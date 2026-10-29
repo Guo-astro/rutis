@@ -1257,18 +1257,21 @@ A plugin definition a test double receives can be passed to `load` as it is.
 
 ### The Go test tool
 
-`github.com/arcships/rutis/go/rutis/rutistest`. The test side is the host of the bus:
+`github.com/arcships/rutis/go/rutis/rutistest`. The test process runs the Go runtime and starts `rutis-host test` once (`rutis-host` on `PATH`, or the path in `RUTIS_HOST`): a host with no rows of its own, in a session with that runtime (on Unix a socket pair, `--channel fd:3`; on Windows and with `RUTIS_LOCAL_HANDOVER=loopback` a loopback connection). Each `Load` is a row of that host, which checks its config and fills its defaults in, waits for the services it injects and dispatches its events. The services a test gives, its listeners and its emissions are plugins of the test's in the same runtime; they use what every plugin uses. Rows unload when their test ends; the host stays for the next test and ends with the test process. Calls between the test and the plugin are calls between two rows of one Go runtime.
 
 | Name | What it does |
 | --- | --- |
-| `loaded.Emit`, `Parallel`, `Serial`, `Waterfall`, `Bail`, `Filter` | Emit from the row's scope |
-| `loaded.On(name, fn, options...)` | Listen as the host does: the plugin's emissions of that name then go through the test side, as they go through rutis; the options are `advanced.Prepend()`, `advanced.Global()`; returns the function that stops it |
-| `loaded.Load(config, options...)` | Load another row in the same runtime |
-| `loaded.Update(config)` | Change a row's config as rutis does, by restarting the row: it unloads, then loads with the new config, its listeners registered anew, after the others (rutis sends a Go row no `rows.update`: a change of config is a restart; the row is gone while its cleanups run, so an event a cleanup emits fails) |
-| `loaded.Reported()` | What the runtime reported of failed `Emit` listeners |
-| `loaded.Provided()`, `loaded.Scope()`, `loaded.Unload()` | The names of the services the plugin provides now; the row's scope chain; unload |
-| `loaded.Service(name)` | `Call(ctx, method, &result, args...)`, `Methods()`, and `Bind(&target)`, which fills a struct of function fields as `ctx.Use` does |
-| Options of `Load`, `TryLoad` and `loaded.Load` | `rutistest.InScope("t1/s1", groups...)` loads into a scope; `InChain(chain...)` into a scope chain (outermost first); `Row(key)` names the row (default `test`, then `test-2`, `test-3`, ...); `RuntimeName(name)` is the runtime's name in descriptors (default `go`; only `Load`'s counts: every row is in the one runtime) |
+| `loaded.Emit`, `Parallel`, `Serial`, `Waterfall`, `Bail`, `Filter` | Emit, from the test's plugin, on the host's bus |
+| `loaded.On(name, fn, options...)` | Listen, as the test's plugin; the options are `advanced.Prepend()`, `advanced.Global()`; returns the function that stops it |
+| `loaded.Load(config, options...)` | Load another row of the plugin, with the same services |
+| `loaded.Update(config)` | Change the row's config, as rutis does for a Go row: a restart; a config the Schema refuses fails the test and the row keeps its config |
+| `loaded.Reported()` | What the runtime and the host reported since the row loaded: failed `Emit` listeners, filters, emissions |
+| `loaded.Provided()`, `loaded.Unload()` | The names of the services the row provides now; unload |
+| `loaded.Service(name)` | The service as a plugin injecting it gets it: `Call(ctx, method, &result, args...)`, `Methods()`, and `Bind(&target)`, which fills a struct of function fields as `ctx.Use` does |
+| `TryLoad` | `Load` giving back the row's line when it cannot start (`weather: config: city is required`) |
+| Option of `Load`, `TryLoad` and `loaded.Load` | `Row(key)` gives the row its id (default the plugin's name, then `<name>-2`, `<name>-3`, ...) |
+
+A host has one provider of a service name: a service the test gives to two `Load`s whose rows are both loaded is one provider, so both get the same value; another value fails the second `Load`. The provider goes when the last row using it unloads.
 
 A test of [the Go `greeter` above](#go):
 
@@ -1277,7 +1280,7 @@ func TestEvents(t *testing.T) {
 	loaded := rutistest.Load(t, Plugin, struct{}{}, nil)
 	said := make(chan any, 1)
 	loaded.On("greeting/said", func(_ context.Context, args ...any) (any, error) {
-		said <- args[0] // the test side listens as the host does
+		said <- args[0] // the test's plugin listens on the host's bus
 		return nil, nil
 	})
 	var text string
@@ -1294,7 +1297,7 @@ func TestEvents(t *testing.T) {
 }
 ```
 
-A plugin definition the plugin hands to a test double (the double's method takes a `*rutis.Definition`) can be passed to `rutistest.Load` as it is: like rutis mounting a copy, it loads another row in the runtime that defined it, with what the plugin's `Apply` prepared; the `services` given then are that copy's own, as the services of the instance it is in, and so are the services it declares in `Provides`: several copies of one definition can be loaded at once when they provide only declared services (an undeclared service's name is not known in advance and is not isolated). Descriptors and reported lines call a copy's row by the id of its origin row. A definition belongs to the row that handed it over (as an argument, as the result of a service it provides, or in an event it emitted): when that row unloads or is updated (a restart), its copies unload first, and loading the definition fails from then on. A copy's config is fixed when it is mounted: `Update` and `Load` on a copy fail. A definition without a `Name` can also be passed to `rutistest.Load` directly.
+A plugin definition the plugin hands to a test double (the double's method takes a `*rutis.Definition`) can be passed to `rutistest.Load` as it is: it loads another row of the runtime that defined it, with what the plugin's `Apply` prepared. A definition without a `Name` can also be passed to `rutistest.Load` directly.
 
 ### The Swift test tool
 

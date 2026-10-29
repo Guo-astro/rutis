@@ -69,7 +69,7 @@ All of it is in `references/runtime-contract.md`. The fastest way to get the beh
 Compiled from the files Bun (arcships/rutis#200) and Go (arcships/rutis#227) actually changed.
 
 **Language side**
-- [ ] `<language>/…`: session layer, SDK, runtime entry point, host-free test helper (like Go's `rutistest`, Python's `rutis.testing`)
+- [ ] `<language>/…`: session layer, SDK, runtime entry point, test helper that runs the real runtime under `rutis-host test` (like Go's `rutistest`, Python's `rutis.testing`)
 - [ ] A conformance entry point for the Rust tests to start
 
 **rutis-bridge**

@@ -111,17 +111,13 @@ func (l *Loaded) On(name string, fn func(ctx context.Context, args ...any) (any,
 func (l *Loaded) Parallel(ctx context.Context, name string, args ...any) error
 func (l *Loaded) Provided() []string
 func (l *Loaded) Reported() []string
-func (l *Loaded) Scope() []rutis.Scope
 func (l *Loaded) Serial(ctx context.Context, name string, args ...any) (any, error)
 func (l *Loaded) Service(name string) *Service
 func (l *Loaded) Unload()
 func (l *Loaded) Update(config any)
 func (l *Loaded) Waterfall(ctx context.Context, name string, terminal rutis.Terminal, args ...any) (any, error)
 type Option func(*options)
-func InChain(chain ...rutis.Scope) Option
-func InScope(path string, groups ...string) Option
 func Row(key string) Option
-func RuntimeName(name string) Option
 type Service struct {
 }
 func (s *Service) Bind(target any) error

@@ -259,6 +259,10 @@ Kotlin 另有两点：
 
 行名 `go-<二进制>:<插件>`、`swift-<二进制>:<插件>` 删除，写 `go:<插件>`、`swift:<插件>`；`rutis.json` 里还有旧写法时，读文件就报错并给出新写法。两个二进制有同名插件时这一行失败、写出两个文件名，由插件作者改名。
 
+- `rutistest` 在真正的内核下运行插件：需要 `PATH` 上的 `rutis-host`，或在 `RUTIS_HOST` 里给出它的路径（模板的发布 workflow 在 `go test` 之前安装它）。`Load`、`TryLoad`、`Loaded` 的形状不变；`TryLoad` 交回的错误现在是宿主为这一行写的那一行（`weather: config: city is required`）。测试工具不再有作用域：删掉 `InScope`、`InChain` 和 `Loaded.Scope`，也删掉 `RuntimeName`（运行时由宿主命名）。测试与插件之间的调用，是同一个 Go 运行时里两行之间的调用。同时加载着的两行，测试给的同名服务是同一个提供者：给同一个值。
+- 运行时不再按 Schema 检查行的配置，也不再补默认值：由宿主做，并发来补好的配置；运行时只解码（解不成配置类型时是 `config: <路径> is not a value the plugin accepts`）。
+- 所有发出都经过宿主，监听器全在同一个二进制里时也一样。会话结束后（包括那时运行的清理里）`ctx.Emit` 等发出以 `the host disconnected` 失败，不再送到同一个二进制里的监听器。
+
 ### Python
 
 最低版本 3.12（3.10、3.11 不再支持）。

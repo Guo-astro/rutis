@@ -193,7 +193,7 @@
       "node": "yes",
       "bun": "yes",
       "python": "yes",
-      "go": "yes",
+      "go": "no",
       "swift": "yes",
       "kotlin": "yes",
       "rust": "no"

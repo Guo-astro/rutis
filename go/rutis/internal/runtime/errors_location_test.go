@@ -1,4 +1,4 @@
-package rutis_test
+package rutis
 
 import (
 	"context"
@@ -7,10 +7,10 @@ import (
 	"regexp"
 	"strings"
 	"testing"
-
-	"github.com/arcships/rutis/go/rutis"
-	"github.com/arcships/rutis/go/rutis/rutistest"
 )
+
+// Errors a Go service method returns, as they cross the session to the
+// host (#677).
 
 type locating struct{}
 
@@ -25,7 +25,7 @@ func (byValue) Fail(context.Context) error { return errors.New("by value") }
 // rootStack is the stack of the root error of a received error's graph.
 func rootStack(t *testing.T, err error) string {
 	t.Helper()
-	var remote *rutis.RemoteError
+	var remote *RemoteError
 	if !errors.As(err, &remote) {
 		t.Fatalf("not a received error: %#v", err)
 	}
@@ -43,18 +43,20 @@ func rootStack(t *testing.T, err error) string {
 // with the method's declaration, file:line, as its stack's frame; a panic
 // with its whole stack: #677)
 func TestAServiceErrorCrossesWithItsMethodsPosition(t *testing.T) {
-	plugin := rutis.Define(rutis.Plugin[rutis.NoConfig]{
+	plugin := Define(Plugin[NoConfig]{
 		Name: "locating",
-		Apply: func(c *rutis.Ctx, _ rutis.NoConfig) error {
+		Apply: func(c *Ctx, _ NoConfig) error {
 			c.Provide("locating", &locating{})
 			c.Provide("byvalue", &byValue{})
 			return nil
 		},
 	})
-	loaded := rutistest.Load(t, plugin, nil, nil)
-	ctx := context.Background()
+	h := startFakeHost(t, nil, plugin)
+	if err := h.load("locating", "locating"); err != nil {
+		t.Fatal(err)
+	}
 
-	stack := rootStack(t, loaded.Service("locating").Call(ctx, "fail", nil))
+	stack := rootStack(t, h.service("locating", "fail"))
 	frame := regexp.MustCompile(`^Error: no forecast\n    at locating\.Fail \((.+):(\d+)\)$`)
 	match := frame.FindStringSubmatch(stack)
 	if match == nil || !strings.HasSuffix(match[1], "errors_location_test.go") || match[2] != "17" {
@@ -62,19 +64,19 @@ func TestAServiceErrorCrossesWithItsMethodsPosition(t *testing.T) {
 	}
 
 	// A method of T offered through *T: T's own declaration.
-	stack = rootStack(t, loaded.Service("byvalue").Call(ctx, "fail", nil))
+	stack = rootStack(t, h.service("byvalue", "fail"))
 	if !regexp.MustCompile(`^Error: by value\n    at byValue\.Fail \(.+errors_location_test\.go:23\)$`).MatchString(stack) {
 		t.Fatalf("stack: %q", stack)
 	}
 
 	// A panic keeps its whole stack.
-	stack = rootStack(t, loaded.Service("locating").Call(ctx, "panic", nil))
+	stack = rootStack(t, h.service("locating", "panic"))
 	if !strings.HasPrefix(stack, "Panic: panic: bad region\n") || !strings.Contains(stack, "goroutine") || strings.Contains(stack, "    at locating.Panic") {
 		t.Fatalf("stack: %q", stack)
 	}
 }
 
-type relaying struct{ received *rutis.RemoteError }
+type relaying struct{ received *RemoteError }
 
 func (r *relaying) Relay(context.Context) error { return r.received }
 
@@ -89,7 +91,7 @@ func receivedGraph(rethrown []string) json.RawMessage {
 // rethrown, and that rethrown.
 func rethrownGraph(t *testing.T, err error) (map[string]any, []string) {
 	t.Helper()
-	var remote *rutis.RemoteError
+	var remote *RemoteError
 	if !errors.As(err, &remote) {
 		t.Fatalf("not a received error: %#v", err)
 	}
@@ -115,28 +117,30 @@ func rethrownGraph(t *testing.T, err error) (map[string]any, []string) {
 // crosses with the graph it came with; the method's declaration is
 // appended to its root node's rethrown, at most 8 items: #677)
 func TestAReceivedErrorThrownOnRecordsTheMethodInRethrown(t *testing.T) {
-	received := &rutis.RemoteError{Name: "Fail", Message: "far", Graph: receivedGraph([]string{"    at first (a.js:1:1)"})}
+	received := &RemoteError{Name: "Fail", Message: "far", Graph: receivedGraph([]string{"    at first (a.js:1:1)"})}
 	full := make([]string, 8)
 	for i := range full {
 		full[i] = "    at caller (c.js:1:1)"
 	}
-	capped := &rutis.RemoteError{Name: "Fail", Message: "far", Graph: receivedGraph(full)}
-	plugin := rutis.Define(rutis.Plugin[rutis.NoConfig]{
+	capped := &RemoteError{Name: "Fail", Message: "far", Graph: receivedGraph(full)}
+	plugin := Define(Plugin[NoConfig]{
 		Name: "relaying",
-		Apply: func(c *rutis.Ctx, _ rutis.NoConfig) error {
+		Apply: func(c *Ctx, _ NoConfig) error {
 			c.Provide("relaying", &relaying{received})
 			c.Provide("capped", &relaying{capped})
 			return nil
 		},
 	})
-	loaded := rutistest.Load(t, plugin, nil, nil)
-	ctx := context.Background()
+	h := startFakeHost(t, nil, plugin)
+	if err := h.load("relaying", "relaying"); err != nil {
+		t.Fatal(err)
+	}
 	stored := string(received.Graph)
 
 	// Twice: each crossing appends once; the stored graph is not changed.
 	for range 2 {
-		err := loaded.Service("relaying").Call(ctx, "relay", nil)
-		var remote *rutis.RemoteError
+		err := h.service("relaying", "relay")
+		var remote *RemoteError
 		if !errors.As(err, &remote) || remote.Name != "Fail" || remote.Message != "far" || remote.Code != "Gone" {
 			t.Fatalf("received: %#v", err)
 		}
@@ -157,7 +161,7 @@ func TestAReceivedErrorThrownOnRecordsTheMethodInRethrown(t *testing.T) {
 	}
 
 	// At most 8 items: no more are appended.
-	_, rethrown := rethrownGraph(t, loaded.Service("capped").Call(ctx, "relay", nil))
+	_, rethrown := rethrownGraph(t, h.service("capped", "relay"))
 	if len(rethrown) != 8 || rethrown[7] != "    at caller (c.js:1:1)" {
 		t.Fatalf("rethrown: %q", rethrown)
 	}

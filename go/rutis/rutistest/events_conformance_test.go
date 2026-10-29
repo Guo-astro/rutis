@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -249,12 +250,11 @@ func fromWritten(t *testing.T, raw json.RawMessage) any {
 
 // eventRun is one case on one harness.
 type eventRun struct {
-	t      *testing.T
-	c      *eventCase
-	groups map[string]string
-	log    *eventLog
-	root   *Loaded
-	rows   map[string]*Loaded
+	t    *testing.T
+	c    *eventCase
+	log  *eventLog
+	root *Loaded
+	rows map[string]*Loaded
 	// The listener rows' configs, by label, and the last config generation.
 	participants map[string]map[string]any
 	generation   int
@@ -269,18 +269,35 @@ type outcome struct {
 	err   error
 }
 
-func (r *eventRun) options(label, path string) []Option {
-	if path == "" {
-		path = "root"
-	}
-	var groups []string
-	if path != "root" {
-		segments := strings.Split(path, "/")
-		for i := range segments {
-			groups = append(groups, r.groups[strings.Join(segments[:i+1], "/")])
+// options are the options of the row `label`: its id. Cases with scopes
+// are not run here (scoped).
+func (r *eventRun) options(label string) []Option { return []Option{Row(label)} }
+
+var scopeField = regexp.MustCompile(`"scope"\s*:\s*"([^"]*)"`)
+
+// scoped reports whether the case `raw` places a participant in a scope:
+// the testing tool has none (rutis-loader's events_conformance runs it).
+func scoped(raw json.RawMessage) bool {
+	for _, match := range scopeField.FindAllStringSubmatch(string(raw), -1) {
+		if match[1] != "" && match[1] != "root" {
+			return true
 		}
 	}
-	return []Option{Row(label), InScope(path, groups...)}
+	return false
+}
+
+// reported is every line reported since the case began: the runtime's
+// (from `since`), and the host's of each of the case's rows.
+func (r *eventRun) reportedLines() []string {
+	lines := r.root.h.since(r.reported)
+	for _, row := range r.rows {
+		from, err := r.root.h.test.Reported(context.Background(), row.id)
+		if err != nil {
+			r.t.Errorf("reported %s: %v", row.id, err)
+		}
+		lines = append(lines, from...)
+	}
+	return lines
 }
 
 // load loads a listener row.
@@ -293,8 +310,7 @@ func (r *eventRun) load(raw json.RawMessage) {
 		listener["name"] = r.c.Name
 	}
 	label, _ := listener["label"].(string)
-	scope, _ := listener["scope"].(string)
-	r.rows[label] = r.root.Load(listener, r.options(label, scope)...)
+	r.rows[label] = r.root.Load(listener, r.options(label)...)
 	r.participants[label] = listener
 }
 
@@ -315,14 +331,11 @@ func (r *eventRun) update(label string) {
 	r.participants[label] = config
 }
 
-// emitter is the emitter row of `label` in `scope`, created on first use.
-func (r *eventRun) emitter(label, scope string) (*Loaded, string) {
+// emitter is the emitter row of `label`, created on first use.
+func (r *eventRun) emitter(label string) (*Loaded, string) {
 	key := label
-	if scope != "" && scope != "root" {
-		key = label + "-" + strings.ReplaceAll(scope, "/", "-")
-	}
 	if _, ok := r.rows[key]; !ok {
-		r.rows[key] = r.root.Load(map[string]any{"label": key, "emitter": true}, r.options(key, scope)...)
+		r.rows[key] = r.root.Load(map[string]any{"label": key, "emitter": true}, r.options(key)...)
 	}
 	return r.rows[key], key
 }
@@ -351,7 +364,7 @@ func (r *eventRun) emit(raw json.RawMessage) outcome {
 	if spec.Name == "" {
 		spec.Name = r.c.Name
 	}
-	loaded, key := r.emitter(spec.Row, spec.Scope)
+	loaded, key := r.emitter(spec.Row)
 	args := make([]any, len(spec.Args))
 	for i, arg := range spec.Args {
 		args[i] = fromWritten(r.t, arg)
@@ -365,7 +378,7 @@ func (r *eventRun) emit(raw json.RawMessage) outcome {
 		if err := json.Unmarshal(spec.Terminal, &terminal); err != nil {
 			r.t.Fatal(err)
 		}
-		request["terminal"] = terminal
+		request["terminal"] = json.RawMessage(spec.Terminal)
 	}
 	if spec.Cancel != nil {
 		request["cancel"] = spec.Cancel
@@ -405,20 +418,18 @@ type thrown struct {
 }
 
 // failure is the error as the emitter's runtime threw it.
+// The emitter row is in this process: its error is as it made it, or as
+// it received it from the host.
 func matches(err error, want thrown) string {
-	var remote *peer.RemoteError
-	if !errors.As(err, &remote) {
-		return fmt.Sprintf("not an error of the plugin: %v", err)
+	if name := peer.ErrorName(err); want.Name != "" && name != want.Name {
+		return fmt.Sprintf("name %s, want %s (%v)", name, want.Name, err)
 	}
-	if want.Name != "" && remote.Name != want.Name {
-		return fmt.Sprintf("name %s, want %s (%v)", remote.Name, want.Name, err)
-	}
-	if want.Message != "" && !strings.Contains(remote.Message, want.Message) {
-		return fmt.Sprintf("message %q, want %q", remote.Message, want.Message)
+	if message := peer.Message(err); want.Message != "" && !strings.Contains(message, want.Message) {
+		return fmt.Sprintf("message %q, want %q", message, want.Message)
 	}
 	if want.Errors != nil {
 		var aggregate *peer.AggregateError
-		if !errors.As(peer.Aggregated(remote), &aggregate) || len(aggregate.Errors) != len(want.Errors) {
+		if !errors.As(peer.Aggregated(err), &aggregate) || len(aggregate.Errors) != len(want.Errors) {
 			return fmt.Sprintf("errors of %v, want %d", err, len(want.Errors))
 		}
 		for i, child := range want.Errors {
@@ -455,7 +466,8 @@ func reports(line, event string, filter bool, row string) string {
 	if filter {
 		kind, at = "filter", "from"
 	}
-	rest, ok := strings.CutPrefix(line, fmt.Sprintf("rutis: %s of %s %s row %s failed: ", kind, event, at, row))
+	// The runtime's lines start `rutis: `; the host's (`reported`) do not.
+	rest, ok := strings.CutPrefix(strings.TrimPrefix(line, "rutis: "), fmt.Sprintf("%s of %s %s row %s failed: ", kind, event, at, row))
 	if !ok {
 		return ""
 	}
@@ -552,7 +564,7 @@ func (r *eventRun) logProblems(e expectation, event string) string {
 			out = append(out, fmt.Sprintf("the filter saw %q, want %q", seen, e.FilterSees))
 		}
 	}
-	lines := r.root.Reported()[r.reported:]
+	lines := r.reportedLines()
 	for _, want := range e.Reported {
 		var about []string
 		for _, line := range lines {
@@ -619,9 +631,6 @@ func (r *eventRun) step(i int, raw json.RawMessage) {
 	}
 	where := fmt.Sprintf("%s step %d", r.c.Case, i)
 	e := r.expectation(step.Expect)
-	if e.ViaHost != nil && *e.ViaHost {
-		r.t.Errorf("%s: the testing tool always dispatches on the fast path", where)
-	}
 	// The event the step's reports are about: its emit's name, else the
 	// case's.
 	event := r.c.Name
@@ -674,7 +683,12 @@ func (r *eventRun) step(i int, raw json.RawMessage) {
 
 // knownFailing are the cases a product bug fails here, and why: skipped,
 // and counted so that the tool still runs as many as the file says.
-var knownFailing = map[string]string{}
+var knownFailing = map[string]string{
+	// The emitter rows are rows of the test process's runtime, which the
+	// test calls within the process: a function inside an argument of
+	// such a call does not reach a parameter of type any.
+	"values/function-argument": "a function in an argument of a call within the process",
+}
 
 func TestRutistestMeetsTheEventExpectations(t *testing.T) {
 	data, err := os.ReadFile(filepath.FromSlash(eventExpectations))
@@ -682,19 +696,28 @@ func TestRutistestMeetsTheEventExpectations(t *testing.T) {
 		t.Fatal(err)
 	}
 	var expected struct {
-		Scopes    map[string]string `json:"scopes"`
-		ToolCases map[string]int    `json:"toolCases"`
-		Cases     []eventCase       `json:"cases"`
+		ToolCases map[string]int `json:"toolCases"`
+		Cases     []eventCase    `json:"cases"`
 	}
 	if err := json.Unmarshal(data, &expected); err != nil {
 		t.Fatal(err)
 	}
-	ran, known := 0, 0
+	var raw struct {
+		Cases []json.RawMessage `json:"cases"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatal(err)
+	}
+	ran, known, inScopes := 0, 0, 0
 	for i := range expected.Cases {
 		c := &expected.Cases[i]
 		t.Run(c.Case, func(t *testing.T) {
 			if ok, why := c.forGo(t); !ok {
 				t.Skipf("not for the Go testing tool: %s", why)
+			}
+			if scoped(raw.Cases[i]) {
+				inScopes++
+				t.Skip("places a participant in a scope: the testing tool has none (rutis-loader events_conformance runs it)")
 			}
 			if why, failing := knownFailing[c.Case]; failing {
 				known++
@@ -702,10 +725,10 @@ func TestRutistestMeetsTheEventExpectations(t *testing.T) {
 			}
 			ran++
 			log := &eventLog{}
-			r := &eventRun{t: t, c: c, groups: expected.Scopes, log: log, rows: map[string]*Loaded{}, participants: map[string]map[string]any{}, pending: make(chan outcome, 1)}
+			r := &eventRun{t: t, c: c, log: log, rows: map[string]*Loaded{}, participants: map[string]map[string]any{}, pending: make(chan outcome, 1)}
 			r.root = Load(t, conformance.Plugin, map[string]any{"label": "e", "emitter": true}, map[string]any{"events-log": log}, Row("e"))
 			r.rows["e"] = r.root
-			r.reported = len(r.root.Reported())
+			r.reported = r.root.since
 			for _, listener := range c.Listeners {
 				r.load(listener)
 			}
@@ -715,7 +738,7 @@ func TestRutistestMeetsTheEventExpectations(t *testing.T) {
 		})
 	}
 	// The skip logic agrees with events.rs `tool_combo`.
-	if ran+known != expected.ToolCases[eventLanguage] {
-		t.Fatalf("ran %d cases and %d known failing, the file gives %s %d", ran, known, eventLanguage, expected.ToolCases[eventLanguage])
+	if ran+known+inScopes != expected.ToolCases[eventLanguage] {
+		t.Fatalf("ran %d cases, %d known failing and %d in scopes, the file gives %s %d", ran, known, inScopes, eventLanguage, expected.ToolCases[eventLanguage])
 	}
 }

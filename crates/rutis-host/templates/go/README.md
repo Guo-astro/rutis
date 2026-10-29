@@ -4,7 +4,7 @@ A [rutis](https://github.com/arcships/rutis) plugin in Go.
 
 ```bash
 go mod tidy
-go test ./...        # unit tests, no host needed
+go test ./...        # unit tests, in a test host (rutis-host on PATH, or RUTIS_HOST)
 rutis-host dev       # run it in a local host; changes rebuild and restart it
 ```
 

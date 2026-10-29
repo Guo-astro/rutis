@@ -141,7 +141,10 @@ func (r *row) id(name string) string {
 
 // runtimeState runs the rows one controller loads into this process.
 type runtimeState struct {
-	defs    map[string]*Definition
+	defs map[string]*Definition
+	// The plugins not in defs, by name, as rows load them (the Tester's,
+	// whose plugins are the tests').
+	find    func(name string) *Definition
 	session *peer.Peer
 
 	mu       sync.Mutex
@@ -159,11 +162,6 @@ type runtimeState struct {
 	listenerSeq int64
 	// The lowest and highest positions given (Prepend takes one below).
 	first, last int64
-	// The names and prefixes with listeners outside this process
-	// (events.elsewhere), and the emits through the host not answered yet.
-	elsewhere         map[string]bool
-	elsewherePrefixes map[string]bool
-	hostEmits         map[string]int
 	// What the host calls this runtime (mount `runtime`), for descriptors.
 	runtimeName string
 
@@ -227,11 +225,8 @@ func newRuntime(defs []*Definition) *runtimeState {
 		slots:    map[string]*slot{},
 		handles:  map[string]*handleEntry{},
 
-		listeners:         map[string][]*listener{},
-		byID:              map[string]*listener{},
-		elsewhere:         map[string]bool{},
-		elsewherePrefixes: map[string]bool{},
-		hostEmits:         map[string]int{},
+		listeners: map[string][]*listener{},
+		byID:      map[string]*listener{},
 	}
 }
 
@@ -246,6 +241,9 @@ func (rt *runtimeState) names() string {
 
 func (rt *runtimeState) definition(entry string) (*Definition, error) {
 	def := rt.defs[entry]
+	if def == nil && rt.find != nil {
+		def = rt.find(entry)
+	}
 	if def == nil {
 		return nil, &peer.RemoteError{Name: "NotFound", Message: fmt.Sprintf("plugin %s is not in this binary; it has: %s", entry, rt.names())}
 	}

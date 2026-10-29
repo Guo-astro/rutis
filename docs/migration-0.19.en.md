@@ -259,6 +259,10 @@ Rebuild them with SDK 0.18 or later (the `required` exception for binaries built
 
 The row names `go-<binary>:<plugin>` and `swift-<binary>:<plugin>` are removed; write `go:<plugin>` and `swift:<plugin>`. A `rutis.json` still using them is refused when read, with the name to write. When two binaries have a plugin of the same name the row fails naming both files, and the plugins' author renames one.
 
+- `rutistest` runs the plugin under the real kernel: it needs `rutis-host` on `PATH`, or its path in `RUTIS_HOST` (the template's release workflow installs it before `go test`). `Load`, `TryLoad` and `Loaded` keep their shape; `TryLoad`'s error is now the host's line for the row (`weather: config: city is required`). The test tool no longer has scopes: `InScope`, `InChain` and `Loaded.Scope` are removed, and so is `RuntimeName` (the host names the runtime). Calls between the test and the plugin are calls between two rows of one Go runtime. A service given to two `Load`s whose rows are loaded at once is one provider: give the same value.
+- The runtime no longer checks a row's config against the schema or fills its defaults: the host does, and sends the filled config; the runtime only decodes it (`config: <path> is not a value the plugin accepts` when it does not decode into the config type).
+- Every emission goes through the host, also when every listener is in the same binary. `ctx.Emit` (and the other modes) after the session ended, in a cleanup run then, fails with `the host disconnected` instead of reaching the listeners of the same binary.
+
 ### Python
 
 The minimum is 3.12 (3.10 and 3.11 are no longer supported).
