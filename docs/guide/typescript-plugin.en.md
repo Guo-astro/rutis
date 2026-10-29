@@ -262,7 +262,7 @@ rutis-host dev: services: greeter (greeter), loader (host), translate (translate
 greeter: running
 ```
 
-`greeter` runs once `translate` is available; the lines may come in another order. The `rutis-host dev: services:` line lists the services now and the row providing each (`loader` comes from the host). While `dev` runs, in another terminal in the project directory, look at the state and call `greeter` once:
+`greeter` runs once `translate` is available; the lines may come in another order. The `rutis-host dev: services:` line lists the services now and the row providing each (`loader` comes from the host); it is printed once every row is running, waiting or failed, and again whenever the services change, before or after the rows' state lines. While `dev` runs, in another terminal in the project directory, look at the state and call `greeter` once:
 
 ```console
 $ npx rutis-host status

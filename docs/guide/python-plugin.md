@@ -241,7 +241,7 @@ rutis-host dev: services: greeter (greeter), loader (host), translate (translate
 greeter: running
 ```
 
-每一行的状态变化时打印一行，各行之间的先后每次可能不同；`rutis-host dev: services:` 是现在的服务和提供它的行。
+每一行的状态变化时打印一行，各行之间的先后每次可能不同；`rutis-host dev: services:` 是现在的服务和提供它的行，这一行在所有行都已运行、等待或失败后打印一次，之后服务变化时再打印，和各行状态行的先后不固定。
 
 另开一个终端，在项目目录里看现在有哪些服务、由哪一行提供，再调一次（Windows 上不提供 `status` 与 `call`）：
 

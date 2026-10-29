@@ -286,7 +286,7 @@ Make `rutis.dev.json` two rows:
 npx @arcships/rutis-host dev
 ```
 
-`dev` builds the binary with `swift build`, starts the two rows, then prints the services there are and the row providing each:
+`dev` builds the binary with `swift build`, and starts the two rows. `rutis-host dev: services:` gives the services there are and the row providing each; it is printed once every row is running, waiting or failed, and again whenever the services change, before or after the rows' state lines:
 
 ```text
 greeter: building

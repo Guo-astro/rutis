@@ -241,7 +241,7 @@ rutis-host dev: services: greeter (greeter), loader (host), translate (translate
 greeter: running
 ```
 
-Each row prints a line when its state changes, and the rows' lines may come in another order each time; `rutis-host dev: services:` gives the services there are now and the row that provides each.
+Each row prints a line when its state changes, and the rows' lines may come in another order each time; `rutis-host dev: services:` gives the services there are now and the row that provides each; it is printed once every row is running, waiting or failed, and again whenever the services change, before or after the rows' state lines.
 
 In another terminal, in the project's directory, see which services there are and which row provides each, then call one (`status` and `call` are not on Windows):
 

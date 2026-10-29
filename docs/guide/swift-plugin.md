@@ -286,7 +286,7 @@ npm install --prefix dev @arcships/rutis
 npx @arcships/rutis-host dev
 ```
 
-`dev` 用 `swift build` 构建二进制，启动两行，然后打印现在有哪些服务、各由哪一行提供：
+`dev` 用 `swift build` 构建二进制，启动两行。`rutis-host dev: services:` 是现在有哪些服务、各由哪一行提供，这一行在所有行都已运行、等待或失败后打印一次，之后服务变化时再打印，和各行状态行的先后不固定：
 
 ```text
 greeter: building

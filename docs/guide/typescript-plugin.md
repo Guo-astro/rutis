@@ -262,7 +262,7 @@ rutis-host dev: services: greeter (greeter), loader (host), translate (translate
 greeter: running
 ```
 
-`greeter` 等 `translate` 就绪后才运行，几行的先后可能和这里不同。`rutis-host dev: services:` 一行是现在的服务和提供它的行（`loader` 由宿主提供）。`dev` 运行时，另开一个终端，在项目目录里看状态、调一次 `greeter`：
+`greeter` 等 `translate` 就绪后才运行，几行的先后可能和这里不同。`rutis-host dev: services:` 一行是现在的服务和提供它的行（`loader` 由宿主提供），这一行在所有行都已运行、等待或失败后打印一次，之后服务变化时再打印，和各行状态行的先后不固定。`dev` 运行时，另开一个终端，在项目目录里看状态、调一次 `greeter`：
 
 ```console
 $ npx rutis-host status
