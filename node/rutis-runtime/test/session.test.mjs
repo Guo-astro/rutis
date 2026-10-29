@@ -75,14 +75,14 @@ test('sync wait only pumps related calls and admits a prequeued related callback
 // before the next frame is handled, not on a later tick.
 test('invokeAnswered tells the reply as its frame is read, before the next frame', async () => {
   const seen = []
-  const { peer, sent, fault } = harness((_, method) => { seen.push(method); return null }, { inline: ['events.elsewhere'] })
+  const { peer, sent, fault } = harness((_, method) => { seen.push(method); return null }, { inline: ['plugins.read'] })
   peer.invokeAnswered('', 'events.dispatch', [{ mode: 'emit' }], result => seen.push(['answered', result.ok, result.value]))
   assert.equal(sent.at(-1).method, 'events.dispatch')
   const id = sent.at(-1).id
   peer.receive({ op: 'return', id, value: { type: 'undefined' } })
   assert.deepEqual(seen, [['answered', true, undefined]], 'in the same call, no tick in between')
-  peer.receive({ op: 'invoke', id: 'rust:1', path: [], target: '', method: 'events.elsewhere', args: data([{}]) })
-  assert.deepEqual(seen, [['answered', true, undefined], 'events.elsewhere'])
+  peer.receive({ op: 'invoke', id: 'rust:1', path: [], target: '', method: 'plugins.read', args: data([]) })
+  assert.deepEqual(seen, [['answered', true, undefined], 'plugins.read'])
   // A throw is told the same way.
   peer.invokeAnswered('', 'events.dispatch', [{ mode: 'emit' }], result => seen.push(['failed', result.ok, result.value.name]))
   peer.receive({ op: 'throw', id: sent.at(-1).id, error: { name: 'BindingError', message: 'refused' } })
@@ -109,7 +109,7 @@ test('an emit-mode listener call waits while an unrelated synchronous call does'
     }
     if (method === 'events.call') log.push(`listener sees ${state}`)
     return undefined
-  }, { inline: ['events.elsewhere'], holds })
+  }, { inline: ['plugins.read'], holds })
   incoming.push(
     { op: 'invoke', id: 'rust:2', path: [], target: '', method: 'events.call', args: data([{ listener: '1', mode: 'emit', name: 'n', args: [] }]) },
     { op: 'return', id: 'node:1', value: data('slow') },
@@ -148,78 +148,6 @@ test('a related later emit waits behind the earlier held emit of its name', asyn
   assert.deepEqual(log, ['n:1', 'n:2'])
   assert.equal(fault(), undefined)
   peer.close()
-})
-
-// §5.5: a local emit of a name goes behind the held listener calls of an
-// earlier emit of it, in frame order; with none held it runs at once.
-test('behind runs local work after the held calls of its key, in frame order', async () => {
-  const log = []
-  const holds = (method, args) => method === 'events.call' && args?.[0]?.mode === 'emit' ? args[0].name : undefined
-  const { peer, incoming, fault } = harness((_, method, args) => { log.push(`call ${args[0].name}:${args[0].args[0]}`); return undefined }, { holds })
-  const call = (id, name, n) => ({ op: 'invoke', id: `rust:${id}`, path: [], target: '', method: 'events.call', args: data([{ listener: '1', mode: 'emit', name, args: [n] }]) })
-  assert.equal(peer.behind('n', () => log.push('local n:0')), false, 'nothing held: the caller runs it')
-  incoming.push(call(1, 'n', 1), call(2, 'm', 1), { op: 'return', id: 'node:1', value: data(7) })
-  assert.equal(peer.invoke('test', 'sync', []), 7)
-  // Right after the wait, before the held calls ran: behind them.
-  assert.equal(peer.behind('n', () => log.push('local n:2')), true)
-  assert.equal(peer.behind('m', () => log.push('local m:2')), true)
-  assert.equal(peer.behind('other', () => {}), false)
-  assert.deepEqual(log, [])
-  await new Promise(resolve => setImmediate(resolve))
-  assert.deepEqual(log, ['call n:1', 'call m:1', 'local n:2', 'local m:2'])
-  // Behind a queued local run too.
-  incoming.push(call(3, 'n', 3), { op: 'return', id: 'node:2', value: data(8) })
-  assert.equal(peer.invoke('test', 'sync', []), 8)
-  assert.equal(peer.behind('n', () => log.push('local n:4')), true)
-  assert.equal(peer.behind('n', () => log.push('local n:5')), true)
-  await new Promise(resolve => setImmediate(resolve))
-  assert.deepEqual(log.slice(4), ['call n:3', 'local n:4', 'local n:5'])
-  assert.equal(fault(), undefined)
-  peer.close()
-})
-
-// §5.5 / #546: a local emit queued behind a held call is lost when the
-// session ends; close says which ones instead of dropping them silently.
-test('close reports local emits still queued behind a held call', async () => {
-  const log = []
-  const reports = []
-  const holds = (method, args) => method === 'events.call' && args?.[0]?.mode === 'emit' ? args[0].name : undefined
-  const { peer, incoming, fault } = harness((_, method, args) => {
-    if (method === 'events.call') log.push(`call ${args[0].name}`)
-  }, { holds, report: (line, details) => reports.push({ line, details }) })
-  const call = (id, name) => ({
-    op: 'invoke', id: `rust:${id}`, path: [], target: '', method: 'events.call',
-    args: data([{ listener: '1', mode: 'emit', name, args: [] }]),
-  })
-  // The listener call is held while the unrelated synchronous call waits.
-  incoming.push(call(1, 't/a'), { op: 'return', id: 'node:1', value: data(7) })
-  assert.equal(peer.invoke('test', 'sync', []), 7)
-  // The held call has not run yet; a local emit of the name goes behind it.
-  assert.equal(peer.behind('t/a', () => log.push('local t/a')), true)
-  peer.close()
-  // Neither the held call nor the local emit runs; the loss is reported once.
-  assert.deepEqual(log, [])
-  assert.equal(reports.length, 1)
-  assert.equal(reports[0].line, 'rutis: the connection to the host ended with 1 local emit still waiting behind an earlier one: t/a')
-  assert.deepEqual(reports[0].details, { count: 1, events: ['t/a'] })
-  peer.close()
-  assert.equal(reports.length, 1, 'close is idempotent')
-  await new Promise(resolve => setImmediate(resolve))
-  assert.deepEqual(log, [])
-  assert.equal(fault(), undefined)
-})
-
-test('close needs no report callback for local emits still queued', async () => {
-  const holds = (method, args) => method === 'events.call' && args?.[0]?.mode === 'emit' ? args[0].name : undefined
-  const { peer, incoming } = harness(() => undefined, { holds })
-  incoming.push(
-    { op: 'invoke', id: 'rust:1', path: [], target: '', method: 'events.call', args: data([{ listener: '1', mode: 'emit', name: 't/a', args: [] }]) },
-    { op: 'return', id: 'node:1', value: data(7) },
-  )
-  assert.equal(peer.invoke('test', 'sync', []), 7)
-  assert.equal(peer.behind('t/a', () => { throw new Error('the local emit must not run') }), true)
-  assert.doesNotThrow(() => { peer.close(); peer.close() })
-  await new Promise(resolve => setImmediate(resolve))
 })
 
 test('explicit release accounts repeated live imports without relying on GC', async () => {

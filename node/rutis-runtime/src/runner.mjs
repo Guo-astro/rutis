@@ -905,9 +905,7 @@ function dispatchCall(target, method, args) {
       case 'dispose':
         closing = true
         return Promise.all([dispose(), peer.drain()]).then(() => null)
-      // The logical bus (#464): `events.elsewhere` runs as its frame
-      // arrives (the session's `inline`); `events.call` runs a listener.
-      case 'events.elsewhere': bus.elsewhere(args?.[0] ?? {}); return undefined
+      // The logical bus (#464): the host runs a listener of this process.
       case 'events.call': return bus.call(args?.[0] ?? {})
       case 'get': {
         // A live read of a declared service property.
@@ -1062,10 +1060,10 @@ try {
     ended: channelEnded,
     // `plugins.read` only reads: answered even while a synchronous call
     // waits (a definition handed to a synchronous host method).
-    inline: ['events.elsewhere', 'plugins.read'],
+    inline: ['plugins.read'],
     // An `emit`-mode `events.call` waits while a synchronous call of this
-    // process does, as every call not of its chain does; a local emit of
-    // the name goes behind it (the bus's `behind`, §5.5).
+    // process does, as every call not of its chain does; a later one of
+    // the name waits behind it (§5.5).
     holds: (method, args) => method === 'events.call' && args?.[0]?.mode === 'emit' ? args[0].name : undefined,
     report: bus.report,
     // A function or object a row hands over runs as that row's when
@@ -1093,7 +1091,6 @@ bus.peer = {
   callAsync: (target, method, args) => peer.callAsync(target, method, args),
   callAnswered: (target, method, args, answered) => peer.callAnswered(target, method, args, answered),
   callFunctionAsync: (fn, args) => peer.callFunctionAsync(fn, args),
-  behind: (name, run) => peer.behind(name, run),
 }
 if (dialed) {
   // Stopped: the rows go while rutis still hears from this end, then the

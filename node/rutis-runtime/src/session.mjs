@@ -237,9 +237,9 @@ export class Session {
     this.#report = typeof report === 'function' ? report : () => {}
     // `inline`: control methods (empty target) run as their frame arrives,
     // in frame order, before the next frame is read, also while a
-    // synchronous call waits (`events.on`, `events.off`, `events.elsewhere`).
+    // synchronous call waits (`events.on`, `events.off`).
     // `holds(method, args)`: the key of a control call (empty target) that
-    // later local work may have to wait behind (`behind`), or undefined.
+    // a later call of the same key waits behind, or undefined.
     this.#holds = holds
     this.#inline = new Set(inline ?? [])
     if (!ENDPOINT_ID.test(endpoint?.local)) throw new Error(`invalid endpoint id ${endpoint?.local}`)
@@ -266,19 +266,7 @@ export class Session {
     if (this.#closed) return
     this.#closed = error; this.#rejectReady(error)
     for (const pending of this.#pending.values()) pending({ ok: false, value: error })
-    // Local emits queued behind an earlier call never start once the session
-    // ends; say which were lost instead of dropping them silently (#546).
-    // Protocol jobs are still dropped silently, as before.
-    const dropped = [...this.#queued].filter(job => job.run)
     this.#pending.clear(); this.#sites.clear(); this.#exports.clear(); this.#imports.clear(); this.#queued.clear()
-    if (dropped.length) {
-      const events = dropped.map(job => String(job.key ?? '(none)'))
-      const line = `rutis: the connection to the host ended with ${dropped.length} local emit${dropped.length === 1 ? '' : 's'} still waiting behind an earlier one: ${events.join(', ')}`
-      // Reporting is best effort: a failing reporter must not throw from
-      // close() (nor turn into an uncaught microtask exception) and leave
-      // the session half closed (#546).
-      try { this.#report(line, { count: dropped.length, events }) } catch { /* ignore */ }
-    }
   }
   // What this side found wrong with the session, if that is what ended it
   // (a frame it refused, say): not a normal end.
@@ -663,22 +651,6 @@ export class Session {
       else queueMicrotask(() => this.#run(job))
     } catch (error) { this.#fault(error) }
   }
-  // Run `run` behind every call of `key` (`holds`) that arrived and has not
-  // run yet, in turn: such calls wait while a synchronous call of this side
-  // waits, unless they are of its chain, and run, in frame order, once it
-  // returns. Whether there was one; if not, the caller runs `run` itself.
-  // An `emit`'s local listeners go behind the host's `events.call` of an
-  // earlier emit of the name this way (events protocol §5.5): this side is
-  // not reentrant, and they would otherwise overtake them.
-  behind(key, run) {
-    let held = false
-    for (const job of this.#queued) if (job.key === key) { held = true; break }
-    if (!held) return false
-    const job = { key, run }
-    this.#queued.add(job)
-    if (!this.#waiting.length) queueMicrotask(() => this.#run(job))
-    return true
-  }
   #run(job) {
     if (!this.#queued.has(job)) return
     // A later call of a name whose earlier emit has not run yet waits behind
@@ -689,13 +661,6 @@ export class Session {
         if (other === job) break
         if (other.key === job.key) return
       }
-    }
-    if (job.run) {
-      // Local work: never on top of a wait.
-      if (this.#waiting.length) return
-      this.#queued.delete(job)
-      try { job.run() } catch (error) { queueMicrotask(() => { throw error }) }
-      return
     }
     if (this.#waiting.length && !this.#waiting.some(id => job.frame.path.includes(id))) return
     this.#queued.delete(job)

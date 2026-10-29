@@ -23,6 +23,7 @@
   "type": "module",
   "exports": {
     "./bridge": "./src/bridge/index.mjs",
+    "./testing": "./src/testing/start.mjs",
     "./package.json": "./package.json"
   },
   "files": [

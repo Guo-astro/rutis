@@ -250,6 +250,18 @@ Rebuild them with SDK 0.18 or later (the `required` exception for binaries built
 
 The row names `go-<binary>:<plugin>` and `swift-<binary>:<plugin>` are removed; write `go:<plugin>` and `swift:<plugin>`. A `rutis.json` still using them is refused when read, with the name to write. When two binaries have a plugin of the same name the row fails naming both files, and the plugins' author renames one.
 
+### TypeScript and Bun plugins
+
+`@arcships/rutis/testing` runs the plugin on a real host (`rutis-host test`; see [plugin API: the TypeScript and Bun test tool](guide/plugin-api.en.md#the-typescript-and-bun-test-tool)):
+
+- Add `@arcships/rutis-runtime` (`@arcships/rutis-bun` under Bun) and `@arcships/rutis-host` as dev dependencies (a project `rutis-host new` made has them), or set `RUTIS_HOST` to a `rutis-host`.
+- The plugin must be the default export of its module: move a plugin made with `definePlugin` inside a test file into a file of its own, or `load` fails with `load needs a plugin that its module exports as default`.
+- Removed options: `strict`, `scope`, `scopes`, `deadline`, `runtime`, `row`, and `h.at(scope)`.
+- `t.reported` and `h.reported` are methods: `await t.reported()`, each entry `{ line }`, `line` the line the host prints.
+- Values between the test and the plugin cross by the rules between processes; the events `t.on` receives arrive through the host, a little after the emitter returns.
+- The host checks the config and fills its defaults; a load that fails is a `PluginTestError` whose text is the row's status, such as `weather: config: city is required`.
+- The runtimes no longer dispatch events in their own process: every emission goes through the host (a median of about 71 microseconds for `emit`; see the [events benchmark](performance-events-2026-10-28.en.md)).
+
 ### Python
 
 The minimum is 3.12 (3.10 and 3.11 are no longer supported).

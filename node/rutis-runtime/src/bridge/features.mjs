@@ -6,7 +6,7 @@ import { peerService } from './link.mjs'
 import { toJsonSchema } from '../schema.mjs'
 import { isLeaf, supported, toCordis } from '../leaf.mjs'
 import { Context } from '@deepseek-ai/cordis'
-import { Bus } from '../events.mjs'
+import { Bus } from './bus.mjs'
 import { install } from '../cordis-events.mjs'
 
 // The node features of a Cordis application, each gated on its link's peer

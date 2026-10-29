@@ -6,16 +6,20 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { Context } from '@deepseek-ai/cordis'
-import { Bus } from '../src/events.mjs'
+import { Bus as LeafBus } from '../src/events.mjs'
+import { Bus as NodeBus } from '../src/bridge/bus.mjs'
 import { install } from '../src/cordis-events.mjs'
 import { definePlugin } from '../../rutis/src/index.mjs'
 import { supported, toCordis } from '../src/leaf.mjs'
 
-// A root Context on a bus without a host; plugins are rows by name.
-function setup(options = {}) {
+// A root Context on a bus; plugins are rows by name. By default the bus of
+// a Cordis node, which dispatches here (../src/bridge/bus.mjs); with
+// `peer`, the leaf runtime's, which dispatches through that host.
+function setup({ peer } = {}) {
   const root = new Context()
   const reported = []
-  const bus = new Bus({ runtime: 'node', report: line => reported.push(line), ...options })
+  const report = line => reported.push(line)
+  const bus = peer ? new LeafBus({ runtime: 'node', peer, report }) : new NodeBus({ report })
   const scopes = new Map()
   const signals = new Map()
   install(root, Context, bus, context => {
@@ -40,8 +44,7 @@ function setup(options = {}) {
 test('Cordis listeners register on the bus and leave with their fiber', async () => {
   const sent = []
   const host = { callAsync: (target, method, args) => { sent.push([method, args]); return Promise.resolve() }, call() {}, callFunctionAsync() {} }
-  const { root, bus, load } = setup()
-  bus.peer = host
+  const { root, bus, load } = setup({ peer: host })
   const fiber = await load('chat', ctx => {
     ctx.on('session/created', () => {})
     ctx.on('session/created', async () => {}, { prepend: true, global: true })
@@ -107,8 +110,8 @@ test('Context.filter sees the listener Context, which has ctx.rutis', async () =
   await chat.parallel(self, 'f')
   assert.deepEqual(log, ['chat', 'global'])
   assert.deepEqual(seen, [
-    { name: 'f', prefix: false, plugin: 'chat', row: 'chat', runtime: 'node', node: null, scope: [T1], global: false },
-    { name: 'f', prefix: false, plugin: 'other', row: 'other', runtime: 'node', node: null, scope: [], global: false },
+    { name: 'f', prefix: false, plugin: 'chat', row: 'chat', runtime: null, node: null, scope: [T1], global: false },
+    { name: 'f', prefix: false, plugin: 'other', row: 'other', runtime: null, node: null, scope: [], global: false },
   ])
   // Outside a filter: the Context's own descriptor.
   assert.equal(chat.rutis.row, 'chat')
@@ -118,14 +121,13 @@ test('Context.filter sees the listener Context, which has ctx.rutis', async () =
 
 test('internal/dispatch is fired once for each dispatch, before the listeners', async () => {
   const { root, bus, load } = setup()
-  const ids = []
-  bus.peer = { callAsync: (target, method, [fields]) => { if (method === 'events.on') ids.push(fields.id); return Promise.resolve() }, call() {}, callFunctionAsync() {} }
   const log = []
   root.on('internal/dispatch', (mode, name) => { log.push(`dispatch:${mode}:${name}`) })
   await load('a', ctx => { ctx.on('x', () => { log.push('x') }) })
   await load('b', ctx => { ctx.on('x', () => { log.push('y') }) })
   await root.serial('x')
   assert.deepEqual(log.splice(0), ['dispatch:serial:x', 'x', 'y'])
+  const ids = bus.entries().filter(entry => entry.name === 'x').map(entry => entry.id)
   // From elsewhere: once per dispatch id, however many listeners run here;
   // never for this process's own dispatch, which fired it already.
   for (const listener of ids) bus.call({ listener, dispatch: 'd1', own: false, name: 'x', mode: 'serial', args: [] })
@@ -217,8 +219,7 @@ test('a failure of events.dispatch(\'emit\') nobody awaits is reported', async (
 test('through the host, Context.filter gets the Context the host asks about', async () => {
   const sent = []
   const host = { callAsync: (target, method, args) => { sent.push([method, args]); return Promise.resolve() }, call() {}, callFunctionAsync() {} }
-  const { root, bus, load } = setup()
-  bus.peer = host
+  const { root, bus, load } = setup({ peer: host })
   const contexts = []
   await load('chat', ctx => {
     for (const label of ['one', 'two']) {
@@ -227,7 +228,6 @@ test('through the host, Context.filter gets the Context the host asks about', as
   })
   const ids = sent.filter(([method]) => method === 'events.on').map(([, [fields]]) => fields.id)
   assert.equal(ids.length, 2)
-  bus.elsewhere({ add: ['f'] })
   const self = Object.create(root)
   const seen = []
   self[Context.filter] = context => { seen.push(context); return context === contexts[1] }
@@ -241,26 +241,27 @@ test('through the host, Context.filter gets the Context the host asks about', as
 
 // Some plugins call Cordis's primitive themselves (`ctx.events.dispatch`,
 // then each callback, as dsh-credentials fans its events out): with the
-// listeners on the bus, here or elsewhere, it gives one callback that
-// dispatches on the bus.
+// listeners on the bus, it gives one callback that dispatches on the bus,
+// here on a Cordis node's, through the host on the leaf runtime's.
 test('events.dispatch dispatches on the bus, here or through the host', async () => {
+  const here = setup()
+  const heard = []
+  await here.load('chat', ctx => { ctx.on('credentials/updated', value => { heard.push(value) }) })
+  // A Cordis node: one callback, dispatching on the bus here.
+  for (const callback of here.root.events.dispatch('emit', ['credentials/updated', 'a'])) await callback('a')
+  assert.deepEqual(heard, ['a'])
+
   const sent = []
   const host = { callAsync: (target, method, args) => { sent.push([method, args]); return Promise.resolve() }, call() {}, callFunctionAsync() {} }
-  const { root, bus, load } = setup()
+  const { root, load } = setup({ peer: host })
   const seen = []
   await load('chat', ctx => { ctx.on('credentials/updated', value => { seen.push(value) }) })
-  // Only here: one callback, dispatching on the bus here.
-  for (const callback of root.events.dispatch('emit', ['credentials/updated', 'a'])) await callback('a')
-  assert.deepEqual(seen, ['a'])
-  assert.deepEqual(sent, [])
-  bus.peer = host
-  bus.elsewhere({ add: ['credentials/updated'] })
   const callbacks = root.events.dispatch('emit', ['credentials/updated', 'b'])
   assert.equal(callbacks.length, 1)
   await callbacks[0]('b')
   const dispatched = sent.filter(([method]) => method === 'events.dispatch').map(([, [fields]]) => [fields.name, fields.mode, fields.args])
   assert.deepEqual(dispatched, [['credentials/updated', 'parallel', ['b']]])
-  assert.deepEqual(seen, ['a'], 'this process\'s listener is called through the host, not twice')
+  assert.deepEqual(seen, [], 'this process\'s listener is called back by the host, not here')
 })
 
 test('the Events plugin refuses the options removed in rutis 0.13', async () => {

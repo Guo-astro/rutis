@@ -1,15 +1,17 @@
 // Cordis plugins on the logical bus (#464; docs/design-events-protocol-
 // 2026-10-18.en.md): the Node runtime's Context dispatches every event that
-// is not `internal/*` through the bus (./events.mjs), with Cordis's own
+// is not `internal/*` through the bus (./events.mjs; ./bridge/bus.mjs in a
+// linked Cordis application), with Cordis's own
 // five methods and its listener options.
 //
 // - Registration: Cordis's `internal/listener` hook takes every `ctx.on`
 //   (and `ctx.once`) of a name that is not `internal/*`: the listener goes
 //   on the bus, owned by the fiber that registered it, and leaves with it.
 // - Dispatch: `ctx.emit` / `parallel` / `serial` / `waterfall` / `bail`,
-//   `[thisArg,] name, ...args`, run by the bus's rules: on this process's
-//   listeners when every listener of the name is here, else through the
-//   host. Cordis's `internal/dispatch` is fired first, as Cordis does.
+//   `[thisArg,] name, ...args`, run by the bus's rules: through the host
+//   in the runtime (./events.mjs), here in a Cordis application linked to
+//   other nodes (./bridge/bus.mjs). Cordis's `internal/dispatch` is fired
+//   first, as Cordis does.
 // - Filter: `thisArg[Context.filter]` is called with the listener's own
 //   Context for a listener here and `{ rutis: descriptor }` for one
 //   elsewhere; every Context has a read-only `ctx.rutis`, its descriptor,

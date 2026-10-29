@@ -45,7 +45,6 @@ export default definePlugin({ apply(ctx) { ctx.provide('llm', { ask() { return 1
   const host = await fakeHost([process.execPath, runner, file('anchor.mjs')])
   try {
     await within('the handshake', host.ready)
-    await host.elsewhere({})
     await host.call('mount', { plugins: [], announce: true, scope: [] })
     await host.call('hosts.provide', ['llm', { ask: 'sync' }])
     const load = (key, name) => within(`row ${key} answers`, host.call('rows.load', [key, file(name), {}, [], [], {}, { scope: [] }])).then(() => null, error => error)

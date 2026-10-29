@@ -4,14 +4,14 @@ import assert from 'node:assert/strict'
 import { Context } from '@deepseek-ai/cordis'
 import { definePlugin } from '../../rutis/src/index.mjs'
 import { supported, toCordis } from '../src/leaf.mjs'
-import { Bus } from '../src/events.mjs'
+import { Bus } from '../src/bridge/bus.mjs'
 import { install } from '../src/cordis-events.mjs'
 
 test('leaf events delegate to the shared Cordis bus and leave with their fiber', async () => {
-  // The runtime's logical bus on the root, as the runner installs it.
+  // A bus that dispatches here on the root (a Cordis node's, ../src/bridge/bus.mjs).
   const root = new Context()
   const reported = []
-  install(root, Context, new Bus({ runtime: 'node', report: line => reported.push(line) }), () => ({ row: null, scope: [], signal: undefined }))
+  install(root, Context, new Bus({ report: line => reported.push(line) }), () => ({ row: null, scope: [], signal: undefined }))
   const received = []
   const seen = []
   let leaf

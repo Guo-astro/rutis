@@ -165,7 +165,7 @@ export default definePlugin<Config>({
 
 ## 6. Test
 
-`load` from `@arcships/rutis/testing` loads the plugin without a host: give it a config and a fake `translate`, call its service, listen to the events it emits, unload it. Replace `test/index.test.ts` with:
+`load` from `@arcships/rutis/testing` loads the plugin on a real host (`rutis-host test`, already among the project's dev dependencies), in this Bun runtime: give it a config and a fake `translate`, call its service, listen to the events it emits, unload it. Replace `test/index.test.ts` with:
 
 <!-- example: bun-en file=greeter/test/index.test.ts -->
 ```ts
@@ -183,9 +183,9 @@ test('greets with the translated greeting', async () => {
   const greeted: string[] = []
   t.on('greeter/greeted', (name: string) => { greeted.push(name) })
   expect(await t.service('greeter').hello('Ada')).toBe('Salut, Ada!')
-  expect(greeted).toEqual(['Ada'])
   expect(await t.service('greeter').count()).toBe(1)
   await t.unload()
+  expect(greeted).toEqual(['Ada'])
 })
 ```
 
@@ -195,8 +195,8 @@ bun test
 bun run check
 ```
 
-- `services` are the services the plugin `inject`s; `t.service(name)` is a service the plugin provides; `t.on` listens to events as the host does; `t.unload()` unloads the plugin, running its cleanups.
-- `load` checks what the host checks: the config fits the schema, the plugin uses only the services in `inject`, and what it provides has every method in `provides`. Values pass by the rules between processes.
+- `services` are the services the plugin `inject`s; `t.service(name)` is a service the plugin provides; `t.on` listens to events as another plugin next to it does (they arrive through the host, a little after the service returns, so the assertion comes after `await t.unload()`); `t.unload()` unloads the plugin, running its cleanups.
+- The host does what it does for real: it checks the config against the schema, fills its defaults and dispatches the events. Values between the plugin and the test cross between processes. The plugin must be the default export of its file.
 - When the host gives you its services' types (a `.d.ts` written by `rutis-host types`), write `ctx.use<Services['translate']>('translate')` and `bun run check` checks the calls before anything runs; see [Building a host open to plugins: types for plugin authors](open-host.en.md#types-for-plugin-authors).
 - The rest of the test tool: [plugin API: the TypeScript and Bun test tool](plugin-api.en.md#the-typescript-and-bun-test-tool).
 

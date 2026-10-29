@@ -1,10 +1,10 @@
 // A host for one runtime, in JavaScript, for the runtimes' event tests
 // (#464): it speaks the endpoint format over a Unix socket, keeps the
 // listener table the runtime registers (`events.on` / `events.off`),
-// pushes `events.elsewhere`, and dispatches `events.dispatch` on that table
-// by calling the runtime back (`events.call`), as the Rust host does. It
-// provides `events-log` (sync `add`) to the rows. Only what the tests need:
-// one runtime, no listeners of its own (a test adds "elsewhere" names).
+// and dispatches `events.dispatch` on that table by calling the runtime
+// back (`events.call`), as the Rust host does. It provides `events-log`
+// (sync `add`) to the rows. Only what the tests need: one runtime, no
+// listeners of its own.
 import { createServer } from 'node:net'
 import { spawn } from 'node:child_process'
 import { mkdtempSync, rmSync } from 'node:fs'
@@ -139,7 +139,6 @@ export async function fakeHost(command, { hello, env } = {}) {
     }
     return session.invokeAsync('', method, args)
   }
-  host.elsewhere = change => session.invokeAsync('', 'events.elsewhere', [change])
   host.end = async () => {
     channel.end()
     const code = await exited

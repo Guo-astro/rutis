@@ -77,4 +77,8 @@ export class Client {
   closed() { return this.#exited }
   // End this side: the far end sees the channel end.
   end() { this.#port.postMessage({ end: true }) }
+  // Whether the session keeps this process running (by default it does):
+  // a test tool lets the process end while it waits for nothing.
+  ref() { this.#worker.ref(); (this.#port as any).ref?.() }
+  unref() { this.#worker.unref(); (this.#port as any).unref?.() }
 }
