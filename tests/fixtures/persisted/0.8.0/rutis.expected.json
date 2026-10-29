@@ -9,17 +9,7 @@
     "py": {
       "project": "<dir>/plugins",
       "python": "<dir>/.venv/bin/python"
-    },
-    "remote": [
-      {
-        "name": "gpu",
-        "language": "python"
-      },
-      {
-        "name": "edge",
-        "language": "node"
-      }
-    ]
+    }
   },
   "listen": [
     {
@@ -120,7 +110,6 @@
       "config": {
         "peer": "gpu",
         "dial": "wss://gpu.example.com/rutis",
-        "runtime": "gpu",
         "identity": "host"
       }
     },

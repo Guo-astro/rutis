@@ -2,7 +2,7 @@
 
 [English](design-remote-session-2026-10-28.en.md)
 
-状态：定稿，未实现。日期：2026-10-28。基准：`main` `3d19634f`。排期：0.19。
+状态：定稿，未实现。日期：2026-10-28；2026-10-29 修订：宿主停止时 WebSocket 以 1000 关闭（不再用 1001，§三）；§七 写出实际的文字（认证被拒带拨号方的地址，listen 上握手失败不打印，应用插件装不上只在设备日志里），`status` 的 `connections:` 写实际形式（0.19 不列远程插件），并加上决定 3 的 `loader` 写法（§2.6）。rutis-host 在 0.19 只带 dial 与 listen，本机运行时照旧由 `runtimes.*` 起，`rutis-host/spawn` 在下一个 PR（S4b）。基准：`main` `3d19634f`。排期：0.19。
 Issue：[#695](https://github.com/arcships/rutis/issues/695)（实施 [#696](https://github.com/arcships/rutis/issues/696) loader、[#698](https://github.com/arcships/rutis/issues/698) rutis-host）。依据：#695 的 2026-10-28 两条评论。
 与旧设计的关系：取代 [远程运行时一致性](design-remote-runtime-consistency-2026-10-26.md) 的实施部分（§四"rutis-host 内部"一列、§五、§七、§八）；它的"缺插件一律 `Unavailable`"保留，`runtimes.remote` 的写法删掉（§六）。[决策记录](decision-remote-runtime-consistency-2026-10-26.md) 里"不新增交接接口、不重写 link 与接入点"一条由本稿推翻，理由见 §一。
 
@@ -183,7 +183,7 @@ rutis-host
 - `rutis-host/listen` 只为每条通过的连接建一个 session，对面的插件注册为普通插件 `<id>:<插件>`；它们提供的服务全局可见，同名按内核规则冲突（后来的被拒，并说明原因）。宿主不为每条连接建实例。
 - 要每台设备各算一份的逻辑，放在设备上；宿主上的插件要处理多台，由它自己按设备区分，或由设备上的插件各用不同的服务名。平台不替插件做隔离。
 - loader 已有的 `instanced` 分组照旧是通用功能，远程不再专门用它。
-- 0.18 的"宿主上 `py:coach` 每台设备一份"（Swift、Kotlin 应用指南的例子）在 0.19 不再支持。改法：把 coach 放到设备上（应用里的一个插件），或者 coach 自己按设备区分（例如设备上的插件以 `health-<设备>` 为名提供服务，coach 按名字找）。
+- 0.18 的"宿主上 `py:coach` 每台设备一份"（Swift、Kotlin 应用指南的例子）在 0.19 不再支持。改法：把 coach 放到设备上（应用里的一个插件），或者由宿主上的插件按设备区分：设备上的插件以 `health-<设备>` 为名提供服务，宿主上的一个插件监听 `rutis/service` 事件，`health-<设备>` `available: true` 时调用服务 `loader`：`loader.create({id: "coach-<设备>", name: "py:coach-one", config: {device}, inject: ["health-<设备>"]})`，`available: false` 时 `loader.remove("coach-<设备>")`；在事件处理里调用，不在 `apply` 里。
 
 ## 三、Channel
 
@@ -226,7 +226,7 @@ pub enum Close { Done, Replaced, Rejected(String) }
 
   | `Close` | WebSocket | 本机管道（子进程） | 内存 |
   | --- | --- | --- | --- |
-  | `Done` | 关闭码 1000（宿主停止时 1001） | 关闭子进程的 stdin | 对端 `recv` 得到 `Ok(None)` |
+  | `Done` | 关闭码 1000（宿主停止时也是） | 关闭子进程的 stdin | 对端 `recv` 得到 `Ok(None)` |
   | `Replaced` | 关闭码 4002 | 同 `Done` | 对端 `recv` 得到 `Closed` |
   | `Rejected(r)` | 关闭码 4003，原因 `r` | 同 `Done` | 对端 `recv` 得到 `Rejected` |
 
@@ -367,7 +367,7 @@ export default definePlugin({
 ```text
 gpu: connected
 gpu: disconnected (gpu.example.com:7443: Connection refused); retrying in 2.1s
-gpu: disconnected (auth-rejected: upgrade refused with 403 Forbidden); retrying in 30s
+gpu: disconnected (auth-rejected: gpu.example.com:7443: upgrade refused with 403 Forbidden); retrying in 30s
 gpu: disconnected (incompatible: this endpoint speaks rutis.3, the dialer offered rutis.4: upgrade this endpoint (PyPI rutis)); stopped
 phone: connected phone-1
 phone: disconnected phone-1 (connection lost)
@@ -375,13 +375,17 @@ phone: disconnected phone-1 (replaced by a new connection)
 office: connected
 ```
 
-**`rutis-host status`**：`connections:` 一节，每个连接行一行，连着的写它注册了哪些远程插件：
+- 认证被拒的原因保留拨号方 `ConnectError` 的原文，带对面的地址。
+- listen 上握手失败的连接（升级时 token 不对，401 / 403；协议不兼容）什么都不打印：它没有碰到已有的连接，原因由拨号方那一端写出。
+- 宿主停止或连接行被删时不打印 `disconnected`。
+
+**`rutis-host status`**：`connections:` 一节，每个连接行一行：dial 行写 `connected` / `disconnected`，listen 行写连着的 id（没有时 `none connected`）。0.19 的限制：不列出每条连接注册的远程插件（`SessionHandle` 给不出它们）。
 
 ```text
 connections:
-  gpu: connected (gpu:embedder)
-  phone: phone-1 (phone-1:health), phone-2 (phone-2:health)
-  office: connected (office:clock, office:scanner)
+  gpu: connected
+  phone: phone-1, phone-2
+  office: connected
 ```
 
 **出错**
@@ -395,6 +399,9 @@ connections:
 | 0.18 与 0.19 相遇 | 握手时（WebSocket 在子协议那一步）拒绝，不重试，说明升级哪一端。0.19 的宿主起 0.18 的本机运行时（它说本机的协议 2）：`incompatible session: the far end speaks protocol 2, this side 4: upgrade the far end`；0.18 拨号 0.19 的监听方，拨号方写出 `this endpoint speaks rutis.4, the dialer offered rutis.3: upgrade the dialer`；0.19 拨号 0.18 的监听方，监听方答 `this endpoint speaks rutis.3, the dialer offered rutis.4: upgrade this endpoint (<它的包>)`（例如 `(PyPI rutis)`）。例外：0.18 的宿主起 0.19 的本机运行时不传 `--id`，运行时在握手之前只写一行 `a local channel needs --id <endpoint>: fd:3; a host older than rutis 0.19 started this runtime: upgrade the host` 并退出 |
 | 0.18 的远程写法（`runtimes.remote`、`rutis-bridge/peer` 行及其字段） | 没有专门的提示：`runtimes.remote` 是 rutis-host 配置不认识的字段，`rutis-bridge/peer` 是不认识的插件名，按 0.18 的规则报错 |
 | 对面运行插件时抛出 | 远程插件 `<id>:<插件>` 失败，按 0.18 §4.2 打印对面的错误 |
+| 应用里的插件装不上（配置不合 Schema、`apply` 失败、服务名已有） | 0.19 只在设备的日志里写出（Swift 的 `log`、Kotlin 的 `System.err`，例如 `rutis: plugin device: BindingError: config: installation is required`），宿主上不打印：这个远程插件只是没有出现 |
+| listen 的行没有 token | `phone: set RUTIS_TOKEN_PHONE: the token the far ends present when they connect` |
+| listen 的监听器不存在 | `no listener named private: add it to listen` |
 
 ## 八、删除与收回清单
 

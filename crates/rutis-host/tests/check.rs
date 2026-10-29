@@ -623,22 +623,21 @@ async fn check_passes_what_cordis_rows_may_provide_at_runtime() {
     assert_eq!(checked.status, 1);
 }
 
-/// A service only a row whose declarations are not known may provide (a
-/// remote runtime's, not connected during the check) is not known to be
-/// missing: check says so and passes.
+/// A service only a row whose declarations are not known may provide (one
+/// on a dial row's far end, not connected during the check) is not known
+/// to be missing: check says so and passes.
 /// risk: A6
 /// guarantee: host/check
 #[tokio::test(flavor = "multi_thread")]
-async fn check_passes_a_service_that_may_come_from_a_remote_runtime() {
+async fn check_passes_a_service_that_may_come_from_a_connection_row() {
     let dir = tempfile::tempdir().unwrap();
     let configuration = serde_json::json!({
         "runtimes": {
-            "node": { "runtime": repo().join("node/rutis-runtime") },
-            "remote": [{ "name": "gpu", "language": "python" }]
+            "node": { "runtime": repo().join("node/rutis-runtime") }
         },
         "rows": [
             { "id": "chat", "name": "./chat.mjs" },
-            { "id": "gpu", "name": "rutis-bridge/peer", "config": { "peer": "gpu", "dial": "wss://gpu.example.com/rutis", "runtime": "gpu" } },
+            { "id": "gpu", "name": "rutis-host/dial", "config": { "address": "wss://gpu.example.com/rutis" } },
             { "id": "embedder", "name": "gpu:embedder" }
         ]
     });
@@ -662,8 +661,8 @@ async fn check_passes_a_service_that_may_come_from_a_remote_runtime() {
             "chat (file://<dir>/chat.mjs): ok",
             "  inject: [\"embeddings\"]",
             "  provides: {}",
-            "  embeddings: not known to be provided; it may come from embedder (the gpu runtime is not running)",
-            "gpu (rutis-bridge/peer): ok",
+            "  embeddings: not known to be provided; it may come from gpu (its plugin does not say), embedder (gpu is not connected)",
+            "gpu (rutis-host/dial): ok",
             "embedder (gpu:embedder): ok",
             "  config not checked: its schema is known only when it runs",
         ]
@@ -817,24 +816,21 @@ async fn check_warns_of_extra_config_keys() {
     assert_eq!(strict.status, 1);
 }
 
-/// A listening link row and a runtime dialing in to the same listener, the
-/// tokens of both from the environment.
+/// A listening link row and a listen row on the same listener, the tokens
+/// of both from the environment.
 fn sharing_a_listener(dir: &Path) {
     let config = serde_json::json!({
         "listen": [{ "name": "public", "address": "127.0.0.1:0" }],
-        "runtimes": {
-            "remote": [{ "name": "phone", "language": "python", "listen": "public", "instances": "phone" }]
-        },
         "rows": [
             { "id": "main", "name": "rutis-bridge/peer", "config": { "peer": "main", "listen": "public" } },
-            { "id": "phone", "group": true, "instanced": true, "config": [] }
+            { "id": "phone", "name": "rutis-host/listen", "config": { "listener": "public" } }
         ]
     });
     write(dir, &[("rutis.json", &config.to_string())]);
 }
 
 /// With the same value in RUTIS_TOKEN_MAIN and RUTIS_TOKEN_PHONE, the link
-/// row and the runtime would accept the same token on one listener, and a
+/// row and the listen row would accept the same token on one listener, and a
 /// connection presenting it is refused as ambiguous: check (and run, which
 /// starts the same way) fails at once, naming both and the variables to
 /// change (#702).
@@ -856,8 +852,8 @@ async fn check_refuses_two_entries_accepting_one_token_on_a_listener() {
     assert_eq!(checked.stdout, "");
     assert_eq!(
         checked.stderr,
-        "rutis-host: listener public: link row main accepts RUTIS_TOKEN_MAIN and remote \
-         runtime phone accepts RUTIS_TOKEN_PHONE, the same token, so a connection \
+        "rutis-host: listener public: link row main accepts RUTIS_TOKEN_MAIN and row \
+         phone accepts RUTIS_TOKEN_PHONE, the same token, so a connection \
          presenting it cannot be told apart: give RUTIS_TOKEN_MAIN or RUTIS_TOKEN_PHONE \
          another value\n"
     );

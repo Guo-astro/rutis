@@ -998,7 +998,6 @@ impl Project {
         let mut runtimes = json!({
             "node": policy(restart),
             "py": policy(py_restart),
-            "remote": [{ "name": "gpu", "language": "python" }],
         });
         let mut rows = vec![
             json!({ "id": "store", "name": "py:store", "config": rev("store") }),
@@ -1013,12 +1012,8 @@ impl Project {
         rows.extend([
             json!({
                 "id": "gpu",
-                "name": "rutis-bridge/peer",
-                "config": {
-                    "peer": "gpu",
-                    "dial": format!("ws://{}/rutis", self.proxy.addr()),
-                    "runtime": "gpu",
-                },
+                "name": "rutis-host/dial",
+                "config": { "address": format!("ws://{}/rutis", self.proxy.addr()) },
             }),
             json!({ "id": "infer", "name": "gpu:infer" }),
         ]);
@@ -1112,7 +1107,7 @@ impl<'a> Run<'a> {
         for row in model.revs.keys().chain(&["infer"]) {
             host.expect(&format!("{row}: running"));
         }
-        host.expect("gpu: link connected");
+        host.expect("gpu: connected");
         project.probe.started(&mut host);
         project.watch.started(&mut host);
         project.far.started(&mut host);
@@ -1356,11 +1351,11 @@ impl<'a> Run<'a> {
                 }
                 self.host.skip_written();
                 self.project.proxy.cut();
-                self.host.expect("gpu: link down (");
+                self.host.expect("gpu: disconnected (");
                 self.host.expect("infer: waiting for ");
                 self.project.far.event(&mut self.host, "stopped");
                 self.project.proxy.restore();
-                self.host.expect("gpu: link connected");
+                self.host.expect("gpu: connected");
                 self.host.expect("infer: running");
                 self.project.far.started(&mut self.host);
                 self.connected = Instant::now();
@@ -1514,7 +1509,7 @@ impl<'a> Run<'a> {
         }
         expect(
             "links connected".into(),
-            count("gpu: link connected"),
+            count("gpu: connected"),
             self.cuts + 1,
         );
         expect("runtimes given up".into(), count(": gave up after"), 0);

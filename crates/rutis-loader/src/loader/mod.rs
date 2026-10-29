@@ -51,31 +51,6 @@ pub(crate) use service::LoaderService;
 #[cfg_attr(not(feature = "runtimes"), allow(dead_code))]
 pub(crate) struct WeakLoader(std::sync::Weak<Inner>);
 
-#[cfg_attr(not(feature = "runtimes"), allow(dead_code))]
-impl WeakLoader {
-    /// The config step for a copy of row `row` in `instance` of a runtime
-    /// that dialed in, its plugin described there with `schema`: the filled
-    /// copy, extra keys warned about once per row, instance and value.
-    pub(crate) fn connection_step(
-        &self,
-        row: &str,
-        instance: &str,
-        schema: Option<&Value>,
-        cordis: bool,
-        config: &Value,
-    ) -> Result<Value, rutis::ConfigError> {
-        let Some(inner) = self.0.upgrade() else {
-            return Ok(config.clone());
-        };
-        let subject = config_step::Subject::connection(schema, cordis);
-        let purpose = config_step::Purpose::Run {
-            row,
-            instance: Some(instance),
-        };
-        inner.config_step(&subject, config, purpose)
-    }
-}
-
 impl Loader {
     #[cfg_attr(not(feature = "runtimes"), allow(dead_code))]
     pub(crate) fn downgrade(&self) -> WeakLoader {

@@ -1,7 +1,6 @@
 //! Local language runtimes: a process this machine starts, a link to it,
-//! and the runtime plugin running its rows, composed. Its session comes the
-//! way a remote runtime's does (`RuntimeSession#<name>` from a link), only
-//! started here: [`crate::pipe::spawn`] starts it on an inherited socket
+//! and the runtime plugin running its rows on that link's peer, composed:
+//! [`crate::pipe::spawn`] starts it on an inherited socket
 //! with `--id <name>`, the endpoint it greets as, and the link does not
 //! reconnect, since a local runtime process is not restarted.
 //!
@@ -20,9 +19,7 @@ use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 use crate::channel::{Close, Closer, PeerId};
-use crate::runtime::{
-    Launcher, RuntimeAccessPlugin, RuntimeHandle, RuntimePlugin, RuntimeState, Stdio,
-};
+use crate::runtime::{Launcher, RuntimeHandle, RuntimePlugin, RuntimeState, Stdio};
 use crate::{identity_key, Dialer, LinkConfig, LinkPlugin, LinkState, StaticIdentity};
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind};
 use rutis::{Ctx, Error};
@@ -272,8 +269,7 @@ impl DynPlugin for LocalRuntime {
             // the link waits for must come from a provider that is running,
             // and this one is still starting.
             let kind = format!("local:{}", self.runtime_name);
-            let peer = PeerId::new(self.runtime_name.clone())
-                .unwrap_or_else(|_| PeerId::new("runtime").expect("a valid id"));
+            let peer = crate::runtime::runtime_peer(&self.runtime_name);
             let carrier = Carrier {
                 label: format!("{kind} carrier"),
                 kind: kind.clone(),
@@ -290,7 +286,6 @@ impl DynPlugin for LocalRuntime {
             self.runtime.announce(ctx);
             self.runtime.starting();
             ctx.plugin(link);
-            ctx.plugin(RuntimeAccessPlugin::new(peer, &self.runtime_name));
             ctx.plugin(self.runtime.clone());
             // Started once the runtime runs, as a runtime plugin starting its
             // own process is: while it starts this is Loading, and a restart

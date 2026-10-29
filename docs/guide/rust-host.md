@@ -503,7 +503,7 @@ for failure in &report.failures {
 - 运行时是一个插件，它的进程随插件启动、随插件卸载而结束。进程意外结束时，运行时停下，它的行等待；`RuntimeHandle::state()` 是 `Down(原因)`，原因说明进程怎样结束。是否重启由应用决定：对运行时的 fiber 调用 `restart`。
 - 运行时结束不算到行头上：结束时还在加载的行和其他行一样等它，不会失败。运行时的 `Down` 原因写明进程怎样结束，正在进行的、对它的行的调用失败时也这样写明。
 - 运行时进程不会比应用活得久。丢掉应用的 tokio 运行时会杀掉它们。应用被它没处理的信号（Ctrl-C、SIGTERM）或 `kill -9` 结束时，运行时在 `RUTIS_SHUTDOWN_TIMEOUT`（默认 10 秒）内卸载各行后退出；插件让运行时一直在忙时，再过一秒运行时自己结束。插件让运行时一直在忙时，`shutdown_with_timeout` 可能结束不了（它的行卸载不了）：剩下的用 `LocalRuntime::processes().kill()` 结束，或者用 `rutis_bridge::pipe::kill_processes()` 结束所有运行时进程，和 rutis-host 一样。
-- 远程运行时（`RuntimePlugin::remote`）的会话断开又回来时，它的行在启动前由新会话重新解析：远端升级了插件，就用上新的配置 schema 和声明。
+- 远程运行时由连接插件接上：连接插件拿到一条 Channel，调 `ctx.plugin(rutis_bridge::Session::new(channel))`（或先 `Session::handshake(&ctx, channel).await` 看对面的 id，再 `ctx.plugin(greeted)`）；行 `<连接行>:<插件>` 由 loader 找到这个会话、让对面运行。rutis-host 的 `rutis-host/dial`、`rutis-host/listen` 就是这样写的。会话断开又回来时，它的行在启动前由新会话重新解析：远端升级了插件，就用上新的配置 schema 和声明。
 - 行的完整格式（分组、`isolate`、`inject`、表达式、命令式修改与持久化）见 [rutis-loader 设计](../design-rutis-loader-2026-10-02.md)。
 - 改了插件代码：`RuntimeResolver::invalidate_all()` 后 `Loader::reload(行)`，新代码生效（Node 与 Python 都只重新导入插件的入口模块）。
 - 设置 `RUTIS_TRACE` 时，运行时通道上的每条消息在 stderr 记一行（方向和长度，不含内容）。
@@ -615,7 +615,7 @@ loop {
 - 本端 id 没有提供时，会话失败：`the host provides no id for its sessions`。rutis-host 已经提供（rutis.json 的 `id`，默认 `main`）。
 - 别的语言的插件经服务 `sessions` 的 `open` 交出连接，见 [插件 API：自建连接](plugin-api.md#自建连接sessionsopen)。
 
-0.18 的节点写法在 0.19 仍可用、将被替换：用 rutis-loader 配置时，`rutis_loader::peer::register_peer_node` 注册 `rutis-bridge/peer` 行（与 rutis.json 相同），`rutis_loader::peer::PeerResolver` 解析 `peer:` 行。远程运行时：`RuntimePlugin::remote(名字)` 加一个 `runtime` 设为同名的节点行，行名由 `RuntimeResolver::modules(handle)` 解析为 `<名字>:<模块>`。概念与安全见 [连接节点](nodes.md)。
+0.18 的节点写法在 0.19 仍可用、将被替换：用 rutis-loader 配置时，`rutis_loader::peer::register_peer_node` 注册 `rutis-bridge/peer` 行（与 rutis.json 相同），`rutis_loader::peer::PeerResolver` 解析 `peer:` 行。远程运行时用连接插件：`rutis-host/dial`、`rutis-host/listen` 的行，或自己的连接插件调 `Session::new(channel)`，行写 `<连接行>:<插件>`。概念与安全见 [连接节点](nodes.md)。
 
 ## 事件
 

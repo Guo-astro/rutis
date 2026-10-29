@@ -29,8 +29,7 @@ fn every_field_is_read() {
             "node": { "project": "web", "runtime": "vendor/rutis-runtime", "restart": "on-failure" },
             "py": { "project": "py", "python": "py/.venv/bin/python", "restart": "exit" },
             "bun": { "project": "edge", "runtime": "vendor/rutis-bun", "program": "tools/bun", "restart": "no" },
-            "go": { "dir": "plugins/go", "binaries": ["bin/netkit"], "start": "on-demand", "idle": 30, "project": "work" },
-            "remote": [{ "name": "gpu", "language": "python" }]
+            "go": { "dir": "plugins/go", "binaries": ["bin/netkit"], "start": "on-demand", "idle": 30, "project": "work" }
           },
           "listen": [{ "name": "public", "address": "0.0.0.0:7443", "cert": "tls/server.pem", "key": "tls/server.key" }],
           "rows": [
@@ -63,8 +62,6 @@ fn every_field_is_read() {
     assert_eq!(go.idle, Some(30));
     assert_eq!(go.project, base.join("work"));
     assert!(go.validate("go").is_ok());
-    assert_eq!(config.runtimes.remote[0].name, "gpu");
-    assert_eq!(config.runtimes.remote[0].language, "python");
     let listener = &config.listen[0];
     assert_eq!(listener.name, "public");
     assert_eq!(listener.address, "0.0.0.0:7443".parse().unwrap());
@@ -95,7 +92,7 @@ fn absent_fields_take_their_defaults() {
     assert!(config.listen.is_empty() && config.rows.is_empty());
     let runtimes = &config.runtimes;
     assert!(runtimes.node.is_none() && runtimes.py.is_none() && runtimes.bun.is_none());
-    assert!(runtimes.go.is_none() && runtimes.remote.is_empty());
+    assert!(runtimes.go.is_none() && runtimes.swift.is_none());
 
     let config = read(
         dir.path(),
@@ -341,7 +338,7 @@ fn unknown_fields_are_refused() {
         ),
         (
             r#"{ "runtimes": { "deno": {} } }"#,
-            "<dir>/rutis.json: unknown field `deno`, expected one of `node`, `py`, `bun`, `go`, `swift`, `remote` at line 1 column 22",
+            "<dir>/rutis.json: unknown field `deno`, expected one of `node`, `py`, `bun`, `go`, `swift` at line 1 column 22",
         ),
         (
             r#"{ "runtimes": { "node": { "projects": "." } } }"#,
@@ -360,8 +357,8 @@ fn unknown_fields_are_refused() {
             "<dir>/rutis.json: unknown field `dirs`, expected one of `dir`, `binaries`, `start`, `idle`, `project`, `restart` at line 1 column 30",
         ),
         (
-            r#"{ "runtimes": { "remote": [{ "name": "gpu", "lang": "python" }] } }"#,
-            "<dir>/rutis.json: unknown field `lang`, expected one of `name`, `language`, `dial`, `listen`, `instances` at line 1 column 50",
+            r#"{ "runtimes": { "remote": [{ "name": "gpu", "language": "python" }] } }"#,
+            "<dir>/rutis.json: unknown field `remote`, expected one of `node`, `py`, `bun`, `go`, `swift` at line 1 column 24",
         ),
         (
             r#"{ "listen": [{ "name": "p", "address": "127.0.0.1:0", "tls": true }] }"#,
@@ -442,34 +439,6 @@ fn a_peers_token_is_its_own_variable_only() {
     assert_eq!(token("gpu").as_deref(), Some("gpu"));
     assert_eq!(token("office-a"), None);
     std::env::remove_var("RUTIS_TOKEN_GPU");
-}
-
-/// A runtime's name is its rows' prefix: a remote runtime may not take a
-/// local one's, nor a name that is not one.
-/// risk: B5
-#[test]
-fn remote_runtime_names_are_checked() {
-    let dir = tempfile::tempdir().unwrap();
-    let check = |runtimes: &str| {
-        read(dir.path(), &format!(r#"{{ "runtimes": {runtimes} }}"#))
-            .unwrap()
-            .check_runtime_names()
-    };
-    assert_eq!(
-        check(r#"{ "node": {}, "remote": [{ "name": "node", "language": "node" }] }"#).unwrap_err(),
-        "remote runtime node: the name is already a runtime's; rows `node:<module>` must name one"
-    );
-    assert_eq!(
-        check(r#"{ "remote": [{ "name": "GPU", "language": "python" }] }"#).unwrap_err(),
-        "remote runtime \"GPU\": a runtime name is two or more of a-z, 0-9 and -, and not file"
-    );
-    assert_eq!(
-        check(r#"{ "go": { "dir": "g" }, "remote": [{ "name": "go-edge", "language": "go" }] }"#)
-            .unwrap_err(),
-        "remote runtime go-edge: go and names starting with go- are the local Go runtimes'"
-    );
-    assert!(check(r#"{ "remote": [{ "name": "go-edge", "language": "go" }] }"#).is_ok());
-    assert!(check(r#"{ "py": {}, "remote": [{ "name": "gpu", "language": "python" }] }"#).is_ok());
 }
 
 /// `format`: the current one and an absent one are read; a newer one is

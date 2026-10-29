@@ -63,15 +63,6 @@ impl Language for Go {
         }
     }
 
-    /// `go:<plugin>` and `go-<binary>:<plugin>` are the Go runtimes' rows.
-    fn claims(&self, name: &str) -> Option<String> {
-        binary::claims("go", "Go", name)
-    }
-
-    fn remote_names(&self) -> &'static [&'static str] {
-        &["go"]
-    }
-
     /// The binaries' resolver now; their runtimes once the loader runs,
     /// under Delve with `dev --debug`.
     fn start(&self, config: &HostConfig, mount: &mut Mount<'_>) -> Result<(), Error> {

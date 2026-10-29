@@ -25,7 +25,7 @@ use serde_json::{json, Value as Json};
 
 use crate::host::PluginCatalog;
 use crate::peer::Offered;
-use crate::runtime::{Process, Routed, RowSchema, RuntimeSession};
+use crate::runtime::{Carried, Process, Routed, RowSchema};
 use crate::session::rpc::{Connection, Dispatch, Reply, Value};
 use crate::session::{host_key, Error, HostDispatch};
 use crate::Peer;
@@ -376,7 +376,7 @@ impl Drop for Routing {
     }
 }
 
-impl RuntimeSession for Client {
+impl Carried for Client {
     fn connection(&self) -> Connection {
         self.peer.connection().clone()
     }

@@ -2,7 +2,7 @@
 
 [中文](design-remote-runtime-consistency-2026-10-26.md)
 
-Status: final, not implemented. Date: 2026-10-26. Baseline: `main` `b4eee45e` (0.17.1). Scheduled for: 0.19.
+Status: superseded by [Remote connections: one session plugin](design-remote-session-2026-10-28.en.md). Final, not implemented. Date: 2026-10-26. Baseline: `main` `b4eee45e` (0.17.1). Scheduled for: 0.19.
 Issue: [#695](https://github.com/arcships/rutis/issues/695) (implementation: [#696](https://github.com/arcships/rutis/issues/696) loader, [#698](https://github.com/arcships/rutis/issues/698) rutis-host). Decision record: [remote runtime consistency](decision-remote-runtime-consistency-2026-10-26.en.md).
 Revises: the rule in §4 of [Remote runtimes: dialing out and dynamic connections](design-remote-runtime-dial-2026-10-14.en.md) that "`listen` together with `instances` means dynamic connections"; see §6.
 

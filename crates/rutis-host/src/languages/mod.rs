@@ -3,8 +3,7 @@
 //!
 //! Each knows its part of `rutis.json` (`runtimes.<key>`: making its paths
 //! relative to the file, merging a dev file), how its runtime is found and
-//! started, the names it takes as `runtimes.remote[].language` and how a
-//! remote runtime's rows are named, its `rutis-host new` template, and how
+//! started, how its rows are named, its `rutis-host new` template, and how
 //! `rutis-host dev` recognizes and runs a project of it.
 //!
 //! Adding a language: a file here implementing [`Language`], its line in
@@ -97,17 +96,8 @@ pub trait Language: Sync {
     /// Take `other`'s settings when `runtimes` has none.
     fn merge(&self, runtimes: &mut Runtimes, other: &mut Runtimes);
 
-    /// When it is configured: why a remote runtime may not be named `name`
-    /// (its rows' prefix would be this language's), or `None`.
-    fn claims(&self, name: &str) -> Option<String> {
-        (name == self.key()).then(|| taken(name))
-    }
-
-    /// The names `runtimes.remote[].language` takes for it.
-    fn remote_names(&self) -> &'static [&'static str];
-
-    /// The resolver of the rows of its runtime `runtime`, local or remote:
-    /// by default `<runtime>:<module>`.
+    /// The resolver of the rows of its runtime `runtime`: by default
+    /// `<runtime>:<module>`.
     fn rows(&self, runtime: RuntimeHandle) -> RuntimeResolver {
         RuntimeResolver::modules(runtime)
     }
@@ -183,61 +173,12 @@ pub trait Language: Sync {
     }
 }
 
-/// The error of a remote runtime named `name` when another runtime has
-/// that name.
-pub(crate) fn taken(name: &str) -> String {
-    format!(
-        "remote runtime {name}: the name is already a runtime's; rows `{name}:<module>` must name one"
-    )
-}
-
 /// The language whose `--lang` name `rutis-host new` takes is `name`.
 pub fn by_new_name(name: &str) -> Option<&'static dyn Language> {
     LANGUAGES
         .iter()
         .copied()
         .find(|language| language.new_names().contains(&name))
-}
-
-/// The names `runtimes.remote[].language` takes for a language that runs
-/// only remotely, its SDK in an application (no runtime, project or
-/// template on this machine): Kotlin, in Android applications.
-const REMOTE_ONLY: &[&[&str]] = &[&["kotlin", "kt"]];
-
-/// A language `runtimes.remote[].language` names.
-#[derive(Clone, Copy)]
-pub enum RemoteLanguage {
-    /// One of [`LANGUAGES`].
-    Local(&'static dyn Language),
-    /// One that runs only remotely.
-    RemoteOnly,
-}
-
-impl RemoteLanguage {
-    /// The resolver of the rows of its remote runtime `runtime`: a local
-    /// language's own; `<runtime>:<plugin>` for one that runs only
-    /// remotely.
-    pub fn rows(&self, runtime: RuntimeHandle) -> RuntimeResolver {
-        match self {
-            RemoteLanguage::Local(language) => language.rows(runtime),
-            RemoteLanguage::RemoteOnly => RuntimeResolver::modules(runtime),
-        }
-    }
-}
-
-/// The language `runtimes.remote[].language` names `name`.
-pub fn by_remote_name(name: &str) -> Option<RemoteLanguage> {
-    if let Some(language) = LANGUAGES
-        .iter()
-        .copied()
-        .find(|language| language.remote_names().contains(&name))
-    {
-        return Some(RemoteLanguage::Local(language));
-    }
-    REMOTE_ONLY
-        .iter()
-        .any(|names| names.contains(&name))
-        .then_some(RemoteLanguage::RemoteOnly)
 }
 
 /// The language of the project in `dir`.
@@ -253,15 +194,6 @@ pub fn new_names() -> Vec<&'static str> {
     LANGUAGES
         .iter()
         .map(|language| language.new_names()[0])
-        .collect()
-}
-
-/// The name of each language that runs remotely, as messages show them.
-pub fn remote_names() -> Vec<&'static str> {
-    LANGUAGES
-        .iter()
-        .filter_map(|language| language.remote_names().first().copied())
-        .chain(REMOTE_ONLY.iter().map(|names| names[0]))
         .collect()
 }
 
@@ -449,11 +381,6 @@ mod tests {
     fn names_are_unique() {
         for names in [
             LANGUAGES.iter().map(|l| vec![l.key()]).collect::<Vec<_>>(),
-            LANGUAGES
-                .iter()
-                .map(|l| l.remote_names().to_vec())
-                .chain(REMOTE_ONLY.iter().map(|names| names.to_vec()))
-                .collect(),
             LANGUAGES.iter().map(|l| l.new_names().to_vec()).collect(),
         ] {
             let mut all: Vec<&str> = names.concat();
@@ -468,8 +395,6 @@ mod tests {
     fn messages_list_the_languages() {
         let names: Vec<String> = new_names().iter().map(|n| n.to_string()).collect();
         assert_eq!(either(&names), "node, bun, python, go or swift");
-        let remote: Vec<String> = remote_names().iter().map(|n| n.to_string()).collect();
-        assert_eq!(either(&remote), "node, bun, python, go, swift or kotlin");
         let files: Vec<String> = project_files().iter().map(|f| f.to_string()).collect();
         assert_eq!(
             either(&files),

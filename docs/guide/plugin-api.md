@@ -1062,7 +1062,7 @@ export default definePlugin({
 ```
 
 - 能交出的：Node、Bun 的 `definePlugin` 结果；Node 里的 Cordis 插件（函数、类、带 `apply` 的对象）；Python 的 `define_plugin` 结果；Go 的 `rutis.Define` 结果（`*rutis.Definition`，客户端的函数字段直接写这个类型）；Swift、Kotlin 的 `Rutis.define` 结果（客户端的参数类型写 `Rutis.Definition`、`Plugin`，见下面的[各语言怎样交出插件定义](#各语言怎样交出插件定义)、[Kotlin 应用](kotlin-app.md#2-写插件)）。
-- 连进来的应用（Swift、Kotlin 的 `RutisApp`）交出的插件定义只能挂在这个连接所在的实例里，或更里面。
+- 连进来的应用（Swift、Kotlin 的 `RutisApp`）交出的插件定义在这个应用里运行；应用的连接断开时，从它挂出的每一份随之结束。
 - 收的一方是 Rust：参数或返回值的类型写 `rutis::Definition`，用 `ctx.plugin(def.at(&ctx, config)?)` 挂上，见 [Rust 宿主](rust-host.md#收插件定义)。其他类型的参数照旧：要数据的参数收到插件定义时这次调用失败。
 - 每一份在定义它的运行时里运行，按挂上它的实例隔离，按它的 `inject` 门控。
 - 插件定义属于交出它的那一行的这一代：这一行卸载、重载或结束时，先结束从它挂出的每一份，等它们清理完，再卸载这一行。之后再挂会失败。运行时进程退出时，这些副本也结束。

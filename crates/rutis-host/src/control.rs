@@ -1,7 +1,7 @@
 //! `rutis-host status`: a host started by `run` or `dev` answers it on a
 //! local socket that only its user can open (design §5.3). The socket
-//! answers `status` with [`Loader::status`] as printed (and the remote
-//! runtimes' connections), which changes nothing; and `call` (`rutis-host
+//! answers `status` with [`Loader::status`] as printed (and what the
+//! connection rows have connected), which changes nothing; and `call` (`rutis-host
 //! call`, try-and-test design §4). The format on the socket is
 //! rutis-host's own: both ends are the same rutis-host. It sits in
 //! the system's runtime directory

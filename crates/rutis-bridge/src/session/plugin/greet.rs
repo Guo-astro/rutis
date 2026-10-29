@@ -1,6 +1,5 @@
 //! How this end opens a session on a channel: the handshake every session
-//! of rutis-bridge starts with (a [`Session`](super::Session), a link, an
-//! access point's connection).
+//! of rutis-bridge starts with (a [`Session`](super::Session), a link).
 
 use std::sync::Arc;
 use std::time::Duration;

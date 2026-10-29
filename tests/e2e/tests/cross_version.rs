@@ -688,10 +688,9 @@ fn a_previous_remote_runtime_is_refused_at_the_handshake() {
             "rutis.json",
             &json!({
                 "id": "main",
-                "runtimes": { "remote": [{ "name": "gpu", "language": "python" }] },
                 "rows": [
-                    { "id": "gpu", "name": "rutis-bridge/peer", "config": {
-                        "peer": "gpu", "dial": url, "runtime": "gpu",
+                    { "id": "gpu", "name": "rutis-host/dial", "config": {
+                        "address": url,
                     } },
                     { "id": "echo", "name": "gpu:echo" },
                 ],
@@ -699,12 +698,12 @@ fn a_previous_remote_runtime_is_refused_at_the_handshake() {
         );
         let mut host = s.host_with(["run", "rutis.json"], &[("RUTIS_TOKEN_GPU", &token)]);
         let stopped = host.wait_for("the link stopped as incompatible", |line| {
-            line.starts_with("gpu: link stopped: incompatible (")
+            line.starts_with("gpu: disconnected (incompatible: ")
         });
         assert!(stopped.contains(OLDER_LISTENER), "{stopped}");
         // Not dialed again: no second refusal within a backoff's first steps.
         std::thread::sleep(std::time::Duration::from_secs(3));
-        assert_eq!(host.count("gpu: link stopped: incompatible ("), 1);
+        assert_eq!(host.count("gpu: disconnected (incompatible: "), 1);
         assert_eq!(host.count("echo: running"), 0);
         stop(host);
         node.kill();
@@ -1147,16 +1146,13 @@ fn a_previous_python_remote_runtime_dialed_by_the_current_host() {
                 "id": "main",
                 "runtimes": {
                     "node": {},
-                    "remote": [{ "name": "gpu", "language": "python" }],
                 },
                 "rows": [
                     {
                         "id": "gpu",
-                        "name": "rutis-bridge/peer",
+                        "name": "rutis-host/dial",
                         "config": {
-                            "peer": "gpu",
-                            "dial": url,
-                            "runtime": "gpu",
+                            "address": url,
                         },
                     },
                     { "id": "echo", "name": "gpu:echo" },

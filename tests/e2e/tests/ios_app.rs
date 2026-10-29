@@ -2,14 +2,15 @@
 //! design `docs/design-swift-sdk-2026-10-12.md` §七, §八): the sample app
 //! `swift/examples/HealthApp` (a HealthKit plugin `health` and a plugin
 //! `device`, `RutisApp` started in the foreground and stopped in the
-//! background), run by `rutis-host run` with a Python row using its
-//! services in each app's instance.
+//! background), dialing in to the `rutis-host/listen` row of a
+//! `rutis-host run`, with a Python row per app using its services.
 //!
-//! - Two simulators run the app, each with an id of its own: each is an
-//!   instance, and the Python row in each sees its own app's `device`.
+//! - Two simulators run the app, each with an id of its own: each app's
+//!   services are named after it (`health-<id>`, `device-<id>`), and the
+//!   Python row of each sees its own app's `device`.
 //! - The app's business layer stops rutis in the background and starts it
-//!   in the foreground: its instance's Python row stops and comes back,
-//!   the other app's runs on.
+//!   in the foreground: its Python row stops and comes back, the other
+//!   app's runs on.
 //! - HealthKit access belongs to the app: before the user decides, the
 //!   plugin's refusal reaches the Python caller as its error (name,
 //!   message, `code`); asking shows the system's sheet over the app, which
@@ -32,7 +33,8 @@ use serde_json::{json, Value};
 
 const BUNDLE: &str = "dev.rutis.example.health";
 
-/// The Python row in each app's instance: records what it sees (its app's
+/// The Python row of the app `__ID__` (its services `health-__ID__` and
+/// `device-__ID__`): records what it sees (its app's
 /// id, HealthKit's status, the steps or the error reading them) in
 /// `<dir>/<id>.json` while it runs; once `<dir>/<id>.authorize` appears,
 /// it asks for access (the sheet), recording the answer in
@@ -42,7 +44,7 @@ import asyncio
 import json
 import os
 
-inject = ["health", "device"]
+inject = ["health-__ID__", "device-__ID__"]
 
 # The calls asking for access, kept until they end.
 asking = set()
@@ -60,9 +62,9 @@ def failure(error):
 
 async def apply(ctx, config):
     out = config["dir"]
-    health = ctx.use("health")
+    health = ctx.use("health-__ID__")
     # Services the app provides without declaring them: every method async.
-    me = await ctx.use("device").id()
+    me = await ctx.use("device-__ID__").id()
     record = {"id": me, "status": await health.status()}
     try:
         record["steps"] = await health.stepsToday()
@@ -292,8 +294,7 @@ fn build(s: &Scenario) -> PathBuf {
 /// guarantee: swift/app-start-stop, swift/app-access-belongs-to-the-app
 #[test]
 #[ignore = "needs macOS, Xcode and an iOS simulator runtime: cargo test -p rutis-e2e --test ios_app -- --ignored"]
-fn an_ios_app_hosts_plugins_per_instance_stops_in_the_background_and_its_health_access_is_its_own()
-{
+fn ios_apps_host_plugins_per_device_stop_in_the_background_and_its_health_access_is_its_own() {
     let s = Scenario::new("ios-app");
     let runtime = runtime();
     let app = build(&s);
@@ -309,21 +310,21 @@ fn an_ios_app_hosts_plugins_per_instance_stops_in_the_background_and_its_health_
 
     let records = s.path("records");
     std::fs::create_dir_all(&records).unwrap();
-    s.write("coach.py", COACH);
+    // A coach per app, using that app's services.
+    let mut rows = vec![
+        json!({ "id": "phone", "name": "rutis-host/listen", "config": { "listener": "public" } }),
+    ];
+    for (id, name) in [("sim-a", "a"), ("sim-b", "b")] {
+        s.write(format!("coach_{name}.py"), COACH.replace("__ID__", id));
+        rows.push(json!({ "id": format!("coach-{name}"), "name": format!("py:coach_{name}"), "config": { "dir": records } }));
+    }
     s.write_json(
         "rutis.json",
         &json!({
             "id": "main",
             "listen": [{ "name": "public", "address": "127.0.0.1:0" }],
-            "runtimes": {
-                "py": { "project": "." },
-                "remote": [{ "name": "phone", "language": "swift", "listen": "public", "instances": "phone" }]
-            },
-            "rows": [{ "id": "phone", "group": true, "instanced": true, "config": [
-                { "id": "health", "name": "phone:health" },
-                { "id": "device", "name": "phone:device" },
-                { "id": "coach", "name": "py:coach", "config": { "dir": records } }
-            ] }]
+            "runtimes": { "py": { "project": "." } },
+            "rows": rows
         }),
     );
     let mut host = s.host_with(["run", "rutis.json"], &[("RUTIS_TOKEN_PHONE", "shared")]);
@@ -334,8 +335,8 @@ fn an_ios_app_hosts_plugins_per_instance_stops_in_the_background_and_its_health_
     }
     let seen = |id: &str| record(&records.join(format!("{id}.json")));
 
-    // Each app is an instance: its row sees its own app, and HealthKit not
-    // decided yet is the plugin's refusal, reaching the Python caller.
+    // Each app's row sees its own app, and HealthKit not decided yet is the
+    // plugin's refusal, reaching the Python caller.
     for (id, simulator) in &simulators {
         let record = eventually(build_guard(), &format!("{id}'s row"), || seen(id));
         assert_eq!(record["id"], *id, "{record}");
@@ -359,7 +360,7 @@ fn an_ios_app_hosts_plugins_per_instance_stops_in_the_background_and_its_health_
     }
 
     // sim-a goes to the background: its business layer stops rutis, and
-    // its instance's row stops; sim-b's runs on.
+    // its row stops; sim-b's runs on.
     let (a, b) = (&simulators[0].1, &simulators[1].1);
     a.background();
     eventually(hang_guard(), "sim-a's row stopped", || {
@@ -392,7 +393,7 @@ fn an_ios_app_hosts_plugins_per_instance_stops_in_the_background_and_its_health_
         "the call waits for the user's answer"
     );
 
-    // The app ends: its instance closes, the waiting call fails.
+    // The app ends: its services go, the waiting call fails.
     a.terminate();
     eventually(hang_guard(), "sim-a's row stopped", || {
         seen("sim-a").is_none().then_some(())

@@ -86,7 +86,7 @@ Compiled from the files Bun (arcships/rutis#200) and Go (arcships/rutis#227) act
 **rutis-host**
 Every local language is one entry in a registry (arcships/rutis#230): `config.rs`, `host.rs`, `new.rs`, `project.rs` and `main.rs` loop over it and need no edit. Read https://github.com/arcships/rutis/tree/main/crates/rutis-host/src/languages first: `node.rs` (load by name) or `go.rs` (compiled program).
 - [ ] `src/config.rs`: a `runtimes.<language>` field in `Runtimes` and its settings type (this is the `rutis.json` format; the persisted-fixture tests guard it)
-- [ ] `src/languages/<language>.rs`: one type implementing the `Language` trait: its `runtimes` key; `rebase`/`merge` of its settings; the names it takes as `runtimes.remote[].language` and how its rows are named (`rows`); `runtime`, which finds the package or interpreter, runs the preflight check of its version and builds the `LocalRuntime` (a compiled-program language with one runtime per binary overrides `start` instead, as Go does); `new --lang` names, template and next steps; `dev`: how a project is recognized (`is_project`, `project_file`) and the rows that run it (the host never compiles; it only runs the project's own build)
+- [ ] `src/languages/<language>.rs`: one type implementing the `Language` trait: its `runtimes` key; `rebase`/`merge` of its settings; how its rows are named (`rows`); `runtime`, which finds the package or interpreter, runs the preflight check of its version and builds the `LocalRuntime` (a compiled-program language with one runtime per binary overrides `start` instead, as Go does); `new --lang` names, template and next steps; `dev`: how a project is recognized (`is_project`, `project_file`) and the rows that run it (the host never compiles; it only runs the project's own build)
 - [ ] `src/languages/mod.rs`: its `mod` line and its line in `LANGUAGES` (the order messages list languages in; the host starts them in reverse, so Node, whose resolver takes bare npm names, stays first)
 - [ ] `src/main.rs`: only the `USAGE` help text names the languages. A compiled-program language that rebuilds in `dev` or lists its binaries in `check` follows Go there (`host.go`, `project::GoDev`)
 - [ ] `templates/<language>/`: plugin, tests, `rutis.dev.json`, publish workflow
@@ -106,7 +106,7 @@ Every local language is one entry in a registry (arcships/rutis#230): `config.rs
 2. Session layer and conformance entry point: pass `runtime_conformance`.
 3. Runtime contract, SDK and Rust wiring: pass `<language>_runtime`, `<language>_rows` and the new `multilang` column; all existing tests stay green.
 4. Developer workflow: `new`, `dev`, `check`, template, publishing.
-5. Remote: `listen:` and `dial:`, passing `websocket_conformance` and `dial_conformance`.
+5. Remote: `listen:` and `dial:`, passing `websocket_conformance` and `dial_conformance`. Making an existing runtime remote changes nothing on the runtime side beyond these channels; the rutis side needs no per-language code: it writes a `rutis-host/dial` row (the runtime listens; rows `<row id>:<plugin>`) or a `rutis-host/listen` row (the runtime dials in), with the token `RUTIS_TOKEN_<row id>` (rutis 0.19; `runtimes.remote` and its `language` are gone).
 
 ## 7. Common mistakes
 

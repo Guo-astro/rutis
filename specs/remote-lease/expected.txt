@@ -8,10 +8,7 @@ lease-mut-late-hello violated:ReadyIsCurrent
 lease-mut-wait-for-old violated:liveness
 access-healthy-same ok
 access-healthy-distinct ok
-access-registration ok
 access-lose ok
 access-all ok
-access-mut-accept-before-release violated:OneInstancePerId
-access-mut-route-by-id violated:OldCallsStayOld
-access-mut-no-gen-check violated:NoStaleHandOver
+access-mut-accept-before-release violated:OnePluginSetPerId
 access-mut-stop-keeps-retry violated:StoppedStaysDown

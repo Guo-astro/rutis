@@ -269,6 +269,8 @@ class Listening(
     private val plugins: List<Plugin>,
     private val status: (Status) -> Unit = {},
     private val shutdownMillis: Long? = null,
+    /** An application's plugins with their configurations, which it installs itself once greeted, instead of rutis's rows running them. */
+    private val own: List<Pair<Plugin, Any?>>? = null,
 ) {
     private sealed class Event {
         class Accepted(val connection: FrameConnection) : Event()
@@ -321,7 +323,7 @@ class Listening(
                             it.end()
                         }
                         val started = try {
-                            RuntimeSession.start(event.connection, endpoint, plugins, shutdownMillis)
+                            RuntimeSession.start(event.connection, endpoint, plugins, shutdownMillis, own)
                         } catch (e: Exception) {
                             event.connection.closeWith(CloseCode.GOING_AWAY, e.message ?: "the session did not start")
                             null
@@ -329,7 +331,10 @@ class Listening(
                         current = started
                         connection = if (started != null) event.connection else null
                         started?.peer?.readyFuture?.thenRun {
-                            if (started.peer.error == null) status(Status.Connected(server.address))
+                            if (started.peer.error == null) {
+                                status(Status.Connected(server.address))
+                                started.install()
+                            }
                         }
                         started?.peer?.closedFuture?.thenRun { events.put(Event.Closed(started)) }
                     }

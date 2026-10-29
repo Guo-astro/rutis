@@ -149,8 +149,8 @@ RutisApp.State.connected  swift.enum.case
 RutisApp.State.connecting  swift.enum.case
 RutisApp.State.description  swift.property
 RutisApp.State.stopped(reason:)  swift.enum.case
-RutisApp.init(plugins:connect:id:token:peer:trust:shutdownTimeout:log:)  swift.init
-RutisApp.init(plugins:listen:id:token:certificate:peer:shutdownTimeout:log:)  swift.init
+RutisApp.init(plugins:configs:connect:id:token:peer:trust:shutdownTimeout:log:)  swift.init
+RutisApp.init(plugins:configs:listen:id:token:certificate:peer:shutdownTimeout:log:)  swift.init
 RutisApp.standardError(_:)  swift.type.method
 RutisApp.start()  swift.method
 RutisApp.state  swift.property

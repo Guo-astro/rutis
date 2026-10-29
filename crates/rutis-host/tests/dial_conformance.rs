@@ -1,15 +1,16 @@
 //! The dial-out conformance suite (`docs/design-remote-runtime-dial-2026-10-14.md`
-//! §六): rutis runs an access point (a shared token over a loopback
-//! WebSocket), each language's runtime dials it out (`dial:ws://…`), and
-//! every rule of the dial-out table is checked against what the access
-//! point observes and what the runtime says on stderr.
+//! §六, `docs/design-remote-session-2026-10-28.md` §六): a rutis-host with a
+//! `rutis-host/listen` row on a loopback WebSocket listener, each language's
+//! runtime dialing it (`dial:ws://…`), and every rule of the dial-out table
+//! checked against what the host's row has connected and what the runtime
+//! says on stderr.
 //!
 //! A column per language: Python, Go, Node and Bun (Unix only, as the whole
 //! Bun runtime is), Swift (macOS, as its plugin binaries are), Kotlin
 //! (feature `kotlin`: the SDK's jvm target, the same code an Android
-//! application dials with, K-P2). A language joins by a
-//! [`Language`] variant (the command that dials, the conformance plugin in
-//! its project) and a `column!` line. What every dialer must do:
+//! application dials with). A language joins by a [`Language`] variant (the
+//! command that dials, its project) and a `column!` line. What every dialer
+//! must do:
 //!
 //! - take `dial:<address> --id <id> --peer main <project>`, the token in
 //!   `RUTIS_TOKEN`, and shortened waits in
@@ -19,31 +20,24 @@
 //!   `rutis: cannot connect (…); retrying in <s>s` for a retryable failure,
 //!   `rutis: refused: auth-rejected (…); retrying in <s>s`, and
 //!   `rutis: refused: incompatible (…); stopping` (then exit non-zero);
-//! - stop on SIGTERM: unload every row, close, exit 0;
-//! - serve the plugin `marker`, which says `conformance: loaded <config>`
-//!   and `conformance: unloaded <config>` on stderr.
+//! - give way to a newer connection of its id (4002), and dial again;
+//! - stop on SIGTERM: close, exit 0.
 //!
 //! Risk C10: the matrix is in docs/ci.md. guarantee: bridge/dial-out-rules
-#![cfg(all(feature = "websocket", feature = "testing"))]
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use rutis::host::{BoxFuture, CtxHost, FiberView};
-use rutis::Ctx;
 use rutis_bridge::channel::PeerId;
-use rutis_bridge::session::Value;
-use rutis_bridge::websocket::{self, Limits, Listener, ListenerConfig};
-use rutis_bridge::{
-    Accept, Accepted, Accepting, AccessEvent, AccessPointConfig, AccessPointPlugin, Admission,
-    AdmissionPlugin, Presented, Registration, Registrations, Rejection, Release, SharedToken,
-    StaticIdentity,
-};
-use rutis_test_support::{scaled, within, HANG_GUARD};
+use rutis_bridge::websocket::{self, Limits, ListenerConfig};
+use rutis_bridge::{Registration, Registrations, StaticIdentity};
+use rutis_host::config::HostConfig;
+use rutis_host::host::Host;
+use rutis_test_support::{within, HANG_GUARD};
 use serde_json::json;
 use tokio::io::AsyncBufReadExt;
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::mpsc;
 
 fn id(s: &str) -> PeerId {
     PeerId::new(s).unwrap()
@@ -53,7 +47,8 @@ fn repo() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
-/// The token every dialer here presents, unless a case says otherwise.
+/// The token every dialer here presents, unless a case says otherwise:
+/// `RUTIS_TOKEN_PHONE` of every host here.
 const TOKEN: &str = "dial-token";
 
 /// Waits short enough for a test (`RUTIS_RETRY`): backoff from 100 ms
@@ -67,12 +62,11 @@ enum Language {
     Python,
     Node,
     /// Unix only: Bun on Windows is not a declared platform.
-    #[cfg(all(unix, feature = "bun"))]
+    #[cfg(unix)]
     Bun,
-    #[cfg(feature = "go")]
     Go,
     /// macOS only, as Swift plugin binaries are.
-    #[cfg(all(feature = "swift", target_os = "macos"))]
+    #[cfg(target_os = "macos")]
     Swift,
     /// The Kotlin SDK's jvm target (`Rutis.serve` in the conformance jar).
     #[cfg(feature = "kotlin")]
@@ -81,7 +75,7 @@ enum Language {
 
 /// The Kotlin programs (`tests/kotlin`); `kotlin` is the column.
 #[cfg(feature = "kotlin")]
-#[path = "kotlin/mod.rs"]
+#[path = "../../rutis-bridge/tests/kotlin/mod.rs"]
 mod kotlin_programs;
 
 /// The conformance plugin as the npm package `marker` in `project`, which
@@ -108,7 +102,6 @@ fn python_program() -> String {
 /// The Go conformance dialer (`go/rutis/internal/fixtures/dial`, the
 /// plugin `marker` in it), built once per test binary with the `go` on
 /// PATH.
-#[cfg(feature = "go")]
 fn go_dialer() -> &'static Path {
     static BINARY: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
     BINARY.get_or_init(|| {
@@ -129,7 +122,7 @@ fn go_dialer() -> &'static Path {
 /// The Swift conformance dialer (the product `RutisDial` of the root
 /// `Package.swift`, the plugin `marker` in it), built once per test binary
 /// with the `swift` on PATH.
-#[cfg(all(feature = "swift", target_os = "macos"))]
+#[cfg(target_os = "macos")]
 fn swift_dialer() -> &'static Path {
     static BINARY: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
     BINARY.get_or_init(|| {
@@ -186,7 +179,7 @@ impl Language {
                     .current_dir(runtime);
                 command
             }
-            #[cfg(all(unix, feature = "bun"))]
+            #[cfg(unix)]
             Language::Bun => {
                 marker_package(project, "bun/rutis-bun/test/fixtures/conformance-dial.ts");
                 let mut command = tokio::process::Command::new("bun");
@@ -199,7 +192,6 @@ impl Language {
                     .current_dir(project);
                 command
             }
-            #[cfg(feature = "go")]
             Language::Go => {
                 let mut command = tokio::process::Command::new(go_dialer());
                 command
@@ -208,7 +200,7 @@ impl Language {
                     .arg(project);
                 command
             }
-            #[cfg(all(feature = "swift", target_os = "macos"))]
+            #[cfg(target_os = "macos")]
             Language::Swift => {
                 let mut command = tokio::process::Command::new(swift_dialer());
                 command
@@ -233,123 +225,53 @@ impl Language {
     }
 }
 
-/// Mounts each connection as a runtime and loads the row `marker` on it,
-/// its config naming the connection: `<id> <generation>`.
-struct Rows;
-
-impl Accept for Rows {
-    fn accept(&self, connection: Accepted) -> BoxFuture<'_, Result<Release, String>> {
-        Box::pin(async move {
-            let session = connection.runtime_session().connection();
-            let config = format!("{} {}", connection.id(), connection.peer().generation());
-            session
-                .invoke_async("", "mount", Value::Data(json!({})))
-                .await
-                .map_err(|error| format!("mount: {error}"))?;
-            session
-                .invoke_async(
-                    "",
-                    "rows.load",
-                    Value::Data(json!(["marker", "marker", config, [], [], {}, { "scope": [] }])),
-                )
-                .await
-                .map_err(|error| format!("rows.load: {error}"))?;
-            let release: Release = Box::new(|| Box::pin(async {}));
-            Ok(release)
-        })
-    }
-}
-
-/// Admits whoever presents [`TOKEN`], then rejects every id it greets with.
-struct Refusing(PeerId);
-
-impl Admission for Refusing {
-    fn local(&self) -> &PeerId {
-        &self.0
-    }
-    fn verify(&self, presented: Presented<'_>) -> bool {
-        matches!(presented, Presented::Bearer(token) if token == TOKEN)
-    }
-    fn admit(&self, reported: &PeerId) -> Result<PeerId, Rejection> {
-        Err(Rejection(format!("{reported} is not known")))
-    }
-}
-
-/// rutis, `main`: a loopback WebSocket listener and the access point
-/// `phone` on it.
+/// A host `main` with the listener `public` on loopback and the listen row
+/// `phone` on it, its token [`TOKEN`].
 struct Rutis {
-    listener: Listener,
-    access: FiberView,
-    events: broadcast::Receiver<AccessEvent>,
+    host: Host,
     port: u16,
-    _root: Ctx,
 }
 
 impl Rutis {
     /// Listening on `port` (0: any free one).
-    async fn start(port: u16, admission: impl Admission) -> Self {
-        let root = Ctx::root().unwrap();
-        let registrations = Registrations::new();
-        let listener = websocket::listen(
-            &ListenerConfig::new("public", ([127, 0, 0, 1], port).into()),
-            &Limits::default(),
-            websocket::admit_registered(registrations.clone(), "public"),
-        )
+    async fn start(port: u16) -> Self {
+        // Every host here has this token: set by any test, it is the same.
+        std::env::set_var("RUTIS_TOKEN_PHONE", TOKEN);
+        let config: HostConfig = serde_json::from_value(json!({
+            "id": "main",
+            "listen": [{ "name": "public", "address": format!("127.0.0.1:{port}") }],
+            "rows": [{ "id": "phone", "name": "rutis-host/listen", "config": { "listener": "public" } }]
+        }))
         .unwrap();
-        let port = listener.local_addr().port();
-        (&root.plugin(AdmissionPlugin::new("phone", admission)))
-            .await
-            .unwrap();
-        let plugin = AccessPointPlugin::new(
-            AccessPointConfig::new(
-                id("phone"),
-                "phone",
-                Accepting {
-                    registrations,
-                    listener: "public".into(),
-                    local: id("main"),
-                },
-            )
-            .handshake(scaled(HANG_GUARD))
-            .require("runtime"),
-        )
-        .accept(Rows);
-        let events = plugin.events();
-        let access = root.plugin(plugin);
-        (&access).await.unwrap();
-        Self {
-            listener,
-            access,
-            events,
-            port,
-            _root: root,
-        }
+        let host = Host::start(&config).await.unwrap();
+        host.load(config.rows()).await.unwrap();
+        let port = host.listening[0].1.port();
+        Self { host, port }
     }
 
     fn address(&self) -> String {
         format!("ws://127.0.0.1:{}/rutis", self.port)
     }
 
-    async fn next(&mut self) -> AccessEvent {
-        within("an access point event", self.events.recv())
-            .await
-            .unwrap()
+    /// The far ends `phone` has connected now.
+    fn connected(&self) -> Vec<String> {
+        self.host
+            .connections()
+            .into_iter()
+            .filter(|row| row.id == "phone")
+            .flat_map(|row| row.connected)
+            .map(|connected| connected.id)
+            .collect()
     }
 
-    async fn connected(&mut self, who: &str) -> u64 {
-        match self.next().await {
-            AccessEvent::Connected {
-                id: again,
-                generation,
-            } if again == id(who) => generation,
-            other => panic!("expected {who} to connect: {other:?}"),
-        }
+    /// Until `phone` has connected exactly `ids`.
+    async fn until_connected(&self, ids: &[&str]) {
+        rutis_test_support::until(|| self.connected() == ids, &format!("connected {ids:?}")).await;
     }
 
-    /// Goes away: the access point, then the listener.
+    /// Goes away: its rows, then its listener.
     async fn stop(self) {
-        self.access.dispose().await.unwrap();
-        drop(self.listener);
+        self.host.shut_down(HANG_GUARD).await.ok();
     }
 }
 
@@ -435,23 +357,19 @@ fn retrying_in(line: &str) -> f64 {
     wait.trim_end_matches('s').parse().unwrap()
 }
 
-/// Accepted under the id it chose: the access point's connection, and a
-/// session with its rows loaded.
-async fn connects_and_is_accepted_with_its_id(language: Language) {
-    let mut rutis = Rutis::start(0, SharedToken::new(id("main"), TOKEN)).await;
+/// Connected under the id it chose.
+async fn connects_with_its_id(language: Language) {
+    let rutis = Rutis::start(0).await;
     let mut pixel = Dialer::start(language, &rutis.address(), "pixel", TOKEN);
-    let generation = rutis.connected("pixel").await;
     let line = pixel.expect("rutis: connected to ").await;
     assert!(line.contains(&rutis.address()), "{line}");
-    pixel
-        .expect(&format!("conformance: loaded pixel {generation}"))
-        .await;
+    rutis.until_connected(&["pixel"]).await;
 }
 
 /// Credentials refused at the upgrade (403): an authentication failure,
 /// waited out and retried, never given up.
 async fn a_wrong_token_is_retried_as_rejected(language: Language) {
-    let rutis = Rutis::start(0, SharedToken::new(id("main"), TOKEN)).await;
+    let rutis = Rutis::start(0).await;
     let mut pixel = Dialer::start(language, &rutis.address(), "pixel", "guess");
     for _ in 0..2 {
         let line = pixel.expect("rutis: refused: auth-rejected (").await;
@@ -460,28 +378,12 @@ async fn a_wrong_token_is_retried_as_rejected(language: Language) {
         assert!((retrying_in(&line) - 0.3).abs() < 0.05, "{line}");
     }
     assert!(pixel.running());
+    assert!(rutis.connected().is_empty());
 }
 
-/// The admission rejecting the id after the hello (close 4003): an
-/// authentication failure too.
-async fn a_rejected_id_is_retried_as_rejected(language: Language) {
-    let mut rutis = Rutis::start(0, Refusing(id("main"))).await;
-    let mut pixel = Dialer::start(language, &rutis.address(), "pixel", TOKEN);
-    for _ in 0..2 {
-        let event = rutis.next().await;
-        assert!(
-            matches!(&event, AccessEvent::Rejected { reason } if reason.contains("pixel is not known")),
-            "{event:?}"
-        );
-        let line = pixel.expect("rutis: refused: auth-rejected (").await;
-        assert!(line.contains("pixel is not known"), "{line}");
-    }
-    assert!(pixel.running());
-}
-
-/// An access point speaking another session protocol (400 at the
-/// upgrade): the dialer stops and reports, exiting non-zero.
-async fn an_incompatible_access_point_stops_the_dialer(language: Language) {
+/// A listener speaking another session protocol (400 at the upgrade): the
+/// dialer stops and reports, exiting non-zero.
+async fn an_incompatible_listener_stops_the_dialer(language: Language) {
     let registrations = Registrations::new();
     let listener = websocket::listen(
         &ListenerConfig::new("public", "127.0.0.1:0".parse().unwrap()),
@@ -511,29 +413,24 @@ async fn an_incompatible_access_point_stops_the_dialer(language: Language) {
     assert!(!pixel.exit().await.success());
 }
 
-/// An id no access point could admit (`[a-z0-9-]+`) is not dialed with:
+/// An id no listener could take (`[a-z0-9-]+`) is not dialed with:
 /// retrying cannot fix it.
 async fn an_invalid_id_is_refused_before_dialing(language: Language) {
-    let rutis = Rutis::start(0, SharedToken::new(id("main"), TOKEN)).await;
+    let rutis = Rutis::start(0).await;
     let mut pixel = Dialer::start(language, &rutis.address(), "Pixel 7", TOKEN);
     assert!(!pixel.exit().await.success());
+    assert!(rutis.connected().is_empty());
 }
 
-/// The access point going away: the rows go, the dialer backs off
-/// (doubling, capped), and connects again once it is back, as a new
-/// session that loads its rows afresh.
+/// The host going away: the dialer backs off (doubling, capped), and
+/// connects again once it is back, as a new session.
 async fn it_backs_off_and_reconnects_as_a_new_session(language: Language) {
-    let mut rutis = Rutis::start(0, SharedToken::new(id("main"), TOKEN)).await;
+    let rutis = Rutis::start(0).await;
     let port = rutis.port;
     let mut pixel = Dialer::start(language, &rutis.address(), "pixel", TOKEN);
-    let generation = rutis.connected("pixel").await;
-    pixel
-        .expect(&format!("conformance: loaded pixel {generation}"))
-        .await;
+    pixel.expect("rutis: connected to ").await;
+    rutis.until_connected(&["pixel"]).await;
     rutis.stop().await;
-    pixel
-        .expect(&format!("conformance: unloaded pixel {generation}"))
-        .await;
     let mut waits = vec![retrying_in(&pixel.expect("rutis: connection lost (").await)];
     while waits.len() < BACKOFF.len() {
         waits.push(retrying_in(&pixel.expect("rutis: cannot connect (").await));
@@ -546,86 +443,49 @@ async fn it_backs_off_and_reconnects_as_a_new_session(language: Language) {
         );
     }
 
-    let mut rutis = Rutis::start(port, SharedToken::new(id("main"), TOKEN)).await;
-    let generation = rutis.connected("pixel").await;
+    let rutis = Rutis::start(port).await;
     pixel.expect("rutis: connected to ").await;
-    pixel
-        .expect(&format!("conformance: loaded pixel {generation}"))
-        .await;
+    rutis.until_connected(&["pixel"]).await;
 }
 
-/// A second dialer with the same id takes over: the first is replaced,
-/// its rows go, and it dials again by its backoff, taking over in turn.
-/// Two live dialers with one id keep displacing each other at the pace of
-/// their backoffs (up to every 30 s each, as a session shorter than 60 s
-/// does not reset it): ids must be unique, which nothing but the
-/// deployment ensures while ids are self-reported (design §五).
+/// A second dialer with the same id takes over: the first is replaced
+/// (4002) and dials again by its backoff, taking over in turn. Two live
+/// dialers with one id keep displacing each other at the pace of their
+/// backoffs: ids must be unique, which nothing but the deployment ensures
+/// while ids are self-reported.
 async fn the_same_id_takes_over(language: Language) {
-    let mut rutis = Rutis::start(0, SharedToken::new(id("main"), TOKEN)).await;
+    let rutis = Rutis::start(0).await;
     let mut first = Dialer::start(language, &rutis.address(), "pixel", TOKEN);
-    let one = rutis.connected("pixel").await;
-    first
-        .expect(&format!("conformance: loaded pixel {one}"))
-        .await;
+    first.expect("rutis: connected to ").await;
+    rutis.until_connected(&["pixel"]).await;
 
     let mut second = Dialer::start(language, &rutis.address(), "pixel", TOKEN);
-    assert_eq!(
-        rutis.next().await,
-        AccessEvent::Replaced {
-            id: id("pixel"),
-            generation: one
-        }
-    );
-    let two = rutis.connected("pixel").await;
-    second
-        .expect(&format!("conformance: loaded pixel {two}"))
-        .await;
+    second.expect("rutis: connected to ").await;
     let line = first.expect("rutis: connection lost (").await;
     assert!(line.contains("replaced by a new connection"), "{line}");
-    first
-        .expect(&format!("conformance: unloaded pixel {one}"))
-        .await;
-
-    assert_eq!(
-        rutis.next().await,
-        AccessEvent::Replaced {
-            id: id("pixel"),
-            generation: two
-        }
-    );
-    let three = rutis.connected("pixel").await;
-    first
-        .expect(&format!("conformance: loaded pixel {three}"))
-        .await;
+    // The first dials again and takes over in turn.
+    first.expect("rutis: connected to ").await;
     let line = second.expect("rutis: connection lost (").await;
     assert!(line.contains("replaced by a new connection"), "{line}");
+    assert_eq!(rutis.connected(), ["pixel"]);
 }
 
-/// Stopped by its own side (SIGTERM): the rows go, the connection closes,
-/// the process ends with success and dials no more.
+/// Stopped by its own side (SIGTERM): the connection closes, the process
+/// ends with success and dials no more.
 #[cfg(unix)]
-async fn stopping_unloads_and_ends_without_reconnecting(language: Language) {
-    let mut rutis = Rutis::start(0, SharedToken::new(id("main"), TOKEN)).await;
+async fn stopping_ends_without_reconnecting(language: Language) {
+    let rutis = Rutis::start(0).await;
     let mut pixel = Dialer::start(language, &rutis.address(), "pixel", TOKEN);
-    let generation = rutis.connected("pixel").await;
-    pixel
-        .expect(&format!("conformance: loaded pixel {generation}"))
-        .await;
+    pixel.expect("rutis: connected to ").await;
+    rutis.until_connected(&["pixel"]).await;
     let pid = pixel.child.id().unwrap().to_string();
     let status = std::process::Command::new("kill")
         .args(["-TERM", &pid])
         .status()
         .unwrap();
     assert!(status.success());
-    pixel
-        .expect(&format!("conformance: unloaded pixel {generation}"))
-        .await;
     assert!(pixel.exit().await.success());
-    let event = rutis.next().await;
-    assert!(
-        matches!(&event, AccessEvent::Disconnected { generation: g, .. } if *g == generation),
-        "{event:?}"
-    );
+    rutis.until_connected(&[]).await;
     while let Some(line) = pixel.lines.recv().await {
         assert!(!line.starts_with("rutis: "), "said after stopping: {line}");
     }
@@ -638,8 +498,8 @@ macro_rules! column {
             use super::*;
 
             #[tokio::test(flavor = "multi_thread")]
-            async fn connects_and_is_accepted_with_its_id() {
-                super::connects_and_is_accepted_with_its_id($language).await;
+            async fn connects_with_its_id() {
+                super::connects_with_its_id($language).await;
             }
 
             #[tokio::test(flavor = "multi_thread")]
@@ -648,13 +508,8 @@ macro_rules! column {
             }
 
             #[tokio::test(flavor = "multi_thread")]
-            async fn a_rejected_id_is_retried_as_rejected() {
-                super::a_rejected_id_is_retried_as_rejected($language).await;
-            }
-
-            #[tokio::test(flavor = "multi_thread")]
-            async fn an_incompatible_access_point_stops_the_dialer() {
-                super::an_incompatible_access_point_stops_the_dialer($language).await;
+            async fn an_incompatible_listener_stops_the_dialer() {
+                super::an_incompatible_listener_stops_the_dialer($language).await;
             }
 
             #[tokio::test(flavor = "multi_thread")]
@@ -674,8 +529,8 @@ macro_rules! column {
 
             #[cfg(unix)]
             #[tokio::test(flavor = "multi_thread")]
-            async fn stopping_unloads_and_ends_without_reconnecting() {
-                super::stopping_unloads_and_ends_without_reconnecting($language).await;
+            async fn stopping_ends_without_reconnecting() {
+                super::stopping_ends_without_reconnecting($language).await;
             }
         }
     };
@@ -683,11 +538,10 @@ macro_rules! column {
 
 column!(python, Language::Python);
 column!(node, Language::Node);
-#[cfg(all(unix, feature = "bun"))]
+#[cfg(unix)]
 column!(bun, Language::Bun);
-#[cfg(feature = "go")]
 column!(go, Language::Go);
-#[cfg(all(feature = "swift", target_os = "macos"))]
+#[cfg(target_os = "macos")]
 column!(swift, Language::Swift);
 #[cfg(feature = "kotlin")]
 column!(kotlin, Language::Kotlin);
