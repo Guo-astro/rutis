@@ -92,6 +92,46 @@ pub(super) fn copy_label(label: &str, copy: Option<u64>) -> String {
     }
 }
 
+impl Row {
+    /// The rutis scope of a row whose resolver handles its scope itself
+    /// (`Resolved::foreign_scope`, a runtime's row): its isolates only,
+    /// keyed as the runtime's rows publish and wait for a name (a shared
+    /// name through the catalog, per copy inside instances; any other by
+    /// itself). What it provides, or waits for, under a name it isolates
+    /// stays in that isolate, as for a Rust row; its `inject` is the
+    /// plugin's own.
+    pub(super) fn foreign_scope(
+        &self,
+        catalog: &ServiceCatalog,
+        build: &Build,
+    ) -> Result<BoundScope, LoaderError> {
+        #[cfg(any(feature = "runtimes", feature = "peer"))]
+        {
+            let isolate = self
+                .raw_scope
+                .isolate
+                .iter()
+                .map(|(name, label)| {
+                    let key = match catalog.is_shared(name) {
+                        true => catalog.key_in(name, build)?,
+                        false => rutis_bridge::session::host_key(name).erase(),
+                    };
+                    Ok((name.clone(), key, label.clone()))
+                })
+                .collect::<Result<_, LoaderError>>()?;
+            Ok(BoundScope {
+                isolate,
+                inject: Vec::new(),
+            })
+        }
+        #[cfg(not(any(feature = "runtimes", feature = "peer")))]
+        {
+            let _ = (catalog, build);
+            Ok(BoundScope::default())
+        }
+    }
+}
+
 impl BoundScope {
     /// `parent` with every isolate applied, for the copy in instance `copy`.
     pub(super) fn context(&self, parent: &Ctx, copy: Option<u64>) -> Ctx {

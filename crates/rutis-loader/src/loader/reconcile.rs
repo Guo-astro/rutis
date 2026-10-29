@@ -37,9 +37,14 @@ fn combined_injects(factory: &dyn PluginFactory<Value>, scope: &BoundScope) -> V
 /// The catalog scope a copy in `build`'s instances runs with: none for a
 /// resolver that handles scope itself, else the row's scope with the
 /// copy's keys (`None` when it failed).
-fn effective_scope(resolved: &Resolved, row: &Row, build: &Build) -> Option<BoundScope> {
+fn effective_scope(
+    resolved: &Resolved,
+    row: &Row,
+    build: &Build,
+    catalog: &crate::ServiceCatalog,
+) -> Option<BoundScope> {
     if resolved.foreign_scope {
-        Some(BoundScope::default())
+        row.foreign_scope(catalog, build).ok()
     } else {
         row.scope.as_ref().ok()?.bind(build).ok()
     }
@@ -301,7 +306,13 @@ impl Inner {
                 state.rejected.insert(slot, misplaced.clone());
                 return None;
             }
-            BoundScope::default()
+            match row.foreign_scope(&self.catalog, &build) {
+                Ok(scope) => scope,
+                Err(error) => {
+                    state.rejected.insert(slot, error);
+                    return None;
+                }
+            }
         } else {
             match row
                 .scope
@@ -802,9 +813,10 @@ impl Inner {
                                 continue;
                             };
                             let build = Self::build_for(state, slot.scope);
-                            let same = effective_scope(resolved, row, &build).is_some_and(|s| {
-                                combined_injects(factory.as_ref(), &s) == running.injects
-                            }) && factory.name() == running.factory_name;
+                            let same =
+                                effective_scope(resolved, row, &build, &self.catalog).is_some_and(
+                                    |s| combined_injects(factory.as_ref(), &s) == running.injects,
+                                ) && factory.name() == running.factory_name;
                             if !same {
                                 continue;
                             }
