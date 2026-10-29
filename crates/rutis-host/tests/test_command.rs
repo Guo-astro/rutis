@@ -38,7 +38,7 @@ const OPTIONS: &str = r#"OPTIONS {"named":"oslo","taken":"a row oslo is loaded a
 
 /// The SDK as a file URL: Node imports a Windows path (`C:\\…`) only as one.
 fn sdk() -> String {
-    common::process::file_url(
+    common::file_url(
         &repo()
             .join("node/rutis/src/index.mjs")
             .canonicalize()

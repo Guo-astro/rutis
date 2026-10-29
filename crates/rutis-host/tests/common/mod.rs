@@ -9,6 +9,11 @@ use std::sync::{Mutex, MutexGuard};
 #[cfg(unix)]
 pub mod process;
 
+/// A file URL for `path` (the form an ES module import needs on Windows too).
+pub fn file_url(path: &Path) -> String {
+    url::Url::from_file_path(path).unwrap().to_string()
+}
+
 /// The environment variables the host reads. A test that sets one, or
 /// starts a host, holds [`environment`] and starts from none of them set.
 pub const VARIABLES: &[&str] = &[
