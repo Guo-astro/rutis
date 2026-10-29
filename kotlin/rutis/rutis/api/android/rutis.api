@@ -186,6 +186,16 @@ public final class arcships/rutis/advanced/Emitter$DefaultImpls {
 	public static synthetic fun waterfall$default (Larcships/rutis/advanced/Emitter;Ljava/lang/String;[Ljava/lang/Object;Lkotlin/jvm/functions/Function2;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
 }
 
+public final class arcships/rutis/advanced/InProcessKt {
+	public static final fun serveInProcess (Larcships/rutis/Rutis;Ljava/io/InputStream;Ljava/io/OutputStream;Ljava/lang/String;Lkotlin/jvm/functions/Function0;)Larcships/rutis/advanced/InProcessSession;
+}
+
+public final class arcships/rutis/advanced/InProcessSession {
+	public final fun end ()Z
+	public final fun getEnded ()Ljava/util/concurrent/CompletableFuture;
+	public final fun register (Larcships/rutis/Plugin;)V
+}
+
 public final class arcships/rutis/advanced/JdkSerializers {
 	public static final field INSTANCE Larcships/rutis/advanced/JdkSerializers;
 	public final fun getBigDecimalSerializer ()Lkotlinx/serialization/KSerializer;
