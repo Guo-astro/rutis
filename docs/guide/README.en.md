@@ -20,7 +20,7 @@ Choose by what you want to do.
 | I want to… | Read |
 | --- | --- |
 | Without writing Rust, install other people's plugins, write `rutis.json`, run and try them | [rutis-host and rutis.json](rutis-host.en.md) |
-| Run a plugin on another machine | [rutis-host: remote runtimes](rutis-host.en.md#remote-runtimes) |
+| Run a plugin on another machine | [rutis-host: remote runtimes and devices](rutis-host.en.md#remote-runtimes-and-devices) |
 
 ## Build a host open to plugins
 

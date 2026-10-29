@@ -414,7 +414,7 @@ A change to `dev/fake_translate.py` reloads only the row `translate`, without a 
 - Push a tag like `v0.1.0`: the template's workflow runs the tests and `rutis-host check`, builds binaries for Linux (x64 / arm64), macOS (x64 / arm64) and Windows x64, and publishes them with `SHA256SUMS` to a GitHub Release.
 - The dependency range: the `require github.com/arcships/rutis/go/rutis` in `go.mod` is the lowest version; a binary has the version chosen when it was built compiled in.
 
-How a host installs your plugin: see [rutis-host: How a host installs plugins](rutis-host.en.md#how-a-host-installs-plugins). To run it on another machine, see [the remote section of rutis-host.en.md](rutis-host.en.md#remote-runtimes).
+How a host installs your plugin: see [rutis-host: How a host installs plugins](rutis-host.en.md#how-a-host-installs-plugins). To run it on another machine, see [the remote section of rutis-host.en.md](rutis-host.en.md#remote-runtimes-and-devices).
 
 ## Debugging
 
