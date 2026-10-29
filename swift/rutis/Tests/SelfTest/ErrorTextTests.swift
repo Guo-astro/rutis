@@ -56,10 +56,7 @@ struct ErrorTextTests {
         })
         let loaded = try await RutisTest.load(plugin)
         defer { Task { await loaded.close() } }
-        let declared = try await loaded.service("weather")
-        // Past the testing tool's own check: what the runtime answers.
-        let weather = Service(session: declared.session, handle: declared.handle, name: "weather",
-                              methods: ["tomorow": "async", "tomorrow": "async", "forecast": "async"])
+        let weather = try await loaded.service("weather")
 
         var error = await refusal { _ = try await weather.callValue("tomorow", []) }
         XCTAssertEqual(error?.message, "weather has no method tomorow (methods: forecast, today, tomorrow)")
@@ -80,10 +77,6 @@ struct ErrorTextTests {
         XCTAssertEqual(error?.message, "weather.forecast: argument 1 should be a TextForecast, got an object whose city is a number")
         error = await refusal { _ = try await weather.callValue("forecast", [.data(.array([]))]) }
         XCTAssertEqual(error?.message, "weather.forecast: argument 1 should be a TextForecast, got a list")
-
-        // The testing tool's own check says the same.
-        error = await refusal { _ = try await declared.callValue("tomorow", []) }
-        XCTAssertEqual(error?.message, "weather has no method tomorow (methods: forecast, today, tomorrow)")
     }
 
     // guarantee: sdk/error-texts (an object passed by reference refuses a

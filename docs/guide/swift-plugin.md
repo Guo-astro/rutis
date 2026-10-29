@@ -200,7 +200,7 @@ public let plugin = Rutis.define(Plugin(
 
 ## 6. 测试
 
-`RutisTest` 不需要宿主：插件在真实的运行时里运行，测试一方就是宿主，给插件假的服务、调用它提供的服务、像宿主一样监听事件。`Tests/GreeterPluginTests/PluginTests.swift` 换成：
+`RutisTest` 把插件作为真实宿主的一行运行：它自己启动 `rutis-host test`（`rutis-host` 在 `PATH` 上，或把路径写在 `RUTIS_HOST`；`npm install --global @arcships/rutis-host`）。测试从同一运行时里的一个测试插件给插件假的服务、调用它提供的服务、监听它的事件。`Tests/GreeterPluginTests/PluginTests.swift` 换成：
 
 <!-- example: swift file=greeter/Tests/GreeterPluginTests/PluginTests.swift -->
 ```swift
@@ -236,10 +236,10 @@ swift test
 
 - `RutisTest.load(plugin, config:, services:)` 装载插件：`config` 是这一行的配置，`services` 是假的服务（`@RutisService` 类型的实例），插件 `inject` 的服务都要给。
 - `loaded.service("greeter").call("hello", "Ada", as: String.self)` 像别的插件一样调用服务。
-- `loaded.on(name) { … }` 像宿主一样监听事件；事件是另一边发出的，所以测试等它到达（这里用 `AsyncStream`），不在调用返回时直接检查。
-- `loaded.close()` 卸载插件、结束测试的宿主。
+- `loaded.on(name) { … }` 监听事件；事件由宿主分发，所以测试等它到达（这里用 `AsyncStream`），不在调用返回时直接检查。
+- `loaded.close()` 卸载插件；宿主留给下一个测试。
 
-值在测试里经真实的会话传递，和在宿主里一样：只在同一进程里才成立的写法在这里就失败。测试工具的其余接口见 [插件 API：Swift 的测试工具](plugin-api.md#swift-的测试工具)。
+宿主检查这一行的配置、等它 inject 的服务都在了才启动它、分发它的事件，和运行时一样。测试工具的其余接口见 [插件 API：Swift 的测试工具](plugin-api.md#swift-的测试工具)。
 
 ## 7. 本地运行并试一下
 

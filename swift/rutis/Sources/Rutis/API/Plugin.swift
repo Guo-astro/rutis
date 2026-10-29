@@ -322,17 +322,15 @@ extension Rutis {
                 }
             }
         }
-        // The schema the host checks rows with (`check`) and this runtime
-        // validates them with: the type's own (`@RutisConfig`,
-        // `rutisSchema`), or what its type says (a `String` config:
-        // `{"type": "string"}`); a type that says nothing more takes any
-        // object, checked only when decoded.
+        // The schema the host checks rows with (`check`): the type's own
+        // (`@RutisConfig`, `rutisSchema`), or what its type says (a `String`
+        // config: `{"type": "string"}`); a type that says nothing more takes
+        // any object.
         let schema: JSON
-        let validates: Bool
         if C.self == NoConfig.self {
-            (schema, validates) = (.null, false)
+            schema = .null
         } else if let configurable = C.self as? RutisConfigurable.Type {
-            (schema, validates) = (configurable.rutisSchema.json, true)
+            schema = configurable.rutisSchema.json
         } else if case var .object(fields) = Rutis._Generated.Schema.of(C.self).json, !fields.isEmpty {
             // An optional config type takes no config too.
             if C.self is OptionalProtocol.Type, let index = fields.firstIndex(where: { $0.0 == "type" }), case let .string(type) = fields[index].1 {
@@ -341,39 +339,22 @@ extension Rutis {
                     fields[at].1 = .array(values + [.null])
                 }
             }
-            (schema, validates) = (.object(fields), true)
+            schema = .object(fields)
         } else {
-            (schema, validates) = (Rutis._Generated.Schema.anyObject.json, false)
+            schema = Rutis._Generated.Schema.anyObject.json
         }
         let apply = plugin.apply
         return Definition(name: plugin.name, inject: plugin.inject, provides: plugin.provides, schema: schema,
                           version: plugin.version, api: Rutis.Advanced.pluginAPI)
         { ctx, config in
-            // Defaults filled and the config validated against the schema
-            // before decoding (config schema design §2.2); a decoder error
-            // after that is the schema and the type disagreeing (§3.3).
-            // Only a schema of the type's own (`@RutisConfig` or
-            // `rutisSchema`): the `{"type": "object"}` other Decodable types
-            // get is checked only when decoded (a `String` config, say).
-            var value = config
-            if validates {
-                // A config of plain data (one holding tagged values, which
-                // only Swift's own callers send, is decoded as it is).
-                var json: JSON??
-                switch config {
-                case .undefined: json = .some(nil)
-                case let .data(data): json = .some(data == .null ? nil : data)
-                default: json = config.isNullish ? .some(nil) : nil
-                }
-                if let json {
-                    let checked = ConfigSchema.check(schema, json)
-                    if !checked.errors.isEmpty { throw ConfigSchema.error(checked.errors) }
-                    value = .data(checked.config)
-                }
-            }
+            // The host validated the config and filled its defaults; a
+            // decoder error is the schema and the type disagreeing (§3.3).
+            let value = config
             let decoded: C
             do {
                 decoded = try ValueCodec.decode(C.self, from: value.isNullish ? .data(.object([])) : value)
+            } catch let problem as ConfigProblem {
+                throw ConfigSchema.error([ConfigSchema.issue(problem.path, problem.reason)])
             } catch {
                 throw ConfigSchema.error([ConfigSchema.issue(ConfigSchema.path(of: error), "is not a value the plugin accepts")])
             }

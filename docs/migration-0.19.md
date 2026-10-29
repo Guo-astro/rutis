@@ -267,6 +267,16 @@ Kotlin 另有两点：
 
 最低版本 3.12（3.10、3.11 不再支持）。
 
+### Swift
+
+- `RutisTest` 把插件作为真实宿主 `rutis-host test` 的一行运行，宿主由它启动：把 `rutis-host` 放在 `PATH` 上（`npm install --global @arcships/rutis-host`），或用 `RUTIS_HOST` 给出路径。整个测试进程共用一个宿主；`close()` 卸掉这个测试的行。
+- 测试工具不再有 scope：`RutisTest.scope(_:groups:)`、各处的 `scope:` 参数和 `Loaded.scope` 删除，`runtimeName:` 也删除。`row:` 是行 id（默认是插件名）；`isolate:` 是这一行的 `isolate`，与 rutis.json 相同。
+- `loaded.reported` 要 `await` 读。宿主不接受的配置让 `load` 以宿主为这一行写的行失败：`weather: config: city is required`。
+- 测试的服务、`on` 与发出是插件所在运行时里的一个插件：测试与插件之间的值不再跨进程。
+- 设备与 iOS 模拟器上，`RutisTest` 是一个自己装插件的应用，连到开发机上的宿主（`RUTIS_TEST_CONNECT`、`RUTIS_TEST_TOKEN`；见 [Swift 应用指南](guide/swift-app.md)）；那里不能用 `Loaded.load` 与 `update`。
+- Swift SDK 不再校验配置：宿主检查一行的配置并填好默认值再交给运行时。应用自己装的插件只解码：用 `@RutisConfig` 时，缺的键取类型里写的字面初始值；缺必填的键或类型不对时以 `config: <键> is required` 或 `config: <键> should be <类型>, got <值>` 失败。
+- Swift 插件的事件都由宿主分发；应用自己装的插件的监听与发出算作这条连接的。
+
 ### Kotlin
 
 - 测试工具是单独的构件 `io.github.arcships:rutis-testing`（jvm）：`testImplementation("io.github.arcships:rutis-testing:<版本>")`，并 `kspTest("io.github.arcships:rutis-ksp:<版本>")`。它在测试进程里跑插件真实的运行时，作为 `rutis-host test` 的一行，需要 `rutis-host`（`PATH` 上或 `RUTIS_HOST`）。
