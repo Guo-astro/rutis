@@ -2,7 +2,7 @@
 //! `type Deps`, gives both the gate declaration and the values `apply`
 //! receives, so they cannot drift apart.
 
-use crate::internal::CtxInternal;
+use crate::host::CtxHost;
 use std::sync::Arc;
 
 use crate::ctx::Ctx;
@@ -59,8 +59,8 @@ pub(crate) fn declaration<D: Deps>() -> Vec<TypeKey> {
 
 /// A required read: a dependency withdrawn after the gate opened is
 /// reported as such, so the load returns to Pending.
-fn require<T: ?Sized + Send + Sync + 'static>(ctx: &Ctx, key: TypeKey) -> Result<Arc<T>, Error> {
-    ctx.require_key::<T>(key)
+fn require<T: ?Sized + Send + Sync + 'static>(ctx: &Ctx) -> Result<Arc<T>, Error> {
+    ctx.require::<T>()
         .map_err(|error: ServiceReadError| match error.reason {
             ServiceReadFailure::Unavailable(_) => {
                 Error::from(ErrorKind::InjectUnsatisfied(vec![error.key.describe()]))
@@ -85,7 +85,7 @@ impl<T: ?Sized + Send + Sync + 'static> Deps for Arc<T> {
     }
 
     fn resolve(ctx: &Ctx) -> Result<Self, Error> {
-        require(ctx, TypeKey::of::<T>())
+        require::<T>(ctx)
     }
 }
 
@@ -94,7 +94,7 @@ impl<T: ?Sized + Send + Sync + 'static> Deps for Option<Arc<T>> {
     fn injects(_: &mut Vec<TypeKey>) {}
 
     fn resolve(ctx: &Ctx) -> Result<Self, Error> {
-        Ok(ctx.get_key::<T>(TypeKey::of::<T>()))
+        Ok(ctx.get::<T>())
     }
 }
 

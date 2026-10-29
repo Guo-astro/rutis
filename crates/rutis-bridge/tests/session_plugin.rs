@@ -248,7 +248,7 @@ async fn a_handshake_alone_registers_nothing() {
     );
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert!(
-        b.get_key::<dyn HostDispatch>(host_key("clock")).is_none(),
+        b.get_at(&host_key("clock")).is_none(),
         "a greeted session shares nothing"
     );
     drop(greeted);
@@ -306,10 +306,7 @@ impl DynPlugin for Provides {
             if let Some(row) = self.row {
                 ctx.mark_row(row)?;
             }
-            ctx.provide_key::<dyn HostDispatch>(
-                host_key(self.service),
-                Arc::new(Answer(self.answer)),
-            )?;
+            ctx.provide_at(host_key(self.service), Arc::new(Answer(self.answer)))?;
             Ok(Effect::Done)
         })
     }
@@ -327,10 +324,7 @@ fn provides(name: &'static str, service: &'static str, answer: &'static str) -> 
 /// What `service`'s `get` answers at `ctx`, once it is there.
 async fn get(ctx: &Ctx, service: &str) -> String {
     eventually(
-        || {
-            ctx.get_key::<dyn HostDispatch>(host_key(service))
-                .map(|_| ())
-        },
+        || ctx.get_at(&host_key(service)).map(|_| ()),
         &format!("{service} here"),
     )
     .await;
@@ -499,7 +493,7 @@ async fn the_far_end_leaving_unloads_its_plugins() {
     disposed(&at_a).await;
     assert!(within("the call", slow).await.unwrap().is_err());
     assert!(plugin(&a, "b:clock").is_none_or(|p| p.0 == FiberState::Disposed));
-    assert!(a.get_key::<dyn HostDispatch>(host_key("clock")).is_none());
+    assert!(a.get_at(&host_key("clock")).is_none());
 }
 
 // ── the handshake's ends ────────────────────────────────────────
@@ -642,11 +636,7 @@ async fn run_on_a_rutis_kernel() {
     )
     .await;
     eventually(
-        || {
-            main.get_key::<dyn HostDispatch>(host_key("contacts"))
-                .is_none()
-                .then_some(())
-        },
+        || main.get_at(&host_key("contacts")).is_none().then_some(()),
         "contacts gone at main",
     )
     .await;
@@ -771,10 +761,7 @@ async fn run_on_a_language_runtime() {
         Some(FiberState::Active)
     );
     eventually(
-        || {
-            main.get_key::<dyn HostDispatch>(host_key("contacts"))
-                .map(|_| ())
-        },
+        || main.get_at(&host_key("contacts")).map(|_| ()),
         "contacts here",
     )
     .await;

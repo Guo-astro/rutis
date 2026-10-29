@@ -9,7 +9,6 @@
 use std::sync::{Arc, Mutex};
 
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, FiberState, FiberView, PluginFactory};
-use rutis::internal::CtxInternal;
 use rutis::Ctx;
 use rutis_bridge::session::{call_service, host_key, HostDispatch, Reply, Value as RpcValue};
 use rutis_bridge::{
@@ -58,7 +57,7 @@ impl DynPlugin for Contacts {
 
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, rutis::Error>> {
         Box::pin(async move {
-            ctx.provide_key::<dyn HostDispatch>(host_key("contacts"), Arc::new(Answer))?;
+            ctx.provide_at(host_key("contacts"), Arc::new(Answer))?;
             Ok(Effect::Done)
         })
     }
@@ -276,8 +275,7 @@ impl Main {
     }
 
     fn contacts(&self) -> Option<Arc<dyn HostDispatch>> {
-        self.root
-            .get_key::<dyn HostDispatch>(host_key("contacts").erase())
+        self.root.get_at(&host_key("contacts"))
     }
 }
 

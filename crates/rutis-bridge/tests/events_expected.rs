@@ -110,11 +110,7 @@ fn every_case_runs_somewhere() {
     // Each testing tool checks it ran as many cases as `toolCases` says,
     // and `toolCases` is what the cases give each tool's language.
     let tools: Vec<&str> = expected.tool_cases.keys().map(String::as_str).collect();
-    assert_eq!(
-        tools,
-        ["go", "kotlin", "swift"],
-        "toolCases"
-    );
+    assert_eq!(tools, ["go", "kotlin", "swift"], "toolCases");
     let counted: std::collections::BTreeMap<String, usize> = tools
         .iter()
         .map(|language| {

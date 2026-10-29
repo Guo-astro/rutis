@@ -12,7 +12,7 @@ use std::any::Any;
 use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, Mutex, Weak};
 
-use rutis::host::{BoxFuture, Effect, InstanceId, TypeKey};
+use rutis::host::{BoxFuture, Effect, InstanceId, Key, TypeKey};
 use rutis::host::{CtxHost, ErrorKind};
 use rutis::internal::service::{
     erased_serde, exported_name, Answer, CallError, Encoded, Entry, Exposer, Exposure, Function,
@@ -132,7 +132,7 @@ fn short(type_name: &str) -> &str {
 struct Place {
     name: &'static str,
     type_name: &'static str,
-    key: TypeKey,
+    key: Key<dyn HostDispatch>,
     serving: Ctx,
 }
 
@@ -154,7 +154,7 @@ impl Place {
         Ok(Self {
             name,
             type_name,
-            key: key.erase(),
+            key,
             serving,
         })
     }
@@ -163,7 +163,7 @@ impl Place {
     fn taken(&self) -> RutisError {
         let by = self
             .serving
-            .get_key::<dyn HostDispatch>(self.key.clone())
+            .get_at(&self.key)
             .and_then(|other| other.provider())
             .map(|other| format!(" by {other}"))
             .unwrap_or_default();
@@ -177,7 +177,7 @@ impl Place {
 impl Exposer for BridgeExposer {
     fn admit(&self, exposure: &Exposure<'_>) -> Result<(), RutisError> {
         let place = Place::of(exposure)?;
-        if rutis::internal::service::vacant(&place.serving, &place.key) {
+        if rutis::internal::service::vacant(&place.serving, &place.key.erase()) {
             Ok(())
         } else {
             Err(place.taken())
@@ -209,7 +209,7 @@ impl Exposer for BridgeExposer {
             type_name,
         });
         let served = serving
-            .provide_key::<dyn HostDispatch>(key.clone(), marked)
+            .provide_at(key.clone(), marked as Arc<dyn HostDispatch>)
             .map_err(|error| match &*error {
                 ErrorKind::ServiceExists(_) => place.taken(),
                 _ => error,

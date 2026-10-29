@@ -87,17 +87,6 @@ pub trait CtxInternal: sealed::Sealed {
     /// is a no-op.
     fn mark_row(&self, key: &str) -> Result<(), Error>;
 
-    /// An optional read under an explicit key (several instances of one type).
-    fn get_key<T: ?Sized + Send + Sync + 'static>(&self, key: impl Into<TypeKey>)
-        -> Option<Arc<T>>;
-
-    /// Strict keyed read. A declaration on an ancestor fiber is usable only
-    /// when that ancestor sees the same isolate scope as this context.
-    fn require_key<T: ?Sized + Send + Sync + 'static>(
-        &self,
-        key: impl Into<TypeKey>,
-    ) -> Result<Arc<T>, ServiceReadError>;
-
     /// The strict read a marked service's entry by name makes on every call
     /// ([`crate::service::Entry::resolve`]): [`CtxHost::require_at`](crate::host::CtxHost::require_at) by the
     /// providing context, of the binding `provision` provided only.
@@ -106,13 +95,6 @@ pub trait CtxInternal: sealed::Sealed {
         key: impl Into<TypeKey>,
         provision: &crate::service::Provision,
     ) -> Result<Arc<T>, ServiceReadError>;
-
-    /// Registers `value` under an explicit key (trait objects, shared instances).
-    fn provide_key<T: ?Sized + Send + Sync + 'static>(
-        &self,
-        key: impl Into<TypeKey>,
-        value: Arc<T>,
-    ) -> Result<Disposer, Error>;
 
     /// Register a provider-owned mutable binding and return a generation-bound
     /// writer. A write replaces the registered Arc, not existing Arc snapshots.
