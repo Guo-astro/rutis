@@ -3,7 +3,7 @@
 //!
 //! Go is a [`BinaryLanguage`]: rows `go:<plugin>` and `go-<binary>:<plugin>`,
 //! the SDK's marker `rutis-go-runtime:1`, runtimes started by
-//! [`LocalRuntime::go`]. Everything else (manifests, directory scans, the
+//! [`Launcher::go`]. Everything else (manifests, directory scans, the
 //! on-demand lifecycle, restarts, replaced and refused binaries) is
 //! [`super::binary`]'s: `BinaryResolver<Go>`, `BinaryRuntimes<Go>` and so on.
 //!
@@ -15,7 +15,7 @@
 
 use std::path::Path;
 
-use rutis_bridge::runtime::{go_runtime_name, LocalRuntime};
+use rutis_bridge::runtime::{go_runtime_name, Launcher};
 
 use super::binary::BinaryLanguage;
 
@@ -40,7 +40,7 @@ impl BinaryLanguage for Go {
         go_runtime_name(path)
     }
 
-    fn launch(binary: &Path, project: &Path) -> LocalRuntime {
-        LocalRuntime::go(binary, project)
+    fn launch(binary: &Path, project: &Path) -> Launcher {
+        Launcher::go(binary, project)
     }
 }

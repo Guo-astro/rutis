@@ -88,7 +88,7 @@ mod tests {
     use rutis::host::CtxHost;
     use rutis::host::{BoxFuture, DynPlugin, Effect};
     use rutis::{Ctx, Error};
-    use rutis_bridge::runtime::RuntimePlugin;
+    use rutis_bridge::runtime::RuntimeStates;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
     use std::time::Duration;
@@ -168,14 +168,14 @@ mod tests {
     /// A runtime that is down as soon as it starts.
     #[derive(Clone)]
     struct Crashing {
-        runtime: RuntimePlugin,
+        runtime: RuntimeStates,
         starts: Arc<AtomicUsize>,
     }
 
     impl Crashing {
         fn new() -> Self {
             Self {
-                runtime: RuntimePlugin::session("py", "."),
+                runtime: RuntimeStates::new("py", "."),
                 starts: Arc::default(),
             }
         }

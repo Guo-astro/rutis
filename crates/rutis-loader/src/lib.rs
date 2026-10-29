@@ -98,8 +98,6 @@ pub mod internal {
     pub use crate::runtime::go::PLUGIN_API;
     #[cfg(feature = "runtimes")]
     pub use crate::runtime::is_runtime_name;
-    #[cfg(feature = "node")]
-    pub use crate::runtime::resolve_entry;
     #[cfg(feature = "swift")]
     pub use crate::runtime::swift::SWIFT_PLUGIN_API;
 }

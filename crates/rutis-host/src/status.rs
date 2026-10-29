@@ -811,11 +811,12 @@ mod tests {
                 "waiting for runtime py (down: exited with exit status: 1)",
             ),
             (Some(RuntimeState::Idle), "waiting for runtime py (stopped)"),
-            (None, "waiting for runtime py"),
         ];
         for (state, line) in cases {
             assert_eq!(own_runtime_line("py", state.as_ref()), line);
         }
+        // Not a local runtime: a connection row's far end.
+        assert_eq!(own_runtime_line("gpu", None), "waiting for gpu");
     }
 
     #[test]

@@ -17,12 +17,13 @@ use rutis::Ctx;
 use rutis_bridge::runtime::{RuntimeState, Stdio};
 use rutis_loader::runtime::binary::{
     Binaries, BinaryFile, BinaryLanguage, BinaryResolver, BinaryRuntimeInfo, BinaryRuntimes,
-    BinaryRuntimesHandle, RestartPolicy, RuntimeEnd,
+    BinaryRuntimesHandle, RestartPolicy, RuntimeEnd, Spawn, Spawned,
 };
 use rutis_loader::ServiceCatalog;
 
 use super::{Language, Mount, LANGUAGES};
 use crate::config::{BinaryRuntime, BinaryStart, HostConfig, Restart};
+use crate::connect::SpawnPlugin;
 use crate::host::Error;
 
 /// A compiled language's binaries and runtimes in a running host.
@@ -180,7 +181,7 @@ pub(super) fn start<L: BinaryLanguage>(
     let prefix_output = mount.prefix_output;
     mount.later.push(Box::new(move |root: Ctx| {
         Box::pin(async move {
-            let mut plugin = BinaryRuntimes::<L>::new(resolver.clone(), &project)
+            let mut plugin = BinaryRuntimes::<L>::new(resolver.clone(), &project, spawn())
                 .output(Stdio::Lines, Stdio::Lines)
                 .prefix_output(prefix_output);
             plugin = match start {
@@ -199,6 +200,19 @@ pub(super) fn start<L: BinaryLanguage>(
         })
     }));
     Ok(())
+}
+
+/// What starts a compiled language's runtime: a `rutis-host/spawn` row,
+/// named after it.
+fn spawn() -> Spawn {
+    Arc::new(|name: &str, launcher, anchor: &Path| {
+        let plugin = SpawnPlugin::new(name, launcher, anchor);
+        Spawned {
+            handle: plugin.handle(),
+            processes: plugin.processes(),
+            plugin: Box::new(plugin),
+        }
+    })
 }
 
 /// The resolver of the binaries `settings` names. A runtime of them may not

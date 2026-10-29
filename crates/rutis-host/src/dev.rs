@@ -370,9 +370,6 @@ impl Project {
         if plan.is_empty() {
             return false;
         }
-        // Their new code is described again, also once a runtime started
-        // again resolves its rows.
-        host.invalidate();
         let mut skip: HashSet<String> = HashSet::new();
         for (runtime, rows) in down_runtimes(host, &plan) {
             let why = plan
@@ -542,7 +539,6 @@ impl Project {
                     .map(|(id, _)| (id.clone(), Vec::new()))
                     .collect();
                 for (runtime, _) in down_runtimes(host, &plan) {
-                    host.invalidate();
                     start_again(host, &runtime, &format!("{DEV_FILE} changed")).await;
                 }
             }

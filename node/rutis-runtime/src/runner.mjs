@@ -717,30 +717,35 @@ function chainOf(scope) {
 async function describe(entry) {
   entry = located(entry)
   const declared = await declaredOf(entry)
+  // The package the plugin file belongs to: its version, and what it says
+  // it provides.
+  const pkg = await packageOf(entry)
+  const version = typeof pkg?.version === 'string' ? pkg.version : undefined
   // A leaf plugin declares in code; one that declares no `provides` (an
   // SDK of 0.12 or later says so) has its services announced.
-  if (isLeaf(declared)) return { config: declared.config ?? null, inject: declared.inject, provides: declared.provides, announces: declared.announces === true }
+  if (isLeaf(declared)) return { config: declared.config ?? null, inject: declared.inject, provides: declared.provides, announces: declared.announces === true, version }
   const plugin = declared
   const schema = plugin.Config ?? plugin.schema
-  const provides = await providesOf(entry)
+  const provides = pkg?.rutis?.provides
   return {
     config: schema ? toJsonSchema(schema) : null,
     inject: Object.keys(Inject.resolve(plugin.inject)),
     provides: provides ?? {},
     announces: provides === undefined,
+    version,
     // A Cordis plugin, not a leaf one: what it injects from rows of this
     // runtime resolves in Cordis.
     cordis: true,
   }
 }
 
-// `rutis.provides` in the package.json nearest the plugin, if it declares it.
-async function providesOf(entry) {
+// The package.json nearest the plugin, if there is one.
+async function packageOf(entry) {
   const { readFile } = await import('node:fs/promises')
   const { dirname, join } = await import('node:path')
   for (let dir = dirname(entry); ; dir = dirname(dir)) {
     const text = await readFile(join(dir, 'package.json'), 'utf8').catch(() => undefined)
-    if (text !== undefined) return JSON.parse(text).rutis?.provides
+    if (text !== undefined) return JSON.parse(text)
     if (dirname(dir) === dir) return undefined
   }
 }

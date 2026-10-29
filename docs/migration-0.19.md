@@ -225,6 +225,7 @@ Kotlin 另有两点：
 | `ctx.plugin_from(\|cfg\| …)` | 实现 `rutis::host::PluginFactory`，`ctx.plugin_with(factory, config)` |
 | `rutis_loader::status::RowState`（`status::Row::state` 的类型） | `rutis_loader::report::EntryStatus`：等待是 `Running` 加 `Pending` 阶段，启动中是 `Loading` 阶段；`Display` 打出的文字不变 |
 | `rutis_loader::report::RowState`（`rutis/row` 事件的取值） | 改名 `rutis_loader::report::RowEventState`，取值不变 |
+| `RuntimeResolver::invalidate`、`invalidate_all`，rutis-host 的 `Host::invalidate` | 删；Node 行名不再由 Rust 按 `package.json` 解析和缓存，每次解析都问运行时，改了插件代码直接 `Loader::reload(行)` |
 | `take_cleanup_errors()` | 清理的错误在卸载结果里（`dispose` 返回的错误） |
 | `FiberView::effects()`、`EffectMeta`、`EffectPhase` | 无替代；诊断用 `diagnostics()` |
 | `EventBus::observe_dispatch` | 无替代；要观察就注册一个普通监听器 |

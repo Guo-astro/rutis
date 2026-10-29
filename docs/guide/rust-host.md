@@ -505,7 +505,7 @@ for failure in &report.failures {
 - 运行时进程不会比应用活得久。丢掉应用的 tokio 运行时会杀掉它们。应用被它没处理的信号（Ctrl-C、SIGTERM）或 `kill -9` 结束时，运行时在 `RUTIS_SHUTDOWN_TIMEOUT`（默认 10 秒）内卸载各行后退出；插件让运行时一直在忙时，再过一秒运行时自己结束。插件让运行时一直在忙时，`shutdown_with_timeout` 可能结束不了（它的行卸载不了）：剩下的用 `LocalRuntime::processes().kill()` 结束，或者用 `rutis_bridge::pipe::kill_processes()` 结束所有运行时进程，和 rutis-host 一样。
 - 远程运行时由连接插件接上：连接插件拿到一条 Channel，调 `ctx.plugin(rutis_bridge::Session::new(channel))`（或先 `Session::handshake(&ctx, channel).await` 看对面的 id，再 `ctx.plugin(greeted)`）；行 `<连接行>:<插件>` 由 loader 找到这个会话、让对面运行。rutis-host 的 `rutis-host/dial`、`rutis-host/listen` 就是这样写的。会话断开又回来时，它的行在启动前由新会话重新解析：远端升级了插件，就用上新的配置 schema 和声明。
 - 行的完整格式（分组、`isolate`、`inject`、表达式、命令式修改与持久化）见 [rutis-loader 设计](../design-rutis-loader-2026-10-02.md)。
-- 改了插件代码：`RuntimeResolver::invalidate_all()` 后 `Loader::reload(行)`，新代码生效（Node 与 Python 都只重新导入插件的入口模块）。
+- 改了插件代码：`Loader::reload(行)`，新代码生效（Node 与 Python 都只重新导入插件的入口模块）。
 - 设置 `RUTIS_TRACE` 时，运行时通道上的每条消息在 stderr 记一行（方向和长度，不含内容）。
 - 运行时进程默认没有标准输入，标准输出和标准错误用应用自己的。读终端的插件（终端界面、Python 的 `input()`）需要终端本身：它会检查输入是不是终端，并自己设置终端模式。用 `stdin(Stdio::Inherit)` 把本进程的输入交给它的运行时。这一设置作用于整个运行时进程，进程里的每个插件都能读到输入，所以把这类插件放进单独的运行时（`named`），并且终端最多交给一个运行时：多个进程读同一个终端，会争抢每一次按键。`stdout(Stdio::Null)` 和 `stderr(Stdio::Null)` 让其他运行时不往终端上写。`Launcher` 上有同样的设置。
 

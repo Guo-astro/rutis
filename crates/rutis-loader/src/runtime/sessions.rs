@@ -1,5 +1,7 @@
-//! Rows on the far end of a connection row's session: `<row>:<plugin>`
-//! runs `<plugin>` there (`docs/design-remote-session-2026-10-28.md` §4.3).
+//! Rows on the far end of a session: `<row>:<plugin>` runs `<plugin>`
+//! there (`docs/design-remote-session-2026-10-28.md` §4.3). The session is
+//! a connection row's, or a local runtime's (rutis-host's `runtimes.py` is
+//! the row `py`, its process the far end): both are the same here.
 //!
 //! A connection row `gpu` mounts a `rutis-bridge/session` on its channel;
 //! once mounted, the session provides its handle at
@@ -17,11 +19,12 @@
 //! (`runtime gpu: this connection does not contain plugin embedder`).
 //!
 //! [`SessionResolver`] goes last in the loader's chain: a name another
-//! resolver takes (a runtime named like the connection row, `peer:`, an
-//! npm name) stays theirs, so existing texts do not change. It resolves
+//! resolver takes (`go:`, `swift:`, `peer:`) stays theirs. It resolves
 //! every `<x>:<plugin>` whose `x` may name a runtime, whether or not a row
 //! `x` is there yet (it may come in the same batch, or later): until its
-//! session is there, the row waits for it.
+//! session is there, the row waits for it. With [`SessionResolver::npm`],
+//! the other names (npm names, `file:` URLs, absolute paths) run on the
+//! Node runtime's session.
 //!
 //! [`Unavailable`]: crate::report::Unavailable
 
@@ -35,6 +38,8 @@ use rutis::{Ctx, Error};
 use rutis_bridge::runtime::Process;
 use rutis_bridge::{session_key, SessionHandle};
 use serde_json::{json, Map};
+
+use rutis_bridge::runtime::RuntimeHandle;
 
 use super::discover::{self, Described};
 use super::{
@@ -74,31 +79,76 @@ pub struct SessionResolver {
 
 struct Sessions {
     catalog: ServiceCatalog,
+    /// The row whose session runs the names no runtime prefixes (Node's).
+    npm: Option<String>,
+    /// The local runtimes, by row: what [`Loader::status`] says of them.
+    runtimes: Mutex<Vec<RuntimeHandle>>,
     loader: Mutex<Option<WeakLoader>>,
     /// The connection rows whose [`SessionRowsPlugin`] is mounted, each
     /// with the loader context it is mounted under.
     mounted: Mutex<HashMap<String, InstanceId>>,
-    /// Names resolved without their session: resolved again before their
-    /// rows may start. A name leaves only once resolved with a session.
-    offline: Mutex<HashSet<String>>,
-    /// Names resolved with a session, by the session's connection tag:
-    /// another session may run other code, so they are resolved again
-    /// with it.
-    described: Mutex<HashMap<String, String>>,
+    /// Names resolved without their session, with the row they run on:
+    /// resolved again before their rows may start. A name leaves only once
+    /// resolved with a session.
+    offline: Mutex<HashMap<String, String>>,
+    /// Names resolved with a session, with the row and the session's
+    /// connection tag: another session may run other code, so they are
+    /// resolved again with it.
+    described: Mutex<HashMap<String, (String, String)>>,
 }
 
 impl SessionResolver {
     /// `catalog` is the loader's (`LoaderOptions::catalog`): its shared
     /// names are the injected services rows wait for in rutis.
     pub fn new(catalog: &ServiceCatalog) -> Self {
+        Self::with(catalog, None)
+    }
+
+    /// [`SessionResolver::new`], the names no runtime prefixes (npm names,
+    /// subpaths of them, `file:` URLs, absolute paths) running on the
+    /// session of the row `row` (rutis-host's Node runtime, `node`).
+    pub fn npm(catalog: &ServiceCatalog, row: &str) -> Self {
+        Self::with(catalog, Some(row.to_owned()))
+    }
+
+    fn with(catalog: &ServiceCatalog, npm: Option<String>) -> Self {
         Self {
             inner: Arc::new(Sessions {
                 catalog: catalog.clone(),
+                npm,
+                runtimes: Mutex::default(),
                 loader: Mutex::default(),
                 mounted: Mutex::default(),
                 offline: Mutex::default(),
                 described: Mutex::default(),
             }),
+        }
+    }
+
+    /// The local runtime `runtime` runs the rows of the session of the row
+    /// named like it: [`Loader::status`] lists it, and a row waiting for
+    /// it says the runtime's state.
+    pub fn runtime(&self, runtime: RuntimeHandle) {
+        let mut runtimes = self.inner.runtimes.lock().unwrap();
+        runtimes.retain(|known| known.name() != runtime.name());
+        runtimes.push(runtime);
+    }
+
+    /// The local runtime `name` no longer runs: the host stopped it.
+    pub fn forget_runtime(&self, name: &str) {
+        self.inner
+            .runtimes
+            .lock()
+            .unwrap()
+            .retain(|known| known.name() != name);
+    }
+
+    /// Release the rows of `row`'s session as soon as it is there, before
+    /// any of them is resolved: for a local runtime the host waits for
+    /// (`rutis-host`'s `runtimes_ready`). Once the loader runs.
+    pub fn follow_row(&self, row: &str) {
+        if let Some(ctx) = self.loader().and_then(|loader| loader.ctx()) {
+            self.follow(&ctx, row);
         }
     }
 
@@ -112,10 +162,16 @@ impl SessionResolver {
         self.inner.loader.lock().unwrap().as_ref()?.upgrade()
     }
 
-    /// `<row>:<plugin>`, when `row` may name a connection.
-    fn split(name: &str) -> Option<(&str, &str)> {
-        let (row, plugin) = name.split_once(':')?;
-        (is_runtime_name(row) && !plugin.is_empty()).then_some((row, plugin))
+    /// The row `name` runs on and the plugin it runs there:
+    /// `<row>:<plugin>`, when `row` may name a runtime; else the npm row's.
+    fn split<'n>(&'n self, name: &'n str) -> Option<(&'n str, &'n str)> {
+        if let Some((row, plugin)) = name.split_once(':') {
+            if is_runtime_name(row) {
+                return (!plugin.is_empty()).then_some((row, plugin));
+            }
+        }
+        let npm = self.inner.npm.as_deref()?;
+        (!name.is_empty()).then_some((npm, name))
     }
 
     /// Mount the [`SessionRowsPlugin`] of `row` under the loader, once per
@@ -126,33 +182,51 @@ impl SessionResolver {
             return;
         }
         mounted.insert(row.to_owned(), ctx.instance());
-        ctx.plugin(SessionRowsPlugin::new(row, self.clone()));
+        ctx.plugin(SessionRowsPlugin::new(
+            row,
+            Arc::new(Stale {
+                resolver: self.clone(),
+                row: row.to_owned(),
+            }),
+        ));
     }
 
     /// The names of `row`'s rows to resolve again before they start with
     /// the session whose connection is tagged `session`.
     fn take_stale(&self, row: &str, session: &str) -> HashSet<String> {
-        let ours = |name: &str| Self::split(name).is_some_and(|(of, _)| of == row);
         let mut stale: HashSet<String> = self
             .inner
             .offline
             .lock()
             .unwrap()
             .iter()
-            .filter(|name| ours(name))
-            .cloned()
+            .filter(|(_, of)| *of == row)
+            .map(|(name, _)| name.clone())
             .collect();
-        for (name, by) in self.inner.described.lock().unwrap().iter() {
-            if ours(name) && by != session {
+        for (name, (of, by)) in self.inner.described.lock().unwrap().iter() {
+            if of == row && by != session {
                 stale.insert(name.clone());
             }
         }
         stale
     }
 
+    /// Whether `row` is a local runtime's.
+    fn is_local(&self, row: &str) -> bool {
+        self.inner
+            .runtimes
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|runtime| runtime.name() == row)
+    }
+
     /// A row resolved without its session: it waits for it.
     fn offline(&self, name: &str, row: &str, plugin: &str) -> Arc<Resolved> {
-        let why = format!("{row} is not connected");
+        let why = match self.is_local(row) {
+            true => format!("the {row} runtime is not running"),
+            false => format!("{row} is not connected"),
+        };
         let runtime = RowRuntime::Session(row.to_owned());
         let module = JsModule {
             name: name.to_owned(),
@@ -185,12 +259,16 @@ impl SessionResolver {
 }
 
 impl Resolver for SessionResolver {
+    fn runtimes(&self) -> Vec<RuntimeHandle> {
+        self.inner.runtimes.lock().unwrap().clone()
+    }
+
     fn resolve<'a>(&'a self, name: &'a str) -> BoxFuture<'a, Result<Arc<Resolved>, LoaderError>> {
         Box::pin(async move {
             let not_found = || LoaderError::NotFound {
                 name: name.to_owned(),
             };
-            let Some((row, plugin)) = Self::split(name) else {
+            let Some((row, plugin)) = self.split(name) else {
                 return Err(not_found());
             };
             // Whether a row `row` exists is not asked: it may come in the
@@ -202,7 +280,13 @@ impl Resolver for SessionResolver {
             }
             // Marked first: a session arriving between reading it and
             // marking the name would leave the name unmarked.
-            let marked_before = !self.inner.offline.lock().unwrap().insert(name.to_owned());
+            let marked_before = self
+                .inner
+                .offline
+                .lock()
+                .unwrap()
+                .insert(name.to_owned(), row.to_owned())
+                .is_some();
             let process = ctx
                 .and_then(|ctx| ctx.get_at(&session_key(row)))
                 .and_then(|handle: Arc<SessionHandle>| handle.process());
@@ -219,7 +303,7 @@ impl Resolver for SessionResolver {
                         .described
                         .lock()
                         .unwrap()
-                        .insert(name.to_owned(), tag);
+                        .insert(name.to_owned(), (row.to_owned(), tag));
                     let why = discover::missing(row, plugin);
                     return Ok(Arc::new(unavailable_resolved(name, &entry, why)));
                 }
@@ -247,7 +331,7 @@ impl Resolver for SessionResolver {
                 .described
                 .lock()
                 .unwrap()
-                .insert(name.to_owned(), tag);
+                .insert(name.to_owned(), (row.to_owned(), tag));
             Ok(Arc::new(leaf_resolved_on(
                 name,
                 RowRuntime::Session(row.to_owned()),
@@ -269,23 +353,44 @@ impl Resolver for SessionResolver {
     }
 }
 
-/// The second stage of a connection row's session: once the session is
-/// there, resolve its rows again, then provide [`SessionRows`]. Mounted by
-/// [`SessionResolver`] under the loader.
-struct SessionRowsPlugin {
+/// Where a [`SessionRowsPlugin`] learns which rows of its session to
+/// resolve again before they may start.
+pub(crate) trait RowsSource: Send + Sync + 'static {
+    /// The row names whose resolution lacks the declarations of the session
+    /// whose connection is tagged `session`. A name is returned again until
+    /// it is resolved anew.
+    fn take_stale(&self, session: &str) -> HashSet<String>;
+}
+
+/// The rows [`SessionResolver`] resolved to one row's session.
+struct Stale {
+    resolver: SessionResolver,
+    row: String,
+}
+
+impl RowsSource for Stale {
+    fn take_stale(&self, session: &str) -> HashSet<String> {
+        self.resolver.take_stale(&self.row, session)
+    }
+}
+
+/// The second stage of a row's session: once the session is there, resolve
+/// its rows again, then provide [`SessionRows`]. Mounted under the loader
+/// (by [`SessionResolver`], or a compiled language's runtimes).
+pub(crate) struct SessionRowsPlugin {
     row: String,
     name: String,
-    resolver: SessionResolver,
+    source: Arc<dyn RowsSource>,
     injects: [TypeKey; 2],
 }
 
 impl SessionRowsPlugin {
-    fn new(row: &str, resolver: SessionResolver) -> Self {
+    pub(crate) fn new(row: &str, source: Arc<dyn RowsSource>) -> Self {
         Self {
             injects: [session_key(row).erase(), TypeKey::of::<Loader>()],
-            name: format!("rows of connection {row}"),
+            name: format!("rows of {row}"),
             row: row.to_owned(),
-            resolver,
+            source,
         }
     }
 }
@@ -311,9 +416,7 @@ impl DynPlugin for SessionRowsPlugin {
             let Some(process) = handle.process() else {
                 return Ok(Effect::Done);
             };
-            let stale = self
-                .resolver
-                .take_stale(&self.row, process.connection().tag());
+            let stale = self.source.take_stale(process.connection().tag());
             let rows: Vec<String> = loader
                 .entries()
                 .into_iter()
@@ -334,7 +437,7 @@ impl DynPlugin for SessionRowsPlugin {
                 }
                 if let Err(error) = owner.provide_key(key, Arc::new(SessionRows { process })) {
                     if !owner.cancellation_token().is_cancelled() {
-                        eprintln!("connection {row}: cannot release its rows: {error}");
+                        eprintln!("{row}: cannot release its rows: {error}");
                     }
                 }
             });

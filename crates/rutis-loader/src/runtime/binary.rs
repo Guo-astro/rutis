@@ -36,12 +36,13 @@ use rutis::host::{
 use rutis::{Ctx, Error};
 use rutis_bridge::pipe::{isolate_manifest_command, ManifestChild, Processes};
 use rutis_bridge::runtime::{
-    LocalRuntime, RowSchema, RuntimeHandle, RuntimeState, Stdio as RuntimeStdio,
+    Launcher, RowSchema, RuntimeHandle, RuntimeState, Stdio as RuntimeStdio,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use super::{leaf_resolved, RowsSource, RuntimeRowsPlugin};
+use super::sessions::{RowsSource, SessionRowsPlugin};
+use super::{leaf_resolved_on, RowRuntime};
 use crate::backoff::{Backoff, LIMIT, WINDOW};
 use crate::loader::EntryStatus;
 use crate::resolver::Resolved;
@@ -65,10 +66,24 @@ pub trait BinaryLanguage: Send + Sync + 'static {
     const PLUGIN_API: u64;
     /// The runtime the binary at `path` runs as: `<PREFIX>-<file>`.
     fn runtime_name(path: &Path) -> String;
-    /// The local runtime that runs `binary` in `project` (its channel is
-    /// the local transport's: an inherited fd, or loopback).
-    fn launch(binary: &Path, project: &Path) -> LocalRuntime;
+    /// How `binary` is started in `project` (its channel an inherited fd,
+    /// or loopback).
+    fn launch(binary: &Path, project: &Path) -> Launcher;
 }
+
+/// A runtime started as the far end of a session: the plugin that starts
+/// it (its fiber is the row named after the runtime, under which the
+/// session provides its handle), and its state.
+pub struct Spawned {
+    pub plugin: Box<dyn DynPlugin>,
+    pub handle: RuntimeHandle,
+    pub processes: Processes,
+}
+
+/// What starts a runtime: `(name, launcher, anchor)`, its process started
+/// with `launcher` (`Launcher::start`, as `--id <name>`, `anchor` last).
+/// The application's (rutis-host's `rutis-host/spawn`).
+pub type Spawn = Arc<dyn Fn(&str, Launcher, &Path) -> Spawned + Send + Sync>;
 
 /// How often [`BinaryRuntimes`] looks for runtimes to start or stop.
 const SWEEP: Duration = Duration::from_millis(100);
@@ -1155,9 +1170,9 @@ impl<L: BinaryLanguage> BinaryResolver<L> {
             "inject": described.inject,
             "provides": described.provides,
         });
-        let resolved = leaf_resolved(
+        let resolved = leaf_resolved_on(
             name,
-            &binary.runtime,
+            RowRuntime::Session(binary.runtime.clone()),
             PathBuf::from(plugin),
             gated,
             described,
@@ -1202,18 +1217,14 @@ impl<L: BinaryLanguage> Resolver for BinaryResolver<L> {
     }
 }
 
-/// The rows of one runtime, for its [`RuntimeRowsPlugin`].
+/// The rows of one runtime, for its [`SessionRowsPlugin`].
 struct BinaryRows<L: BinaryLanguage> {
     resolver: Arc<BinaryResolver<L>>,
     runtime: String,
 }
 
 impl<L: BinaryLanguage> RowsSource for BinaryRows<L> {
-    fn runtime_name(&self) -> &str {
-        &self.runtime
-    }
-
-    fn take_stale(&self) -> HashSet<String> {
+    fn take_stale(&self, _session: &str) -> HashSet<String> {
         self.resolver.take_stale(&self.runtime)
     }
 }
@@ -1376,6 +1387,7 @@ type Prepared<L> = Result<(Ctx, BinaryRuntime<L>, PathBuf, Launched), StartFailu
 struct Inner<L: BinaryLanguage> {
     resolver: Arc<BinaryResolver<L>>,
     project: PathBuf,
+    spawn: Spawn,
     /// Set by the builder methods before the plugin runs.
     settings: Mutex<Settings>,
     ctx: Mutex<Option<Ctx>>,
@@ -1494,13 +1506,18 @@ impl<L: BinaryLanguage> Clone for BinaryRuntimesHandle<L> {
 }
 
 impl<L: BinaryLanguage> BinaryRuntimes<L> {
-    /// Runtimes for the binaries `resolver` knows, run in `project`; they
-    /// stop 60 s after their last row is gone.
-    pub fn new(resolver: Arc<BinaryResolver<L>>, project: impl Into<PathBuf>) -> Self {
+    /// Runtimes for the binaries `resolver` knows, run in `project`,
+    /// started by `spawn`; they stop 60 s after their last row is gone.
+    pub fn new(
+        resolver: Arc<BinaryResolver<L>>,
+        project: impl Into<PathBuf>,
+        spawn: Spawn,
+    ) -> Self {
         Self {
             inner: Arc::new(Inner {
                 resolver,
                 project: project.into(),
+                spawn,
                 settings: Mutex::new(Settings {
                     idle: Some(Duration::from_secs(60)),
                     eager: false,
@@ -1538,7 +1555,7 @@ impl<L: BinaryLanguage> BinaryRuntimes<L> {
 
     /// Where each runtime process's standard output and error go: this
     /// process's by default ([`RuntimeStdio::Inherit`]), as
-    /// [`LocalRuntime::stdout`] and [`LocalRuntime::stderr`].
+    /// [`Launcher::stdout`] and [`Launcher::stderr`].
     pub fn output(self, stdout: RuntimeStdio, stderr: RuntimeStdio) -> Self {
         self.inner.settings.lock().unwrap().output = (stdout, stderr);
         self
@@ -1896,10 +1913,11 @@ impl<L: BinaryLanguage> Inner<L> {
             output: settings.output,
             prefix_output: settings.prefix_output,
             resolver: self.resolver.clone(),
+            spawn: self.spawn.clone(),
             first: Mutex::new(None),
         };
-        let local = runtime_plugin.local();
-        runtime_plugin.first = Mutex::new(Some(local));
+        let spawned = runtime_plugin.spawned();
+        runtime_plugin.first = Mutex::new(Some(spawned));
         Ok((ctx, runtime_plugin, binary, launched))
     }
 
@@ -1915,8 +1933,8 @@ impl<L: BinaryLanguage> Inner<L> {
         self.resolver.launched(runtime, launched);
         let (handle, processes) = {
             let first = runtime_plugin.first.lock().unwrap();
-            let local = first.as_ref().expect("the first runtime was just made");
-            (local.handle(), local.processes())
+            let spawned = first.as_ref().expect("the first runtime was just made");
+            (spawned.handle.clone(), spawned.processes.clone())
         };
         let view = ctx.plugin(runtime_plugin);
         let mut slots = self.slots.lock().unwrap();
@@ -2289,20 +2307,21 @@ struct BinaryRuntime<L: BinaryLanguage> {
     /// Whether each line of that output starts with its name.
     prefix_output: bool,
     resolver: Arc<BinaryResolver<L>>,
+    spawn: Spawn,
     /// The runtime whose handle the slot watches, for the first start.
-    first: Mutex<Option<LocalRuntime>>,
+    first: Mutex<Option<Spawned>>,
 }
 
 impl<L: BinaryLanguage> BinaryRuntime<L> {
-    fn local(&self) -> LocalRuntime {
-        let local = L::launch(&self.binary, &self.project)
-            .named(self.runtime.clone())
+    fn spawned(&self) -> Spawned {
+        let launcher = L::launch(&self.binary, &self.project)
             .stdout(self.output.0)
             .stderr(self.output.1);
-        match self.prefix_output {
-            true => local.output_prefix(&self.runtime),
-            false => local,
-        }
+        let launcher = match self.prefix_output {
+            true => launcher.output_prefix(&self.runtime),
+            false => launcher,
+        };
+        (self.spawn)(&self.runtime, launcher, &self.project)
     }
 }
 
@@ -2328,17 +2347,20 @@ impl<L: BinaryLanguage> DynPlugin for BinaryRuntime<L> {
                     .into(),
                 )));
             }
-            let local = self
+            let spawned = self
                 .first
                 .lock()
                 .unwrap()
                 .take()
-                .unwrap_or_else(|| self.local());
-            ctx.plugin(local);
-            ctx.plugin(RuntimeRowsPlugin::new(Arc::new(BinaryRows::<L> {
-                resolver: self.resolver.clone(),
-                runtime: self.runtime.clone(),
-            })));
+                .unwrap_or_else(|| self.spawned());
+            ctx.plugin(spawned.plugin);
+            ctx.plugin(SessionRowsPlugin::new(
+                &self.runtime,
+                Arc::new(BinaryRows::<L> {
+                    resolver: self.resolver.clone(),
+                    runtime: self.runtime.clone(),
+                }),
+            ));
             Ok(Effect::Done)
         })
     }

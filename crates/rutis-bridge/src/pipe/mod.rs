@@ -4,7 +4,8 @@
 //! Unix sockets are framed the same way, by newline.
 //!
 //! It knows nothing of what runs in the process: a language runtime started
-//! this way is composed on top ([`crate::runtime::LocalRuntime`]).
+//! this way is a session's far end ([`crate::runtime::Launcher::start`],
+//! [`crate::Session`]).
 
 use std::sync::Arc;
 

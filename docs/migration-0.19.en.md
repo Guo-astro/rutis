@@ -225,6 +225,7 @@ A host using `LoaderPlugin` (rutis-host included) now provides a service named `
 | `ctx.plugin_from(\|cfg\| …)` | Implement `rutis::host::PluginFactory` and call `ctx.plugin_with(factory, config)` |
 | `rutis_loader::status::RowState` (the type of `status::Row::state`) | `rutis_loader::report::EntryStatus`: waiting is `Running` with the `Pending` phase, starting is the `Loading` phase; what `Display` prints is unchanged |
 | `rutis_loader::report::RowState` (the values of the `rutis/row` event) | Renamed `rutis_loader::report::RowEventState`; the values are unchanged |
+| `RuntimeResolver::invalidate`, `invalidate_all`, rutis-host's `Host::invalidate` | Removed; Rust no longer resolves and caches Node row names by `package.json`, every resolution asks the runtime: after a plugin code change, just `Loader::reload(row)` |
 | `take_cleanup_errors()` | A cleanup's error is in the unload result (the error `dispose` returns) |
 | `FiberView::effects()`, `EffectMeta`, `EffectPhase` | No replacement; for diagnostics use `diagnostics()` |
 | `EventBus::observe_dispatch` | No replacement; to observe, register an ordinary listener |

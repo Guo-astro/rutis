@@ -284,7 +284,7 @@ impl Launcher {
     ///
     /// The setting is the whole runtime process's: every plugin loaded into
     /// it can read the input. Run a plugin that needs the terminal in a
-    /// runtime of its own ([`LocalRuntime::named`](crate::runtime::LocalRuntime::named)).
+    /// runtime of its own.
     ///
     /// On Unix, a runtime process normally runs in a process group of its
     /// own, so a Ctrl-C in the terminal reaches only the host, which unloads
@@ -396,6 +396,45 @@ impl Launcher {
             .arg(package.join("src/main.ts"))
             .cwd(project)
             .inherit_fd()
+    }
+
+    /// Start the runtime process ([`crate::pipe::spawn`]) on a channel of
+    /// its own, recording it in `processes`: it receives its channel,
+    /// `--id <id>` (the endpoint it greets as) and `anchor` as its last
+    /// arguments. With `RUTIS_TRACE` set, every message on the channel is
+    /// reported on stderr (direction and length, never content).
+    pub async fn start(
+        &self,
+        id: &crate::PeerId,
+        anchor: &std::path::Path,
+        processes: &crate::pipe::Processes,
+    ) -> Result<crate::Channel, crate::ConnectError> {
+        let mut spawn = crate::pipe::Spawn::new(self.program.clone());
+        spawn.args = self.args.clone();
+        spawn.env = self.env.clone();
+        spawn.cwd = self.cwd.clone();
+        spawn.stdin = self.stdin;
+        spawn.stdout = self.stdout;
+        spawn.stderr = self.stderr;
+        spawn.output_prefix = self.output_prefix.clone();
+        spawn.handover = match self.inherit_fd {
+            true => crate::pipe::Handover::Inherit,
+            false => crate::pipe::Handover::DialBack,
+        };
+        spawn.trailing = vec![
+            std::ffi::OsString::from("--id"),
+            std::ffi::OsString::from(id.as_str()),
+            std::ffi::OsString::from(anchor),
+        ];
+        let channel = crate::pipe::spawn(&spawn, processes).await?;
+        Ok(match std::env::var_os("RUTIS_TRACE") {
+            Some(_) => crate::channel::trace::trace(
+                channel,
+                "runtime",
+                Arc::new(|line: &str| eprintln!("rutis trace: {line}")),
+            ),
+            None => channel,
+        })
     }
 }
 

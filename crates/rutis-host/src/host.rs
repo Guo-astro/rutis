@@ -16,7 +16,7 @@ use rutis_bridge::{
 };
 use rutis_loader::peer::{register_peer_node, Address, PeerResolver};
 use rutis_loader::runtime::binary::RuntimeEnd;
-use rutis_loader::runtime::{RuntimeResolver, RuntimeRows, RuntimeRowsPlugin};
+use rutis_loader::runtime::{SessionResolver, SessionRows};
 use rutis_loader::{
     Builtins, Chain, Layer, Loader, LoaderOptions, LoaderPlugin, Patch, ServiceCatalog,
 };
@@ -30,8 +30,8 @@ pub struct Host {
     root: Ctx,
     pub loader: Loader,
     pub runtimes: Vec<(String, RuntimeHandle)>,
-    /// The resolvers of the runtimes' rows, to invalidate after a change.
-    pub resolvers: Vec<Arc<RuntimeResolver>>,
+    /// What resolves the rows on sessions, the local runtimes' among them.
+    sessions: Arc<SessionResolver>,
     /// The compiled languages' binaries and runtimes (Go, Swift), those
     /// the configuration has.
     pub binaries: Vec<BinaryHost>,
@@ -256,12 +256,18 @@ impl Host {
         if let Some(register) = embedding.builtins {
             register(&mut builtins);
         }
+        // The rows `<row>:<plugin>` (a connection row's, a local runtime's),
+        // and with Node the names no runtime prefixes; last in the chain.
+        let sessions = Arc::new(match config.runtimes.node.is_some() {
+            true => SessionResolver::npm(&catalog, "node"),
+            false => SessionResolver::new(&catalog),
+        });
         let mut mount = Mount {
             root: &root,
             catalog: &catalog,
             chain: Chain::new().with(builtins).with_shared(peers.clone()),
+            sessions: sessions.clone(),
             runtimes: Vec::new(),
-            resolvers: Vec::new(),
             fibers: Vec::new(),
             processes: Vec::new(),
             later: Vec::new(),
@@ -291,14 +297,11 @@ impl Host {
             }
         }
 
-        // The rows `<connection row>:<plugin>`, last: a name another
-        // resolver takes stays theirs.
-        let sessions = Arc::new(rutis_loader::runtime::SessionResolver::new(mount.catalog));
+        // Last: a name another resolver takes stays theirs.
         mount.chain = std::mem::take(&mut mount.chain).with_shared(sessions.clone());
         let Mount {
             chain,
             runtimes,
-            resolvers,
             fibers,
             processes,
             later,
@@ -328,8 +331,9 @@ impl Host {
         (&root.plugin(plugin))
             .await
             .map_err(|error| format!("the loader: {error}"))?;
-        for rows in &resolvers {
-            root.plugin(RuntimeRowsPlugin::new(rows.clone()));
+        // The local runtimes' rows are released once each runs.
+        for (name, _) in &runtimes {
+            sessions.follow_row(name);
         }
         let restarts = LANGUAGES
             .iter()
@@ -351,7 +355,7 @@ impl Host {
             root,
             loader,
             runtimes,
-            resolvers,
+            sessions,
             binaries,
             fibers,
             processes,
@@ -455,6 +459,7 @@ impl Host {
         self.unsupervise(Some(name));
         let (_, fiber) = self.fibers.remove(index);
         self.runtimes.retain(|(runtime, _)| runtime != name);
+        self.sessions.forget_runtime(name);
         fiber
             .dispose()
             .await
@@ -490,8 +495,8 @@ impl Host {
     /// whose process ended and that nothing restarts (`restart` is `no`, or
     /// `on-failure` gave up), and wait until it runs and its rows may start
     /// ([`Host::runtimes_ready`]), or say why it did not start. Its rows
-    /// come back by themselves, resolved again first when
-    /// [`Host::invalidate`] was called: their code as it is now.
+    /// come back by themselves, resolved again first: their code as it is
+    /// now.
     pub async fn start_runtime_again(&self, name: &str) -> Result<(), Error> {
         let fiber = self
             .fibers
@@ -524,7 +529,7 @@ impl Host {
         if let RuntimeState::Down(reason) = state {
             return Err(format!("the {name} runtime did not start: {reason}"));
         }
-        // A running runtime releases its rows ([`RuntimeRows`]) once it
+        // A running runtime releases its rows ([`SessionRows`]) once it
         // has resolved again those resolved before it ran. Rows loaded
         // before then wait for it, and the host would say it runs while
         // they do (#314). A plugin injecting it applies once it is there.
@@ -532,7 +537,7 @@ impl Host {
         // Disposed however the wait ends, a signal dropping it included:
         // left mounted, it would count among what still runs.
         let mut waiter = Unmount(Some(self.root.plugin(Released {
-            injects: [RuntimeRows::key(name)],
+            injects: [SessionRows::key(name)],
             released: std::sync::Mutex::new(Some(released)),
         })));
         let down = async {
@@ -923,14 +928,6 @@ impl Host {
     /// What each connection row has connected now.
     pub fn connections(&self) -> Vec<crate::connect::Row> {
         self.connections.rows()
-    }
-
-    /// Forget what the runtimes' resolvers cached, so changed plugins are
-    /// described again.
-    pub fn invalidate(&self) {
-        for rows in &self.resolvers {
-            rows.invalidate_all();
-        }
     }
 }
 
@@ -1419,7 +1416,6 @@ mod tests {
         assert_eq!(greeting(&host).await, "Hello, Ada");
         // A different size, so the edit shows even within the same instant.
         std::fs::write(&entry, node_plugin("Welcome")).unwrap();
-        host.invalidate();
         host.loader.reload("greeter").await.unwrap();
         assert_eq!(greeting(&host).await, "Welcome, Ada");
     }
@@ -1464,7 +1460,7 @@ mod tests {
     }
 
     /// Once `runtimes_ready` returns, the rows of each runtime may start:
-    /// what they wait for ([`rutis_loader::RuntimeRows`]) is there, so a row
+    /// what they wait for ([`SessionRows`]) is there, so a row
     /// loaded then runs once loading returns. It used to return once the
     /// runtime process was ready, and such a row could still wait: `run`
     /// said it was running, and printed its state, while it did (#314).
@@ -1500,7 +1496,7 @@ mod tests {
             .await
             .unwrap();
         // What the runtime's rows wait for.
-        let rows = host.root.get_key::<RuntimeRows>(RuntimeRows::key("py"));
+        let rows = host.root.get_key::<SessionRows>(SessionRows::key("py"));
         assert!(rows.is_some(), "the runtime is ready, its rows not yet");
         within("loading the row", host.load(config.rows()))
             .await
