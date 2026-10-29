@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, Weak};
 
 use rutis::events::{ListenerInfo, Mode, Scope};
-use rutis::host::{BoxFuture, DynPlugin, Effect, TypeKey};
+use rutis::host::{BoxFuture, DynPlugin, Effect, Key, TypeKey};
 use rutis::host::{CtxHost, ErrorKind, ListenerKind};
 use rutis::internal::events::{EntryCall, RawTerminal, RemoteEntry, TableChange, TableEntry};
 use rutis::internal::{CtxInternal, EventOptions};
@@ -37,7 +37,7 @@ fn imported(origin: Option<u64>) -> bool {
 /// The events of a session with a far rutis kernel, on its `Peer#<peer>`.
 pub(crate) struct NodeEvents {
     label: String,
-    injects: [TypeKey; 1],
+    key: Key<Peer>,
     peer: PeerId,
 }
 
@@ -45,7 +45,7 @@ impl NodeEvents {
     pub(crate) fn new(peer: PeerId) -> Self {
         Self {
             label: format!("rutis-bridge/events#{peer}"),
-            injects: [peer_key(&peer).erase()],
+            key: peer_key(&peer),
             peer,
         }
     }
@@ -530,18 +530,16 @@ impl DynPlugin for NodeEvents {
     }
 
     fn injects(&self) -> Vec<TypeKey> {
-        self.injects.to_vec()
+        vec![self.key.erase()]
     }
 
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, RutisError>> {
         Box::pin(async move {
-            let peer = ctx
-                .get_key::<Peer>(self.injects[0].clone())
-                .ok_or_else(|| {
-                    rutis::Error::from(ErrorKind::PluginFailed(
-                        format!("{}: the peer is gone", self.label).into(),
-                    ))
-                })?;
+            let peer = ctx.get_at(&self.key).ok_or_else(|| {
+                rutis::Error::from(ErrorKind::PluginFailed(
+                    format!("{}: the peer is gone", self.label).into(),
+                ))
+            })?;
             ctx.events().set_transcoder(Arc::new(SessionTranscoder));
             let origin = next_origin();
             LINK_ORIGINS.lock().unwrap().push(origin);

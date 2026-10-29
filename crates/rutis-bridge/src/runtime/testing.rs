@@ -227,7 +227,7 @@ pub async fn runtime(
         .await
         .expect("hosts.provide");
     // The declared service, and the ones the row announces (`undeclared`).
-    let projection = row_projection_of("row w", &provides, |name| host_key(name).erase());
+    let projection = row_projection_of("row w", &provides, host_key);
     projection.attach(ctx, process.clone()).unwrap();
     let load = || {
         process.load_row_exporting(

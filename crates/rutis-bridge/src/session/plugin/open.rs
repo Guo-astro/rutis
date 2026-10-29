@@ -334,7 +334,6 @@ mod tests {
     use std::time::Duration;
 
     use rutis::host::FiberState;
-    use rutis::internal::CtxInternal;
     use rutis_test_support::{eventually, within};
 
     use super::*;
@@ -488,9 +487,7 @@ mod tests {
             ]))
         };
         let args = Value::List(vec![far]);
-        let service = relay
-            .get_key::<dyn HostDispatch>(host_key("sessions").erase())
-            .unwrap();
+        let service = relay.get_at(&host_key("sessions")).unwrap();
 
         let refused = service.invoke("open", args.clone()).err().unwrap();
         assert_eq!(refused.code(), Some(code::NOT_DECLARED));
@@ -523,11 +520,7 @@ mod tests {
         });
 
         let now: String = within("the clock", async {
-            eventually(
-                || relay.get_key::<dyn HostDispatch>(host_key("clock").erase()),
-                "office's clock",
-            )
-            .await;
+            eventually(|| relay.get_at(&host_key("clock")), "office's clock").await;
             call_service(&relay, "clock", "get", ()).await
         })
         .await

@@ -188,17 +188,6 @@
       "rust": "yes"
     },
     {
-      "id": "strict-testing-tool",
-      "what": "The testing tool's strict mode gives a cross-process proxy",
-      "node": "yes",
-      "bun": "yes",
-      "python": "no",
-      "go": "no",
-      "swift": "no",
-      "kotlin": "yes",
-      "rust": "no"
-    },
-    {
       "id": "undefined-nested-null",
       "what": "undefined is null at any depth; a whole argument keeps it",
       "node": "yes",

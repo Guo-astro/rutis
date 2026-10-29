@@ -13,7 +13,8 @@ use serde_json::{Map, Value};
 use crate::runtime::rpc::{Reply, Value as RpcValue};
 use crate::runtime::{host_key, HostDispatch, Process, Projection};
 use crate::session::CallerRow;
-use rutis::internal::CtxInternal;
+use rutis::host::CtxHost;
+use rutis::host::Key;
 
 /// One object a row's service slot holds, as a host service: calls go to
 /// that object in the runtime. Async methods return a future.
@@ -210,19 +211,19 @@ impl Drop for RowService {
 /// Attach it from the row's own context and pass it to
 /// [`Process::load_row_exporting`] as the observer.
 pub fn row_projection(provides: &Map<String, Value>) -> Arc<Projection> {
-    row_projection_with(provides, |name| host_key(name).erase())
+    row_projection_with(provides, host_key)
 }
 
 /// [`row_projection`] publishing each service under `key(name)` instead
 /// (`host_key_in(name, instance)` for a service inside an instance).
 pub fn row_projection_with(
     provides: &Map<String, Value>,
-    key: impl Fn(&str) -> rutis::host::TypeKey,
+    key: impl Fn(&str) -> Key<dyn HostDispatch>,
 ) -> Arc<Projection> {
     let projection = Projection::new();
     for (name, methods) in provides {
         let methods = methods.clone();
-        projection.service_keyed::<dyn HostDispatch>(name, key(name), move |process, handle| {
+        projection.service_keyed(name, key(name), move |process, handle| {
             Arc::new(RowService::new(process, handle, methods.clone()))
         });
     }
@@ -238,7 +239,7 @@ pub fn row_projection_with(
 pub fn row_projection_of(
     provider: &str,
     provides: &Map<String, Value>,
-    key: impl Fn(&str) -> rutis::host::TypeKey + Send + 'static,
+    key: impl Fn(&str) -> Key<dyn HostDispatch> + Send + 'static,
 ) -> Arc<Projection> {
     let projection = Projection::new();
     for (name, methods) in provides {
@@ -271,14 +272,14 @@ fn row_slot(
     projection: &Projection,
     provider: &str,
     name: &str,
-    key: rutis::host::TypeKey,
+    key: Key<dyn HostDispatch>,
     methods: Arc<Mutex<Value>>,
 ) {
     let named = provider.to_owned();
     let service = name.to_owned();
     let holder = key.clone();
     let owner = projection.weak();
-    projection.service_keyed_occupied::<dyn HostDispatch>(
+    projection.service_keyed_occupied(
         name,
         key,
         move |process, handle| {
@@ -293,7 +294,7 @@ fn row_slot(
         },
         provider.to_owned(),
         move |ctx| {
-            let holder = ctx.get_key::<dyn HostDispatch>(holder.clone())?;
+            let holder = ctx.get_at(&holder)?;
             // A row or a peer by its name; anything else (a Rust service,
             // whose type path a plugin author never wrote) is the host's.
             Some(

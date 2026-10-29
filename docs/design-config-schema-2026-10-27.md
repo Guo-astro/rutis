@@ -26,14 +26,14 @@ Issue：[#669](https://github.com/arcships/rutis/issues/669)。与 [0.18 的诊�
 
 | # | 决策 | 章节 |
 | --- | --- | --- |
-| C1 | 每种语言的 SDK 在装载一行、调用 `apply` 之前补默认值并校验（运行时和测试工具走同一段代码）；`check` 用 Rust 实现做同样的事；loader 不对别的运行时的行再校验一遍 | 2.1 |
+| C1 | 补默认值与校验只在内核一份（`rutis::config::check`，0.19）：loader 对每一行（不论属于哪个运行时）、bridge 对插件值、`check` 都调它，把补过默认值的副本发给运行时；各语言的 SDK 只解码 | 2.1 |
 | C2 | 一个 JSON Schema 子集，14 个关键字；其他关键字不检查，也不告警 | 3.1 |
 | C3 | 多出来的键：告警并原样交给 `apply`，告警由 loader 的配置步骤（§2.1）算出，每行每个配置值打印一次；Schema 写了 `additionalProperties: false` 时是错误；`check --strict` 把告警当错误 | 3.2 |
 | C4 | 类型化配置（Go、Swift、Kotlin、Rust）的 Schema 由类型生成，只写语言自己的解码器本来就有的规则；Schema 通过后解码器还报错时写 `is not a value the plugin accepts`，不出现解码器原文 | 3.3 |
 | C5 | 默认值按"对象在才补它的属性"逐层补，跟着 `$ref`、`allOf`，不进 `anyOf` / `oneOf`；没给配置时对象根是 `{}` | 四 |
 | C6 | 所有问题按路径排序一次列出，每个一行：`<行>: config: <路径> should be …, got …`；错误码 `bad-config` | 五 |
 | C7 | 配置错时这一行失败，等它的行显示为等这一行；`dev`、`run`、测试工具、`check` 输出相同 | 五 |
-| C8 | 一份共同的用例表 `specs/config-schema/cases.json`，每种语言和 `check` 都逐条跑，逐字比较；§六 的每条规则都有用例 | 六、八 |
+| C8 | 一份用例表 `specs/config-schema/cases.json`，内核逐条跑（`crates/rutis/tests/config_cases.rs`），逐字比较；§六 的每条规则都有用例 | 六、八 |
 
 ### 2.1 在哪里做（0.19 改写）
 

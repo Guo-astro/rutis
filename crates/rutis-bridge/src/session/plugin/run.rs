@@ -6,8 +6,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, FiberView, TypeKey};
-use rutis::internal::CtxInternal;
+use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, FiberView, Key, TypeKey};
 use rutis::{Ctx, Error as RutisError};
 use serde_json::Value as Json;
 use tokio::sync::watch;
@@ -103,11 +102,7 @@ async fn start(
     // A leaf runtime resolves nothing itself: what its plugin injects
     // waits here. A rutis kernel's plugin waits there.
     let injects = match !running.node && running.process.supports("leaf") {
-        true => schema
-            .inject
-            .iter()
-            .map(|name| host_key(name).erase())
-            .collect(),
+        true => schema.inject.iter().map(|name| host_key(name)).collect(),
         false => Vec::new(),
     };
     let target = Target::new();
@@ -134,7 +129,7 @@ struct RunRow {
     plugin: String,
     config: Json,
     schema: RowSchema,
-    injects: Vec<TypeKey>,
+    injects: Vec<Key<dyn HostDispatch>>,
     process: Arc<Process>,
     target: Target,
 }
@@ -145,7 +140,7 @@ impl DynPlugin for RunRow {
     }
 
     fn injects(&self) -> Vec<TypeKey> {
-        self.injects.clone()
+        self.injects.iter().map(Key::erase).collect()
     }
 
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, RutisError>> {
@@ -179,7 +174,7 @@ impl RunRow {
         let caller = CallerRow::new(self.name.clone(), key.clone(), ctx.clone());
         let mut leases: Vec<HostLease> = Vec::new();
         for (name, inject) in self.schema.inject.iter().zip(&self.injects) {
-            let Some(dispatch) = ctx.get_key::<dyn HostDispatch>(inject.clone()) else {
+            let Some(dispatch) = ctx.get_at(inject) else {
                 continue;
             };
             if dispatch.origin() == Some(process.connection().tag()) {
@@ -199,7 +194,7 @@ impl RunRow {
         let projection = row_projection_of(
             &format!("row {}", self.name),
             &self.schema.provides,
-            |name| host_key(name).erase(),
+            host_key,
         );
         projection.owned_by(caller);
         if let Err(error) = projection.attach(ctx, process.clone()) {

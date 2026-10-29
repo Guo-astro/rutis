@@ -53,6 +53,8 @@ rutis-host: rutis.json: unknown field `remote`, expected one of …
 office (rutis-bridge/peer): no plugin named "rutis-bridge/peer"
 ```
 
+0.18 的 `peer:<对端>/<插件>` 行在 0.19 不报错，会显示 `waiting for peer`：它被读成名为 `peer` 的连接行上的一行，而没有这样的连接行。改成 `<连接行>:<插件>`（`peer:office/scanner` 改成 `office:scanner`，`office` 是连到对面的那一行的 id）。
+
 ```json
 // 0.18：main 一侧
 { "id": "office", "name": "rutis-bridge/peer", "config": { "peer": "office", "dial": "wss://office.example.com/rutis", "export": ["weather"], "import": ["clock"], "rows": true } },
@@ -79,7 +81,7 @@ office (rutis-bridge/peer): no plugin named "rutis-bridge/peer"
 - token 按连接行的 id：`main` 的 `office` 行出示 `RUTIS_TOKEN_OFFICE`，`office` 的 `main` 行核对 `RUTIS_TOKEN_MAIN`（以前是节点行的 `peer`，名字通常相同）。
 - 同名服务：以前 `import` 一个本地已有的名字时拒绝这次导入；现在按内核规则后注册的被拒，那个远程插件失败：`office:weather: weather is provided here by row weather: not registered from office`。
 - **给出 token 等于允许对方在本节点运行它能解析的任何插件**（以前要对方打开 `host: true`；谁能连上由连接行的 token 决定，连上即信任）。相连的节点互相看到对方全部可共享的服务：只连可信的节点；不给对面看的服务在提供它的行上用 `isolate`。
-- 一个节点经一条连接收到的服务，经别的连接继续到达第三个节点（以前事件与服务只走一跳）。
+- 一个节点经一条连接收到的服务，经别的连接继续到达第三个节点（以前服务只走一跳）。
 - `run` 的输出：`office: link connected` / `link down (…)` / `link refused: …` / `link stopped: …` 改为 `office: connected` / `office: disconnected (…); retrying in …` / `office: disconnected (incompatible: …); stopped`；listen 一侧写 `main: connected main`、`main: disconnected main (…)`。
 
 ### 行为变化
@@ -290,6 +292,7 @@ Kotlin 另有两点：
 | `rutis_loader::config::check(schema, config, options)` | `rutis::config::check(schema, config)` |
 | `internal::provide_checked`、`refresh`，`DependencyStatus::CheckPending`、`CheckRejected`、`CheckPanicked` | 无替代 |
 | `rutis_loader::backoff`、`runtime::binary::{RestartPolicy, RuntimeEnd}`、`BinaryRuntimesHandle::supervise` / `unsupervise` | 删：加载器不再重启崩溃的 Go/Swift 运行时。自己调用 `BinaryRuntimesHandle::restart(name)`；握手被拒的二进制用新的 `runtime::binary::refused(why)` 判断，重启也起不来。用 rutis-host 时写 `runtimes.<key>.restart` |
+| `internal::CtxInternal` 的 `get_key`、`require_key`、`provide_key`（键是 `TypeKey`） | 持有 `rutis::host::Key<T>`，用 `CtxHost` 的 `get_at`、`require_at`、`provide_at`。随之改为 `Key`：`ServiceCatalog::register_keyed`、`readable_keyed` 的 `key` 参数；`SessionRows::key(行)` 返回 `Key<SessionRows>`；`Projection::service_keyed`、`service_keyed_occupied` 的 `key` 参数；`row_projection_with`、`row_projection_of` 的 `key` 函数返回 `Key<dyn HostDispatch>`（直接传 `host_key`）。要 `TypeKey` 时（`DynPlugin::injects`）用 `key.erase()` |
 
 ### 工具
 

@@ -16,7 +16,6 @@ use std::sync::{Arc, Mutex};
 
 use rutis::host::diagnostics::{ServiceChange, ServiceChanged};
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind, FiberView, TypeKey};
-use rutis::internal::CtxInternal;
 use rutis::{Ctx, Disposer, Error as RutisError};
 
 use crate::channel::PeerId;
@@ -24,7 +23,7 @@ use crate::peer::Peer;
 use crate::runtime::Process;
 use crate::services::{provider, Announcement, ExportOne};
 use crate::session::rpc::{Connection, Reply, Value};
-use crate::session::{host_key, Error, HostDispatch};
+use crate::session::{host_key, Error};
 
 /// The name of the host service `key` is, if it is one a session shares:
 /// `host_key(name)` outside any instance.
@@ -217,15 +216,11 @@ impl Imports {
 
     /// Who provides `name` here, in a refusal.
     fn holder(&self, name: &str) -> String {
-        let key = host_key(name).erase();
-        match provider(&self.ctx, &key) {
+        let key = host_key(name);
+        match provider(&self.ctx, &key.erase()) {
             Some(provider) => match provider.row {
                 Some(row) => format!("row {row}"),
-                None => match self
-                    .ctx
-                    .get_key::<dyn HostDispatch>(key)
-                    .and_then(|service| service.provider())
-                {
+                None => match self.ctx.get_at(&key).and_then(|service| service.provider()) {
                     Some(by) => by,
                     None => format!("plugin {}", provider.plugin),
                 },
@@ -314,7 +309,7 @@ impl Imports {
                         format!("row {}:{plugin}", self.far),
                         Some(self.session.tag().to_owned()),
                     );
-                    match ctx.provide_key::<dyn HostDispatch>(host_key(&name), Arc::new(service)) {
+                    match ctx.provide_at(host_key(&name), Arc::new(service)) {
                         Ok(provided) => Some(provided),
                         Err(error) => {
                             let why = match &*error {

@@ -26,14 +26,14 @@ The plugin API guide has long said "JSON Schema; the host validates and shows th
 
 | # | Decision | Section |
 | --- | --- | --- |
-| C1 | Each language's SDK fills defaults and validates when it loads a row, before calling `apply` (the runtime and the testing tool run the same code); `check` does the same with the Rust implementation; the loader does not validate rows of other runtimes again | 2.1 |
+| C1 | Filling defaults and validating have one implementation, the kernel's (`rutis::config::check`, 0.19): the loader for every row (whatever runtime it belongs to), the bridge for plugin values and `check` call it, and the runtime is sent the copy with its defaults filled; the language SDKs only decode | 2.1 |
 | C2 | One JSON Schema subset of 14 keywords; other keywords are neither checked nor warned about | 3.1 |
 | C3 | Extra keys: a warning, and passed to `apply` as they are; the loader's config step (§2.1) works the warning out and prints it once per row and config value; an error when the schema says `additionalProperties: false`; `check --strict` treats the warning as an error | 3.2 |
 | C4 | Typed configs (Go, Swift, Kotlin, Rust) get their schema from the type, stating only the rules the language's own decoder already has; a decoder error after the schema passed is written `is not a value the plugin accepts`, never the decoder's text | 3.3 |
 | C5 | Defaults are filled level by level, "an object that is there gets its properties filled", following `$ref` and `allOf`, not `anyOf` / `oneOf`; with no config an object root is `{}` | 4 |
 | C6 | All problems are listed at once, sorted by path, one per line: `<row>: config: <path> should be …, got …`; error code `bad-config` | 5 |
 | C7 | With a wrong config the row fails, and rows depending on it show that they wait for it; `dev`, `run`, testing tools and `check` print the same | 5 |
-| C8 | One shared case list `specs/config-schema/cases.json`, run case by case and compared word for word by every language and by `check`; every rule of §6 has cases | 6, 8 |
+| C8 | One case list `specs/config-schema/cases.json`, run case by case by the kernel (`crates/rutis/tests/config_cases.rs`) and compared word for word; every rule of §6 has cases | 6, 8 |
 
 ### 2.1 Where it is done (rewritten for 0.19)
 

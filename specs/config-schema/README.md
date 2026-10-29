@@ -2,7 +2,7 @@
 
 [English](README.en.md)
 
-[配置 Schema 设计](../../docs/design-config-schema-2026-10-27.md) §8 的用例表：补默认值、校验与错误文字的规则，每种语言的 SDK（Go、Swift、Kotlin）、rutis-loader 和 `rutis-host check` 都逐条跑 [`cases.json`](cases.json)，逐字比较。这不是 TLA+ 模型，不在 CI 的 `specs` 任务里跑，由各实现自己的测试跑。
+[配置 Schema 设计](../../docs/design-config-schema-2026-10-27.md) §8 的用例表：补默认值、校验与错误文字的规则。这些规则只有内核一份实现（`rutis::config::check`）：loader 的每一行、插件值与 `rutis-host check` 都调它，各语言的 SDK 只解码（[平台清理](../../docs/design-platform-cleanup-2026-10-28.md) §7.5）。`crates/rutis/tests/config_cases.rs` 逐条跑 [`cases.json`](cases.json)，逐字比较。这不是 TLA+ 模型，不在 CI 的 `specs` 任务里跑。
 
 ## 格式
 
@@ -13,13 +13,13 @@
 - `config` 不写表示没有配置（和 `null` 一样）。
 - `then.config`：通过，`apply` 拿到的值（补好默认值；通过 `integer` 的 `1.0` 写成整数 `1`）。按 JSON 相等比较；区分整数和小数的语言（Rust、Go）还要比较是不是整数。
 - `then.errors`：不通过，错误的每一行，也就是标记的配置错误的文字去掉行名（设计 §5.1：按路径排好，最多 20 行，余下的写成 `config: and N more problems`）。
-- `warnings`：多余的键，同样的句子（测试工具和 loader 给出的警告）。
+- `warnings`：多余的键，同样的句子（loader 给出的警告）。
 
-## 各实现怎么跑
+## 怎么跑
 
 - 每个用例跑一遍，比较 `then` 和 `warnings`。
 - 通过的用例再跑一遍：先把第一次得到的配置里每个对象、数组原地改掉（加一个键、加一项），第二次的结果仍然等于 `then.config`（补上的默认值是复制，设计 §4、用例 21）。
-- 这里只有各语言共用的规则。类型化语言自己的用例（Go 的零值与指针、Swift 的字面量初值、Kotlin 的默认参数、Rust 的 `serde(default)` 与 `deny_unknown_fields`、Rust `Definition` 的解码错误）、旧版 Go 清单忽略 `required`（设计 §7），都写在各自的测试里。
+- 这里只有校验的规则。类型化语言解码时自己的用例（Go 的零值与指针、Swift 的字面量初值、Kotlin 的默认参数、Rust 的 `serde(default)` 与 `deny_unknown_fields`、Rust `Definition` 的解码错误）、旧版 Go 清单忽略 `required`（设计 §7），都写在各自的测试里。
 
 ## 实现时定下的细节
 

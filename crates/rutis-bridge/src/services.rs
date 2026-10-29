@@ -19,8 +19,7 @@ use std::sync::Arc;
 
 use crate::session::rpc::{Connection, Reference, Reply, Value};
 use crate::session::{host_key, Error, HostDispatch};
-use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind, TypeKey};
-use rutis::internal::CtxInternal;
+use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind, Key, TypeKey};
 use rutis::{Ctx, Error as RutisError};
 use serde_json::{json, Value as Json};
 
@@ -35,7 +34,7 @@ pub(crate) struct ExportOne {
     label: String,
     /// The exported service's name.
     service: String,
-    injects: [TypeKey; 1],
+    key: Key<dyn HostDispatch>,
     /// Its announcements and withdrawals take their versions from the
     /// session ([`Peer::next_version`]).
     peer: Arc<Peer>,
@@ -49,7 +48,7 @@ impl ExportOne {
         Self {
             label: format!("rutis-bridge/session/export/{name}"),
             service: name.to_owned(),
-            injects: [host_key(name).erase()],
+            key: host_key(name),
             peer,
         }
     }
@@ -65,20 +64,20 @@ impl DynPlugin for ExportOne {
     }
 
     fn injects(&self) -> Vec<TypeKey> {
-        self.injects.to_vec()
+        vec![self.key.erase()]
     }
 
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, RutisError>> {
         Box::pin(async move {
             let service = ctx
-                .get_key::<dyn HostDispatch>(self.injects[0].clone())
+                .get_at(&self.key)
                 .ok_or_else(|| failed(&self.label, "the service is gone"))?;
             // What cannot cross is not shared.
             let Some(shape) = service.methods() else {
                 return Ok(Effect::Done);
             };
             let record = record(&service, &shape).map_err(|error| failed(&self.label, error))?;
-            let provider = provider(ctx, &self.injects[0]);
+            let provider = provider(ctx, &self.key.erase());
             // Not a platform plugin's service, nor one that came over this
             // same session.
             let own = service.origin() == Some(self.peer.connection().tag());
