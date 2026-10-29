@@ -270,7 +270,7 @@ impl Rutis {
 /// The release build, R8 on, started and stopped as its business layer
 /// would (here, intents pressing its buttons): its `device` comes, is used
 /// through what R8 kept, and goes and comes back.
-/// guarantee: host/remote-runtimes
+/// guarantee: host/connection-plugins
 #[tokio::test(flavor = "multi_thread")]
 async fn the_release_build_dials_in_and_stops_and_starts_again() {
     let _environment = environment();
@@ -334,7 +334,7 @@ fn checked(step: &str) {
 /// `tablet`, whose services are `<name>-tablet`) on one listen row, each
 /// with a Python row using its `device`; stopping one takes its services
 /// and its user away alone; starting it again brings them back.
-/// guarantee: host/remote-runtimes
+/// guarantee: host/connection-plugins
 #[tokio::test(flavor = "multi_thread")]
 async fn connections_of_an_application_bring_their_services() {
     let _environment = environment();
@@ -493,7 +493,7 @@ fn text(screen: &str, id: &str) -> String {
 /// service never reaches rutis, and a call needing it fails with
 /// `permission-denied` at the caller (a Python row) with the permission in
 /// its data. Granted, the plugins load and the calls go through.
-/// guarantee: host/remote-runtimes
+/// guarantee: host/connection-plugins
 #[tokio::test(flavor = "multi_thread")]
 async fn a_denied_permission_fails_the_plugin_and_reaches_the_caller() {
     let _environment = environment();

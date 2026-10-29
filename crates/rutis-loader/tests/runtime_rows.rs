@@ -1333,7 +1333,7 @@ export function apply(ctx) {
 /// An error a row's service method throws records which row it came from
 /// and which `service.method` it was serving, for the output and the host;
 /// the plugin's own error stays as it was (#677).
-/// guarantee: loader/error-site
+/// guarantee: loader/error-site, bridge/error-codes
 #[tokio::test(flavor = "multi_thread")]
 async fn an_error_from_a_service_method_says_where_it_came_from() {
     if !rutis_test_support::runtimes::enabled("node") {

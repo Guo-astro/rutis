@@ -206,6 +206,7 @@ async fn a_disposed_mount_frees_its_process() {
     until(|| weak.upgrade().is_none(), "the process freed").await;
 }
 
+/// guarantee: boundary/5.1
 // Review #7: a method that replaces the service and then throws still
 // refreshes the slot.
 #[tokio::test(flavor = "current_thread")]
@@ -433,6 +434,7 @@ impl DynPlugin for Consumer {
     }
 }
 
+/// guarantee: boundary/5.8
 #[tokio::test(flavor = "current_thread")]
 async fn a_crashed_process_withdraws_its_services() {
     if !rutis_test_support::runtimes::enabled("node") {

@@ -1,3 +1,5 @@
+//! guarantee: loader/plugin-value-copies
+//! guarantee: bridge/plugin-values
 //! Plugin definitions across languages (`docs/design-plugin-values-2026-10-25.md`
 //! §9), the same cases for each runtime: a row hands a plugin definition to a
 //! Rust service in `apply`; Rust host parts in two instances each mount a

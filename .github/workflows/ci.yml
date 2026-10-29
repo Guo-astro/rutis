@@ -366,6 +366,12 @@ jobs:
       - name: fault acceptance summary
         if: success() || failure()
         run: node tools/check-faults.mjs
+      # The guarantee register (docs/guarantees.md, §4–§5): every test a row
+      # lists is there and carries its `guarantee:` marker, every marker names
+      # a row, and both languages list the same rows.
+      - name: guarantee register
+        if: success() || failure()
+        run: node tools/check-guarantees.mjs
       - name: self-hosted runner, end
         if: always() && runner.environment == 'self-hosted'
         env:

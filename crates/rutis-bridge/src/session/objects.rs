@@ -1338,6 +1338,7 @@ mod tests {
         }
     }
 
+    /// guarantee: bridge/value-tags
     /// User JSON whose objects look like markers, even under the very keys
     /// the next operations pick, is carried as data, top level and inside
     /// maps, sets and nested values: never read as a marker, and never

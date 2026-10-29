@@ -155,6 +155,7 @@ async fn rejects_registration_after_failed_apply() {
     root.shutdown().await.unwrap();
 }
 
+/// guarantee: core/D9
 #[test]
 fn rejects_late_registration_current_thread() {
     tokio::runtime::Builder::new_current_thread()

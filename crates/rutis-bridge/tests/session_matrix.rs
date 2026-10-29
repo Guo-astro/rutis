@@ -1,3 +1,4 @@
+//! guarantee: loader/announced-services
 //! The runtime conformance suite (`rutis_bridge::runtime::testing::runtime`) over
 //! every channel: the Node, the Python, the Go and (macOS) the Swift
 //! runtime, each connected on an inherited socket (`fd:3`), on a socket

@@ -695,6 +695,7 @@ fn the_go_plugin_development_loop() {
     not(target_os = "macos"),
     ignore = "Swift plugin binaries are macOS only (Swift SDK design §13)"
 )]
+/// guarantee: loader/swift-runtimes
 fn the_swift_plugin_development_loop() {
     dev_loop(Kind::Swift);
 }

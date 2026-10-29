@@ -44,6 +44,7 @@ async fn failed_with(launcher: Launcher) -> String {
     reason
 }
 
+/// guarantee: core/features.default-output
 #[tokio::test(flavor = "multi_thread")]
 async fn a_runtime_that_exits_before_greeting_says_how() {
     #[cfg(unix)]

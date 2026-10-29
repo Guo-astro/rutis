@@ -113,6 +113,7 @@ async fn named_channels_and_dispatch_tails_prune() {
     listener.dispose().await.unwrap();
 }
 
+/// guarantee: events/emit
 /// An emit on a runtime shutting down: `spawn` drops its task's future at
 /// once. What the emit recorded (its backlog entry, its name's chain) goes
 /// with it instead of staying forever.

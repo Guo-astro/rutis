@@ -1,3 +1,5 @@
+//! guarantee: host/row-failure-output
+//! guarantee: sdk/error-codes
 //! One row's or one runtime's problem stays its own (#682): a row providing
 //! a service the host already provides fails alone; rows of a runtime whose
 //! process exits wait for it instead of failing, and the runtime says how

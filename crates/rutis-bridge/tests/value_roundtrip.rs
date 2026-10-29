@@ -1149,6 +1149,7 @@ async fn rust_tagged_values_refused_without_capabilities() {
         .unwrap();
 }
 
+/// guarantee: bridge/large-and-deep-values
 #[tokio::test(flavor = "multi_thread")]
 async fn rust_depth_limit() {
     let (near, _far) = rust_far_end();

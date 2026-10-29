@@ -2,7 +2,22 @@
 
 [中文](migration-0.19.md)
 
-0.19 is for host owners. Four changes are incompatible: how remote runtimes and devices connect (the first section below), upgrading hosts and runtimes together (session protocol 4), the host side's tokens, and the platform cleanup (the last section: removed forms are removed outright, not deprecated, with no conversion or hint); the rest are new options, off by default, whose sections are added as 0.19's changes land.
+0.19 is for host owners. Only the changes since 0.18 are written here. Removed forms are removed outright, not deprecated, with no conversion or hint. The incompatible changes, by kind, each with the section saying how to change:
+
+- **Protocol 4**: 0.18 and older hosts, runtimes, nodes and SDKs are refused at the handshake; upgrade them to 0.19 together ([Upgrade together](#upgrade-together-695)).
+- **How remote configuration is written**: `runtimes.remote`, `rutis-bridge/peer` rows and `peer:` rows are removed, written as the connection rows `rutis-host/dial` and `rutis-host/listen` instead ([Remote runtimes and devices](#remote-runtimes-and-devices-695-696-698)); the host side's tokens go by the connection row's id ([Tokens on the host side](#tokens-on-the-host-side-695)).
+- **Nodes**: node rows lose `host: true`, `export` and `import`, and giving out a token allows the other side to run plugins on this node; a Cordis application as a node (`@arcships/rutis-runtime/bridge`) is removed ([Nodes](#nodes)).
+- **Old names at the SDKs' roots removed outright**: a name moved to advanced is not found at its old place ([The SDKs' default entry points](#the-sdks-default-entry-points-692)).
+- **The service name `loader` is taken**: a row providing `loader` itself fails ([The service name `loader`](#the-service-name-loader-185)).
+- **Runtime rows and `isolate`**: an isolate sees only the providers in it, as with Rust rows ([Runtime rows and `isolate`](#runtime-rows-and-isolate-896)).
+- **Every language's test tool goes through `rutis-host test`**: the plugin runs on a real host, and `scope` and other options are removed ([TypeScript and Bun](#typescript-and-bun-plugins), [Python](#python), [Go](#go-plugins), [Swift](#swift), [Kotlin](#kotlin)).
+- **Python 3.12 at least** ([Python](#python)).
+- **Go and Swift row names keep only the language prefix**: `go-<binary>:<plugin>` becomes `go:<plugin>` ([Go plugins](#go-plugins)).
+- **The Kotlin SDK is not published to Maven**: it is used from source ([Kotlin](#kotlin)).
+- **Rust APIs removed and renamed**: the connection and session parts ([Rust embeddings](#rust-embeddings)), the platform cleanup ([Platform cleanup](#platform-cleanup-694)), and a filter failing in a runtime's `emit` reported as `FilterFailed` ([Error kinds](#error-kinds-879)).
+- **Tools**: `rutis-dev` is removed, `rutis-migrate` is no longer released, `rutis-host go add` is removed ([Tools](#tools)).
+
+The rest is new, and changes nothing already written.
 
 ## Remote runtimes and devices (#695, #696, #698)
 
@@ -129,7 +144,7 @@ A 0.18 row `peer:<peer>/<plugin>` is not refused in 0.19: it shows `waiting for 
 ### Rust embeddings
 
 - `rutis_host::control::serve` takes one more argument after the `Loader`: a `Report` (a function returning the status text, which `status` is answered with); `Host::status_report()` gives it.
-- The Rust API of rutis does not change. The connection and session parts of rutis-bridge and rutis-loader changed, and a local language runtime is now the far end of a session, as a remote one is (#695, [Remote connections: one session plugin](design-remote-session-2026-10-28.en.md) §3, §6, §8, §13 S4):
+- Listed here are the connection and session parts of rutis-bridge and rutis-loader (removals in the rutis kernel and elsewhere are in [Platform cleanup](#platform-cleanup-694)). These changed, and a local language runtime is now the far end of a session, as a remote one is (#695, [Remote connections: one session plugin](design-remote-session-2026-10-28.en.md) §3, §6, §8, §13 S4):
 
   | 0.18 | 0.19 |
   | --- | --- |
@@ -157,6 +172,7 @@ A 0.18 row `peer:<peer>/<plugin>` is not refused in 0.19: it shows `waiting for 
   | `PeerPlugin`, `PeerHandle`, `Features`; `Peer`, `peer_key`, `Handler`, `Offered`, `Offers`, `family()` | removed: a node is a `Session` too, the far end's plugins `<id>:<plugin>` |
   | `ExportPlugin`, `ImportPlugin`, `HostPlugin`, `LinkEventsPlugin`, `ServiceKeys` | not needed: services are seen on both sides, events are one bus, the far end runs plugins through `run` |
   | `Identity`, `IdentityPlugin`, `identity_key`, `StaticIdentity`, `Presented`; `Registration`, `Registered`, `RegistrationError`, `Registrations`, `Accepting`, `Ticket`, `Refusal`, `Deliver` | the connection plugin's own authentication; ids come from the handshake. `fingerprint` stays |
+  | Revocation while running: `Revocations`, `Revocable`, `Identity::revocations()`, `Admission::revocations()` (#834) | removed: to cut existing connections, stop the row |
   | `rutis_bridge::Credential` | `rutis_bridge::websocket::Credential` (what `websocket::dial` presents) |
   | `Installed { described: Described { schema, version, integrity }, factory }`; `StaticCatalog::with(name, described, factory)` | `Installed { schema, version, factory }`; `StaticCatalog::with(name, Installed::new(factory))` |
   | rutis-loader's feature `peer` and `rutis_loader::peer` (`PeerResolver`, `PeerRows`, `PeerRowsPlugin`, `register_peer_node`, `node_schema`, `LoaderCatalog`) | removed; rows `<connection row>:<plugin>` are resolved by `runtime::SessionResolver`, `LoaderCatalog` is in `rutis_loader::runtime` |
@@ -254,11 +270,19 @@ Two more points for Kotlin:
 - Use the same version of `rutis-ksp` as of the SDK: the code a `rutis-ksp` before 0.19 generated refers to the old places at the root and does not compile against the 0.19 SDK.
 - These classes changed packages. A Kotlin plugin library published on its own, already compiled, has to be recompiled with the 0.19 SDK before it goes into an application with the 0.19 SDK.
 
-Unchanged: `definePlugin` / `define_plugin` / `Define` / `Rutis.define` at each language's root, every method on `ctx`, the testing tools, Rust. The code Swift macros and Kotlin KSP generate is updated with the SDK and needs no change. The plugin API version is unchanged: plugins built with an older SDK run on the 0.19 runtimes as before.
+Not affected by the move: `definePlugin` / `define_plugin` / `Define` / `Rutis.define` at each language's root, every method on `ctx`, the testing tools, Rust. The code Swift macros and Kotlin KSP generate is updated with the SDK and needs no change. The plugin API version is unchanged: plugins built with an older SDK run on the 0.19 runtimes as before.
 
 ## The service name `loader` (#185)
 
 A host using `LoaderPlugin` (rutis-host included) now provides a service named `loader` ([Managing plugins with `loader`](guide/plugin-api.en.md#managing-plugins-with-loader)); a row that itself provides a service named `loader` now fails with the existing error for a name already provided (`service loader is already provided by …: row <row> cannot provide it too`): rename its service.
+
+## Runtime rows and `isolate` (#896)
+
+A runtime's row (a Node, Bun, Python, Go, Swift or Kotlin plugin) is isolated by its `isolate` on the rutis side too, as a Rust row is:
+
+- For a service name in its `isolate` it sees only the providers in the isolate (the rows with the same label, or with `true` the row alone), not those outside it, the host's services included. In 0.18 such a row was not affected by `isolate` on the rutis side, and a row in an isolate could use a service of that name provided outside it (by the host, say); in 0.19 it waits for a provider in the isolate. To use the service from outside, take the name out of the row's `isolate`.
+- A service it provides under a name in its `isolate` is in the isolate only, not published everywhere.
+- With no provider in a private isolate (`true`), the row shows in `run`'s output as waiting for the service (0.18 showed `running` while it waited in the runtime).
 
 ## Platform cleanup (#694)
 
@@ -266,7 +290,6 @@ A host using `LoaderPlugin` (rutis-host included) now provides a service named `
 
 | 0.18 | 0.19 |
 | --- | --- |
-| `LocalRuntime::call_limit`, `kill_on_timeout`, `allowed_services`, error code `timeout` | Callers limit their own calls (Rust's `tokio::time::timeout`, Python's `asyncio.wait_for` and so on); when a plugin is still stuck after a timeout, the host ends its process with `processes().kill()` and calls `FiberView::restart()` on the fiber `root.plugin(runtime)` returned; which services a plugin may use is the host's own decision |
 | `Loader::set_overlay`, `overlays()`, `LoaderChanged::Overlay` | Removed; to override a row, write it in a layer of your own (the layer list given to `reconcile`) |
 | The error name on the wire `CordisError`, the generated type `CordisErrorThrown` | `Error`, `ErrorThrown` |
 | The generated type `ErrorThrown` where it meant an error type other than rutis's named `Error` (`io::Error`, `anyhow::Error` and so on) | `<module name>ErrorThrown` (`IoErrorThrown`, `AnyhowErrorThrown`): `ErrorThrown` is rutis's own error's only; the `name` it is thrown with is unchanged, still `Error` (#771 X4) |
@@ -281,15 +304,18 @@ A host using `LoaderPlugin` (rutis-host included) now provides a service named `
 | `rutis_loader::internal::*` | `rutis_loader::patch::{apply_patches, Composed, ComposedRow, Owner, PatchWarning}`, `rutis_loader::runtime::is_runtime_name`, `rutis_loader::runtime::binary::read_binary_manifest`; the plugin API version is `Go::PLUGIN_API`, `Swift::PLUGIN_API` (constants of `BinaryLanguage`) |
 | `take_cleanup_errors()` | A cleanup's error is in the unload result (the error `dispose` returns) |
 | `FiberView::effects()`, `EffectMeta`, `EffectPhase` | No replacement; for diagnostics use `diagnostics()` |
-| `EventBus::observe_dispatch` | No replacement; to observe, register an ordinary listener |
-| feature `anyhow`, `Error::from_anyhow` | `.map_err(\|e\| Error::msg(format!("{e:#}")))` |
+| `EventBus::observe_dispatch`, `internal::DispatchAttempt` | No replacement; to observe, register an ordinary listener |
+| `internal::EventPattern` (prefix subscriptions) | No replacement |
+| `try_filter`, `try_filter_named` of `internal::CtxInternal` | `EventBus::dispatch` / `dispatch_sync` with `Dispatch { filter: Some(BatchFilter), … }` (`rutis::internal`) |
+| feature `anyhow`, `Error::from_anyhow`, `From<Error> for anyhow::Error` | `.map_err(\|e\| Error::msg(format!("{e:#}")))` |
 | `rutis_bridge::cordis::build::rutis_plugin`, `cordis::server` | Removed (a Cordis host mounting Rust plugins is no longer supported) |
-| `waterfall_sync` | Use `waterfall` (asynchronous) or the synchronous `bail` |
-| `internal::intercept_require_as`, `intercept_set_as`, `ServiceIntercept`, the `Intercept*` variants of `ServiceReadFailure` / `ServiceWriteFailure` | No replacement |
+| `waterfall_sync`; the event protocol's mode `waterfall-sync` (for those implementing a runtime) | Use `waterfall` (asynchronous) or the synchronous `bail` |
+| `internal::intercept_require_as`, `intercept_set_as`, `ServiceIntercept`, the `Intercept*` variants of `ServiceReadFailure` / `ServiceWriteFailure` | No replacement; `internal::CtxInternal::require_provided_as` no longer takes an `actor` argument |
 | `rutis_bridge::build::Exports`, build-dependency `rutis-bridge = { features = ["exports"] }` | `rutis_types::Exports`, build-dependency `rutis-types`; API unchanged |
 | `internal::config::{closest, decode, …}` | `rutis::config::closest`; validation `rutis::config::check` |
 | `rutis_loader::config::check(schema, config, options)` | `rutis::config::check(schema, config)` |
-| `internal::provide_checked`, `refresh`, `DependencyStatus::CheckPending`, `CheckRejected`, `CheckPanicked` | No replacement |
+| `internal::provide_checked`, `refresh`, `service::Check`, `Exposure`'s `check`, `DependencyStatus::CheckPending`, `CheckRejected`, `CheckPanicked` | No replacement |
+| `rutis_bridge::session::Connection::independent_future` | No replacement |
 | `rutis_loader::backoff`, `runtime::binary::{RestartPolicy, RuntimeEnd}`, `BinaryRuntimesHandle::supervise` / `unsupervise` | Removed: the loader no longer restarts a crashed Go or Swift runtime. Call `BinaryRuntimesHandle::restart(name)` yourself; the new `runtime::binary::refused(why)` tells a binary whose handshake was refused, which a restart would not start either. With rutis-host, set `runtimes.<key>.restart` |
 | `get_key`, `require_key`, `provide_key` of `internal::CtxInternal` (keyed by `TypeKey`) | Hold a `rutis::host::Key<T>` and use `get_at`, `require_at`, `provide_at` of `CtxHost`. Along with it these take a `Key`: the `key` argument of `ServiceCatalog::register_keyed` and `readable_keyed`; `SessionRows::key(row)` returns `Key<SessionRows>`; the `key` argument of `Projection::service_keyed` and `service_keyed_occupied`; the `key` function of `row_projection_with` and `row_projection_of` returns `Key<dyn HostDispatch>` (pass `host_key` itself). Where a `TypeKey` is needed (`DynPlugin::injects`), use `key.erase()` |
 | rutis-bridge's features `node`, `python`, `go`, `bun`, `swift`, `kotlin` | Removed, nothing to enable: the bridge carries no language (`cordis` no longer enables `node` either) |
@@ -299,6 +325,10 @@ A host using `LoaderPlugin` (rutis-host included) now provides a service named `
 | `Process::launch`, `launch_observed`, `launch_group`, `launch_mount`, `attach` | `Process::mount` to mount Cordis plugins; for any other process, once you have its `Channel`, open a session: `ctx.plugin(Session::new(channel))` |
 | `Launcher::output_prefix`, `pipe::Stdio::Lines` | `pipe::Stdio::Pipe(factory)`; to pass output on a whole line at a time (with an optional prefix), use rutis-host's `rutis_host::output::lines(stream, prefix)`, which returns such a `Stdio` |
 | `BinaryRuntimes::output(..)`, `prefix_output(..)` | Removed: `SpawnPlugin::stdio(..)` in `spawn` decides the standard streams |
+
+### Error kinds (#879)
+
+When a filter fails in an `emit` a runtime makes through the host, the host's error receiver gets `ErrorKind::FilterFailed { name, emitter, error }` (`emitter` is `row <row>` or `the mount`), as for the same failure in a Rust plugin; 0.18 gave `ErrorKind::PluginFailed(<text>)`. Rust code that told this failure by `PluginFailed` tells it by `FilterFailed` instead. The printed text is unchanged: `filter of t/fe from row chat failed: FErr: no`.
 
 ### Tools
 
@@ -358,6 +388,7 @@ The runtime no longer dispatches events in its own process: every emission goes 
 
 ### Kotlin
 
+- The Kotlin SDK is not published to Maven (0.18 was `implementation("io.github.arcships:rutis:0.18.0")`): fetch this repository's tag `v0.19.0`, bring it in with `includeBuild("../rutis/kotlin/rutis")`, and write the dependencies without a version (`implementation("io.github.arcships:rutis")`, `ksp("io.github.arcships:rutis-ksp")`); see [kotlin-app](guide/kotlin-app.en.md#1-dependencies).
 - The testing tool is an artifact of its own, `io.github.arcships:rutis-testing` (jvm): `testImplementation("io.github.arcships:rutis-testing")`, with `kspTest("io.github.arcships:rutis-ksp")` (the SDK is used from source, with no version: see [kotlin-app](guide/kotlin-app.en.md#1-dependencies)). It runs the plugin's real runtime in the test process, as a row of `rutis-host test`, and needs `rutis-host` (on `PATH` or at `RUTIS_HOST`).
 - The testing tool no longer has scope: `RutisTest.load(scope:)`, `Loaded.load(scope:)` and `RutisTest.scope(...)` are removed; so are `RutisTest.load(runtime:)` and `Loaded.provided`. Without `row`, rutis gives the row an id from the plugin's name (no longer `test`); a load that fails fails with the row's line (`weather: config: city is required`); `loaded.reported()` is the lines rutis reported (`weather: listener of x failed: …`).
 - The test's services, `loaded.on`, `emit` and so on are a plugin of the same runtime: values do not cross between processes.

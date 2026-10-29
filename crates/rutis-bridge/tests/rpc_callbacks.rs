@@ -286,6 +286,7 @@ fn rpc_client() -> std::path::PathBuf {
         .join("../../node/rutis-runtime/test/fixtures/rpc-client.mjs")
 }
 
+/// guarantee: boundary/5.6
 /// The fixture started on a local pipe, on the channel it is handed (fd 3,
 /// or a loopback address); the channel's end says how it exited.
 #[tokio::test(flavor = "current_thread")]

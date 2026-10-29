@@ -229,7 +229,7 @@ async def apply(ctx, config):
 plugin = define_plugin(apply, inject=["notes", "commands"])
 ```
 
-Install the two runtimes (Node 22 or later, Python 3.10 or later) and run:
+Install the two runtimes (Node 22 or later, Python 3.12 or later) and run:
 
 <!-- example: jot-en run -->
 ```bash

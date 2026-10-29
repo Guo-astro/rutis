@@ -452,6 +452,7 @@ mod tests {
             .unwrap_or_else(|| panic!("no {line:?}"))
     }
 
+    /// guarantee: host/connection-plugins
     #[tokio::test]
     async fn upgrades_are_routed_by_token_and_a_token_of_no_row_is_refused() {
         let phone = start("phone").await;
@@ -528,6 +529,7 @@ mod tests {
         root.shutdown().await.unwrap();
     }
 
+    /// guarantee: host/listen-replacement-order
     #[tokio::test]
     async fn a_newer_connection_replaces_the_older_after_the_older_fully_unloaded() {
         let phone = start("phone").await;
@@ -587,6 +589,7 @@ mod tests {
         until(|| old_end.is_finished()).await;
     }
 
+    /// guarantee: host/link-state-output
     #[tokio::test]
     async fn a_far_end_leaving_is_said_and_unloading_the_row_unloads_its_sessions() {
         let phone = start("phone").await;

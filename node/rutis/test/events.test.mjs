@@ -1,3 +1,4 @@
+// guarantee: host/test-command
 // guarantee: sdk/leaf-events — the test tool's events (#464), on a real
 // host: the five modes from the test, filters with descriptors, emit's
 // reported failures, errors as from another process, unload waiting for

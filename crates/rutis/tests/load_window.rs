@@ -282,7 +282,7 @@ async fn withdrawn_at_the_gate(
 
 /// A first load past the gate, before its dependencies are recorded.
 ///
-/// guarantee: core/D14
+/// guarantee: core/D14, loader/rows-gate-on-services
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_dependency_withdrawn_at_the_gate_of_a_first_load_stops_the_consumer() {
     let root = Ctx::root().unwrap();

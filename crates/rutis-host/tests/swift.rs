@@ -76,7 +76,7 @@ async fn call(
 /// A row `swift:ping` runs in the runtime of the binary that has it,
 /// started when the row loads; `restart: on-failure` starts it again when
 /// it crashes, and the row comes back.
-/// guarantee: host/runtime-restart, loader/swift-runtimes
+/// guarantee: host/runtime-restart, loader/swift-runtimes, swift/tcc-belongs-to-the-binary
 #[tokio::test(flavor = "multi_thread")]
 async fn a_swift_row_runs_in_its_binarys_runtime_and_comes_back_after_a_crash() {
     let dir = tempfile::tempdir().unwrap();

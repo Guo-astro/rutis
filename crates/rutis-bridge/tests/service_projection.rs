@@ -89,6 +89,7 @@ impl DynPlugin for Mount {
     }
 }
 
+/// guarantee: boundary/5.1
 #[tokio::test(flavor = "current_thread")]
 async fn projected_service_follows_replacement_and_withdrawal() {
     if !rutis_test_support::runtimes::enabled("node") {

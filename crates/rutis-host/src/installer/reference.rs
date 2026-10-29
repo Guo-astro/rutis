@@ -109,6 +109,7 @@ fn split_version(text: &str, rest: &str) -> Result<(String, Option<String>), Err
     Ok((name.to_owned(), version.map(str::to_owned)))
 }
 
+/// guarantee: host/plugin-install
 #[cfg(test)]
 mod tests {
     use super::*;

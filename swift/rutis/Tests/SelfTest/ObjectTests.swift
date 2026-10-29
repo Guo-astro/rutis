@@ -1,3 +1,4 @@
+// guarantee: bridge/object-refs
 // Objects with methods across processes, Swift's side (#687), and within
 // one runtime (a plugin handing one to another, as RutisTest's test plugin
 // does): a received object is the proxy of a @RutisClient protocol whose methods call the

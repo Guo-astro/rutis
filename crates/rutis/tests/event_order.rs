@@ -162,7 +162,7 @@ async fn status_events_arrive_in_commit_order_across_concurrent_fibers() {
 /// 发出的顺序开始。监听器按序号让出不同轮数,链若分叉,同一发射者的
 /// 后一个事件会超车。
 ///
-/// guarantee: core/D31
+/// guarantee: core/D31, events/emit
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn emit_order_is_kept_per_emitter() {
     const EMITTERS: usize = 4;

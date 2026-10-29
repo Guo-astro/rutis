@@ -1,3 +1,4 @@
+// guarantee: bridge/object-refs
 package arcships.rutis
 
 import arcships.rutis.internal.Native

@@ -239,7 +239,7 @@ uv run rutis-host dev
 rutis-host dev: running greeter; changes reload it (Ctrl-C ends)
 greeter: starting
 translate: running
-rutis-host dev: services: greeter (greeter), loader (host), translate (translate)
+rutis-host dev: services: greeter (greeter), loader (host), sessions (host), translate (translate)
 greeter: running
 ```
 
@@ -255,6 +255,7 @@ rows:
 services:
   greeter: greeter
   loader: host
+  sessions: host
   translate: translate
 runtimes:
   py: running (pid 55011)
@@ -272,7 +273,7 @@ A change to the code reloads it: change the `!` that `hello` returns to `!!` and
 
 ```text
 greeter: reloaded (src/greeter/__init__.py changed)
-rutis-host dev: services: greeter (greeter), loader (host), translate (translate)
+rutis-host dev: services: greeter (greeter), loader (host), sessions (host), translate (translate)
 ```
 
 `call greeter.hello '"Ada"'` now gives `"Bonjour, Ada!!"`. Only the row whose file changed reloads; a change to `rutis.dev.json` takes effect while it runs too. Only the plugin's module is imported again; when a module it imports changes, restart `dev`. See [Developing a plugin with `dev`](rutis-host.en.md#developing-a-plugin-with-dev).
