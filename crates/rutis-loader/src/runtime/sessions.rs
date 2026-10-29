@@ -19,8 +19,9 @@
 //! [`SessionResolver`] goes last in the loader's chain: a name another
 //! resolver takes (a runtime named like the connection row, `peer:`, an
 //! npm name) stays theirs, so existing texts do not change. It resolves
-//! only `<x>:<plugin>` whose `x` may name a runtime and is the id of one of
-//! the loader's rows; anything else is not found.
+//! every `<x>:<plugin>` whose `x` may name a runtime, whether or not a row
+//! `x` is there yet (it may come in the same batch, or later): until its
+//! session is there, the row waits for it.
 //!
 //! [`Unavailable`]: crate::report::Unavailable
 
@@ -192,13 +193,10 @@ impl Resolver for SessionResolver {
             let Some((row, plugin)) = Self::split(name) else {
                 return Err(not_found());
             };
-            let Some(loader) = self.loader() else {
-                return Err(not_found());
-            };
-            if loader.get(row).is_none() {
-                return Err(not_found());
-            }
-            let ctx = loader.ctx();
+            // Whether a row `row` exists is not asked: it may come in the
+            // same batch as this one, or later. Until its session is there,
+            // this row waits for it (§4.3).
+            let ctx = self.loader().and_then(|loader| loader.ctx());
             if let Some(ctx) = &ctx {
                 self.follow(ctx, row);
             }
