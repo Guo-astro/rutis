@@ -1539,12 +1539,22 @@ impl Connection {
             .await
         }
     }
+    /// Invoke `method` of `target` on the far end. Called while another
+    /// session's call is handled ([`caller`]), it is forwarded from that
+    /// session, its chain rebased, as calls on references are: untagged,
+    /// that session's ids would name this session's own calls, even the one
+    /// being sent (#813).
     pub fn invoke(&self, target: &str, method: &str, args: Value) -> Reply {
-        self.request_sync(Operation::Invoke(target.into(), method.into(), args))
+        forwarded(self, || {
+            self.request_sync(Operation::Invoke(target.into(), method.into(), args))
+        })
     }
     pub async fn invoke_async(&self, target: &str, method: &str, args: Value) -> Reply {
-        self.request_async(Operation::Invoke(target.into(), method.into(), args))
-            .await
+        forwarded_async(
+            self,
+            self.request_async(Operation::Invoke(target.into(), method.into(), args)),
+        )
+        .await
     }
     /// [`Connection::invoke_async`], its frame written before this returns:
     /// calls started one after another reach the far end in that order,
@@ -1557,10 +1567,12 @@ impl Connection {
         args: Value,
     ) -> Result<impl Future<Output = Reply> + Send + 'static, Error> {
         let (sender, receiver) = oneshot::channel();
-        let id = self.send(
-            Operation::Invoke(target.into(), method.into(), args),
-            Waiting::Async(sender),
-        )?;
+        let id = forwarded(self, || {
+            self.send(
+                Operation::Invoke(target.into(), method.into(), args),
+                Waiting::Async(sender),
+            )
+        })?;
         let guard = CancelOnDrop {
             peer: Arc::downgrade(&self.0),
             id,
@@ -1584,10 +1596,12 @@ impl Connection {
         args: Value,
     ) -> Result<impl Future<Output = Reply> + Send + 'static, Error> {
         let (sender, receiver) = oneshot::channel();
-        let id = self.send(
-            Operation::Invoke(target.into(), method.into(), args),
-            Waiting::Async(sender),
-        )?;
+        let id = forwarded(self, || {
+            self.send(
+                Operation::Invoke(target.into(), method.into(), args),
+                Waiting::Async(sender),
+            )
+        })?;
         let guard = CancelOnDrop {
             peer: Arc::downgrade(&self.0),
             id,
