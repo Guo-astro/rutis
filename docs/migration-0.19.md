@@ -280,6 +280,7 @@ Kotlin 另有两点：
 | `take_cleanup_errors()` | 清理的错误在卸载结果里（`dispose` 返回的错误） |
 | `FiberView::effects()`、`EffectMeta`、`EffectPhase` | 无替代；诊断用 `diagnostics()` |
 | `EventBus::observe_dispatch` | 无替代；要观察就注册一个普通监听器 |
+| 宿主发给运行时会话的 `events.elsewhere`；`rutis_bridge::session::Dispatch::arrived` / `replied`；`rutis_bridge::events::testing::Tap::dispatches` / `answered`（#813） | 删除：运行时不在自己进程里分发，每次发出都交给宿主（`events.dispatch`），没有要告诉它们或要计数的东西；自己写的运行时删掉处理 `events.elsewhere` 的代码 |
 | feature `anyhow`、`Error::from_anyhow` | `.map_err(\|e\| Error::msg(format!("{e:#}")))` |
 | `rutis_bridge::cordis::build::rutis_plugin`、`cordis::server` | 删（Cordis 宿主挂 Rust 插件的方向不再支持） |
 | `waterfall_sync` | 改用 `waterfall`（异步）或同步 `bail` |

@@ -407,7 +407,6 @@ type expectation struct {
 		Filter bool   `json:"filter"`
 	} `json:"reported"`
 	FilterSees []string `json:"filterSees"`
-	ViaHost    *bool    `json:"viaHost"`
 	Settles    bool     `json:"settles"`
 }
 

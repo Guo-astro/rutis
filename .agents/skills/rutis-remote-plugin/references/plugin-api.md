@@ -203,7 +203,7 @@ A failure nobody waits for is written in one line where it happens (a runtime on
 
 In Go, check with `errors.Is(err, advanced.ErrWaterfallNext)` and the like; an error of that name from any process matches. An error a listener throws crosses with its name, message and error graph, as any call's error.
 
-**Match a listener's error by its name, not its class.** Where it arrives depends on where the listener runs: from another process it arrives as the language's remote error (TypeScript: an `Error` of the same built-in class or a plain `Error` with that `name`; Python: `rutis.RemoteError`, rutis's own names as their classes; Go: `*rutis.RemoteError`, `errors.As` then `Name`), with its `name`, `message` and `code`; when every listener is in the emitter's process (the fast path), the listener's own error object may arrive. The test tools give a plugin's own emitters the crossed form (in strict mode), so a test catches a match by class; that the fast path keeps the original is not a guarantee.
+**Match a listener's error by its name, not its class.** It reaches the emitter through the host, also when the listener runs in the emitter's process, and arrives as the language's remote error (TypeScript: an `Error` of the same built-in class or a plain `Error` with that `name`; Python: `rutis.RemoteError`, rutis's own names as their classes; Go: `*rutis.RemoteError`, `errors.As` then `Name`), with its `name`, `message` and `code`.
 
 ### Mixing with 0.12 and earlier
 

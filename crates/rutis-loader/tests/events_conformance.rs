@@ -27,7 +27,7 @@
 //! their pid and stderr.
 //!
 //! The `host` and `node` locations are the Rust plugin of
-//! `events_conformance/rust_participant.rs`; `viaHost`, `hold` and the
+//! `events_conformance/rust_participant.rs`; `hold` and the
 //! host's own failure reports are the host bus's test hooks
 //! (`rutis_bridge::events::testing::Tap`).
 #![cfg(all(feature = "node", feature = "python"))]
@@ -488,7 +488,7 @@ impl Host {
         let expected = events::expected();
         let dir = tempfile::tempdir().unwrap();
         // The host prints event failures as rutis-host does; the tap
-        // records them and counts and holds the runtimes' dispatches.
+        // records them and holds the runtimes' dispatches.
         let tap = Tap::new();
         let print: rutis::host::ErrorSink =
             Arc::new(|error| match rutis_bridge::events::report_line(&error) {
@@ -1127,14 +1127,6 @@ impl World for Host {
             self.mark();
             Ok(())
         })
-    }
-
-    fn dispatches(&self) -> Option<u64> {
-        Some(self.rust.dispatches())
-    }
-
-    fn answered(&self) -> BoxFuture<'_, Result<(), String>> {
-        Box::pin(self.rust.answered())
     }
 
     fn hold(&self, n: usize) -> Result<(), String> {

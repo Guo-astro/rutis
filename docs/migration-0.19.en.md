@@ -280,6 +280,7 @@ A host using `LoaderPlugin` (rutis-host included) now provides a service named `
 | `take_cleanup_errors()` | A cleanup's error is in the unload result (the error `dispose` returns) |
 | `FiberView::effects()`, `EffectMeta`, `EffectPhase` | No replacement; for diagnostics use `diagnostics()` |
 | `EventBus::observe_dispatch` | No replacement; to observe, register an ordinary listener |
+| The host's `events.elsewhere` to runtime sessions; `rutis_bridge::session::Dispatch::arrived` / `replied`; `rutis_bridge::events::testing::Tap::dispatches` / `answered` (#813) | Removed: runtimes dispatch nothing in their own process, every emission goes to the host (`events.dispatch`), so there is nothing to tell them or to count; a runtime of your own deletes its `events.elsewhere` handler |
 | feature `anyhow`, `Error::from_anyhow` | `.map_err(\|e\| Error::msg(format!("{e:#}")))` |
 | `rutis_bridge::cordis::build::rutis_plugin`, `cordis::server` | Removed (a Cordis host mounting Rust plugins is no longer supported) |
 | `waterfall_sync` | Use `waterfall` (asynchronous) or the synchronous `bail` |

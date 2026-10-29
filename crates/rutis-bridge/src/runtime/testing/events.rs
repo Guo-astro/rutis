@@ -368,8 +368,7 @@ pub enum Step {
     Unload {
         label: String,
         when: Option<String>,
-        /// An entry the runner logs once the row is gone (and, with
-        /// `answered`, once the host answered its dispatches), before it
+        /// An entry the runner logs once the row is gone, before it
         /// joins the background dispatch: what an emitter's `then.until`
         /// waits for.
         then: Option<String>,
@@ -396,7 +395,7 @@ pub enum Step {
 
 /// The keys of a step's `expect` (the first [`STEP_EXPECTATIONS`]), then
 /// the fields of `throws`.
-pub const EXPECTATIONS: [&str; 15] = [
+pub const EXPECTATIONS: [&str; 13] = [
     "returns",
     "throws",
     "cancelled",
@@ -406,16 +405,14 @@ pub const EXPECTATIONS: [&str; 15] = [
     "logLacks",
     "reported",
     "filterSees",
-    "viaHost",
     "settles",
-    "answered",
     "why",
     "errors",
     "message",
 ];
 
 /// How many of [`EXPECTATIONS`] are keys of `expect`.
-pub const STEP_EXPECTATIONS: usize = 12;
+pub const STEP_EXPECTATIONS: usize = 10;
 
 impl Step {
     pub fn parse(raw: &Json) -> Result<Self, String> {
@@ -1243,19 +1240,6 @@ pub trait World: Send + Sync {
     /// Unload every row of the case and bring back what it killed.
     fn reset(&self) -> BoxFuture<'_, Result<(), String>>;
 
-    /// How many `events.dispatch` the host received so far, if the world
-    /// can tell (`viaHost`).
-    fn dispatches(&self) -> Option<u64> {
-        None
-    }
-
-    /// Wait until the host has written its reply to every `events.dispatch`
-    /// it received (`answered`): the frames the suite sends afterwards
-    /// reach each emitter after those replies.
-    fn answered(&self) -> BoxFuture<'_, Result<(), String>> {
-        Box::pin(async { Err("answered: this world cannot see the host's replies".into()) })
-    }
-
     /// Hold the next `n` dispatches at the host until all arrived (`hold`).
     fn hold(&self, _n: usize) -> Result<(), String> {
         Err("this world cannot hold dispatches".into())
@@ -1364,7 +1348,6 @@ async fn run_step(
     let empty = Json::Object(Default::default());
     let expect = step.expect().unwrap_or(&empty);
     let settles = expect["settles"].as_bool().unwrap_or(false);
-    let before = world.dispatches();
     let mut outcomes: Vec<Outcome> = Vec::new();
     // Where the step's emitter is: the descriptions its filter sees are
     // this process's view (an entry of another node is the link's).
@@ -1394,9 +1377,6 @@ async fn run_step(
             }
             world.unload(label).await?;
             if let Some(then) = then {
-                if expect.get("answered").and_then(Json::as_bool) == Some(true) {
-                    world.answered().await?;
-                }
                 log.add(then.clone());
             }
             if let Some(handle) = pending.take() {
@@ -1439,23 +1419,6 @@ async fn run_step(
         .map(|spec| combo.language(combo.at.get(&spec.row).copied().unwrap_or(spec.from)))
         .map(str::to_owned);
     check_outcomes(expect, &outcomes, emitter_language.as_deref())?;
-    if let Some(via) = expect.get("viaHost").and_then(Json::as_bool) {
-        let (Some(before), Some(after)) = (before, world.dispatches()) else {
-            return Err("viaHost: this world cannot see the host's dispatches".into());
-        };
-        if (after > before) != via {
-            return Err(format!(
-                "viaHost: expected {via}, {} events.dispatch arrived",
-                after - before
-            ));
-        }
-    }
-    // The emits through the host are answered before the next step: an
-    // emitter takes its replies in frame order (§5.5), so its next emit of
-    // the name may take the fast path again.
-    if expect.get("answered").and_then(Json::as_bool) == Some(true) {
-        world.answered().await?;
-    }
     check_log(world, log, expect, viewer, &event_of(case, step)).await
 }
 

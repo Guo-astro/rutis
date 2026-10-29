@@ -702,7 +702,7 @@ Rust 的类型化事件以 `Event::NAME` 作为跨语言的名字，参数按 se
 
 Go 用 `errors.Is(err, advanced.ErrWaterfallNext)` 等判断，任何进程里同名的错误都匹配。监听器自己抛出的错误带着名字、信息与错误图跨边界，与任何调用的错误相同。
 
-**按名字匹配监听器的错误，不按类。** 收到的是什么取决于监听器在哪里运行：来自别的进程时，它是本语言的远端错误（TypeScript：同一内置类的 `Error`，或带那个 `name` 的普通 `Error`；Python：`rutis.RemoteError`，rutis 自己的名字是对应的类；Go：`*rutis.RemoteError`，先 `errors.As` 再看 `Name`），带着它的 `name`、`message` 和 `code`；所有监听器都在发出方进程里时（快速路径），可能收到监听器自己的错误对象。测试工具让插件自己的发出方法收到跨进程后的形式（严格模式下），所以按类匹配会在测试里失败；快速路径保留原对象这一点不作保证。
+**按名字匹配监听器的错误，不按类。** 它经宿主到达发出方，监听器在发出方进程里时也一样，收到的是本语言的远端错误（TypeScript：同一内置类的 `Error`，或带那个 `name` 的普通 `Error`；Python：`rutis.RemoteError`，rutis 自己的名字是对应的类；Go：`*rutis.RemoteError`，先 `errors.As` 再看 `Name`），带着它的 `name`、`message` 和 `code`。
 
 ### 与 0.12 及更早的端混用
 

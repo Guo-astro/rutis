@@ -376,11 +376,21 @@ fn template_tests(s: &Scenario, kind: Kind) -> Host {
         // The test tool runs the plugin on `rutis-host test`.
         Kind::Node => {
             let host = rutis_e2e::host_program();
-            s.program("demo", npm(), ["test"], &[("RUTIS_HOST", &host.to_string_lossy())])
+            s.program(
+                "demo",
+                npm(),
+                ["test"],
+                &[("RUTIS_HOST", &host.to_string_lossy())],
+            )
         }
         Kind::Bun => {
             let host = rutis_e2e::host_program();
-            s.program("demo", "bun", ["test"], &[("RUTIS_HOST", &host.to_string_lossy())])
+            s.program(
+                "demo",
+                "bun",
+                ["test"],
+                &[("RUTIS_HOST", &host.to_string_lossy())],
+            )
         }
         Kind::Python => {
             let path = std::env::join_paths([PathBuf::from("src"), repo().join("python/rutis")])

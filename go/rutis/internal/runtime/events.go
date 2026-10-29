@@ -468,12 +468,7 @@ func selector(keep func(Listener) (bool, error)) peer.Func {
 // arrive takes the host's event calls on the reading goroutine, in frame
 // order (§4.1, §5.5); the rest runs as any call does.
 func (rt *runtimeState) arrive(ctx context.Context, method string, args []any) func() (any, error) {
-	switch method {
-	case "events.elsewhere":
-		// Every emission goes through the host: where else listeners are
-		// changes nothing here.
-		return func() (any, error) { return nil, nil }
-	case "events.call":
+	if method == "events.call" {
 		return rt.eventCall(ctx, args)
 	}
 	return nil

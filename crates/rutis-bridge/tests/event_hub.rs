@@ -26,11 +26,10 @@ fn id(s: &str) -> PeerId {
 /// What a fake listener does when called: its answer.
 type Behavior = Arc<dyn Fn(&BTreeMap<String, Value>) -> Reply + Send + Sync>;
 
-/// A runtime that mounts nothing: it records `events.elsewhere` and the
-/// `events.call`s it gets, answering each by its listener's behavior.
+/// A runtime that mounts nothing: it records the `events.call`s it gets,
+/// answering each by its listener's behavior.
 #[derive(Default)]
 struct Fake {
-    elsewhere: Mutex<Vec<Json>>,
     calls: Mutex<Vec<BTreeMap<String, Value>>>,
     listeners: Mutex<BTreeMap<String, Behavior>>,
 }
@@ -51,10 +50,6 @@ impl Dispatch for Fake {
             )),
             ("", "rows.load") | ("", "rows.unload") => Ok(Value::Undefined),
             ("", "ping") => Ok(Value::Data(json!("pong"))),
-            ("", "events.elsewhere") => {
-                self.elsewhere.lock().unwrap().push(first()?.json()?);
-                Ok(Value::Undefined)
-            }
             ("", "events.call") => {
                 let Value::Record(fields) = first()? else {
                     return Err(Error::Value("events.call needs a record".into()));
@@ -177,10 +172,6 @@ impl Rig {
         }
         self.send("events.dispatch", Value::Record(fields)).await
     }
-
-    fn elsewhere(&self) -> Vec<Json> {
-        self.fake.elsewhere.lock().unwrap().clone()
-    }
 }
 
 fn answers(answer: Json) -> Behavior {
@@ -220,49 +211,6 @@ fn answer(value: Option<&'static str>, heard: Arc<Mutex<Vec<Vec<Value>>>>) -> im
             Ok(value.map(|answer| ArgValue(Value::Data(json!(answer)))))
         }
     }
-}
-
-/// guarantee: events/presence
-///
-/// The runtime hears the names with listeners elsewhere first (before
-/// `mount`), then each change: a host listener added and withdrawn, a
-/// prefix entry; its own entries are never elsewhere to it.
-#[tokio::test(flavor = "multi_thread")]
-async fn a_runtime_hears_what_is_elsewhere() {
-    within("presence", async {
-        let root = Ctx::root().unwrap();
-        let heard = Arc::new(Mutex::new(Vec::new()));
-        root.listen::<Args>()
-            .name("t/before")
-            .on(answer(None, heard.clone()))
-            .unwrap();
-        let rig = rig_with(root.clone(), Endpoint::rust(id("rt")))
-            .await
-            .unwrap();
-        // Sent before `attach` returns, as a one-way message: the far side
-        // handles it in its own time.
-        eventually(|| !rig.elsewhere().is_empty(), "t/before").await;
-        assert_eq!(rig.elsewhere()[0], json!({ "add": ["t/before"] }));
-
-        let later = root
-            .listen::<Args>()
-            .name("t/later")
-            .on(answer(None, heard.clone()))
-            .unwrap();
-        // Queued before `on` returned.
-        eventually(|| rig.elsewhere().len() == 2, "t/later").await;
-        assert_eq!(rig.elsewhere()[1], json!({ "add": ["t/later"] }));
-        later.dispose().await.unwrap();
-        eventually(|| rig.elsewhere().len() == 3, "t/later gone").await;
-        assert_eq!(rig.elsewhere()[2], json!({ "remove": ["t/later"] }));
-
-        // Its own listener is not elsewhere to it.
-        rig.on("1", "t/own", None, "async", answers(json!(null)))
-            .await;
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        assert_eq!(rig.elsewhere().len(), 3);
-    })
-    .await;
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

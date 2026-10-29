@@ -1129,20 +1129,6 @@ impl Drop for Flight {
 
 pub trait Dispatch: Send + Sync + 'static {
     fn invoke(&self, peer: &Connection, target: &str, method: &str, args: Value) -> Reply;
-
-    /// The event operation `method` (an `events.*` control call) was read
-    /// and admitted: called on the reader, before the next frame is taken,
-    /// whereas [`Dispatch::invoke`] runs it later, in the session's order
-    /// of event operations. It must not block. The host's bus counts the
-    /// `events.dispatch` requests here for its test hooks (feature
-    /// `testing`); nothing else needs it.
-    fn arrived(&self, _peer: &Connection, _method: &str) {}
-
-    /// The reply to the event operation `method` was written: what the far
-    /// end reads after it was sent after the reply. It must not block. The
-    /// host's bus counts the answered `events.dispatch` requests here for
-    /// its test hooks (feature `testing`).
-    fn replied(&self, _peer: &Connection, _method: &str) {}
 }
 /// This side of a session: each side names itself in the handshake and
 /// calls as `<endpoint id>:<n>`.
@@ -1222,11 +1208,11 @@ fn is_ordered_op(method: &str) -> bool {
 
 /// Whether the ordered control operation `method` runs in its turn, before
 /// the next one starts (events protocol §4.1, §5.5, §7.1): the table
-/// changes (`events.on`, `events.off`, `events.elsewhere`, `rows.ended`),
+/// changes (`events.on`, `events.off`, `rows.ended`),
 /// and the `emit` dispatches and invocations, which start in arrival order.
 fn inline_event_op(method: &str, args: &Value) -> bool {
     match method {
-        "events.on" | "events.off" | "events.elsewhere" | "rows.ended" => true,
+        "events.on" | "events.off" | "rows.ended" => true,
         "events.dispatch" | "events.call" => {
             let first = match args {
                 Value::List(items) => items.first(),
@@ -2620,11 +2606,6 @@ impl Connection {
                 Err(id)
             }
         };
-        if let Some(method) = &event_op {
-            // Arrived now, in frame order: before any later frame of the
-            // session (a reply among them) is read.
-            self.0.dispatch.arrived(self, method);
-        }
         if let (Err(id), true) = (&delivery, event_op.is_some()) {
             self.run_ordered(id.clone(), inline);
         } else if let Err(id) = delivery {
@@ -2807,16 +2788,12 @@ impl Connection {
                         self.0.executor.spawn(async move {
                             let settled = settle(future).await;
                             peer.respond_to(id, settled, Some(&call));
-                            peer.0.dispatch.replied(&peer, &method);
                             drop(_flight);
                         });
                         return;
                     }
                 }
                 self.respond_to(id, result, Some(&call));
-                if event_op {
-                    self.0.dispatch.replied(self, &method);
-                }
                 drop(_flight);
             }
         }

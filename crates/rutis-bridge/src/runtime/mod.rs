@@ -120,14 +120,6 @@ impl crate::peer::Handler for Routed {
     ) -> crate::session::Reply {
         self.0.invoke(peer, target, method, args)
     }
-
-    fn arrived(&self, peer: &Connection, method: &str) {
-        self.0.arrived(peer, method)
-    }
-
-    fn replied(&self, peer: &Connection, method: &str) {
-        self.0.replied(peer, method)
-    }
 }
 
 impl Carried for PeerSession {
