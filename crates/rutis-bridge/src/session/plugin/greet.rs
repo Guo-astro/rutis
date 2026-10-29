@@ -66,7 +66,8 @@ impl Greet<'_> {
             return Err(error);
         }
         closing.disarm();
-        operations.attach(session.clone());
+        // Not attached here: what this end offers (`link.offers`) is told
+        // only once the session is mounted; a greeted session sends nothing.
         Ok((session, operations))
     }
 }
