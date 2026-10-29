@@ -582,8 +582,12 @@ async fn an_isolated_second_provider_runs_beside_the_first() {
         return;
     }
     let fixture = fixture().await;
-    let plugin = repo().join("node/rutis/src/index.mjs");
-    let plugin = plugin.to_string_lossy();
+    // A file URL: Node imports a Windows path (`C:\\…`) only as one.
+    let plugin = repo()
+        .join("node/rutis/src/index.mjs")
+        .canonicalize()
+        .unwrap();
+    let plugin = url::Url::from_file_path(&plugin).unwrap().to_string();
     for (name, text) in [("py_forecast", PY_FORECAST), ("py_reader", PY_READER)] {
         std::fs::write(fixture.py.join(format!("{name}.py")), text).unwrap();
     }
