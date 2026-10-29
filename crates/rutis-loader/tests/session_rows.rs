@@ -383,12 +383,11 @@ async fn a_runtime_named_like_a_connection_row_wins() {
     main.root.shutdown().await.unwrap();
 }
 
-/// A name whose prefix is no row of the loader is not the session
-/// resolver's.
+/// A row whose connection row is not there (yet: it may come in the same
+/// batch or later) waits for it, as for a connection not connected.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_prefix_that_is_no_row_is_not_found() {
+async fn a_row_whose_connection_row_is_not_there_waits_for_it() {
     let main = main(json!([{ "id": "contacts", "name": "cpu:contacts" }]), None).await;
-    let error = main.failed("contacts").await;
-    assert!(matches!(error, LoaderError::NotFound { .. }), "{error:?}");
+    assert_eq!(main.waiting("contacts").await, "waiting for cpu");
     main.root.shutdown().await.unwrap();
 }
