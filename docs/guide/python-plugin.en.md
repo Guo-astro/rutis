@@ -1,95 +1,189 @@
 # Write a Python Plugin
 
-This guide covers creating a project, publishing it, and using it from a host. Python 3.10 or later is required. The examples use [uv](https://docs.astral.sh/uv/), but pip and venv work too.
+From starting a project to publishing it, in eight steps. The example is the `greeter` the template makes: it provides the `greeter` service and uses the `translate` service, which another plugin provides, to translate its greeting. It needs Python 3.12 or later; the commands below use [uv](https://docs.astral.sh/uv/), and pip with venv works too.
 
-## 1. Create a project
+## 1. Start a project
 
 <!-- example: python-en run -->
 ```bash
-uvx rutis-host new weather --lang python
-cd weather
+uvx rutis-host new greeter --lang python
+cd greeter
 uv sync
+uv run python -m unittest discover -s tests
 ```
 
-The generated project contains:
+The project:
 
-| File | Purpose |
+| File | What it is |
 | --- | --- |
-| `src/weather/__init__.py` | The plugin itself. |
-| `tests/test_plugin.py` | Unit tests that do not need a host. |
-| `rutis.dev.json` | Local runtime configuration and other plugins used for testing. |
-| `pyproject.toml` | Depends on `rutis` (a lower bound only, see §5); development dependency `rutis-host`; entry point under `rutis.plugins`. |
-| `.github/workflows/publish.yml` | Tests and publishes to PyPI when a `v*` tag is pushed. |
+| `src/greeter/__init__.py` | The plugin |
+| `tests/test_plugin.py` | Its tests, which need no host |
+| `rutis.dev.json` | The rows of a local run (step 7) |
+| `pyproject.toml` | Depends on `rutis`; dev dependency `rutis-host`; entry point `rutis.plugins` |
+| `.github/workflows/publish.yml` | Tests and publishes to PyPI on a `v*` tag (step 8) |
 
-## 2. Write the plugin
+## 2. Provide a service
 
-The generated `src/weather/__init__.py` is a `greeter` that uses no service, and `tests/test_plugin.py` is its test. Here it becomes a `weather` that uses an `llm` service: replace `__init__.py` with the code below, and `tests/test_plugin.py` with the one in §3 at the same time (the two files go together).
+The generated `src/greeter/__init__.py`:
 
-<!-- example: python-en file=weather/src/weather/__init__.py -->
+<!-- example: python-en file=greeter/src/greeter/__init__.py -->
 ```python
+"""greeter: a rutis plugin."""
+
+# Guide: https://github.com/arcships/rutis/blob/main/docs/guide/python-plugin.en.md
+
 from rutis import define_plugin
 
 
-class Weather:
-    def __init__(self, llm, city):
-        self.llm, self.city = llm, city
+class Greeter:
+    def __init__(self, greeting: str) -> None:
+        self.greeting = greeting
 
-    async def today(self):                # async def declares an asynchronous method
-        return f"{await self.llm.ask(f'weather in {self.city}')} in {self.city}"
+    async def hello(self, name: str) -> str:
+        return f"{self.greeting}, {name}!"
 
 
 def apply(ctx, config):
-    ctx.provide("weather", Weather(ctx.use("llm"), config["city"]))
-    return lambda: None                   # Cleanup may be async; returning nothing is also fine
+    # config has the schema's default when the row leaves greeting out.
+    ctx.provide("greeter", Greeter(config["greeting"]))
 
 
 plugin = define_plugin(
     apply,
-    inject=["llm"],                       # Services used: start when all are ready; stop if any is revoked
-    provides={"weather": Weather},        # What it provides: check knows before running
-    config={"type": "object", "properties": {"city": {"type": "string", "default": "Oslo"}}},
+    # The services it uses (step 3 of the guide): inject=["translate"], then
+    # ctx.use("translate") in apply.
+    inject=[],
+    # The services it provides, so a host knows them before the plugin runs:
+    # the class's public methods.
+    provides={"greeter": Greeter},
+    # The JSON Schema of its config (step 4).
+    config={"type": "object", "properties": {"greeting": {"type": "string", "default": "Hello"}}},
 )
 ```
 
-Before `apply`, rutis fills the config with the schema's defaults (`Oslo` when the row has no `city`) and validates it: a row whose config does not match fails with `config: …`, and `apply` is not called ([plugin API: configuration](plugin-api.en.md#configuration)). `load` and `update` in `rutis.testing` do the same, raising a `BindingError` with code `bad-config`; extra keys are written on stderr.
+- `define_plugin(apply, …)` defines the plugin. When the plugin starts, rutis calls `apply(ctx, config)`; `apply` may be an `async def`.
+- `ctx.provide("greeter", …)` provides the service named `greeter`: other plugins, plugins in other languages and the host use it by that name. The service's methods are the object's methods whose names do not start with `_`.
+- `provides` says which services the plugin provides and their methods, so a host knows them without running the plugin.
 
-You can also omit `define_plugin` and declare `apply`, `inject`, `provides`, and `Config` directly in the module. `apply` may be an `async def` function.
+## 3. Use a service
 
-`provides` says what the plugin provides, so `rutis-host check` knows without running the plugin that this row provides `weather`: when a host checks its configuration with `check --strict` in CI, the rows that use `weather` pass (the template declares it by default). `provides={"weather": Weather}` reads the methods from the class: those not starting with `_`, `async def` ones async, the others sync; `{"weather": {"today": "async"}}` works too. It also runs without one: what `ctx.provide` provides still reaches rutis by itself, its methods the object's callable attributes not starting with `_`, all called as `async`; `check` then only knows once the plugin runs, and `--strict` reports an error.
+`greeter` translates its greeting with the `translate` service. Replace `src/greeter/__init__.py` with:
 
-`ctx.use("llm")` gets the service. A service provided by a plugin in the same process is the object itself; services from another language or machine are proxies, whose methods return synchronously or produce awaitable results according to their declarations. See [Plugin API](plugin-api.en.md) for capabilities and value passing rules.
+<!-- example: python-en file=greeter/src/greeter/__init__.py -->
+```python
+from rutis import define_plugin
 
-A plugin is itself a value, to hand to a service and mount elsewhere many times: see [plugin API: plugin definitions](plugin-api.en.md#plugin-definitions).
 
-### Objects with methods
+class Greeter:
+    def __init__(self, translate, greeting: str) -> None:
+        self.translate = translate
+        self.greeting = greeting
 
-Data (`dict`, `list`, `tuple`, dataclasses) is copied; an instance of any other class goes to another language by reference, the far end getting a proxy: see [plugin API: objects with methods](plugin-api.en.md#objects-with-methods).
+    async def hello(self, name: str) -> str:
+        return f"{await self.translate.text(self.greeting)}, {name}!"
 
-## 3. Test
 
-`rutis.testing` does not require a host:
+def apply(ctx, config):
+    ctx.provide("greeter", Greeter(ctx.use("translate"), config["greeting"]))
 
-<!-- example: python-en file=weather/tests/test_plugin.py -->
+
+plugin = define_plugin(
+    apply,
+    inject=["translate"],
+    provides={"greeter": Greeter},
+    config={"type": "object", "properties": {"greeting": {"type": "string", "default": "Hello"}}},
+)
+```
+
+`inject` lists the services the plugin uses, and `ctx.use("translate")` gets one. The plugin starts once all of them are there; when one goes, the plugin stops, and it starts again when the service is back. `greeter` need not know which plugin provides `translate` or in which language; call its methods with `await`.
+
+The template's test now fails: it gives no `translate`. Step 6 replaces it.
+
+## 4. Configuration
+
+`config` is the JSON Schema of the plugin's config. Before `apply`, rutis fills in the schema's defaults and validates the config: when the row leaves `greeting` out, `config["greeting"]` is `"Hello"`; when the config does not match, the row fails with `config: …` and `apply` is not called.
+
+Where the config comes from: in a test, `load(plugin, config=…)` passes it (step 6); when running, it is the plugin's row in the host (`rutis.dev.json` in step 7, the host's `rutis.json`).
+
+## 5. Emit and listen to events
+
+After each greeting, `hello` emits the `greeter/greeted` event; the plugin listens to it to count the greetings, and `count` returns the number. Replace `src/greeter/__init__.py` with:
+
+<!-- example: python-en file=greeter/src/greeter/__init__.py -->
+```python
+from rutis import define_plugin
+
+
+class Greeter:
+    def __init__(self, ctx, greeting: str) -> None:
+        self.ctx = ctx
+        self.translate = ctx.use("translate")
+        self.greeting = greeting
+        self.greeted = 0
+
+    async def hello(self, name: str) -> str:
+        word = await self.translate.text(self.greeting)
+        self.ctx.emit("greeter/greeted", name)
+        return f"{word}, {name}!"
+
+    async def count(self) -> int:
+        return self.greeted
+
+
+def apply(ctx, config):
+    greeter = Greeter(ctx, config["greeting"])
+
+    def greeted(name):
+        greeter.greeted += 1
+
+    ctx.on("greeter/greeted", greeted)
+    ctx.provide("greeter", greeter)
+
+
+plugin = define_plugin(
+    apply,
+    inject=["translate"],
+    provides={"greeter": Greeter},
+    config={"type": "object", "properties": {"greeting": {"type": "string", "default": "Hello"}}},
+)
+```
+
+`ctx.emit(name, *args)` emits an event and returns at once, without waiting for the listeners. `ctx.on(name, listener)` listens to one, with nothing to declare: it hears the event alike whether this plugin, another plugin, a plugin in another language or the host emits it. The plugin's listeners go when it stops. The other ways to emit: [Plugin API: events](plugin-api.en.md#events).
+
+## 6. Test
+
+`load` from `rutis.testing` needs no host: it loads the plugin with a config and a fake `translate`, gives you its service to call and its events to listen to, and unloads the plugin when the `async with` ends. Replace `tests/test_plugin.py` with:
+
+<!-- example: python-en file=greeter/tests/test_plugin.py -->
 ```python
 import asyncio
 import unittest
 
 from rutis.testing import load
-from weather import plugin
+
+from greeter import plugin
 
 
-class FakeLlm:
-    async def ask(self, question):
-        return "sunny"
+class FakeTranslate:
+    async def text(self, text: str) -> str:
+        return {"Hello": "Bonjour", "Hi": "Salut"}.get(text, text)
 
 
-class Weather(unittest.TestCase):
-    def test_reports_the_weather_of_the_configured_city(self):
+class Plugin(unittest.TestCase):
+    def test_greets_with_the_translated_greeting(self):
         async def go():
-            async with load(plugin, config={"city": "Oslo"}, services={"llm": FakeLlm()}) as t:
-                self.assertEqual(await t.service("weather").today(), "sunny in Oslo")
+            async with load(plugin, config={"greeting": "Hi"}, services={"translate": FakeTranslate()}) as t:
+                greeted = []
+                t.on("greeter/greeted", greeted.append)
+                self.assertEqual(await t.service("greeter").hello("Ada"), "Salut, Ada!")
+                self.assertEqual(greeted, ["Ada"])
+                self.assertEqual(await t.service("greeter").count(), 1)
 
         asyncio.run(go())
+
+
+if __name__ == "__main__":
+    unittest.main()
 ```
 
 <!-- example: python-en run -->
@@ -97,149 +191,129 @@ class Weather(unittest.TestCase):
 uv run python -m unittest discover -s tests
 ```
 
-`load` checks the same things as the host: the plugin uses only services declared in `inject`; it does not provide a name already in `services` (the host provides it: `PluginTestError: wordcount: notes is already provided by the host`); its provided service has every method declared in `provides` (an undeclared service is called as rutis calls it, by the object's public methods, all async; `t.methods(name)` returns the methods rutis sees); and all cleanup functions run when the `async with` block exits. Strict mode is the default: values follow cross-process rules, see [plugin API: strict mode](plugin-api.en.md#strict-mode).
+`load` checks what a host checks: the config gets the schema's defaults and is validated, and a config that does not match raises `BindingError` (its `code` is `bad-config`); the plugin uses only the services in `inject`; the services it provides have the methods in `provides`; values pass by the rules across processes. The rest of the test tool: [Plugin API: the Python test tool](plugin-api.en.md#the-python-test-tool). When a host gives Python types for its services, see [Types from the host](#types-from-the-host).
 
-The rest of the test tool's interface (`Bus`, scopes, `update` and more) is in [plugin API: the Python test tool](plugin-api.en.md#the-python-test-tool).
+## 7. Run it locally and try it
 
-To check that the plugin emits an event, listen with `t.on` into a list:
+`rutis-host dev` runs the plugin in a local host. The rows of `rutis.dev.json` say which plugins run:
 
-<!-- example: python-en file=weather/tests/test_asked.py order=2 -->
-```python
-import asyncio
-import unittest
-
-from rutis import define_plugin
-from rutis.testing import load
-
-
-def apply(ctx, config):
-    class Weather:
-        async def today(self):
-            ctx.emit("weather/asked", config["city"])
-            return "sunny"
-
-    ctx.provide("weather", Weather())
-
-
-asking = define_plugin(apply)
-
-
-class Asked(unittest.TestCase):
-    def test_each_call_emits_weather_asked(self):
-        async def go():
-            async with load(asking, config={"city": "Oslo"}) as t:
-                asked = []
-                off = t.on("weather/asked", asked.append)
-                await t.service("weather").today()
-                self.assertEqual(asked, ["Oslo"])
-                off()
-
-        asyncio.run(go())
-```
-
-### Events
-
-`ctx.on(name, listener)` listens to an event, `ctx.emit(name, *args)` emits one (`test_asked.py` above). Listeners register themselves with the host and nothing is declared: whether the emitter is in the same process, in a runtime of another language, in the host or on a linked node, the result is the same, so a TypeScript plugin emits and a Python plugin listens with nothing to change. The other ways to emit (`parallel`, `serial`, `waterfall`, `bail`), filters, scopes and an example across languages are in [plugin API: events](plugin-api.en.md#events).
-
-## 4. Run in a local host
-
-<!-- example: python-en run until="weather: running" order=99 -->
-```bash
-uv run rutis-host dev
-```
-
-`dev` runs the plugin with the project's `.venv` and reimports it when its files change; only the rows whose files changed reload, and a change to `rutis.dev.json` applies while it runs (see [Developing a plugin with `dev`](rutis-host.en.md#developing-a-plugin-with-dev)). Add other required services to `rutis.dev.json`, such as a fake `llm` (the row name `py:fake_llm` names the module `fake_llm` in the project's `src/`, shown after it):
-
-<!-- example: python-en file=weather/rutis.dev.json -->
+<!-- example: python-en file=greeter/rutis.dev.json -->
 ```json
 {
+  "format": 1,
   "rows": [
-    { "id": "weather", "config": { "city": "Oslo" } },
-    { "id": "llm", "name": "py:fake_llm" }
+    { "id": "greeter", "config": { "greeting": "Hello" } },
+    { "id": "translate", "name": "py:fake_translate" }
   ]
 }
 ```
 
-<!-- example: python-en file=weather/src/fake_llm.py -->
+- The row whose `id` is the plugin's (`greeter`) is the plugin itself, and `config` is its config.
+- The other row is a fake `translate`: `py:fake_translate` is the module `fake_translate` in the project's `src/`, below. It runs only locally and is not in the published package (`pyproject.toml` packages only `src/greeter`).
+
+<!-- example: python-en file=greeter/src/fake_translate.py -->
 ```python
-# src/fake_llm.py
 from rutis import define_plugin
 
 
-class FakeLlm:
-    async def ask(self, question):
-        return "sunny"
+class FakeTranslate:
+    async def text(self, text: str) -> str:
+        return {"Hello": "Bonjour", "Hi": "Salut"}.get(text, text)
 
 
 def apply(ctx, config):
-    ctx.provide("llm", FakeLlm())
+    ctx.provide("translate", FakeTranslate())
 
 
-plugin = define_plugin(apply, provides={"llm": FakeLlm})
+plugin = define_plugin(apply, provides={"translate": FakeTranslate})
 ```
 
-`dev` finds plugin modules in the project's `src/`, so `fake_llm` needs no entry point, and it is not in the built wheel (`pyproject.toml` packages only `src/weather`).
+<!-- example: python-en run until="greeter: running" -->
+```bash
+uv run rutis-host dev
+```
 
-The row with the same ID as the plugin supplies its configuration; the other rows are additional plugins. They may also be TypeScript plugins (in that case, add `"runtimes": { "node": { "project": "." } }` to `rutis.dev.json`). `uv run rutis-host check` lists each row's dependencies, provided services, and configuration schema, and exits with a nonzero status if there is a problem.
+```text
+rutis-host dev: running greeter; changes reload it (Ctrl-C ends)
+greeter: starting
+translate: running
+rutis-host dev: services: greeter (greeter), loader (host), translate (translate)
+greeter: running
+```
 
-Only the plugin module itself is reimported. If another imported module changes, restart `rutis-host dev`.
+Each row prints a line when its state changes, and the rows' lines may come in another order each time; `rutis-host dev: services:` gives the services there are now and the row that provides each; it is printed once every row is running, waiting or failed, and again whenever the services change, before or after the rows' state lines.
 
-### Calling a method
-
-After it starts and after each reload, `dev` prints which services there are and the row that provides each: `rutis-host dev: services: llm (llm), loader (host), weather (weather)`.
-
-While `dev` runs, in another terminal in the project's directory, call a service the plugin provides, to see what it returns and what it says when it fails, without writing a plugin to call it:
+In another terminal, in the project's directory, see which services there are and which row provides each, then call one (`status` and `call` are not on Windows):
 
 ```console
-$ uv run rutis-host call weather.today
-"sunny in Oslo"
+$ uv run rutis-host status
+rows:
+  greeter: running
+  translate: running
+services:
+  greeter: greeter
+  loader: host
+  translate: translate
+runtimes:
+  py: running (pid 55011)
+calls:
+  none
+$ uv run rutis-host call greeter.hello '"Ada"'
+"Bonjour, Ada!"
+$ uv run rutis-host call greeter.count
+1
 ```
 
-Each argument is a JSON value (a string with its quotes: `'"Oslo"'`); the result is printed as JSON; an error goes to stderr with exit status 1. See [rutis-host: Calling a service](rutis-host.en.md#calling-a-service).
+Each argument of `call` is a JSON value, strings in quotes; the result is printed as JSON, and an error goes to standard error with exit status 1 (see [Calling a service](rutis-host.en.md#calling-a-service)).
 
-### Debugging
+A change to the code reloads it: change the `!` that `hello` returns to `!!` and save, and `dev` prints
 
-`--debug` gives the Python runtime this terminal: a `breakpoint()` in the plugin stops in pdb, where `w` shows the call stack, `p <variable>` a variable, and `c` continues.
-
-<!-- example: python-en run until="weather: running" order=100 -->
-```bash
-uv run rutis-host dev --debug
+```text
+greeter: reloaded (src/greeter/__init__.py changed)
+rutis-host dev: services: greeter (greeter), loader (host), translate (translate)
 ```
 
-- While it is stopped at a breakpoint, the whole Python runtime waits: calls to its other rows wait too.
-- Without `--debug` the runtime has no standard input, and `breakpoint()` fails the row.
-- The runtime shares the terminal with `dev`, so Ctrl-C reaches it too: it exits at once, and the plugin's cleanups may not get to run.
-- What the plugin prints, and what it writes to standard error, shows in `dev`'s output.
-- With a graphical debugger (VS Code and the like): install `debugpy` in the project's environment, call `debugpy.listen(5678)` in `apply`, and attach the debugger to `127.0.0.1:5678`.
-- Tests (§3) run the plugin in the test process, where `breakpoint()` works without `--debug`.
+`call greeter.hello '"Ada"'` now gives `"Bonjour, Ada!!"`. Only the row whose file changed reloads; a change to `rutis.dev.json` takes effect while it runs too. Only the plugin's module is imported again; when a module it imports changes, restart `dev`. See [Developing a plugin with `dev`](rutis-host.en.md#developing-a-plugin-with-dev).
 
-## 5. Publish
+## 8. Publish
 
 ```bash
 uv build
 uv publish
 ```
 
-Alternatively, push a tag such as `v0.1.0`. The generated workflow tests, runs `check`, and publishes through PyPI trusted publishing (configure a trusted publisher for the repository on PyPI first).
+Or push a tag such as `v0.1.0`: the template's workflow tests and publishes with PyPI trusted publishing (configure a trusted publisher for the repository on PyPI first).
 
-The entry point in `pyproject.toml` lets the host find the plugin by name:
+- Package name: a short name like `greeter` is most likely taken on PyPI, so change `name` in `pyproject.toml` before publishing, to `your-name-greeter` for example. The entry point's name stays, and so does the host's row name `py:greeter`:
 
-```toml
-[project.entry-points."rutis.plugins"]
-weather = "weather"
+  ```toml
+  [project.entry-points."rutis.plugins"]
+  greeter = "greeter"
+  ```
+
+- Dependency range: give `rutis` a lower bound only (`rutis>=0.19`; `rutis-host new` writes its own version). The plugin and the host's Python runtime use the same `rutis` package, so an upper bound would downgrade the host or keep it from upgrading (see [Plugin API: versions](plugin-api.en.md#versions)).
+
+How a host installs your plugin: [rutis-host: how a host installs plugins](rutis-host.en.md#how-a-host-installs-plugins).
+
+## Debugging
+
+`--debug` has the Python runtime read this terminal: a `breakpoint()` in the plugin stops in pdb; in the terminal, `w` shows the stack, `p <variable>` a variable, `c` continues.
+
+<!-- example: python-en run until="greeter: running" -->
+```bash
+uv run rutis-host dev --debug
 ```
 
-Depend on `rutis` with a lower bound only: `rutis>=0.17` (`rutis-host new` writes its own version). The plugin and the Python runtime are the same `rutis` package, installed in the host's one environment; with an upper bound (`<0.18`), installing the plugin downgrades rutis, or a later upgrade of rutis fails to resolve. Whether the runtime can load the plugin is decided by the plugin API version: `define_plugin` tags the plugin with the plugin API version it uses, a host runtime older than that refuses it with a clear message, and a newer one loads it; a release of `rutis` that removes or moves a name plugins import says so in its migration guide, and plugins upgrade together with the host ([plugin API: versions](plugin-api.en.md#versions)).
+- While it is stopped at a breakpoint, the whole Python runtime is stopped: calls to its other rows wait too.
+- Without `--debug` the runtime has no standard input, and `breakpoint()` fails the row.
+- The runtime shares the terminal with `dev`, so Ctrl-C reaches it too: it exits at once, and the plugin's cleanups may not run.
+- What the plugin prints, and what it writes to standard error, appears in `dev`'s output.
+- With a graphical debugger (VS Code and others): install `debugpy` in the project's environment, call `debugpy.listen(5678)` in `apply`, and attach the debugger to `127.0.0.1:5678`.
+- Tests (step 6) run the plugin in the test process, where `breakpoint()` works without `--debug`.
 
-Before publishing, give the distribution a name of your own: a short name such as `weather` is most likely taken on PyPI. Change `name` in `pyproject.toml`, for example to `your-name-weather`; the entry point name (`weather` above) stays, and a host's row is still `py:weather`.
+## Types from the host
 
-## 6. Use from a host
-
-How a host installs this plugin: [rutis-host: How a host installs plugins](rutis-host.en.md#how-a-host-installs-plugins).
-
-### Types from the host
-
-A Rust host can give the Python types of its services (the module `rutis-host types --python` writes; see [Embed in a Rust application: Declarations](rust-host.en.md#declarations)), usually in the plugin template. Annotate what `ctx.use` returns with them, and the editor and pyright check the calls before anything runs; without the annotation it runs the same:
+A Rust host can give the Python types of its services (the module `rutis-host types --python` writes, see [Embed in a Rust application: declarations](rust-host.en.md#declarations)), usually in its plugin template. Annotate what `ctx.use` returns with them, and your editor and pyright check the calls before anything runs; without the annotation it runs the same:
 
 ```python
 from deskmate_types import Notes  # the host's module (written by rutis-host types --python deskmate_types.py)
@@ -255,3 +329,7 @@ A call that does not match, as pyright reports it:
 ```text
 error: Argument of type "Literal[42]" cannot be assigned to parameter "value" of type "str" in function "put"
 ```
+
+## Advanced: plugin API
+
+Plugins as values, the other ways to emit events, scopes, objects with methods, how values pass, the rest of the test tool: see [Plugin API](plugin-api.en.md). To run on another machine, see [the remote section of rutis-host.en.md](rutis-host.en.md#remote-runtimes).

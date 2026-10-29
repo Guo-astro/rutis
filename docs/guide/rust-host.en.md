@@ -2,6 +2,8 @@
 
 Use the crates directly when your application needs to provide its own Rust services to plugins or when you want to embed rutis in an existing Rust program. If you do not need this, use [rutis-host](rutis-host.en.md); both use the same row configuration format.
 
+This is the API reference. To build a host open to plugins from the start, follow [Build a host open to plugins](open-host.en.md) step by step.
+
 ## Dependencies
 
 ```toml
@@ -25,7 +27,7 @@ Enable only the language features you use so the application compiles and starts
 
 ## Mount Rust plugins
 
-How to write a Rust plugin: [write a Rust plugin](rust-plugin.en.md); `Greeter`, `Printer` and `Weather` below are its examples. The methods of a host (making and closing the root, reading and writing by key, mounting from configuration) are in `rutis::host`; after `use rutis::host::*;` they are methods of `Ctx`:
+How to write a Rust plugin: [write a Rust plugin](rust-plugin.en.md); `Greeter`, `Printer` and `Weather` below are sample plugins. The methods of a host (making and closing the root, reading and writing by key, mounting from configuration) are in `rutis::host`; after `use rutis::host::*;` they are methods of `Ctx`:
 
 ```rust
 use rutis::host::*;
@@ -585,13 +587,40 @@ rutis has no `tracing` / `log` integration; the host's own logging works as usua
 
 ## Nodes
 
-0.19 redoes remote connections ([Remote connections: one session plugin](../design-remote-session-2026-10-28.en.md)); how a Rust program sets up a node itself changes with it, and this section is filled in once the new form lands. Until then, use rutis-host's node rows (see [Connect nodes](nodes.en.md)).
+In 0.19 a remote connection has one shape ([Remote connections: one session plugin](../design-remote-session-2026-10-28.en.md)): a connection plugin gets a `Channel` and hands it to `rutis_bridge::Session`. The far end may be another rutis, a language runtime or a device, all the same; the services it provides are named `<far id>:<plugin>` here, the services here are visible there, and events are on one bus. The host first provides, in the root ctx, the id this end gives in the handshake:
 
-For rutis-loader configuration, `rutis_loader::peer::register_peer_node` registers the `rutis-bridge/peer` row (the same format as `rutis.json`), and `rutis_loader::peer::PeerResolver` resolves `peer:` rows. For a remote runtime, add `RuntimePlugin::remote(name)` and a node row whose `runtime` is the same name; `RuntimeResolver::modules(handle)` resolves row names as `<name>:<module>`. See [Connect nodes](nodes.en.md) for concepts and security.
+```rust,ignore
+use rutis::host::FiberState;
+use rutis_bridge::{websocket, Credential, LocalId, PeerId, Session};
+
+root.provide(LocalId(PeerId::new("main")?));
+
+// A connection plugin's apply: dial office, dial again once the session unloads.
+loop {
+    let channel = websocket::dial(
+        "wss://office.example.com/rutis",
+        &rutis_bridge::protocol(),
+        Some(&Credential::Bearer(token.clone())),
+        &websocket::Trust::default(),
+        &websocket::Limits::default(),
+    )
+    .await?;
+    let session = ctx.plugin(Session::new(channel));
+    let mut state = session.watch();
+    let _ = state.wait_for(|s| s.state == FiberState::Disposed).await;
+    tokio::time::sleep(backoff.next()).await;
+}
+```
+
+- To have the far end run a plugin, write a row `<connection row>:<plugin>` in rutis-loader's configuration; while the far end is not there, that row waits. In Rust you can also take `Greeted` from `Session::handshake(&ctx, channel).await?`, call `greeted.handle().run(plugin, config)`, then mount it with `ctx.plugin(greeted)`.
+- Without this end's id the session fails: `the host provides no id for its sessions`. rutis-host provides it (rutis.json's `id`, `main` by default).
+- Plugins in other languages hand over a connection through the `open` of the service `sessions`; see [Plugin API: your own connection](plugin-api.en.md#your-own-connection-sessionsopen).
+
+The 0.18 node form still works in 0.19 and is being replaced: For rutis-loader configuration, `rutis_loader::peer::register_peer_node` registers the `rutis-bridge/peer` row (the same format as `rutis.json`), and `rutis_loader::peer::PeerResolver` resolves `peer:` rows. For a remote runtime, add `RuntimePlugin::remote(name)` and a node row whose `runtime` is the same name; `RuntimeResolver::modules(handle)` resolves row names as `<name>:<module>`. See [Connect nodes](nodes.en.md) for concepts and security.
 
 ## Events
 
-The host's Rust plugins, the plugins in every runtime (any language) and the listeners on linked nodes are on one logical bus ([plugin API: events](plugin-api.en.md#events)). Runtime listeners register themselves and the host side configures nothing: what `ctx.emit` and the other modes send reaches listeners in every language, and what they emit reaches the Rust listeners here. How plugins write it: [write a Rust plugin: events](rust-plugin.en.md#events); a host uses the same methods on its root `Ctx`.
+The host's Rust plugins, the plugins in every runtime (any language) and the listeners on linked nodes are on one logical bus ([plugin API: events](plugin-api.en.md#events)). Runtime listeners register themselves and the host side configures nothing: what `ctx.emit` and the other modes send reaches listeners in every language, and what they emit reaches the Rust listeners here. How plugins write it: [write a Rust plugin: events](rust-plugin.en.md#5-emit-and-listen-to-events); a host uses the same methods on its root `Ctx`.
 
 An event type is named across languages by `Event::NAME` and its arguments are serde-encoded, so it and its `Value` derive `Serialize` / `Deserialize`. A tuple struct of two or more fields is that many arguments, so `Created` below is `emit("session/created", id, size)` in other languages:
 
@@ -648,7 +677,7 @@ off.dispose().await?;
 | Framework events | `rutis_loader::RowEvent` (`rutis/row`), `rutis_bridge::events::{ServiceEvent, RuntimeEvent}` (`rutis/service`, `rutis/runtime`): listen with `ctx.on`; emitting `rutis/*` fails with `ReservedEvent` |
 | Nodes | `Features { export, import }` of `PeerPlugin` select events too (names or `*` prefixes), see [nodes](#nodes) and [connecting nodes](nodes.en.md#events-between-nodes) |
 
-Tests need no separate tool: in a `#[tokio::test]`, take `Ctx::root()` (or `Ctx::root_with_sink` to collect `emit` failures), load the plugins, and emit and assert as above ([write a Rust plugin: test](rust-plugin.en.md#3-test)). Listeners in runtimes need a real runtime (`LocalRuntime`), as in production.
+Tests need no separate tool: in a `#[tokio::test]`, take `Ctx::root()` (or `Ctx::root_with_sink` to collect `emit` failures), load the plugins, and emit and assert as above ([write a Rust plugin: test](rust-plugin.en.md#6-test)). Listeners in runtimes need a real runtime (`LocalRuntime`), as in production.
 
 ## Exported services: reference
 
@@ -666,7 +695,7 @@ Rust services, used by name from the rows of every language (TypeScript, JavaScr
 
 ### Where the source comes from
 
-The generator finds the marked types in the crate and in the crates it uses that depend on rutis. The `path` of `.declared` is written as the application writes it: `crate::…` for its own types, a dependency's crate name (as `Cargo.toml` names it, renames included) for a dependency's. The generator runs `cargo metadata` (for the target being built, offline first) to find each crate's entry file and the features Cargo resolved, and reads the module tree with syn: `mod` files (`#[path]` included), `use` items, globs and `pub use` re-exports (a type re-exported from a private module is found), type aliases (generic ones too). The methods are the public `&self` methods of the type's marked inherent `impl` blocks (but those marked `#[service(skip)]`). `#[cfg]` is evaluated: `feature = "…"` from the features Cargo resolved, target `cfg`s from `CARGO_CFG_*`, `test` and `doc` as off. Stable Rust only: nothing is compiled or expanded for this.
+The generator finds the marked types in the crate and in the crates it uses that depend on rutis. The `path` of `.declared` is written as the application writes it: `crate::…` for its own types, a dependency's crate name (as `Cargo.toml` names it, renames included) for a dependency's. The generator runs `cargo metadata` (for the target being built, offline first) to find each crate's entry file and the features Cargo resolved, and reads the module tree with syn: `mod` files (`#[path]` included), `use` items, globs and `pub use` re-exports (a type re-exported from a private module is found), type aliases (generic ones too). rutis's own source is not read: its names are known by their paths (`rutis::Error`, `Result`, `Ctx`, `Definition`, `rutis::host::BoxFuture`, `ErrorKind`), also when brought in by `use rutis::*;` or `use rutis::host::*;`. The methods are the public `&self` methods of the type's marked inherent `impl` blocks (but those marked `#[service(skip)]`). `#[cfg]` is evaluated: `feature = "…"` from the features Cargo resolved, target `cfg`s from `CARGO_CFG_*`, `test` and `doc` as off. Stable Rust only: nothing is compiled or expanded for this.
 
 ### What crosses
 
@@ -707,7 +736,7 @@ A method returning `Result<T, E>` (`std::result::Result`, an alias of it, `anyho
 | `rutis_bridge::session::Error` | thrown as it is (a call it forwarded keeps the far end's error) | | |
 | Anything else (`anyhow::Error`, `io::Error`) | its type name | its type name | — |
 
-`message` is always `e`'s `Display`. JavaScript reads `error.code` and `error.data`; Python `error.code`, `error.data`; Go `remote.Code`, `remote.Data` (big integers as `*big.Int`); Rust `Error::code()`, `Error::data()`. They cross in the error graph, so a runtime that does not know them still gets the name and message. In the declarations each error type has a `<Name>Thrown` type, `RustError<'Name', 'Code1' | 'Code2', Data>`, named in the method's JSDoc (`@throws {CalendarErrorThrown}`).
+`message` is always `e`'s `Display`. JavaScript reads `error.code` and `error.data`; Python `error.code`, `error.data`; Go `remote.Code`, `remote.Data` (big integers as `*big.Int`); Rust `Error::code()`, `Error::data()`. They cross in the error graph, so a runtime that does not know them still gets the name and message. In the declarations each error type has a `<Name>Thrown` type, `RustError<'Name', 'Code1' | 'Code2', Data>`, named in the method's JSDoc (`@throws {CalendarErrorThrown}`). `ErrorThrown` is rutis's own error's; another type named `Error`, and an error type named as another one already declared, is declared by its module: `io::Error` is `IoErrorThrown`, `anyhow::Error` `AnyhowErrorThrown`, `notes::Error` `NotesErrorThrown`. The `name` it is thrown with stays the type's own (`Error`).
 
 ### Declarations
 

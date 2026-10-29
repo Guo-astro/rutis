@@ -20,7 +20,7 @@ The first build compiles the SDK's macros (swift-syntax, at build time only), an
 
 ## 2. Write the plugins
 
-As in the [Swift plugin guide](swift-plugin.en.md#2-write-the-plugin): a plugin declares what it uses, provides its services in `apply` (they reach rutis by themselves, no `provides` needed), and registers its cleanups. Plugins that use the device's capabilities call the system APIs directly:
+As in the [Swift plugin guide](swift-plugin.en.md#2-provide-a-service): a plugin declares what it uses, provides its services in `apply` (they reach rutis by themselves, no `provides` needed), and registers its cleanups. Plugins that use the device's capabilities call the system APIs directly:
 
 ```swift
 import HealthKit
@@ -73,11 +73,11 @@ public let device = Rutis.define(Plugin(name: "device") { ctx in ctx.provide("de
 
 Test plugins with `RutisTest` as in the plugin guide (§3); it runs in the iOS simulator too.
 
-A plugin definition a plugin hands to a service ([Swift plugin](swift-plugin.en.md#handing-a-plugin-to-a-service)) runs in the app's process; when the app dials in, it mounts only in that connection's instance (or deeper), and every copy mounted from it ends when the app calls `stop()` or disconnects.
+A plugin definition a plugin hands to a service ([Plugin API: handing over plugin definitions in each language](plugin-api.en.md#handing-over-plugin-definitions-in-each-language)) runs in the app's process; when the app dials in, it mounts only in that connection's instance (or deeper), and every copy mounted from it ends when the app calls `stop()` or disconnects.
 
 ### Objects with methods
 
-As in the [Swift plugin](swift-plugin.en.md#objects-with-methods): an instance of a `@RutisService` type is handed over by reference; for an object another process passes, a parameter typed with a file-level `@RutisClient` protocol (`any Cache`, not optional) gets its proxy, and one typed `Any` gets a `Rutis.Advanced.Client` (`try await client.call("get", values: ["a"], as: Int?.self)`).
+As in the [Plugin API: handing over and receiving objects in each language](plugin-api.en.md#handing-over-and-receiving-objects-in-each-language): an instance of a `@RutisService` type is handed over by reference; for an object another process passes, a parameter typed with a file-level `@RutisClient` protocol (`any Cache`, not optional) gets its proxy, and one typed `Any` gets a `Rutis.Advanced.Client` (`try await client.call("get", values: ["a"], as: Int?.self)`).
 
 ```swift
 @RutisClient

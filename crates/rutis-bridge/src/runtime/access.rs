@@ -75,7 +75,7 @@ pub(crate) fn peer_session(peer: Arc<Peer>) -> Arc<dyn RuntimeSession> {
 
 struct PeerSession(Arc<Peer>);
 
-struct Routed(Arc<dyn Dispatch>);
+pub(crate) struct Routed(pub(crate) Arc<dyn Dispatch>);
 impl crate::Handler for Routed {
     fn invoke(&self, peer: &Connection, target: &str, method: &str, args: Value) -> Reply {
         self.0.invoke(peer, target, method, args)

@@ -949,7 +949,7 @@ impl Process {
         let (imports, rest) = Self::imports(started);
         let peer = Connection::open(channel, imports.clone(), endpoint)?;
         peer.ready().await?;
-        Self::finish(peer, imports, child, directory, None, rest).await
+        Self::finish(peer, imports, child, directory, None, rest, true).await
     }
 
     /// What serves the runtime's calls into rutis, and the rest of the mount.
@@ -996,6 +996,24 @@ impl Process {
         session: Arc<dyn RuntimeSession>,
         mount: Mount<'_>,
     ) -> Result<Arc<Self>, Error> {
+        Self::routed(session, mount, true).await
+    }
+
+    /// [`Process::over`] on a session whose events something else carries:
+    /// the process does not join the bus (a session with a rutis kernel,
+    /// whose listeners cross as a node's).
+    pub(crate) async fn over_without_bus(
+        session: Arc<dyn RuntimeSession>,
+        mount: Mount<'_>,
+    ) -> Result<Arc<Self>, Error> {
+        Self::routed(session, mount, false).await
+    }
+
+    async fn routed(
+        session: Arc<dyn RuntimeSession>,
+        mount: Mount<'_>,
+        bus: bool,
+    ) -> Result<Arc<Self>, Error> {
         let (started, _) = Started::from(mount);
         let (imports, rest) = Self::imports(started);
         let routed = session.route(imports.clone())?;
@@ -1006,6 +1024,7 @@ impl Process {
             None,
             Some(routed),
             rest,
+            bus,
         )
         .await
     }
@@ -1017,6 +1036,7 @@ impl Process {
         directory: Option<tempfile::TempDir>,
         routed: Option<Box<dyn std::any::Any + Send + Sync>>,
         rest: MountRest,
+        bus: bool,
     ) -> Result<Arc<Self>, Error> {
         let MountRest {
             plugins,
@@ -1057,13 +1077,15 @@ impl Process {
         // runtime learns which names have listeners elsewhere first
         // (events protocol §4.5).
         let runtime = runtime.unwrap_or_else(|| "runtime".to_owned());
-        let events = crate::events::SessionEvents::join(
-            ctx.as_ref(),
-            process.peer.clone(),
-            runtime.clone(),
-            scope.clone(),
-        )?;
-        let _ = process.imports.bus.set(events);
+        if bus {
+            let events = crate::events::SessionEvents::join(
+                ctx.as_ref(),
+                process.peer.clone(),
+                runtime.clone(),
+                scope.clone(),
+            )?;
+            let _ = process.imports.bus.set(events);
+        }
         let mounted = process
             .call_async(
                 "",
@@ -1351,6 +1373,34 @@ impl Process {
         for (name, observer, version) in self.imports.forget(ids) {
             observer.changed(&name, None, version);
         }
+    }
+
+    /// Whether row `key` is loaded with an observer of its services.
+    pub(crate) fn has_row(&self, key: &str) -> bool {
+        self.imports.rows.lock().unwrap().contains_key(key)
+    }
+
+    /// Row `key` provides `name` with `methods`, called at `handle`, as a
+    /// runtime announces a service a row did not declare (`service` with
+    /// `{ row, methods }`). Whether its observer follows it.
+    pub(crate) fn announce_row_service(
+        &self,
+        key: &str,
+        name: &str,
+        methods: &Value,
+        handle: String,
+        version: u64,
+    ) -> bool {
+        if !self.imports.announce(key, name, methods) {
+            return false;
+        }
+        self.imports.update(name.to_owned(), Some(handle), version);
+        true
+    }
+
+    /// The service `name` a row announced is gone, at `version`.
+    pub(crate) fn withdraw_row_service(&self, name: &str, version: u64) {
+        self.imports.update(name.to_owned(), None, version);
     }
 
     /// Give row `key` a new config. Cordis commits volatile values in place

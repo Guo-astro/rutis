@@ -23,7 +23,7 @@ MODULES = ("rutis", "rutis.advanced", "rutis.testing")
 
 
 def annotation(value) -> str:
-    # The same text on every supported Python (3.10 to 3.14): an annotation
+    # The same text on every supported Python (3.12 to 3.14): an annotation
     # written as a string, evaluated or deferred, prints unquoted.
     if isinstance(value, str):
         return value

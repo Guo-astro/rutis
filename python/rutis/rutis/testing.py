@@ -770,7 +770,6 @@ async def load(
     bus: Bus | None = None,
     scope: str | None = "root",
     row: str | None = None,
-    emits: Any = None,
     runtime: str | None = "python",
     deadline: float | None = None,
 ) -> AsyncIterator[Loaded]:
@@ -785,11 +784,6 @@ async def load(
     give as `runtime` (default "python"). `deadline`: how long unload
     waits for running listeners, in seconds (default
     RUTIS_SHUTDOWN_TIMEOUT, 10)."""
-    if emits is not None:
-        raise PluginTestError(
-            "the load option emits was removed in rutis 0.13: listeners register themselves; "
-            "emit with t.emit / parallel / serial / waterfall / bail (https://github.com/arcships/rutis/blob/main/docs/migration-0.13.md)"
-        )
     name = plugin.__name__ if isinstance(plugin, ModuleType) else None
     if isinstance(plugin, ModuleType):
         plugin = sdk.load(plugin)

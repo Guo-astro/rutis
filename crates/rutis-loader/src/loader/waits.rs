@@ -26,6 +26,9 @@ pub enum WaitReason {
     /// It is the copy's own runtime, `service` its name: the runtime has
     /// not released its rows (it is starting, or down).
     OwnRuntime,
+    /// It is the session of the copy's connection row, `service` the
+    /// row's id: the far end is not connected (`<row>:<plugin>` rows).
+    OwnSession,
     /// No row declares it. `like` is a service name close to it that a
     /// row declares or something provides (a misspelt name).
     NoProvider { like: Option<String> },
@@ -194,6 +197,12 @@ impl Loader {
                             return Wait {
                                 service,
                                 reason: WaitReason::OwnRuntime,
+                            };
+                        }
+                        if own_session(&key) {
+                            return Wait {
+                                service,
+                                reason: WaitReason::OwnSession,
                             };
                         }
                         let named = |key: &TypeKey| self.service_name(key);
@@ -401,6 +410,9 @@ pub(crate) fn key_name(catalog: &crate::ServiceCatalog, key: &TypeKey) -> Option
     if own_runtime(key) {
         return key.name().map(|name| format!("runtime {name}"));
     }
+    if own_session(key) {
+        return key.name().map(str::to_owned);
+    }
     if let Some(name) = catalog.name_of(key) {
         return Some(name);
     }
@@ -415,6 +427,18 @@ pub(crate) fn key_name(catalog: &crate::ServiceCatalog, key: &TypeKey) -> Option
 pub(super) fn own_runtime(key: &TypeKey) -> bool {
     #[cfg(feature = "runtimes")]
     return key.type_id() == std::any::TypeId::of::<crate::runtime::RuntimeRows>();
+    #[cfg(not(feature = "runtimes"))]
+    {
+        let _ = key;
+        false
+    }
+}
+
+/// Whether `key` is the session of a row's connection row
+/// ([`SessionRows`](crate::runtime::SessionRows)), named by the row's id.
+pub(super) fn own_session(key: &TypeKey) -> bool {
+    #[cfg(feature = "runtimes")]
+    return key.type_id() == std::any::TypeId::of::<crate::runtime::SessionRows>();
     #[cfg(not(feature = "runtimes"))]
     {
         let _ = key;
@@ -471,6 +495,8 @@ mod tests {
         assert_eq!(key_name(&catalog, &llm).as_deref(), Some("llm"));
         let counter = rutis::host::TypeKey::of::<u32>();
         assert_eq!(key_name(&catalog, &counter).as_deref(), Some("counter"));
+        let gpu = crate::runtime::SessionRows::key("gpu");
+        assert_eq!(key_name(&catalog, &gpu).as_deref(), Some("gpu"));
         let other = rutis::host::TypeKey::of::<String>();
         assert_eq!(key_name(&catalog, &other), None);
     }

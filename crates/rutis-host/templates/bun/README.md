@@ -1,6 +1,6 @@
 # {{name}}
 
-A [rutis](https://github.com/arcships/rutis) plugin, run by the Bun runtime.
+A [rutis](https://github.com/arcships/rutis) plugin, run by the Bun runtime. Its steps, from here to publishing, are in the [Bun plugin guide](https://github.com/arcships/rutis/blob/main/docs/guide/bun-plugin.en.md).
 
 ```bash
 bun install

@@ -29,8 +29,9 @@ use rutis::{Ctx, Error as RutisError};
 use tokio::sync::{broadcast, mpsc, watch};
 
 use crate::channel::{Channel, ChannelError, Closer, PeerId, Receiver};
-use crate::link::{Greet, Live};
+use crate::link::Live;
 use crate::runtime::RuntimeSession;
+use crate::session::plugin::Greet;
 use crate::session::Error;
 use crate::{
     admission_key, Accepting, Admission, Credential, Identity, Peer, Presented, Rejection, Retry,

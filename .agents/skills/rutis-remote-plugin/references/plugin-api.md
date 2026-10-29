@@ -108,7 +108,7 @@ ctx.On("greeting/format", func(ctx context.Context, args ...any) (any, error) {
 })
 ```
 
-Each language's guide has a complete example: [TypeScript](https://github.com/arcships/rutis/blob/main/docs/guide/typescript-plugin.en.md#events), [Bun](https://github.com/arcships/rutis/blob/main/docs/guide/bun-plugin.en.md#events), [Python](https://github.com/arcships/rutis/blob/main/docs/guide/python-plugin.en.md#events), [Go](https://github.com/arcships/rutis/blob/main/docs/guide/go-plugin.en.md#events), [Cordis](https://github.com/arcships/rutis/blob/main/docs/guide/cordis.en.md#events), [Rust](https://github.com/arcships/rutis/blob/main/docs/guide/rust-plugin.en.md#events).
+Each language's guide has a complete example: [TypeScript](https://github.com/arcships/rutis/blob/main/docs/guide/typescript-plugin.en.md#5-emit-and-listen-to-events), [Bun](https://github.com/arcships/rutis/blob/main/docs/guide/bun-plugin.en.md#5-emit-and-listen-to-events), [Python](https://github.com/arcships/rutis/blob/main/docs/guide/python-plugin.en.md#5-emit-and-listen-to-events), [Go](https://github.com/arcships/rutis/blob/main/docs/guide/go-plugin.en.md#5-emit-and-listen-to-events), [Cordis](https://github.com/arcships/rutis/blob/main/docs/guide/cordis.en.md#events), [Rust](https://github.com/arcships/rutis/blob/main/docs/guide/rust-plugin.en.md#5-emit-and-listen-to-events).
 
 ### Scope
 
@@ -322,7 +322,7 @@ The check covers runtimes that declare the `sync-wait` capability (the Node, Pyt
 
 Do not wait inside a synchronous method for a result that requires the event loop to advance, such as a Promise. This produces `SyncWaitCycle`; make the method `async` instead.
 
-An `async` method runs up to its first `await` before the reply, like a JS async function, so an `async` method that never suspends can be awaited inside a synchronous call chain too. This holds on every supported Python (asyncio's own eager start from 3.12, rutis's on 3.10 and 3.11).
+An `async` method runs up to its first `await` before the reply, like a JS async function, so an `async` method that never suspends can be awaited inside a synchronous call chain too.
 
 ## Cancellation
 
