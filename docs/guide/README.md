@@ -20,7 +20,7 @@
 | 我要… | 读 |
 | --- | --- |
 | 不写 Rust，装别人写的插件、写 `rutis.json`、运行并试一下 | [rutis-host 与 rutis.json](rutis-host.md) |
-| 在另一台机器上运行插件 | [rutis-host：远程运行时](rutis-host.md#远程运行时) |
+| 在另一台机器上运行插件 | [rutis-host：远程运行时与设备](rutis-host.md#远程运行时与设备) |
 
 ## 做一个开放插件的宿主
 

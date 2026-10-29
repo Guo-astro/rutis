@@ -334,4 +334,4 @@ error: Argument of type "Literal[42]" cannot be assigned to parameter "value" of
 
 ## Advanced: plugin API
 
-Plugins as values, the other ways to emit events, scopes, objects with methods, how values pass, the rest of the test tool: see [Plugin API](plugin-api.en.md). To run on another machine, see [the remote section of rutis-host.en.md](rutis-host.en.md#remote-runtimes).
+Plugins as values, the other ways to emit events, scopes, objects with methods, how values pass, the rest of the test tool: see [Plugin API](plugin-api.en.md). To run on another machine, see [the remote section of rutis-host.en.md](rutis-host.en.md#remote-runtimes-and-devices).

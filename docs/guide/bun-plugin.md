@@ -286,7 +286,7 @@ $ bunx --bun rutis-host call greeter.hello '"Ada"'
 
 只有文件变了的行重新加载；`rutis.dev.json` 改了也在运行中生效。见 [rutis-host：用 dev 开发插件](rutis-host.md#用-dev-开发插件)。
 
-在另一台机器上运行见 [rutis-host.md 的远程一节](rutis-host.md#远程运行时)。
+在另一台机器上运行见 [rutis-host.md 的远程一节](rutis-host.md#远程运行时与设备)。
 
 ## 8. 发布
 

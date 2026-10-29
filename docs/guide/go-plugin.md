@@ -414,7 +414,7 @@ $ npx @arcships/rutis-host call greeter.hello '"Ada"'
 - 推一个 `v0.1.0` 这样的 tag：模板里的工作流运行测试和 `rutis-host check`，为 Linux（x64 / arm64）、macOS（x64 / arm64）和 Windows x64 构建二进制，连同 `SHA256SUMS` 发布到 GitHub Release。
 - 依赖范围：`go.mod` 的 `require github.com/arcships/rutis/go/rutis` 是最低版本；二进制里编进的是构建时选定的那个版本。
 
-宿主怎样装你的插件见 [rutis-host：宿主怎样装插件](rutis-host.md#宿主怎样装插件)。在另一台机器上运行见 [rutis-host.md 的远程一节](rutis-host.md#远程运行时)。
+宿主怎样装你的插件见 [rutis-host：宿主怎样装插件](rutis-host.md#宿主怎样装插件)。在另一台机器上运行见 [rutis-host.md 的远程一节](rutis-host.md#远程运行时与设备)。
 
 ## 调试
 

@@ -334,4 +334,4 @@ error: Argument of type "Literal[42]" cannot be assigned to parameter "value" of
 
 ## 进阶：插件 API
 
-插件作为值、其余事件方式、作用域、带方法的对象、值怎样传递、测试工具的其余接口：见 [插件 API](plugin-api.md)。在另一台机器上运行见 [rutis-host.md 的远程一节](rutis-host.md#远程运行时)。
+插件作为值、其余事件方式、作用域、带方法的对象、值怎样传递、测试工具的其余接口：见 [插件 API](plugin-api.md)。在另一台机器上运行见 [rutis-host.md 的远程一节](rutis-host.md#远程运行时与设备)。

@@ -264,7 +264,7 @@ added: BUY MILK
 | `Layer`、`Patch` | 行的来源：几层，后面的层覆盖前面的；一层是若干 `Patch`（`insert` 加行，或按 `id` 改字段） | 宿主自带的行、用户加的行各放一层（第 4 节） |
 | `root.shutdown()` | 卸载全部插件，等每个清理结束，运行时进程随之结束 | 不限时：要限时用 `shutdown_with_timeout`（[默认输出](rust-host.md#默认输出)） |
 
-在另一台机器上运行插件见 [rutis-host.md 的远程一节](rutis-host.md#远程运行时)。
+在另一台机器上运行插件见 [rutis-host.md 的远程一节](rutis-host.md#远程运行时与设备)。
 
 ### 等就绪
 
