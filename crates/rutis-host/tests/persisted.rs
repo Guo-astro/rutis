@@ -261,20 +261,27 @@ fn formats_no_longer_read_are_refused() {
         }
         cases += 1;
         if dir.join("rutis.check").exists() {
-            let output = std::process::Command::new(env!("CARGO_BIN_EXE_rutis-host"))
+            let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_rutis-host"));
+            command
                 .args(["check", "rutis.json"])
                 .current_dir(&dir)
                 .env_clear()
-                .env("PATH", std::env::var_os("PATH").unwrap_or_default())
-                .output()
-                .expect("rutis-host runs");
+                .env("PATH", std::env::var_os("PATH").unwrap_or_default());
+            // Windows sockets do not start without `SystemRoot`.
+            if let Some(root) = std::env::var_os("SystemRoot") {
+                command.env("SystemRoot", root);
+            }
+            let output = command.output().expect("rutis-host runs");
             assert_eq!(output.status.code(), Some(1), "{}", dir.display());
             let printed = format!(
                 "{}{}",
                 String::from_utf8_lossy(&output.stdout),
                 String::from_utf8_lossy(&output.stderr)
             );
-            let expected = std::fs::read_to_string(dir.join("rutis.check")).unwrap();
+            // A Windows checkout may turn the sample's line ends into CRLF.
+            let expected = std::fs::read_to_string(dir.join("rutis.check"))
+                .unwrap()
+                .replace("\r\n", "\n");
             assert_eq!(normalize(&printed, &dir), expected, "{}", dir.display());
             continue;
         }
