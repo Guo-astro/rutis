@@ -1,23 +1,18 @@
-// Package events is the dispatch of the unified event model (#464,
-// docs/design-events-protocol-2026-10-18.md §5): the five modes over a
-// snapshot of entries, wherever each entry runs. The runtime dispatches its
-// fast path with it (every entry a listener of its own process); rutistest
-// dispatches as a host with it (entries in the runtime it tests, reached by
-// `events.call`, and the test's own).
+// Package events holds what the runtime's side of the unified event model
+// (#464, docs/design-events-protocol-2026-10-18.md) needs: descriptors,
+// modes, the reserved names, the lines of §5.6 and the order of a
+// listener's `emit` invocations. The host dispatches every emission.
 package events
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"math"
 	"os"
-	"reflect"
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/arcships/rutis/go/rutis/internal/peer"
@@ -117,18 +112,6 @@ func (m Mode) Valid() bool {
 // and, in a waterfall, `next`.
 type Call func(ctx context.Context, mode Mode, args []any, next Next) (any, error)
 
-// Entry is one listener of a dispatch's snapshot.
-type Entry interface {
-	Info() Listener
-	// Begin reserves an invocation, unless the entry was withdrawn: then
-	// it is skipped, as if it had never been in the snapshot.
-	Begin() (Call, bool)
-	// Emit starts an `emit` invocation after the earlier ones of this
-	// entry (§5.5), unless the entry was withdrawn. Its failure is
-	// reported by the entry, never returned.
-	Emit(ctx context.Context, args []any) bool
-}
-
 // The names of the event model's errors (§11).
 var (
 	ErrReservedEvent = peer.NewSentinel("ReservedEvent")
@@ -155,26 +138,6 @@ func CheckListen(name string) error {
 		return fmt.Errorf("event %s is internal to the runtime", name)
 	}
 	return nil
-}
-
-// HasResult reports whether v is a result: not nil, undefined, null or
-// false (§1), as a Go value or as a value received from a session.
-func HasResult(v any) bool {
-	switch x := v.(type) {
-	case nil, peer.UndefinedType, *peer.Signal:
-		return false
-	case bool:
-		return x
-	case json.RawMessage:
-		text := string(bytes.TrimSpace(x))
-		return text != "null" && text != "false" && text != ""
-	}
-	value := reflect.ValueOf(v)
-	switch value.Kind() {
-	case reflect.Pointer, reflect.Map, reflect.Slice, reflect.Interface, reflect.Func, reflect.Chan:
-		return !value.IsNil()
-	}
-	return true
 }
 
 // ShutdownVariable sets, in seconds, how long an unload waits for its
@@ -220,165 +183,6 @@ func SetReport(write func(string)) func(string) {
 // Failure is an error as the lines of §5.6 show it: `<ErrorName>: <message>`.
 func Failure(err error) string {
 	return peer.ErrorName(err) + ": " + peer.Message(err)
-}
-
-// Dispatch is one dispatch: the snapshot, in registration order, already
-// limited to the emitter's scope (§5.1 step 1).
-type Dispatch struct {
-	Name    string
-	Entries []Entry
-	// Keep is the filter (§6), nil for none: asked once per non-global
-	// entry, in order, before any invocation starts.
-	Keep func(Listener) (bool, error)
-}
-
-// selected applies the filter (§5.1 step 2).
-func (d *Dispatch) selected() ([]Entry, error) {
-	if d.Keep == nil {
-		return d.Entries, nil
-	}
-	kept := make([]Entry, 0, len(d.Entries))
-	for _, entry := range d.Entries {
-		info := entry.Info()
-		if !info.Global {
-			keep, err := d.Keep(info)
-			if err != nil {
-				return nil, err
-			}
-			if !keep {
-				continue
-			}
-		}
-		kept = append(kept, entry)
-	}
-	return kept, nil
-}
-
-// Emit starts every invocation in order and waits for none. A filter's
-// failure is returned, for the dispatcher to report (§5.6).
-func (d *Dispatch) Emit(ctx context.Context, args []any) error {
-	entries, err := d.selected()
-	if err != nil {
-		return err
-	}
-	for _, entry := range entries {
-		entry.Emit(ctx, args)
-	}
-	return nil
-}
-
-// Parallel starts every invocation in order and waits for all; failures
-// are an *AggregateError in registration order, even a single one. The
-// emitter giving up (ctx) stops starting invocations and returns at once;
-// those running see ctx cancelled.
-func (d *Dispatch) Parallel(ctx context.Context, args []any) error {
-	entries, err := d.selected()
-	if err != nil {
-		return err
-	}
-	errs := make([]error, len(entries))
-	var running sync.WaitGroup
-	for i, entry := range entries {
-		if ctx.Err() != nil {
-			break
-		}
-		call, ok := entry.Begin()
-		if !ok {
-			continue
-		}
-		running.Add(1)
-		go func() {
-			defer running.Done()
-			_, errs[i] = call(ctx, ModeParallel, args, nil)
-		}()
-	}
-	done := make(chan struct{})
-	go func() { running.Wait(); close(done) }()
-	select {
-	case <-done:
-	case <-ctx.Done():
-	}
-	if ctx.Err() != nil {
-		return ctx.Err()
-	}
-	var failed []error
-	for _, err := range errs {
-		if err != nil {
-			failed = append(failed, err)
-		}
-	}
-	if len(failed) != 0 {
-		return &peer.AggregateError{Message: fmt.Sprintf("%d listeners of %s failed", len(failed), d.Name), Errors: failed}
-	}
-	return nil
-}
-
-// Serial runs one invocation at a time and returns the first result; a
-// failure stops it. `mode` is serial or bail.
-func (d *Dispatch) Serial(ctx context.Context, mode Mode, args []any) (any, error) {
-	entries, err := d.selected()
-	if err != nil {
-		return nil, err
-	}
-	for _, entry := range entries {
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
-		}
-		call, ok := entry.Begin()
-		if !ok {
-			continue
-		}
-		value, err := call(ctx, mode, args, nil)
-		if err != nil {
-			return nil, err
-		}
-		if HasResult(value) {
-			return value, nil
-		}
-	}
-	return nil, nil
-}
-
-// Waterfall calls the outermost entry with `next`, each `next` calling
-// the entry after it and the last one `terminal` with the event's
-// arguments (nil: no result), and returns the outermost value as it is.
-func (d *Dispatch) Waterfall(ctx context.Context, args []any, terminal Terminal) (any, error) {
-	entries, err := d.selected()
-	if err != nil {
-		return nil, err
-	}
-	var ended atomic.Bool
-	defer ended.Store(true)
-	var run func(context.Context, int) (any, error)
-	next := func(from int) Next {
-		var called atomic.Bool
-		return func(nextCtx context.Context) (any, error) {
-			if nextCtx == nil {
-				nextCtx = ctx
-			}
-			if called.Swap(true) {
-				return nil, peer.Errorf("WaterfallNext", "next of %s was already called", d.Name)
-			}
-			if ended.Load() || ctx.Err() != nil {
-				return nil, peer.Errorf("WaterfallNext", "next of %s was called after its waterfall ended", d.Name)
-			}
-			return run(nextCtx, from)
-		}
-	}
-	run = func(ctx context.Context, from int) (any, error) {
-		for i := from; i < len(entries); i++ {
-			call, ok := entries[i].Begin()
-			if !ok {
-				continue
-			}
-			return call(ctx, ModeWaterfall, args, next(i+1))
-		}
-		if terminal != nil {
-			return terminal(ctx, append([]any(nil), args...)...)
-		}
-		return nil, nil
-	}
-	return run(ctx, 0)
 }
 
 // Queue runs functions one after another, in the order given (§5.5: the

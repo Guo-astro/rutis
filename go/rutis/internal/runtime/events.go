@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"slices"
 	"strconv"
-	"strings"
 
 	"github.com/arcships/rutis/go/rutis/internal/convert"
 	"github.com/arcships/rutis/go/rutis/internal/events"
@@ -16,9 +15,8 @@ import (
 
 // Events (#464, docs/design-events-2026-10-18.md): every listener on a
 // host is on one logical bus. A listener this process registers is
-// registered with the host too; an emission whose listeners are all in
-// this process is dispatched here (the fast path), any other by the host.
-// The result is the same either way.
+// registered with the host; every emission is dispatched by the host,
+// which calls each listener where it is (`events.call`).
 
 // Listener is what the bus says of a listener, as a Filter predicate sees
 // it. Empty strings are absent values: Row is empty for a listener of no
@@ -62,14 +60,6 @@ type listener struct {
 	queue     events.Queue
 }
 
-func (l *listener) Info() Listener {
-	l.rt.mu.Lock()
-	runtime := l.rt.runtimeName
-	l.rt.mu.Unlock()
-	// A copy of the scope: a filter changing it changes nothing else.
-	return Listener{Name: l.name, Plugin: l.row.plugin(), Row: l.row.name, Runtime: runtime, Scope: slices.Clone(l.row.scope), Global: l.global}
-}
-
 // live reports whether invocations may start; rt.mu is held.
 func (l *listener) live() bool {
 	return !l.withdrawn && l.rt.rows[l.row.key] == l.row
@@ -95,25 +85,6 @@ func (l *listener) Begin() (events.Call, bool) {
 		defer l.row.listening.Done()
 		return l.run(ctx, mode, args, next)
 	}, true
-}
-
-func (l *listener) Emit(ctx context.Context, args []any) bool {
-	if !l.reserve() {
-		return false
-	}
-	l.queue.Push(func() {
-		defer l.row.listening.Done()
-		l.rt.mu.Lock()
-		live := l.live()
-		l.rt.mu.Unlock()
-		if !live {
-			return
-		}
-		if _, err := l.run(ctx, events.ModeEmit, args, nil); err != nil {
-			l.failed(err)
-		}
-	})
-	return true
 }
 
 // failed reports an `emit` invocation's failure where the listener is
@@ -380,48 +351,12 @@ func (e *Emitter) dispatch(ctx context.Context, name string, mode events.Mode, a
 		rt.mu.Unlock()
 		return nil, peer.Errorf("BindingError", "row %s is not loaded in this runtime", r.name)
 	}
-	if rt.viaHost(name, mode) {
-		return rt.dispatchViaHost(ctx, r, name, mode, args, terminal, e.keep)
-	}
-	// The fast path (§5.2): the snapshot of this process's listeners.
-	d := &events.Dispatch{Name: name, Keep: keepOf(e.keep)}
-	for _, l := range rt.listeners[name] {
-		d.Entries = append(d.Entries, l)
-	}
-	rt.mu.Unlock()
-	switch mode {
-	case events.ModeEmit:
-		// Not cancelled with the emitter: it does not wait.
-		if err := d.Emit(context.WithoutCancel(ctx), args); err != nil {
-			events.Report(fmt.Sprintf("rutis: filter of %s from row %s failed: %s", name, r.name, events.Failure(err)))
-		}
-		return nil, nil
-	case events.ModeParallel:
-		return nil, d.Parallel(ctx, args)
-	case events.ModeWaterfall:
-		return d.Waterfall(ctx, args, terminal)
-	default:
-		return d.Serial(ctx, mode, args)
-	}
-}
-
-// viaHost reports whether an emission of `name` goes through the host
-// (§5.2): a listener of it may be elsewhere, or an earlier emit of it
-// through the host is unanswered. rt.mu is held.
-func (rt *runtimeState) viaHost(name string, mode events.Mode) bool {
-	// Once the session ended, nothing is elsewhere.
+	// No session (it ended, or never started): nothing dispatches.
 	if rt.session == nil || rt.closing || rt.session.Err() != nil {
-		return false
+		rt.mu.Unlock()
+		return nil, peer.HostGone(nil)
 	}
-	if rt.elsewhere[name] {
-		return true
-	}
-	for prefix := range rt.elsewherePrefixes {
-		if strings.HasPrefix(name, prefix) {
-			return true
-		}
-	}
-	return mode == events.ModeEmit && rt.hostEmits[name] > 0
+	return rt.dispatchViaHost(ctx, r, name, mode, args, terminal, e.keep)
 }
 
 // dispatchViaHost sends `events.dispatch`; rt.mu is held, and released.
@@ -461,22 +396,13 @@ func (rt *runtimeState) dispatchViaHost(ctx context.Context, r *row, name string
 	}
 	result := make(chan sent, 1)
 	if mode == events.ModeEmit {
-		// Queued now, in order with this process's other frames; its later
-		// emits of `name` follow it through the host until it is answered
-		// (§5.5). The emitter does not wait, nor cancel it.
-		rt.hostEmits[name]++
+		// Queued now, in order with this process's other frames (§5.5).
+		// The emitter does not wait, nor cancel it.
 		answered := func(err error) {
-			rt.mu.Lock()
-			if rt.hostEmits[name]--; rt.hostEmits[name] <= 0 {
-				delete(rt.hostEmits, name)
-			}
-			rt.mu.Unlock()
 			if err != nil {
 				events.Report(fmt.Sprintf("rutis: emit of %s from row %s failed: %s", name, r.name, events.Failure(err)))
 			}
 		}
-		// The answer is taken in frame order (§5.5): an emit that a later
-		// frame starts already sees it.
 		failed := make(chan error, 1)
 		rt.post(func() {
 			failed <- session.SendAnswered(ctx, "", "events.dispatch", []any{record}, answered)
@@ -544,37 +470,11 @@ func selector(keep func(Listener) (bool, error)) peer.Func {
 func (rt *runtimeState) arrive(ctx context.Context, method string, args []any) func() (any, error) {
 	switch method {
 	case "events.elsewhere":
-		err := rt.elsewhereChanged(args)
-		return func() (any, error) { return nil, err }
+		// Every emission goes through the host: where else listeners are
+		// changes nothing here.
+		return func() (any, error) { return nil, nil }
 	case "events.call":
 		return rt.eventCall(ctx, args)
-	}
-	return nil
-}
-
-func (rt *runtimeState) elsewhereChanged(args []any) error {
-	change, err := argument[struct {
-		Add            []string `json:"add"`
-		Remove         []string `json:"remove"`
-		AddPrefixes    []string `json:"addPrefixes"`
-		RemovePrefixes []string `json:"removePrefixes"`
-	}](args, 0)
-	if err != nil {
-		return fmt.Errorf("events.elsewhere: %w", err)
-	}
-	rt.mu.Lock()
-	defer rt.mu.Unlock()
-	for _, name := range change.Add {
-		rt.elsewhere[name] = true
-	}
-	for _, name := range change.Remove {
-		delete(rt.elsewhere, name)
-	}
-	for _, prefix := range change.AddPrefixes {
-		rt.elsewherePrefixes[prefix] = true
-	}
-	for _, prefix := range change.RemovePrefixes {
-		delete(rt.elsewherePrefixes, prefix)
 	}
 	return nil
 }

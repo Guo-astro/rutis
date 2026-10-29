@@ -90,6 +90,27 @@ type fakeHost struct {
 	end    func()
 	mu     sync.Mutex
 	frames []string
+	// The handle of each service the runtime published, by id.
+	handles map[string]string
+}
+
+// service calls `method` of the service `name` the runtime published.
+func (h *fakeHost) service(name, method string, args ...any) error {
+	h.t.Helper()
+	var handle string
+	testwait.Eventually(h.t, "the service "+name, func() bool {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		handle = h.handles[name]
+		return handle != ""
+	}, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), testwait.HangGuard)
+	defer cancel()
+	if args == nil {
+		args = []any{}
+	}
+	_, err := h.host.Call(ctx, handle, method, args, false)
+	return err
 }
 
 func (h *fakeHost) log() []string {
@@ -126,7 +147,18 @@ func startFakeHostWith(t *testing.T, wrap func(peer.Channel) peer.Channel, refus
 	h.host, err = peer.New(hostChannel, peer.Options{
 		Endpoint:     &peer.Endpoint{Local: "main"},
 		Capabilities: peer.TestCapabilities,
-		Dispatch: func(_ context.Context, target, method string, _ []any) (any, error) {
+		Dispatch: func(_ context.Context, target, method string, args []any) (any, error) {
+			if target == "" && method == "service" && len(args) > 1 {
+				var id, handle string
+				_ = convert.Decode(args[0], &id)
+				_ = convert.Decode(args[1], &handle)
+				h.mu.Lock()
+				if h.handles == nil {
+					h.handles = map[string]string{}
+				}
+				h.handles[id] = handle
+				h.mu.Unlock()
+			}
 			if target == "" && method == "events.dispatch" {
 				h.mu.Lock()
 				h.frames = append(h.frames, method)
@@ -174,7 +206,6 @@ func startFakeHostWith(t *testing.T, wrap func(peer.Channel) peer.Channel, refus
 		})
 	}
 	t.Cleanup(h.end)
-	h.call("events.elsewhere", map[string]any{"add": []any{}})
 	h.call("mount", map[string]any{"announce": true, "runtime": "go"})
 	return h
 }
@@ -260,29 +291,21 @@ func TestABlockedWriteDoesNotStopTheReader(t *testing.T) {
 	// A frame the reader handles inline (taking rt.mu) while the write is
 	// blocked; its answer waits for the write.
 	changed := make(chan error, 1)
-	go func() { changed <- h.call("events.elsewhere", map[string]any{"add": []any{"t/x"}}) }()
+	go func() {
+		changed <- h.call("events.call", map[string]any{"listener": "none", "name": "t/x", "mode": "serial", "args": []any{}})
+	}()
 	testwait.Within(t, "the registration is sent", registered)
 	if h.channel.stuck.Load() {
 		t.Fatal("the reader waited for rt.mu while a write held it")
 	}
-	if err := testwait.Within(t, "the change is answered", changed); err != nil {
-		t.Fatal(err)
-	}
-	// The host answered events.on before this call: the runtime has the
-	// answer when it answers.
-	if err := h.call("events.elsewhere", map[string]any{}); err != nil {
-		t.Fatal(err)
-	}
-	h.rt.mu.Lock()
-	defer h.rt.mu.Unlock()
-	if !h.rt.elsewhere["t/x"] {
-		t.Fatal("the change was not applied")
+	if err := testwait.Within(t, "the call is answered", changed); err == nil || !strings.Contains(err.Error(), "withdrawn") {
+		t.Fatalf("a call for no listener: %v", err)
 	}
 }
 
 // arrange holds the next events.on until the reader took the
-// events.elsewhere after it.
-func (g *gated) arrange() { g.arm(`"events.on"`, `"events.elsewhere"`) }
+// events.call after it.
+func (g *gated) arrange() { g.arm(`"events.on"`, `"events.call"`) }
 
 // guarantee: events/order (an events.on precedes a later events.dispatch
 // of the same process, §4.4 1)
@@ -291,9 +314,6 @@ func TestARegistrationPrecedesALaterDispatch(t *testing.T) {
 	def := Define(Plugin[NoConfig]{Name: "ordered", Apply: func(ctx *Ctx, _ NoConfig) error { c = ctx; return nil }})
 	h := startFakeHost(t, nil, def)
 	if err := h.load("o", "ordered"); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.call("events.elsewhere", map[string]any{"add": []any{"t/order"}}); err != nil {
 		t.Fatal(err)
 	}
 	ctx := context.Background()

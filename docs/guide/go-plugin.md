@@ -2,12 +2,13 @@
 
 从建项目到发布：写一个 `greeter` 插件，它提供服务 `greeter`，用到别人提供的服务 `translate`。需要 Go 1.24 或更高。
 
-下面的 `rutis-host`（建项目、在本地宿主里运行、调用服务）用 `npx @arcships/rutis-host …` 运行，要有 Node；也可以先装好，见 [rutis-host：安装](rutis-host.md#安装)，之后命令写成 `rutis-host …`。
+下面的 `rutis-host`（建项目、在本地宿主里运行、调用服务）用 `npx @arcships/rutis-host …` 运行，要有 Node；也可以先装好，见 [rutis-host：安装](rutis-host.md#安装)，之后命令写成 `rutis-host …`。测试（`go test`）需要装好的 `rutis-host`：在 `PATH` 上，或由 `RUTIS_HOST` 给出路径；第一段命令用 npm 装上它。
 
 ## 1. 起项目
 
 <!-- example: go run -->
 ```bash
+npm install --global @arcships/rutis-host
 npx @arcships/rutis-host new greeter --lang go
 cd greeter
 go mod tidy
@@ -21,7 +22,7 @@ Go 插件编译成二进制，一个二进制就是宿主里的一个运行时�
 | 文件 | 作用 |
 | --- | --- |
 | `plugin.go` | 插件本身（包 `greeter`，导出 `Plugin`） |
-| `plugin_test.go` | 测试，不需要宿主 |
+| `plugin_test.go` | 测试（`go test` 需要 `rutis-host`） |
 | `cmd/greeter/main.go` | 二进制：`rutis.Serve(greeter.Plugin)` |
 | `rutis.dev.json` | 在本地运行时有哪些行（第 7 步） |
 | `go.mod` | 模块路径（改成你自己的）；依赖 `github.com/arcships/rutis/go/rutis` |
@@ -283,11 +284,12 @@ func TestHello(t *testing.T) {
 go test ./...
 ```
 
-- `rutistest.Load(t, 插件, 配置, 服务)` 加载插件：插件在它真正的运行时里跑，值经过真正的会话传递，不需要宿主。最后一个参数给出插件用到的服务，这里是假的 `translate`。
+- `go test` 需要 `rutis-host`：在 `PATH` 上，或由 `RUTIS_HOST` 给出路径。测试进程跑 Go 运行时，并启动一次 `rutis-host test`；每次 `Load` 都是这个宿主的一行。
+- `rutistest.Load(t, 插件, 配置, 服务)` 把插件作为一行加载：插件在它真正的运行时里、真正的 rutis 内核下运行。最后一个参数给出插件用到的服务，这里是假的 `translate`：由测试自己的一个插件提供。
 - `loaded.Service("greeter")` 取插件提供的服务，`Call(ctx, 方法, &结果, 参数...)` 调用它。
-- `loaded.On` 像宿主一样监听插件发出的事件。
-- `loaded.Unload()` 卸载插件。
-- `Load` 也检查宿主会检查的事：配置合 Schema；插件只用 `Inject` 里写的服务；提供的服务和 `Provides` 一致。
+- `loaded.On` 监听插件发出的事件；监听的是测试自己的插件，在宿主的总线上。
+- `loaded.Unload()` 卸载插件；测试结束时这一行也会卸掉。
+- 宿主对这一行做它对每一行都做的检查：配置合 Schema（`TryLoad` 交回它的那一行，`weather: config: city is required`），`Inject` 里的服务都在。
 
 宿主给的服务类型（`rutis-host types`）只有 TypeScript 与 Python 两种；Go 插件照宿主文档里的方法写函数字段的结构体。测试工具的其余接口见 [插件 API：Go 的测试工具](plugin-api.md#go-的测试工具)。
 
@@ -446,7 +448,7 @@ dlv connect 127.0.0.1:2345
 - `rutis.dev.json` 加的 Python 运行时这时也读这个终端（见 [Python 指南](python-plugin.md#调试)），Ctrl-C 也送到它。
 - 停在断点时整个运行时停着：这个二进制里其他插件的调用也等它继续。
 - macOS 上第一次调试时，系统会请求允许开发者工具。
-- 测试不用宿主：`dlv test .`。
+- 测试：`dlv test .`（`rutis-host` 在 `PATH` 上，或设 `RUTIS_HOST`）。
 
 ## Go 的规则
 

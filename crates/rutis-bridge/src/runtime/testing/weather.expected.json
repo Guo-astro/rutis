@@ -21,6 +21,7 @@
     { "call": "each", "args": [{ "$callback": "upper" }], "returns": ["MON", "TUE"], "why": "a callback during a sync call" },
     {
       "call": "each",
+      "crossing": true,
       "args": [{ "$callback": { "throws": { "name": "NoForecast", "message": "no forecast for mon", "fields": { "code": 7 } } } }],
       "throws": { "name": "NoForecast", "message": "no forecast for mon" },
       "why": "an error crosses twice (callback to plugin, plugin to caller) with its name and message, not as the object thrown"

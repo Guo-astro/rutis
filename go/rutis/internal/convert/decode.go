@@ -127,8 +127,19 @@ func FromPeer(v any, t reflect.Type) (reflect.Value, error) {
 	default:
 		// A tagged value into its own type, or a Go value given as it is
 		// (a call within this process).
-		if value := reflect.ValueOf(v); value.Type().AssignableTo(t) {
+		value := reflect.ValueOf(v)
+		if value.Type().AssignableTo(t) {
 			return valueOf(v, t), nil
+		}
+		// A number into another number type, when it is the same number
+		// there, as it would be from the wire.
+		if numeric(value.Kind()) && numeric(t.Kind()) {
+			negative := (value.CanInt() && value.Int() < 0) || (value.CanFloat() && value.Float() < 0)
+			converted := value.Convert(t)
+			if !(negative && converted.CanUint()) && converted.Convert(value.Type()).Equal(value) {
+				return converted, nil
+			}
+			return reflect.Value{}, fmt.Errorf("%v does not fit %s", v, t)
 		}
 	}
 	// Lists, records and tagged values: into what a pointer points to, or
@@ -491,4 +502,15 @@ func objectFromPeer(x *peer.RemoteObject, t reflect.Type) (reflect.Value, error)
 		return out, nil
 	}
 	return out.Elem(), nil
+}
+
+// numeric reports whether `kind` is a Go number kind.
+func numeric(kind reflect.Kind) bool {
+	switch kind {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
+		reflect.Float32, reflect.Float64:
+		return true
+	}
+	return false
 }

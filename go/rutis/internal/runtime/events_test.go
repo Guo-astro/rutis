@@ -21,7 +21,8 @@ import (
 )
 
 // eventRows loads rows of one plugin in the scopes given ("" is the
-// root), with no session: every dispatch is on the fast path.
+// root), with no session: what the host does, a test does by calling the
+// runtime (`invoke`), as the host would.
 func eventRows(t *testing.T, scopes ...string) (*runtimeState, []*Ctx) {
 	t.Helper()
 	var mu sync.Mutex
@@ -79,35 +80,26 @@ func captureReports(t *testing.T) *journal {
 	return j
 }
 
+// invoke runs listener `id` as the host does (`events.call`), in `mode`,
+// with `args`; it returns once the invocation ran.
+func invoke(ctx context.Context, rt *runtimeState, id, name, mode string, args ...any) (any, error) {
+	if args == nil {
+		args = []any{}
+	}
+	return rt.control(ctx, "events.call", []any{map[string]any{"listener": id, "dispatch": "d", "own": false, "name": name, "mode": mode, "args": args}})
+}
+
 // guarantee: events/registration (disposers, unload, reserved names)
-func TestEventRegistrationLifecycle(t *testing.T) {
+func TestReservedNamesAndInactiveRows(t *testing.T) {
 	rt, rows := eventRows(t, "", "")
 	a, b := rows[0], rows[1]
 	ctx := context.Background()
-	var calls atomic.Int64
-	listen := func(context.Context, ...any) (any, error) { calls.Add(1); return nil, nil }
-	a.On("changed", listen)
-	off := b.On("changed", listen)
-	b.On("changed", listen)
-	if err := a.Parallel(ctx, "changed"); err != nil || calls.Load() != 3 {
-		t.Fatalf("parallel: %v, calls %d", err, calls.Load())
-	}
-	off()
-	off()
-	if err := a.Parallel(ctx, "changed"); err != nil || calls.Load() != 5 {
-		t.Fatalf("off: %v, calls %d", err, calls.Load())
-	}
-	// A listener unloading a later row: the snapshot skips its listener.
-	a.On("unload", func(ctx context.Context, _ ...any) (any, error) { return nil, rt.unload(ctx, "r1") })
-	b.On("unload", listen)
-	if _, err := a.Serial(ctx, "unload"); err != nil || calls.Load() != 5 {
-		t.Fatalf("withdrawn snapshot listener ran: %v, calls %d", err, calls.Load())
-	}
-	if err := a.Parallel(ctx, "changed"); err != nil || calls.Load() != 6 {
-		t.Fatalf("unload: %v, calls %d", err, calls.Load())
-	}
+	listen := func(context.Context, ...any) (any, error) { return nil, nil }
 	if _, err := peer.Protect(func() (any, error) { a.On("internal/update", listen); return nil, nil }); err == nil {
 		t.Fatal("reserved registration accepted")
+	}
+	if err := rt.unload(ctx, "r1"); err != nil {
+		t.Fatal(err)
 	}
 	// The unloaded row: reported, not registered (TestAnUnloadedRowCannotProvide).
 	var written bytes.Buffer
@@ -118,10 +110,6 @@ func TestEventRegistrationLifecycle(t *testing.T) {
 	if !strings.Contains(written.String(), "row r1 is not active") {
 		t.Fatalf("inactive registration not reported: %q", written.String())
 	}
-	if err := a.Parallel(ctx, "changed"); err != nil || calls.Load() != 7 {
-		t.Fatalf("inactive registration accepted: %v, calls %d", err, calls.Load())
-	}
-	a.On("rutis/row", listen)
 	if err := a.Emit(ctx, "internal/update"); err == nil {
 		t.Fatal("internal emission accepted")
 	}
@@ -140,57 +128,60 @@ func TestEventRegistrationLifecycle(t *testing.T) {
 			t.Fatalf("rutis/* emission: %v", err)
 		}
 	}
-	if err := b.Emit(ctx, "changed"); !errors.Is(err, ErrBinding) {
+	if err := b.Emit(ctx, "changed"); !errors.Is(err, ErrBinding) || err.Error() != "row r1 is not loaded in this runtime" {
 		t.Fatalf("an unloaded row emitted: %v", err)
 	}
-	var workers sync.WaitGroup
-	for range 4 {
-		workers.Add(1)
-		go func() {
-			defer workers.Done()
-			for range 100 {
-				off := a.On("changed", listen)
-				_ = a.Parallel(ctx, "changed")
-				_ = a.Emit(ctx, "changed")
-				off()
-			}
-		}()
-	}
-	workers.Wait()
 }
 
-// guarantee: events/emit (returns at once; order per listener; failures
-// reported, isolated)
-func TestEmitStartsInOrderAndReportsFailures(t *testing.T) {
-	reports := captureReports(t)
+// Every emission goes through the host: without a session (it ended)
+// it fails, saying so, in every mode.
+func TestAnEmitWithoutTheHostSaysItDisconnected(t *testing.T) {
 	_, rows := eventRows(t, "")
 	a := rows[0]
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx := context.Background()
+	for _, emit := range []func() error{
+		func() error { return a.Emit(ctx, "t/e") },
+		func() error { return a.Parallel(ctx, "t/e") },
+		func() error { _, err := a.Serial(ctx, "t/e"); return err },
+		func() error { _, err := a.Waterfall(ctx, "t/e", nil); return err },
+		func() error { _, err := a.Bail(ctx, "t/e"); return err },
+	} {
+		if err := emit(); !errors.Is(err, ErrBinding) || err.Error() != "the host disconnected" {
+			t.Fatalf("an emit without the host: %v", err)
+		}
+	}
+}
+
+// guarantee: events/emit (order per listener; failures reported where
+// the listener is, isolated)
+func TestEmitInvocationsRunInOrderAndFailuresAreReported(t *testing.T) {
+	reports := captureReports(t)
+	rt, rows := eventRows(t, "")
+	a := rows[0]
 	j := &journal{}
 	release := make(chan struct{})
 	a.On("t/emit", func(ctx context.Context, args ...any) (any, error) {
 		<-release
 		j.add(fmt.Sprintf("slow:%v", args[0]))
-		if ctx.Err() != nil {
-			return nil, errors.New("an emit's listener saw the emitter's cancellation")
-		}
 		return nil, nil
 	})
 	a.On("t/emit", func(_ context.Context, args ...any) (any, error) {
 		j.add(fmt.Sprintf("fails:%v", args[0]))
 		return nil, peer.Errorf("Boom", "failed on %v", args[0])
 	})
+	// The host's calls arrive in frame order (arrive, on the reading
+	// goroutine); each is answered once it ran.
+	var answered sync.WaitGroup
 	for i := 1; i <= 3; i++ {
-		if err := a.Emit(ctx, "t/emit", i); err != nil {
-			t.Fatal(err)
+		for _, id := range []string{"1", "2"} {
+			run := rt.arrive(context.Background(), "events.call", []any{map[string]any{"listener": id, "dispatch": "d", "own": false, "name": "t/emit", "mode": "emit", "args": []any{i}}})
+			answered.Add(1)
+			go func() { defer answered.Done(); _, _ = run() }()
 		}
 	}
-	// Emit returned with the slow listener still held, and the emitter
-	// giving up does not cancel what it emitted.
-	cancel()
 	testwait.Eventually(t, "the fast listener ran each emit", func() bool { return len(j.list()) == 3 }, func() string { return fmt.Sprint(j.list()) })
 	close(release)
-	testwait.Eventually(t, "every emit ran", func() bool { return len(j.list()) == 6 }, func() string { return fmt.Sprint(j.list()) })
+	answered.Wait()
 	var slow, fails []string
 	for _, entry := range j.list() {
 		if strings.HasPrefix(entry, "slow:") {
@@ -209,215 +200,6 @@ func TestEmitStartsInOrderAndReportsFailures(t *testing.T) {
 	}
 	if got := reports.list(); !slices.Equal(got, want) {
 		t.Fatalf("reported %q", got)
-	}
-}
-
-// guarantee: events/parallel (all run; AggregateError in registration
-// order, even for one failure)
-func TestParallelAggregatesInRegistrationOrder(t *testing.T) {
-	_, rows := eventRows(t, "")
-	a := rows[0]
-	ctx := context.Background()
-	a.On("t/par", func(context.Context, ...any) (any, error) {
-		time.Sleep(50 * time.Millisecond)
-		return nil, peer.Errorf("AErr", "a")
-	})
-	a.On("t/par", func(context.Context, ...any) (any, error) { return nil, peer.Errorf("BErr", "b") })
-	var ran atomic.Bool
-	a.On("t/par", func(context.Context, ...any) (any, error) { ran.Store(true); return "C", nil })
-	err := a.Parallel(ctx, "t/par")
-	var aggregate *peer.AggregateError
-	if !errors.As(err, &aggregate) || len(aggregate.Errors) != 2 || peer.ErrorName(aggregate.Errors[0]) != "AErr" || peer.ErrorName(aggregate.Errors[1]) != "BErr" || !ran.Load() {
-		t.Fatalf("parallel: %v", err)
-	}
-	if aggregate.Message != "2 listeners of t/par failed" || peer.Message(aggregate) != aggregate.Message {
-		t.Fatalf("message %q", aggregate.Message)
-	}
-	a.On("t/one", func(context.Context, ...any) (any, error) { panic("boom") })
-	err = a.Parallel(ctx, "t/one")
-	if !errors.As(err, &aggregate) || len(aggregate.Errors) != 1 || peer.ErrorName(aggregate.Errors[0]) != "Panic" {
-		t.Fatalf("one failure is aggregated too: %v", err)
-	}
-	if err := a.Parallel(ctx, "t/none"); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// guarantee: events/serial, events/bail (first result; nil and false are
-// none, 0 is one; an error stops)
-func TestSerialAndBailReturnTheFirstResult(t *testing.T) {
-	_, rows := eventRows(t, "")
-	a := rows[0]
-	ctx := context.Background()
-	j := &journal{}
-	a.On("t/serial", returns(j, "a", nil))
-	a.On("t/serial", returns(j, "b", false))
-	a.On("t/serial", returns(j, "c", (*int)(nil)))
-	a.On("t/serial", returns(j, "d", 0))
-	a.On("t/serial", returns(j, "e", "E"))
-	for _, emit := range []func(context.Context, string, ...any) (any, error){a.Serial, a.Bail} {
-		if value, err := emit(ctx, "t/serial"); err != nil || value != 0 {
-			t.Fatalf("serial: %v %v", value, err)
-		}
-	}
-	if got := j.list(); fmt.Sprint(got) != "[a b c d a b c d]" {
-		t.Fatalf("ran %v", got)
-	}
-	a.On("t/none", returns(j, "x", false))
-	if value, err := a.Serial(ctx, "t/none"); err != nil || value != nil {
-		t.Fatalf("no result: %v %v", value, err)
-	}
-	a.On("t/error", func(context.Context, ...any) (any, error) { return nil, peer.Errorf("AErr", "a") })
-	a.On("t/error", returns(j, "after", "B"))
-	if _, err := a.Bail(ctx, "t/error"); peer.ErrorName(err) != "AErr" || slices.Contains(j.list(), "after") {
-		t.Fatalf("an error stops: %v %v", err, j.list())
-	}
-}
-
-// guarantee: events/waterfall (next, veto, terminal, next twice, after the
-// end)
-func TestWaterfallChainsThroughNext(t *testing.T) {
-	_, rows := eventRows(t, "")
-	a := rows[0]
-	ctx := context.Background()
-	link := func(text string) func(context.Context, ...any) (any, error) {
-		return func(ctx context.Context, args ...any) (any, error) {
-			next := args[len(args)-1].(events.Next)
-			rest, err := next(ctx)
-			if err != nil {
-				return nil, err
-			}
-			if rest == nil {
-				rest = ""
-			}
-			return text + rest.(string), nil
-		}
-	}
-	a.On("t/wf", link("a"))
-	a.On("t/wf", link("b"))
-	terminal := func(context.Context, ...any) (any, error) { return "t", nil }
-	if value, err := a.Waterfall(ctx, "t/wf", terminal); err != nil || value != "abt" {
-		t.Fatalf("chain: %v %v", value, err)
-	}
-	if value, err := a.Waterfall(ctx, "t/wf", nil); err != nil || value != "ab" {
-		t.Fatalf("no terminal: %v %v", value, err)
-	}
-	if value, err := a.Waterfall(ctx, "t/empty", terminal); err != nil || value != "t" {
-		t.Fatalf("no listeners: %v %v", value, err)
-	}
-	if value, err := a.Waterfall(ctx, "t/empty", nil); err != nil || value != nil {
-		t.Fatalf("nothing at all: %v %v", value, err)
-	}
-	j := &journal{}
-	a.On("t/veto", link("a"))
-	a.On("t/veto", returns(j, "veto", "v"))
-	a.On("t/veto", returns(j, "never", "x"))
-	if value, err := a.Waterfall(ctx, "t/veto", terminal); err != nil || value != "av" || slices.Contains(j.list(), "never") {
-		t.Fatalf("veto: %v %v %v", value, err, j.list())
-	}
-	a.On("t/raw", func(context.Context, ...any) (any, error) { return false, nil })
-	if value, err := a.Waterfall(ctx, "t/raw", terminal); err != nil || value != false {
-		t.Fatalf("the outermost value as it is: %v %v", value, err)
-	}
-	a.On("t/twice", func(ctx context.Context, args ...any) (any, error) {
-		next := args[len(args)-1].(events.Next)
-		if _, err := next(ctx); err != nil {
-			return nil, err
-		}
-		return next(ctx)
-	})
-	a.On("t/twice", func(context.Context, ...any) (any, error) { return "b", nil })
-	_, err := a.Waterfall(ctx, "t/twice", nil)
-	if !errors.Is(err, events.ErrWaterfallNext) || err.Error() != "next of t/twice was already called" {
-		t.Fatalf("next twice: %v", err)
-	}
-	var late events.Next
-	a.On("t/late", func(_ context.Context, args ...any) (any, error) {
-		late = args[len(args)-1].(events.Next)
-		return "v", nil
-	})
-	if _, err := a.Waterfall(ctx, "t/late", nil); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := late(ctx); !errors.Is(err, events.ErrWaterfallNext) || err.Error() != "next of t/late was called after its waterfall ended" {
-		t.Fatalf("next after the end: %v", err)
-	}
-	a.On("t/args", func(_ context.Context, args ...any) (any, error) { return len(args), nil })
-	if value, err := a.Serial(ctx, "t/args", 1, 2); err != nil || value != 2 {
-		t.Fatalf("only a waterfall passes next: %v %v", value, err)
-	}
-	if value, err := a.Waterfall(ctx, "t/args", nil, 1, 2); err != nil || value != 3 {
-		t.Fatalf("a waterfall passes next last: %v %v", value, err)
-	}
-}
-
-// guarantee: events/flat (events are delivered by name)
-func TestListenersHearEveryEvent(t *testing.T) {
-	_, rows := eventRows(t, "", "t1", "t1/s1", "t2")
-	root, t1, s1, t2 := rows[0], rows[1], rows[2], rows[3]
-	ctx := context.Background()
-	j := &journal{}
-	root.On("t/scope", returns(j, "r", nil))
-	t1.On("t/scope", returns(j, "u", nil))
-	s1.On("t/scope", returns(j, "s", nil))
-	t2.On("t/scope", returns(j, "v", nil))
-	for _, step := range []struct {
-		from *Ctx
-		want string
-	}{{s1, "[r u s v]"}, {t1, "[r u s v]"}, {t2, "[r u s v]"}, {root, "[r u s v]"}} {
-		j.entries = nil
-		if _, err := step.from.Serial(ctx, "t/scope"); err != nil {
-			t.Fatal(err)
-		}
-		if got := fmt.Sprint(j.list()); got != step.want {
-			t.Fatalf("from %v: %s, want %s", step.from.Scope(), got, step.want)
-		}
-	}
-	if got := s1.Scope(); len(got) != 2 || got[0].ID != "t1" || got[1].ID != "t1/s1" {
-		t.Fatalf("scope %v", got)
-	}
-}
-
-// guarantee: events/filter (sees descriptors in order before any call;
-// Global skips it; Prepend orders first)
-func TestFilterGlobalAndPrepend(t *testing.T) {
-	_, rows := eventRows(t, "", "t2")
-	a, other := rows[0], rows[1]
-	ctx := context.Background()
-	j := &journal{}
-	a.On("t/filter", returns(j, "a", nil))
-	a.On("t/filter", returns(j, "g", nil), Global())
-	a.On("t/filter", returns(j, "b", nil))
-	other.On("t/filter", returns(j, "d", nil))
-	a.On("t/filter", returns(j, "p", nil), Prepend())
-	var seen []Listener
-	keep := func(l Listener) (bool, error) {
-		seen = append(seen, l)
-		j.add("filter")
-		return len(seen) != 2, nil
-	}
-	if _, err := a.Filter(keep).Serial(ctx, "t/filter"); err != nil {
-		t.Fatal(err)
-	}
-	if got := fmt.Sprint(j.list()); got != "[filter filter filter filter p g b d]" {
-		t.Fatalf("ran %s", got)
-	}
-	if seen[0].Row != "r0" || seen[0].Plugin != "events" || seen[0].Name != "t/filter" || seen[0].Global || len(seen[0].Scope) != 0 {
-		t.Fatalf("descriptor %+v", seen[0])
-	}
-	j.entries = nil
-	if err := a.Filter(func(Listener) (bool, error) { panic("no") }).Parallel(ctx, "t/filter"); peer.ErrorName(err) != "Panic" || len(j.list()) != 0 {
-		t.Fatalf("a failing filter fails the dispatch before any call: %v %v", err, j.list())
-	}
-	if _, err := a.Filter(func(Listener) (bool, error) { return false, peer.Errorf("FErr", "no") }).Serial(ctx, "t/filter"); peer.ErrorName(err) != "FErr" || err.Error() != "no" || len(j.list()) != 0 {
-		t.Fatalf("the error a filter returns fails the dispatch with it, before any call: %v %v", err, j.list())
-	}
-	reports := captureReports(t)
-	if err := a.Filter(func(Listener) (bool, error) { panic("no") }).Emit(ctx, "t/filter"); err != nil {
-		t.Fatal(err)
-	}
-	if got := reports.list(); len(got) != 1 || !strings.HasPrefix(got[0], "rutis: filter of t/filter from row r0 failed: Panic: ") {
-		t.Fatalf("a failing emit filter is reported: %q", got)
 	}
 }
 
@@ -442,14 +224,12 @@ func TestUnloadCancelsAndWaitsForListeners(t *testing.T) {
 		return nil
 	})
 	done := make(chan error, 1)
-	go func() { done <- a.Parallel(ctx, "t/unload") }()
+	go func() { _, err := invoke(ctx, rt, "1", "t/unload", "parallel"); done <- err }()
 	testwait.Within(t, "the listener starts", started)
 	if err := rt.unload(ctx, "r1"); err != nil {
 		t.Fatal(err)
 	}
-	err := testwait.Within(t, "the dispatch settles", done)
-	var aggregate *peer.AggregateError
-	if !errors.As(err, &aggregate) || !errors.Is(aggregate.Errors[0], context.Canceled) {
+	if err := testwait.Within(t, "the invocation settles", done); !errors.Is(err, context.Canceled) {
 		t.Fatalf("the cancelled listener's failure: %v", err)
 	}
 
@@ -459,9 +239,7 @@ func TestUnloadCancelsAndWaitsForListeners(t *testing.T) {
 	stuck := make(chan struct{})
 	defer close(stuck)
 	a.On("t/stuck", func(context.Context, ...any) (any, error) { started <- struct{}{}; <-stuck; return nil, nil })
-	if err := a.Emit(ctx, "t/stuck"); err != nil {
-		t.Fatal(err)
-	}
+	go func() { _, _ = invoke(ctx, rt, "2", "t/stuck", "emit") }()
 	testwait.Within(t, "the stuck listener starts", started)
 	if err := rt.unload(ctx, "r0"); err != nil {
 		t.Fatal(err)
@@ -471,9 +249,10 @@ func TestUnloadCancelsAndWaitsForListeners(t *testing.T) {
 	}
 }
 
-// guarantee: events/cancel (an emitter giving up cancels its listeners)
-func TestAnEmitterGivingUpCancelsItsListeners(t *testing.T) {
-	_, rows := eventRows(t, "")
+// guarantee: events/cancel (an emitter giving up cancels its listeners:
+// the host's call is cancelled)
+func TestACancelledCallCancelsItsListener(t *testing.T) {
+	rt, rows := eventRows(t, "")
 	a := rows[0]
 	started := make(chan struct{}, 1)
 	cancelled := make(chan struct{})
@@ -484,13 +263,9 @@ func TestAnEmitterGivingUpCancelsItsListeners(t *testing.T) {
 		return nil, nil
 	})
 	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() { done <- a.Parallel(ctx, "t/cancel") }()
+	go func() { _, _ = invoke(ctx, rt, "1", "t/cancel", "parallel") }()
 	testwait.Within(t, "the listener starts", started)
 	cancel()
-	if err := testwait.Within(t, "the emitter's call ends", done); !errors.Is(err, context.Canceled) {
-		t.Fatalf("parallel: %v", err)
-	}
 	testwait.Within(t, "the listener is cancelled", cancelled)
 }
 
@@ -514,9 +289,7 @@ func TestFailedApplyAndUpdateRemoveListeners(t *testing.T) {
 		}
 		return nil
 	}})
-	var emitter *Ctx
-	emitting := Define(Plugin[NoConfig]{Name: "emitter", Apply: func(c *Ctx, _ NoConfig) error { emitter = c; return nil }})
-	rt := newRuntime([]*Definition{def, emitting})
+	rt := newRuntime([]*Definition{def})
 	ctx := context.Background()
 	t.Cleanup(func() { _ = rt.dispose(ctx) })
 	if err := rt.load(ctx, "a", "events", map[string]any{"label": "first"}, nil, nil, nil); err != nil {
@@ -528,11 +301,16 @@ func TestFailedApplyAndUpdateRemoveListeners(t *testing.T) {
 	if err := rt.load(ctx, "f", "events", map[string]any{"label": "failed", "fail": true}, nil, nil, nil); err == nil {
 		t.Fatal("the failing apply loaded")
 	}
-	if err := rt.load(ctx, "e", "emitter", nil, nil, nil, nil); err != nil {
-		t.Fatal(err)
+	rt.mu.Lock()
+	var ids []string
+	for _, l := range rt.listeners["changed"] {
+		ids = append(ids, l.id)
 	}
-	if err := emitter.Parallel(ctx, "changed"); err != nil {
-		t.Fatal(err)
+	rt.mu.Unlock()
+	for _, id := range ids {
+		if _, err := invoke(ctx, rt, id, "changed", "parallel"); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if len(seen) != 1 || seen[0] != "updated" {
 		t.Fatalf("listeners of the old config or the failed row remain: %v", seen)
@@ -553,30 +331,6 @@ func TestACallForAWithdrawnListenerFails(t *testing.T) {
 	off()
 	if err := call(); !errors.Is(err, ErrBinding) || err.Error() != "listener 1 of t/gone is withdrawn" {
 		t.Fatalf("withdrawn: %v", err)
-	}
-}
-
-// guarantee: events/cancel (a cancelled waterfall fails a later next, §5.7)
-func TestNextAfterTheEmitterGaveUpFails(t *testing.T) {
-	_, rows := eventRows(t, "")
-	a := rows[0]
-	held := make(chan events.Next, 1)
-	a.On("t/wf-cancel", func(ctx context.Context, args ...any) (any, error) {
-		held <- args[len(args)-1].(events.Next)
-		<-ctx.Done()
-		return nil, ctx.Err()
-	})
-	a.On("t/wf-cancel", func(context.Context, ...any) (any, error) { return "never", nil })
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() { _, err := a.Waterfall(ctx, "t/wf-cancel", nil); done <- err }()
-	next := testwait.Within(t, "the listener starts", held)
-	cancel()
-	if err := testwait.Within(t, "the emitter's call ends", done); !errors.Is(err, context.Canceled) {
-		t.Fatalf("waterfall: %v", err)
-	}
-	if _, err := next(context.Background()); !errors.Is(err, events.ErrWaterfallNext) || err.Error() != "next of t/wf-cancel was called after its waterfall ended" {
-		t.Fatalf("next after cancellation: %v", err)
 	}
 }
 
@@ -637,9 +391,6 @@ func TestRefusedEmitsAndRegistrationsAreReported(t *testing.T) {
 	a := rows[0]
 	refusingHost(t, rt, false)
 	a.On("t/late", func(context.Context, ...any) (any, error) { return nil, nil })
-	rt.mu.Lock()
-	rt.elsewhere["t/e"] = true
-	rt.mu.Unlock()
 	if err := a.Emit(context.Background(), "t/e"); err != nil {
 		t.Fatal(err)
 	}
@@ -678,9 +429,6 @@ func TestAnUnansweredEmitIsReportedWhenTheSessionEnds(t *testing.T) {
 	reports := captureReports(t)
 	rt, rows := eventRows(t, "")
 	end := refusingHost(t, rt, true)
-	rt.mu.Lock()
-	rt.elsewhere["t/e"] = true
-	rt.mu.Unlock()
 	if err := rows[0].Emit(context.Background(), "t/e"); err != nil {
 		t.Fatal(err)
 	}
@@ -715,76 +463,11 @@ func TestTheSelectorIgnoresExtraDescriptorFields(t *testing.T) {
 	}
 }
 
-// guarantee: events/filter (a filter gets a copy of the scope: changing it
-// changes neither the entry nor the row)
-func TestAFilterGetsACopyOfTheScope(t *testing.T) {
-	_, rows := eventRows(t, "t1")
-	a := rows[0]
-	ctx := context.Background()
-	j := &journal{}
-	a.On("t/scope", returns(j, "a", nil))
-	var seen []string
-	keep := func(l Listener) (bool, error) {
-		seen = append(seen, l.Scope[0].ID)
-		l.Scope[0].ID = "changed"
-		return true, nil
-	}
-	for range 2 {
-		if _, err := a.Filter(keep).Serial(ctx, "t/scope"); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if fmt.Sprint(seen) != "[t1 t1]" || a.Scope()[0].ID != "t1" || fmt.Sprint(j.list()) != "[a a]" {
-		t.Fatalf("seen %v, scope %v, ran %v", seen, a.Scope(), j.list())
-	}
-}
-
-// guarantee: events/waterfall (the terminal gets the event's arguments,
-// §5.4)
-func TestTheTerminalGetsTheEventArguments(t *testing.T) {
-	_, rows := eventRows(t, "")
-	a := rows[0]
-	ctx := context.Background()
-	terminal := func(_ context.Context, args ...any) (any, error) { return fmt.Sprint(len(args), args), nil }
-	a.On("t/wf-args", func(ctx context.Context, args ...any) (any, error) {
-		rest, err := args[len(args)-1].(events.Next)(ctx)
-		return fmt.Sprint("a:", rest), err
-	})
-	if value, err := a.Waterfall(ctx, "t/wf-args", terminal, "x", 2); err != nil || value != "a:2 [x 2]" {
-		t.Fatalf("through a listener: %v %v", value, err)
-	}
-	if value, err := a.Waterfall(ctx, "t/none", terminal, "x"); err != nil || value != "1 [x]" {
-		t.Fatalf("no listeners: %v %v", value, err)
-	}
-}
-
-// guarantee: events/next (next runs the rest of the chain when called,
-// before it returns)
-func TestNextRunsTheRestWhenCalled(t *testing.T) {
-	_, rows := eventRows(t, "")
-	a := rows[0]
-	ctx := context.Background()
-	j := &journal{}
-	a.On("t/eager", func(ctx context.Context, args ...any) (any, error) {
-		j.add("a:before")
-		rest, err := args[len(args)-1].(events.Next)(ctx)
-		j.add("a:after")
-		return rest, err
-	})
-	a.On("t/eager", returns(j, "b", "B"))
-	if value, err := a.Waterfall(ctx, "t/eager", nil); err != nil || value != "B" {
-		t.Fatalf("waterfall: %v %v", value, err)
-	}
-	if got := fmt.Sprint(j.list()); got != "[a:before b a:after]" {
-		t.Fatalf("ran %s", got)
-	}
-}
-
 // guarantee: events/unload (a listener its row's unload stops is not a
 // failure: no report; emitting from an unloaded row is refused)
 func TestAListenerStoppedByItsUnloadIsNotReported(t *testing.T) {
 	rt, rows := eventRows(t, "", "")
-	a, b := rows[0], rows[1]
+	b := rows[1]
 	ctx := context.Background()
 	reports := captureReports(t)
 	started := make(chan struct{}, 2)
@@ -798,8 +481,8 @@ func TestAListenerStoppedByItsUnloadIsNotReported(t *testing.T) {
 		<-ctx.Done()
 		return nil, fmt.Errorf("stopping: %w", ctx.Err())
 	})
-	if err := a.Emit(ctx, "t/stop"); err != nil {
-		t.Fatal(err)
+	for _, id := range []string{"1", "2"} {
+		go func() { _, _ = invoke(ctx, rt, id, "t/stop", "emit") }()
 	}
 	testwait.Within(t, "the first listener starts", started)
 	testwait.Within(t, "the second listener starts", started)

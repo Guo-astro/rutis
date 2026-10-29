@@ -18,8 +18,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
+      - run: npm install --global @arcships/rutis-host@^{{version}}
+      # rutistest runs the plugin under `rutis-host test`, found on PATH.
       - run: go test ./...
-      - run: npx --yes @arcships/rutis-host@^{{version}} check
+      - run: rutis-host check
       - name: build every platform
         run: |
           mkdir -p dist
