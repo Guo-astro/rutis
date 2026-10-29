@@ -473,10 +473,14 @@ async fn the_filter_runs_in_the_emitters_process() {
 async fn a_failing_filter_of_an_emit_is_reported_from_its_row() {
     within("filter report", async {
         let lines: Arc<Mutex<Vec<String>>> = Arc::default();
-        let into = lines.clone();
+        let emitters: Arc<Mutex<Vec<String>>> = Arc::default();
+        let (into, from) = (lines.clone(), emitters.clone());
         let root = Ctx::root_with_sink(
             tokio::runtime::Handle::current(),
             Arc::new(move |error: Arc<ErrorKind>| {
+                if let ErrorKind::FilterFailed { emitter, .. } = &*error {
+                    from.lock().unwrap().push(emitter.clone());
+                }
                 if let Some(line) = rutis_bridge::events::report_line(&error) {
                     into.lock().unwrap().push(line);
                 }
@@ -506,6 +510,8 @@ async fn a_failing_filter_of_an_emit_is_reported_from_its_row() {
             *lines.lock().unwrap(),
             vec!["filter of t/fe from row chat failed: FErr: no".to_owned()]
         );
+        // The host's sink sees it as a filter's failure, of the row.
+        assert_eq!(*emitters.lock().unwrap(), vec!["row chat".to_owned()]);
         assert!(heard.lock().unwrap().is_empty());
     })
     .await;
