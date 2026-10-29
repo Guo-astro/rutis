@@ -19,6 +19,17 @@ pub(crate) fn binding(message: impl Into<String>) -> Error {
     }
 }
 
+/// What a listener elsewhere gets for the promise of a runtime that waits
+/// for its waterfall synchronously (`sync: true`, events protocol §5.4):
+/// it settles only once that wait ends, which waits for this listener.
+pub(crate) fn promise_of_waiting() -> Error {
+    Error::SyncWaitCycle(
+        "the rest of the waterfall is a promise of the runtime waiting for it synchronously: \
+         it settles only after that wait, which waits for this listener"
+            .into(),
+    )
+}
+
 /// A session error as the kernel carries it; [`to_session`] gives it back
 /// as it was.
 pub(crate) fn to_cordis(error: Error) -> RutisError {

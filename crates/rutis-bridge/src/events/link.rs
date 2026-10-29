@@ -342,6 +342,8 @@ impl Link {
                 kind: announced.kind,
                 origin: self.origin,
                 owner: self.ctx.clone(),
+                // A linked node waits for no dispatch synchronously.
+                waits: Default::default(),
             });
             disposers.push(
                 self.ctx

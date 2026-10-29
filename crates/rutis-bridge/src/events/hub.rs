@@ -21,7 +21,7 @@ use rutis::{Ctx, Disposer, Error as RutisError};
 use serde_json::{json, Value as Json};
 
 use super::args::{from_wire, result_from_wire, result_to_wire, to_wire, SessionTranscoder};
-use super::errors::{binding, to_cordis, to_session};
+use super::errors::{binding, promise_of_waiting, to_cordis, to_session};
 use crate::session::rpc::with_caller;
 use crate::session::{settle, Connection, Error, Reply, Value, WeakConnection};
 
@@ -134,6 +134,9 @@ pub(crate) struct SessionEvents {
     entries: Mutex<HashMap<String, Registered>>,
     /// `emit` dispatches waiting for those before them to start (§5.5).
     emits: Mutex<Emits>,
+    /// The synchronous waits of the runtime in its `waterfall` dispatches
+    /// (`sync: true`, §5.4); its entries read it.
+    waits: Waits,
 }
 
 struct Registered {
@@ -286,6 +289,7 @@ impl SessionEvents {
             rows: Mutex::default(),
             entries: Mutex::default(),
             emits: Mutex::default(),
+            waits: Waits::default(),
         });
         let weak = Arc::downgrade(&session);
         session.executor.spawn(async move {
@@ -470,6 +474,7 @@ impl SessionEvents {
             kind: registration.kind,
             origin: self.origin,
             owner: ctx.clone(),
+            waits: self.waits.clone(),
         });
         let disposer = ctx
             .events()
@@ -534,17 +539,41 @@ impl SessionEvents {
         };
         let filter = reference(&mut fields, "filter")?;
         let terminal = reference(&mut fields, "terminal")?;
+        // A Cordis plugin's `emit` or `waterfall` (§5.4): the runtime waits
+        // for the reply synchronously, so whatever this dispatch calls in
+        // its process (the filter, the terminal, its own listeners) is
+        // called synchronously; a `waterfall`'s reply is its value.
+        let sync = match fields.remove("sync") {
+            None | Some(Value::Undefined) => false,
+            Some(sync) => crate::session::decode::<bool>(sync.json()?)?,
+        };
         let Some(ctx) = self.ctx.clone() else {
             // No bus: `events.on` registered nothing, so no listener hears it.
             return Ok(Value::Undefined);
         };
         let mut dispatch = Dispatch::new(name.clone(), mode, from_wire(args));
         dispatch.origin = Some(self.origin);
-        dispatch.filter =
-            filter.map(|filter| selector(filter, name.clone(), mode.is_sync(), self.origin));
-        dispatch.terminal = terminal.map(terminal_of);
+        dispatch.filter = filter
+            .map(|filter| selector(filter, name.clone(), mode.is_sync() || sync, self.origin));
+        dispatch.terminal = match sync {
+            true => terminal.map(|terminal| sync_terminal_of(terminal, self.waits.clone())),
+            false => terminal.map(terminal_of),
+        };
 
         match mode {
+            Mode::Waterfall if sync => {
+                // The whole chain, waited for here: listeners elsewhere run
+                // as they always do (an asynchronous one is awaited where it
+                // runs), and the runtime handles what reaches it meanwhile in
+                // its synchronous wait.
+                let _waiting = Waiting::new(&self.waits);
+                let result = wait_here(with_caller(
+                    source.clone(),
+                    ctx.events().dispatch(&ctx, dispatch),
+                ))
+                .map_err(|error| to_session(&error))?;
+                result_to_wire(result)
+            }
             Mode::Bail => {
                 let result = ctx
                     .events()
@@ -744,6 +773,10 @@ fn selector(
     sync: bool,
     origin: u64,
 ) -> BatchFilter {
+    // A synchronous filter is called along the chain of the dispatch that
+    // made it, whatever thread the bus calls it on: the emitter takes it as
+    // part of its synchronous wait.
+    let chain = crate::session::rpc::chain();
     Box::new(move |candidates: Vec<Candidate>| {
         let wanted = candidates.len();
         let described = candidates
@@ -781,7 +814,9 @@ fn selector(
         };
         match sync {
             true => {
-                FilterAnswer::Ready(selector.call(argument).map_err(to_cordis).and_then(answers))
+                let reply =
+                    crate::session::rpc::on_chain(chain.clone(), || selector.call(argument));
+                FilterAnswer::Ready(reply.map_err(to_cordis).and_then(answers))
             }
             false => FilterAnswer::Pending(Box::pin(async move {
                 let reply = selector.call_async(argument).await.map_err(to_cordis)?;
@@ -829,6 +864,56 @@ fn terminal_of(terminal: crate::session::Reference) -> RawTerminal {
     }))
 }
 
+/// A waterfall's terminal in the emitter's process while it waits
+/// synchronously (`sync: true`): called synchronously, along the chain of
+/// its innermost wait, its value as is.
+fn sync_terminal_of(terminal: crate::session::Reference, waits: Waits) -> RawTerminal {
+    RawTerminal::Sync(Box::new(move |event: PayloadRef<'_>| {
+        let args = to_wire(event).map_err(to_cordis)?;
+        let reply = waits
+            .along(|| terminal.call(Value::List(args)))
+            .map_err(to_cordis)?;
+        Ok(result_from_wire(reply, Mode::Waterfall))
+    }))
+}
+
+/// The synchronous waits of a session in its `waterfall` dispatches: the
+/// chain of each, innermost last (the dispatch's own, then each `next` its
+/// listeners call meanwhile). A call into the session while it waits is
+/// made along the innermost, so the session takes it as part of its wait.
+#[derive(Clone, Default)]
+pub(crate) struct Waits(Arc<Mutex<Vec<Vec<String>>>>);
+
+impl Waits {
+    fn innermost(&self) -> Option<Vec<String>> {
+        self.0.lock().unwrap().last().cloned()
+    }
+
+    /// Run `call` along the innermost wait's chain.
+    fn along<R>(&self, call: impl FnOnce() -> R) -> R {
+        match self.innermost() {
+            Some(chain) => crate::session::rpc::on_chain(chain, call),
+            None => call(),
+        }
+    }
+}
+
+/// One synchronous wait of a session, counted while it lasts.
+struct Waiting(Waits);
+
+impl Waiting {
+    fn new(waits: &Waits) -> Self {
+        waits.0.lock().unwrap().push(crate::session::rpc::chain());
+        Self(waits.clone())
+    }
+}
+
+impl Drop for Waiting {
+    fn drop(&mut self) {
+        self.0 .0.lock().unwrap().pop();
+    }
+}
+
 /// An entry whose listener is across a session: a runtime's (its
 /// `events.on` id) or a linked node's (the id it announced). Each call is
 /// one `events.call` (events protocol §5.3).
@@ -843,6 +928,9 @@ pub(crate) struct WireEntry {
     /// its answer fails with the session's end instead of holding the
     /// unload, which ends that session only after its wait (§7.1, §7.2).
     pub(crate) owner: Ctx,
+    /// The synchronous waits of its session (`sync: true`): meanwhile a
+    /// call of one of its own waterfalls is synchronous.
+    pub(crate) waits: Waits,
 }
 
 /// What an `events.call` carries.
@@ -853,6 +941,9 @@ struct Invocation<'a> {
     own: bool,
     event: PayloadRef<'a>,
     next: Option<Value>,
+    /// A call in a waterfall its own runtime waits for synchronously: the
+    /// listener's `next` is called synchronously there (§5.4).
+    sync: bool,
 }
 
 impl WireEntry {
@@ -876,6 +967,9 @@ impl WireEntry {
         fields.insert("args".into(), Value::List(args));
         if let Some(next) = call.next {
             fields.insert("next".into(), next);
+        }
+        if call.sync {
+            fields.insert("sync".into(), Value::Data(json!(true)));
         }
         fields.insert("signal".into(), Value::Signal);
         Ok(Value::List(vec![Value::Record(fields)]))
@@ -904,12 +998,34 @@ fn forwarded<R>(connection: &Connection, call: impl FnOnce() -> R) -> R {
 
 /// `next` as the far end gets it: a function taking no arguments,
 /// returning the rest of the chain.
+/// `next` for a listener whose runtime waits for this waterfall
+/// synchronously: the rest of the chain, waited for here (a wait of the
+/// session while it lasts).
+fn sync_next_function(next: RemoteNext, waits: Waits) -> Value {
+    Value::callback(move |_| {
+        let _waiting = Waiting::new(&waits);
+        let rest = next.call();
+        let rest = match crate::session::caller() {
+            Some(source) => wait_here(with_caller(source, rest)),
+            None => wait_here(rest),
+        };
+        result_to_wire(rest.map_err(|error| to_session(&error))?)
+    })
+}
+
 pub(crate) fn next_function(next: RemoteNext) -> Value {
     Value::callback(move |_| {
         let next = next.clone();
         let rest = async move {
             let rest = next.call().await.map_err(|error| to_session(&error))?;
-            result_to_wire(rest)
+            match result_to_wire(rest)? {
+                // Only a listener of a runtime waiting for this waterfall
+                // synchronously answers a promise unsettled (`sync: true`,
+                // §5.4): it settles once that wait ends, which waits for
+                // this listener.
+                Value::Reference(value) if value.is_future() => Err(promise_of_waiting()),
+                rest => Ok(rest),
+            }
         };
         // The rest of the chain runs on behalf of the session calling it.
         Ok(match crate::session::caller() {
@@ -941,6 +1057,39 @@ impl RemoteListener for WireEntry {
         // The call, the `next` it hands over, and the wait for what it
         // answers go out with the chain of the session whose dispatch this
         // is, rebased: a function made here records the chain it is made in.
+        // A waterfall of this entry's own runtime, which waits for it
+        // synchronously: the call is synchronous, and what the listener
+        // returns (a promise, for an asynchronous one) is its value.
+        if own && mode == Mode::Waterfall {
+            if let Some(chain) = self.waits.innermost() {
+                // On a thread of its own, so the chain is polled meanwhile:
+                // the listener's `next` runs the rest of it.
+                let request = self.request(Invocation {
+                    name: call.name(),
+                    mode,
+                    dispatch: call.dispatch(),
+                    own,
+                    event: call.event(),
+                    next: call
+                        .next()
+                        .map(|next| sync_next_function(next, self.waits.clone())),
+                    sync: true,
+                });
+                let answer = tokio::task::spawn_blocking(move || {
+                    let request = request?;
+                    crate::session::rpc::on_chain(chain, || {
+                        connection.invoke("", "events.call", request)
+                    })
+                    .map_err(to_cordis)
+                });
+                return Box::pin(async move {
+                    let reply = answer
+                        .await
+                        .map_err(|error| to_cordis(Error::Transport(error.to_string())))??;
+                    Ok(result_from_wire(reply, mode))
+                });
+            }
+        }
         let source = caller_of(&connection);
         let build = || {
             self.request(Invocation {
@@ -950,6 +1099,7 @@ impl RemoteListener for WireEntry {
                 own,
                 event: call.event(),
                 next: call.next().map(next_function),
+                sync: false,
             })
         };
         let request = match &source {
@@ -1007,12 +1157,26 @@ impl RemoteListener for WireEntry {
                 own,
                 event: call.event(),
                 next: None,
+                sync: false,
             })?;
             connection
                 .invoke("", "events.call", request)
                 .map_err(to_cordis)
         })?;
         Ok(result_from_wire(reply, mode))
+    }
+}
+
+/// Poll `future` to completion on this thread, a runtime's worker or not:
+/// on a worker of a multi-thread runtime, the worker's queued tasks are
+/// handed to another thread meanwhile (`block_in_place`), so a task woken
+/// here still runs.
+fn wait_here<F: Future>(future: F) -> F::Output {
+    let worker = tokio::runtime::Handle::try_current()
+        .is_ok_and(|handle| handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread);
+    match worker {
+        true => tokio::task::block_in_place(|| block_on(future)),
+        false => block_on(future),
     }
 }
 

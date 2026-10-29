@@ -9,6 +9,7 @@ use common::{mounted, Scripted};
 use rutis_dsh::agent;
 use serde_json::{json, Value};
 
+// guarantee: events/waterfall
 #[tokio::test(flavor = "multi_thread")]
 async fn a_dsh_agent_turn_calls_a_tool_and_answers_through_aimux() {
     let service = Arc::new(Scripted::default());

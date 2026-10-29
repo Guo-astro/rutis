@@ -17,6 +17,7 @@ fn chunks(raw: Vec<String>) -> Vec<Value> {
         .collect()
 }
 
+// guarantee: events/waterfall
 #[tokio::test(flavor = "multi_thread")]
 async fn dsh_streams_text_tool_calls_and_usage_from_aimux() {
     let service = Arc::new(Scripted::default());

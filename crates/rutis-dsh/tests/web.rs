@@ -106,6 +106,7 @@ async fn started(
     panic!("dsh found no free port in {ATTEMPTS} tries: {failures:?}");
 }
 
+// guarantee: events/emit
 #[tokio::test(flavor = "multi_thread")]
 async fn the_web_ui_starts_reports_failures_and_stops_with_its_mount() {
     // dsh keeps profiles and settings under DSH_HOME; the Node process
