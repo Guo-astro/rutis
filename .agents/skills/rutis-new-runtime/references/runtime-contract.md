@@ -32,15 +32,13 @@ A far end greeting with another version is refused at the handshake, saying whic
 
 | Capability | Declare it when | If not declared |
 | --- | --- | --- |
-| `sync-wait` | Synchronous calls you send carry `sync: true` on the frame, and you accept that field | Your synchronous calls are outside the host's wait-cycle detection and can deadlock. The host does not check it: its synchronous calls to you carry `sync: true` either way |
 | `reentrant-sync` | While waiting synchronously you still run **any** incoming call | You are treated as non-reentrant (only calls on your call chain run; others are deferred) |
 | `sync-stack` | One thread, one stack: calls run while waiting are stacked on top of the waiting one (last in, first out) | You take part only in call-chain edges (runtimes with one execution unit per call do not declare it) |
-| `signals` | Signal frames of the endpoint format; every existing implementation (Rust, Node, Python, Bun, Go) declares it | — |
-| `objects` | You can receive object references from the peer | The host does not check it: it sends you object references either way |
 | `plugins` | You can receive plugin definitions (`plugin` references, §5). rutis declares it; runtimes do not | Send no `plugin` reference to a far end that did not declare it: fail only that call |
-| `events-v2` | You implement the event protocol of rutis 0.13 (§6). Mandatory from 0.13: declare it, and end the session right after the handshake when the far end does not | The host does not check it (older hosts are refused by protocol version, above) |
 
-How to choose: one execution unit per incoming call (thread / goroutine / Task / virtual thread) → `sync-wait` + `reentrant-sync`, no `sync-stack`; single-threaded event loops that run incoming calls while waiting, like Python and Bun → all three; Node is not reentrant → no `reentrant-sync`.
+A synchronous call you send (your thread waits for its reply) carries `sync: true` on the frame, and you accept that field on calls the host sends you: the host's wait-cycle detection reads it.
+
+How to choose: one execution unit per incoming call (thread / goroutine / Task / virtual thread) → `reentrant-sync`, no `sync-stack`; single-threaded event loops that run incoming calls while waiting, like Python and Bun → both; Node is not reentrant → `sync-stack` only.
 
 ## 3. `mount`
 
@@ -143,8 +141,6 @@ Full specification: https://github.com/arcships/rutis/blob/main/docs/design-even
 **Reporting** (failures nobody waits for, one stderr line each, §5.6 and §11): `rutis: listener of <name> in row <row> failed: <ErrorName>: <message>` (an `emit` listener), `rutis: filter of <name> from row <row> failed: …` (the filter of an `emit`), `rutis: emit of <name> from row <row> failed: …` (an `events.dispatch` in `emit` mode refused or unanswered), `rutis: registration of listener of <name> in row <row> failed: …` (an `events.on` refused outside a row load; during a load, fail the load instead).
 
 **Errors** (§11; names and messages exact): `AggregateError` (`<n> listeners of <name> failed`, children in registration order, encoded as JavaScript encodes an `AggregateError`), `AsyncListener`, `WaterfallNext`, `ReservedEvent`, `SyncWaitCycle`, `BindingError`. Refuse registering `internal/*` (the host answers `BindingError` `event <name> is internal to its runtime`).
-
-**An old host**: when the host's `hello` lacks `events-v2`, end the session right after the handshake, write `rutis: refused: incompatible (this host does not declare events-v2 (the event protocol of rutis 0.13): upgrade rutis-host to 0.13 or later); stopping` and exit with status 1 (a dialing runtime does not retry).
 
 **API per language** (§12.2): `on`, `emit`, `parallel`, `serial`, `waterfall` (terminal last), `bail`, `filter`, in the language's native style; a `waterfall` listener receives `next` as its last argument. Plugin API version 3.
 

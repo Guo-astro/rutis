@@ -48,8 +48,7 @@ fn send(channel: &mut Channel, frame: Json) {
 
 /// The far end's greeting, as `endpoint` speaking `version`.
 fn hello(version: u32, endpoint: &str) -> Json {
-    json!({ "op": "hello", "version": version, "endpoint": endpoint,
-            "capabilities": ["events-v2", "objects"] })
+    json!({ "op": "hello", "version": version, "endpoint": endpoint })
 }
 
 /// Until `view` is disposed.

@@ -51,7 +51,7 @@ Using the criteria in `references/principles.md`:
 | Artifact model | **Load by name**: one runtime process loads several installed packages (Node, Bun, Python); rows are `<prefix>:<module>`. **Compiled program**: plugins are built into an executable that describes itself with `--rutis-manifest` and is started on demand (Go; Swift on macOS reuses this machinery). **App hosting**: plugins are built into an app that connects to rutis (Swift / Kotlin apps) |
 | Row prefix | Must not collide with existing ones: `py`, `bun`, `go`, `swift`, `kt`, … |
 | Execution model | One execution unit per incoming call (thread, goroutine, Task, virtual thread) makes the runtime reentrant; the reader thread only parses frames and never runs plugin code |
-| Capabilities | Declare `sync-wait`, `reentrant-sync`, `sync-stack`, `objects` honestly, per `references/runtime-contract.md` §2. A new runtime should declare `sync-wait`; otherwise it is outside wait-cycle detection |
+| Capabilities | Declare `reentrant-sync` and `sync-stack` honestly, per `references/runtime-contract.md` §2, and mark synchronous calls with `sync: true`; otherwise they are outside wait-cycle detection |
 | Channels | Local: `fd:3`, dialing back to a socket path, `tcp:127.0.0.1:<port>` (used on Windows); dial back when the language cannot take an inherited fd. Remote: `listen:wss://` and `dial:wss://` |
 | Method enumeration and schema | Derive them where the language has reflection (Go, Python); otherwise use an explicit method table and a hand-written schema (Swift, Kotlin) |
 | Distribution | The language's standard package channel (npm, PyPI, Go modules, SwiftPM, Maven Central); versions follow the rutis release train |
@@ -113,7 +113,7 @@ Every local language is one entry in a registry (arcships/rutis#230): `config.rs
 | --- | --- |
 | Implementing dependency waits, retries or start order in the SDK | Leave gating to rutis; the SDK only carries out `rows.load` / `unload` |
 | Embedding Rust through FFI to avoid implementing the protocol | Implement it in the platform language; conformance tests keep it consistent with the others |
-| Omitting or guessing capabilities | Declare `reentrant-sync`, `sync-stack`, `sync-wait` according to the execution model |
+| Omitting or guessing capabilities | Declare `reentrant-sync`, `sync-stack` according to the execution model |
 | Running plugin code, or bridging sync calls, on the reader thread | One execution unit per incoming call |
 | Having the host compile plugin code | `dev` runs only the project's own build; `run` runs only ready-made artifacts |
 | Forwarding leaf events across processes yourself | Up to 0.12, events stay in the runtime process (host → runtime only through `emits`). From 0.13 every listener registers with the host automatically and emissions go through it when needed (contract §6); a runtime never forwards events on its own |
