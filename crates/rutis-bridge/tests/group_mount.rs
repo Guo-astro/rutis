@@ -5,7 +5,7 @@
 use std::io::Write;
 use std::path::Path;
 
-use rutis_bridge::runtime::Process;
+use rutis_bridge::runtime::{Mount, Process};
 use serde_json::json;
 
 fn plugin(source: &str) -> tempfile::NamedTempFile {
@@ -29,17 +29,22 @@ export function apply(ctx) {
 
 #[tokio::test(flavor = "current_thread")]
 async fn dependencies_resolve_within_the_group() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     let (provider, consumer) = (plugin(PROVIDER), plugin(CONSUMER));
     let package = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../node/rutis-runtime");
     // The consumer is loaded first: Cordis waits for its dependency natively.
-    let process = Process::launch_group(
+    let process = Process::mount(
         &package,
-        &[
-            (consumer.path(), json!({})),
-            (provider.path(), json!({ "now": 42 })),
-        ],
-        json!({ "greeter": ["greet"], "clock": ["now"] }),
-        None,
+        Mount {
+            plugins: vec![
+                (consumer.path(), json!({})),
+                (provider.path(), json!({ "now": 42 })),
+            ],
+            services: json!({ "greeter": ["greet"], "clock": ["now"] }),
+            ..Mount::default()
+        },
     )
     .await
     .unwrap();
@@ -53,13 +58,18 @@ async fn dependencies_resolve_within_the_group() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn a_dependency_missing_from_the_group_is_named() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     let consumer = plugin(CONSUMER);
     let package = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../node/rutis-runtime");
-    let error = match Process::launch_group(
+    let error = match Process::mount(
         &package,
-        &[(consumer.path(), json!({}))],
-        json!({ "greeter": ["greet"] }),
-        None,
+        Mount {
+            plugins: vec![(consumer.path(), json!({}))],
+            services: json!({ "greeter": ["greet"] }),
+            ..Mount::default()
+        },
     )
     .await
     {

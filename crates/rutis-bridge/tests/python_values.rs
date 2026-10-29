@@ -68,6 +68,9 @@ fn echo(far: &Connection, value: Value) -> Result<Value, Error> {
 /// back; times come back to the microsecond, truncated.
 #[tokio::test(flavor = "multi_thread")]
 async fn python_echoes_every_tagged_value() {
+    if !rutis_test_support::runtimes::enabled("python") {
+        return;
+    }
     let (far, _child) = python().await;
     tokio::task::spawn_blocking(move || {
         let sent = Value::List(vec![
@@ -138,6 +141,9 @@ async fn python_echoes_every_tagged_value() {
 /// call; the session goes on.
 #[tokio::test(flavor = "multi_thread")]
 async fn keys_that_collide_in_python_fail_only_that_call() {
+    if !rutis_test_support::runtimes::enabled("python") {
+        return;
+    }
     let (far, _child) = python().await;
     tokio::task::spawn_blocking(move || {
         for keys in [

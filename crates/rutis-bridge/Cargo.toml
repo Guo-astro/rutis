@@ -44,21 +44,7 @@ windows-sys = { version = "0.61", features = [
 ] }
 
 [features]
-default = ["node"]
-# Local Node runtimes.
-node = []
-# Local Python runtimes.
-python = []
-# Local Go runtimes: binaries built with the Go SDK (go/rutis).
-go = []
-# Local Bun runtimes.
-bun = []
-# Tests only: the conformance suites with the Kotlin SDK (kotlin/rutis, its
-# jvm target), started through the generic `Launcher`; no Kotlin runtime is
-# configured in rutis-host (docs/design-android-runtime-2026-10-12.md K-P1).
-kotlin = []
-# Local Swift runtimes: binaries built with the Swift SDK (swift/rutis).
-swift = []
+default = []
 # The WebSocket transport.
 websocket = [
     "dep:futures-util",
@@ -69,7 +55,7 @@ websocket = [
     "dep:tokio-tungstenite",
 ]
 # Cordis plugins mounted with Rust bindings generated at build time.
-cordis = ["node", "dep:toml"]
+cordis = ["dep:toml"]
 # The channel contract tests, and the session and runtime conformance
 # suites other implementations run.
 testing = []

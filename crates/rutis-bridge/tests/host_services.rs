@@ -7,7 +7,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use rutis_bridge::runtime::{Host, Process};
+use rutis_bridge::runtime::{Host, Mount, Process};
 use rutis_bridge::session::{Error, HostDispatch};
 use rutis_bridge::session::{Reply, Value};
 use serde_json::json;
@@ -49,21 +49,26 @@ impl HostDispatch for Clock {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn plugins_inject_and_call_host_services() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     let mut consumer = tempfile::Builder::new().suffix(".mjs").tempfile().unwrap();
     consumer.write_all(CONSUMER.as_bytes()).unwrap();
     let watching = Arc::new(AtomicUsize::new(0));
-    let process = Process::launch_mount(
+    let process = Process::mount(
         &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../node/rutis-runtime"),
-        &[(consumer.path(), json!({}))],
-        json!({ "reader": ["now", "later", "missing"] }),
-        None,
-        vec![Host {
-            name: "clock".into(),
-            methods: json!({ "now": "sync", "later": "async", "watch": "sync" }),
-            dispatch: Arc::new(Clock {
-                watching: watching.clone(),
-            }),
-        }],
+        Mount {
+            plugins: vec![(consumer.path(), json!({}))],
+            services: json!({ "reader": ["now", "later", "missing"] }),
+            hosts: vec![Host {
+                name: "clock".into(),
+                methods: json!({ "now": "sync", "later": "async", "watch": "sync" }),
+                dispatch: Arc::new(Clock {
+                    watching: watching.clone(),
+                }),
+            }],
+            ..Mount::default()
+        },
     )
     .await
     .unwrap();

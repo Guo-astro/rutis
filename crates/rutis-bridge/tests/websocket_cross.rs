@@ -167,6 +167,9 @@ async fn dial(
 
 #[tokio::test(flavor = "multi_thread")]
 async fn node_dialing_rust_is_refused_by_category() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     let (ca, certificate, key) = pki();
     let plain = listen(
         ListenerConfig::new("public", "127.0.0.1:0".parse().unwrap()),
@@ -218,6 +221,9 @@ async fn node_dialing_rust_is_refused_by_category() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn rust_dialing_node_is_refused_by_category() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     let (ca, certificate, key) = pki();
     let (system, trusting) = (Trust::default(), Trust::only(ca.into_bytes()));
     let (_plain, url) = node_listen("ws://127.0.0.1:0/rutis", &[("RUTIS_TOKEN", "good")]).await;
@@ -255,6 +261,9 @@ async fn rust_dialing_node_is_refused_by_category() {
 /// guarantee: bridge/websocket-refusal-categories
 #[tokio::test(flavor = "multi_thread")]
 async fn rust_dialing_python_is_refused_by_category() {
+    if !rutis_test_support::runtimes::enabled("python") {
+        return;
+    }
     let (ca, certificate, key) = pki();
     let (system, trusting) = (Trust::default(), Trust::only(ca.into_bytes()));
     let (_plain, url) = python_listen("ws://127.0.0.1:0/rutis", &[("RUTIS_TOKEN", "good")]).await;

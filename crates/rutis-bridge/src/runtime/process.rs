@@ -187,10 +187,23 @@ pub struct Mount<'a> {
     /// this file (a `package.json`), and load plugins later one by one with
     /// [`Process::load_row`].
     pub anchor: Option<&'a Path>,
-    /// How to start the runtime process; `None` runs the Node runtime in
-    /// the npm package (`node --import tsx <package>/src/runner.mjs`, feature
-    /// `node`).
+    /// How to start the runtime process; `None` runs the Cordis runtime,
+    /// Node, in the npm package ([`cordis_node`]).
     pub launcher: Option<&'a Launcher>,
+}
+
+/// The Cordis runtime of the npm package `package` (`node/rutis-runtime`,
+/// or a deployed `@arcships/rutis-runtime`): `node --import tsx
+/// src/runner.mjs` in the package, on an inherited socket. Cordis plugins
+/// run on Node only: this is part of Cordis compatibility (a mount of
+/// generated Cordis bindings, [`crate::cordis`]), not a language launcher.
+pub fn cordis_node(package: &Path) -> Launcher {
+    Launcher::new("node")
+        .arg("--import")
+        .arg("tsx")
+        .arg(package.join("src/runner.mjs"))
+        .cwd(package)
+        .inherit_fd()
 }
 
 /// The command that starts a runtime process. It receives its channel,
@@ -199,8 +212,7 @@ pub struct Mount<'a> {
 /// takes an inherited socket ([`Launcher::inherit_fd`]), otherwise a socket
 /// path to dial.
 ///
-/// Build one with [`Launcher::new`] (or `Launcher::node` with the `node`
-/// feature, `Launcher::python` with `python`) and its builders.
+/// Build one with [`Launcher::new`] and its builders.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct Launcher {
@@ -221,9 +233,6 @@ pub struct Launcher {
     /// Standard error: this process's ([`Stdio::Inherit`]) unless set with
     /// [`Launcher::stderr`].
     pub stderr: Stdio,
-    /// What each line of its output starts with when passed on as
-    /// [`Stdio::Lines`]: none unless set with [`Launcher::output_prefix`].
-    pub output_prefix: Option<String>,
 }
 
 impl Default for Launcher {
@@ -237,7 +246,6 @@ impl Default for Launcher {
             stdin: Stdio::Null,
             stdout: Stdio::Inherit,
             stderr: Stdio::Inherit,
-            output_prefix: None,
         }
     }
 }
@@ -298,104 +306,22 @@ impl Launcher {
 
     /// The process's standard output: this process's by default
     /// ([`Stdio::Inherit`]); [`Stdio::Null`] discards it, for example so
-    /// that other runtimes do not draw over a terminal UI; [`Stdio::Lines`]
-    /// passes it on a whole line at a time, so that it does not run into
-    /// this process's own lines (or other runtimes'). For the whole
-    /// runtime process, as [`Launcher::stdin`].
+    /// that other runtimes do not draw over a terminal UI; [`Stdio::Pipe`]
+    /// gives it a pipe the caller reads (rutis-host passes it on a whole
+    /// line at a time). For the whole runtime process, as
+    /// [`Launcher::stdin`].
     pub fn stdout(mut self, stdio: Stdio) -> Self {
         self.stdout = stdio;
         self
     }
 
     /// The process's standard error: this process's by default
-    /// ([`Stdio::Inherit`]); [`Stdio::Null`] discards it, [`Stdio::Lines`]
-    /// passes it on a whole line at a time. For the whole runtime process,
-    /// as [`Launcher::stdin`].
+    /// ([`Stdio::Inherit`]); [`Stdio::Null`] discards it, [`Stdio::Pipe`]
+    /// gives it a pipe the caller reads. For the whole runtime process, as
+    /// [`Launcher::stdin`].
     pub fn stderr(mut self, stdio: Stdio) -> Self {
         self.stderr = stdio;
         self
-    }
-
-    /// Start each line of its output passed on as [`Stdio::Lines`] with
-    /// `[<name>] `: a host showing which process wrote it, for a process
-    /// that runs one plugin (`rutis-host dev`'s Go and Swift runtimes). A
-    /// process sharing a stream ([`Stdio::Inherit`]) is not prefixed.
-    pub fn output_prefix(mut self, name: &str) -> Self {
-        self.output_prefix = Some(format!("[{name}] "));
-        self
-    }
-
-    /// The Node runtime of the npm package `node_package` (`node/rutis-runtime`,
-    /// or a deployed `@arcships/rutis-runtime`): `node --import tsx
-    /// src/runner.mjs` in the package, on an inherited socket when the
-    /// package says it takes one (`rutisChannels` lists `"fd"`).
-    #[cfg(feature = "node")]
-    pub fn node(node_package: &std::path::Path) -> Self {
-        let launcher = Launcher::new("node")
-            .arg("--import")
-            .arg("tsx")
-            .arg(node_package.join("src/runner.mjs"))
-            .cwd(node_package);
-        match crate::runtime::spawn::node_inherits(node_package) {
-            true => launcher.inherit_fd(),
-            false => launcher,
-        }
-    }
-
-    /// The Python runtime: `python3 -m rutis` (`python` on Windows; the
-    /// `rutis` package installed where that interpreter finds it), with
-    /// `project` ahead of the inherited `PYTHONPATH`, in `project`, on an
-    /// inherited socket (on Windows, a loopback address).
-    #[cfg(feature = "python")]
-    pub fn python(project: &std::path::Path) -> Self {
-        let inherited = std::env::var_os("PYTHONPATH").filter(|p| !p.is_empty());
-        let path = search_path(project.into(), inherited.as_deref());
-        Launcher::new(if cfg!(windows) { "python" } else { "python3" })
-            .arg("-m")
-            .arg("rutis")
-            .env("PYTHONPATH", path)
-            .env("PYTHONUNBUFFERED", "1")
-            // A plugin imported again after an edit must not come from a
-            // bytecode file written in the same second as the old source.
-            .env("PYTHONDONTWRITEBYTECODE", "1")
-            .cwd(project)
-            .inherit_fd()
-    }
-
-    /// A Go runtime: `binary`, built with the Go SDK (`go/rutis`), serving
-    /// the plugins compiled into it; in `project`, on an inherited socket
-    /// (on Windows, a loopback address).
-    #[cfg(feature = "go")]
-    pub fn go(binary: &std::path::Path, project: &std::path::Path) -> Self {
-        Launcher::new(binary).cwd(project).inherit_fd()
-    }
-
-    /// A Swift runtime: `binary`, built with the Swift SDK (`swift/rutis`),
-    /// serving the plugins compiled into it; in `project`, on an inherited
-    /// socket. The same start as a Go binary's.
-    #[cfg(feature = "swift")]
-    pub fn swift(binary: &std::path::Path, project: &std::path::Path) -> Self {
-        Launcher::new(binary).cwd(project).inherit_fd()
-    }
-
-    /// The Bun runtime of the npm package `package` (`bun/rutis-bun`, or a
-    /// deployed `@arcships/rutis-bun`), run by the Bun executable `program`
-    /// (`bun` on `PATH` when `None`), in `project`, on an inherited socket
-    /// (on Windows, a loopback address). Auto-install and `.env` files are
-    /// always off: plugins resolve only what the project has installed, and
-    /// the environment is only what this process gives.
-    #[cfg(feature = "bun")]
-    pub fn bun(
-        program: Option<&std::ffi::OsStr>,
-        package: &std::path::Path,
-        project: &std::path::Path,
-    ) -> Self {
-        Launcher::new(program.unwrap_or(std::ffi::OsStr::new("bun")))
-            .arg("--no-install")
-            .arg("--no-env-file")
-            .arg(package.join("src/main.ts"))
-            .cwd(project)
-            .inherit_fd()
     }
 
     /// Start the runtime process ([`crate::pipe::spawn`]) on a channel of
@@ -413,10 +339,9 @@ impl Launcher {
         spawn.args = self.args.clone();
         spawn.env = self.env.clone();
         spawn.cwd = self.cwd.clone();
-        spawn.stdin = self.stdin;
-        spawn.stdout = self.stdout;
-        spawn.stderr = self.stderr;
-        spawn.output_prefix = self.output_prefix.clone();
+        spawn.stdin = self.stdin.clone();
+        spawn.stdout = self.stdout.clone();
+        spawn.stderr = self.stderr.clone();
         spawn.handover = match self.inherit_fd {
             true => crate::pipe::Handover::Inherit,
             false => crate::pipe::Handover::DialBack,
@@ -436,18 +361,6 @@ impl Launcher {
             None => channel,
         })
     }
-}
-
-/// `first` ahead of the search path `rest` (`PATH` syntax for the
-/// platform: `:` or `;` between entries).
-#[cfg(feature = "python")]
-pub(crate) fn search_path(
-    first: std::ffi::OsString,
-    rest: Option<&std::ffi::OsStr>,
-) -> std::ffi::OsString {
-    let mut entries = vec![std::path::PathBuf::from(first)];
-    entries.extend(rest.into_iter().flat_map(std::env::split_paths));
-    std::env::join_paths(&entries).unwrap_or_else(|_| entries[0].clone().into_os_string())
 }
 
 impl Imports {
@@ -753,8 +666,9 @@ pub struct Process {
     calls: Arc<crate::runtime::calls::Calls>,
     imports: Arc<Imports>,
     runtime: tokio::runtime::Handle,
-    /// The process this side started; `None` for an attached runtime.
-    child: Option<crate::runtime::spawn::Child>,
+    /// The process this side started ([`Process::mount`]); `None` for a
+    /// runtime on a session.
+    processes: Option<crate::pipe::Processes>,
     /// Reported by the runner when mounting.
     features: std::sync::OnceLock<Vec<String>>,
     /// What the runtime said of itself when mounted (see [`Process::about`]).
@@ -766,7 +680,6 @@ pub struct Process {
     /// once its service is registered on the Node side, and a withdrawal
     /// never overtakes the registration it undoes.
     host_changes: tokio::sync::Mutex<()>,
-    _directory: Option<tempfile::TempDir>,
     /// For a runtime on a session something else owns (a link): what routes
     /// the runtime's calls here. The session is not this process's to close.
     routed: Option<Box<dyn std::any::Any + Send + Sync>>,
@@ -857,64 +770,6 @@ impl HostLease {
 }
 
 impl Process {
-    pub async fn launch(
-        node_package: &Path,
-        plugin: &Path,
-        config: Value,
-        services: Value,
-    ) -> Result<Arc<Self>, Error> {
-        Self::launch_observed(node_package, plugin, config, services, None).await
-    }
-
-    /// Launch and report every later change of the exported service slots.
-    pub async fn launch_observed(
-        node_package: &Path,
-        plugin: &Path,
-        config: Value,
-        services: Value,
-        events: Option<Arc<dyn ServiceEvents>>,
-    ) -> Result<Arc<Self>, Error> {
-        Self::launch_group(node_package, &[(plugin, config)], services, events).await
-    }
-
-    /// Launch a group of plugins in one Cordis Context, loaded in order, so
-    /// dependencies between them resolve natively. `services` lists the
-    /// exported service slots and their methods.
-    pub async fn launch_group(
-        node_package: &Path,
-        plugins: &[(&Path, Value)],
-        services: Value,
-        events: Option<Arc<dyn ServiceEvents>>,
-    ) -> Result<Arc<Self>, Error> {
-        Self::launch_mount(node_package, plugins, services, events, Vec::new()).await
-    }
-
-    /// Launch a group and provide rutis services to it: each host is
-    /// registered in the Cordis Context before the plugins load, so their
-    /// dependencies on it resolve natively.
-    pub async fn launch_mount(
-        node_package: &Path,
-        plugins: &[(&Path, Value)],
-        services: Value,
-        events: Option<Arc<dyn ServiceEvents>>,
-        hosts: Vec<Host>,
-    ) -> Result<Arc<Self>, Error> {
-        Self::mount(
-            node_package,
-            Mount {
-                plugins: plugins.to_vec(),
-                services,
-                observer: events,
-                hosts,
-                ctx: None,
-                runtime: None,
-                anchor: None,
-                launcher: None,
-            },
-        )
-        .await
-    }
-
     /// Launch a mount: see [`Mount`].
     pub async fn mount(node_package: &Path, mount: Mount<'_>) -> Result<Arc<Self>, Error> {
         let (anchor, launcher) = (mount.anchor, mount.launcher);
@@ -940,38 +795,28 @@ impl Process {
         // The endpoint the process greets as: the runtime's name.
         let id = crate::channel::PeerId::new(name)
             .map_err(|error| Error::refused(format!("the runtime's name: {error}")))?;
-        let (command, connect) = crate::runtime::spawn::command(launcher, node_package)?;
-        let spawned = crate::runtime::spawn::spawn(command, id.as_str(), plugin, connect).await?;
+        let launcher = match launcher {
+            Some(launcher) => launcher.clone(),
+            None => cordis_node(node_package),
+        };
+        let processes = crate::pipe::Processes::default();
+        let channel = launcher
+            .start(&id, plugin, &processes)
+            .await
+            .map_err(|error| Error::Transport(error.to_string()))?;
         let main = crate::channel::PeerId::new("main").expect("a valid id");
         Self::start(
-            spawned.channel,
-            Some(spawned.child),
-            spawned.directory,
+            channel,
+            Some(processes),
             started,
             crate::runtime::rpc::Endpoint::rust(main).expect(id),
         )
         .await
     }
 
-    /// Run a mount on a runtime that is already connected: `channel` leads
-    /// to a runtime process this side did not start (for example one that
-    /// listens on a WebSocket and was dialed). [`Mount::launcher`] and
-    /// [`Mount::anchor`] do not apply: that process was started with its own.
-    /// It has no exit status here, and its end is the session's end.
-    /// This side greets as `endpoint`.
-    pub async fn attach(
-        channel: crate::channel::Channel,
-        mount: Mount<'_>,
-        endpoint: crate::runtime::rpc::Endpoint,
-    ) -> Result<Arc<Self>, Error> {
-        let (started, _) = Started::from(mount);
-        Self::start(channel, None, None, started, endpoint).await
-    }
-
     async fn start(
         channel: crate::channel::Channel,
-        child: Option<crate::runtime::spawn::Child>,
-        directory: Option<tempfile::TempDir>,
+        processes: Option<crate::pipe::Processes>,
         started: Started,
         endpoint: crate::runtime::rpc::Endpoint,
     ) -> Result<Arc<Self>, Error> {
@@ -980,7 +825,7 @@ impl Process {
         peer.ready().await?;
         // The runtime calls `events.*` only once mounted, after this.
         Self::join_bus(&imports, &peer, &rest)?;
-        Self::finish(peer, imports, child, directory, None, rest).await
+        Self::finish(peer, imports, processes, None, rest).await
     }
 
     /// What serves the runtime's calls into rutis, and the rest of the mount.
@@ -1053,15 +898,7 @@ impl Process {
             Self::join_bus(&imports, &session.connection(), &rest)?;
         }
         let routed = session.route(imports.clone())?;
-        Self::finish(
-            session.connection(),
-            imports,
-            None,
-            None,
-            Some(routed),
-            rest,
-        )
-        .await
+        Self::finish(session.connection(), imports, None, Some(routed), rest).await
     }
 
     /// The session joins the logical bus before anything is mounted.
@@ -1077,8 +914,7 @@ impl Process {
     async fn finish(
         peer: Connection,
         imports: Arc<Imports>,
-        child: Option<crate::runtime::spawn::Child>,
-        directory: Option<tempfile::TempDir>,
+        processes: Option<crate::pipe::Processes>,
         routed: Option<Box<dyn std::any::Any + Send + Sync>>,
         rest: MountRest,
     ) -> Result<Arc<Self>, Error> {
@@ -1095,12 +931,11 @@ impl Process {
             calls: Arc::default(),
             imports,
             runtime: tokio::runtime::Handle::current(),
-            child,
+            processes,
             features: std::sync::OnceLock::new(),
             about: std::sync::OnceLock::new(),
             plugins: std::sync::OnceLock::new(),
             host_changes: tokio::sync::Mutex::new(()),
-            _directory: directory,
             routed,
             scope: scope.clone(),
             definitions: Mutex::default(),
@@ -1797,10 +1632,13 @@ impl Process {
         let result = self.call_async("", "dispose", Value::Null).await;
         self.peer
             .close(Error::Transport("plugin has been disposed".into()));
-        let Some(child) = &self.child else {
+        let Some(processes) = &self.processes else {
             return result.map(|_| ());
         };
-        let status = child.exited().await;
+        processes.ended().await;
+        let status = processes
+            .status()
+            .unwrap_or_else(|| "exited normally".into());
         result?;
         if status != "exited normally" {
             return Err(Error::Transport(format!("the runtime process {status}")));
@@ -1816,7 +1654,9 @@ impl Process {
     /// How the Node process ended (for example `exited with signal: 9
     /// (SIGKILL)`), or `None` while it runs.
     pub fn exit_status(&self) -> Option<String> {
-        self.child.as_ref().and_then(|child| child.status())
+        self.processes
+            .as_ref()
+            .and_then(|processes| processes.status())
     }
 
     /// Resolves once the session with the Node process has ended, whether

@@ -4,7 +4,7 @@
 use std::io::Write;
 use std::path::Path;
 
-use rutis_bridge::runtime::Process;
+use rutis_bridge::runtime::{Mount, Process};
 use rutis_bridge::session::Value;
 use rutis_bridge::session::{arg, decode_value, ObjectRef};
 use serde::{Deserialize, Serialize};
@@ -47,13 +47,18 @@ struct Summary {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn live_objects_keep_identity_and_state() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     let mut plugin = tempfile::Builder::new().suffix(".mjs").tempfile().unwrap();
     plugin.write_all(PLUGIN.as_bytes()).unwrap();
-    let process = Process::launch(
+    let process = Process::mount(
         &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../node/rutis-runtime"),
-        plugin.path(),
-        json!({}),
-        json!({ "bank": ["open", "summary", "same", "nested"] }),
+        Mount {
+            plugins: vec![(plugin.path(), json!({}))],
+            services: json!({ "bank": ["open", "summary", "same", "nested"] }),
+            ..Mount::default()
+        },
     )
     .await
     .unwrap();

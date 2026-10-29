@@ -468,8 +468,8 @@ jobs:
             sleep 20
           done
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
-      # The Kotlin SDK's jvm target (JDK 17): the bridge's tests with the
-      # feature `kotlin` start its conformance jar, built once here
+      # The Kotlin SDK's jvm target (JDK 17): the bridge's tests with
+      # Kotlin (RUTIS_TEST_RUNTIMES) start its conformance jar, built once here
       # (RUTIS_KOTLIN_JAR); runtimes-kotlin has the rest.
       - uses: actions/setup-java@v4
         with:
@@ -883,17 +883,14 @@ jobs:
       # An application compiles only the parts it enables.
       - name: cargo check (feature sets)
         run: |
-          cargo check -p rutis-bridge --no-default-features --all-targets
-          cargo check -p rutis-bridge --no-default-features --features python --all-targets
-          cargo check -p rutis-bridge --no-default-features --features websocket --all-targets
-          cargo check -p rutis-bridge --no-default-features --features bun --all-targets
-          cargo check -p rutis-bridge --no-default-features --features go --all-targets
+          cargo check -p rutis-bridge --all-targets
+          cargo check -p rutis-bridge --features websocket --all-targets
           cargo check -p rutis-bridge --features cordis --all-targets
-          cargo check -p rutis-loader --features node --all-targets
-          cargo check -p rutis-loader --features python --all-targets
-          cargo check -p rutis-loader --no-default-features --features bun --all-targets
-          cargo check -p rutis-loader --features go --all-targets
+          cargo check -p rutis-bridge --features testing --all-targets
           cargo check -p rutis-loader --features runtimes --all-targets
+          cargo check -p rutis-loader --features node --all-targets
+          cargo check -p rutis-loader --features go --all-targets
+          cargo check -p rutis-loader --features swift --all-targets
 
       # The test targets compile without the language features: which
       # runtimes a test run uses is RUTIS_TEST_RUNTIMES, not a feature
@@ -904,8 +901,8 @@ jobs:
       - name: cargo test --no-run (rutis-loader, runtimes)
         run: cargo test -p rutis-loader --features runtimes --no-run
 
-      - name: cargo test --no-run (rutis-bridge, no language features)
-        run: cargo test -p rutis-bridge --no-default-features --features testing,websocket --no-run
+      - name: cargo test --no-run (rutis-bridge, testing and websocket)
+        run: cargo test -p rutis-bridge --features testing,websocket --no-run
       - name: self-hosted runner, end
         if: always() && runner.environment == 'self-hosted'
         env:
@@ -1016,7 +1013,7 @@ jobs:
   # K-P1): its Gradle build and tests on JDK 17 (the jvm target; the
   # android target and its AAR where the runner has an Android SDK), then
   # the Rust conformance suites with the Kotlin session and runtime
-  # (feature `kotlin`), Gradle before cargo.
+  # (RUTIS_TEST_RUNTIMES=kotlin), Gradle before cargo.
   runtimes-kotlin:
     needs: changes
     if: needs.changes.outputs.kotlin == 'true'

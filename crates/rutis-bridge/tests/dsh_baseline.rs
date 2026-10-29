@@ -5,7 +5,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use rutis_bridge::runtime::Process;
+use rutis_bridge::runtime::{Mount, Process};
 use rutis_bridge::session::Error;
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
@@ -80,7 +80,16 @@ async fn mounted(package: &Path, scenario: &Scenario) -> Value {
         .iter()
         .map(|member| (member.entry.as_path(), member.config.clone()))
         .collect();
-    let process = match Process::launch_group(package, &plugins, manifest, None).await {
+    let process = match Process::mount(
+        package,
+        Mount {
+            plugins: plugins.to_vec(),
+            services: manifest,
+            ..Mount::default()
+        },
+    )
+    .await
+    {
         Ok(process) => process,
         Err(error) => {
             return json!({ "available": false, "results": [], "error": error.to_string() })
@@ -105,6 +114,9 @@ async fn mounted(package: &Path, scenario: &Scenario) -> Value {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn published_plugins_match_native_cordis() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let baseline = root.join("node/baseline");
     if !baseline.join("node_modules").exists() {

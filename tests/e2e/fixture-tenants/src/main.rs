@@ -65,12 +65,13 @@ use std::time::Duration;
 
 use rutis::host::*;
 use rutis::{Ctx, Error, Plugin};
-use rutis_bridge::runtime::{Launcher, RuntimeHandle, Stdio};
+use rutis_bridge::runtime::{RuntimeHandle, Stdio};
 use rutis_bridge::session::{
     host_key_in, settle, Error as CallError, HostDispatch, Reply, Value as CallValue,
 };
 use rutis_bridge::{LocalId, PeerId};
 use rutis_host::connect::SpawnPlugin;
+use rutis_host::languages;
 use rutis_loader::edit::{
     Edit, Editable, Instance, InstanceResult, NewEntry, Persist, PersistError, Version,
 };
@@ -224,16 +225,13 @@ impl App {
         // to stdout: its answers are whole lines.
         let node = SpawnPlugin::new(
             "node",
-            Launcher::node(&node_package),
+            languages::node::launcher(&node_package),
             project.join("package.json"),
         )
         .stdio(Stdio::Null, Stdio::Null, Stdio::Inherit);
         let plugins = project.join("plugins");
-        let mut python = SpawnPlugin::new("py", Launcher::python(&plugins), &plugins).stdio(
-            Stdio::Null,
-            Stdio::Null,
-            Stdio::Inherit,
-        );
+        let mut python = SpawnPlugin::new("py", languages::python::launcher(&plugins), &plugins)
+            .stdio(Stdio::Null, Stdio::Null, Stdio::Inherit);
         if let Some(source) = std::env::var_os("RUTIS_PYTHON_PATH") {
             python = python.python_path(source);
         }

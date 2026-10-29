@@ -7,7 +7,7 @@ use std::io::Write;
 use std::path::Path;
 use std::time::Duration;
 
-use rutis_bridge::runtime::Process;
+use rutis_bridge::runtime::{Mount, Process};
 use rutis_bridge::session::{settle, Value};
 use rutis_test_support::until;
 use serde_json::json;
@@ -32,13 +32,18 @@ export function apply(ctx) {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_dropped_call_aborts_its_signal_and_the_session_continues() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     let mut plugin = tempfile::Builder::new().suffix(".mjs").tempfile().unwrap();
     plugin.write_all(PLUGIN.as_bytes()).unwrap();
-    let process = Process::launch(
+    let process = Process::mount(
         &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../node/rutis-runtime"),
-        plugin.path(),
-        json!({}),
-        json!({ "work": ["wait", "aborted", "started", "ping"] }),
+        Mount {
+            plugins: vec![(plugin.path(), json!({}))],
+            services: json!({ "work": ["wait", "aborted", "started", "ping"] }),
+            ..Mount::default()
+        },
     )
     .await
     .unwrap();
@@ -91,13 +96,18 @@ async fn a_dropped_call_aborts_its_signal_and_the_session_continues() {
 // call is dropped in that window and must still be cancelled.
 #[tokio::test(flavor = "multi_thread")]
 async fn dropping_between_the_reply_and_its_await_still_cancels() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     let mut plugin = tempfile::Builder::new().suffix(".mjs").tempfile().unwrap();
     plugin.write_all(PLUGIN.as_bytes()).unwrap();
-    let process = Process::launch(
+    let process = Process::mount(
         &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../node/rutis-runtime"),
-        plugin.path(),
-        json!({}),
-        json!({ "work": ["wait", "aborted", "ping"] }),
+        Mount {
+            plugins: vec![(plugin.path(), json!({}))],
+            services: json!({ "work": ["wait", "aborted", "ping"] }),
+            ..Mount::default()
+        },
     )
     .await
     .unwrap();

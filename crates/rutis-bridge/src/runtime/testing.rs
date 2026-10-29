@@ -376,13 +376,16 @@ pub async fn runtime(
     } else {
         format!("exited with exit status: {status}")
     };
+    // A process started here ends its session with how it ended; a runtime
+    // on a session the host mounted fails the call as one whose runtime went
+    // away during it.
     match crashed {
         Err(Error::Transport(message)) if started_here => assert_eq!(
             message,
-            format!("Cordis process {ended}"),
+            format!("the process {ended}"),
             "the session ends with how the process ended"
         ),
-        Err(Error::Transport(_)) => {}
+        Err(error) if !started_here && error.code() == Some(crate::session::code::PEER_GONE) => {}
         other => panic!("the crash should end the session, got {other:?}"),
     }
     drop(weather);
