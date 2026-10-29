@@ -24,12 +24,7 @@
     { "id": "per-session", "group": true, "instanced": true, "config": [
       { "id": "session-state", "name": "session-state-plugin" }
     ] },
-    { "id": "office", "name": "rutis-bridge/peer", "config": { "peer": "office", "dial": "wss://office.example.com/rutis", "export": ["weather"] } },
-    { "id": "branch", "name": "rutis-bridge/peer", "config": { "peer": "branch", "listen": "public", "import": ["clock"] } },
-    { "id": "sidecar", "name": "rutis-bridge/peer", "config": { "peer": "sidecar", "dial": "/run/rutis/sidecar.sock" } },
-    { "id": "gpu", "name": "rutis-bridge/peer", "config": { "peer": "gpu", "dial": "wss://gpu.example.com/rutis" } },
     { "id": "embedder", "name": "gpu:embedder" },
-    { "id": "edge-dns", "name": "edge-go:dns" },
-    { "id": "clock", "name": "peer:office/clock" }
+    { "id": "edge-dns", "name": "edge-go:dns" }
   ]
 }

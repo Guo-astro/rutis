@@ -48,7 +48,7 @@
         {"emit": {"from": "X", "mode": "emit", "args": [4]}, "expect": {"logContains": ["d:1", "d:2", "d:3", "d:4"]}}
       ] },
 
-    { "case": "emit/order-across-fast-path", "rule": "5.2, 5.5", "name": "t/switch", "tool": false,
+    { "case": "emit/order-across-fast-path", "rule": "5.2, 5.5", "name": "t/switch", "tool": false, "except": [{"e": ["kotlin", "go"], "why": "Kotlin and Go have no fast path: the host dispatches every event (docs/design-platform-cleanup-2026-10-28.md §7.5)"}],
       "listeners": [
         {"label": "a", "at": "X", "log": "arg", "does": {"returns": null}},
         {"label": "b", "at": "Y", "log": false, "does": {"returns": null}}
@@ -59,7 +59,7 @@
         {"emit": {"from": "X", "mode": "emit", "args": [2]}, "expect": {"log": ["a:1", "a:2"], "viaHost": false}}
       ] },
 
-    { "case": "emit/order-across-fast-path-sync-wait", "rule": "5.2, 5.5", "name": "t/switch-wait", "tool": false,
+    { "case": "emit/order-across-fast-path-sync-wait", "rule": "5.2, 5.5", "name": "t/switch-wait", "tool": false, "except": [{"e": ["kotlin", "go"], "why": "Kotlin and Go have no fast path: the host dispatches every event (docs/design-platform-cleanup-2026-10-28.md §7.5)"}],
       "listeners": [
         {"label": "a", "at": "X", "log": "arg", "does": {"returns": null}},
         {"label": "b", "at": "Y", "log": false, "does": {"returns": null}}
@@ -399,14 +399,6 @@
         {"emit": {"from": "X", "mode": "serial", "args": []}, "expect": {"returns": "A", "log": ["n", "a"]}}
       ] },
 
-    { "case": "node/not-shared", "rule": "9", "name": "n/private", "tool": false,
-      "listeners": [
-        {"label": "n", "at": "node", "does": {"returns": "N"}}
-      ],
-      "steps": [
-        {"emit": {"from": "host", "mode": "serial", "args": []}, "expect": {"returns": null, "log": []}}
-      ] },
-
     { "case": "rutis/row", "rule": "8", "name": "rutis/row", "tool": false,
       "listeners": [
         {"label": "w", "at": "X", "scope": "root", "log": ["row", "state"], "does": {"returns": null}},
@@ -451,7 +443,7 @@
         {"emit": {"from": "X", "mode": "serial", "args": []}, "expect": {"throws": {"name": "ReservedEvent"}}}
       ] },
 
-    { "case": "fast-path/local-only", "rule": "5.2", "name": "t/local", "tool": false,
+    { "case": "fast-path/local-only", "rule": "5.2", "name": "t/local", "tool": false, "except": [{"e": ["kotlin", "go"], "why": "Kotlin and Go have no fast path: the host dispatches every event (docs/design-platform-cleanup-2026-10-28.md §7.5)"}],
       "listeners": [
         {"label": "a", "at": "X", "does": {"returns": "A"}}
       ],
@@ -832,7 +824,7 @@
         {"unload": "z", "expect": {"logContains": ["n:z,running", "n:z,stopped"]}}
       ] },
 
-    { "case": "fast-path/elsewhere-follows", "rule": "4.5, 5.2", "name": "t/elsewhere", "tool": false,
+    { "case": "fast-path/elsewhere-follows", "rule": "4.5, 5.2", "name": "t/elsewhere", "tool": false, "except": [{"e": ["kotlin", "go"], "why": "Kotlin and Go have no fast path: the host dispatches every event (docs/design-platform-cleanup-2026-10-28.md §7.5)"}],
       "listeners": [
         {"label": "a", "at": "X", "does": {"returns": "A"}}
       ],

@@ -10,7 +10,7 @@
 | npm | `@arcships/rutis`、`@arcships/rutis-runtime`、`@arcships/rutis-bun`、`@arcships/rutis-host`（及 `@arcships/rutis-host-{linux,darwin}-{x64,arm64}`、`@arcships/rutis-host-win32-x64`） |
 | PyPI | `rutis`、`rutis-host`（各平台的 wheel） |
 | Go | `github.com/arcships/rutis/go/rutis`（tag `go/rutis/vX.Y.Z`，由 release.yml 打） |
-| Maven Central | `io.github.arcships:rutis`（Kotlin Multiplatform：jvm、android）、`io.github.arcships:rutis-ksp`（没有凭据时跳过，见下文） |
+| Maven Central | `io.github.arcships:rutis`（Kotlin Multiplatform：jvm、android）、`io.github.arcships:rutis-ksp`、`io.github.arcships:rutis-testing`（没有凭据时跳过，见下文） |
 | GitHub Release | `rutis-host` 二进制 |
 
 ## 步骤
@@ -31,7 +31,7 @@ Maven Central（release.yml 的 `maven` 任务，vanniktech maven-publish 插件
 3. 生成签名用的 PGP 密钥并公开公钥：`gpg --quick-gen-key "arcships rutis" rsa4096 sign 0`，`gpg --keyserver keyserver.ubuntu.com --send-keys <密钥 id>`。`gpg --armor --export-secret-keys <密钥 id>` 的全部输出是 `MAVEN_SIGNING_KEY`，口令是 `MAVEN_SIGNING_KEY_PASSWORD`。
 4. 写入 environment：`gh secret set MAVEN_CENTRAL_USERNAME --env maven`，其余三个同样（`gh secret set MAVEN_SIGNING_KEY --env maven < key.asc`）。
 
-发布的是 `io.github.arcships:rutis`（含 `rutis-jvm`、`rutis-android`）与 `io.github.arcships:rutis-ksp`，自动 release；任务等部署发布完成才结束（最多一小时）；Central Portal 已发布这个版本的模块跳过（经 Portal 的 publisher API 查询，不看会滞后的 repo1.maven.org）。Portal 要发布完成（上传后 10～30 分钟）才说已发布，所以上传前先在缓存里记下这个版本上传过：重跑时若之前上传过、模块还没发布，先等它发布（最多 45 分钟），不重复上传；到时仍未发布（部署失败，或上次没真正上传）才重新上传。所以重跑安全。Maven Central 同步到搜索页可能要几十分钟，发布后验证不等它。
+发布的是 `io.github.arcships:rutis`（含 `rutis-jvm`、`rutis-android`）、`io.github.arcships:rutis-ksp` 与 `io.github.arcships:rutis-testing`，自动 release；任务等部署发布完成才结束（最多一小时）；Central Portal 已发布这个版本的模块跳过（经 Portal 的 publisher API 查询，不看会滞后的 repo1.maven.org）。Portal 要发布完成（上传后 10～30 分钟）才说已发布，所以上传前先在缓存里记下这个版本上传过：重跑时若之前上传过、模块还没发布，先等它发布（最多 45 分钟），不重复上传；到时仍未发布（部署失败，或上次没真正上传）才重新上传。所以重跑安全。Maven Central 同步到搜索页可能要几十分钟，发布后验证不等它。
 
 插件 API（`PLUGIN_API`，SDK 与运行时各有一份）只在插件看到的接口不兼容时增加。Python 插件对 `rutis` 只写下限，和运行时共用宿主环境里的同一个 `rutis`：一个版本删掉或移动了插件导入的名字时，在那一版的迁移指南里写明，插件随宿主一起升级。`PLUGIN_API` 增加时，运行时要继续加载旧的插件 API（像 0.13 继续加载 API 2 那样）；做不到时，拒绝的报错要写明插件用哪个版本的 SDK 重新构建。会话协议版本（`rutisProtocol` 与 `rutis_bridge::session::PROTOCOL`）在线格式不兼容时增加。
 

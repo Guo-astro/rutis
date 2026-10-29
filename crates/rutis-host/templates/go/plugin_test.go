@@ -7,7 +7,8 @@ import (
 	"github.com/arcships/rutis/go/rutis/rutistest"
 )
 
-// The plugin in its real runtime, no host needed (step 6 of the guide).
+// The plugin in its real runtime, as a row of `rutis-host test` (step 6
+// of the guide): rutis-host on PATH, or the path RUTIS_HOST gives.
 func TestGreeterGreets(t *testing.T) {
 	loaded := rutistest.Load(t, Plugin, Config{Greeting: "Hi"}, nil)
 	var greeting string

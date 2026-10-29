@@ -979,7 +979,7 @@ fn supply_line(service: &str, supply: &Supply) -> Option<String> {
             ))
         }
         Supply::Missing { .. } => Some(format!(
-            "{service}: add a row that provides it, or import it from a peer (import: [\"{service}\"])"
+            "{service}: add a row that provides it"
         )),
         Supply::Provided(by)
             if by

@@ -139,8 +139,20 @@ internal class Row(
 }
 
 /** The rows one controller loads into this process. */
-class RuntimeState(plugins: List<Plugin>) {
-    internal val plugins: Map<String, Plugin> = plugins.associateBy { it.name }
+class RuntimeState(plugins: List<Plugin>, private val open: Boolean = false) {
+    internal val plugins: MutableMap<String, Plugin> = java.util.concurrent.ConcurrentHashMap(plugins.associateBy { it.name })
+
+    /**
+     * The plugins `mount` lists, or null when more may come ([register]):
+     * then rutis asks for each one's declarations (`rows.schema`).
+     */
+    internal fun listed(): Map<String, Plugin>? = if (open) null else plugins
+
+    /** Adds `plugin`, or replaces the one of its name, for the rows rutis loads from now on (an open runtime only). */
+    fun register(plugin: Plugin) {
+        check(open) { "plugins are registered only in a runtime served in this process" }
+        plugins[plugin.name] = supported(plugin)
+    }
 
     /**
      * How long a row's listeners and cleanups may take when it goes, and
@@ -165,22 +177,9 @@ class RuntimeState(plugins: List<Plugin>) {
     @Volatile
     internal var closing = false
 
-    // The listeners of each name, in position order, and by id.
-    internal val listeners = HashMap<String, MutableList<LocalListener>>()
+    // The listeners of this process, by id, which the host invokes.
     internal val byId = HashMap<String, LocalListener>()
     internal var listenerSeq = 0L
-    internal var first = 0L
-    internal var last = 0L
-
-    // The names and prefixes with listeners outside this process
-    // (events.elsewhere), and the emits through the host not answered yet.
-    internal val elsewhere = HashSet<String>()
-    internal val elsewherePrefixes = HashSet<String>()
-    internal val hostEmits = HashMap<String, Int>()
-
-    /** What the host calls this runtime (mount `runtime`), for descriptors. */
-    @Volatile
-    internal var runtimeName: String? = null
 
     /** An application's own plugins, in order, with their configurations, and where each stands. */
     private var own: List<Pair<Plugin, Any?>> = emptyList()
@@ -492,7 +491,7 @@ class RuntimeState(plugins: List<Plugin>) {
             for ((service, methods) in exports) slots[row.id(service)] = Slot(key, service, methods.keys.toSet())
         }
         val failure = try {
-            val decoded = decodeConfig(plugin, config)
+            val decoded = decodeConfig(plugin, config, own)
             withContext(row.job + CallChain.element(row.chain)) {
                 plugin.apply(Ctx(this@RuntimeState, row), decoded)
             }
@@ -533,66 +532,39 @@ class RuntimeState(plugins: List<Plugin>) {
         }
     }
 
-    private fun decodeConfig(plugin: Plugin, raw: Any?): Any? {
-        // Defaults filled and the config validated against the plugin's
-        // schema before decoding (config schema design §2.2); a decoder
-        // error after that is the schema and the type disagreeing (§3.3).
-        var config = raw
-        val schema = plugin.schema
-        if (schema is kotlinx.serialization.json.JsonObject) {
-            // A config of plain data (one holding dates or bytes, which only
-            // Kotlin's own callers send, is decoded as it is).
-            val data = try {
-                Result.success(ConfigSchema.fromValue(raw))
-            } catch (e: ConfigSchema.NotData) {
-                Result.failure(e)
-            }
-            if (data.isSuccess) {
-                val checked = ConfigSchema.check(ConfigSchema.fromValue(schema), data.getOrNull())
-                if (checked.errors.isNotEmpty()) throw configError(checked.errors)
-                config = ConfigSchema.toJson(checked.config)
-            }
-            // No config: `{}` for a class, as before (a nullable value gets null).
-            val kind = plugin.config.descriptor.kind
-            val structured = kind == kotlinx.serialization.descriptors.StructureKind.CLASS || kind == kotlinx.serialization.descriptors.StructureKind.OBJECT
-            val absent = config == null || config === Undefined || config == kotlinx.serialization.json.JsonNull
-            return try {
-                RutisFormat.decode(plugin.config, if (absent && structured) JsonObject(emptyMap()) else config)
-            } catch (e: Exception) {
-                // Any failure of decoding (the decoder's, or an `init` check
-                // of the type's): one sentence, as in Swift.
-                if (e is kotlinx.coroutines.CancellationException) throw e
-                throw configError(listOf(ConfigSchema.Issue(DecodePaths.of(e), "${ConfigSchema.pathText(DecodePaths.of(e))} is not a value the plugin accepts")))
-            }
-        }
-        val value = if ((config == null || config === Undefined || config == kotlinx.serialization.json.JsonNull) &&
-            plugin.config.descriptor.kind.let { it == kotlinx.serialization.descriptors.StructureKind.CLASS || it == kotlinx.serialization.descriptors.StructureKind.OBJECT }
-        ) {
-            JsonObject(emptyMap())
-        } else {
-            config
-        }
+    /**
+     * The row's config decoded into the plugin's config type. A row of
+     * rutis's: rutis checked it against the plugin's schema and filled its
+     * defaults (docs/design-platform-cleanup-2026-10-28.md §7.5), so a
+     * decoder error is the schema and the type disagreeing (config schema
+     * design §3.3). An application's own plugin ([own]): nothing checked it;
+     * a missing key takes its constructor default, and a decoder error names
+     * the key as rutis's check words it.
+     */
+    private fun decodeConfig(plugin: Plugin, raw: Any?, own: Boolean): Any? {
+        // No config: `{}` for a class (a nullable value gets null).
+        val kind = plugin.config.descriptor.kind
+        val structured = kind == kotlinx.serialization.descriptors.StructureKind.CLASS || kind == kotlinx.serialization.descriptors.StructureKind.OBJECT
+        val absent = raw == null || raw === Undefined || raw == kotlinx.serialization.json.JsonNull
+        val value = if (absent && structured) JsonObject(emptyMap()) else raw
         return try {
             RutisFormat.decode(plugin.config, value)
-        } catch (e: kotlinx.serialization.SerializationException) {
-            throw IllegalArgumentException("config: ${e.message}", e)
-        } catch (e: arcships.rutis.internal.peer.ValueException) {
-            throw IllegalArgumentException("config: ${e.message}", e)
+        } catch (e: Exception) {
+            // Any failure of decoding (the decoder's, or an `init` check of
+            // the type's): one sentence, as in Swift.
+            if (e is kotlinx.coroutines.CancellationException) throw e
+            val path = DecodePaths.of(e)
+            val problem = (if (own) ConfigText.problem(plugin.config.descriptor, value, path, e) else null)
+                ?: "is not a value the plugin accepts"
+            val message = "${DecodePaths.text(path)} $problem"
+            throw arcships.rutis.RutisException(
+                "BindingError",
+                "config: $message",
+                code = "bad-config",
+                data = mapOf("issues" to listOf(mapOf("path" to path, "message" to message))),
+            )
         }
     }
-
-    /**
-     * The error a row fails with when its config does not match: a
-     * BindingError with code `bad-config`, its message a `config: …` line
-     * per problem, its data `{ issues: [{ path, message }] }` (design §5.2).
-     */
-    private fun configError(issues: List<ConfigSchema.Issue>): arcships.rutis.RutisException =
-        arcships.rutis.RutisException(
-            "BindingError",
-            ConfigSchema.lines(issues).joinToString("\n"),
-            code = "bad-config",
-            data = mapOf("issues" to issues.map { mapOf("path" to it.path, "message" to it.message) }),
-        )
 
     /**
      * Unloads row `key`. Returns false when it gave up (listeners or
@@ -745,10 +717,6 @@ class RuntimeState(plugins: List<Plugin>) {
             throw noMethod(entry.name, method, methods ?: entry.table.methods)
         }
         return entry.table.serve(entry.obj, method, args, entry.name)
-    }
-
-    internal fun mounted(runtime: String?) = synchronized(lock) {
-        this.runtimeName = runtime
     }
 
     internal fun released(handle: String) = synchronized(lock) {

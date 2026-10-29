@@ -85,7 +85,7 @@ mod sessions;
 /// Swift runtimes: binaries built with the Swift SDK.
 #[cfg(feature = "swift")]
 pub mod swift;
-pub use sessions::{SessionResolver, SessionRows};
+pub use sessions::{LoaderCatalog, SessionResolver, SessionRows};
 
 use rutis::internal::CtxInternal;
 

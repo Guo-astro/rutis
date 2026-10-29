@@ -55,7 +55,6 @@ fn the_expectation_file_is_well_formed() {
         "disconnect/in-flight-fails-once",
         "disconnect/emit-reported",
         "disconnect/node-link",
-        "node/not-shared",
         "rutis/row",
         "rutis/service",
         "rutis/runtime",
@@ -65,7 +64,7 @@ fn the_expectation_file_is_well_formed() {
         "rust/unit-event",
         "rust/next-outside-waterfall",
     ];
-    assert_eq!(starter.len(), 46);
+    assert_eq!(starter.len(), 45);
     for case in starter {
         assert!(
             expected.cases.iter().any(|c| c.case == case),

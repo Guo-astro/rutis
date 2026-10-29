@@ -39,6 +39,11 @@ kotlin {
             // Tests that start sessions in this process: a hung one fails
             // instead of holding the build.
             systemProperty("junit.jupiter.execution.timeout.default", "120s")
+            // rutis-host test for the testing tool: RUTIS_HOST, else the
+            // repository's debug build (`cargo build -p rutis-host`).
+            (System.getenv("RUTIS_HOST")?.takeIf { it.isNotEmpty() }
+                ?: rootProject.projectDir.resolve("../../target/debug/rutis-host").takeIf { it.isFile }?.canonicalPath)
+                ?.let { environment("RUTIS_HOST", it) }
         }
     }
     if (androidSdk) {
@@ -67,6 +72,8 @@ kotlin {
         }
         val jvmTest by getting {
             dependencies {
+                // The testing tool, on rutis-host test (RUTIS_HOST below).
+                implementation(project(":rutis-testing"))
                 implementation(kotlin("test"))
                 implementation("org.junit.jupiter:junit-jupiter:5.11.4")
                 runtimeOnly("org.junit.platform:junit-platform-launcher:1.11.4")

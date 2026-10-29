@@ -2,89 +2,74 @@
 
 # Connect Nodes
 
-A rutis host is a **node**. Nodes connect through a **link**: one side dials (`dial`) and the other listens (`listen`). Once connected, they can share services, run plugins on each other's behalf, and share events. The connection reconnects automatically when interrupted.
+A rutis host is a **node**. Two nodes are joined by a connection: one writes a `rutis-host/dial` row to connect, the other a `rutis-host/listen` row to take the connection. Once connected, the services of each are seen on both sides, events are one bus, and each side can have the other run plugins. The dialing side connects again when the connection drops. Nodes are written the same way as [remote runtimes](#a-language-runtime-on-another-machine); there is no configuration of their own for nodes.
 
-The examples below configure rows in `rutis.json`. In Rust, use `rutis_bridge::PeerPlugin` for the same purpose (see [Embed in a Rust application](https://github.com/arcships/rutis/blob/main/docs/guide/rust-host.en.md)).
+## Two nodes
 
-## A link
+`main` connects to `office`:
 
 ```json
-{ "id": "office", "name": "rutis-bridge/peer", "config": { "peer": "office", "dial": "wss://office.example.com/rutis" } }
+{
+  "id": "main",
+  "rows": [
+    { "id": "office", "name": "rutis-host/dial", "config": { "address": "wss://office.example.com/rutis" } }
+  ]
+}
 ```
 
-The other side (`office`) listens:
+`office` takes the connection from `main`:
 
 ```json
 {
   "id": "office",
   "listen": [{ "name": "public", "address": "0.0.0.0:7443", "cert": "server.pem", "key": "server.key" }],
   "rows": [
-    { "id": "main", "name": "rutis-bridge/peer", "config": { "peer": "main", "listen": "public" } }
+    { "id": "main", "name": "rutis-host/listen", "config": { "listener": "public" } }
   ]
 }
 ```
 
-Both sides use the same token. The dialing side (`main`) presents `RUTIS_TOKEN_OFFICE`; the listening side (`office`) checks it against `RUTIS_TOKEN_MAIN` to verify that the peer is `main`. Set both variables to the same value.
+- Both ends use one token: `main`'s row `office` presents `RUTIS_TOKEN_OFFICE`, and `office`'s row `main` checks it against `RUTIS_TOKEN_MAIN`; set both variables to the same value (the row id in upper case, `-` as `_`).
+- Each end gives the `id` of its rutis.json in the handshake: `office`'s plugins are named `office:<plugin>` on `main`, and the other way round `main:<plugin>`.
+- `address` is `wss://…` (between machines, TLS required) or `ws://127.0.0.1…` (loopback). For a self-signed certificate, put the CA that signed it in the dialing side's `RUTIS_CA`.
+- Reconnecting: backoff starts at 0.5 s and doubles up to 30 s, back to 0.5 s after a connection that lasted 60 s; rejected credentials (403, an untrusted certificate) are retried every 30 s; an incompatible protocol stops it. A dialer arriving before the listening side has its row is refused (403) and tries again 30 s later, so start the listening side first.
+- `rutis-host run` prints the connection's changes, prefixed with the row id and without the token; the row's own `running` only says it runs, not that it is connected:
 
-- `dial` accepts `wss://…` for remote connections (TLS required) or `ws://127.0.0.1…` for the local loopback interface.
-- For a self-signed certificate, add its issuing CA to `RUTIS_CA` on the dialing side.
-- After a disconnect, retries use backoff starting at 0.5 seconds and capped at 30 seconds. Rejected credentials (403 or an untrusted certificate) are retried every 30 seconds. An incompatible protocol stops retrying and reports an error.
-- `rutis-host run` prints a line when a link's state changes, with a readable category and never the token. The node row's own `running` only says that the row runs, not that the link is connected:
-
+  ```text
+  office: connected
+  office: disconnected (office.example.com:7443: Connection refused); retrying in 2.1s
+  office: disconnected (auth-rejected: office.example.com:7443: upgrade refused with 403 Forbidden); retrying in 30s
+  main: connected main
+  main: disconnected main (connection lost)
   ```
-  office: link connected
-  office: link down (127.0.0.1:7443: Connection refused (os error 61)); retrying in 2.1s
-  office: link refused: auth-rejected (office.example.com: upgrade refused with 403 Forbidden); retrying in 30s
-  office: link stopped: incompatible (office does not declare runtime)
+
+  The first three lines are on `main`, the last two on `office` (a `rutis-host/listen` row writes the id that connected after `connected` / `disconnected`). The full format is in [What rutis-host prints](https://github.com/arcships/rutis/blob/main/docs/guide/rutis-host.en.md#what-run-prints).
+
+## Once connected
+
+- **Services are seen on both sides**: a service a row on `office` provides can be injected and called on `main` directly, and the other way round, without any list. Here it is provided by the remote plugin `office:<the row providing it>`. Call chains are kept: callbacks during a synchronous call, and calls back from them, cross several nodes.
+- **One name, kernel rules**: when both sides provide a name, each uses its own; the one registered later is refused, and that remote plugin fails, saying why:
+
+  ```text
+  office:weather: weather is provided here by row weather: not registered from office
   ```
 
-  `auth-rejected` means the credentials were refused (a wrong token, a certificate for another name or expired, an untrusted CA), `incompatible` that the ends do not fit (not retried), and `link down` that the far end cannot be reached for now. The full format is in [What `run` prints](https://github.com/arcships/rutis/blob/main/docs/guide/rutis-host.en.md#what-run-prints).
-- A dialing peer that arrives before the listening side's link is ready is asked to retry, so either side can start first.
-
-## What a link can do
-
-The node row's `config` determines what happens over the connection. Changing `export` or `import` does not disconnect the link; only the corresponding feature restarts.
-
-| Field | Purpose |
-| --- | --- |
-| `export: ["weather", "session/*"]` | Makes this node's `weather` service available to the peer, and this node's emissions of `weather` and of every `session/…` event reach the peer's listeners. |
-| `import: ["calendar", "tock"]` | Registers the peer's `calendar` service on this node (rejected if this node already has a service with that name), and this node's listeners of `calendar` and `tock` hear the peer's emissions of them. |
-| `host: true` | Allows the peer to run plugins installed on this node. Enable only for trusted peers. |
-| `rows: true` | Runs rows named `peer:<peer>/<plugin>` from this file on the peer. |
-| `runtime: "<name>"` | Identifies the peer as a language runtime; see below. |
-
-Calls retain their call chain across nodes: callbacks during a synchronous call, including callbacks that call back again, can cross multiple nodes.
-
-### Events between nodes
-
-An item of `export` / `import` is a name, or a prefix written with a trailing `*` (`session/*`; `*` alone is every name); prefixes select events only, services keep exact names. A name may be shared both ways. With the peer's `import` matching this node's `export`, the peer's listeners are entries of this node's event bus, under the same rules as local ones: all five modes (`emit`, `parallel`, `serial`, `waterfall`, `bail`), the scope rule, filters, every value type, and when the link goes down they leave the bus (a call in flight fails once). Events go one hop: what a node imported is never shared further. A listener on the peer sits at the link row's scope (the root for a link outside instances). The whole model is in [Unified events](https://github.com/arcships/rutis/blob/main/docs/design-events-2026-10-18.en.md).
-
-For example, `session/…` events emitted on `main` reach listeners in any language on `office`, and `audit/flagged` emitted on `office` reaches the listeners of `main`:
-
-```json
-{ "id": "office", "name": "rutis-bridge/peer", "config": { "peer": "office", "dial": "wss://office.example.com/rutis", "export": ["session/*"], "import": ["audit/flagged"] } }
-```
-
-```json
-{ "id": "main", "name": "rutis-bridge/peer", "config": { "peer": "main", "listen": "public", "import": ["session/*"], "export": ["audit/flagged"] } }
-```
-
-A name is shared only when the emitting end lists it in `export` and the listening end in `import`. On `main`, `await ctx.serial("session/quota", user)` asks the listeners on `main` and on `office` one by one in registration order and returns the first result; when `office` goes away, its listeners leave the bus and later dispatches ask only those on `main`.
-
-Runtimes (local ones, [on another machine](#a-language-runtime-on-another-machine), [connecting in](#runtimes-that-connect-in)) are not node links: their listeners are on the host's bus directly, with no `export` / `import`.
-
-`events: { "out": […], "in": […] }` was removed in rutis 0.13 and is refused: put `out` in `export` and `in` in `import`. Nodes of 0.12 and earlier are refused when they connect (`link stopped: incompatible (…)`); see [migrating to 0.13](https://github.com/arcships/rutis/blob/main/docs/migration-0.13.en.md).
+- A service that came over a connection is not sent back over it; through a node in between, it reaches a third one (`b`'s service reaches `c` through `a`).
+- To keep a service from the far end, use `isolate` on the row that provides it: a service only in one scope does not cross connections.
+- **Events are one bus**: the far end's listeners are entries of this side's bus, with the same rules as on one machine: the five modes (`emit`, `parallel`, `serial`, `waterfall`, `bail`), filters and every value type, without any list. When the connection drops, they leave the bus (calls in flight fail once). A far listener's description carries the connection's scope, for filters. The full model is in [unified events](https://github.com/arcships/rutis/blob/main/docs/design-events-2026-10-18.en.md).
+- When the connection drops, the far end's plugins here unload; rows depending on their services stop and wait by the kernel's rules, and come back once it reconnects.
 
 ## Run a plugin on another node
 
-When the peer enables `host: true` and this node enables `rows: true`, a `peer:<peer>/<plugin>` row loads that plugin on the peer:
+A row `<connection row>:<plugin>` has the far end run a plugin, with the row's config:
 
 ```json
-{ "id": "office", "name": "rutis-bridge/peer", "config": { "peer": "office", "dial": "wss://office.example.com/rutis", "rows": true } },
-{ "id": "scanner", "name": "peer:office/scanner-plugin", "config": { "dpi": 300 } }
+{ "id": "office", "name": "rutis-host/dial", "config": { "address": "wss://office.example.com/rutis" } },
+{ "id": "scanner", "name": "office:scanner", "config": { "dpi": 300 } }
 ```
 
-The plugin runs on the peer and uses that node's services. This node still controls its configuration and lifecycle. If the peer goes offline, the row waits and reloads the plugin when the peer returns. The peer executes the row's `isolate` and `inject` settings.
+- The far end looks `scanner` up with its own loader, as it resolves its own rows (npm packages, `py:` modules, plugins in Go or Swift binaries and so on); the plugin runs there, using that side's services, and what it provides is seen here. Its config and its starting and stopping are this side's.
+- While the far end is not connected, the row waits, and loads once it is; when the far end has no such plugin, only this row fails: `scanner: unresolved: entry "scanner" rejected: runtime office: this connection does not contain plugin scanner`.
 
 ## A language runtime on another machine
 
@@ -125,7 +110,7 @@ A Node runtime can also run remotely: in the Node project on that machine, run `
 
 ### Runtimes that connect in
 
-A runtime can also connect to rutis instead: use this when the remote machines are behind NAT or change address. The rutis side is one `rutis-host/listen` row naming a listener under `listen`; no node row:
+A runtime can also connect to rutis instead: use this when the remote machines are behind NAT or change address. The rutis side is one `rutis-host/listen` row naming a listener under `listen`:
 
 ```json
 {
@@ -179,9 +164,9 @@ Node and Bun run each session in a child process: on a disconnect the child unlo
 
 Kotlin plugins usually ship inside an Android application, which dials out to rutis ([Android app hosting](https://github.com/arcships/rutis/blob/main/docs/design-android-runtime-2026-10-12.en.md) §5). The SDK's jvm target takes the same `dial:` and `listen:` channels, environment variables and rules in `Rutis.serve` (its listener serving `wss://` with `RUTIS_CERT` and `RUTIS_KEY`).
 
-## Connect a Cordis application as a node
+## Cordis applications
 
-An existing Cordis application can become a node through `@arcships/rutis-runtime/bridge`; see [Cordis](https://github.com/arcships/rutis/blob/main/docs/guide/cordis.en.md).
+A Cordis application joins rutis by running its plugins in the Node runtime (`<package name>` rows); see [Cordis](https://github.com/arcships/rutis/blob/main/docs/guide/cordis.en.md).
 
 ## Your own connection
 
@@ -191,7 +176,6 @@ Write your own way of connecting (a relay, Bluetooth, another transport) as a co
 
 - Use `wss://` for remote connections. A listener without TLS may bind only to a loopback address.
 - A Python runtime cannot listen on `wss://` with CPython 3.13.6: its TLS sockets deadlock when one thread is blocked reading while another writes ([python/cpython#137583](https://github.com/python/cpython/issues/137583)), so every handshake hangs, and rutis refuses to start `listen:wss://` on that version. Use 3.13.7 or later (3.13.5 and earlier, and 3.14, are not affected); `ws://` is not affected. Dialing out (`dial:wss://`) is not affected either: one thread does all of a connection's reads and writes.
-- Use one token per peer (`RUTIS_TOKEN_<NODE>`) and set it only on the nodes that need it.
-- `rutis-host` takes its tokens from the environment, so they cannot be changed while it runs: changing a token takes a restart of `rutis-host` (a restart drops every connection). To disconnect existing connections, stop that row: when the row that links to the peer, or that accepts the runtimes, stops, its connections close and calls in flight on them fail with a transport error.
-- `host: true` lets a peer run any plugin installed on this node. Enable it only for trusted peers. It can load installed plugins, not file paths.
-- Nodes share services and events by name, and only those listed in `export` are shared; an event also needs the far end to list it in `import`.
+- Use one token per connection row (`RUTIS_TOKEN_<ROW ID>`) and set it only on the nodes that need it.
+- `rutis-host` takes its tokens from the environment, so they cannot be changed while it runs: changing a token takes a restart of `rutis-host` (a restart drops every connection). To disconnect existing connections, stop that row: when it stops, its connections close and calls in flight on them fail with a transport error.
+- Connected nodes see each other's shareable services and events, and can have this node run any plugin its loader resolves (`<connection row>:<plugin>`): connect only to trusted nodes. Use `isolate` on your own rows for services the far end should not see.

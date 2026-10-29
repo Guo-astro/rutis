@@ -34,10 +34,10 @@ use rutis::{Ctx, Error as RutisError};
 
 use crate::channel::{Channel, Close, PeerId};
 use crate::peer::Operations;
+use crate::peer::{peer_key, Peer};
 use crate::runtime::{Mount, Process};
 use crate::session::rpc::Connection;
 use crate::session::Error;
-use crate::{peer_key, Peer};
 
 /// The plugin name of every session, and of the root plugin that serves
 /// `sessions`.
@@ -313,7 +313,6 @@ async fn mount(shared: Arc<Shared>, start: Start, ctx: &Ctx) -> Result<Effect, R
     let peer = Arc::new(Peer::new(
         far.clone(),
         start.connection.clone(),
-        1,
         start.operations.clone(),
     ));
     // The session's peer is its own: what runs on it is mounted below, in a
@@ -359,7 +358,7 @@ async fn mount(shared: Arc<Shared>, start: Start, ctx: &Ctx) -> Result<Effect, R
         // this bus's are entries of each other's bus, one hop, every name.
         let (rows, served) = rows::Rows::serve(&scoped, &peer).map_err(failing)?;
         offered.extend(served);
-        scoped.plugin(crate::LinkEventsPlugin::new(far.clone(), ["*"], ["*"]));
+        scoped.plugin(crate::events::NodeEvents::new(far.clone()));
         client = Some(tokio::spawn(client_once_served(
             ctx.clone(),
             scoped.clone(),

@@ -614,7 +614,7 @@ fn same(path: &Path) -> PathBuf {
 /// The local runtime (`node`, `py`, `bun`) of the row named `name`, among
 /// `runtimes`: the prefix of its name, or Node for a file or package.
 fn runtime_of<'a>(name: &str, runtimes: &'a [String]) -> Option<&'a str> {
-    if name == "rutis-bridge/peer" {
+    if name == rutis_host::connect::DIAL || name == rutis_host::connect::LISTEN {
         return None;
     }
     let prefixed = name
@@ -886,7 +886,8 @@ mod tests {
         assert_eq!(of("/p/dev/fake.ts"), Some("node"));
         assert_eq!(of("@acme/weather"), Some("node"));
         assert_eq!(of("go:weather"), None);
-        assert_eq!(of("rutis-bridge/peer"), None);
+        assert_eq!(of("rutis-host/dial"), None);
+        assert_eq!(of("rutis-host/listen"), None);
         assert_eq!(runtime_of("dev/fake.ts", &["py".to_owned()]), None);
         assert!(owns("go", "go:weather"));
         assert!(!owns("go", "swift:weather"));

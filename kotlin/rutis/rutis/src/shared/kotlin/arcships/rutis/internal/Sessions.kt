@@ -67,9 +67,10 @@ class RuntimeSession private constructor(val peer: Peer, val runtime: RuntimeSta
             plugins: List<Plugin>,
             shutdownMillis: Long? = null,
             own: List<Pair<Plugin, Any?>>? = null,
+            open: Boolean = false,
         ): RuntimeSession {
-            checkPlugins(plugins)
-            val runtime = RuntimeState(if (own != null) emptyList() else plugins)
+            if (!open) checkPlugins(plugins)
+            val runtime = RuntimeState(if (own != null) emptyList() else plugins, open)
             if (shutdownMillis != null) runtime.shutdownMillis = shutdownMillis
             val peer = Peer(
                 channel,

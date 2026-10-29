@@ -3,26 +3,7 @@ package events
 import (
 	"encoding/json"
 	"testing"
-
-	"github.com/arcships/rutis/go/rutis/internal/peer"
 )
-
-// guarantee: events/no-result (§1: nil, undefined, null and false are no
-// result, in Go and as received)
-func TestWhatIsAResult(t *testing.T) {
-	none := []any{nil, false, peer.Undefined, json.RawMessage("null"), json.RawMessage(" false "), (*int)(nil), []int(nil), map[string]any(nil)}
-	for _, v := range none {
-		if HasResult(v) {
-			t.Errorf("%#v is a result", v)
-		}
-	}
-	some := []any{0, "", true, json.RawMessage("0"), json.RawMessage(`""`), []int{}, struct{}{}}
-	for _, v := range some {
-		if !HasResult(v) {
-			t.Errorf("%#v is no result", v)
-		}
-	}
-}
 
 func TestADescriptorCrossesAsTheProtocolWritesIt(t *testing.T) {
 	data, err := json.Marshal(Listener{Name: "session/created", Plugin: "chat-ui", Row: "chat", Scope: []Scope{{ID: "17", Group: "tenant"}}})

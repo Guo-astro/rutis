@@ -5,14 +5,13 @@
 //! All listeners on one host form one bus: the kernel's listener table
 //! holds this host's Rust listeners, an entry for each listener of every
 //! runtime process (registered by the runtime, `events.on`), and an entry
-//! for each listener of a linked node that the link imports. A runtime
+//! for each listener of a far rutis kernel on a session. A runtime
 //! dispatches through the host whenever a name has listeners outside its
 //! process (`events.dispatch`); the host invokes each entry elsewhere with
 //! one `events.call`. Results are the same as if every listener were in one
 //! process.
 //!
 //! - [`Args`]: an event by name with session values as arguments.
-//! - [`LinkEventsPlugin`]: the events of a node link.
 //! - [`ServiceEvent`], [`RuntimeEvent`]: framework events (`rutis/*`).
 
 mod args;
@@ -27,7 +26,7 @@ pub use args::{ArgValue, Args};
 pub use errors::report_line;
 pub use framework::{RuntimeEvent, RuntimeEventState, ServiceEvent};
 pub use hub::{join_bus, BusHandle};
-pub use link::LinkEventsPlugin;
+pub(crate) use link::NodeEvents;
 
 /// The session error a runtime gets for a kernel event error.
 #[cfg(feature = "testing")]

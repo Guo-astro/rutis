@@ -70,7 +70,7 @@ websocket = [
 ]
 # Cordis plugins mounted with Rust bindings generated at build time.
 cordis = ["node", "dep:toml"]
-# The channel contract tests, and the session, runtime and node conformance
+# The channel contract tests, and the session and runtime conformance
 # suites other implementations run.
 testing = []
 

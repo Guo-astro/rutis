@@ -5,6 +5,7 @@
     "The plugin injects `clock`, whose `now()` returns 0, 1, 2, ... one per call, and provides `service` with `methods`.",
     "A call: `call` (method), `args` (JSON; {\"$callback\": ...} is a function the caller passes: \"upper\" returns its argument upper-cased; {\"throws\": {name, message, fields}} throws an error with that name and message and extra `fields`), and what it does: `returns` (a JSON value; keys in `ignore` are not compared; `copied`: it is not the object passed in), `throws` ({} for any error, or the `name` and `message` the caller receives; the thrown error's extra `fields` do not cross) or `exits` (the plugin's process exits with this status).",
     "`samples` are values one language makes: the plugin's `samples()` names the ones it has, `sample(name)` returns one; a runtime whose plugin has no `samples` method has none.",
+    "`crossing: true`: the sample holds only when the value crosses between processes. Real runtimes are checked on it; a testing tool, whose test plugin is in the same runtime as the plugin under test and does not simulate crossing (docs/design-platform-cleanup-2026-10-28.md §7.5), skips it.",
     "`events` (after `calls` and `samples`): the host emits `emit` with `args` (JSON) with `parallel` on its bus, which the runtime's listeners joined (docs/design-events-protocol-2026-10-18.md); then `then` is a call as in `calls`, or the emission `throws`. The session matrix requires these checks on Node, Bun, Python, Go and Swift; the testing tools emit the same in one process.",
     "`allowed`: the testing tool does not do what this entry says, and why (a bounded, written-down difference, also in docs/guide/plugin-api.md). Every other entry holds for both.",
     "Tagged values (#308, docs/design-value-types-2026-10-15.md) are written {\"$<tag>\": <the value's wire text>}: {\"$instant\": \"2026-10-15T03:22:15.123Z\"}, {\"$bytes\": \"aGVsbG8=\"} (base64), {\"$map\": [[key, value], ...]}, {\"$set\": [element, ...]}, and so for datetime, date, time, bigint, decimal and uuid. No plain value is written so.",
@@ -20,6 +21,7 @@
     { "call": "each", "args": [{ "$callback": "upper" }], "returns": ["MON", "TUE"], "why": "a callback during a sync call" },
     {
       "call": "each",
+      "crossing": true,
       "args": [{ "$callback": { "throws": { "name": "NoForecast", "message": "no forecast for mon", "fields": { "code": 7 } } } }],
       "throws": { "name": "NoForecast", "message": "no forecast for mon" },
       "why": "an error crosses twice (callback to plugin, plugin to caller) with its name and message, not as the object thrown"
@@ -119,7 +121,7 @@
     { "sample": "kotlin/value-constructed", "returns": [{ "$datetime": "2026-10-15T14:30:05.25" }, { "$date": "2026-10-15" }, { "$time": "14:30:05.25" }, { "$decimal": "1.10" }, { "$uuid": "0f8fad5b-d9cb-469f-a165-70867728950e" }], "why": "LocalDateTime, LocalDate, LocalTime, BigDecimal and UUID arrive as a datetime, date, time, decimal and uuid; the decimal keeps its trailing zero (its scale)" },
     { "sample": "kotlin/big-long", "returns": { "raw": null, "at": null, "n": { "$bigint": "1152921504606846976" } }, "why": "a Long beyond ±(2^53−1), here inside a @Serializable class, arrives as a big integer (V6): no BigInteger needed" },
     { "sample": "kotlin/big-long-keys", "returns": { "$map": [[1, "one"], [{ "$bigint": "9223372036854775807" }, "max"]] }, "why": "map keys beyond ±(2^53−1) arrive as big integers, the others as numbers (V6)" },
-    { "sample": "kotlin/nan", "throws": {}, "why": "a Double that is not finite does not cross" },
-    { "sample": "kotlin/exception-value", "returns": { "name": "IllegalStateException", "message": "bad" }, "why": "an exception returned as a value arrives as data: its name and message" }
+    { "sample": "kotlin/nan", "crossing": true, "throws": {}, "why": "a Double that is not finite does not cross" },
+    { "sample": "kotlin/exception-value", "crossing": true, "returns": { "name": "IllegalStateException", "message": "bad" }, "why": "an exception returned as a value arrives as data: its name and message" }
   ]
 }

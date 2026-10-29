@@ -35,13 +35,13 @@ fn every_field_is_read() {
           "rows": [
             { "id": "weather", "name": "weather-plugin", "config": { "city": "Oslo" }, "inject": ["llm"], "isolate": { "cache": true }, "disabled": false },
             { "id": "tools", "group": true, "config": [{ "id": "tool", "name": "./tools/tool.ts" }] },
-            { "id": "office", "name": "rutis-bridge/peer", "config": { "peer": "office", "dial": "wss://office.example.com/rutis" } }
+            { "id": "office", "name": "rutis-host/dial", "config": { "address": "wss://office.example.com/rutis" } }
           ]
         }"#,
     )
     .unwrap();
     assert_eq!(config.id, "main");
-    assert_eq!(config.peers(), vec![("office".to_owned(), true)]);
+    assert_eq!(config.rows().len(), 3);
     let node = config.runtimes.node.unwrap();
     assert_eq!(node.project, base.join("web"));
     assert_eq!(node.runtime.unwrap(), base.join("vendor/rutis-runtime"));

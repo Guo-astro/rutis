@@ -2,9 +2,9 @@
 
 [English](README.md)
 
-用 Kotlin 写 [rutis](https://github.com/arcships/rutis) 插件。SDK（`kotlin/rutis`，Maven 坐标 `io.github.arcships:rutis` 与 `io.github.arcships:rutis-ksp`，随 rutis 发布线）是 Kotlin Multiplatform 库，两个 target：**android**，供托管插件的 Android 应用（K-P2 阶段）；**jvm**，在桌面上运行同一份代码：一致性测试与测试入口 `Rutis.serve`。设计：[docs/design-android-runtime-2026-10-12.md](../docs/design-android-runtime-2026-10-12.md)。
+用 Kotlin 写 [rutis](https://github.com/arcships/rutis) 插件。SDK（`kotlin/rutis`，Maven 坐标 `io.github.arcships:rutis`、`io.github.arcships:rutis-ksp` 与测试工具 `io.github.arcships:rutis-testing`，随 rutis 发布线）是 Kotlin Multiplatform 库，两个 target：**android**，供托管插件的 Android 应用（K-P2 阶段）；**jvm**，在桌面上运行同一份代码：一致性测试与测试入口 `Rutis.serve`。设计：[docs/design-android-runtime-2026-10-12.md](../docs/design-android-runtime-2026-10-12.md)。
 
-状态：K-P2。插件、服务、值、错误、统一事件与测试工具在两个 target 上可用，与其他运行时过同样的一致性套件；应用用 `RutisApp` 接入 rutis（WebSocket 拨出与监听），在 Android 模拟器上测过（含 R8 的 release 构建）。随 0.15 起发布到 Maven Central。
+状态：K-P2。插件、服务、值、错误与统一事件在两个 target 上可用，与其他运行时过同样的一致性套件；应用用 `RutisApp` 接入 rutis（WebSocket 拨出与监听），在 Android 模拟器上测过（含 R8 的 release 构建）。随 0.15 起发布到 Maven Central。
 
 ```kotlin
 import arcships.rutis.*
@@ -45,6 +45,8 @@ plugins {
 dependencies {
     implementation("io.github.arcships:rutis:<版本>")
     ksp("io.github.arcships:rutis-ksp:<版本>")
+    testImplementation("io.github.arcships:rutis-testing:<版本>")   // 测试工具
+    kspTest("io.github.arcships:rutis-ksp:<版本>")
 }
 ```
 
@@ -68,7 +70,7 @@ dependencies {
 
 ## 测试插件
 
-`arcships.rutis.testing` 在插件真实的运行时里、经真实的（内存）会话运行插件，测试一方是宿主：
+`arcships.rutis.testing`（构件 `io.github.arcships:rutis-testing`，jvm）在测试进程里、插件真实的运行时中运行插件，作为真实 rutis 内核的一行：`rutis-host test`（`PATH` 上或 `RUTIS_HOST`），每个测试进程起一个，测试之间卸掉行。rutis 校验配置、补默认值，解析插件 inject 的服务，分发它的事件，与运行它的宿主一样：
 
 ```kotlin
 RutisTest.load(weather, Config("Oslo"), services = mapOf("llm" to FakeLlm())).use { loaded ->
@@ -77,7 +79,7 @@ RutisTest.load(weather, Config("Oslo"), services = mapOf("llm" to FakeLlm())).us
 }
 ```
 
-测试给的服务是 `@RutisService` 类的实例。`loaded.on`、`emit`、`parallel` 等以宿主身份监听和发出；`loaded.load(config, row, scope)` 装载更多行；`loaded.reported()` 是运行时报告的行。
+测试给的服务是 `@RutisService` 类的实例。测试的服务以及 `loaded.on`、`emit`、`parallel` 等是同一个运行时里的一个插件，在根作用域；`loaded.load(config, row, isolate)` 装载更多行（`row` 是行 id，不给时 rutis 按插件名取）；`loaded.reported()` 是 rutis 为测试的行报告的内容（失败的监听器与 `emit` 的过滤器）。设备上没有 `rutis-host`：测试用 `RutisApp` 装自己的插件，拨到开发机上的 rutis（[kotlin-app](../docs/guide/kotlin-app.md) §7）。
 
 ## 在应用里托管插件
 
@@ -112,6 +114,8 @@ JDK 17。不需要安装 Gradle：仓库里有 wrapper。
 cd kotlin/rutis
 ./gradlew build          # SDK、处理器、单元测试、测试工具对两份期望文件
 ```
+
+测试工具的测试跑在 `rutis-host test` 上：`RUTIS_HOST`，否则用仓库里的 `target/debug/rutis-host`（`cargo build -p rutis-host`）。
 
 android target 只在装有 Android SDK 时构建（`ANDROID_HOME`，或 `local.properties` 的 `sdk.dir`）。带 Kotlin 的 Rust 套件用 feature `kotlin`，构建 `rutis-conformance/build/libs/rutis-conformance-all.jar`（或用 `RUTIS_KOTLIN_JAR` 指定的）：
 

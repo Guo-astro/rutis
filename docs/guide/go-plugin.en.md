@@ -2,12 +2,13 @@
 
 From a new project to a release: a plugin `greeter` that provides the service `greeter` and uses a service `translate` that someone else provides. Needs Go 1.24 or later.
 
-The `rutis-host` commands below (create the project, run it in a local host, call a service) run as `npx @arcships/rutis-host …`, which needs Node; or install it first, see [rutis-host: Installation](rutis-host.en.md#installation), and write `rutis-host …`.
+The `rutis-host` commands below (create the project, run it in a local host, call a service) run as `npx @arcships/rutis-host …`, which needs Node; or install it first, see [rutis-host: Installation](rutis-host.en.md#installation), and write `rutis-host …`. The tests (`go test`) need it installed: `rutis-host` on `PATH`, or its path in `RUTIS_HOST`; the first block installs it with npm.
 
 ## 1. Start a project
 
 <!-- example: go-en run -->
 ```bash
+npm install --global @arcships/rutis-host
 npx @arcships/rutis-host new greeter --lang go
 cd greeter
 go mod tidy
@@ -21,7 +22,7 @@ The project:
 | File | What it is |
 | --- | --- |
 | `plugin.go` | The plugin (package `greeter`, exports `Plugin`) |
-| `plugin_test.go` | Its test, no host needed |
+| `plugin_test.go` | Its test (`go test` needs `rutis-host`) |
 | `cmd/greeter/main.go` | The binary: `rutis.Serve(greeter.Plugin)` |
 | `rutis.dev.json` | The rows when you run it locally (step 7) |
 | `go.mod` | The module path (change it to yours); depends on `github.com/arcships/rutis/go/rutis` |
@@ -283,11 +284,12 @@ func TestHello(t *testing.T) {
 go test ./...
 ```
 
-- `rutistest.Load(t, plugin, config, services)` loads the plugin: it runs in its real runtime and values go through a real session, with no host. The last argument gives the services the plugin uses, here a fake `translate`.
+- `go test` needs `rutis-host`: on `PATH`, or the path in `RUTIS_HOST`. The test process runs the Go runtime and starts `rutis-host test` once; each `Load` is a row of that host.
+- `rutistest.Load(t, plugin, config, services)` loads the plugin as a row, in its real runtime under the real rutis kernel. The last argument gives the services the plugin uses, here a fake `translate`: a plugin of the test's provides them.
 - `loaded.Service("greeter")` gets a service the plugin provides; `Call(ctx, method, &result, args...)` calls it.
-- `loaded.On` listens to the plugin's events as a host would.
-- `loaded.Unload()` unloads the plugin.
-- `Load` also checks what a host checks: the configuration matches the Schema; the plugin uses only the services in `Inject`; the services it provides match `Provides`.
+- `loaded.On` listens to the plugin's events; the listener is a plugin of the test's, on the host's bus.
+- `loaded.Unload()` unloads the plugin; the row also goes when the test ends.
+- The host checks what it checks for every row: the configuration matches the Schema (`TryLoad` gives back its line, `weather: config: city is required`), the services in `Inject` are there.
 
 The service types a host gives (`rutis-host types`) come in TypeScript and Python only; a Go plugin writes the struct of function fields from the methods in the host's documentation. The rest of the testing tool: see [plugin API: The Go test tool](plugin-api.en.md#the-go-test-tool).
 
@@ -446,7 +448,7 @@ Once stopped, `stack` shows the call stack, `locals` and `print <variable>` the 
 - A Python runtime that `rutis.dev.json` adds reads this terminal then too (see the [Python guide](python-plugin.en.md#debugging)), and Ctrl-C reaches it as well.
 - While it is stopped at a breakpoint, the whole runtime waits: calls to the other plugins in this binary wait too.
 - On macOS, the first debugging session asks to allow developer tools.
-- Tests need no host: `dlv test .`.
+- Tests: `dlv test .` (`rutis-host` on `PATH`, or `RUTIS_HOST`).
 
 ## Go's rules
 

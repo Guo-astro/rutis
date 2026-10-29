@@ -1,6 +1,7 @@
 package arcships.rutis.internal
 
 import arcships.rutis.generated.rutisObject
+import arcships.rutis.generated.ownObject
 
 import arcships.rutis.advanced.RemoteFunction
 import arcships.rutis.advanced.RutisFormat
@@ -73,8 +74,6 @@ object Native {
         is Decimal -> BigDecimal(value.text)
         is Exported -> value.original
         is ExportedObject -> value.original
-        // A plugin definition of this process, handed to a test double.
-        is RemotePlugin -> value.local ?: value
         else -> value
     }
 
@@ -130,7 +129,10 @@ object Native {
     @OptIn(InternalSerializationApi::class)
     private fun objectOf(value: Any): Any? {
         // A proxy of an object of another process, handed on: that object (#687).
-        if (value is arcships.rutis.generated.ObjectProxy) value.rutisObject?.let { return it }
+        if (value is arcships.rutis.generated.ObjectProxy) {
+            value.rutisObject?.let { return it }
+            value.ownObject?.let { return it }
+        }
         Tables.serviceTable(value.javaClass)?.let { return ServiceObject(value, it) }
         if (value is Function<*>) return exportFunction(value)
         @Suppress("UNCHECKED_CAST")

@@ -15,8 +15,8 @@
 
 use std::path::{Path, PathBuf};
 
+use rutis_bridge::websocket::Credential;
 use rutis_bridge::websocket::{self, Limits, ListenerConfig, ServerTls, Trust};
-use rutis_bridge::{Credential, Registrations};
 use rutis_test_support::within;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -407,7 +407,7 @@ async fn a_listener_serves_tls() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_dialer_trusts_rutis_ca() {
     let (ca, certificate, key) = pki();
-    // Nothing registered: every upgrade past TLS is refused with 503.
+    // Nobody listening yet: every upgrade past TLS is refused with 503.
     let server = websocket::listen(
         &ListenerConfig::new("public", "127.0.0.1:0".parse().unwrap()).tls(ServerTls {
             certificate_pem: certificate.into_bytes(),
@@ -415,7 +415,9 @@ async fn a_dialer_trusts_rutis_ca() {
             client_ca_pem: None,
         }),
         &Limits::default(),
-        websocket::admit_registered(Registrations::new(), "public"),
+        std::sync::Arc::new(|_: websocket::Upgrade<'_>| {
+            Err(websocket::Refused::Unavailable("not listening yet".into()))
+        }),
     )
     .unwrap();
     let address = format!("wss://localhost:{}/rutis", server.local_addr().port());
