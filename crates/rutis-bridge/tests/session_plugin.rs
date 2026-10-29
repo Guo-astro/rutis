@@ -794,3 +794,81 @@ async fn run_on_a_language_runtime() {
         "{error}"
     );
 }
+
+// ── events offered are events ready ─────────────────────────────
+
+/// A runtime that, the moment this end offers `events`, adds a listener
+/// (as an app's plugin calling `ctx.on` in apply does), and says how
+/// that went.
+struct Eager {
+    tokio: tokio::runtime::Handle,
+    answered: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<Result<(), String>>>>,
+}
+
+impl Dispatch for Eager {
+    fn invoke(
+        &self,
+        peer: &rutis_bridge::session::Connection,
+        target: &str,
+        method: &str,
+        args: Value,
+    ) -> Reply {
+        let args = args.json().unwrap_or(Json::Null);
+        match (target, method) {
+            ("", "mount") => Ok(
+                json!({ "services": {}, "features": ["rows.v2", "hosts", "leaf"], "plugins": {} })
+                    .into(),
+            ),
+            ("", "link.offers") => {
+                let events = args[0]["families"]
+                    .as_array()
+                    .is_some_and(|families| families.iter().any(|f| f == "events"));
+                let answered = events
+                    .then(|| self.answered.lock().unwrap().take())
+                    .flatten();
+                if let Some(answered) = answered {
+                    let peer = peer.clone();
+                    self.tokio.spawn(async move {
+                        let on = json!({ "id": "l1", "name": "tick", "row": null, "plugin": "app",
+                                         "kind": "async", "prepend": false, "global": false });
+                        let reply = peer
+                            .invoke_async("", "events.on", Value::List(vec![Value::Data(on)]))
+                            .await
+                            .map(drop)
+                            .map_err(|error| error.to_string());
+                        let _ = answered.send(reply);
+                    });
+                }
+                Ok(Value::Undefined)
+            }
+            ("", _) => Ok(Value::Undefined),
+            (target, method) => Err(SessionError::Value(format!("no {target}.{method}"))),
+        }
+    }
+}
+
+/// Once this end offers `events` to a runtime, its `events.on` is taken
+/// at once: the session's events are set up before they are offered.
+/// Many rounds, as the far end answers the offer on another thread.
+#[tokio::test(flavor = "multi_thread")]
+async fn events_offered_to_a_runtime_take_its_listeners_at_once() {
+    for round in 0..50 {
+        let main = kernel("main");
+        let (ours, theirs) = rutis_bridge::memory::pair();
+        let (answered, answer) = tokio::sync::oneshot::channel();
+        let mut endpoint = Endpoint::rust(id("app"));
+        endpoint.capabilities.push("runtime".into());
+        let _app = rutis_bridge::session::Connection::open(
+            theirs,
+            Arc::new(Eager {
+                tokio: tokio::runtime::Handle::current(),
+                answered: std::sync::Mutex::new(Some(answered)),
+            }),
+            endpoint,
+        )
+        .unwrap();
+        let _session = main.plugin(Session::new(ours));
+        let reply = within("events.on", answer).await.unwrap();
+        assert_eq!(reply, Ok(()), "round {round}");
+    }
+}
