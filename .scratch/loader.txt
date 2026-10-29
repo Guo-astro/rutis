@@ -1,0 +1,275 @@
+mbx[warning]: prediction was not restored: failed to read compiler input /Users/eric8810/Code/rutis/.claude/worktrees/agent-aad5ddc8a34de2a37/crates/rutis-bridge/src/access_point.rs: No such file or directory (os error 2)
+
+running 24 tests
+........................
+test result: ok. 24 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.64s
+
+
+running 1 test
+.
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.41s
+
+
+running 2 tests
+..
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.15s
+
+
+running 2 tests
+..
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.26s
+
+
+running 7 tests
+..error: Module not found "/var/folders/z_/tfr0_4ls4b74wq5m1qm13b640000gn/T/.tmpyO6m5c/no-runtime-here/src/main.ts"
+..runtime bun: exiting (3) before the host disconnected
+...
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.44s
+
+
+running 4 tests
+....
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.30s
+
+
+running 9 tests
+.........
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+
+running 3 tests
+...
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 5 tests
+.test events_with_x_a_bun_plugin has been running for over 60 seconds
+test events_with_x_a_go_plugin has been running for over 60 seconds
+test events_with_x_a_node_leaf_plugin has been running for over 60 seconds
+test events_with_x_a_python_plugin has been running for over 60 seconds
+....
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 242.68s
+
+
+running 15 tests
+...runtime bun: row crasher called process.exit(1)
+runtime bun: exiting (1) before the host disconnected
+runtime node: row crasher called process.exit(1)
+..runtime bun: an unhandled error from an unknown row: Error: boom after load
+    at <anonymous> (/private/var/folders/z_/tfr0_4ls4b74wq5m1qm13b640000gn/T/.tmpMmHwcF/faulty.mjs:6:43)
+.runtime node: an unhandled error from an unknown row: Error: boom after load
+    at Timeout._onTimeout (file:///private/var/folders/z_/tfr0_4ls4b74wq5m1qm13b640000gn/T/.tmpfSRiya/faulty.mjs:6:39)
+.runtime node: an unhandled error from an unknown row: Error: boom in lender
+    at Timeout._onTimeout (file:///private/var/folders/z_/tfr0_4ls4b74wq5m1qm13b640000gn/T/.tmpDyTKy2/lender.mjs:6:50)
+runtime py: row crasher called os._exit(3)
+.runtime py: an unhandled error from an unknown row: Traceback (most recent call last):
+  File "/private/var/folders/z_/tfr0_4ls4b74wq5m1qm13b640000gn/T/.tmpWS499a/lender.py", line 8, in boom
+    raise ValueError("boom in lender")
+ValueError: boom in lender
+runtime node: an unhandled error from an unknown row: Error: refused by lender
+    at Object.refuse (file:///private/var/folders/z_/tfr0_4ls4b74wq5m1qm13b640000gn/T/.tmpDyTKy2/lender.mjs:7:30)
+    at Timeout._onTimeout (file:///private/var/folders/z_/tfr0_4ls4b74wq5m1qm13b640000gn/T/.tmpDyTKy2/borrower.mjs:7:40)
+..runtime py: an unhandled error from an unknown row: Traceback (most recent call last):
+  File "/private/var/folders/z_/tfr0_4ls4b74wq5m1qm13b640000gn/T/.tmpWS499a/lender.py", line 14, in refuse
+    raise ValueError("refused by lender")
+ValueError: refused by lender
+.....
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 10.29s
+
+
+running 1 test
+.
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.15s
+
+
+running 15 tests
+...............
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 17.68s
+
+
+running 1 test
+.
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.90s
+
+
+running 1 test
+.
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.03s
+
+
+running 4 tests
+....
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.74s
+
+
+running 3 tests
+...
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+
+running 19 tests
+i..................
+test result: ok. 18 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+
+running 5 tests
+.....
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+
+running 20 tests
+....................
+test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+
+running 5 tests
+.....
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.45s
+
+
+running 5 tests
+.....
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.62s
+
+
+running 1 test
+.
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+
+running 6 tests
+....runtime py: row px called os._exit(17)
+..
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.67s
+
+
+running 4 tests
+....
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.59s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 8 tests
+........
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 14.72s
+
+
+running 3 tests
+...
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 2 tests
+Debugger listening on ws://127.0.0.1:57995/40bcc839-a244-4ba7-b2de-5233973f2fd3
+For help, see: https://nodejs.org/learn/getting-started/debugging
+..
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 12.01s
+
+
+running 18 tests
+........runtime node: row crash called process.exit(17)
+..runtime bun: exiting (17) before the host disconnected
+...runtime py: row crash called os._exit(17)
+.....
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.45s
+
+
+running 1 test
+.
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.22s
+
+
+running 6 tests
+......
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 1 test
+.
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 5 tests
+.....
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+
+running 18 tests
+node:internal/modules/package_json_reader:301
+  throw new ERR_MODULE_NOT_FOUND(packageName, fileURLToPath(base), null);
+        ^
+
+Error [ERR_MODULE_NOT_FOUND]: Cannot find package 'tsx' imported from /private/var/folders/z_/tfr0_4ls4b74wq5m1qm13b640000gn/T/.tmpNWUsN4/
+    at Object.getPackageJSONURL (node:internal/modules/package_json_reader:301:9)
+    at packageResolve (node:internal/modules/esm/resolve:768:81)
+    at moduleResolve (node:internal/modules/esm/resolve:859:18)
+    at defaultResolve (node:internal/modules/esm/resolve:992:11)
+    at #cachedDefaultResolve (node:internal/modules/esm/loader:701:20)
+    at #resolveAndMaybeBlockOnLoaderThread (node:internal/modules/esm/loader:721:38)
+    at ModuleLoader.resolveSync (node:internal/modules/esm/loader:759:56)
+    at #resolve (node:internal/modules/esm/loader:683:17)
+    at ModuleLoader.getOrCreateModuleJob (node:internal/modules/esm/loader:603:35)
+    at node:internal/modules/esm/loader:632:32 {
+  code: 'ERR_MODULE_NOT_FOUND'
+}
+
+Node.js v24.19.0
+...............runtime node: row x called process.exit(17)
+...
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.09s
+
+
+running 8 tests
+........
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+
+running 3 tests
+...
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+
+running 2 tests
+..
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.20s
+
+
+running 1 test
+.
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.19s
+
+
+running 1 test
+.
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.18s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 7 tests
+.......
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.28s
+
+
+running 6 tests
+......
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s
+
+
+running 1 test
+i
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+mbx[savings]: 1d 10h of rustc's calendar cleared across 10357 builds.

@@ -44,9 +44,9 @@ await ctx.filter(lambda d: d["row"] == "audit").parallel("chat/said", "hi")
 
 A listener hears every event of the name on the one flat bus; a scope is a descriptor for filters. A failing `emit` listener is reported on stderr, never raised. `rutis/*` events can be listened to, not emitted. On unload a running listener's task is cancelled and waited for (at most `RUTIS_SHUTDOWN_TIMEOUT`).
 
-A filter's descriptor is a dict: `name`, `prefix`, `plugin`, `row`, `runtime`, `node`, `scope`, `global`. `plugin` is the name the plugin declares, `define_plugin(apply, name="chat-ui")`; without one, the id of its row in the configuration (`row`). Errors from listeners in other processes arrive as `rutis.RemoteError` (rutis's own, such as `BindingError`, as their classes; `rutis.advanced.AggregateError` children too); on the fast path, within one process, the original exception may arrive instead, so match errors by `name` (and `code`), not by class. A row that unloaded cannot emit any more (`BindingError`). `ctx.on`, the emitters and disposers may be called from the plugin's own threads: they run on the runtime's loop, in call order (from a thread, `parallel` / `serial` / `waterfall` return an awaitable for that thread's loop, or a `concurrent.futures.Future` without one).
+A filter's descriptor is a dict: `name`, `prefix`, `plugin`, `row`, `runtime`, `node`, `scope`, `global`. `plugin` is the name the plugin declares, `define_plugin(apply, name="chat-ui")`; without one, the id of its row in the configuration (`row`). Errors from listeners arrive through the host as `rutis.RemoteError` (rutis's own, such as `BindingError`, as their classes; `rutis.advanced.AggregateError` children too); match errors by `name` (and `code`), not by class. A row that unloaded cannot emit any more (`BindingError`). `ctx.on`, the emitters and disposers may be called from the plugin's own threads: they run on the runtime's loop, in call order (from a thread, `parallel` / `serial` / `waterfall` return an awaitable for that thread's loop, or a `concurrent.futures.Future` without one).
 
-Test it without a host:
+Test it on a host of its own (`rutis-host test`: `rutis-host` on PATH, from the `rutis-host` package, or `RUTIS_HOST`):
 
 ```python
 from rutis.testing import load
@@ -55,7 +55,7 @@ async with load(plugin, config={"city": "Oslo"}, services={"llm": FakeLlm()}) as
     assert await t.service("weather").today() == "sunny in Oslo"
 ```
 
-The loaded plugin `t` has the same `emit` / `parallel` / `serial` / `waterfall` / `bail` / `filter`; plugins loaded with one `rutis.testing.Bus` share one flat bus; a `scope` is a filter descriptor (`load(plugin, bus=bus, scope="t1/s1")`). Descriptors give `runtime` `"python"` (`load(..., runtime=)` to change it); unload waits for running listeners at most `RUTIS_SHUTDOWN_TIMEOUT` (`load(..., deadline=)` seconds). With `strict`, errors reaching the plugin's own emitters arrive as `RemoteError`, as from another process.
+The plugin runs on this process's Python runtime as a row of that host: the host's loader checks its config, every event goes through the host. The loaded plugin `t` has the same `emit` / `parallel` / `serial` / `waterfall` / `bail` / `filter`, `t.on` to listen, and `await t.reported()` for what the host reported of it; plugins loaded with one `rutis.testing.Bus` share one host.
 
 A host runs plugins with `python -m rutis <channel> --id <id> <project>` (it starts that itself); `python -m rutis listen:wss://… --id <id> --peer <controller> <project>` runs a runtime a host on another machine controls (install `rutis[network]`; not on CPython 3.13.6, whose TLS sockets deadlock, [python/cpython#137583](https://github.com/python/cpython/issues/137583): use 3.13.7 or later); `python -m rutis dial:wss://… --id <id> --peer <controller> <project>` connects to that host instead and reconnects by itself (token in `RUTIS_TOKEN`, a further CA in `RUTIS_CA`). Packaged plugins register under the entry point group `rutis.plugins`. Python 3.12 or later; no dependencies.
 

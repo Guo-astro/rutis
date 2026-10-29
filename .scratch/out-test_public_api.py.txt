@@ -1,0 +1,43 @@
+.F.
+======================================================================
+FAIL: test_the_public_api_is_the_snapshot (test_public_api.PublicApi.test_the_public_api_is_the_snapshot)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/eric8810/Code/rutis/.claude/worktrees/agent-aad5ddc8a34de2a37/python/rutis/tests/test_public_api.py", line 123, in test_the_public_api_is_the_snapshot
+    self.fail(f"\n{diff}the public API of rutis changed: review the diff, "
+AssertionError: 
+--- python/rutis/public-api.txt
++++ current
+@@ -37,11 +37,9 @@
+     NAME = 'WaterfallNext'
+ 
+ ## rutis.testing
+-class Bus(object)(*, scopes: dict | None = None) -> None
+-    def chain(self, path: str | None) -> list
+-    def listeners(self, name: str | None = None) -> list[dict]
+-    def emitter(self, *, row: str = 'test', strict: bool = True) -> Emitter
+-class Loaded(object)(plugin: sdk.Plugin, strict: bool, bus: Bus, row: str, scope: list, name: str, runtime: str | None = 'python', deadline: float | None = None) -> None
++class Bus(object)() -> None
++    def emitter(self) -> Emitter
++class Loaded(object)(host: _Host, row: str, entry: str, plugin: sdk.Plugin) -> None
+     def emit(self, name: str, *args: Any) -> None
+     def parallel(self, name: str, *args: Any)
+     def serial(self, name: str, *args: Any)
+@@ -56,10 +54,9 @@
+     async def update(self, config: Any) -> None
+     async def unload(self) -> None
+ class PluginTestError(AssertionError)(…)
+-    why: str | None
+ class Reported(tuple)(kind: str, name: str, row: str | None, error: BaseException)
+     kind: str
+     name: str
+     row: str | None
+     error: BaseException
+-def load(plugin: sdk.Plugin | ModuleType, *, config: Any = None, services: dict | None = None, strict: bool = True, bus: Bus | None = None, scope: str | None = 'root', row: str | None = None, runtime: str | None = 'python', deadline: float | None = None) -> AsyncIterator[Loaded]
++def load(plugin: sdk.Plugin | ModuleType, *, config: Any = None, services: dict | None = None, bus: Bus | None = None, row: str | None = None) -> AsyncIterator[Loaded]
+the public API of rutis changed: review the diff, then run RUTIS_PUBLIC_API_WRITE=1 on tests/test_public_api.py
+
+----------------------------------------------------------------------
+Ran 3 tests in 0.057s
+
+FAILED (failures=1)

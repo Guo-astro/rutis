@@ -704,8 +704,13 @@ jobs:
           echo "$RUNNER_TEMP/python/bin" >> "$GITHUB_PATH"
       # WebSocket channels of the Python runtime (rutis[network]).
       - run: python3 -m pip install "websockets==15.*"
+      # rutis.testing runs plugins on rutis-host (`rutis-host test`).
+      - uses: dtolnay/rust-toolchain@1.98.1
+      - run: cargo build -p rutis-host
       - run: python3 -m unittest discover -s tests
         working-directory: python/rutis
+        env:
+          RUTIS_HOST: ${{ github.workspace }}/target/debug/rutis-host
       - name: self-hosted runner, end
         if: always() && runner.environment == 'self-hosted'
         env:
@@ -1352,8 +1357,12 @@ jobs:
           uv venv --seed --python-preference only-managed --python 3 "$RUNNER_TEMP/python"
           echo "$RUNNER_TEMP/python/bin" >> "$GITHUB_PATH"
       - run: python3 -m pip install "websockets>=15"
+      # rutis.testing runs plugins on rutis-host (`rutis-host test`).
+      - run: cargo build -p rutis-host
       - run: python3 -m unittest discover -s tests
         working-directory: python/rutis
+        env:
+          RUTIS_HOST: ${{ github.workspace }}/target/debug/rutis-host
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest

@@ -1,0 +1,42 @@
+..........FFFFFFFFFFFFF................EEE.Frutis: emit of t/emit from row a failed: AttributeError: 'NoneType' object has no attribute 'request_answered'
+Frutis: emit of t/order from row a failed: AttributeError: 'NoneType' object has no attribute 'request_answered'
+rutis: emit of t/order from row a failed: AttributeError: 'NoneType' object has no attribute 'request_answered'
+rutis: emit of t/order from row a failed: AttributeError: 'NoneType' object has no attribute 'request_answered'
+FEErutis: emit of t/f from row a failed: AttributeError: 'NoneType' object has no attribute 'request_answered'
+EE.EEEE..F.rutis: emit of t/stubborn from row e failed: AttributeError: 'NoneType' object has no attribute 'request_answered'
+FEEF.EEruntime py: an unhandled error from an unknown row: Traceback (most recent call last):
+  File "/Users/eric8810/Code/rutis/.claude/worktrees/agent-aad5ddc8a34de2a37/python/rutis/rutis/events.py", line 126, in _settle
+    value = await value
+            ^^^^^^^^^^^
+  File "/Users/eric8810/Code/rutis/.claude/worktrees/agent-aad5ddc8a34de2a37/python/rutis/rutis/runner.py", line 906, in _dispatch_via_host
+    return plain(await _settle(await self.peer.call_async("", "events.dispatch", [request])))
+                                     ^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'NoneType' object has no attribute 'call_async'
+runtime py: an unhandled error from an unknown row: Traceback (most recent call last):
+  File "/Users/eric8810/Code/rutis/.claude/worktrees/agent-aad5ddc8a34de2a37/python/rutis/rutis/events.py", line 126, in _settle
+    value = await value
+            ^^^^^^^^^^^
+  File "/Users/eric8810/Code/rutis/.claude/worktrees/agent-aad5ddc8a34de2a37/python/rutis/rutis/runner.py", line 906, in _dispatch_via_host
+    return plain(await _settle(await self.peer.call_async("", "events.dispatch", [request])))
+                                     ^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'NoneType' object has no attribute 'call_async'
+runtime py: an unhandled error from an unknown row: Traceback (most recent call last):
+  File "/Users/eric8810/Code/rutis/.claude/worktrees/agent-aad5ddc8a34de2a37/python/rutis/rutis/events.py", line 126, in _settle
+    value = await value
+            ^^^^^^^^^^^
+  File "/Users/eric8810/Code/rutis/.claude/worktrees/agent-aad5ddc8a34de2a37/python/rutis/rutis/runner.py", line 906, in _dispatch_via_host
+    return plain(await _settle(await self.peer.call_async("", "events.dispatch", [request])))
+                                     ^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'NoneType' object has no attribute 'call_async'
+EErutis: emit of t/thread from row a failed: AttributeError: 'NoneType' object has no attribute 'request_answered'
+E.Erutis: emit of tick from row b failed: AttributeError: 'NoneType' object has no attribute 'request_answered'
+FFrutis: emit of t/stubborn from row e failed: AttributeError: 'NoneType' object has no attribute 'request_answered'
+FEEFEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEruntime py: an unhandled error from an unknown row: Traceback (most recent call last):
+  File "/Users/eric8810/Code/rutis/.claude/worktrees/agent-aad5ddc8a34de2a37/python/rutis/rutis/events.py", line 126, in _settle
+    value = await value
+            ^^^^^^^^^^^
+  File "/Users/eric8810/Code/rutis/.claude/worktrees/agent-aad5ddc8a34de2a37/python/rutis/rutis/runner.py", line 906, in _dispatch_via_host
+    return plain(await _settle(await self.peer.call_async("", "events.dispatch", [request])))
+                                     ^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'NoneType' object has no attribute 'call_async'
+EEEEEEEEEEEEEEEEEEEEEEEF....................E..

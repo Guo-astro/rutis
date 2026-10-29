@@ -2,7 +2,7 @@
 
 [中文](README.md)
 
-The case list of the [config schema design](../../docs/design-config-schema-2026-10-27.en.md) §8: the rules for filling defaults, validating and writing errors. Every language's SDK (Python, Go, Swift, Kotlin), rutis-loader and `rutis-host check` run every case of [`cases.json`](cases.json) and compare word for word. This is not a TLA+ model and is not run by CI's `specs` job; each implementation's own tests run it.
+The case list of the [config schema design](../../docs/design-config-schema-2026-10-27.en.md) §8: the rules for filling defaults, validating and writing errors. Every language's SDK (Go, Swift, Kotlin), rutis-loader and `rutis-host check` run every case of [`cases.json`](cases.json) and compare word for word. This is not a TLA+ model and is not run by CI's `specs` job; each implementation's own tests run it.
 
 ## Format
 
@@ -11,7 +11,7 @@ The case list of the [config schema design](../../docs/design-config-schema-2026
 ```
 
 - No `config`: no config (the same as `null`).
-- `then.config`: it passes, and this is what `apply` gets (defaults filled; `1.0` passing `integer` written as the integer `1`). Compared by JSON equality; languages that tell integers from fractions (Rust, Go, Python) also compare whether it is an integer.
+- `then.config`: it passes, and this is what `apply` gets (defaults filled; `1.0` passing `integer` written as the integer `1`). Compared by JSON equality; languages that tell integers from fractions (Rust, Go) also compare whether it is an integer.
 - `then.errors`: it fails; each line of the error, i.e. the text of the marked config error without the row name (design §5.1: sorted by path, at most 20 lines, the rest as `config: and N more problems`).
 - `warnings`: extra keys, in the same sentences (the warnings of testing tools and of the loader).
 

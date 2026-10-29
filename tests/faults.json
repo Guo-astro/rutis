@@ -447,8 +447,7 @@
       },
       "py": {
         "tests": [
-          ["python/rutis/tests/test_config.py", "test_a_bad_config_crosses_with_its_code_and_issues"],
-          ["python/rutis/tests/test_config.py", "test_an_extra_key_is_warned_about_once"]
+          ["python/rutis/tests/test_testing.py", "test_the_hosts_loader_checks_the_config_and_fills_its_defaults"]
         ]
       },
       "go": {

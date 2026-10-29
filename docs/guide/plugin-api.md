@@ -310,11 +310,11 @@ class Events(unittest.TestCase):
     def test_plugins_hear_each_other(self):
         async def go():
             bus = Bus()                          # 同一个 bus 上的插件互相听得到
-            async with load(greeter, bus=bus, row="greeter") as t, load(shout, bus=bus, row="shout"):
+            async with load(greeter, bus=bus, id="greeter") as t, load(shout, bus=bus, id="shout"):
                 self.assertEqual(await t.service("greeter").hello("Ada", "sv"), "Hej, Ada!")
                 self.assertEqual(await t.service("greeter").hello("Bo", "en"), "Hello, Bo!")
-                self.assertEqual(said, ["Ada", "Bo"])
                 self.assertEqual(await t.serial("greeting/pick", "sv"), "Hej")  # 测试自己也能发出
+                self.assertEqual(said, ["Ada", "Bo"])    # emit 经宿主，在它之后的 serial 回来时已送到
 
         asyncio.run(go())
 ```
@@ -324,10 +324,9 @@ class Events(unittest.TestCase):
 uv run python -m unittest discover -s tests
 ```
 
-- `emit` 立即返回；监听器出错不影响发出方和别的监听器，在监听器所在处报告一行（测试里在 `t.reported`）。要等全部监听器、拿到它们的错误，用 `await ctx.parallel(...)`：失败是 `rutis.advanced.AggregateError`，`errors` 按登记顺序。
+- `emit` 立即返回；监听器出错不影响发出方和别的监听器，由宿主报告一行（测试里在 `await t.reported()`）。要等全部监听器、拿到它们的错误，用 `await ctx.parallel(...)`：失败是 `rutis.advanced.AggregateError`，`errors` 按登记顺序。
 - `bail` 是同步的 `serial`：遇到 `async def` 监听器（或返回协程的函数）以 `rutis.advanced.AsyncListener` 失败。
 - `ctx.filter(lambda d: d["row"] == "audit")` 返回带这五个方法的对象，只送达过滤函数留下的监听器；`ctx.on(name, fn, prepend=True)` 排到最前，`global_=True` 不受过滤。
-- 作用域：`load(plugin, bus=bus, scope="t1/s1")` 把插件加载到一个实例里（`Bus(scopes={"t1": "tenant"})` 给出组名）；监听器收到这个 root 总线上的所有同名事件。
 - 卸载时正在运行的监听器的任务被取消并被等待（最多 `RUTIS_SHUTDOWN_TIMEOUT`），然后才运行清理。发出方放弃时（它的任务被取消），进行中的监听器同样被取消。
 
 #### Go
@@ -1186,10 +1185,9 @@ fn mount(at: &Ctx, definition: &Definition) -> Result {
 | 结束进程的插件（`process.exit`、`os._exit`）结束的是测试本身 | 测试工具在测试的进程里运行插件；期望文件里这一条标为 `allowed`，测试工具不做这个调用 |
 | 不重启：配置变化、注入的服务撤销都不会让插件停下再启动 | `load` 只启动一次，生命周期由宿主决定（见上） |
 | 同步调用不阻塞，不会出现 `SyncWaitCycle`；没有取消（`AbortSignal`、协程取消） | 插件与测试在同一个事件循环里 |
-| Python：跨过边界的异常是 `RemoteError`，它的 `__cause__` 是原来的异常 | 方便调试；真实运行时的 `RemoteError` 没有 `__cause__` |
-| 描述里的 `runtime` 是语言名（`node`、`bun`、`python`、`go`；宿主用配置里给的名字）；卸载最多等 `RUTIS_SHUTDOWN_TIMEOUT`，与运行时相同，或用工具自己的选项：Python `load(…, deadline=, runtime=)`（秒），Go `rutistest.RuntimeName` 等选项 | 各工具的选项按各自语言的习惯 |
+| 描述里的 `runtime` 是语言名（`node`、`bun`、`python`、`go`；宿主用配置里给的名字）；卸载最多等 `RUTIS_SHUTDOWN_TIMEOUT`，与运行时相同，或用工具自己的选项：Go `rutistest.RuntimeName` 等选项 | 各工具的选项按各自语言的习惯 |
 | 不检查 16 MiB 的消息上限 | 测试工具不把值编码成消息；真实运行时在消息超过上限时让这次调用失败（见[值怎样传递](#值怎样传递)） |
-| 事件：全部监听器都在测试的进程里（总是本地分发），没有别的进程、节点，也不发出 `rutis/*` | 测试工具在一个进程里运行插件。五种方式、过滤、作用域（Python `Bus` 与 `scope=`、Go `rutistest.InScope`）、卸载等待与取消、`emit` 失败的报告（`reported`）与真实运行时相同，对同一份[事件期望文件](../../crates/rutis-bridge/src/runtime/testing/events.expected.json)比对 |
+| 事件：全部监听器都在测试的进程里（总是本地分发），没有别的进程、节点，也不发出 `rutis/*` | 测试工具在一个进程里运行插件。五种方式、过滤、作用域（Go `rutistest.InScope`）、卸载等待与取消、`emit` 失败的报告（`reported`）与真实运行时相同，对同一份[事件期望文件](../../crates/rutis-bridge/src/runtime/testing/events.expected.json)比对 |
 
 十种值在两边按同样的规则传递，这不是差异。带方法的对象也不是：严格模式下，每种语言的测试工具都按跨进程的样子交出代理（只有方法，每次调用都是异步的），与真实运行时相同。关闭严格模式（`strict: false`）时值不经过上表，以上之外的差异都可能出现。
 
@@ -1238,30 +1236,29 @@ TypeScript、Bun 的测试工具（见下）、Go 的 `rutistest` 和 Swift 的 
 
 `rutis.testing`：
 
+`load` 起一个 `rutis-host test`（`RUTIS_HOST` 指定的文件，没有时用 `PATH` 上的 `rutis-host`；插件项目的开发依赖 `rutis-host` 装的就是它），把测试进程里的 Python 运行时接上去，在测试的事件循环里运行。插件是这个宿主的一行，和在别的宿主上一样运行：配置由宿主的 loader 校验并补上默认值，事件全部经宿主，卸载也由宿主做。测试给的服务（`services`）和测试自己的监听器（`t.on`）属于同一个运行时里测试的插件 `tester`。
+
 | `load(plugin, *, …)` 的参数 | 作用 |
 | --- | --- |
-| `config` | 插件的配置；有 `config` 声明时补默认值并校验 |
+| `config` | 插件的配置；宿主的 loader 按插件的 `config` 声明补默认值并校验，不合格时 `load` 以这一行的状态行失败（`weather: config: city is required`） |
 | `services` | 插件 `inject` 的服务，按名字给 |
-| `strict` | 值按跨进程的规则传递（默认 `True`） |
-| `bus` | 与同一个 `Bus` 上的插件共用事件（默认自己一个） |
-| `scope` | 加载到哪个作用域路径（`t1/s1`，默认根） |
-| `row` | 在总线上的行名（默认插件声明的名字，否则模块名） |
-| `runtime` | 监听器描述里的 `runtime`（默认 `"python"`） |
-| `deadline` | 卸载时等正在运行的监听器多少秒（默认 `RUTIS_SHUTDOWN_TIMEOUT`，10） |
+| `bus` | 与同一个 `Bus` 上的插件共用一个宿主（默认自己一个） |
+| `id` | 行 id；没有时用插件声明的名字，否则模块名，已有同名的行时加 `-2`、`-3`……；给了的 id 已有行时 `load` 以宿主的话失败 |
+| `isolate` | 这一行的 `isolate`，与 `rutis.json` 里的相同（`{"notes": True}`，或给一个服务一个标签） |
 
 | `Loaded`（`async with load(...) as t`）的成员 | 作用 |
 | --- | --- |
 | `t.service(name)` | 插件提供的服务，按 rutis 看到的样子：声明的方法，没有声明时是对象的公开方法，都按 async |
 | `t.methods(name)` | rutis 看到的方法：`{"today": "async"}` |
 | `t.provided()` | 插件现在提供的服务名 |
-| `t.on(name, listener, *, prepend=False, global_=False)` | 像宿主一样在根作用域监听：插件发出的、测试自己发出的都送到；严格模式下参数像从另一个进程收到的；返回撤销函数，不撤销时随插件卸载撤掉 |
-| `t.emit`、`t.parallel`、`t.serial`、`t.waterfall`、`t.bail` | 从插件所在的行和作用域发出事件 |
+| `t.on(name, listener, *, prepend=False, global_=False)` | 以测试的插件监听：插件发出的、测试自己发出的都送到；参数经宿主传来；返回撤销函数，不撤销时随插件卸载撤掉 |
+| `t.emit`、`t.parallel`、`t.serial`、`t.waterfall`、`t.bail` | 从插件所在的行发出事件，经宿主 |
 | `t.filter(predicate)` | 带这五个方法的对象，只送达 `predicate(descriptor)` 留下的监听器 |
-| `t.reported` | 没人接收的失败（`emit` 里出错的监听器、过滤函数） |
-| `await t.update(config)` | 像宿主的 `rows.update` 那样换配置：卸载后用新配置再运行 |
-| `await t.unload()` | 像运行时那样卸载：撤下监听器和服务，取消并等待正在运行的监听器，再按倒序运行清理（退出 `async with` 时自动做） |
+| `await t.reported()` | 宿主为这一行报告的失败（`emit` 里出错的监听器、`emit` 的过滤函数），每个是一个 `Reported`，`line` 是宿主打印的那一行 |
+| `await t.update(config)` | 由宿主换配置：卸载后用新配置再运行；配置不合格时以宿主的话失败，这一行保持原配置 |
+| `await t.unload()` | 由宿主卸载：撤下监听器和服务，取消并等待正在运行的监听器，再按倒序运行清理（退出 `async with` 时自动做） |
 
-`Bus(scopes=...)`：一条测试用的总线，同一个 `bus` 上的插件互相听得到；`scopes` 给作用域路径起组名。它的 `reported`、`listeners(name)`（过滤函数看到的描述）、`emitter(row=..., strict=...)`（以某一行的身份发出）。`Reported`：没人接收的一次失败，字段 `kind`（`"listener"` 或 `"filter"`）、`name`、`row`、`error`。`PluginTestError`：插件做了宿主会拒绝或跨进程会出错的事，是 `AssertionError` 的子类。
+`Bus()`：一个测试用的宿主，同一个 `bus` 上的插件在同一个宿主上，互相听得到；第一个 `load` 时起，最后一个结束时停。它的 `await bus.reported()`（同一个 bus 上各行的，按行）、`emitter()`（以测试的插件发出）。`Reported`：没人接收的一次失败，字段 `line`，宿主打印的那一行（`ticker: listener of tick failed: ValueError: boom`，后面是栈）。`PluginTestError`：宿主拒绝装载或换配置（文字是宿主的话），插件没有提供要的服务，或起不了 `rutis-host`；是 `AssertionError` 的子类。
 
 替身收到的插件定义可以直接交给 `load` 装上。
 

@@ -28,11 +28,10 @@ NUL and the label inside one.
 
 Events (#464, docs/design-events-protocol-2026-10-18.md): every `ctx.on`
 registers with the host (`events.on` / `events.off`; `rows.load` answers
-once the host answered them). The host tells which names and prefixes have
-listeners outside this process (`events.elsewhere`); an emission of any
-other name is dispatched here (`rutis.events`), the rest through the host
-(`events.dispatch`), which calls this process's listeners back with
-`events.call`. A row's scope chain is the seventh `rows.load` argument.
+once the host answered them), and every emission goes through the host
+(`events.dispatch`), which dispatches over every listener and calls this
+process's back with `events.call`. A row's scope chain is the seventh
+`rows.load` argument.
 Unloading a row withdraws its listeners, then cancels its running ones and
 waits for them, at most RUTIS_SHUTDOWN_TIMEOUT.
 """
@@ -54,7 +53,6 @@ from typing import Any, Callable
 
 from . import plugin as sdk
 from ._output import BlockingWatch, install_prefix, say
-from .config import configured
 from ._unhandled import (
     as_row,
     current_row,
@@ -329,14 +327,6 @@ class Runtime:
         # The session's loop, where listeners run and emissions dispatch;
         # other threads' are marshalled onto it.
         self.loop: asyncio.AbstractEventLoop | None = None
-        # Names and prefixes with listeners outside this process (the host
-        # keeps them up to date, `events.elsewhere`): emitting them goes
-        # through the host.
-        self.elsewhere: set = set()
-        self.prefixes: set = set()
-        # Emits of each name sent through the host and not answered yet:
-        # later ones follow them there, so they start in order.
-        self.unanswered: dict[str, int] = {}
         # The source file of each plugin module when it was imported.
         self.stamps: dict[str, tuple | None] = {}
         # Listeners run as their row's code (#688).
@@ -509,11 +499,8 @@ class Runtime:
     async def _apply(self, row: Row, plugin: sdk.Plugin, config: Any, exports: dict) -> None:
         """Apply the row's plugin; done once rutis heard what it provided
         and registered."""
-        # Defaults filled and the config validated against the plugin's
-        # schema before `apply` (config schema design §2.2): a config that
-        # does not match fails the row with a `bad-config` BindingError.
-        # Extra keys are the host's loader's to warn about.
-        config = configured(plugin.config, config)
+        # The config is the host's loader's to check and fill with its
+        # defaults: it arrives checked.
         cleanup = await _settle(plugin.apply(Context(self, row), config))
         if cleanup is not None:
             if not callable(cleanup):
@@ -788,9 +775,7 @@ class Runtime:
     # ── Events ───────────────────────────────────────────────────
 
     def _live(self) -> bool:
-        """A session with the host is on: listeners register with it, and
-        emissions of names listened to elsewhere go through it. Without
-        one, elsewhere is empty and everything stays here."""
+        """A session with the host is on: listeners register with it."""
         return self.peer is not None and self.peer.closed_error is None
 
     def _here(self) -> bool:
@@ -863,27 +848,15 @@ class Runtime:
         if ids and self._live():
             self.peer.notify("", "events.off", [ids])
 
-    def _via_host(self, name: str, mode: str) -> bool:
-        """Whether an emission goes through the host (§5.2): a listener of
-        the name may be elsewhere, or (`emit`) an earlier emit of it there
-        is not answered yet."""
-        if not self._live():
-            return False
-        if name in self.elsewhere or any(name.startswith(prefix) for prefix in self.prefixes):
-            return True
-        return mode == "emit" and self.unanswered.get(name, 0) > 0
-
     def send(self, row: Row, mode: str, name: str, args: list, terminal: Callable | None, keep: Callable | None) -> Any:
-        """An emission of the row: here (the fast path), or through the host,
-        which dispatches over every listener and calls this process's own
-        back. Same results either way. A row that unloaded emits nothing
-        (BindingError, refused at once like a reserved name)."""
+        """An emission of the row, through the host, which dispatches over
+        every listener and calls this process's own back. A row that
+        unloaded emits nothing (BindingError, refused at once like a
+        reserved name)."""
         if self.rows.get(row.key) is not row:
             raise BindingError(f"row {row.named or row.key} is not loaded in this runtime")
         if not self._here():
             return self._send_from_thread(row, mode, name, args, terminal, keep)
-        if not self._via_host(name, mode):
-            return self.bus.dispatch(mode, name, args, keep, terminal, row.key)
         request = {"row": row.key, "name": name, "mode": mode, "args": args}
         if keep is not None:
             request["filter"] = _selector(keep)
@@ -894,7 +867,7 @@ class Runtime:
             return None
         if mode == "bail":
             return plain(self.peer.call("", "events.dispatch", [request]))
-        # Sent now, as the fast path takes its snapshot now.
+        # Sent now: the host takes its snapshot of the listeners now.
         return start(self._dispatch_via_host(request))
 
     def _send_from_thread(self, row: Row, mode: str, name: str, args: list, terminal, keep) -> Any:
@@ -933,21 +906,15 @@ class Runtime:
         return plain(await _settle(await self.peer.call_async("", "events.dispatch", [request])))
 
     def _emit_via_host(self, row: str, name: str, request: dict) -> None:
-        self.unanswered[name] = self.unanswered.get(name, 0) + 1
-
         def failed(error: BaseException) -> None:
-            self._answered(name)
             self.bus.report("emit", name, row, error)
 
         def settled(done) -> None:
             if not done.cancelled() and done.exception() is not None:
                 failed(done.exception())
-            else:
-                self._answered(name)
 
         def answered(ok: bool, value: Any) -> None:
-            # Taken as the reply's frame is read, before the next one: an
-            # emit a later frame starts sees it answered (§5.5).
+            # Taken as the reply's frame is read, before the next one (§5.5).
             if not ok:
                 failed(value)
             elif isinstance(value, RemoteFuture):
@@ -956,42 +923,17 @@ class Runtime:
                     return await value
 
                 self.peer.loop.create_task(awaited()).add_done_callback(settled)
-            else:
-                self._answered(name)
 
         try:
             self.peer.request_answered("", "events.dispatch", [request], answered)
         except Exception as error:  # noqa: BLE001 - contained and reported
             failed(error)
 
-    def _answered(self, name: str) -> None:
-        left = self.unanswered.get(name, 1) - 1
-        if left > 0:
-            self.unanswered[name] = left
-        else:
-            self.unanswered.pop(name, None)
-
-    def _elsewhere(self, change: Any) -> None:
-        """The names and prefixes listened to outside this process changed."""
-        if not isinstance(change, dict):
-            raise ValueError("invalid events.elsewhere")
-        lists = {}
-        for part in ("add", "remove", "addPrefixes", "removePrefixes"):
-            items = change.get(part, [])
-            if items is None or items is UNDEFINED:
-                items = []
-            if not isinstance(items, list) or not all(isinstance(item, str) for item in items):
-                raise ValueError(f"invalid events.elsewhere {part}")
-            lists[part] = items
-        self.elsewhere.difference_update(lists["remove"])
-        self.elsewhere.update(lists["add"])
-        self.prefixes.difference_update(lists["removePrefixes"])
-        self.prefixes.update(lists["addPrefixes"])
-
     def _call_listener(self, request: Any) -> Any:
         """`events.call`: run one listener of this process for a dispatch
-        the host runs. Its return value goes back as is; in `emit` mode,
-        undefined once it finished, its failure reported here."""
+        the host runs. Its return value goes back as is (in `emit` mode,
+        undefined once it finished), its failure too, which the host
+        reports in `emit` mode."""
         if not isinstance(request, dict):
             raise ValueError("invalid events.call")
         id, name, mode = request.get("listener"), request.get("name"), request.get("mode")
@@ -1036,11 +978,8 @@ class Runtime:
             if mode != "emit":
                 raise
             return UNDEFINED
-        except Exception as error:
-            if mode != "emit":
-                raise
-            self.bus.report("listener", name, entry.row, error)
-            return UNDEFINED
+        # A failure goes back to the host, also in `emit` mode: the host
+        # reports it.
         return UNDEFINED if mode == "emit" else value
 
     # ── Dispatch ─────────────────────────────────────────────────
@@ -1083,9 +1022,6 @@ class Runtime:
     def _control(self, method: str, args: Any) -> Any:
         if method == "events.call":
             return self._call_listener(args[0] if args else None)
-        if method == "events.elsewhere":
-            self._elsewhere(args[0] if args else None)
-            return None
         if method == "mount":
             # The runtime's name, which filters see in this process's
             # listeners' descriptors.
