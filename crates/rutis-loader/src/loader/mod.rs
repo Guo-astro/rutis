@@ -81,6 +81,21 @@ impl Loader {
     pub(crate) fn downgrade(&self) -> WeakLoader {
         WeakLoader(Arc::downgrade(&self.inner))
     }
+
+    /// The loader's own context while it is mounted: what plugins of its
+    /// resolvers are mounted under.
+    #[cfg(feature = "runtimes")]
+    pub(crate) fn ctx(&self) -> Option<Ctx> {
+        let state = self.inner.state.lock().unwrap();
+        state.groups.get(&None).map(|group| group.ctx.clone())
+    }
+}
+
+#[cfg(feature = "runtimes")]
+impl WeakLoader {
+    pub(crate) fn upgrade(&self) -> Option<Loader> {
+        self.0.upgrade().map(|inner| Loader { inner })
+    }
 }
 pub use waits::{Wait, WaitReason};
 

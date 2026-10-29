@@ -187,6 +187,7 @@ async fn announce(
             ),
             ("shape".to_owned(), Value::Data(json!({ "now": "sync" }))),
             ("version".to_owned(), Value::Data(json!(version))),
+            ("plugin".to_owned(), Value::Data(json!("clock"))),
         ]
         .into(),
     );
@@ -754,6 +755,7 @@ async fn an_announcement_older_than_a_withdrawal_is_stale() {
                     ),
                     ("shape".to_owned(), Value::Data(json!({ "now": "sync" }))),
                     ("version".to_owned(), Value::Data(json!(version))),
+                    ("plugin".to_owned(), Value::Data(json!("clock"))),
                 ]
                 .into(),
             );

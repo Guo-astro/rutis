@@ -189,6 +189,15 @@ impl DynPlugin for LoaderPlugin {
             ctx.provide(self.loader.clone())?;
             // The same loader by name, for plugins of every language (#185).
             ctx.provide(super::LoaderService(self.loader.clone()))?;
+            // What a far rutis kernel may run here through a session
+            // (`rutis-bridge/session`): the plugins this loader resolves.
+            #[cfg(feature = "peer")]
+            rutis::host::CtxHost::provide_at(
+                ctx,
+                rutis_bridge::catalog_key(),
+                Arc::new(crate::peer::LoaderCatalog::new(self.loader.clone()))
+                    as Arc<dyn rutis_bridge::PluginCatalog>,
+            )?;
             // Copies of plugin definitions other languages hand over are
             // mounted through it, anywhere below.
             #[cfg(feature = "runtimes")]

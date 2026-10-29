@@ -30,8 +30,8 @@ pub(crate) mod unix;
 /// Where a runtime process's standard streams go ([`Launcher::stdin`],
 /// [`LocalRuntime::stdin`]).
 pub use crate::pipe::Stdio;
-pub(crate) use access::peer_session;
 pub use access::RuntimeAccessPlugin;
+pub(crate) use access::{peer_session, Routed};
 pub use calls::InFlight;
 pub(crate) use definitions::read as read_definition;
 pub use definitions::{mounter_key, returned, ForeignPlugin, PluginMounter};

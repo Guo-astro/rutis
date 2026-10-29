@@ -1354,6 +1354,42 @@ async 方法的调用方放弃等待（例如超时）时，调用被取消：�
 - **Rust**：丢弃调用的 future 即取消。
 - 事件的分发怎样取消见[事件：生命周期](#生命周期)。
 
+## 自建连接：`sessions.open`
+
+要让 rutis 经一条自己的连接（中继、蓝牙、别的传输）使用对面的插件，写一个连接插件：拿到一条能收发二进制消息的连接，交给服务 `sessions`。对面可以是语言运行时、自己装插件的应用，或另一个 rutis。
+
+```ts
+type Close = { kind: 'done' } | { kind: 'replaced' } | { kind: 'rejected'; reason: string }
+interface Far  { send(message: Uint8Array): void; close(why: Close): void }
+interface Near { receive(message: Uint8Array): Promise<void>; end(why: Close): void }
+sessions.open(far: Far): Near
+```
+
+```ts
+export default definePlugin({
+  name: 'relay',
+  inject: ['sessions'],
+  async apply(ctx, config: { url: string }) {
+    const ws = new WebSocket(config.url)
+    ws.binaryType = 'arraybuffer'
+    await new Promise(ok => ws.addEventListener('open', ok, { once: true }))
+    const near = ctx.sessions.open({
+      send: m => ws.send(m),
+      close: why => ws.close(why.kind === 'rejected' ? 4003 : why.kind === 'replaced' ? 4002 : 1000),
+    })
+    ws.onmessage = e => near.receive(new Uint8Array(e.data))
+    ws.onclose = () => near.end({ kind: 'done' })
+    ctx.effect(() => () => ws.close())
+  },
+})
+```
+
+- 要在 `inject` 里写 `sessions`；没写时 `open` 失败：`declare sessions in inject`。
+- 会话挂在调用 `open` 的插件下面：这个插件卸载，它的会话与对面的插件全部卸载。
+- `receive` 在消息进入会话的接收队列后完成；队列 64 条，满了就等，背压由此传回连接。
+- 对面的插件在本端叫 `<对面 id>:<插件>`；要让对面运行一个插件，在 rutis.json 里写行 `<连接行>:<插件>`（例如 `relay:contacts`），对面不在时这一行等待。
+- Rust 宿主里的连接插件直接用 `rutis_bridge::Session`：`ctx.plugin(Session::new(channel))`，宿主要在根 ctx 提供 `LocalId`（rutis-host 已经提供）。
+
 ## 版本
 
 插件上标记着它所用的插件 API 版本（`definePlugin` / `define_plugin` / `rutis.Define` 自动标记）。运行时比插件旧时，加载失败并说明需要升级什么；比插件新时照常加载。插件对 SDK 的依赖：

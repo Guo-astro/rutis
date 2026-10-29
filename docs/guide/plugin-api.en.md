@@ -1354,6 +1354,42 @@ When the caller abandons an async call (for example, on timeout), the call is ca
 - **Rust**: dropping the call's future cancels it.
 - How a dispatch of an event is cancelled: [events: lifecycle](#lifecycle).
 
+## Your own connection: `sessions.open`
+
+To let rutis use the plugins at the other end of a connection of your own (a relay, Bluetooth, another transport), write a connection plugin: take a connection that carries binary messages and hand it to the service `sessions`. The far end can be a language runtime, an app that installs its own plugins, or another rutis.
+
+```ts
+type Close = { kind: 'done' } | { kind: 'replaced' } | { kind: 'rejected'; reason: string }
+interface Far  { send(message: Uint8Array): void; close(why: Close): void }
+interface Near { receive(message: Uint8Array): Promise<void>; end(why: Close): void }
+sessions.open(far: Far): Near
+```
+
+```ts
+export default definePlugin({
+  name: 'relay',
+  inject: ['sessions'],
+  async apply(ctx, config: { url: string }) {
+    const ws = new WebSocket(config.url)
+    ws.binaryType = 'arraybuffer'
+    await new Promise(ok => ws.addEventListener('open', ok, { once: true }))
+    const near = ctx.sessions.open({
+      send: m => ws.send(m),
+      close: why => ws.close(why.kind === 'rejected' ? 4003 : why.kind === 'replaced' ? 4002 : 1000),
+    })
+    ws.onmessage = e => near.receive(new Uint8Array(e.data))
+    ws.onclose = () => near.end({ kind: 'done' })
+    ctx.effect(() => () => ws.close())
+  },
+})
+```
+
+- Write `sessions` in `inject`; without it, `open` fails: `declare sessions in inject`.
+- The session hangs under the plugin that called `open`: when that plugin unloads, its sessions and the far end's plugins all unload.
+- `receive` completes once the message is in the session's receive queue; the queue holds 64 messages, and when it is full `receive` waits, which carries backpressure back to the connection.
+- The far end's plugins are named `<far id>:<plugin>` here; to have the far end run a plugin, write a row `<connection row>:<plugin>` in rutis.json (for example `relay:contacts`); while the far end is not there, that row waits.
+- A connection plugin compiled into a Rust host uses `rutis_bridge::Session` directly: `ctx.plugin(Session::new(channel))`; the host must provide `LocalId` in the root ctx (rutis-host does).
+
 ## Versions
 
 Plugins are tagged with the plugin API version they use (`definePlugin` / `define_plugin` / `rutis.Define` adds the tag automatically). If the runtime is older than the plugin requires, loading fails with an explanation of what to upgrade; a newer runtime loads it. How a plugin depends on its SDK:

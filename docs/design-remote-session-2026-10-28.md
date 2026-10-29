@@ -85,7 +85,7 @@ rutis-host
 - **session → 远程插件**：对面的插件有两种来源，都注册为 `<id>:<插件>`，结束或 session 卸载时卸载：
   - 本端让它运行：行 `<连接行>:<插件>`，loader 找到 session 调 `run`；
   - 对面自己装着、提供着服务的插件（对面是 rutis 节点，或自己装插件的设备应用）。
-- **服务**：经 session 两边都全局可见。对面插件 `inject` 的服务从本端借（现在本机运行时就是这样）；对面提供的服务由它的远程插件在本端 `provide`。同名按内核规则：后注册的被拒绝。经同一个 session 来的服务不再发回这个 session。
+- **服务**：经 session 两边都全局可见。对面插件 `inject` 的服务从本端借（现在本机运行时就是这样）；对面提供的服务由它的远程插件在本端 `provide`。同名按内核规则：后注册的被拒绝。经同一个 session 来的服务不再发回这个 session。做法：session 监听内核的 `ServiceChanged`（服务提供与撤下时发），把本端可共享的服务（`host_key(<名>)`、不在实例里、不是 `isolate` 的、提供者不是平台插件）经 `services.announce` 发给对面，提供者是本 session 自己的远程插件的不发；对面发来的全部收下。`services.announce` 带 `plugin` 字段（提供它的插件名，rutis 节点发提供者所在的行 id），本端注册为远程插件 `<对面 id>:<plugin>`。
 - **事件**：一条平的总线。对面的监听器是本端总线上的条目，与现在的运行时相同。
 - **远程插件 ↔ 本地插件**：与普通插件相同（`inject` / `provide`），生命周期全部用内核原有的。
 - **顶替**：只在 `rutis-host/listen` 内部（§4.2）。session 核心不记 id，不做顶替。
@@ -97,8 +97,20 @@ Rust（编进宿主的连接插件）：
 ```rust
 pub struct Channel { /* §三 */ }
 
+/// 本端在握手里报的 id：宿主放进根 ctx（rutis-host 用 rutis.json 的 `id`，默认 `main`）。
+pub struct LocalId(pub PeerId);
+
 impl Session {
+    /// 先握手（10 秒），不注册任何东西。
+    pub async fn handshake(ctx: &Ctx, channel: Channel) -> Result<Greeted, Error>;
+    /// "握手 + 装上"的简写，是一个插件。
     pub fn new(channel: Channel) -> Self;
+}
+/// 握完手、还没装上的会话；`ctx.plugin(greeted)` 装上之后才注册对面的插件、开始服务互通。
+/// 没装上就放下时以 `Close::Done` 关闭 Channel。
+impl Greeted {
+    pub fn id(&self) -> &str;
+    pub fn handle(&self) -> SessionHandle;
 }
 impl SessionHandle {
     /// 对方在握手里报的 id。
@@ -120,7 +132,11 @@ sessions.open(far: Far): Near
 - `far`、`near` 里的函数按引用跨语言（0.18 #687）。
 - `open` 建的 session 挂在调用它的插件下面：这个插件卸载，它的 session 全部卸载。
 
-session 的公开 API 只有这四个名字。`run` 留下的理由：让对面运行一个插件是会话协议里的一步（`rows.v2`），对面是语言运行时或应用时只有这一条路；对面是 rutis 节点时也用它，不另开一条。
+- 握手分出来是为了 `rutis-host/listen` 的顶替（§4.2）：listen 握完手拿到 `greeted.id()`，先卸掉同 id 的旧会话，再装上新的。spawn、dial 直接用 `Session::new`。
+- 本端 id 来自根 ctx 的 `LocalId`；取不到时握手前就失败：`the host provides no id for its sessions`。rutis-bridge 不设默认值。
+- 对面是 rutis 节点时，节点一侧的 session 在自己的 ctx 里找 loader 提供的可运行插件目录：有就回答 `run`（`mount` / `rows.*`），没有就答"不含这个插件"。`Session::new` 不另加参数。
+
+session 的公开 API 是 `Session::{handshake, new}`、`Greeted::{id, handle}`、`SessionHandle::{id, run}`、`sessions.open`，加上 `LocalId`。`run` 留下的理由：让对面运行一个插件是会话协议里的一步（`rows.v2`），对面是语言运行时或应用时只有这一条路；对面是 rutis 节点时也用它，不另开一条。
 
 ### 2.5 "以后"的结构
 
@@ -343,7 +359,7 @@ export default definePlugin({
 **输入**
 
 - rutis.json：`runtimes.*`（本机运行时）；`rutis-host/dial`、`rutis-host/listen` 的行（远程运行时、设备、节点）；运行在对面的行写 `<连接行>:<插件>`。
-- Rust：`Session::new(channel)`、`SessionHandle::{id, run}`；`websocket::{dial, listen}`、`pipe::spawn`、`memory::pair`。
+- Rust：`LocalId`（宿主放进根 ctx）、`Session::handshake(&ctx, channel)` 与 `ctx.plugin(greeted)`、`Session::new(channel)`、`SessionHandle::{id, run}`；`websocket::{dial, listen}`、`pipe::spawn`、`memory::pair`。
 - 其他语言：服务 `sessions` 的 `open(far)`。
 
 **`run` 的输出**：前缀是连接行的 id，只用 connected / disconnected 两个词，原因写在括号里。
@@ -373,6 +389,7 @@ connections:
 | 情况 | 文字 |
 | --- | --- |
 | 对面不含行要的插件 | `embedder: unresolved: entry "embedder" rejected: runtime gpu: this connection does not contain plugin embedder`（#768） |
+| 宿主没有在根 ctx 提供 `LocalId` | 会话失败：`the host provides no id for its sessions` |
 | 对面的服务本地已有同名 | `office:weather: weather is provided here by row weather: not registered from office` |
 | 对面缺行约定 | `the gpu runtime lacks rows.v2 and hosts: a runtime speaking the row contract is required`（去掉现在的"for Node, @arcships/rutis-runtime 0.3.0 or later"） |
 | 0.18 与 0.19 相遇 | 握手时（WebSocket 在子协议那一步）拒绝，不重试，说明升级哪一端。0.19 的宿主起 0.18 的本机运行时（它说本机的协议 2）：`incompatible session: the far end speaks protocol 2, this side 4: upgrade the far end`；0.18 拨号 0.19 的监听方，拨号方写出 `this endpoint speaks rutis.4, the dialer offered rutis.3: upgrade the dialer`；0.19 拨号 0.18 的监听方，监听方答 `this endpoint speaks rutis.3, the dialer offered rutis.4: upgrade this endpoint (<它的包>)`（例如 `(PyPI rutis)`）。例外：0.18 的宿主起 0.19 的本机运行时不传 `--id`，运行时在握手之前只写一行 `a local channel needs --id <endpoint>: fd:3; a host older than rutis 0.19 started this runtime: upgrade the host` 并退出 |
@@ -397,8 +414,8 @@ connections:
 | `PeerPlugin`、`PeerHandle`、`Features` | rutis-bridge `compose.rs` | 组合插件；`PeerPlugin::new` 恒返回 `Ok` | rutis-host；loader；测试 |
 | `Peer`、`peer_key`、`Handler`、`Offered`、`Offers`、`family()` | rutis-bridge `peer.rs` | 并入 session；`family()` 无调用方 | bridge 内部；测试 |
 | `ExportPlugin`、`ImportPlugin` 与 `export`、`import` | rutis-bridge `services.rs`、`events/link.rs` 的名单部分 | 决定 1 | 节点配置；测试；`check.rs` 的提示文字 |
-| `HostPlugin`、`PluginCatalog`、`StaticCatalog`、`Described`、`Installed`、`ServiceKeys` 与 `host`、`rows` | rutis-bridge `host.rs` | 对面跑什么只走 `run` | 节点配置；`peer_rows.rs`、`node.rs` |
-| `peer:<对端>/<插件>` 行、`rutis-bridge/peer` 行名（及其 `runtime`、`transport`、`identity` 字段）、`PeerRows`、`PeerResolver`、`PeerRowsPlugin`、`LoaderCatalog`、`register_peer_node`、`node_schema` | rutis-loader `peer.rs` | 远程插件只有 `<id>:<插件>`；节点是连接插件的行 | 节点配置；持久化样本 |
+| `HostPlugin`、`Described`、`Installed`、`ServiceKeys` 与 `host`、`rows`（`PluginCatalog`、`StaticCatalog` 留下：节点一侧的 session 用它回答 `run`） | rutis-bridge `host.rs` | 对面跑什么只走 `run` | 节点配置；`peer_rows.rs`、`node.rs` |
+| `peer:<对端>/<插件>` 行、`rutis-bridge/peer` 行名（及其 `runtime`、`transport`、`identity` 字段）、`PeerRows`、`PeerResolver`、`PeerRowsPlugin`、`register_peer_node`（`LoaderCatalog` 留下，搬出 `peer.rs`）、`node_schema` | rutis-loader `peer.rs` | 远程插件只有 `<id>:<插件>`；节点是连接插件的行 | 节点配置；持久化样本 |
 | `RuntimeSession`、`runtime_session_key`、`RuntimeAccessPlugin` | rutis-bridge `runtime/` | 服务形状的交接 | loader；测试 |
 | `RuntimePlugin::remote` | rutis-bridge `runtime/plugin.rs` | 远程与本机走同一个 session | rutis-host；loader；测试 |
 | `LocalRuntime` | rutis-bridge `runtime/local.rs` | 起进程移到 `rutis-host/spawn` | rutis-host；测试 |
@@ -455,7 +472,7 @@ connections:
 
 - 本表比上一版多算了 `session/rpc.rs` 与 `catalog.rs`（本轮删 compat 与 `share_registered_only` 涉及它们）。
 - rutis-bridge 根上导出的名字：现在 59 个，改后约 7 个（`Channel`、`Close`、`PeerId`、`Session`、`SessionHandle`、`RowHandle`、`thrown`），估计。
-- session 的公开 API：`Session::new`、`SessionHandle::id`、`SessionHandle::run`、`sessions.open` 四个。
+- session 的公开 API：`Session::{handshake, new}`、`Greeted::{id, handle}`、`SessionHandle::{id, run}`、`sessions.open`，加上 `LocalId`。
 - 生命周期路径从 4 条变 1 条，交接形状从 2 种变 1 种，准入、顶替、状态各从 3 份变 1 份（顶替只在 listen 里）；节点与远程运行时没有专门的代码。
 - 各语言运行时的入口（删 compat 后，估计）：Node `runner.mjs` 1162 → 1140、`session.mjs` 810 → 740；Bun `main.ts` 203 → 195；Python `__main__.py` 352 → 340、`peer.py` 1903 → 1820；Go `serve.go` 295 → 270；Swift `Serve.swift` 263 → 240；Kotlin `Peer.kt` 1438 → 1360、jvm `Serve.kt` 217 → 205。Kotlin、Swift SDK 加上应用自己装插件与 `services.announce`（S4），各约多 150 行。
 - 测试：只测被删接口的文件删掉或改写，约 5500 行（`access_point.rs` 584、`revocation.rs` 798、`link.rs` 547、`fault_links.rs` 959、`memory_mux.rs` 730、`runtime_instances.rs` 703、`peer_rows.rs` 556、`node.rs` 1011 的大部分、`remote_runtimes.rs` 的 `runtimes.remote` 部分等），估计。

@@ -92,12 +92,14 @@ mod discover;
 #[cfg(feature = "go")]
 pub mod go;
 mod rows;
+mod sessions;
 /// Swift runtimes: binaries built with the Swift SDK.
 #[cfg(feature = "swift")]
 pub mod swift;
 pub(crate) use connections::{claimed, claimed_names};
 pub use connections::{AcceptInstances, RuntimeConnection, RuntimeInstances};
 pub use rows::{RowsSource, RuntimeRows, RuntimeRowsPlugin};
+pub use sessions::{SessionResolver, SessionRows};
 
 use rutis::internal::CtxInternal;
 #[cfg(doc)]
@@ -344,7 +346,7 @@ impl Resolver for RuntimeResolver {
             let Some(process) = running else {
                 let module = JsModule {
                     name: name.to_owned(),
-                    runtime: self.runtime.name().to_owned(),
+                    runtime: RowRuntime::Named(self.runtime.name().to_owned()),
                     entry: entry.clone(),
                     gated: Vec::new(),
                     provides: Map::new(),
@@ -476,7 +478,11 @@ pub(crate) fn unknown(why: String) -> crate::resolver::Declarations {
 /// The resolution of a row `name` whose runtime does not contain its plugin
 /// `entry`: the row fails with `why`, alone, and an edit adding it is not
 /// refused.
-fn unavailable_resolved(name: &str, entry: &Path, why: crate::error::Unavailable) -> Resolved {
+pub(crate) fn unavailable_resolved(
+    name: &str,
+    entry: &Path,
+    why: crate::error::Unavailable,
+) -> Resolved {
     Resolved {
         factory: Arc::new(UnavailableFactory {
             name: name.to_owned(),
@@ -522,6 +528,20 @@ pub(crate) fn leaf_resolved(
     catalog: &ServiceCatalog,
     meta: Value,
 ) -> Resolved {
+    let runtime = RowRuntime::Named(runtime.to_owned());
+    leaf_resolved_on(name, runtime, entry, gated, described, catalog, meta)
+}
+
+/// [`leaf_resolved`], its rows on `runtime`.
+pub(crate) fn leaf_resolved_on(
+    name: &str,
+    runtime: RowRuntime,
+    entry: PathBuf,
+    gated: Vec<String>,
+    described: &rutis_bridge::runtime::RowSchema,
+    catalog: &ServiceCatalog,
+    meta: Value,
+) -> Resolved {
     let declared = crate::resolver::Declared {
         requires: gated.clone(),
         provides: described.provides.keys().cloned().collect(),
@@ -529,14 +549,14 @@ pub(crate) fn leaf_resolved(
     };
     let module = JsModule {
         name: name.to_owned(),
-        runtime: runtime.to_owned(),
+        runtime: runtime.clone(),
         entry: entry.clone(),
         gated: gated.clone(),
         provides: described.provides.clone(),
         catalog: catalog.clone(),
     };
     Resolved {
-        factory: Arc::new(JsFactory::new(
+        factory: Arc::new(JsFactory::on(
             name,
             runtime,
             entry,
@@ -554,18 +574,18 @@ pub(crate) fn leaf_resolved(
 /// What a row module declares, from which each copy's factory is built
 /// with the keys of the instances it runs in.
 #[derive(Clone)]
-struct JsModule {
-    name: String,
-    runtime: String,
-    entry: PathBuf,
+pub(crate) struct JsModule {
+    pub(crate) name: String,
+    pub(crate) runtime: RowRuntime,
+    pub(crate) entry: PathBuf,
     /// The injected services that gate the row in rutis.
-    gated: Vec<String>,
-    provides: Map<String, Value>,
-    catalog: ServiceCatalog,
+    pub(crate) gated: Vec<String>,
+    pub(crate) provides: Map<String, Value>,
+    pub(crate) catalog: ServiceCatalog,
 }
 
 impl JsModule {
-    fn scoped(self) -> ScopedFactory {
+    pub(crate) fn scoped(self) -> ScopedFactory {
         Arc::new(move |build: &Build| {
             let factory: Arc<dyn PluginFactory<Value>> = Arc::new(self.factory(build)?);
             Ok(factory)
@@ -605,7 +625,7 @@ impl JsModule {
         });
         Ok(JsFactory::with_keys(
             &self.name,
-            RowRuntime::Named(self.runtime.clone()),
+            self.runtime.clone(),
             RowEntry::Module(self.entry.clone()),
             keyed(&mut self.gated.iter())?,
             self.provides.clone(),
@@ -625,6 +645,9 @@ pub(crate) enum RowRuntime {
     /// One runtime connection's process ([`RuntimeInstances`]): the row
     /// runs in that connection's instance, which ends with it.
     Connection(Arc<Process>),
+    /// The session of the connection row so named, through its
+    /// [`SessionRows`]: rows wait for it and stop when it goes.
+    Session(String),
 }
 
 /// What a row loads: a module, or one copy of a plugin definition the
@@ -716,6 +739,18 @@ impl JsFactory {
         gated: Vec<String>,
         provides: Map<String, Value>,
     ) -> Self {
+        let runtime = RowRuntime::Named(runtime.to_owned());
+        Self::on(name, runtime, entry, gated, provides)
+    }
+
+    /// [`JsFactory::new`], its rows on `runtime`.
+    pub(crate) fn on(
+        name: &str,
+        runtime: RowRuntime,
+        entry: PathBuf,
+        gated: Vec<String>,
+        provides: Map<String, Value>,
+    ) -> Self {
         let entry = RowEntry::Module(entry);
         let gated = gated
             .into_iter()
@@ -728,15 +763,7 @@ impl JsFactory {
             .keys()
             .map(|name| (name.clone(), host_key(name).erase()))
             .collect();
-        Self::with_keys(
-            name,
-            RowRuntime::Named(runtime.to_owned()),
-            entry,
-            gated,
-            provides,
-            provided,
-            Vec::new(),
-        )
+        Self::with_keys(name, runtime, entry, gated, provides, provided, Vec::new())
     }
 
     pub(crate) fn with_keys(
@@ -751,6 +778,7 @@ impl JsFactory {
         let rows = match &runtime {
             RowRuntime::Named(runtime) => Some(RuntimeRows::key(runtime)),
             RowRuntime::Connection(_) => None,
+            RowRuntime::Session(row) => Some(SessionRows::key(row)),
         };
         let injects = rows
             .into_iter()
@@ -881,6 +909,10 @@ impl DynPlugin for JsRow {
                     (runtime.process().clone(), Some(runtime))
                 }
                 RowRuntime::Connection(process) => (process.clone(), None),
+                RowRuntime::Session(row) => {
+                    let rows = ctx.require_key::<SessionRows>(SessionRows::key(row))?;
+                    (rows.process().clone(), None)
+                }
             };
             // Every lease taken is released: by the cleanup once the row
             // runs, here when it does not get that far. The kernel waits for
@@ -898,13 +930,14 @@ impl DynPlugin for JsRow {
                     // The runtime's process ended while the row loaded:
                     // not the row's failure, whichever row's code ended it.
                     // The row waits for its runtime, as the others in it do
-                    // (#682). Only a named runtime's row: nothing ends the
-                    // wait of a row on a connection, which does not come
-                    // back (a runtime connection's instance waits for this
-                    // load before it can end with its connection), nor of
-                    // a copy of a definition. They fail at once.
+                    // (#682). Only a named runtime's row, or a session's
+                    // (its session's end withdraws `SessionRows`): nothing
+                    // ends the wait of a row on a connection, which does not
+                    // come back (a runtime connection's instance waits for
+                    // this load before it can end with its connection), nor
+                    // of a copy of a definition. They fail at once.
                     if let Some(ended) = process.connection().close_reason() {
-                        if matches!(self.runtime, RowRuntime::Named(_)) {
+                        if matches!(self.runtime, RowRuntime::Named(_) | RowRuntime::Session(_)) {
                             return wait_for_the_runtime(ctx, ended).await;
                         }
                     }
