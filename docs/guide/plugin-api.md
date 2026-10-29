@@ -702,8 +702,6 @@ Go 用 `errors.Is(err, advanced.ErrWaterfallNext)` 等判断，任何进程里�
 incompatible session: the far end speaks protocol 2, this side 4: upgrade the far end
 ```
 
-0.13 的运行时遇到旧宿主时退出（状态 1）：`rutis: refused: incompatible (this host does not declare events-v2 (the event protocol of rutis 0.13): upgrade rutis-host to 0.13 or later); stopping`。从 0.12 升级见 [迁移到 0.13](../migration-0.13.md)。
-
 ## 生命周期
 
 插件不决定自己什么时候运行，宿主决定：
@@ -1324,7 +1322,7 @@ func TestEvents(t *testing.T) {
 
 几个运行时互相同步调用时，可能所有参与方都在等别人：两个 Node 运行时互相同步调用；一个 Node 运行时和两个 Python 运行时嵌套调用，也可能如此。宿主在转发每个同步调用之前检查它会不会形成这样的等待环；会的话不转发，调用方得到 `SyncWaitCycle` 错误，其余调用照常完成。收到它时不要立即重试同一个调用（多半会再次形成同一个环），可以改用 `async` 方法、换个时机，或者把它当作失败处理。
 
-检查只涵盖声明了 `sync-wait` 能力的运行时（本仓库的 Node、Python、Bun、Go 运行时；协议见[多语言设计](../design-multilang-runtimes-2026-10-03.md) §九）。没有声明的运行时（旧版 SDK）发出的同步调用不在检查之内，与以前一样可能卡死；不声明 `reentrant-sync` 的运行时按不可重入看待。跨运行时、可能交叉的调用仍然首选 `async` 方法。
+检查涵盖运行时在调用帧上标明的每个同步调用，本仓库的运行时都这样标明（协议见[多语言设计](../design-multilang-runtimes-2026-10-03.md) §九）；不声明 `reentrant-sync` 的运行时按不可重入看待。跨运行时、可能交叉的调用仍然首选 `async` 方法。
 
 需要等待事件循环推进的结果（例如在同步方法里等一个 Promise）不能放在同步方法里，会得到 `SyncWaitCycle` 错误：改成 `async`。
 

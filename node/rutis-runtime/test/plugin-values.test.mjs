@@ -22,7 +22,7 @@ function harness(capabilities, dispatch = () => {}) {
     abort: error => { fault = error },
   })
   peer.start()
-  peer.receive({ op: 'hello', version: ENDPOINT_PROTOCOL, endpoint: 'rust', capabilities: ['objects', ...VALUE_CAPABILITIES, 'events-v2', ...capabilities] })
+  peer.receive({ op: 'hello', version: ENDPOINT_PROTOCOL, endpoint: 'rust', capabilities: [...VALUE_CAPABILITIES, ...capabilities] })
   return { peer, sent, incoming, fault: () => fault }
 }
 

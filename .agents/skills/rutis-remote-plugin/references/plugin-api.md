@@ -213,8 +213,6 @@ The event protocol is rutis 0.13's, with no old path. A runtime or node of 0.12 
 incompatible session: the far end speaks protocol 2, this side 4: upgrade the far end
 ```
 
-A 0.13 runtime meeting an older host exits (status 1): `rutis: refused: incompatible (this host does not declare events-v2 (the event protocol of rutis 0.13): upgrade rutis-host to 0.13 or later); stopping`. Upgrading from 0.12: [migrating to 0.13](https://github.com/arcships/rutis/blob/main/docs/migration-0.13.en.md).
-
 ## Lifecycle
 
 The host controls when a plugin runs:
@@ -318,7 +316,7 @@ A method declared `sync` returns synchronously. Across processes, the caller blo
 
 When runtimes call each other synchronously, every participant may end up waiting for another: two Node runtimes calling each other, or one Node and two Python runtimes in a nested pattern. Before forwarding each synchronous call, the host checks whether it would close such a wait cycle; if it would, the call is not forwarded, its caller gets a `SyncWaitCycle` error, and every other call completes. Do not retry the same call at once (it will most likely close the same cycle again): use an `async` method, try at another moment, or treat it as a failure.
 
-The check covers runtimes that declare the `sync-wait` capability (the Node, Python, Bun and Go runtimes of this repository; the protocol is in §9 of the [multi-language design](https://github.com/arcships/rutis/blob/main/docs/design-multilang-runtimes-2026-10-03.en.md)). Synchronous calls from a runtime that does not declare it (an older SDK) are outside the check and may deadlock as before; a runtime that does not declare `reentrant-sync` is taken as non-reentrant. For calls across runtimes that may cross in both directions, `async` methods are still the first choice.
+The check covers every synchronous call a runtime marks as one on its frame, as every runtime of this repository does (the protocol is in §9 of the [multi-language design](https://github.com/arcships/rutis/blob/main/docs/design-multilang-runtimes-2026-10-03.en.md)); a runtime that does not declare `reentrant-sync` is taken as non-reentrant. For calls across runtimes that may cross in both directions, `async` methods are still the first choice.
 
 Do not wait inside a synchronous method for a result that requires the event loop to advance, such as a Promise. This produces `SyncWaitCycle`; make the method `async` instead.
 

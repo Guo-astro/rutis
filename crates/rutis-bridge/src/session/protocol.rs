@@ -171,7 +171,7 @@ pub(crate) enum Frame {
         target: String,
         method: String,
         args: WireValue,
-        /// The caller waits for the reply synchronously (`sync-wait`).
+        /// The caller waits for the reply synchronously (`sync: true`).
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         sync: bool,
     },
