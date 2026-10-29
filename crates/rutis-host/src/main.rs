@@ -12,6 +12,7 @@
 //! rutis-host remove <plugin> [rutis.json]
 //! rutis-host upgrade [<plugin>[@<version>]] [rutis.json]
 //! rutis-host types [crate dir] [-o file] [--python file]
+//! rutis-host test [--listen <address>] [<plugin>]
 //! ```
 
 use std::collections::HashSet;
@@ -91,6 +92,17 @@ usage:
                                               dir (default .) and the crates it uses (to stdout,
                                               or to file); --python also writes their Python
                                               types
+  rutis-host test [--listen <address>] [<plugin>]
+                                              a host for a test tool: no rows of its own, one
+                                              session with the process that started it on
+                                              standard input and output (one JSON message per
+                                              line), and the service rutis-host/test (load,
+                                              update, unload, reported) running plugins at its
+                                              far end; <plugin>, at the far end, is loaded first
+                                              and drives the test; it exits when the session
+                                              ends. --listen: the session is a connection to a
+                                              listener on <address> presenting RUTIS_TOKEN_TEST
+                                              (a device's test tool), until Ctrl-C
   rutis-host --version
 
 Credentials for links come from RUTIS_TOKEN_<PEER>, RUTIS_CA, RUTIS_CERT and
@@ -103,8 +115,8 @@ Ctrl-C, or runtime processes that did not exit), 3 when a runtime whose
 restart is \"exit\" ended and the host stopped.";
 
 /// The commands `USAGE` describes, each with its own lines there.
-const COMMANDS: [&str; 10] = [
-    "run", "dev", "check", "status", "call", "new", "add", "remove", "upgrade", "types",
+const COMMANDS: [&str; 11] = [
+    "run", "dev", "check", "status", "call", "new", "add", "remove", "upgrade", "types", "test",
 ];
 
 /// The lines of `USAGE` about `command`: its own entry and the options
@@ -161,7 +173,7 @@ fn main() {
             install_command(command, &args[1..]).map(|()| Stopped::Done)
         }
         Some("call") => call_command(&args[1..]),
-        Some(command @ ("run" | "dev" | "check")) => serve(command, &args[1..]),
+        Some(command @ ("run" | "dev" | "check" | "test")) => serve(command, &args[1..]),
         Some(other) => Err(format!("unknown command {other}\n\n{USAGE}")),
     };
     // The runtimes' last lines, still being passed on once they ended.
@@ -371,6 +383,7 @@ fn serve(command: &str, args: &[String]) -> Result<Stopped, String> {
         match command {
             "run" => run(args).await,
             "dev" => dev::dev(args).await,
+            "test" => test(args).await,
             _ => check(args).await.map(|()| Stopped::Done),
         }
     })
@@ -428,6 +441,95 @@ async fn run(args: &[String]) -> Result<Stopped, String> {
                 tokio::select! {
                     () = reload::reload(&mut host, &path, &mut triggers) => {}
                     signal = signals.next() => break Ended::Signal(signal),
+                }
+            }
+        }
+        Started::Signal(signal) => Ended::Signal(signal),
+        Started::Failed(stopped) => return Ok(stopped.failed()),
+    };
+    Ok(stop::end(&host, ended, deadline, &mut signals).await)
+}
+
+/// `rutis-host test [--listen <address>] [<plugin>]`
+/// (`docs/design-platform-cleanup-2026-10-28.md` §7.5).
+async fn test(args: &[String]) -> Result<Stopped, String> {
+    use rutis_host::test::{Session, Test};
+    let (deadline, args) = stop::deadline(args)?;
+    let usage = "usage: rutis-host test [--listen <address>] [<plugin>]";
+    let (mut listen, mut plugin) = (None, None);
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--listen" => listen = Some(args.next().ok_or(usage)?.clone()),
+            other if plugin.is_none() && !other.starts_with('-') => plugin = Some(other.to_owned()),
+            _ => return Err(usage.into()),
+        }
+    }
+    let listeners = match &listen {
+        Some(address) => {
+            serde_json::json!([{ "name": rutis_host::test::LISTENER, "address": address }])
+        }
+        None => serde_json::json!([]),
+    };
+    let config: config::HostConfig =
+        serde_json::from_value(serde_json::json!({ "listen": listeners }))
+            .map_err(|error| format!("--listen {}: {error}", listen.unwrap_or_default()))?;
+    let listening = !config.listen.is_empty();
+    // Taken before anything else could write to standard output.
+    let channel = match listening {
+        false => Some(
+            rutis_host::test::stdio()
+                .map_err(|error| format!("standard input and output: {error}"))?,
+        ),
+        true => None,
+    };
+    stop::pass_on(deadline);
+    let mut signals = stop::Signals::listen()?;
+    let testing = Test::new(channel);
+    let (registering, observing) = (testing.clone(), testing.clone());
+    let embedding = host::Embedding {
+        builtins: Some(Box::new(move |builtins| registering.register(builtins))),
+        observe: Some(std::sync::Arc::new(move |error| observing.observe(error))),
+        ..host::Embedding::default()
+    };
+    let host = host::Host::start_with(&config, embedding).await?;
+    for line in status::listening(&host.listening) {
+        errln!("{line}");
+    }
+    let started = async {
+        rutis_host::test::start(&host.loader, listening).await?;
+        // The plugin that drives the test, once the far end greeted.
+        let Some(plugin) = &plugin else {
+            return Ok(());
+        };
+        if !listening {
+            let mut session = testing.session();
+            let _ = session.wait_for(|state| *state != Session::Starting).await;
+        }
+        testing
+            .load(&host.loader, plugin, serde_json::Value::Null)
+            .await
+            .map(drop)
+    };
+    let ended = match start(&host, started, deadline, &mut signals).await {
+        Started::Running => {
+            let mut session = testing.session();
+            tokio::select! {
+                signal = signals.next() => Ended::Signal(signal),
+                ended = session.wait_for(|state| matches!(state, Session::Ended(_))), if !listening => {
+                    let failed = match ended.as_deref() {
+                        Ok(Session::Ended(Some(why))) => Some(why.clone()),
+                        _ => None,
+                    };
+                    drop(ended);
+                    let stopped = stop::finish(&host, deadline, &mut signals).await;
+                    return Ok(match failed {
+                        Some(why) => {
+                            errln!("rutis-host: test: {why}");
+                            stopped.failed()
+                        }
+                        None => stopped,
+                    });
                 }
             }
         }
