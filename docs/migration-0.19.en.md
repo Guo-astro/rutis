@@ -334,7 +334,7 @@ The minimum is 3.12 (3.10 and 3.11 are no longer supported).
 
 ### Kotlin
 
-- The testing tool is an artifact of its own, `io.github.arcships:rutis-testing` (jvm): `testImplementation("io.github.arcships:rutis-testing:<version>")`, with `kspTest("io.github.arcships:rutis-ksp:<version>")`. It runs the plugin's real runtime in the test process, as a row of `rutis-host test`, and needs `rutis-host` (on `PATH` or at `RUTIS_HOST`).
+- The testing tool is an artifact of its own, `io.github.arcships:rutis-testing` (jvm): `testImplementation("io.github.arcships:rutis-testing")`, with `kspTest("io.github.arcships:rutis-ksp")` (the SDK is used from source, with no version: see [kotlin-app](guide/kotlin-app.en.md#1-dependencies)). It runs the plugin's real runtime in the test process, as a row of `rutis-host test`, and needs `rutis-host` (on `PATH` or at `RUTIS_HOST`).
 - The testing tool no longer has scope: `RutisTest.load(scope:)`, `Loaded.load(scope:)` and `RutisTest.scope(...)` are removed; so are `RutisTest.load(runtime:)` and `Loaded.provided`. Without `row`, rutis gives the row an id from the plugin's name (no longer `test`); a load that fails fails with the row's line (`weather: config: city is required`); `loaded.reported()` is the lines rutis reported (`weather: listener of x failed: …`).
 - The test's services, `loaded.on`, `emit` and so on are a plugin of the same runtime: values do not cross between processes.
 - Tests on a device no longer use `RutisTest`: they install their own plugins with `RutisApp`, dialing a rutis on the development machine.

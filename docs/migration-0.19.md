@@ -334,7 +334,7 @@ Kotlin 另有两点：
 
 ### Kotlin
 
-- 测试工具是单独的构件 `io.github.arcships:rutis-testing`（jvm）：`testImplementation("io.github.arcships:rutis-testing:<版本>")`，并 `kspTest("io.github.arcships:rutis-ksp:<版本>")`。它在测试进程里跑插件真实的运行时，作为 `rutis-host test` 的一行，需要 `rutis-host`（`PATH` 上或 `RUTIS_HOST`）。
+- 测试工具是单独的构件 `io.github.arcships:rutis-testing`（jvm）：`testImplementation("io.github.arcships:rutis-testing")`，并 `kspTest("io.github.arcships:rutis-ksp")`（SDK 从源码引用，不写版本，见 [kotlin-app](guide/kotlin-app.md#1-依赖)）。它在测试进程里跑插件真实的运行时，作为 `rutis-host test` 的一行，需要 `rutis-host`（`PATH` 上或 `RUTIS_HOST`）。
 - 测试工具不再有 scope：`RutisTest.load(scope:)`、`Loaded.load(scope:)`、`RutisTest.scope(...)` 删除；`RutisTest.load(runtime:)` 与 `Loaded.provided` 删除。行 id 不给时由 rutis 按插件名取（不再是 `test`）；装载失败的文字是该行的状态行（`weather: config: city is required`）；`loaded.reported()` 是 rutis 报告的行（`weather: listener of x failed: …`）。
 - 测试给的服务、`loaded.on`、`emit` 等是同一个运行时里的插件，值不跨进程。
 - 设备上的测试不再用 `RutisTest`：用 `RutisApp` 装自己的插件，拨到开发机上的 rutis。
