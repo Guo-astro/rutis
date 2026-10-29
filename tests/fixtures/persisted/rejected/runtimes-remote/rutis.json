@@ -1,0 +1,8 @@
+{
+  "id": "main",
+  "runtimes": {
+    "remote": [
+      { "name": "gpu", "language": "python", "dial": "wss://gpu.example.com/rutis" }
+    ]
+  }
+}

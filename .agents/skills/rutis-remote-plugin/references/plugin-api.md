@@ -108,7 +108,7 @@ ctx.On("greeting/format", func(ctx context.Context, args ...any) (any, error) {
 })
 ```
 
-Each language's guide has a complete example: [TypeScript](https://github.com/arcships/rutis/blob/main/docs/guide/typescript-plugin.en.md#events), [Bun](https://github.com/arcships/rutis/blob/main/docs/guide/bun-plugin.en.md#events), [Python](https://github.com/arcships/rutis/blob/main/docs/guide/python-plugin.en.md#events), [Go](https://github.com/arcships/rutis/blob/main/docs/guide/go-plugin.en.md#events), [Cordis](https://github.com/arcships/rutis/blob/main/docs/guide/cordis.en.md#events), [Rust](https://github.com/arcships/rutis/blob/main/docs/guide/rust-plugin.en.md#events).
+Each language's guide has a complete example: [TypeScript](https://github.com/arcships/rutis/blob/main/docs/guide/typescript-plugin.en.md#5-emit-and-listen-to-events), [Bun](https://github.com/arcships/rutis/blob/main/docs/guide/bun-plugin.en.md#5-emit-and-listen-to-events), [Python](https://github.com/arcships/rutis/blob/main/docs/guide/python-plugin.en.md#5-emit-and-listen-to-events), [Go](https://github.com/arcships/rutis/blob/main/docs/guide/go-plugin.en.md#5-emit-and-listen-to-events), [Cordis](https://github.com/arcships/rutis/blob/main/docs/guide/cordis.en.md#events), [Rust](https://github.com/arcships/rutis/blob/main/docs/guide/rust-plugin.en.md#5-emit-and-listen-to-events).
 
 ### Scope
 
@@ -228,8 +228,6 @@ Services obtained in `apply` remain valid while the plugin is running, so the pl
 
 A service name has one provider in rutis: when another plugin (any language, any node) already provides a service of that name, the plugin providing it later fails (to load, or, when it provides it after loading, at that point), and the error names both, for example `service weather is already provided by row forecast: row weather cannot provide it too`. An undeclared service appears only once its plugin runs; plugins depending on it wait for it as usual, and `rutis-host check` reports such a dependency with a warning, `nothing declares <service>; it may be provided at runtime by …`, not as a failure (with `check --strict`, as one: see [Checking a configuration](https://github.com/arcships/rutis/blob/main/docs/guide/rutis-host.en.md#checking-a-configuration)). The same for one provided from a thread or goroutine before `apply` returns: the host has handled it before the plugin has loaded, and a clash fails the load.
 
-When a 0.12 runtime is mounted by a host older than 0.12, the host does not take undeclared services, which stay visible in their process only; a plugin providing one is told so on stderr, once per name: `rutis: service <name> is not declared in provides, and this host (older than 0.12) does not take undeclared services; declare it or upgrade rutis-host`. Declare it in `provides`, or upgrade rutis-host.
-
 When the host stops, it unloads every plugin, each cleanup runs once, and then the runtime process exits. When the host goes away without unloading them (it was killed, or crashed), the runtime sees its connection to the host close, unloads every plugin itself, and exits; timers, sockets, threads or goroutines a plugin left behind do not keep it running.
 
 Cleanups have a deadline: when the host stops, the `--shutdown-timeout` of `rutis-host` (10 seconds by default, see [rutis-host](https://github.com/arcships/rutis/blob/main/docs/guide/rutis-host.en.md#stopping-and-exit-status)); when the host went away, the runtime uses the same time (`rutis-host` passes it to its runtimes in the `RUTIS_SHUTDOWN_TIMEOUT` environment variable; 10 seconds without it). A cleanup not finished by then, and those after it, are not waited for: the runtime writes a line saying so on stderr and exits with status 1. So work that must happen should not rely on cleanup alone, and a cleanup should not wait without end. In Node and Bun, a cleanup that blocks synchronously (an endless loop) holds the thread, and the deadline cannot interrupt it.
@@ -324,7 +322,7 @@ The check covers runtimes that declare the `sync-wait` capability (the Node, Pyt
 
 Do not wait inside a synchronous method for a result that requires the event loop to advance, such as a Promise. This produces `SyncWaitCycle`; make the method `async` instead.
 
-An `async` method runs up to its first `await` before the reply, like a JS async function, so an `async` method that never suspends can be awaited inside a synchronous call chain too. This holds on every supported Python (asyncio's own eager start from 3.12, rutis's on 3.10 and 3.11).
+An `async` method runs up to its first `await` before the reply, like a JS async function, so an `async` method that never suspends can be awaited inside a synchronous call chain too.
 
 ## Cancellation
 

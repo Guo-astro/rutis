@@ -3,11 +3,12 @@
 
 use std::path::{Path, PathBuf};
 
-use rutis_bridge::runtime::LocalRuntime;
+use rutis_bridge::runtime::Launcher;
 use serde_json::{json, Value};
 
 use super::{id_of, rebase_program, Language, Mount};
 use crate::config::{venv_python, HostConfig, PythonRuntime, Restart, Runtimes, DEFAULT_PYTHON};
+use crate::connect::SpawnPlugin;
 use crate::host::Error;
 use crate::installer::quoted_path as quoted;
 
@@ -62,11 +63,7 @@ impl Language for Python {
         }
     }
 
-    fn remote_names(&self) -> &'static [&'static str] {
-        &["python", "py"]
-    }
-
-    fn runtime(&self, runtimes: &Runtimes) -> Option<Result<LocalRuntime, Error>> {
+    fn runtime(&self, runtimes: &Runtimes) -> Option<Result<SpawnPlugin, Error>> {
         runtimes.py.as_ref().map(runtime)
     }
 
@@ -77,10 +74,9 @@ impl Language for Python {
             return Ok(());
         };
         let runtime = runtime?;
-        let rows = |handle| self.rows(handle);
         match config.runtimes.debug {
-            true => mount.local_terminal(self.key(), runtime, rows),
-            false => mount.local(self.key(), runtime, rows),
+            true => mount.local_terminal(self.key(), runtime),
+            false => mount.local(self.key(), runtime),
         }
         Ok(())
     }
@@ -140,7 +136,7 @@ impl Language for Python {
 
 /// The Python runtime of `py.project`, with an interpreter that has the
 /// `rutis` package.
-fn runtime(py: &PythonRuntime) -> Result<LocalRuntime, Error> {
+fn runtime(py: &PythonRuntime) -> Result<SpawnPlugin, Error> {
     let named = py
         .python
         .clone()
@@ -171,7 +167,8 @@ fn runtime(py: &PythonRuntime) -> Result<LocalRuntime, Error> {
             None => no_environment(&py.project),
         });
     }
-    let mut runtime = LocalRuntime::python(&py.project).interpreter(interpreter);
+    let mut runtime =
+        SpawnPlugin::new("py", Launcher::python(&py.project), &py.project).interpreter(interpreter);
     if let Some(source) = source {
         runtime = runtime.python_path(source);
     }

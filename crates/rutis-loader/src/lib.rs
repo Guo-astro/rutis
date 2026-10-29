@@ -7,58 +7,22 @@
 
 //!
 //! The root has what assembling a loader takes; the rest is grouped by
-//! topic: [`runtime`] (plugins of other languages), [`peer`] (rows from a
-//! linked node), [`report`] (what the loader's methods return), [`edit`]
-//! (imperative edits and persistence) and [`resolve`] (writing a
-//! resolver). [`internal`] is for rutis-host and tests, with no stability
-//! promise.
+//! topic: [`runtime`] (plugins of other languages), [`report`] (what the
+//! loader's methods return), [`edit`] (imperative edits and persistence),
+//! [`patch`] (composing layers of rows) and [`resolve`] (writing a
+//! resolver).
 
-pub mod backoff;
 mod catalog;
 pub mod edit;
 mod error;
 mod framework;
 mod loader;
 pub mod patch;
-#[cfg(feature = "peer")]
-pub mod peer;
 mod persist;
 mod resolver;
 #[cfg(feature = "runtimes")]
 pub mod runtime;
 mod volatile;
-
-/// The Rust host guide's examples compile against these crates (#667).
-#[cfg(all(
-    doctest,
-    feature = "node",
-    feature = "python",
-    feature = "go",
-    feature = "peer"
-))]
-#[doc = include_str!("../../../docs/guide/rust-host.md")]
-pub struct RustHostGuide;
-
-/// The English Rust host guide's examples compile against these crates.
-#[cfg(all(
-    doctest,
-    feature = "node",
-    feature = "python",
-    feature = "go",
-    feature = "peer"
-))]
-#[doc = include_str!("../../../docs/guide/rust-host.en.md")]
-pub struct RustHostGuideEn;
-
-/// The open-host guide's examples compile against these crates (#671).
-#[cfg(all(doctest, feature = "node"))]
-#[doc = include_str!("../../../docs/guide/open-host.md")]
-pub struct OpenHostGuide;
-
-/// The English open-host guide's examples compile against these crates.
-#[cfg(all(doctest, feature = "node"))]
-#[doc = include_str!("../../../docs/guide/open-host.en.md")]
-pub struct OpenHostGuideEn;
 
 pub use catalog::ServiceCatalog;
 pub use error::LoaderError;
@@ -85,11 +49,4 @@ pub mod report {
 pub mod resolve {
     pub use crate::catalog::{ExprScope, Expressions};
     pub use crate::resolver::{Build, Declarations, Declared, Resolved, ScopedFactory};
-}
-
-/// What rutis-host and the tests use. No stability promise.
-#[doc(hidden)]
-pub mod internal {
-    #[cfg(feature = "peer")]
-    pub use crate::peer::{node_schema, REMOVED_EVENTS};
 }

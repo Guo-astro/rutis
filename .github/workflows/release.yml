@@ -9,8 +9,9 @@
 #              @arcships/rutis-host
 #              (and its platform packages @arcships/rutis-host-<os>-<cpu>)
 #   PyPI       rutis, rutis-host (a wheel per platform)
-#   Maven      io.github.arcships:rutis, io.github.arcships:rutis-ksp (the
-#              Kotlin SDK; skipped without the environment `maven`'s secrets)
+#   Maven      io.github.arcships:rutis, io.github.arcships:rutis-ksp,
+#              io.github.arcships:rutis-testing (the Kotlin SDK; skipped
+#              without the environment `maven`'s secrets)
 #   Go         github.com/arcships/rutis/go/rutis (the tag go/rutis/vX.Y.Z;
 #              the Go module proxy serves it from there)
 #   GitHub     rutis-host binaries
@@ -271,7 +272,7 @@ jobs:
       - run: uv publish --trusted-publishing always --publish-url https://upload.pypi.org/legacy/ --check-url https://pypi.org/simple/ dist/*
 
   # Maven Central: the Kotlin SDK, io.github.arcships:rutis (jvm and
-  # android) and io.github.arcships:rutis-ksp, under the namespace
+  # android), io.github.arcships:rutis-ksp and io.github.arcships:rutis-testing, under the namespace
   # io.github.arcships of the Central Portal. Its credentials are the
   # secrets of the environment `maven` (docs/release.md): without them the
   # job says so in the summary and skips, and the rest of the train is not
@@ -332,7 +333,7 @@ jobs:
             echo "$answer" | jq -e '.published == true' > /dev/null
           }
           tasks=
-          for artifact in rutis rutis-ksp; do
+          for artifact in rutis rutis-ksp rutis-testing; do
             if [ "$UPLOADED" = true ] && ! published "$artifact"; then
               echo "an earlier run uploaded $VERSION: waiting for io.github.arcships:$artifact to finish publishing"
               for _ in $(seq 90); do

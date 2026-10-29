@@ -13,7 +13,7 @@ import kotlin.math.roundToLong
 
 // Dialing out to a rutis access point, and dialing again: the rules every
 // runtime follows (docs/design-remote-runtime-dial-2026-10-14.md §六), as
-// rutis-bridge's dialing link does (`link.rs`) and the Go runtime
+// rutis-host's `rutis-host/dial` row does (`connect/dial.rs`) and the Go runtime
 // (`go/rutis/dial.go`).
 //
 // A failure is retryable (backoff from 0.5 s, doubling up to 30 s, reset by
@@ -67,7 +67,7 @@ interface Connection : arcships.rutis.internal.peer.Channel {
     val farClose: Int
 }
 
-/** Reconnection: rutis-bridge's `Retry` defaults. */
+/** Reconnection: the defaults of `rutis-host/dial`. */
 class Retry(
     /** The first wait after a retryable failure; doubled each time. */
     val initialMillis: Long = 500,
@@ -188,7 +188,9 @@ sealed class Ended {
 
 /**
  * Dials an access point with [dial] and stays connected: each connection is
- * a new session serving [plugins], whose rows go when it ends; it dials
+ * a new session serving [plugins] (rutis's rows run them, or, given
+ * [own], an application installs them once greeted), whose rows go
+ * when it ends; it dials
  * again by the rules until [stop] (the rows go, then the connection closes)
  * or the access point is incompatible. [say] gets one state line per change
  * (without the `rutis: ` prefix); [status] sees the same as values.
@@ -202,6 +204,8 @@ class Dialing(
     private val say: (String) -> Unit,
     private val status: (Status) -> Unit = {},
     private val shutdownMillis: Long? = null,
+    /** An application's plugins with their configurations, which it installs itself once greeted. */
+    private val own: List<Pair<Plugin, Any?>>? = null,
 ) {
     private val stopping = CompletableFuture<Unit>()
 
@@ -272,7 +276,7 @@ class Dialing(
             return Failed(Failure.Retryable, cause.message ?: cause.toString(), "cannot connect")
         }
         val session = try {
-            RuntimeSession.start(connection, endpoint, plugins, shutdownMillis)
+            RuntimeSession.start(connection, endpoint, plugins, shutdownMillis, own)
         } catch (e: Exception) {
             connection.close("the session did not start")
             return Failed(Failure.Retryable, "the connection did not start: ${e.message}", "cannot connect")
@@ -284,6 +288,7 @@ class Dialing(
         } else if (peer.error == null) {
             say("connected to $address as ${endpoint.local}")
             status(Status.Connected(address))
+            session.install()
             val since = System.nanoTime()
             if (!await(peer.closedFuture)) return Ended.Stopped(session.stop("the runtime stopped"))
             if ((System.nanoTime() - since) / 1_000_000 >= retry.stableMillis) backoff.reset()

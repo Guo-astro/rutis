@@ -688,10 +688,9 @@ fn a_previous_remote_runtime_is_refused_at_the_handshake() {
             "rutis.json",
             &json!({
                 "id": "main",
-                "runtimes": { "remote": [{ "name": "gpu", "language": "python" }] },
                 "rows": [
-                    { "id": "gpu", "name": "rutis-bridge/peer", "config": {
-                        "peer": "gpu", "dial": url, "runtime": "gpu",
+                    { "id": "gpu", "name": "rutis-host/dial", "config": {
+                        "address": url,
                     } },
                     { "id": "echo", "name": "gpu:echo" },
                 ],
@@ -699,12 +698,12 @@ fn a_previous_remote_runtime_is_refused_at_the_handshake() {
         );
         let mut host = s.host_with(["run", "rutis.json"], &[("RUTIS_TOKEN_GPU", &token)]);
         let stopped = host.wait_for("the link stopped as incompatible", |line| {
-            line.starts_with("gpu: link stopped: incompatible (")
+            line.starts_with("gpu: disconnected (incompatible: ")
         });
         assert!(stopped.contains(OLDER_LISTENER), "{stopped}");
         // Not dialed again: no second refusal within a backoff's first steps.
         std::thread::sleep(std::time::Duration::from_secs(3));
-        assert_eq!(host.count("gpu: link stopped: incompatible ("), 1);
+        assert_eq!(host.count("gpu: disconnected (incompatible: "), 1);
         assert_eq!(host.count("echo: running"), 0);
         stop(host);
         node.kill();
@@ -758,21 +757,33 @@ fn the_current_runtimes_refuse_a_previous_host() {
     }
 }
 
-/// The link row to `peer`: listening on the node's listener `local`
-/// ([`start_nodes`] adds it), or dialing, at the address [`start_nodes`]
-/// sets once the far end listens.
-fn link(peer: &str, listens: bool, export: &[&str], import: &[&str]) -> Value {
-    let mut config = json!({ "peer": peer, "export": export, "import": import });
+/// The connection row to `peer`: a `rutis-host/listen` row on the node's
+/// listener `local` ([`start_nodes`] adds it), or a `rutis-host/dial` row,
+/// at the address [`start_nodes`] sets once the far end listens.
+fn connection(peer: &str, listens: bool) -> Value {
+    match listens {
+        true => {
+            json!({ "id": peer, "name": "rutis-host/listen", "config": { "listener": "local" } })
+        }
+        false => json!({ "id": peer, "name": "rutis-host/dial", "config": {} }),
+    }
+}
+
+/// The node row to `peer` as 0.18 and earlier wrote it (`rutis-bridge/peer`,
+/// which 0.19 no longer has): for a previous release's host only.
+fn link_before_0_19(peer: &str, listens: bool) -> Value {
+    let mut config = json!({ "peer": peer });
     if listens {
         config["listen"] = json!("local");
     }
     json!({ "id": peer, "name": "rutis-bridge/peer", "config": config })
 }
 
-/// Start two linked nodes, `old/rutis.json` and `current/rutis.json`
-/// (their link rows from [`link`]): the listening one first, on a port it
-/// picks (`127.0.0.1:0`, #455); then the other, its link dialing the
-/// address the first reported. Returns (old, current).
+/// Start two connected nodes, `old/rutis.json` and `current/rutis.json`
+/// (their rows from [`connection`], or [`link_before_0_19`] for a previous
+/// release before 0.19): the listening one first, on a port it picks
+/// (`127.0.0.1:0`, #455); then the other, its row dialing the address the
+/// first reported. Returns (old, current).
 fn start_nodes(
     s: &Scenario,
     old_listens: bool,
@@ -788,8 +799,12 @@ fn start_nodes(
             .unwrap()
             .iter_mut()
             .find(|row| row["id"] == peer)
-            .expect("the link row");
-        row["config"]["dial"] = json!(format!("ws://{address}/rutis"));
+            .expect("the connection row");
+        let field = match row["name"] == "rutis-host/dial" {
+            true => "address",
+            false => "dial",
+        };
+        row["config"][field] = json!(format!("ws://{address}/rutis"));
     };
     if old_listens {
         old["listen"] = listener;
@@ -808,10 +823,11 @@ fn start_nodes(
     }
 }
 
-/// A previous rutis-host node and the current one, either dialing: the
-/// listener refuses the dialer's WebSocket upgrade, as they offer
-/// different session protocols, saying which end to upgrade; the dialing
-/// node's link stops on it and is not dialed again. Never connected.
+/// A previous rutis-host node (0.18, its node row `rutis-bridge/peer`) and
+/// the current one (a `rutis-host/dial` or `rutis-host/listen` row), either
+/// dialing: the listener refuses the dialer's WebSocket upgrade, as they
+/// offer different session protocols, saying which end to upgrade; the
+/// dialing node stops on it and does not dial again. Never connected.
 ///
 /// guarantee: bridge/cross-version-meetings, events/old-peer-refused
 #[test]
@@ -823,9 +839,9 @@ fn a_previous_node_is_refused_at_the_handshake() {
             Meeting::Refused,
             |release, s| {
                 let token = s.secret();
-                let old = json!({ "id": "old", "rows": [link("current", old_listens, &[], &[])] });
-                let current =
-                    json!({ "id": "current", "rows": [link("old", !old_listens, &[], &[])] });
+                let old =
+                    json!({ "id": "old", "rows": [link_before_0_19("current", old_listens)] });
+                let current = json!({ "id": "current", "rows": [connection("old", !old_listens)] });
                 let (mut old, mut current) = start_nodes(
                     &s,
                     old_listens,
@@ -847,13 +863,13 @@ fn a_previous_node_is_refused_at_the_handshake() {
                         )
                     },
                 );
-                // The dialer's link stops, with the listener's words: the
-                // old listener says to upgrade it; the current one, the
-                // old dialer.
+                // The dialer stops, with the listener's words: the old
+                // listener says to upgrade it; the current one, the old
+                // dialer.
                 let (dialer, said, refusal) = match old_listens {
                     true => (
                         &mut current,
-                        "old: link stopped: incompatible (",
+                        "old: disconnected (incompatible: ",
                         OLDER_LISTENER,
                     ),
                     false => (
@@ -862,13 +878,13 @@ fn a_previous_node_is_refused_at_the_handshake() {
                         OLDER_DIALER,
                     ),
                 };
-                let stopped = dialer.wait_for("the link stopped as incompatible", |line| {
+                let stopped = dialer.wait_for("the dialer stopped as incompatible", |line| {
                     line.starts_with(said)
                 });
                 assert!(stopped.contains(refusal), "{stopped}");
                 std::thread::sleep(std::time::Duration::from_secs(3));
                 assert_eq!(dialer.count(said), 1, "not dialed again");
-                assert_eq!(current.count("old: link connected"), 0);
+                assert_eq!(current.count("old: connected"), 0);
                 stop(current);
                 stop(old);
                 s.finish();
@@ -1147,16 +1163,13 @@ fn a_previous_python_remote_runtime_dialed_by_the_current_host() {
                 "id": "main",
                 "runtimes": {
                     "node": {},
-                    "remote": [{ "name": "gpu", "language": "python" }],
                 },
                 "rows": [
                     {
                         "id": "gpu",
-                        "name": "rutis-bridge/peer",
+                        "name": "rutis-host/dial",
                         "config": {
-                            "peer": "gpu",
-                            "dial": url,
-                            "runtime": "gpu",
+                            "address": url,
                         },
                     },
                     { "id": "echo", "name": "gpu:echo" },
@@ -1290,15 +1303,14 @@ fn the_current_runtimes_under_a_previous_host() {
 
 /// Two nodes: `old` (the previous rutis-host, its Python runtime the
 /// previous PyPI `rutis`) and `current` (this checkout's), in the project's
-/// subdirectories of those names. `old` exports `echo` and imports
-/// `greeter`; `current` the other way round; the events `t/ping/echo`
-/// (current to old) and `t/ring/echo` (old to current) are shared the same
-/// way. `old_listens`: `old` listens and `current` dials, else the other
-/// way round.
+/// subdirectories of those names. `old` provides `echo`, `current`
+/// `greeter`; each sees the other's, and the events `t/ping/echo` and
+/// `t/ring/echo` are on one bus. `old_listens`: `old` listens and `current`
+/// dials, else the other way round.
 ///
-/// Through the link: a current probe calls `echo` on the old node, an old
-/// probe calls `greeter` on the current one; a current plugin sends the
-/// tagged values to the old node; events cross both ways.
+/// Through the connection: a current probe calls `echo` on the old node,
+/// an old probe calls `greeter` on the current one; a current plugin sends
+/// the tagged values to the old node; events cross both ways.
 fn nodes(release: &Release, s: Scenario, old_listens: bool) {
     let token = s.secret();
 
@@ -1309,12 +1321,7 @@ fn nodes(release: &Release, s: Scenario, old_listens: bool) {
         "runtimes": { "py": {} },
         "rows": [
             { "id": "echo", "name": "py:echo" },
-            link(
-                "current",
-                old_listens,
-                &["echo", "t/ring/echo"],
-                &["greeter", "thrower", "t/ping/echo"],
-            ),
+            connection("current", old_listens),
             old_probe.row(),
         ],
     });
@@ -1335,12 +1342,7 @@ fn nodes(release: &Release, s: Scenario, old_listens: bool) {
             { "id": "greeter", "name": "py:greeter" },
             { "id": "sender", "name": "./sender.ts" },
             { "id": "thrower", "name": "./thrower.ts" },
-            link(
-                "old",
-                !old_listens,
-                &["greeter", "thrower", "t/ping/echo"],
-                &["echo", "t/ring/echo"],
-            ),
+            connection("old", !old_listens),
             probe.row(),
         ],
     });
@@ -1373,8 +1375,17 @@ fn nodes(release: &Release, s: Scenario, old_listens: bool) {
         },
     );
     old.expect("echo: running");
-    current.expect("old: link connected");
-    old.expect("current: link connected");
+    // A listen row names the id that connected.
+    match old_listens {
+        true => {
+            current.expect("old: connected");
+            old.expect("current: connected current");
+        }
+        false => {
+            current.expect("old: connected old");
+            old.expect("current: connected");
+        }
+    }
     probe.started(&mut current);
     old_probe.started(&mut old);
     assert_eq!(
@@ -1403,9 +1414,9 @@ fn nodes(release: &Release, s: Scenario, old_listens: bool) {
         .into_iter()
         .skip(mark)
         .map(|line| line.text)
-        .filter(|line| line.starts_with("current: link down"))
+        .filter(|line| line.starts_with("current: disconnected"))
         .collect();
-    assert!(down.is_empty(), "the link went down: {down:?}");
+    assert!(down.is_empty(), "the connection went down: {down:?}");
     values(&mut current, &probe);
     events(&mut current, &probe, "echo", "python");
     stop(current);

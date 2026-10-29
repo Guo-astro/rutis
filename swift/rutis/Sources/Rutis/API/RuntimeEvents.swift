@@ -1,12 +1,11 @@
 import Foundation
 
 // Events in the runtime (#464): every listener a row registers is
-// registered with the host too; an emission whose listeners are all in this
-// process is dispatched here (the fast path), any other by the host. The
-// result is the same either way.
+// registered with the host, and every emission is dispatched by the host,
+// which calls the listeners here back (`events.call`).
 
 /// A listener of a row of this process.
-final class LocalListener: EventEntry, @unchecked Sendable {
+final class LocalListener: @unchecked Sendable {
     /// Weak: an invocation queued before the runtime ended may run after
     /// it is gone, and then starts nothing.
     weak var runtime: Runtime?
@@ -53,20 +52,6 @@ final class LocalListener: EventEntry, @unchecked Sendable {
         }
     }
 
-    func emit(_ args: [Value]) -> Bool {
-        guard reserve() else { return false }
-        let chain = CallChain.path
-        queue.push { [self] in
-            defer { row.release() }
-            guard let runtime, runtime.lock.withLock({ live }) else { return }
-            do {
-                _ = try await CallChain.$path.withValue(chain) { try await run(args, nil) }
-            } catch {
-                failed(error)
-            }
-        }
-        return true
-    }
 
     /// Reports an `emit` invocation's failure where the listener is (§5.6).
     func failed(_ error: Error) {
@@ -101,26 +86,19 @@ extension Runtime {
         listenerSequence += 1
         let listener = LocalListener(runtime: self, id: String(listenerSequence), name: name, row: row, body: body,
                                      prepend: prepend, global: global)
-        var list = listeners[name] ?? []
-        if prepend {
-            first -= 1
-            list.insert(listener, at: 0)
-        } else {
-            last += 1
-            list.append(listener)
-        }
-        listeners[name] = list
         byID[listener.id] = listener
         // The host hears of it before any emission this process makes after
         // it (queued in order); a row loading answers once the host has it,
         // and fails when the host refuses it (§4.4). Refused outside a load,
         // it is reported (§11).
         if live, let session {
-            let registration: [Value] = [.data(.object([
-                ("id", .string(listener.id)), ("name", .string(name)), ("row", .string(row.key)),
-                ("plugin", .string(row.definition.name)), ("kind", .string("sync")), ("prepend", .bool(prepend)),
-                ("global", .bool(global)),
-            ]))]
+            // An app's own plugin is no row of rutis's: its listeners are
+            // the connection's.
+            var fields: [(String, JSON)] = [("id", .string(listener.id)), ("name", .string(name))]
+            if !row.own { fields.append(("row", .string(row.key))) }
+            fields += [("plugin", .string(row.definition.name)), ("kind", .string("sync")), ("prepend", .bool(prepend)),
+                       ("global", .bool(global))]
+            let registration: [Value] = [.data(.object(fields))]
             let loading = row.loading
             let answered = Event()
             let refusal = ErrorBox()
@@ -175,9 +153,6 @@ extension Runtime {
     func withdraw(_ listener: LocalListener) {
         listener.withdrawn = true
         byID[listener.id] = nil
-        var list = listeners[listener.name] ?? []
-        list.removeAll { $0 === listener }
-        listeners[listener.name] = list.isEmpty ? nil : list
     }
 
     /// Withdraws a row's listeners as it unloads; `lock` is held, and
@@ -191,24 +166,7 @@ extension Runtime {
         }
     }
 
-    /// Whether an emission of `name` goes through the host (§5.2): a
-    /// listener of it may be elsewhere, or an earlier emit of it through the
-    /// host is unanswered. `lock` is held.
-    func viaHost(_ name: String, _ mode: Mode) -> Bool {
-        guard live, let session, session.error == nil else { return false }
-        if elsewhere.contains(name) { return true }
-        if elsewherePrefixes.contains(where: { name.hasPrefix($0) }) { return true }
-        return mode == .emit && (hostEmits[name] ?? 0) > 0
-    }
-
-    /// The fast path's snapshot (§5.1); `lock` is held. Delivery is by name.
-    func snapshot(_ row: Row, _ name: String, keep: ((Rutis.Advanced.Listener) async throws -> Bool)?) -> Dispatch {
-        Dispatch(name: name, entries: listeners[name] ?? [], keep: keep.map(protectedKeep))
-    }
-
-    func protectedKeep(_ keep: @escaping (Rutis.Advanced.Listener) async throws -> Bool) -> (Rutis.Advanced.Listener) async throws -> Bool { keep }
-
-    /// An `emit` (§5.4): returns at once.
+    /// An `emit` (§5.4): sent to the host, returning at once.
     func emitNow(_ row: Row, _ name: String, _ args: [Value], keep: ((Rutis.Advanced.Listener) async throws -> Bool)?) throws -> Value {
         try Events.checkEmit(name)
         lock.lock()
@@ -216,73 +174,11 @@ extension Runtime {
             lock.unlock()
             throw RutisError(name: RutisError.Name.bindingError, message: "row \(row.name) is not loaded in this runtime")
         }
-        if held[name] == nil {
-            if viaHost(name, .emit) {
-                try emitViaHost(row, name, args, keep: keep)
-                return .undefined
-            }
-            if keep == nil {
-                // Started now, in order (§5.5).
-                let dispatch = snapshot(row, name, keep: nil)
-                lock.unlock()
-                for entry in dispatch.entries { entry.emit(args) }
-                return .undefined
-            }
-        }
-        // A filter may wait (it is async), and runs before any start: this
-        // emit, and every later one of `name` from this process until it
-        // started, waits in the name's queue, so they start in emission
-        // order (§5.5). Each takes its path and listeners when its turn
-        // comes, in a task of its emitter row's: when that row unloads,
-        // its emits still queued are dropped and the one in its filter is
-        // let go (cancelled, starting nothing), so the queue moves on.
-        var waiting = held[name] ?? (SerialQueue(), 0)
-        waiting.count += 1
-        held[name] = waiting
-        let chain = CallChain.path
-        waiting.queue.push { [self] in
-            await row.held { await CallChain.$path.withValue(chain) { await self.emitInTurn(row, name, args, keep: keep) } }
-            lock.withLock {
-                if let entry = held[name] {
-                    held[name] = entry.count <= 1 ? nil : (entry.queue, entry.count - 1)
-                }
-            }
-        }
-        lock.unlock()
+        try emitViaHost(row, name, args, keep: keep)
         return .undefined
     }
 
-    /// A queued `emit`, its turn come: through the host or started here,
-    /// after its filter.
-    private func emitInTurn(_ row: Row, _ name: String, _ args: [Value], keep: ((Rutis.Advanced.Listener) async throws -> Bool)?) async {
-        lock.lock()
-        // Its row gone meanwhile: nothing to emit from.
-        guard rows[row.key] === row else {
-            lock.unlock()
-            return
-        }
-        if viaHost(name, .emit) {
-            do {
-                try emitViaHost(row, name, args, keep: keep)
-            } catch {
-                Events.report("rutis: emit of \(name) from row \(row.name) failed: \(Events.failure(error))", to: row.settings.log)
-            }
-            return
-        }
-        let dispatch = snapshot(row, name, keep: keep)
-        lock.unlock()
-        do {
-            // Its row unloading while the filter ran: nothing starts.
-            try await dispatch.emit(args, unlessCancelled: true)
-        } catch where row.isCancelled {
-            // Let go as its row unloaded: whatever it ended with, nothing
-            // is reported.
-        } catch {
-            Events.report("rutis: filter of \(name) from row \(row.name) failed: \(Events.failure(error))", to: row.settings.log)
-        }
-    }
-
-    /// A dispatch other than `emit`.
+    /// A dispatch other than `emit`, by the host.
     func dispatch(_ row: Row, _ name: String, _ mode: Mode, _ args: [Value], keep: ((Rutis.Advanced.Listener) async throws -> Bool)?,
                   terminal: (([Value]) async throws -> Value)?) async throws -> Value
     {
@@ -292,28 +188,16 @@ extension Runtime {
             lock.unlock()
             throw RutisError(name: RutisError.Name.bindingError, message: "row \(row.name) is not loaded in this runtime")
         }
-        if viaHost(name, mode) {
-            return try await dispatchViaHost(row, name, mode, args, keep: keep, terminal: terminal)
-        }
-        let dispatch = snapshot(row, name, keep: keep)
-        lock.unlock()
-        switch mode {
-        case .parallel:
-            try await dispatch.parallel(args)
-            return .undefined
-        case .waterfall:
-            return try await dispatch.waterfall(mode, args, terminal: terminal)
-        default:
-            return try await dispatch.serial(mode, args)
-        }
+        return try await dispatchViaHost(row, name, mode, args, keep: keep, terminal: terminal)
     }
 
     /// The `events.dispatch` record (§5.3).
     private func record(_ row: Row, _ name: String, _ mode: Mode, _ args: [Value], keep: ((Rutis.Advanced.Listener) async throws -> Bool)?,
                         terminal: (([Value]) async throws -> Value)?) -> Value
     {
-        var fields: [(String, Value)] = [("row", .data(.string(row.key))), ("name", .data(.string(name))),
-                                         ("mode", .data(.string(mode.rawValue))), ("args", .list(args))]
+        // An app's own plugin emits as the connection.
+        var fields: [(String, Value)] = row.own ? [] : [("row", .data(.string(row.key)))]
+        fields += [("name", .data(.string(name))), ("mode", .data(.string(mode.rawValue))), ("args", .list(args))]
         if let keep { fields.append(("filter", .function(selector(keep)))) }
         if let terminal, mode == .waterfall {
             // The host calls it with the event's arguments.
@@ -322,34 +206,26 @@ extension Runtime {
         return .record(fields)
     }
 
-    /// Sends an `emit` through the host; `lock` is held, and released. Its
-    /// later emits of `name` follow it through the host until it is
-    /// answered (§5.5). The emitter neither waits for nor cancels it.
+    /// Sends an `emit` through the host; `lock` is held, and released. The
+    /// emitter neither waits for nor cancels it.
     private func emitViaHost(_ row: Row, _ name: String, _ args: [Value], keep: ((Rutis.Advanced.Listener) async throws -> Bool)?) throws {
         guard let session else {
             lock.unlock()
             return
         }
         let record = record(row, name, .emit, args, keep: keep, terminal: nil)
-        hostEmits[name, default: 0] += 1
-        let answered: @Sendable (Error?) -> Void = { [weak self] error in
-            guard let self else { return }
-            lock.withLock {
-                self.hostEmits[name, default: 1] -= 1
-                if self.hostEmits[name]! <= 0 { self.hostEmits[name] = nil }
-            }
+        let answered: @Sendable (Error?) -> Void = { error in
             if let error {
                 Events.report("rutis: emit of \(name) from row \(row.name) failed: \(Events.failure(error))", to: row.settings.log)
             }
         }
-        // The answer is taken as its frame is read, before the next one: an
-        // emit a later frame starts sees it answered (§5.5).
         let taken: @Sendable (Result<Value, Error>) -> Void = { result in
             switch result {
             case let .failure(error):
                 answered(error)
             case let .success(.remoteFuture(future)):
-                // An older host answers with a future: its settlement.
+                // The host queued this emit behind one already running in
+                // the row, and answered with a future: its settlement.
                 Task.detached {
                     do {
                         _ = try await settle(.remoteFuture(future))
@@ -366,10 +242,7 @@ extension Runtime {
         post { sent.set(Result { try session.sendAnswered(target: "", method: "events.dispatch", args: [record], answered: taken) }) }
         lock.unlock()
         flush()
-        if case let .failure(error) = sent.get() {
-            answered(nil)
-            throw error
-        }
+        if case let .failure(error) = sent.get() { throw error }
     }
 
     /// Sends `events.dispatch`; `lock` is held, and released. The frame is
@@ -415,22 +288,7 @@ extension Runtime {
     /// Takes the host's event calls on the reading thread, in frame order
     /// (§4.1, §5.5); the rest runs as any call does.
     func arrive(_ method: String, _ args: [Value]) -> (() async throws -> Value)? {
-        switch method {
-        case "events.elsewhere":
-            let change = args.first ?? .undefined
-            func names(_ key: String) -> [String] { (try? ValueCodec.decode([String]?.self, from: change[key] ?? .undefined)) ?? [] }
-            lock.withLock {
-                for name in names("add") { elsewhere.insert(name) }
-                for name in names("remove") { elsewhere.remove(name) }
-                for prefix in names("addPrefixes") { elsewherePrefixes.insert(prefix) }
-                for prefix in names("removePrefixes") { elsewherePrefixes.remove(prefix) }
-            }
-            return { .undefined }
-        case "events.call":
-            return eventCall(args)
-        default:
-            return nil
-        }
+        method == "events.call" ? eventCall(args) : nil
     }
 
     /// One invocation of a listener here (§5.3): an `emit` one is queued
@@ -471,11 +329,11 @@ extension Runtime {
             }
         }
         var next: NextFunction?
-        if mode.isWaterfall {
+        if mode == .waterfall {
             guard case let .remoteFunction(far) = record["next"] ?? .undefined else {
                 return failed(RutisError(name: "Error", message: "events.call: a \(modeText) needs next"))
             }
-            next = { try await settle(try await far.call([], sync: mode == .waterfallSync)) }
+            next = { try await settle(try await far.call([], sync: false)) }
         }
         guard let call = listener.begin() else { return failed(withdrawn) }
         return { try await call(mode, values, next) }

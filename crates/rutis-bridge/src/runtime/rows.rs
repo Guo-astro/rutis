@@ -231,9 +231,9 @@ pub fn row_projection_with(
 
 /// [`row_projection_with`] for the row `provider` names ("row storage"):
 /// it also publishes, under `key(name)`, each service the row announces
-/// without declaring it, with the methods its current object has, except
-/// those `private` says the row keeps to a scope of its own (a name its
-/// config isolates). A service another provider has already is refused as
+/// without declaring it, with the methods its current object has. Neither
+/// a declared nor an announced service is published when `private` says
+/// the row keeps it to a scope of its own (a name its config isolates). A service another provider has already is refused as
 /// the later one, naming both ([`Projection::take_refused`]).
 pub fn row_projection_of(
     provider: &str,
@@ -242,7 +242,8 @@ pub fn row_projection_of(
     private: impl Fn(&str) -> bool + Send + 'static,
 ) -> Arc<Projection> {
     let projection = Projection::new();
-    for (name, methods) in provides {
+    // A name the row isolates stays in its scope, declared or not.
+    for (name, methods) in provides.iter().filter(|(name, _)| !private(name)) {
         let methods = Arc::new(Mutex::new(methods.clone()));
         row_slot(&projection, provider, name, key(name), methods);
     }

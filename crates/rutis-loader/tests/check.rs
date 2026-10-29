@@ -320,9 +320,9 @@ async fn a_foreign_rows_own_inject_counts_only_names_rutis_shares() {
         ])))
         .await;
     // `clock` is the application's own service, not shared by name, so not
-    // checked. With runtimes or peers, `shared` is shared by name and
+    // checked. With runtimes, `shared` is shared by name and
     // nothing provides it; without them, rutis shares nothing.
-    #[cfg(any(feature = "runtimes", feature = "peer"))]
+    #[cfg(feature = "runtimes")]
     assert_eq!(
         supplies(&report, "cordis"),
         [(
@@ -332,13 +332,13 @@ async fn a_foreign_rows_own_inject_counts_only_names_rutis_shares() {
             }
         )]
     );
-    #[cfg(not(any(feature = "runtimes", feature = "peer")))]
+    #[cfg(not(feature = "runtimes"))]
     assert_eq!(supplies(&report, "cordis"), []);
 }
 
 /// A `#[rutis::service]` type of the application nothing has provided is
 /// not reported as provided by the host: it serves its name once provided.
-#[cfg(any(feature = "runtimes", feature = "peer"))]
+#[cfg(feature = "runtimes")]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_marked_type_serves_its_name_once_provided() {
     pub struct Weather;

@@ -69,11 +69,12 @@ fn sigusr1_to_the_npm_launcher_reloads_the_configuration() {
             .then_some(())
     });
 
-    // A link to a port nothing listens on: a row that runs, its link down.
+    // A dial row to a port nothing listens on: a row that runs, not
+    // connected.
     let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let address = closed.local_addr().unwrap();
     drop(closed);
-    let rows = json!([{ "id": "office", "name": "rutis-bridge/peer", "config": { "peer": "office", "dial": format!("ws://{address}/rutis") } }]);
+    let rows = json!([{ "id": "office", "name": "rutis-host/dial", "config": { "address": format!("ws://{address}/rutis") } }]);
     std::fs::write(&file, config(rows)).unwrap();
     // To the launcher alone, as systemd's `kill -USR1 $MAINPID`.
     signal(&host, libc::SIGUSR1, false);

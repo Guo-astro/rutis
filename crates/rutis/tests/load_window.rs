@@ -548,6 +548,20 @@ async fn reach(view: &FiberView, state: FiberState) {
     .expect("state reached");
 }
 
+/// Waits until `apply` of its first generation runs: past the second
+/// dependency check, so a withdrawal from here on finds it loading.
+/// Loading alone is set before that check: a withdrawal there sends the
+/// load back to Pending without running `apply`.
+async fn applying(applies: &AtomicUsize) {
+    tokio::time::timeout(LIMIT, async {
+        while applies.load(Ordering::SeqCst) == 0 {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("apply runs");
+}
+
 fn assert_cleanup_error(result: Result<(), Arc<ErrorKind>>) {
     let error = result.expect_err("dispose reports the cleanup error");
     assert!(error.to_string().contains("cleanup boom"), "{error}");
@@ -616,7 +630,7 @@ async fn refresh_queued_before_a_dispose() {
         applies: applies.clone(),
         needs: true,
     });
-    reach(&view, FiberState::Loading).await;
+    applying(&applies).await;
     let withdrawal = tokio::spawn(service.dispose());
     tokio::time::timeout(LIMIT, async {
         while root.get::<Svc>().is_some() {
@@ -726,7 +740,7 @@ async fn restart_behind_a_refresh_that_disposes() {
         applies: applies.clone(),
         needs: true,
     });
-    reach(&view, FiberState::Loading).await;
+    applying(&applies).await;
     let withdrawal = tokio::spawn(service.dispose());
     tokio::time::timeout(LIMIT, async {
         while root.get::<Svc>().is_some() {

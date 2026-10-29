@@ -71,11 +71,10 @@ env:
   # a test that starts nothing and opens nothing belongs in PURE_TESTS_*. A
   # name here without its file fails the `lint` job.
   PURE_TESTS_BRIDGE: >-
-    link memory_mux memory_session multihop node
-    node_conformance
+    memory_session multihop
   PURE_TESTS_LOADER: >-
-    check instance_peers instance_services instances lifecycle loader
-    migration_example patch_parity peer_rows regressions reload scope
+    check instance_services instances lifecycle loader migration_example
+    patch_parity regressions reload scope
   # What the pull-request jobs on macOS and Windows skip besides PURE_TESTS_*:
   # tests of runtime and event behavior that is the same on Linux, where the
   # `rust` job runs them with every runtime's features. What is platform
@@ -90,15 +89,15 @@ env:
     marked_services python_runtime runtime_conformance swift_runtime
     value_roundtrip
   MACOS_SKIP_TESTS_LOADER: >-
-    events_conformance events_nodes go_rows go_stop instance_go leases
-    marked_services multilang_go runtime_instances runtime_rows sync_cycles
+    events_conformance go_rows go_stop instance_go
+    marked_services multilang_go runtime_rows sync_cycles
   WINDOWS_SKIP_TESTS_BRIDGE: >-
     dsh_baseline event_hub events_expected go_runtime kotlin_runtime
     marked_services python_runtime runtime_conformance swift_runtime
     value_roundtrip
   WINDOWS_SKIP_TESTS_LOADER: >-
-    bun_instances bun_multilang bun_rows events_conformance events_nodes
-    multilang_swift swift_rows
+    bun_instances bun_multilang bun_rows events_conformance multilang_swift
+    swift_rows
   # The jobs only build to run the tests and checks, and none reads a
   # backtrace: leaving debug info out of the dev and test profiles keeps the
   # target directories (and Swatinem/rust-cache's archives) smaller and the
@@ -444,7 +443,7 @@ jobs:
       # oldest websockets (rutis[network]).
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: '3.12'
       - run: python3 -m pip install "websockets==15.*"
       # The older of the two Go releases supported.
       - uses: actions/setup-go@v5
@@ -527,7 +526,7 @@ jobs:
           RUTIS_EVENTS_PLACEMENTS: ${{ needs.changes.outputs.all == 'true' && 'sampled' || 'written' }}
           RUTIS_EVENTS_REQUIRE: node,python,go,bun
           RUTIS_EVENTS_SETTLE_SCALE: '2'
-        run: cargo test -p rutis-loader --features node,python,go,bun,peer
+        run: cargo test -p rutis-loader --features node,python,go,bun
 
       # Both runtimes, every transport, and the conformance suites.
       - name: cargo test (rutis-bridge, all features)
@@ -544,7 +543,7 @@ jobs:
           RUTIS_EVENTS_PLACEMENTS: written
           RUTIS_EVENTS_REQUIRE: node,python,go,bun
           RUTIS_EVENTS_SETTLE_SCALE: '2'
-        run: cargo test -p rutis-loader --features node,python,go,bun,peer --test runtime_rows --test python_rows --test multilang --test leases --test instance_runtimes --test go_rows --test go_stop --test multilang_go --test instance_go --test sync_cycles --test events_conformance
+        run: cargo test -p rutis-loader --features node,python,go,bun --test runtime_rows --test python_rows --test multilang --test instance_runtimes --test go_rows --test go_stop --test multilang_go --test instance_go --test sync_cycles --test events_conformance
       - name: job time
         if: always()
         run: echo "rust job, $(( ($(date +%s) - RUTIS_JOB_STARTED) / 60 )) min" >> "$GITHUB_STEP_SUMMARY"
@@ -599,7 +598,7 @@ jobs:
       # (rutis[network]); the scenarios use the checkout's python/rutis.
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: '3.12'
       - run: python3 -m pip install "websockets==15.*"
       # The older of the two Go releases supported.
       - uses: actions/setup-go@v5
@@ -683,19 +682,19 @@ jobs:
       # The Python package on the oldest Python (requires-python) and
       # the oldest websockets.
       # setup-python's macOS builds install only under /Users/runner: a
-      # self-hosted runner takes uv's Python 3.10, in a virtual environment
+      # self-hosted runner takes uv's Python 3.12, in a virtual environment
       # with pip.
       - uses: actions/setup-python@v5
         if: runner.environment == 'github-hosted'
         with:
-          python-version: '3.10'
+          python-version: '3.12'
       - uses: astral-sh/setup-uv@v6
         if: runner.environment == 'self-hosted'
-      - name: Python 3.10 (self-hosted runner)
+      - name: Python 3.12 (self-hosted runner)
         if: runner.environment == 'self-hosted'
         run: |
-          uv python install 3.10
-          uv venv --seed --python-preference only-managed --python 3.10 "$RUNNER_TEMP/python"
+          uv python install 3.12
+          uv venv --seed --python-preference only-managed --python 3.12 "$RUNNER_TEMP/python"
           echo "$RUNNER_TEMP/python/bin" >> "$GITHUB_PATH"
       # WebSocket channels of the Python runtime (rutis[network]).
       - run: python3 -m pip install "websockets==15.*"
@@ -874,7 +873,7 @@ jobs:
           cargo check -p rutis-loader --features python --all-targets
           cargo check -p rutis-loader --no-default-features --features bun --all-targets
           cargo check -p rutis-loader --features go --all-targets
-          cargo check -p rutis-loader --features peer --all-targets
+          cargo check -p rutis-loader --features runtimes --all-targets
 
       # The loader test targets compile under each single feature.
       - name: cargo test --no-run (rutis-loader, node)
@@ -883,8 +882,8 @@ jobs:
       - name: cargo test --no-run (rutis-loader, python)
         run: cargo test -p rutis-loader --features python --no-run
 
-      - name: cargo test --no-run (rutis-loader, peer)
-        run: cargo test -p rutis-loader --features peer --no-run
+      - name: cargo test --no-run (rutis-loader, runtimes)
+        run: cargo test -p rutis-loader --features runtimes --no-run
 
       - name: cargo test --no-run (rutis-loader, go)
         run: cargo test -p rutis-loader --features go --no-run
@@ -933,25 +932,28 @@ jobs:
           node-version: '22'
       - run: npm --prefix node/rutis-runtime ci
       # setup-python's macOS builds install only under /Users/runner (the
-      # hosted image's user): the self-hosted Macs take uv's Python 3.10, in
+      # hosted image's user): the self-hosted Macs take uv's Python 3.12, in
       # a virtual environment with pip (as js-py).
       - uses: actions/setup-python@v5
         if: runner.environment == 'github-hosted' || runner.os != 'macOS'
         with:
-          python-version: '3.10'
+          python-version: '3.12'
       - uses: astral-sh/setup-uv@v6
         if: runner.environment == 'self-hosted' && runner.os == 'macOS'
-      - name: Python 3.10 (self-hosted macOS)
+      - name: Python 3.12 (self-hosted macOS)
         if: runner.environment == 'self-hosted' && runner.os == 'macOS'
         run: |
-          uv python install 3.10
-          uv venv --seed --python-preference only-managed --python 3.10 "$RUNNER_TEMP/python"
+          uv python install 3.12
+          uv venv --seed --python-preference only-managed --python 3.12 "$RUNNER_TEMP/python"
           echo "$RUNNER_TEMP/python/bin" >> "$GITHUB_PATH"
       - run: python3 -m pip install "websockets==15.*"
       - name: gofmt
         run: test -z "$(gofmt -l go crates/rutis-loader/tests/fixtures/go)"
+      # rutistest runs plugins under `rutis-host test` (RUTIS_HOST).
       - name: go vet and test (SDK, fixtures)
         run: |
+          cargo build -p rutis-host
+          export RUTIS_HOST="${CARGO_TARGET_DIR:-$PWD/target}/debug/rutis-host"
           (cd go/rutis && go vet ./... && go test -race ./...)
           (cd crates/rutis-loader/tests/fixtures/go && go vet ./...)
       # rust runs the bridge and loader suites with every runtime's features
@@ -967,7 +969,7 @@ jobs:
         run: cargo test -p rutis-bridge --features testing,websocket,go --test session_matrix --test runtime_conformance go_
       - name: cargo test (Go rows)
         if: needs.changes.outputs.all == 'true'
-        run: cargo test -p rutis-loader --features node,python,go --test go_rows --test go_stop --test multilang_go --test instance_go --test leases
+        run: cargo test -p rutis-loader --features node,python,go --test go_rows --test go_stop --test multilang_go --test instance_go
       # Pull requests run these rows on Windows (runtimes-windows), where
       # loopback is how processes start; full runs also run them here.
       - name: cargo test (Go rows on loopback channels)
@@ -1015,6 +1017,11 @@ jobs:
           java-version: '17'
           cache: ${{ runner.environment == 'github-hosted' && 'gradle' || '' }}
           cache-dependency-path: kotlin/rutis/**/*.gradle.kts
+      # The testing tool runs the plugins under test on rutis-host test.
+      - name: rutis-host for the testing tool
+        run: |
+          cargo build -p rutis-host
+          echo "RUTIS_HOST=$(cargo metadata --format-version 1 --no-deps | jq -r .target_directory)/debug/rutis-host" >> "$GITHUB_ENV"
       - name: gradle build (the SDK, the processor, the testing tool, the conformance programs)
         working-directory: kotlin/rutis
         run: |
@@ -1035,7 +1042,7 @@ jobs:
       - uses: actions/setup-python@v5
         if: runner.environment == 'github-hosted' || runner.os != 'macOS'
         with:
-          python-version: '3.10'
+          python-version: '3.12'
       - run: python3 -m pip install "websockets==15.*"
       # Only the Kotlin tests of the contract suites: the other runtimes run
       # in their own jobs.
@@ -1045,10 +1052,10 @@ jobs:
           cargo test -p rutis-bridge --features testing,kotlin --test kotlin_runtime
       # Remote: the dial-out column, the listener's and dialer's own rules
       # (statuses, frames, heartbeat, takeover, TLS both ways), and
-      # rutis-host's `runtimes.remote[].language: "kotlin"`.
+      # rutis-host's dial and listen rows with Kotlin.
       - name: cargo test (the Kotlin runtime remotely)
         run: |
-          cargo test -p rutis-bridge --features testing,websocket,kotlin --test dial_conformance kotlin::
+          cargo test -p rutis-host --features kotlin --test dial_conformance kotlin::
           cargo test -p rutis-bridge --features testing,websocket,kotlin --test kotlin_remote
           cargo test -p rutis-host --features kotlin --test kotlin
       # Kotlin rows among Node and Python ones (the multilang Kotlin column),
@@ -1098,10 +1105,12 @@ jobs:
       # The SDK's own tests run as a program (swift/rutis/Tests/SelfTest):
       # the runners' Command Line Tools have no XCTest, and not every
       # version has Swift Testing's macros.
+      # RutisTest runs the plugins under test as rows of `rutis-host test`.
       - name: swift build and the SDK's tests
         run: |
+          cargo build -p rutis-host
           swift build
-          swift run RutisSelfTest
+          RUTIS_HOST="$PWD/target/debug/rutis-host" swift run RutisSelfTest
       # The public API of Rutis and RutisTest against
       # swift/rutis/public-api.txt (SDK entry design §6, #692).
       - name: public API of the Swift SDK
@@ -1124,7 +1133,7 @@ jobs:
       # rules (statuses, frames, heartbeat, takeover, TLS both ways).
       - name: cargo test (the Swift runtime remotely)
         run: |
-          cargo test -p rutis-bridge --features testing,websocket,swift --test dial_conformance swift::
+          cargo test -p rutis-host --test dial_conformance swift::
           cargo test -p rutis-bridge --features testing,websocket,swift --test swift_remote
       - name: cargo test (the Swift runtime in the bridge)
         run: cargo test -p rutis-bridge --features testing,swift --test swift_runtime
@@ -1135,16 +1144,16 @@ jobs:
       - run: npm --prefix node/rutis-runtime ci
       - uses: astral-sh/setup-uv@v6
         if: runner.environment == 'self-hosted'
-      - name: Python 3.10 (self-hosted macOS)
+      - name: Python 3.12 (self-hosted macOS)
         if: runner.environment == 'self-hosted'
         run: |
-          uv python install 3.10
-          uv venv --seed --python-preference only-managed --python 3.10 "$RUNNER_TEMP/python"
+          uv python install 3.12
+          uv venv --seed --python-preference only-managed --python 3.12 "$RUNNER_TEMP/python"
           echo "$RUNNER_TEMP/python/bin" >> "$GITHUB_PATH"
       - uses: actions/setup-python@v5
         if: runner.environment == 'github-hosted'
         with:
-          python-version: '3.10'
+          python-version: '3.12'
       - name: cargo test (Swift rows)
         run: |
           cargo test -p rutis-loader --features node,python,swift --test swift_rows --test multilang_swift
@@ -1245,16 +1254,15 @@ jobs:
       # Only the Bun tests of the contract suites: the other runtimes run
       # in their own jobs.
       - name: cargo test (rutis-bridge, the contract suites with Bun)
-        run: cargo test -p rutis-bridge --features bun,testing,websocket --test runtime_conformance --test session_matrix --test dial_conformance bun
+        run: |
+          cargo test -p rutis-bridge --features bun,testing,websocket --test runtime_conformance --test session_matrix bun
+          cargo test -p rutis-host --test dial_conformance bun::
       - name: cargo test (rutis-bridge, the runtime contract with Bun on loopback channels)
         env:
           RUTIS_LOCAL_HANDOVER: loopback
         run: cargo test -p rutis-bridge --features bun,testing,websocket --test session_matrix bun
       - name: cargo test (rutis-loader, Bun rows)
         run: cargo test -p rutis-loader --features bun,node,python --test bun_rows --test bun_instances --test bun_multilang --test caller_rows
-      # A listening Bun runtime's leases (the other languages run in `rust`).
-      - name: cargo test (rutis-loader, remote Bun runtime leases)
-        run: cargo test -p rutis-loader --features bun,node,python --test leases bun
       - name: cargo test (rutis-loader, Bun rows on loopback channels)
         env:
           RUTIS_LOCAL_HANDOVER: loopback
@@ -1370,7 +1378,7 @@ jobs:
             LOADER_TESTS=$(bash tools/platform-tests.sh crates/rutis-loader $PURE_TESTS_LOADER $MACOS_SKIP_TESTS_LOADER)
           fi
           cargo test -p rutis-bridge --all-features $BRIDGE_TESTS
-          cargo test -p rutis-loader --features node,python,go,peer,bun $LOADER_TESTS
+          cargo test -p rutis-loader --features node,python,go,bun $LOADER_TESTS
           cargo test -p rutis-host
       # The published Cordis plugins S6 mounts (tests/e2e/tests/cordis.rs),
       # at the lockfile's versions.
@@ -1716,9 +1724,13 @@ jobs:
           go-version: stable
           cache: ${{ runner.environment == 'github-hosted' }}
           cache-dependency-path: go/rutis/go.mod
+      # rutistest runs plugins under `rutis-host test` (RUTIS_HOST).
       - name: go test (the Go SDK)
-        run: go test ./...
-        working-directory: go/rutis
+        shell: bash
+        run: |
+          cargo build -p rutis-host
+          export RUTIS_HOST="${CARGO_TARGET_DIR:-$PWD/target}/debug/rutis-host"
+          cd go/rutis && go test ./...
       # The Kotlin SDK's jvm target, for the bridge's tests with `kotlin`
       # (loopback channels only on Windows).
       - uses: actions/setup-java@v4
@@ -1749,7 +1761,7 @@ jobs:
           if [ "$ALL" != true ]; then
             LOADER_TESTS=$(bash tools/platform-tests.sh crates/rutis-loader $PURE_TESTS_LOADER $WINDOWS_SKIP_TESTS_LOADER)
           fi
-          cargo test -p rutis-loader --features node,python,go,peer --no-fail-fast $LOADER_TESTS
+          cargo test -p rutis-loader --features node,python,go --no-fail-fast $LOADER_TESTS
       - name: cargo test (rutis-bridge, all features)
         if: '!cancelled()'
         env:

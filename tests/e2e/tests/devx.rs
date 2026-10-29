@@ -815,7 +815,9 @@ fn a_go_plugin_is_written_tested_reloaded_and_packed() {
         .output()
         .expect("go env GOCACHE");
     let cache = String::from_utf8_lossy(&cache.stdout).trim().to_owned();
-    let env = go_env(&cache);
+    let mut env = go_env(&cache);
+    // rutistest runs the plugin under `rutis-host test`: the installed one.
+    env.push(("RUTIS_HOST", launcher.display().to_string()));
     let env: Vec<(&str, &str)> = env
         .iter()
         .map(|(name, value)| (*name, value.as_str()))

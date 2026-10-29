@@ -75,6 +75,18 @@ private class Case(val raw: JsonObject) {
         (key == "X" || key == "Y" || key in labels) && list.jsonArray.any { it.jsonPrimitive.content == LANGUAGE }
     }
 
+    /**
+     * Whether the case places a row in a scope: the testing tool has no
+     * scopes (docs/design-platform-cleanup-2026-10-28.md §7.5); rutis-loader's
+     * events_conformance runs those cases.
+     */
+    fun scoped(): Boolean {
+        fun at(o: JsonObject?) = (o?.get("scope") as? JsonPrimitive)?.content.let { it != null && it != "" && it != "root" }
+        fun step(o: JsonObject): Boolean = at(o["emit"] as? JsonObject) || at(o["load"] as? JsonObject) ||
+            (o["concurrent"]?.jsonArray?.any { step(it.jsonObject) } ?: false)
+        return listeners.any { at(it) } || steps.any(::step)
+    }
+
     /** Whether the case runs on the Kotlin testing tool, and why not (events.rs `tool_combo`). */
     fun forKotlin(): String? {
         if (!tool) return "tool: false"
@@ -86,7 +98,7 @@ private class Case(val raw: JsonObject) {
 }
 
 /** One case on one harness. */
-private class Run(val c: Case, val groups: Map<String, String>, val log: EventLog, val problems: MutableList<String>) {
+private class Run(val c: Case, val log: EventLog, val problems: MutableList<String>) {
     lateinit var root: Loaded
     val rows = HashMap<String, Loaded>()
     val participants = HashMap<String, Map<String, Any?>>()
@@ -94,19 +106,13 @@ private class Run(val c: Case, val groups: Map<String, String>, val log: EventLo
     var pending: CompletableFuture<Result<Any?>>? = null
     var reported = 0
 
-    fun scopeOf(path: String?): List<arcships.rutis.advanced.Scope> {
-        if (path == null || path == "" || path == "root") return emptyList()
-        val segments = path.split("/")
-        return RutisTest.scope(path, *segments.indices.map { groups[segments.subList(0, it + 1).joinToString("/")] ?: segments[it] }.toTypedArray())
-    }
-
     /** Loads a listener row. */
     fun load(raw: JsonObject) {
         @Suppress("UNCHECKED_CAST")
         val listener = (arcships.rutis.internal.Native.toNative(raw) as Map<String, Any?>).toMutableMap()
         if ("name" !in listener) listener["name"] = c.name
         val label = listener["label"] as String
-        rows[label] = root.load(listener, row = label, scope = scopeOf(listener["scope"] as? String))
+        rows[label] = root.load(listener, row = label)
         participants[label] = listener
     }
 
@@ -119,16 +125,15 @@ private class Run(val c: Case, val groups: Map<String, String>, val log: EventLo
         participants[label] = config
     }
 
-    /** The emitter row of `label` in `scope`, created on first use. */
-    fun emitter(label: String, scope: String?): Pair<Loaded, String> {
-        val key = if (scope == null || scope == "" || scope == "root") label else label + "-" + scope.replace("/", "-")
-        val row = rows.getOrPut(key) { root.load(mapOf("label" to key, "emitter" to true), row = key, scope = scopeOf(scope)) }
-        return row to key
+    /** The emitter row of `label`, created on first use. */
+    fun emitter(label: String): Pair<Loaded, String> {
+        val row = rows.getOrPut(label) { root.load(mapOf("label" to label, "emitter" to true), row = label) }
+        return row to label
     }
 
     fun emit(spec: JsonObject): Result<Any?> {
         val row = (spec["row"] as? JsonPrimitive)?.content ?: "e"
-        val (loaded, key) = emitter(row, (spec["scope"] as? JsonPrimitive)?.content)
+        val (loaded, key) = emitter(row)
         val mode = spec["mode"]!!.jsonPrimitive.content
         val request = linkedMapOf<String, Any?>(
             "mode" to JsonPrimitive(mode),
@@ -138,7 +143,7 @@ private class Run(val c: Case, val groups: Map<String, String>, val log: EventLo
         spec["filter"]?.let { request["filter"] = it }
         spec["terminal"]?.let { request["terminal"] = it }
         spec["cancel"]?.let { request["cancel"] = it }
-        val method = if (mode == "bail" || mode == "waterfall-sync") "dispatchSync" else "dispatch"
+        val method = if (mode == "bail") "dispatchSync" else "dispatch"
         return runBlocking {
             runCatching { withTimeout(10_000) { loaded.service("emitter-$key").raw(method, listOf(request)) } }
         }
@@ -189,10 +194,13 @@ private class Run(val c: Case, val groups: Map<String, String>, val log: EventLo
         }
     }
 
-    /** The error name of a §5.6 report `line` about `event` naming `row`, or null (events.rs `reports`). */
+    /**
+     * The error name of a §5.6 line rutis reported about `event` naming
+     * `row`, or null: `<row>: listener of <event> failed: …`, `filter of
+     * <event> from row <row> failed: …`.
+     */
     private fun reports(line: String, event: String, filter: Boolean, row: String): String? {
-        val (kind, at) = if (filter) "filter" to "from" else "listener" to "in"
-        val prefix = "rutis: $kind of $event $at row $row failed: "
+        val prefix = if (filter) "filter of $event from row $row failed: " else "$row: listener of $event failed: "
         if (!line.startsWith(prefix)) return null
         val rest = line.removePrefix(prefix)
         val colon = rest.indexOf(": ")
@@ -259,7 +267,6 @@ private class Run(val c: Case, val groups: Map<String, String>, val log: EventLo
     fun step(i: Int, step: JsonObject) {
         val where = "${c.case} step $i"
         val e = step["expect"] as? JsonObject ?: JsonObject(emptyMap())
-        if ((e["viaHost"] as? JsonPrimitive)?.booleanOrNull == true) problems.add("$where: the testing tool always dispatches on the fast path")
         val emit = step["emit"] as? JsonObject
         val event = (emit?.get("name") as? JsonPrimitive)?.content ?: c.name
         val outcomes = ArrayList<Result<Any?>>()
@@ -303,17 +310,21 @@ class EventsConformanceTest {
     @Test
     fun theTestingToolMeetsTheEventExpectations() {
         val expected = expectations("events.expected.json")
-        val groups = expected["scopes"]!!.jsonObject.mapValues { it.value.jsonPrimitive.content }
         val toolCases = expected["toolCases"]!!.jsonObject[LANGUAGE]?.jsonPrimitive?.content?.toInt()
         var ran = 0
+        var scoped = 0
         val failures = ArrayList<String>()
         for (raw in expected["cases"]!!.jsonArray) {
             val c = Case(raw.jsonObject)
             if (c.forKotlin() != null) continue
+            if (c.scoped()) {
+                scoped++
+                continue
+            }
             ran++
             val log = EventLog()
             val problems = ArrayList<String>()
-            val run = Run(c, groups, log, problems)
+            val run = Run(c, log, problems)
             try {
                 RutisTest.load(conformanceEvents, mapOf("label" to "e", "emitter" to true), mapOf("events-log" to log), row = "e").use { root ->
                     run.root = root
@@ -328,7 +339,8 @@ class EventsConformanceTest {
             if (problems.isNotEmpty()) failures.add(problems.joinToString("\n"))
         }
         if (failures.isNotEmpty()) fail("${failures.size} cases failed:\n" + failures.joinToString("\n"))
-        // The skip logic agrees with events.rs `tool_combo`.
-        assertEquals(toolCases, ran, "the cases the file gives $LANGUAGE")
+        // The skip logic agrees with events.rs `tool_combo`; the cases with
+        // scopes are rutis-loader's.
+        assertEquals(toolCases, ran + scoped, "the cases the file gives $LANGUAGE")
     }
 }

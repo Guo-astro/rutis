@@ -60,7 +60,7 @@ pub trait Closer: Send + Sync {
 ///
 /// | `Close` | WebSocket | process pipe | memory |
 /// | --- | --- | --- | --- |
-/// | `Done` | close code 1000 (1001 when the host stops) | the child's end of the channel closed | the far end's `recv` gives `Ok(None)` |
+/// | `Done` | close code 1000 | the child's end of the channel closed | the far end's `recv` gives `Ok(None)` |
 /// | `Replaced` | close code 4002 | as `Done` | the far end's `recv` gives `Closed` |
 /// | `Rejected(reason)` | close code 4003 with `reason` | as `Done` | the far end's `recv` gives `Rejected` |
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -117,7 +117,7 @@ pub enum ChannelError {
     #[error("{reason}")]
     Closed { reason: String },
     /// The far end rejected this end's identity after the channel was
-    /// established (an access point refusing the id this end greeted
+    /// established (a listener refusing the id this end greeted
     /// with): an authentication failure, which a session ends with as an
     /// identity mismatch. Only a transport that can say so reports it.
     #[error("{reason}")]

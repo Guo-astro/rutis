@@ -61,22 +61,13 @@ export function versionMismatch(far, local, implementation) {
     ? `${mismatch}: upgrade the far end (${name} ${version})`
     : `${mismatch}: upgrade the far end`
 }
-// What this implementation supports. `objects`: it
-// takes objects with methods, as a proxy whose methods call them (#687).
-// `reentrant-sync`: while a synchronous call waits, every incoming call
-// runs, not only those of its own call chain (see `#run`). `sync-wait`:
-// its synchronous calls say so (`sync: true`), for the host's wait-cycle
-// check; `sync-stack`: calls run while it waits are stacked on its one
-// thread. `value-<tag>`: it takes all ten tagged values (#308,
-// ./values.ts).
-export const CAPABILITIES = ['objects', 'signals', 'reentrant-sync', 'sync-wait', 'sync-stack', ...VALUE_CAPABILITIES, 'events-v2']
+// What this implementation supports. `reentrant-sync`: while a
+// synchronous call waits, every incoming call runs, not only those of its
+// own call chain (see `#run`). `sync-stack`: calls run while it waits are
+// stacked on its one thread. `value-<tag>`: it takes all ten tagged values
+// (#308, ./values.ts).
+export const CAPABILITIES = ['reentrant-sync', 'sync-stack', ...VALUE_CAPABILITIES]
 export const ENDPOINT_ID = /^[a-z0-9-]+$/
-// `events-v2` (#464): the event protocol of rutis 0.13. A runtime requires it of its host (`requires`) and ends the
-// session right after the handshake without it (protocol §2.1).
-export const EVENTS_V2_REFUSAL = 'this host does not declare events-v2 (the event protocol of rutis 0.13): upgrade rutis-host to 0.13 or later'
-function required(capabilities, requires) {
-  if (requires?.includes('events-v2') && !capabilities.includes('events-v2')) throw Object.assign(new Error(EVENTS_V2_REFUSAL), { category: 'incompatible' })
-}
 
 // What a far end's hello says of it, or why it is refused:
 // an error whose `category` says what it means for a link or a dialer
@@ -92,7 +83,6 @@ export function greetingOf(frame, endpoint) {
   }
   if (far === endpoint.local) throw fail('auth-rejected', `endpoint mismatch: the far end greeted as this endpoint (${far})`)
   const capabilities = Array.isArray(frame.capabilities) ? frame.capabilities : []
-  required(capabilities, endpoint.requires)
   return { endpoint: far, implementation: frame.implementation, capabilities }
 }
 
@@ -152,7 +142,6 @@ const classOf = value => {
   const name = prototype && prototype !== Object.prototype ? prototype.constructor?.name : undefined
   return typeof name === 'string' && name && name !== 'Object' ? name : undefined
 }
-const className = value => { const name = classOf(value); return name ? ` (${name})` : '' }
 // The methods an object passed by reference has: its own and inherited
 // function-valued properties, not `constructor` nor Object's own, a field
 // hiding an inherited method of its name; sorted.
@@ -223,7 +212,7 @@ class RemotePromise extends Promise {
 // plugin is itself inside a synchronous call: do not hold a lock across a
 // call into rutis.
 export class Session {
-  #send; #pump; #dispatch; #abort; #settled; #inline; #requires; #owner; #within
+  #send; #pump; #dispatch; #abort; #settled; #inline; #owner; #within
   #next = 0; #received = 0; #ref = 0; #pending = new Map(); #sites = new Map(); #exports = new Map(); #identities = new WeakMap()
   #imports = new Map(); #proxies = new WeakMap(); #finalizer
   #closed; #handshake = false; #resolveReady; #rejectReady
@@ -244,7 +233,7 @@ export class Session {
   // `endpoint` ({ local, expected?, verified?, declare? }): this side's
   // endpoint id, the far end's it expects, and what it declares beyond the
   // session's capabilities (the contract, say).
-  constructor({ send, pump, dispatch, abort, settled, endpoint, inline, requires, owner, within, maxMessage = MAX_MESSAGE }) {
+  constructor({ send, pump, dispatch, abort, settled, endpoint, inline, owner, within, maxMessage = MAX_MESSAGE }) {
     this.#send = send; this.#pump = pump; this.#dispatch = dispatch; this.#abort = abort; this.#settled = settled
     // `owner()`: whose code is running now (the runtime's row, #678), kept
     // with each function or object exported; `within(owner, run)` runs a
@@ -255,8 +244,7 @@ export class Session {
     // `inline`: control methods (empty target) run as their frame arrives,
     // in frame order, before the next frame is read, also while a
     // synchronous call waits (`events.on`, `events.off`, `events.elsewhere`).
-    // `requires`: capabilities the far end must declare (`events-v2`).
-    this.#inline = new Set(inline ?? []); this.#requires = requires ?? endpoint?.requires
+    this.#inline = new Set(inline ?? [])
     if (!ENDPOINT_ID.test(endpoint?.local)) throw new Error(`invalid endpoint id ${endpoint?.local}`)
     this.#endpoint = endpoint; this.#local = `${endpoint.local}:`
     this.ready = new Promise((resolve, reject) => { this.#resolveReady = resolve; this.#rejectReady = reject })
@@ -272,7 +260,7 @@ export class Session {
   // Handshake failures carry what they mean for a link (greetingOf): stop
   // on an incompatible far end, retry slowly on a mismatched identity.
   #greet(frame) {
-    this.greeting = greetingOf(frame, { ...this.#endpoint, requires: this.#requires })
+    this.greeting = greetingOf(frame, this.#endpoint)
     this.#remote = `${this.greeting.endpoint}:`
     this.#declared = this.greeting.capabilities
   }
@@ -313,9 +301,6 @@ export class Session {
         id = ++this.#ref
         if (!Number.isSafeInteger(id)) throw new Error('reference identifiers exhausted')
         const kind = typeof value === 'function' ? 'function' : value instanceof Promise ? 'future' : isPluginDefinition(value) ? 'plugin' : 'object'
-        // An object goes only to a far end that can call its methods.
-        // An older one (before rutis 0.18) takes none.
-        if (kind === 'object' && !this.supports('objects')) throw new ValueError(`an object with methods${className(value)} cannot cross to ${this.greeting.endpoint}; pass plain data or a function instead, or upgrade ${this.greeting.endpoint} to rutis 0.18`)
         if (kind === 'plugin' && !this.#declared.includes('plugins')) throw new ValueError('cannot send a plugin definition: the far end does not accept plugin definitions (it did not declare the capability plugins)')
         entry = { origin: [...this.#path()], value, kind, grants: 0, business, call: kind === 'future' ? this.#promiseCalls.get(value) : undefined, owner: this.#owner() }
         this.#identities.set(value, id); this.#exports.set(id, entry)
@@ -540,9 +525,9 @@ export class Session {
     try {
       const call = () => describeCall(op, fields)
       const frame: any = { op, id, path: [...new Set([...this.#path(), ...origin])], ...fields, ...(op === 'await' ? {} : { args: this.#encodeArgs(args, grants, call) }) }
-      // This thread waits for the reply: a host that checks for wait
-      // cycles needs to know (#228); older hosts would refuse the field.
-      if (sync && this.#declared.includes('sync-wait')) frame.sync = true
+      // This thread waits for the reply: the host checks for wait cycles
+      // (#228).
+      if (sync) frame.sync = true
       const encoded = encode(frame)
       // Over the limit, only this call fails, before it is sent (#675).
       const size = sizeOver(encoded, this.#max)

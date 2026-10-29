@@ -44,15 +44,11 @@ const val ENDPOINT_PROTOCOL: Int = 4
 /** How deep a value crossing a session may nest (#279): each list, record, map or set is a level. */
 const val MAX_DEPTH: Int = 64
 
-/** The event protocol of rutis 0.13 (#464), which both ends of every 0.13 session declare. */
-const val EVENTS_CAPABILITY: String = "events-v2"
-
 /**
- * What this side declares: `signals`; `sync-wait` (its
- * synchronous calls say so); `reentrant-sync` (a thread per incoming call);
- * not `sync-stack`; `events-v2`; every `value-<tag>`.
+ * What this side declares: `reentrant-sync` (a thread per incoming call);
+ * not `sync-stack`; every `value-<tag>`.
  */
-val SESSION_CAPABILITIES: List<String> = listOf("objects", "signals", "reentrant-sync", "sync-wait", EVENTS_CAPABILITY) + VALUE_CAPABILITIES
+val SESSION_CAPABILITIES: List<String> = listOf("reentrant-sync") + VALUE_CAPABILITIES
 
 private val endpointId = Regex("^[a-z0-9-]+$")
 private val endpointOrigin = Regex("^(s[0-9]+/)?[a-z0-9-]+:[1-9][0-9]*$")
@@ -93,7 +89,7 @@ class Options(
     val implementation: Map<String, String> = emptyMap(),
     /** Declared in the endpoint handshake. */
     val capabilities: List<String> = SESSION_CAPABILITIES,
-    /** This side takes the far end's plugin definitions and declares `plugins`, as rutis does: a test host (RutisTest). */
+    /** This side takes the far end's plugin definitions and declares `plugins`, as rutis does. */
     val plugins: Boolean = false,
     /** Capabilities the far end must declare: the session ends right after its handshake when it does not. */
     val require: List<String> = emptyList(),
@@ -105,12 +101,6 @@ class Options(
      * the call.
      */
     val arrive: ((method: String, args: List<Any?>) -> (suspend () -> Any?)?)? = null,
-    /**
-     * A test host (RutisTest) in the runtime's process: the plugin definition
-     * the runtime exported as `id`, so that a test double gets the definition
-     * itself, as the runtime would take it back.
-     */
-    val localPlugin: ((id: Long) -> Plugin?)? = null,
 )
 
 /** What the far end said of itself. */
@@ -132,12 +122,8 @@ class Imported internal constructor(val id: Long, val kind: String, val origin: 
     internal var obj: WeakReference<RemoteObject>? = null
 }
 
-/**
- * A plugin definition of the far end, held by a test host (RutisTest): it
- * can only be handed back. [local] is the definition itself when the runtime
- * is in this process.
- */
-class RemotePlugin internal constructor(internal val peer: Peer, internal val record: Imported, val local: Plugin?)
+/** A plugin definition of the far end, held by a side that takes them (`plugins`): it can only be handed back. */
+class RemotePlugin internal constructor(internal val peer: Peer, internal val record: Imported)
 
 /** An asynchronous result of the far end. */
 class RemoteFuture internal constructor(internal val peer: Peer, internal val record: Imported) {
@@ -212,15 +198,6 @@ class Peer(private val channel: Channel, private val opts: Options) {
     private val identities = IdentityHashMap<Any, Long>()
     private val imports = HashMap<Long, Imported>()
 
-    /**
-     * A test host's plugin definitions of the far end, by the definition
-     * itself, held until the session ends (or the reference is released):
-     * one handed back goes home as the original reference, as rutis sends
-     * it. So the test host never lets one go before the session ends, and a
-     * test does not see rutis dropping a definition and the runtime
-     * releasing it with it.
-     */
-    private val heldPlugins = java.util.IdentityHashMap<Plugin, RemotePlugin>()
     private val running = HashMap<String, Running>()
     private val signals = HashMap<String, Signal>()
 
@@ -266,7 +243,6 @@ class Peer(private val channel: Channel, private val opts: Options) {
     fun supports(capability: String): Boolean = synchronized(lock) { capability in declared }
 
     /** The plugin definition exported as `id`, while the far end holds it. */
-    fun exportedPlugin(id: Long): Plugin? = synchronized(lock) { exports[id]?.value as? Plugin }
 
     /** What the far end said of itself, once it greeted. */
     fun greeting(): Greeting? = synchronized(lock) { greeting }
@@ -354,7 +330,6 @@ class Peer(private val channel: Channel, private val opts: Options) {
             exports.clear()
             identities.clear()
             imports.clear()
-            heldPlugins.clear()
             drains = ArrayList(draining)
             draining.clear()
             cancelled = ArrayList(running.values)
@@ -393,8 +368,6 @@ class Peer(private val channel: Channel, private val opts: Options) {
             }
             record.released = true
             if (imports[record.id] === record) imports.remove(record.id)
-            // A released plugin definition is no longer held.
-            if (record.kind == "plugin") heldPlugins.values.removeIf { it.record === record }
             count = record.grants
         }
         outbox.offer(compact(buildJsonObject {
@@ -465,9 +438,6 @@ class Peer(private val channel: Channel, private val opts: Options) {
             // A plugin definition, only to a far end that takes them; only
             // this call fails (plugin values §5).
             is Plugin -> {
-                // A test host hands a definition of the far end back home.
-                val held = heldPlugins[value]
-                if (held != null && !held.record.released) return homeReference(held.record)
                 if (!supportsLocked("plugins")) {
                     throw ValueException("cannot send a plugin definition: the far end does not accept plugin definitions (it did not declare the capability plugins)")
                 }
@@ -475,7 +445,6 @@ class Peer(private val channel: Channel, private val opts: Options) {
             }
             is Exported -> exportValue(value, "function", value.original, grants, origin)
             is ExportedObject -> {
-                if (!supportsLocked("objects")) throw objectRefused(value.original, greeting?.endpoint)
                 exportValue(value, "object", value.original, grants, origin)
             }
             is Long -> if (value > MAX_SAFE || value < -MAX_SAFE) {
@@ -686,9 +655,8 @@ class Peer(private val channel: Channel, private val opts: Options) {
         imports[id] = record
         d.fresh.add(record)
         if (kind == "plugin") {
-            val proxy = RemotePlugin(this, record, opts.localPlugin?.invoke(id))
+            val proxy = RemotePlugin(this, record)
             record.plugin = WeakReference(proxy)
-            proxy.local?.let { heldPlugins[it] = proxy }
             Collector.watch(proxy, this, record)
             return proxy
         }
@@ -713,9 +681,9 @@ class Peer(private val channel: Channel, private val opts: Options) {
 
     // ── Outgoing calls ───────────────────────────────────────────
 
-    /** The frame fields of a synchronous call: `sync: true` for a far end that declared `sync-wait`. */
+    /** The frame fields of a synchronous call: `sync: true` (#228). */
     private fun waiting(fields: Map<String, JsonElement>, sync: Boolean): Map<String, JsonElement> =
-        if (sync && supports("sync-wait")) fields + ("sync" to JsonPrimitive(true)) else fields
+        if (sync) fields + ("sync" to JsonPrimitive(true)) else fields
 
     private fun invokeFields(target: String, method: String) =
         mapOf("target" to JsonPrimitive(target), "method" to JsonPrimitive(method))

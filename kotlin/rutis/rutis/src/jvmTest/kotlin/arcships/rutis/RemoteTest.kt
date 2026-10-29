@@ -24,7 +24,7 @@ import kotlin.test.assertTrue
 /**
  * The remote channels' rules (design-remote-runtime-dial §六) that need no
  * connection; what needs one is checked from outside, on the conformance
- * jar (crates/rutis-bridge/tests/dial_conformance.rs, kotlin_remote.rs).
+ * jar (crates/rutis-host/tests/dial_conformance.rs, kotlin_remote.rs).
  */
 class RemoteTest {
     @Test
@@ -59,7 +59,7 @@ class RemoteTest {
         assertEquals(Failure.AuthRejected, sessionFailure(IOException("rejected: pixel is not known"), CloseCode.REJECTED))
         assertEquals(Failure.AuthRejected, sessionFailure(EndpointMismatchException("endpoint mismatch"), 0))
         assertEquals(Failure.Incompatible, sessionFailure(IncompatibleException("incompatible session"), 0))
-        assertEquals(Failure.Incompatible, sessionFailure(RefusedException("this host does not declare events-v2"), 0))
+        assertEquals(Failure.Incompatible, sessionFailure(RefusedException("this access point is incompatible"), 0))
         assertEquals(Failure.Retryable, sessionFailure(IOException("replaced by a new connection"), CloseCode.REPLACED))
         assertEquals(Failure.Retryable, sessionFailure(null, 0))
     }

@@ -167,8 +167,8 @@ async fn connect(mut command: tokio::process::Command, via: Via) -> (Channel, Ch
 /// Start `command` listening on a loopback WebSocket, and dial it.
 #[cfg(feature = "websocket")]
 async fn listening(mut command: tokio::process::Command) -> (Channel, Child) {
+    use rutis_bridge::websocket::Credential;
     use rutis_bridge::websocket::{Limits, Trust};
-    use rutis_bridge::Credential;
     use tokio::io::AsyncBufReadExt;
 
     let mut child = command

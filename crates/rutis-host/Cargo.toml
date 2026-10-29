@@ -19,9 +19,9 @@ name = "rutis-host"
 path = "src/main.rs"
 
 [features]
-# Tests only: Kotlin runtimes connecting to the host, `runtimes.remote[]`
-# with `language: "kotlin"` (the jvm target of kotlin/rutis, its
-# conformance jar; `RUTIS_KOTLIN_JAR` names one built beforehand).
+# Tests only: Kotlin runtimes and applications connecting to the host's
+# dial and listen rows (the jvm target of kotlin/rutis, its conformance
+# jar; `RUTIS_KOTLIN_JAR` names one built beforehand).
 kotlin = []
 # Tests only: kotlin/rutis/android-sample on an Android device or emulator
 # (`adb`), dialing in to the host (tests/android.rs).
@@ -31,7 +31,7 @@ android = []
 rutis = { path = "../rutis", version = "0.18.0" }
 rutis-bridge = { path = "../rutis-bridge", version = "0.18.0", features = ["node", "python", "bun", "go", "swift", "websocket"] }
 rutis-types = { path = "../rutis-types", version = "0.18.0" }
-rutis-loader = { path = "../rutis-loader", version = "0.18.0", features = ["node", "python", "bun", "go", "swift", "peer"] }
+rutis-loader = { path = "../rutis-loader", version = "0.18.0", features = ["node", "python", "bun", "go", "swift"] }
 # To say which file is not PEM (the transport only sees the contents).
 rustls-pki-types = { version = "1", features = ["std"] }
 serde = { version = "1", features = ["derive"] }
@@ -50,3 +50,5 @@ tempfile = "3"
 tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
 # The paused clock, for the configuration watch's timing.
 tokio = { workspace = true, features = ["test-util"] }
+# The Rust host guides' examples (`lib.rs`, doctests) derive config schemas.
+schemars = "1"

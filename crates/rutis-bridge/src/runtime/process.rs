@@ -1,7 +1,7 @@
 use crate::pipe::Stdio;
 use crate::runtime::rpc::{Connection, Dispatch, Reply, Value as RpcValue};
 use crate::runtime::Error;
-use crate::runtime::{CallerRow, HostDispatch, RuntimeSession};
+use crate::runtime::{CallerRow, Carried, HostDispatch};
 use rutis::host::CtxHost;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -284,7 +284,7 @@ impl Launcher {
     ///
     /// The setting is the whole runtime process's: every plugin loaded into
     /// it can read the input. Run a plugin that needs the terminal in a
-    /// runtime of its own ([`LocalRuntime::named`](crate::runtime::LocalRuntime::named)).
+    /// runtime of its own.
     ///
     /// On Unix, a runtime process normally runs in a process group of its
     /// own, so a Ctrl-C in the terminal reaches only the host, which unloads
@@ -397,10 +397,50 @@ impl Launcher {
             .cwd(project)
             .inherit_fd()
     }
+
+    /// Start the runtime process ([`crate::pipe::spawn`]) on a channel of
+    /// its own, recording it in `processes`: it receives its channel,
+    /// `--id <id>` (the endpoint it greets as) and `anchor` as its last
+    /// arguments. With `RUTIS_TRACE` set, every message on the channel is
+    /// reported on stderr (direction and length, never content).
+    pub async fn start(
+        &self,
+        id: &crate::PeerId,
+        anchor: &std::path::Path,
+        processes: &crate::pipe::Processes,
+    ) -> Result<crate::Channel, crate::ConnectError> {
+        let mut spawn = crate::pipe::Spawn::new(self.program.clone());
+        spawn.args = self.args.clone();
+        spawn.env = self.env.clone();
+        spawn.cwd = self.cwd.clone();
+        spawn.stdin = self.stdin;
+        spawn.stdout = self.stdout;
+        spawn.stderr = self.stderr;
+        spawn.output_prefix = self.output_prefix.clone();
+        spawn.handover = match self.inherit_fd {
+            true => crate::pipe::Handover::Inherit,
+            false => crate::pipe::Handover::DialBack,
+        };
+        spawn.trailing = vec![
+            std::ffi::OsString::from("--id"),
+            std::ffi::OsString::from(id.as_str()),
+            std::ffi::OsString::from(anchor),
+        ];
+        let channel = crate::pipe::spawn(&spawn, processes).await?;
+        Ok(match std::env::var_os("RUTIS_TRACE") {
+            Some(_) => crate::channel::trace::trace(
+                channel,
+                "runtime",
+                Arc::new(|line: &str| eprintln!("rutis trace: {line}")),
+            ),
+            None => channel,
+        })
+    }
 }
 
 /// `first` ahead of the search path `rest` (`PATH` syntax for the
 /// platform: `:` or `;` between entries).
+#[cfg(feature = "python")]
 pub(crate) fn search_path(
     first: std::ffi::OsString,
     rest: Option<&std::ffi::OsStr>,
@@ -909,8 +949,9 @@ impl Process {
                 ))
             }
         };
+        // The endpoint the process greets as: the runtime's name.
         let id = crate::channel::PeerId::new(name)
-            .unwrap_or_else(|_| crate::channel::PeerId::new("runtime").expect("a valid id"));
+            .map_err(|error| Error::refused(format!("the runtime's name: {error}")))?;
         let (command, connect) = crate::runtime::spawn::command(launcher, node_package)?;
         let spawned = crate::runtime::spawn::spawn(command, id.as_str(), plugin, connect).await?;
         let main = crate::channel::PeerId::new("main").expect("a valid id");
@@ -949,7 +990,7 @@ impl Process {
         let (imports, rest) = Self::imports(started);
         let peer = Connection::open(channel, imports.clone(), endpoint)?;
         peer.ready().await?;
-        Self::finish(peer, imports, child, directory, None, rest).await
+        Self::finish(peer, imports, child, directory, None, rest, true).await
     }
 
     /// What serves the runtime's calls into rutis, and the rest of the mount.
@@ -992,9 +1033,27 @@ impl Process {
     /// Run a mount on `session`, a runtime session something else owns:
     /// its calls into rutis are routed here while the process lives, and
     /// disposing or dropping the process leaves the session open.
-    pub async fn over(
-        session: Arc<dyn RuntimeSession>,
+    pub(crate) async fn over(
+        session: Arc<dyn Carried>,
         mount: Mount<'_>,
+    ) -> Result<Arc<Self>, Error> {
+        Self::routed(session, mount, true).await
+    }
+
+    /// [`Process::over`] on a session whose events something else carries:
+    /// the process does not join the bus (a session with a rutis kernel,
+    /// whose listeners cross as a node's).
+    pub(crate) async fn over_without_bus(
+        session: Arc<dyn Carried>,
+        mount: Mount<'_>,
+    ) -> Result<Arc<Self>, Error> {
+        Self::routed(session, mount, false).await
+    }
+
+    async fn routed(
+        session: Arc<dyn Carried>,
+        mount: Mount<'_>,
+        bus: bool,
     ) -> Result<Arc<Self>, Error> {
         let (started, _) = Started::from(mount);
         let (imports, rest) = Self::imports(started);
@@ -1006,6 +1065,7 @@ impl Process {
             None,
             Some(routed),
             rest,
+            bus,
         )
         .await
     }
@@ -1017,6 +1077,7 @@ impl Process {
         directory: Option<tempfile::TempDir>,
         routed: Option<Box<dyn std::any::Any + Send + Sync>>,
         rest: MountRest,
+        bus: bool,
     ) -> Result<Arc<Self>, Error> {
         let MountRest {
             plugins,
@@ -1057,13 +1118,15 @@ impl Process {
         // runtime learns which names have listeners elsewhere first
         // (events protocol §4.5).
         let runtime = runtime.unwrap_or_else(|| "runtime".to_owned());
-        let events = crate::events::SessionEvents::join(
-            ctx.as_ref(),
-            process.peer.clone(),
-            runtime.clone(),
-            scope.clone(),
-        )?;
-        let _ = process.imports.bus.set(events);
+        if bus {
+            let events = crate::events::SessionEvents::join(
+                ctx.as_ref(),
+                process.peer.clone(),
+                runtime.clone(),
+                scope.clone(),
+            )?;
+            let _ = process.imports.bus.set(events);
+        }
         let mounted = process
             .call_async(
                 "",
@@ -1351,6 +1414,34 @@ impl Process {
         for (name, observer, version) in self.imports.forget(ids) {
             observer.changed(&name, None, version);
         }
+    }
+
+    /// Whether row `key` is loaded with an observer of its services.
+    pub(crate) fn has_row(&self, key: &str) -> bool {
+        self.imports.rows.lock().unwrap().contains_key(key)
+    }
+
+    /// Row `key` provides `name` with `methods`, called at `handle`, as a
+    /// runtime announces a service a row did not declare (`service` with
+    /// `{ row, methods }`). Whether its observer follows it.
+    pub(crate) fn announce_row_service(
+        &self,
+        key: &str,
+        name: &str,
+        methods: &Value,
+        handle: String,
+        version: u64,
+    ) -> bool {
+        if !self.imports.announce(key, name, methods) {
+            return false;
+        }
+        self.imports.update(name.to_owned(), Some(handle), version);
+        true
+    }
+
+    /// The service `name` a row announced is gone, at `version`.
+    pub(crate) fn withdraw_row_service(&self, name: &str, version: u64) {
+        self.imports.update(name.to_owned(), None, version);
     }
 
     /// Give row `key` a new config. Cordis commits volatile values in place

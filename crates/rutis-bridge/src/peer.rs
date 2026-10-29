@@ -1,6 +1,8 @@
-//! A ready session with one far end, as a link provides it (`Peer#<id>`).
+//! A ready session with one far end, inside rutis-bridge: what a
+//! [`Session`](crate::Session) and what runs on it (a far end's process,
+//! a far kernel's rows and events) use.
 //!
-//! The session is the link's; what runs on it is registered here by
+//! The session is its owner's; what runs on it is registered here by
 //! family. A call from the far end goes to the handler of its family:
 //! the part of a control method before its first `.` (`rows.load` →
 //! `rows`), the bare control method (`service`), or the part of a target
@@ -24,7 +26,7 @@ use serde_json::json;
 use tokio::sync::watch;
 
 /// Serves one family of operations on a peer's session.
-pub trait Handler: Send + Sync + 'static {
+pub(crate) trait Handler: Send + Sync + 'static {
     fn invoke(&self, peer: &Connection, target: &str, method: &str, args: Value) -> Reply;
 
     /// [`Dispatch::arrived`] for this family's event operations.
@@ -45,19 +47,19 @@ where
 
 /// The families an end offers, ordered by `version`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Offers {
-    pub families: BTreeSet<String>,
-    pub version: u64,
+pub(crate) struct Offers {
+    pub(crate) families: BTreeSet<String>,
+    pub(crate) version: u64,
     /// When each family was registered (its number in the end's sequence
     /// of offers, from 1). An end that does not say has every family at 0.
-    pub since: BTreeMap<String, u64>,
+    pub(crate) since: BTreeMap<String, u64>,
 }
 
 impl Offers {
     /// Which offer of `family` this is, if it is offered: it changes
     /// whenever the family is registered anew, even if a follower never saw
     /// it withdrawn.
-    pub fn epoch(&self, family: &str) -> Option<u64> {
+    pub(crate) fn epoch(&self, family: &str) -> Option<u64> {
         self.families
             .contains(family)
             .then(|| self.since.get(family).copied().unwrap_or(0))
@@ -65,7 +67,7 @@ impl Offers {
 }
 
 /// The family a call belongs to.
-pub fn family<'a>(target: &'a str, method: &'a str) -> &'a str {
+pub(crate) fn family<'a>(target: &'a str, method: &'a str) -> &'a str {
     match target {
         "" => method.split('.').next().unwrap_or(method),
         target => target.split(':').next().unwrap_or(target),
@@ -109,7 +111,10 @@ impl Operations {
     /// Forget the session, which holds this as its dispatch.
     pub(crate) fn detach(&self) {
         self.session.lock().unwrap().take();
-        self.handlers.lock().unwrap().clear();
+        // Dropped outside the lock: a handler may hold what unregisters
+        // families of its own (a process routed on this session).
+        let handlers = std::mem::take(&mut *self.handlers.lock().unwrap());
+        drop(handlers);
     }
 
     /// What this end offers now, as the announcement after `version`.
@@ -206,22 +211,21 @@ impl Dispatch for Operations {
 }
 
 /// A session with one far end, ready: the far end greeted as `id`.
-pub struct Peer {
+pub(crate) struct Peer {
     id: PeerId,
     connection: Connection,
-    generation: u64,
     operations: Arc<Operations>,
 }
 
 /// The key the peer `id` is provided under (`Peer#mac`).
-pub fn peer_key(id: &PeerId) -> Key<Peer> {
+pub(crate) fn peer_key(id: &PeerId) -> Key<Peer> {
     Key::dynamic(id.to_string())
 }
 
 /// A family registered on a peer; dropping it unregisters the family and
 /// tells the far end.
 #[must_use = "dropping the registration unregisters the family"]
-pub struct Offered {
+pub(crate) struct Offered {
     operations: Weak<Operations>,
     family: String,
     since: u64,
@@ -231,7 +235,7 @@ impl Offered {
     /// Which offer of the family this is: what the far end reads as its
     /// epoch ([`Offers::epoch`]). A later registration of the family on the
     /// session has a higher one.
-    pub fn epoch(&self) -> u64 {
+    pub(crate) fn epoch(&self) -> u64 {
         self.since
     }
 }
@@ -253,39 +257,30 @@ impl Drop for Offered {
 }
 
 impl Peer {
-    pub(crate) fn new(
-        id: PeerId,
-        connection: Connection,
-        generation: u64,
-        operations: Arc<Operations>,
-    ) -> Self {
+    pub(crate) fn new(id: PeerId, connection: Connection, operations: Arc<Operations>) -> Self {
         Self {
             id,
             connection,
-            generation,
             operations,
         }
     }
 
     /// The far end's endpoint id.
-    pub fn id(&self) -> &PeerId {
+    pub(crate) fn id(&self) -> &PeerId {
         &self.id
     }
 
     /// The session, to call the far end.
-    pub fn connection(&self) -> &Connection {
+    pub(crate) fn connection(&self) -> &Connection {
         &self.connection
     }
 
-    /// Which session of this link this is: each new session (a reconnect, a
-    /// takeover) has a higher one. Resources of an older one never apply to
-    /// a newer one.
-    pub fn generation(&self) -> u64 {
-        self.generation
-    }
-
     /// Serve `family` on this session. A family has one handler at a time.
-    pub fn register(&self, family: &str, handler: Arc<dyn Handler>) -> Result<Offered, Error> {
+    pub(crate) fn register(
+        &self,
+        family: &str,
+        handler: Arc<dyn Handler>,
+    ) -> Result<Offered, Error> {
         if family.is_empty() || family == "link" || family.contains(['.', ':']) {
             return Err(Error::refused(format!("{family:?} cannot be registered")));
         }
@@ -311,7 +306,7 @@ impl Peer {
 
     /// The next version in this session's sequence: higher than any taken
     /// before on it, whichever feature took it.
-    pub fn next_version(&self) -> u64 {
+    pub(crate) fn next_version(&self) -> u64 {
         self.operations
             .versions
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
@@ -319,7 +314,7 @@ impl Peer {
     }
 
     /// What the far end offers, as it announces it.
-    pub fn offers(&self) -> watch::Receiver<Offers> {
+    pub(crate) fn offers(&self) -> watch::Receiver<Offers> {
         self.operations.remote.subscribe()
     }
 }
@@ -342,12 +337,7 @@ mod tests {
             crate::session::rpc::Endpoint::rust(PeerId::new("main").unwrap()),
         )
         .unwrap();
-        let peer = Peer::new(
-            PeerId::new("mac").unwrap(),
-            connection,
-            1,
-            operations.clone(),
-        );
+        let peer = Peer::new(PeerId::new("mac").unwrap(), connection, operations.clone());
         let peer = Arc::new(peer);
 
         // An announcement in progress (another family's registration, on

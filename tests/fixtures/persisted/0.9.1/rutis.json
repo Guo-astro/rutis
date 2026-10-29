@@ -4,11 +4,7 @@
     "node": {},
     "py": { "python": ".venv/bin/python" },
     "bun": { "project": "edge" },
-    "go": { "binaries": ["bin/netkit", "bin/dns"], "start": "eager" },
-    "remote": [
-      { "name": "gpu", "language": "python" },
-      { "name": "office-node", "language": "node" }
-    ]
+    "go": { "binaries": ["bin/netkit", "bin/dns"], "start": "eager" }
   },
   "listen": [
     { "name": "public", "address": "[::]:7443", "cert": "../tls/server.pem", "key": "../tls/server.key" }
@@ -17,7 +13,6 @@
     { "id": "weather", "name": "weather-plugin", "config": { "city": "Oslo", "units": ["metric"] }, "inject": ["llm", "cache"] },
     { "id": "llm", "name": "py:llm_gateway", "isolate": { "http": true } },
     { "id": "edge-fn", "name": "bun:./fn/edge.ts" },
-    { "id": "dns", "name": "go-dns:resolver" },
     { "id": "probe", "name": "go:probe", "disabled": true },
     { "id": "local-tool", "name": "./tools/tool.ts" },
     { "id": "tools", "group": true, "config": [
@@ -29,10 +24,6 @@
     { "id": "per-session", "group": true, "instanced": true, "config": [
       { "id": "session-state", "name": "session-state-plugin" }
     ] },
-    { "id": "office", "name": "rutis-bridge/peer", "config": { "peer": "office", "dial": "wss://office.example.com/rutis", "export": ["weather"], "runtime": "office-node" } },
-    { "id": "branch", "name": "rutis-bridge/peer", "config": { "peer": "branch", "listen": "public", "identity": "edge" } },
-    { "id": "gpu", "name": "rutis-bridge/peer", "config": { "peer": "gpu", "dial": "wss://gpu.example.com/rutis", "runtime": "gpu" } },
-    { "id": "embedder", "name": "gpu:embedder" },
-    { "id": "clock", "name": "peer:office/clock" }
+    { "id": "embedder", "name": "gpu:embedder" }
   ]
 }

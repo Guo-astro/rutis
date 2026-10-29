@@ -70,7 +70,7 @@ websocket = [
 ]
 # Cordis plugins mounted with Rust bindings generated at build time.
 cordis = ["node", "dep:toml"]
-# The channel contract tests, and the session, runtime and node conformance
+# The channel contract tests, and the session and runtime conformance
 # suites other implementations run.
 testing = []
 
@@ -83,7 +83,7 @@ unexpected_cfgs = { level = "warn", check-cfg = ["cfg(fuzzing)"] }
 rutis-test-support = { path = "../rutis-test-support" }
 rcgen = "0.14"
 tempfile = "3"
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
 proptest = { version = "1.12.0", default-features = false, features = ["std"] }
 
 [[example]]

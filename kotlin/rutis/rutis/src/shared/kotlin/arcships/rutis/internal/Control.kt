@@ -26,18 +26,24 @@ internal object Control {
 
     suspend fun control(rt: RuntimeState, method: String, args: List<Any?>): Any? = when (method) {
         "mount" -> {
-            val mount = record(arg(args, 0))
-            rt.mounted(mount["announce"] == true, mount["runtime"] as? String)
             linkedMapOf(
                 "services" to linkedMapOf<String, Any?>(),
                 "features" to FEATURES,
                 "implementation" to linkedMapOf("name" to arcships.rutis.advanced.IMPLEMENTATION, "version" to arcships.rutis.advanced.VERSION),
                 "engine" to engine(),
-                "plugins" to LinkedHashMap<String, Any?>().apply { for ((name, plugin) in rt.plugins) put(name, rt.describe(plugin)) },
+                "plugins" to rt.listed()?.let { listed -> LinkedHashMap<String, Any?>().apply { for ((name, plugin) in listed) put(name, rt.describe(plugin)) } },
             )
         }
+        "link.offers" -> {
+            rt.offered(record(arg(args, 0)))
+            null
+        }
+        "services.announce", "services.withdraw" -> {
+            rt.heard(method, record(arg(args, 0)))
+            null
+        }
         // Served by `arrive` on the reading thread; here only when called directly.
-        "events.elsewhere", "events.call" -> EventsRuntime.arrive(rt, method, args)!!.invoke()
+        "events.call" -> EventsRuntime.arrive(rt, method, args)!!.invoke()
         "dispose" -> {
             rt.closing = true
             rt.dispose(rt.shutdownMillis)

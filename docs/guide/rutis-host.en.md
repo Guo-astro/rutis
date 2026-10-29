@@ -4,7 +4,7 @@
 
 ## Quick start
 
-A host made of two plugins: `greeter`, written in TypeScript, provides the `greeter` service (`hello(name)`); `welcome`, written in Python, uses it and provides the `welcome` service (`everyone(names)`). Plugins usually install from npm and PyPI (`npm:@your-name/greeter`, `pypi:your-name-welcome`); here `rutis-host new` makes the two plugin projects locally and they install from files, so every step runs as written. It needs Node 22 or later, and [uv](https://docs.astral.sh/uv/) with Python 3.10 or later.
+A host made of two plugins: `greeter`, written in TypeScript, provides the `greeter` service (`hello(name)`); `welcome`, written in Python, uses it and provides the `welcome` service (`everyone(names)`). Plugins usually install from npm and PyPI (`npm:@your-name/greeter`, `pypi:your-name-welcome`); here `rutis-host new` makes the two plugin projects locally and they install from files, so every step runs as written. It needs Node 22 or later, and [uv](https://docs.astral.sh/uv/) with Python 3.12 or later.
 
 1. Make the two plugin projects. `greeter` is the template as it is, packed as an npm package (`npm pack` runs `prepack` first, which builds with `tsc`):
 
@@ -160,7 +160,7 @@ Next:
 
 - Published plugins: `npx rutis-host add npm:@your-name/greeter`, `npx rutis-host add pypi:your-name-welcome`; Bun, Go and Swift plugins, and installing by hand: [How a host installs plugins](#how-a-host-installs-plugins).
 - A plugin author runs the plugin in its own project with `rutis-host dev`, which reloads it when its files change and prints the services after it starts (`rutis-host dev: services: …`); see [Developing a plugin with `dev`](#developing-a-plugin-with-dev).
-- A plugin running on another machine: see [Remote runtimes](#remote-runtimes).
+- A plugin running on another machine, or an app on a device connecting in: see [Remote runtimes and devices](#remote-runtimes-and-devices).
 
 ## A minimal rutis.json
 
@@ -240,7 +240,7 @@ On errors (on stderr, exit status 1, `rutis.json` unchanged):
 
 | Case | Output |
 | --- | --- |
-| No package manager | `rutis-host: cannot run npm (No such file or directory): install Node.js 22 or later`; for Python with neither uv nor `python3`: `rutis-host: cannot create the Python environment /app/.venv: install uv, or Python 3.10 or later` |
+| No package manager | `rutis-host: cannot run npm (No such file or directory): install Node.js 22 or later`; for Python with neither uv nor `python3`: `rutis-host: cannot create the Python environment /app/.venv: install uv, or Python 3.12 or later` |
 | The package manager fails | its own output, then `rutis-host: npm install @ana/wordcount failed (exit status 1); rutis.json is unchanged` |
 | Not a plugin | `rutis-host: bo-utils has no rutis.plugins entry point: it is not a plugin; it stays installed: uv pip uninstall --python /app/.venv/bin/python bo-utils` |
 | A local directory it does not recognize | `rutis-host: ./plugins/notes has no package.json, pyproject.toml or go.mod` |
@@ -274,15 +274,15 @@ Installing by hand works as before, with the same row names: each language's plu
 - **TypeScript, JavaScript**: the row name is the package name (`@your-name/greeter`) or a subpath of it. A plugin package brings the `@arcships/rutis` version it was written against, and several versions work side by side in one host; a plugin carries the plugin API version it uses, and a host runtime older than that fails with a clear error.
 - **Bun**: for a package that depends on `@arcships/rutis-bun`, `add` installs it into `runtimes.bun.project` with `bun add`. The row name `bun:<npm name or subpath>` resolves from that project's `node_modules`, and `bun:./path` is relative to the project; `bun:sqlite` is the project's module `sqlite`, not Bun's built-in one. `runtimes.bun` can sit beside `runtimes.node` and `runtimes.py`; services are shared by name across runtimes.
 - **Python**: the row name is the plugin's entry point name in the `rutis.plugins` group (`py:welcome`), not the distribution name. The Python runtime is the `rutis` package in that environment, at the same version as `rutis-host` (`rutis-host --version`).
-- **Go**: the binaries go into `runtimes.go.dir` (`add` uses `go install`; the binary for the platform from the plugin's release works too; a binary downloaded on macOS carries the quarantine attribute, which `rutis-host check` points out). The row name `go:<plugin>` is looked up in every binary; when two binaries have a plugin of that name, write `go-<binary>:<plugin>`. A binary starts the first time a row uses it and stops after 60 idle seconds (`"start": "eager"` starts them all and keeps them running); a replaced binary takes effect when the host restarts.
-- **Swift** (macOS): download the binary from the plugin's release into `runtimes.swift.dir`; a downloaded binary carries the quarantine attribute, which `rutis-host check` points out: once you trust it, clear it with `xattr -d com.apple.quarantine <file>`. The row name is `swift:<plugin>` (`swift-<binary>:<plugin>` for a name two binaries share); the other settings are those of `runtimes.go`. Running it needs no Swift toolchain.
+- **Go**: the binaries go into `runtimes.go.dir` (`add` uses `go install`; the binary for the platform from the plugin's release works too; a binary downloaded on macOS carries the quarantine attribute, which `rutis-host check` points out). The row name `go:<plugin>` is looked up in every binary; when two binaries have a plugin of that name, the row fails naming both files, and the plugins' author renames one. A binary starts the first time a row uses it and stops after 60 idle seconds (`"start": "eager"` starts them all and keeps them running); a replaced binary takes effect when the host restarts.
+- **Swift** (macOS): download the binary from the plugin's release into `runtimes.swift.dir`; a downloaded binary carries the quarantine attribute, which `rutis-host check` points out: once you trust it, clear it with `xattr -d com.apple.quarantine <file>`. The row name is `swift:<plugin>` (a plugin name is in one binary only); the other settings are those of `runtimes.go`. Running it needs no Swift toolchain.
 - **Rust**: Rust plugins are compiled into a Rust host: see [Embed in a Rust application](rust-host.en.md); a Rust host also runs the plugins of the languages above (Go's `BinaryResolver<Go>`, `BinaryRuntimes<Go>`, for one): see [Runtime and loader](rust-host.en.md#runtime-and-loader).
 
 ## Commands
 
 | Command | Purpose |
 | --- | --- |
-| `rutis-host run [rutis.json]` | Runs the configuration (reading it again while it runs on SIGUSR1 on Unix, or with `--watch-config`; see [Changing the configuration while it runs](#changing-the-configuration-while-it-runs)) and prints each row's status changes, the state of node rows' links and local runtimes that end (see [What `run` prints](#what-run-prints)). Press Ctrl-C to stop (see [Stopping and exit status](#stopping-and-exit-status)). |
+| `rutis-host run [rutis.json]` | Runs the configuration (reading it again while it runs on SIGUSR1 on Unix, or with `--watch-config`; see [Changing the configuration while it runs](#changing-the-configuration-while-it-runs)) and prints each row's status changes, the connections of connection rows and local runtimes that end (see [What `run` prints](#what-run-prints)). Press Ctrl-C to stop (see [Stopping and exit status](#stopping-and-exit-status)). |
 | `rutis-host dev [directory]` | Runs a plugin project with its `rutis.dev.json` file and follows its changes: a changed file reloads the rows whose file it is, a changed `rutis.dev.json` is read again; a Go or Swift project is rebuilt (`go build`, `swift build`) when its sources change, restarting only its runtime (see [Developing a plugin with `dev`](#developing-a-plugin-with-dev)). |
 | `rutis-host check [rutis.json] [--strict]` | Without running any plugin, checks that each row can run (see [Checking a configuration](#checking-a-configuration)) and prints its version, dependencies, provided services, and configuration schema, and lists every Go and Swift binary (runtime name, platform, SDK, plugin API, plugins; a binary of an SDK older than rutis 0.13 cannot run). Exits with a nonzero status if a row or binary cannot run. A dependency no row declares, which another row may provide at runtime, is a warning; with `--strict`, an error. Without `rutis.json`, checks the plugin project in the current directory. |
 | `rutis-host status [rutis.json \| directory]` | Asks the `rutis-host` running that configuration (or that `dev` project) what it does now: each row's state and why, each service's provider, the runtimes, the calls not returned yet (see [Seeing the current state](#seeing-the-current-state)); not on Windows. |
@@ -291,6 +291,7 @@ Installing by hand works as before, with the same row names: each language's plu
 | `rutis-host add <plugin> [rutis.json]` | Installs a plugin by its source (`npm:`, `pypi:`, a Go module path, a local path) with what its runtime lacks, records it under `installed`, adds its row and prints its introduction (see [How a host installs plugins](#how-a-host-installs-plugins)). |
 | `rutis-host remove <plugin> [rutis.json]` | Uninstalls the package of a plugin `add` installed, and removes its records and rows. |
 | `rutis-host upgrade [<plugin>[@<version>]] [rutis.json]` | Upgrades plugins `add` installed to the newest version (or the one given); a running host uses it once it restarts. |
+| `rutis-host test <plugin> -- <runtime command…> <project>` | For the SDKs' test tools: a host with no rows of its own that starts a runtime as a local runtime, loads `<plugin>` there to drive the test, and serves `rutis-host/test` to run plugins in that runtime; it exits when the runtime ends (see [Running plugins under test](#running-plugins-under-test-rutis-host-test)). |
 | `rutis-host types [directory] [-o file] [--python file]` | Writes the TypeScript declarations of the Rust services marked `#[rutis::service]` in the crate in `directory` (by default the current one) and in the crates it uses, to stdout or to `file`; `--python` writes their Python types too; see [Embed in a Rust application: Declarations](rust-host.en.md#declarations). |
 
 Add `--help` or `-h` to any command to print its usage (only that command's lines) and exit 0 without doing anything else; `rutis-host --help` prints them all.
@@ -323,7 +324,7 @@ A waiting row says what it waits for and why (from 0.17.2, #676). Waiting for it
 | `waiting for llm (row model's runtime py is down)` / `… is not running yet` / `(row model waits for its runtime gpu)` | The row that provides it waits for its own runtime (a remote runtime's state the host does not know: it only says it waits) |
 | `waiting for bsvc (row b waits for asvc from this row: they inject each other)` | Two rows `inject` each other's services; neither starts |
 | `waiting for llm (row model waits too, for x)` | The row that provides it waits itself |
-| `waiting for llm (row model is starting)` / `(row model has not provided it)` | The row that provides it is starting; or runs but has not provided it (a link row whose link is down, say) |
+| `waiting for llm (row model is starting)` / `(row model has not provided it)` | The row that provides it is starting; or runs but has not provided it (one running on a connection's far end while the connection is down, say) |
 | `waiting for its services` | When rutis cannot say what it waits for |
 
 When the reason changes (the provider going from starting to failed, say), another line is printed.
@@ -339,29 +340,31 @@ A runtime that stays down prints once; one that starts again and goes down again
 
 The rows of a runtime that ended only wait for it, whichever plugin made its process exit; one that was still starting when the runtime ended is not reported as `failed`. A call in progress to one of them fails saying how the process ended. What the runtime itself wrote about it (an error and its stack, say) is in the output as before.
 
-A node row's (`rutis-bridge/peer`) state only says that the row runs; whether its link is connected is printed on a line of its own, when the link's state changes:
+The connections of connection rows (`rutis-host/dial`, `rutis-host/listen`; see [Remote runtimes and devices](#remote-runtimes-and-devices)) print lines starting with the row id, in two words only, `connected` and `disconnected`, the reason in parentheses:
+
+```text
+gpu: connected
+gpu: disconnected (gpu.example.com:7443: Connection refused); retrying in 2.1s
+gpu: disconnected (auth-rejected: gpu.example.com:7443: upgrade refused with 403 Forbidden); retrying in 30s
+gpu: disconnected (incompatible: this endpoint speaks rutis.3, the dialer offered rutis.4: upgrade this endpoint (PyPI rutis)); stopped
+phone: connected phone-1
+phone: disconnected phone-1 (connection lost)
+phone: disconnected phone-1 (replaced by a new connection)
+```
 
 | Output | Meaning |
 | --- | --- |
-| `<row id>: link connected` | The session is ready; the far end can be used. |
-| `<row id>: link down (<reason>); retrying in 2.1s` | Cannot connect, or the connection broke (the far end is not up, the network is cut, the connection ended); retried with backoff after the time given. |
-| `<row id>: link refused: auth-rejected (<reason>); retrying in 30s` | Refused: a wrong token, an untrusted certificate (another name, expired, unknown CA), an identity that does not match; retried after 30 seconds. |
-| `<row id>: link stopped: incompatible (<reason>)` | Incompatible: the protocol, the address's form, a capability the far end lacks (such as `runtime`); not retried until the configuration changes and the row reloads. |
-| `<row id>: link down (the connection ended)` | Listening side: the connection ended; it waits for the far end to connect again (a listening side does not retry, so no `retrying in`). |
+| `<row id>: connected` | dial: the handshake is done; the far end's plugins start registering as `<row id>:<plugin>` |
+| `<row id>: disconnected (<reason>); retrying in 2.1s` | dial: it could not connect, or the connection ended; retried with backoff: from 0.5 seconds, doubling, at most 30 seconds, from 0.5 seconds again once a connection lasted 60 seconds |
+| `<row id>: disconnected (auth-rejected: <reason>); retrying in 30s` | dial: refused: a wrong token (401 / 403 on the upgrade), a certificate not trusted (wrong name, expired, CA not trusted), or the far end closing with 4003; the reason names the far end's address; tried again every 30 seconds |
+| `<row id>: disconnected (incompatible: <reason>); stopped` | dial: the protocols do not match, and the reason says which end to upgrade; not retried; change the configuration and reload |
+| `<row id>: connected <id>` | listen: a connection finished its handshake; `<id>` is the id the far end gave in it, and its plugins register as `<id>:<plugin>` |
+| `<row id>: disconnected <id> (<reason>)` | listen: that connection ended; its remote plugins all unloaded |
+| `<row id>: disconnected <id> (replaced by a new connection)` | listen: a newer connection with the same id finished its handshake; the old connection's remote plugins unloaded first |
 
-- The category (`auth-rejected`, `incompatible`) comes from the link's classification of the failure, never from the error's text; the reason in parentheses is detail for people, such as what is wrong with a refused certificate, and its wording is not guaranteed.
-- No token or other credential appears in the output.
-- Whole seconds are written `30s`; other waits to a tenth of a second.
-- States are checked every 200 ms and only changes are printed: a line the same as the last one is not printed again (the same refusal every 30 seconds is printed once), and a state lasting less than 200 ms may not be printed. Nothing is printed while a dialing side has no result yet (connecting), nor while a listening side has no far end yet.
-
-The connections of the remote runtimes `runtimes.remote` connects itself (`dial`, `listen`, `listen` + `instances`) print lines starting `runtime <name>`:
-
-| Output | Meaning |
-| --- | --- |
-| `runtime <name>: link connected`, … | One runtime (`dial`, `listen`): its link's state, each line as the node row's in the table above, prefixed `runtime <name>` instead (a node row of the old form still uses its row id) |
-| `runtime <name>: connected <id>` | Many: a connection came in and is an instance |
-| `runtime <name>: disconnected <id> (<reason>)` | Many: the connection ended (or a newer one with the same id took over); its instance closed |
-| `runtime <name>: refused (<reason>)` | Many: a connection was refused before it became an instance, such as a runtime not speaking the row contract (`lacks rows.v2 and hosts`); a connection with a wrong token is refused in its handshake and not printed |
+- No token or other credential appears in the output; whole seconds are written `30s`, other waits to a tenth of a second.
+- A connection whose handshake fails on a listen row (a wrong token, refused with 401 / 403 on the upgrade; protocols that do not match) prints nothing: it touched no connection there is; the dialing end says why.
+- When the host stops, or the row is removed or stopped, its connections close with it, and no `disconnected` is printed.
 
 A listener that fails in an `emit` (the emitter does not wait, so nobody else hears of it) prints one line on stderr, where it ran: `rutis: listener of <name> in row <row> failed: <ErrorName>: <message>` for the host's own, the same line from the runtime for a runtime's; a call the host could not deliver names where it went (`in runtime <name>`, `in node <peer>`). A failing filter of an `emit` prints `rutis: filter of <name> from row <row> failed: …` (`from the mount` for a plugin a mount loaded).
 
@@ -382,10 +385,10 @@ A runtime of rutis 0.12 or older (or a node) is refused by its protocol version 
 For each row (except disabled ones), `check` verifies that:
 
 - its plugin is found and resolves;
-- the row passes the checks made before loading (scopes, and the config of built-in plugins such as link rows);
-- every service it waits for (its plugin's `inject`, plus the row's own `inject`) is provided by another row: as plugins declare in `provides`, and a link row provides what it `import`s.
+- the row passes the checks made before loading (scopes, and the config of built-in plugins such as connection rows);
+- every service it waits for (its plugin's `inject`, plus the row's own `inject`) is provided by another row: as plugins declare in `provides`.
 
-A row waiting for a service no row provides, and no row may provide at runtime, would wait forever: `check` says which service is missing and what to do, and exits with 1; when only disabled rows provide it, it names them. What some rows provide is not known during the check (runtimes on other machines, which the check does not connect to, and `peer:` rows); a service missing then is only reported as possibly coming from them, not as a failure.
+A row waiting for a service no row provides, and no row may provide at runtime, would wait forever: `check` says which service is missing and what to do, and exits with 1; when only disabled rows provide it, it names them. What some rows provide is not known during the check (rows run on a connection's far end, which the check does not connect to); a service missing then is only reported as possibly coming from them, not as a failure.
 
 What a plugin `ctx.provide`s reaches rutis without a declaration (from 0.12, every plugin of the four SDKs, one declaring `provides` too, which may provide more; also a Cordis row without `rutis.provides`), so it is known only when the plugin runs. A service no row declares, while there are such rows, is a warning on stderr, and `check` still exits with 0:
 
@@ -433,7 +436,7 @@ rutis-host: warning: weather: config: cty is not a config key (did you mean city
 ```
 
 - Cordis rows (Cordis plugins exporting `Config`) are validated by Cordis with their own `Config` when they load; `check` prints their schema and does not check their config.
-- Rows whose schema is known only when they run (remote runtimes not connected, a `peer:` row whose peer is not there) say `config not checked: its schema is known only when it runs`, which is not a warning.
+- Rows whose schema is known only when they run (rows run on the far end of a connection not connected) say `config not checked: its schema is known only when it runs`, which is not a warning.
 
 `run` and `dev` apply the same rules: a row whose config does not match fails (`weather: config: …`, a line per problem), and rows waiting for it say so (`chat: waiting for weather (row weather failed: config: …)`); extra keys are warned about once per row and config value.
 
@@ -467,12 +470,12 @@ While `run` runs, `rutis.json` can change without restarting the host (`dev` rea
 Both run the same reload, all or nothing:
 
 1. A file that cannot be read, or is not a valid configuration: refused.
-2. A change to what a running host cannot change: refused, saying to restart the host. That is the top-level `format`, `id`, `listen`, `runtimes.go` and `runtimes.swift` (any change), `runtimes.remote` (an entry added or removed, or any field of one changed, `listen` and `instances` included), and a local runtime (`node`, `py`, `bun`) added or with changed settings.
+2. A change to what a running host cannot change: refused, saying to restart the host. That is the top-level `format`, `id`, `listen`, `runtimes.go` and `runtimes.swift` (any change), and a local runtime (`node`, `py`, `bun`) added or with changed settings.
 3. The new rows are checked first (as by `check`): a row that cannot start (its plugin not found, its settings failing the checks before loading), and that is not failing now, refuses it. A row that waits for a service is not one that cannot start, as at start.
 4. Then the new rows replace the old: added rows start, removed rows unload, changed rows restart; rows that did not change are left alone (rows using a service of a restarted row wait for it and come back with it, as always). A row failing after the replacement (its plugin's `apply` throwing, say) that was not failing before brings the old rows back (the rows replaced restart once more), and refuses it.
 5. A local runtime removed: its rows unload first, then the runtime stops, and the reload is done once its process has exited.
 
-When rows of an `instanced` group change, the change applies in every instance there is: an added row starts in each instance, a removed one unloads in each, a changed one restarts in each; the connections (instances) stay, and the rows in them that did not change are left alone. Instances created later run the new rows.
+When rows of an `instanced` group change, the change applies in every instance there is: an added row starts in each instance, a removed one unloads in each, a changed one restarts in each; the instances stay, and the rows in them that did not change are left alone. Instances created later run the new rows.
 
 It prints one line for the result:
 
@@ -491,7 +494,7 @@ rutis-host: reload rejected: row weather's config does not match its plugin's sc
 
 Row state changes are printed by the state lines as usual. SIGUSR1, or a file change, while a reload runs makes one more reload once it ends; a termination signal while a reload runs stops the host as usual.
 
-Credentials are read from the environment when a link dials, or when a far end dials in (see [Credentials](#credentials)), so a peer row a reload adds connects too. The environment does not change while the process runs: a new token still needs a restart.
+Credentials are read from the environment when a row dials, or when a far end dials in (see [Credentials](#credentials)), so a connection row a reload adds connects too. The environment does not change while the process runs: a new token still needs a restart.
 
 Plugins can add and remove rows too, through the service `loader` (`create`, `remove`; see [The host writes its own plugins](../design-host-writes-plugins-2026-10-27.en.md)). `run` writes these changes back into `rutis.json`: only `rows` changes (a row added goes last, with only the fields the plugin gave, `id` always; a row removed goes), its other fields and the order of its keys stay, written as `rutis-host add` writes it (two-space indents). What it writes is no change to the file: `--watch-config` does not read it again for it. When the file was changed after the host read it (by hand, by `rutis-host add`) and has not been read again, a plugin's next change first reads back the file's `rows` and runs them, then makes the change on them and writes it back; a change outside `rows` still takes SIGUSR1 or `--watch-config`. When the file cannot be written, the row is added or removed all the same, and the plugin's error says `<row>: added, but rutis.json could not be written: <why>` (`removed` for a removal); a restart of the host loses the change. `dev` does not write `rutis.dev.json`: under `dev`, `create` and `remove` get `this host keeps no editable configuration, so rows cannot be added or removed`.
 
@@ -556,7 +559,7 @@ Besides the lines of [`run`](#what-run-prints), `dev` prints:
 | `<row id>: restarted (<other row> reloaded)` | The row uses a service of the other row, and restarted with it. The cause may also be `<row> updated`, `added` or `removed` (by `rutis.dev.json`), `<Go or Swift runtime> restarted`, or `<row> restarted`: a row it uses that restarted with the change (`caller: restarted (greeter restarted)` when `llm` reloaded and `greeter` uses it). The cause named is always a row the row uses; when that is not known (a dependency inside a runtime, between Cordis rows), no cause is named: `<row id>: restarted`. `started` or `stopped` instead of `restarted` when the row was not running before, or is not running now. |
 | `rutis-host: reloaded rutis.dev.json (<n> rows changed)` | `rutis.dev.json` was read again; each row that changed follows: `<row id>: updated (its row in rutis.dev.json changed)`, `<row id>: added`, `<row id>: removed`. Refused: `rutis-host: reload rejected: <reason>; nothing changed`. |
 | `runtime <name>: starting again (<files> changed)` | A runtime that was down starts again for the change; `runtime <name>: running` follows when it runs, or `runtime <name>: down (<reason>)` again. When its `restart` starts it again: `runtime <name>: down; its restart starts it again, its rows with the code as it is then (…)`; when it is starting: `runtime <name>: starting; its rows start with the code as it is then (…)`. |
-| `rutis-host dev: services: forecast (weather), llm (llm), loader (host)` | Once started (every row running or failed), and after each reload, rebuild or reading of `rutis.dev.json`, the services now and the rows providing them (as `services` in `rutis-host status`), by name; one the host provides as `host` (`loader`, which rutis provides itself, say); when no row provides one, `rutis-host dev: services: none`, whatever the host provides. Printed every time, not compared with the last; besides, printed again whenever the services changed (a runtime can provide one after its row started). It starts with `rutis-host dev: `, not in the form `<row>: <state>`, so scripts reading the state lines are not affected; `run` does not print it: use `rutis-host status` |
+| `rutis-host dev: services: forecast (weather), llm (llm), loader (host)` | Once every row is running, waiting or failed, the services now and the rows providing them (as `services` in `rutis-host status`), by name; one the host provides as `host` (`loader`, which rutis provides itself, say); when no row provides one, `rutis-host dev: services: none`, whatever the host provides. Printed again whenever the services change (a runtime can provide one after its row started), and after each reload, rebuild or reading of `rutis.dev.json`, not compared with the last. It may come before or after the rows' state lines. It starts with `rutis-host dev: `, not in the form `<row>: <state>`, so scripts reading the state lines are not affected; `run` does not print it: use `rutis-host status` |
 | `<project>: building`, `<project>: built in 1.2s`, `<runtime>: rebuilt and restarted` | A Go or Swift project was rebuilt and its runtime restarted on the build. When the build fails: `<project>: the build failed; the last build keeps running`, followed by the compiler's errors; when the new build does not run: `<runtime>: cannot restart: <reason>; the previous build is kept`. |
 
 ## When a runtime ends
@@ -584,7 +587,7 @@ Also:
 - `dev` follows the same rules and defaults; write `"runtimes": { "py": { "restart": "on-failure" } }` (or `"go"`, `"swift"`, …) in `rutis.dev.json` (for the project's own runtime, only `restart` is taken). A runtime that stays down there also starts again at the next change to one of its rows (see [Developing a plugin with `dev`](#developing-a-plugin-with-dev)).
 
 - Go: `runtimes.go.restart` applies to every Go runtime, each on its own (its own waits and limit; `runtime go-<name>: restarting`). A runtime stopped for being idle did not end on its own; nor did one whose binary's handshake was refused (an old SDK), which is not restarted until its file changes. Whatever `restart` says, a crashed Go runtime also starts again when a row uses it once its binary changed. Changing `runtimes.go` while the host runs needs a restart, as before. `runtimes.swift.restart` is the same for the Swift runtimes (`runtime swift-<name>: restarting`).
-- Remote runtimes and peer rows' links reconnect by themselves and are not affected.
+- `rutis-host/dial` rows reconnect by themselves and are not affected.
 
 ## Seeing the current state
 
@@ -603,15 +606,15 @@ runtimes:
 calls:
   caller → slow.wait  42s
 connections:
-  gpu: link connected
-  worker: worker-1, worker-2
+  gpu: connected
+  phone: kim, lee
 ```
 
 - `rows`: each row (a row inside instances once per instance, as `<row> in <group> #<number>`) and its state: `running`, `starting`, `stopped`, `disabled`, and `waiting` for a waiting row when rutis cannot say for what; a waiting row says what it waits for (in the words of `run`'s waiting lines); a failed row, the first line of its failure. When a runtime exits, its rows show at once that they wait for it.
 - `services`: each service by name and the row providing it; one the host (Rust) provides says `host`.
 - `runtimes`: each runtime's state (`running`, `starting`, `down`, `stopped`), how one that exited ended, and a local runtime's process id.
 - `calls`: the calls into a row's service that have not returned: who calls (`host` for one no row made), which service and method, for how long; `(row <row>)` when the row called is named otherwise than the service. Not seen: calls within one runtime, and calls of functions passed by reference (only "host → row" is seen, without a method name); a call an in-process Rust plugin makes is listed as from `host`.
-- `connections`: the remote runtimes `runtimes.remote` connects itself (the part is left out when there are none). One runtime: its link's state (as `run`'s link lines; before it connects, `connecting` or `waiting for it to connect`); many: the ids connected now (`none connected` when none is).
+- `connections`: a line per connection row (`rutis-host/dial`, `rutis-host/listen`); the part is left out when there are none. A dial row says `connected` or `disconnected`; a listen row, the ids connected now (`phone: kim, lee`), `none connected` when none is. 0.19 does not list the remote plugins each connection registered.
 - rutis sets no time limit on calls: how long to wait is the caller's decision (how each language limits a call: [plugin API](plugin-api.en.md)). This only shows which call has waited how long.
 
 `run` and `dev` open a local socket only the user can use (mode 0600, inside the user's own 0700 directory) that answers `status`, which changes nothing, and `rutis-host call` (see [Calling a service](#calling-a-service)). It lives under `rutis-host-<uid>/` in the system's runtime directory (`$XDG_RUNTIME_DIR`, else the temporary directory; `/tmp` when that path would be too long), named by a hash of the configuration's path, so nothing is written into the project; the host removes it when it ends (and the directory, when no other host's socket is in it); a host killed outright (`kill -9`) cannot, and the next host for the same configuration replaces it. `status` finds the directory by its own environment: run as another user, with `sudo`, or from a terminal with other variables, it looks elsewhere and says no host runs. When another host already answers for the same configuration, the later one runs as usual with a warning. Not on Windows in 0.18.
@@ -653,6 +656,44 @@ $ rutis-host call forecast.week '{"days": 3}'
 
 `run` and `dev` both accept `call`. Who can connect is as for `status`: only the user can use the socket. Not on Windows (`rutis-host call is not available on Windows`).
 
+## Running plugins under test: `rutis-host test`
+
+`rutis-host test` is for the test tools of the SDKs: it runs the plugin under test in a real runtime against a real rutis kernel, so that a test sees what a host does. A plugin author does not run it by hand; the test tool does. A test tool finds it on `PATH`, or at the path `RUTIS_HOST` names.
+
+```console
+rutis-host test <plugin> -- <runtime command…> <project>
+rutis-host test <plugin> --channel <channel>
+```
+
+- It starts a host with no rows of its own (its id is `host`), and starts the runtime as every local runtime is started: `<runtime command…> <channel> --id test <project>`, the channel on fd 3, or, on Windows (and with `RUTIS_LOCAL_HANDOVER=loopback`), a loopback address with a one-time token. For Node, `node <@arcships/rutis-runtime>/src/runner.mjs <package.json>`; for Python, `python3 -m rutis <project directory>`. The runtime's output is passed on a whole line at a time, as a local runtime's.
+- The host has the plugin `rutis-host/test`, which provides the service `rutis-host/test`:
+
+| Method | Does |
+| --- | --- |
+| `load(name, config?, options?)` | Runs the plugin `name`, as the runtime knows it (a file or package for Node and Bun, a module for Python), with `config`, as a row of its own (`test:<name>`, by the session's `run`); returns the row's id. `options` gives fields of the row: `id` (one already there: `a row oslo is loaded already`), and `isolate`, as a row's in `rutis.json` (`{ "forecast": true }`, or a label). Without `id`: the file's name without its extension (`/tests/weather.mjs` is `weather`), else `name`, with `-2`, `-3`… while one is taken. When the row cannot start, it fails with the row's line (`weather: config: city is required`) and no row stays. |
+| `update(id, config)` | Gives the row `config`, as a changed row's config: the plugin restarts with it. Fails when the plugin refuses it (the row keeps its config) or fails with it. |
+| `unload(id)` | Removes the row; returns once its plugin unloaded in the runtime. |
+| `reported(id)` | What the host reported of the row: each of its listeners that failed in an `emit`, each filter of its `emit` that failed, as the host prints them (`weather: listener of weather/ask failed: Error: boom`). |
+
+- `<plugin>` is loaded first (as `load(<plugin>)`), once the runtime greeted: the plugin that drives the test. It injects `rutis-host/test`, provides the fakes the plugin under test uses (`ctx.provide`), listens (`ctx.on`) and emits (`ctx.emit`) as any plugin. It calls `load` outside its `apply` (in a task it starts, or a listener): the loader is starting it while its `apply` runs.
+- Plugins loaded this way share the runtime and one event bus with the driving plugin; services are visible to all of them, as in any host.
+- It exits once the runtime ends: 0 when every cleanup ran. The driving plugin ends the test by ending its runtime (Node `process.exit(0)`, Python `os._exit(0)`); the runtime says so (`runtime test: row tester called process.exit(0)`). Ctrl-C and SIGTERM stop it as they stop `run`.
+
+What a test tool does: run `rutis-host test <driving plugin> -- <runtime command…> <project>`, read what the driving plugin reports in the output, and wait for it to exit.
+
+A language whose tests call the plugin under test from the test process (Go, Swift, Kotlin) runs the runtime in its own process and uses `--channel`: the test tool hands `rutis-host test` the channel as a host hands one to a local runtime, `<channel>` being `fd:<n>` (an inherited socket, Unix) or `tcp:<host>:<port>` (the test tool listens on a loopback address; `rutis-host` connects and first sends the one-time token in `RUTIS_CHANNEL_TOKEN` and a newline; the only way on Windows), and the runtime greets with the id `test`. The rest is as above; the runtime's output is the test tool's own.
+
+In 0.19, test tools use a local runtime only. Tests on a device (an Android instrumented test, an iOS simulator) do not use `rutis-host test`: there, the application installs its own plugins.
+
+| Case | Output |
+| --- | --- |
+| The runtime cannot start | `rutis-host: test: cannot start /usr/bin/nodee: No such file or directory (os error 2)` (exit status 1) |
+| The runtime ends before greeting | `rutis-host: test: <why>` (exit status 1) |
+| The driving plugin cannot start | `rutis-host: ` and its row's line, as `load` fails (`rutis-host: tester: unresolved: …`; exit status 1) |
+| No `--`, or no project after the runtime's command | `rutis-host: usage: rutis-host test <plugin> -- <runtime command...> <project>`, the next line `--channel`'s usage (exit status 1) |
+| `--channel`'s channel is not there or not written right | `rutis-host: test: fd:97: no such descriptor`, `rutis-host: test: tcp:127.0.0.1:1: Connection refused (os error 61)`, `rutis-host: test: pipe:x: a channel is fd:<n> or tcp:<host>:<port>` (exit status 1) |
+| `update` or `unload` of a row `load` did not add | `no row weather was loaded` |
+
 ## Output
 
 The standard output and standard error of the runtime processes (Node, Bun, Python, Go, Swift) are not written straight onto `rutis-host`'s: `rutis-host` reads them through pipes and writes them a whole line at a time — a line a plugin writes to stdout comes out on `rutis-host`'s stdout, one written to stderr on its stderr. `rutis-host` writes its own status lines to stderr, a whole line at a time too. So a plugin's line and a line of `rutis-host`'s, or lines of two runtimes, never run into each other, also when the plugin writes a line in pieces (Python's `print` writes the text, then the newline) and when stdout and stderr are the same file (`2>&1`).
@@ -693,8 +734,7 @@ In the Node, Bun and Python runtimes, when a service method holds the runtime fo
     "node": { "project": "." },
     "py": { "project": "plugins", "python": ".venv/bin/python" },
     "go": { "dir": "plugins/go" },
-    "swift": { "dir": "plugins/swift", "restart": "on-failure" },
-    "remote": [{ "name": "gpu", "language": "python" }]
+    "swift": { "dir": "plugins/swift", "restart": "on-failure" }
   },
   "listen": [
     { "name": "public", "address": "0.0.0.0:7443", "cert": "tls/server.pem", "key": "tls/server.key" }
@@ -709,9 +749,9 @@ In the Node, Bun and Python runtimes, when a service method holds the runtime fo
     { "id": "dns", "name": "go:dns" },
     { "id": "calendar", "name": "swift:calendar" },
     { "id": "local-tool", "name": "./tools/tool.ts" },
-    { "id": "office", "name": "rutis-bridge/peer", "config": { "peer": "office", "dial": "wss://office.example.com/rutis", "export": ["weather"] } },
-    { "id": "gpu", "name": "rutis-bridge/peer", "config": { "peer": "gpu", "dial": "wss://gpu.example.com/rutis", "runtime": "gpu" } },
-    { "id": "embedder", "name": "gpu:embedder" }
+    { "id": "gpu", "name": "rutis-host/dial", "config": { "address": "wss://gpu.example.com/rutis" } },
+    { "id": "embedder", "name": "gpu:embedder" },
+    { "id": "phone", "name": "rutis-host/listen", "config": { "listener": "public" } }
   ]
 }
 ```
@@ -743,7 +783,6 @@ The endpoint ID of this node. Connected nodes see this name. Defaults to `host`.
 | `py` | `project` (default `.`), `python`, `restart` | Starts the Python runtime. The interpreter defaults to `$VIRTUAL_ENV/bin/python`, then `<project>/.venv/bin/python`, then `python3` (on Windows, `Scripts\python.exe` and `python`). Its environment must contain `rutis` and the plugins. |
 | `go` | `dir`, `binaries`, `start` (`on-demand` by default / `eager`), `idle` (seconds, default 60), `project` (default `.`), `restart` | Go plugins: one runtime process per binary. Every executable in `dir` that contains the Go SDK's marker counts (the directory is trusted as a whole and should be dedicated); `binaries` lists single files. A runtime is named after its file (`netkit` → `go-netkit`). An on-demand runtime starts when a row first uses it and stops after `idle` seconds without one (objects it handed out and that are held elsewhere do not count as use: once it stopped, calls on them fail with `peer-gone`); `eager` starts all and keeps them running (not together with `idle`). A replaced binary takes effect when the host restarts. |
 | `swift` | as `go` | Swift plugins (macOS): as `go`, for binaries built with the Swift SDK (`plugin-binary` → `swift-plugin-binary`); see [Swift plugins](swift-plugin.en.md). |
-| `remote` | `name`, `language`, `dial`, `listen`, `instances` | A runtime on another machine, written whole in one entry: `dial` has rutis dial it, `listen` waits for it to connect in, `listen` + `instances` makes each connection an instance; see [Remote runtimes](#remote-runtimes) below. With none of them, it is connected through a node row with `"runtime": "<name>"` (the form before 0.19), see [Connect nodes](nodes.en.md). |
 
 If a runtime package is missing, startup fails and prints an installation command. When the Python environment does not exist (the `.venv/bin/python` that `python` names has not been created) or its interpreter lacks the `rutis` package, the error gives the commands that create the environment and install the `rutis` of this host's version (`uv venv <environment>` and `uv pip install --python <interpreter> rutis==<version>`, or `python3 -m venv` and pip); with no environment at all and only a `python3` without `rutis`, it gives the commands that create `<project>/.venv`, which the host then uses by itself.
 
@@ -753,80 +792,15 @@ Rows using a language that `runtimes` does not declare (a `py:llmbox` row withou
 rutis-host: warning: rutis.json: rows use the py runtime (py:llmbox), which runtimes does not declare: it runs with its defaults; declare "runtimes": { "py": {} } to say so
 ```
 
-`py:` rows enable `py`, `bun:` rows `bun`, and JavaScript or TypeScript files named by a path or a `file:` URL (`.js`, `.mjs`, `.cjs`, `.ts`, `.mts`, `.cts`) `node`; an npm package name is not guessed (it may be another resolver's). Disabled rows do not count, and a runtime under `runtimes.remote` of that name (for Node, a remote runtime of `language: node`) keeps its rows. Go and Swift need their binaries named and are never enabled so: for such a row (`go:<plugin>`, `go-<binary>:<plugin>`), `check` says to declare `runtimes.go` (`runtimes.swift`). In `rutis-host dev`, the project's own runtime is set up by `dev`: rows of `rutis.dev.json` in it (`./dev/fake-llm.ts` in a TypeScript project, `py:fake_llm` in a Python one) have no warning; one another runtime runs (a `py:` row in a TypeScript project) has it once, not again each time `rutis.dev.json` is read again.
+`py:` rows enable `py`, `bun:` rows `bun`, and JavaScript or TypeScript files named by a path or a `file:` URL (`.js`, `.mjs`, `.cjs`, `.ts`, `.mts`, `.cts`) `node`; an npm package name is not guessed (it may be another resolver's). Disabled rows do not count. Go and Swift need their binaries named and are never enabled so: for such a row (`go:<plugin>`), `check` says to declare `runtimes.go` (`runtimes.swift`). In `rutis-host dev`, the project's own runtime is set up by `dev`: rows of `rutis.dev.json` in it (`./dev/fake-llm.ts` in a TypeScript project, `py:fake_llm` in a Python one) have no warning; one another runtime runs (a `py:` row in a TypeScript project) has it once, not again each time `rutis.dev.json` is read again.
 
 A runtime enabled so that cannot start with its defaults (no `package.json`, `@arcships/rutis-runtime` not installed, or no `rutis` in the Python environment, say) does not stop the host: a warning on stderr says why and what to do (`rutis-host: warning: the node runtime, which rows use but runtimes does not declare, cannot run with its defaults: …; its rows do not run`), its rows fail as before (`unresolved: no plugin named …`), and the other rows run. A runtime declared under `runtimes` that cannot start still fails the start.
 
 `restart` of `node`, `py`, `bun`, `go` and `swift` (`"no"`, the default; `"on-failure"`; `"exit"`) says what happens when the runtime's process ends on its own (for `go` and `swift`, each of their runtimes'); see [When a runtime ends](#when-a-runtime-ends).
 
-#### Remote runtimes
-
-One `remote` entry describes a remote runtime whole; no node row is needed:
-
-| `dial` | `listen` | `instances` | Meaning |
-| --- | --- | --- | --- |
-| address | — | — | One runtime, which rutis dials; its `--id` is `name` |
-| — | listener | — | One runtime, which connects in; its `--id` is `name` |
-| — | listener | group | Many, each connection an instance (see [Runtimes that connect in](#runtimes-that-connect-in)) |
-| — | — | — | No connection of its own: a node row with `"runtime": "<name>"`, or the embedding program, provides its session |
-
-```json
-{
-  "id": "main",
-  "listen": [{ "name": "public", "address": "0.0.0.0:7443", "cert": "server.pem", "key": "server.key" }],
-  "runtimes": { "remote": [
-    { "name": "gpu",    "language": "python", "dial": "wss://gpu.example.com:7443/rutis" },
-    { "name": "mac",    "language": "swift",  "listen": "public" },
-    { "name": "worker", "language": "python", "listen": "public", "instances": "worker" }
-  ] },
-  "rows": [
-    { "id": "embedder", "name": "gpu:embedder" },
-    { "id": "calendar", "name": "mac:calendar" },
-    { "id": "worker", "group": true, "instanced": true, "config": [
-      { "id": "chunker", "name": "worker:chunker" }
-    ] }
-  ]
-}
-```
-
-- Token: `RUTIS_TOKEN_<NAME>` (the runtime's name in upper case, `-` as `_`). With `dial` it is presented; with `listen` it admits the runtime connecting in, and without one the host does not start.
-- Refused at startup: `dial` with `listen` (`dial and listen both set`), `dial` with `instances` (`dial and instances both set`), `instances` without `listen`, a `listen` listener that does not exist, and a node row with `"runtime"` for the same runtime (`link row <id> connects it too`).
-- One runtime's `listen` takes part in the same-token check as a listening node row does (#702, #726): two entries that would accept one token stop the host at startup.
-- When the remote side does not contain a row's plugin, only that row fails (`runtime <name>: this connection does not contain plugin <plugin>`); the other rows are not affected, and adding such a row is not refused.
-- How the connections change: [What `run` prints](#what-run-prints); their state now: `connections` in [Seeing the current state](#seeing-the-current-state).
-
-#### Runtimes that connect in
-
-With `listen` (the name of a listener under `listen`) and `instances` (the id of a top-level `instanced` group), rutis does not connect to the runtime: the runtime connects to that listener. Any number of connections may come in, and each is an instance of the group:
-
-```json
-{
-  "listen": [{ "name": "public", "address": "0.0.0.0:7443", "cert": "server.pem", "key": "server.key" }],
-  "runtimes": {
-    "py": { "project": "." },
-    "remote": [{ "name": "phone", "language": "python", "listen": "public", "instances": "phone" }]
-  },
-  "rows": [
-    { "id": "phone", "group": true, "instanced": true, "config": [
-      { "id": "contacts", "name": "phone:contacts" },
-      { "id": "digest", "name": "py:digest" }
-    ] }
-  ]
-}
-```
-
-- A runtime connecting presents a token equal to `RUTIS_TOKEN_<NAME>` on the rutis side (the runtime's name in uppercase, `-` written as `_`) and reports an id of its own (`[a-z0-9-]`). A wrong token is refused; the id only tells connections apart and is not a credential.
-- Each connection is an instance of the group: created when it connects, closed when it disconnects. A newer connection with the same id takes over: the old instance closes before the new one is created.
-- The group's `<name>:<plugin>` rows run, in each instance, on that instance's connection. When a connection does not have the plugin, the row fails in that instance only (`runtime <name>: this connection does not contain plugin <plugin>`); other instances are not affected, and adding such a row is not refused because of it.
-- The services a connection's plugins provide belong to its instance: several connections with the same plugin do not collide, and rows in the same instance (in any language) that use the name get their own connection's service. Rows outside the instance cannot use them; put the consumer in the group.
-- No node row is needed. `instances` goes with `listen` (`listen` alone is one runtime); a listener or group that does not exist, a group that is not `instanced`, or a missing token stops the host at startup.
-- `<name>:` rows belong in that group; anywhere else the row fails.
-
-A Python runtime connects in with `python -m rutis dial:wss://… --id <id> --peer <this host's id> <project>`, a Go plugin binary with `<binary> dial:wss://… --id <id> --peer <this host's id> <project>`, and Node and Bun runtimes with `dial:` too; the commands are in [Connect nodes](nodes.en.md#runtimes-that-connect-in).
-
 ### `listen`
 
-WebSocket listeners used by other nodes to connect. `cert` and `key` are a TLS certificate and private key in PEM format; they can also be supplied through `RUTIS_CERT` and `RUTIS_KEY` (the file's own come first). They go together: with only one of them the host does not start, rather than listening without TLS. A listener without TLS can bind only to a loopback address.
+WebSocket listeners used by other nodes, and by the far ends of `rutis-host/listen` rows, to connect. `cert` and `key` are a TLS certificate and private key in PEM format; they can also be supplied through `RUTIS_CERT` and `RUTIS_KEY` (the file's own come first). They go together: with only one of them the host does not start, rather than listening without TLS. A listener without TLS can bind only to a loopback address.
 
 ### `installed`
 
@@ -851,7 +825,7 @@ Each row runs a plugin:
 | Field | Meaning |
 | --- | --- |
 | `id` | Row name, unique within this file. |
-| `name` | Plugin identifier: an npm package (or package subpath), `py:<name>` (Python entry point or module), `bun:<module>` (a module in the Bun runtime), `go:<plugin>` (the Go binary that has it; `go-<binary name>:<plugin>` when two do), `swift:<plugin>` (likewise, Swift binaries), `./relative-path` (plugin file), `<remote-runtime>:<module or plugin>`, `rutis-bridge/peer` (a node; see [Connect nodes](nodes.en.md)), or `peer:<node>/<plugin>` (a plugin running on another node). |
+| `name` | Plugin identifier: an npm package (or package subpath), `py:<name>` (Python entry point or module), `bun:<module>` (a module in the Bun runtime), `go:<plugin>` (the Go binary that has it; a plugin name is in one binary only), `swift:<plugin>` (likewise, Swift binaries), `./relative-path` (plugin file), `rutis-host/dial` / `rutis-host/listen` (a connection; see [Remote runtimes and devices](#remote-runtimes-and-devices); nodes connect the same way, see [Connect nodes](nodes.en.md)), or `<connection row>:<plugin>` (a plugin run on a connection's far end). |
 | `config` | Plugin configuration. |
 | `inject` | Additional service names to wait for. |
 | `isolate` | `{ "service": true }` gives this row its own instance of the service; `{ "service": "label" }` shares one instance among rows with that label. |
@@ -859,23 +833,59 @@ Each row runs a plugin:
 
 Services are shared by name across all plugins. Any plugin that declares `inject: ["weather"]` can use a `weather` service provided in any language or on any node.
 
+### Remote runtimes and devices
+
+Language runtimes on other machines and apps on devices connecting in are written as **connection rows**. rutis-host ships two connection plugins, `rutis-host/dial` and `rutis-host/listen`; a connection row's id names the connection (the prefix of its output, the name of its token). Local runtimes stay under [`runtimes`](#runtimes), unchanged:
+
+| Plugin | What it does | Config |
+| --- | --- | --- |
+| `rutis-host/dial` | Dials `address`; once connected, the far end's plugins appear here; after a disconnection it reconnects with backoff | `address`: `wss://…` (or `ws://…` to a loopback address) |
+| `rutis-host/listen` | Waits on one listener of [`listen`](#listen) for far ends to connect in, each connection on its own; a newer connection with an id replaces the older | `listener`: the name of a listener under `listen` |
+
+```json
+{
+  "id": "main",
+  "listen": [{ "name": "public", "address": "0.0.0.0:7443", "cert": "server.pem", "key": "server.key" }],
+  "runtimes": { "py": { "project": "plugins" } },
+  "rows": [
+    { "id": "gpu", "name": "rutis-host/dial", "config": { "address": "wss://gpu.example.com:7443/rutis" } },
+    { "id": "embedder", "name": "gpu:embedder" },
+    { "id": "phone", "name": "rutis-host/listen", "config": { "listener": "public" } }
+  ]
+}
+```
+
+- A plugin run on the far end is the row `<connection row>:<plugin>` (`gpu:embedder`), its configuration in the row's `config`: while the far end is not connected, the row waits; once it is, rutis has the far end run it. The plugin name is resolved on the far end; no language is written. When the far end does not have that plugin, only this row fails, other rows are not affected, and adding such a row is not refused: `embedder: unresolved: entry "embedder" rejected: runtime gpu: this connection does not contain plugin embedder`.
+- `<connection row>:<plugin>` rows go with `rutis-host/dial`: when the host decides which plugins the far end runs, the far end's runtime listens and the host dials it. The far ends of `rutis-host/listen` bring only the plugins they installed themselves and provide.
+- The plugins a far end installed itself (an app on a device installing its own, or what the far end runs anyway) register as `<far end's id>:<plugin>` (`phone-1:health`), not listed in rutis.json. Their services are visible everywhere, as local ones are; one named like a service already here follows the kernel's rule: the later one is refused, and that remote plugin fails saying so, such as `office:weather: weather is provided here by row weather: not registered from office`.
+- The host creates no instance per connection. Logic computed once per device goes on the device, or the host's plugin tells the devices apart itself (an example: [Swift app](swift-app.en.md#once-per-device)).
+- The token is `RUTIS_TOKEN_<row id>` (uppercase, `-` written as `_`): dial presents it (without it, it dials with none); listen checks the far ends connecting in with it, all of them presenting this one token. A listen row without a token fails: `phone: set RUTIS_TOKEN_PHONE: the token the far ends present when they connect`. The host side never reads a bare `RUTIS_TOKEN`.
+- Dial also trusts the CAs in `RUTIS_CA` (for self-signed certificates).
+- A listen row whose listener does not exist fails: `no listener named private: add it to listen`. One listener can carry several listen rows, connections routed to them by token; two entries that would accept the same token stop the host before it starts (see [Credentials](#credentials)).
+- Replacing: once a newer connection with an id already connected on a listen row finishes its handshake, the old connection's remote plugins all unload first (in reverse order, every cleanup run), then the old connection is closed with close code 4002, and only then are the new connection's plugins registered. A connection whose handshake fails touches no connection there is.
+- When the host stops or the row stops, its connections close with close code 1000; the far end reconnects by its own rules.
+- The two plugins take no other config fields: `check` reports a misspelled field by the schema.
+- How the connections change: [What `run` prints](#what-run-prints); their state now: `connections` in [Seeing the current state](#seeing-the-current-state); the far end's runtime commands: [Connect nodes](nodes.en.md#a-language-runtime-on-another-machine).
+- 0.18's `runtimes.remote` is removed in 0.19: written, it is an unknown field; how to change it: [Migrating to 0.19](../migration-0.19.en.md).
+- A connection of your own (another transport, your own authentication): hand over a Channel: write a connection plugin that calls `Session::new(channel)`; other languages use the service `sessions`' `open`. See [Embed in a Rust application](rust-host.en.md) and the [plugin API](plugin-api.en.md).
+
 ## Credentials
 
-Do not put credentials in the file; they are read from the environment when a link dials or a far end dials in:
+Do not put credentials in the file; they are read from the environment when a row dials or a far end dials in:
 
 | Environment variable | Purpose |
 | --- | --- |
-| `RUTIS_TOKEN_<NODE>` | Token presented when connecting to that node and checked when it connects in (the node's name in uppercase, with `-` written as `_`). For a runtime that connects in (`listen` / `instances`), by the runtime's name: every connection presents this one token. The host side reads only these per-name variables, never a bare `RUTIS_TOKEN`. |
+| `RUTIS_TOKEN_<NAME>` | A token by name (uppercase, with `-` written as `_`): `rutis-host/dial` and `rutis-host/listen` rows by row id, presented by dial and checked by listen against the far ends connecting in (all of them presenting this one). The host side reads only these per-name variables, never a bare `RUTIS_TOKEN`. |
 | `RUTIS_CA` | Additional trusted CA certificate in PEM format for `wss://` connections. |
 | `RUTIS_CERT` / `RUTIS_KEY` | Listener certificate and key when they are not specified under `listen`. |
 
-On one listener, each entry that accepts connections with these variables (a listening peer row, a runtime that connects in) must accept a token of its own; listening peer rows must, on different listeners too (they share the host's one identity; a row with an identity or transport of its own counts when the other uses the host's), disabled ones included (enabling one would clash). When two would accept the same token (two `RUTIS_TOKEN_<name>` variables set to one value), a connection could not tell which it is for, so `run`, `check` and a configuration reload fail before starting, naming both entries and the two variables, one of which needs another value:
+On one listener, each `rutis-host/listen` row must accept a token of its own, disabled ones included (enabling one would clash). When two would accept the same token (two `RUTIS_TOKEN_<name>` variables set to one value), a connection could not tell which it is for, so `run`, `check` and a configuration reload fail before starting, naming both rows and the two variables, one of which needs another value:
 
 ```
-rutis-host: listener public: link row main accepts RUTIS_TOKEN_MAIN and remote runtime phone accepts RUTIS_TOKEN_PHONE, the same token, so a connection presenting it cannot be told apart: give RUTIS_TOKEN_MAIN or RUTIS_TOKEN_PHONE another value
+rutis-host: listener public: row main accepts RUTIS_TOKEN_MAIN and row phone accepts RUTIS_TOKEN_PHONE, the same token, so a connection presenting it cannot be told apart: give RUTIS_TOKEN_MAIN or RUTIS_TOKEN_PHONE another value
 ```
 
-The environment cannot be changed from outside the process, so these tokens cannot be revoked while it runs: to cut off a peer or a runtime that connects in, change the token and restart `rutis-host`, which drops every connection. Cutting off one identity at runtime takes the identity layer's revocation hook; see [Connect Nodes](nodes.en.md#security).
+The environment cannot be changed from outside the process, so these tokens cannot be revoked while it runs: to cut off a connected node or a device that connects in, change the token and restart `rutis-host`, which drops every connection. A connection there is now is cut off by stopping its row: the row connecting it stops, and its connection closes with it.
 
 ## Deployment
 

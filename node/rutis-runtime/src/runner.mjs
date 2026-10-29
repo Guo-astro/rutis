@@ -6,8 +6,8 @@ import { Worker } from 'node:worker_threads'
 import { Process } from './client.mjs'
 import { toJsonSchema } from './schema.mjs'
 import { cordisConfig } from './cordis-config.mjs'
-import { isLeaf, oncePerName, supported, toCordis } from './leaf.mjs'
-import { Bus, EVENTS_V2, NO_EVENTS_V2, refuseRemoved } from './events.mjs'
+import { isLeaf, supported, toCordis } from './leaf.mjs'
+import { Bus } from './events.mjs'
 import { install } from './cordis-events.mjs'
 import { rowTracking, install as handleUnhandled, failureText, kindText, realFile, reportText, stackFiles, unhandledError } from './unhandled.mjs'
 import { cannotLoad, encodeError, entryGone, fileShown, noMethod, notDefinePlugin, serviceName } from './errors.mjs'
@@ -67,10 +67,6 @@ let mounted = false
 let closing = false
 let disposing
 let version = 0
-// The host takes the services rows provide without declaring them, each
-// announced with its methods (mount `announce`, feature `rows.announce`).
-// A host that did not ask (0.11) hears only the declared ones.
-let announce = false
 // Rows: plugins rutis-loader manages one by one in this Context (`rows.*`).
 const rows = new Map() // key -> { fiber, inner, config, exports, loading, scope, labelOf, chain, abort }
 // rutis services registered one by one (`hosts.*`): id -> withdraw
@@ -84,8 +80,7 @@ const waitingHosts = new Map()
 // What this runner supports, reported by `mount`.
 // rows.announce: the services a row provides (a Cordis plugin's, or a leaf
 // plugin's `ctx.provide`) reach rutis without a declaration, announced with
-// the methods they have (`service` with a fourth argument, to a host whose
-// mount asked for it).
+// the methods they have (`service` with a fourth argument).
 // plugin-values: a plugin definition this runtime handed over comes back to
 // be described (`plugins.read`) and loaded as a row's entry
 // (docs/design-plugin-values-2026-10-25.md §5).
@@ -292,7 +287,7 @@ function rowOf(fiber) {
 // slots.
 function discover() {
   const found = []
-  if (!announce || closing) return found
+  if (closing) return found
   const store = ctx.reflect.store
   for (const key of Reflect.ownKeys(store)) {
     const impl = store[key]
@@ -317,7 +312,7 @@ function discover() {
 // bookkeeping: they are looked for once it is done.
 let discovering = false
 function discoverLater() {
-  if (discovering || !announce || !rows.size) return
+  if (discovering || !rows.size) return
   discovering = true
   queueMicrotask(() => {
     discovering = false
@@ -440,20 +435,12 @@ function located(entry) {
   }
 }
 
-// A leaf plugin providing a service it does not declare, under a host that
-// mounted without `announce` (one older than 0.12): it is told, once per
-// name, that the host does not take it.
-const tellOldHost = oncePerName(text => say(text))
-const undeclared = name => {
-  if (fibers && !announce) tellOldHost(name)
-}
-
 // `rowInject`: the names the row's own `inject` adds, which a leaf plugin
 // may use too.
 async function pluginOf(entry, rowInject = []) {
   entry = located(entry)
   const declared = await declaredOf(entry, described)
-  return isLeaf(declared) ? toCordis(declared, undeclared, rowInject, providerOf) : declared
+  return isLeaf(declared) ? toCordis(declared, rowInject, providerOf) : declared
 }
 
 // A plugin definition this runtime handed over, back as a row's entry (a
@@ -470,7 +457,7 @@ function definedPlugin(value, rowInject = []) {
     const key = rowInject.join('\0')
     let wrapped = wrappings.get(key)
     if (!wrapped) {
-      wrapped = toCordis(supported(value, value.name ?? 'plugin definition'), undeclared, rowInject, providerOf)
+      wrapped = toCordis(supported(value, value.name ?? 'plugin definition'), rowInject, providerOf)
       wrappings.set(key, wrapped)
     }
     return wrapped
@@ -730,30 +717,35 @@ function chainOf(scope) {
 async function describe(entry) {
   entry = located(entry)
   const declared = await declaredOf(entry)
+  // The package the plugin file belongs to: its version, and what it says
+  // it provides.
+  const pkg = await packageOf(entry)
+  const version = typeof pkg?.version === 'string' ? pkg.version : undefined
   // A leaf plugin declares in code; one that declares no `provides` (an
   // SDK of 0.12 or later says so) has its services announced.
-  if (isLeaf(declared)) return { config: declared.config ?? null, inject: declared.inject, provides: declared.provides, announces: declared.announces === true }
+  if (isLeaf(declared)) return { config: declared.config ?? null, inject: declared.inject, provides: declared.provides, announces: declared.announces === true, version }
   const plugin = declared
   const schema = plugin.Config ?? plugin.schema
-  const provides = await providesOf(entry)
+  const provides = pkg?.rutis?.provides
   return {
     config: schema ? toJsonSchema(schema) : null,
     inject: Object.keys(Inject.resolve(plugin.inject)),
     provides: provides ?? {},
     announces: provides === undefined,
+    version,
     // A Cordis plugin, not a leaf one: what it injects from rows of this
     // runtime resolves in Cordis.
     cordis: true,
   }
 }
 
-// `rutis.provides` in the package.json nearest the plugin, if it declares it.
-async function providesOf(entry) {
+// The package.json nearest the plugin, if there is one.
+async function packageOf(entry) {
   const { readFile } = await import('node:fs/promises')
   const { dirname, join } = await import('node:path')
   for (let dir = dirname(entry); ; dir = dirname(dir)) {
     const text = await readFile(join(dir, 'package.json'), 'utf8').catch(() => undefined)
-    if (text !== undefined) return JSON.parse(text).rutis?.provides
+    if (text !== undefined) return JSON.parse(text)
     if (dirname(dir) === dir) return undefined
   }
 }
@@ -852,8 +844,6 @@ function hostProxy(id, methods) {
 // them resolve natively. `args.plugins` lists [{ entry, config }] in load
 // order; a single-plugin mount passes only `args.config`.
 function mount(args) {
-  // Listeners register themselves (#464): the static forwarding is gone.
-  refuseRemoved(args)
   if (fibers) throw new Error('plugins are already mounted')
   mountScope = chainOf(args.scope)
   // This runtime's name on the host, for descriptors, when it says.
@@ -864,7 +854,6 @@ function mount(args) {
     slots.set(name, { name, methods: new Set(methods), scope: undefined, object: undefined, identity: undefined, handle: null, generation: 0, version: 0 })
   }
   const plugins = args.plugins ?? [{ entry: pluginPath, config: args.config }]
-  announce = args.announce === true
   // Services the rutis application provides are registered before the
   // plugins load, so the plugins' dependencies on them resolve natively.
   for (const [name, methods] of Object.entries(args.provided ?? {})) ctx.provide(name, hostProxy(name, methods))
@@ -1045,10 +1034,8 @@ function charge(kind, error, traced) {
   // and stack, which the host prints under it.
   let encoded
   try { encoded = encodeError(error) } catch {}
-  peer.callAsync('', 'rows.failed', encoded ? [key, kindText(kind, error), encoded] : [key, kindText(kind, error)]).catch(() => {
-    // A host older than 0.18 fails no row so: the row goes on.
-    say(`runtime ${runtimeName()}: row ${bus.rowId(key)}: ${why}\n`)
-  })
+  // The host gone: there is no one to tell.
+  peer.callAsync('', 'rows.failed', encoded ? [key, kindText(kind, error), encoded] : [key, kindText(kind, error)]).catch(() => {})
 }
 // The row an error traced to row `key` is charged to: that row, unless the
 // innermost plugin file on the error's stack is another row's only. Then
@@ -1085,7 +1072,6 @@ try {
     // process does, as every call not of its chain does; a local emit of
     // the name goes behind it (the bus's `behind`, §5.5).
     holds: (method, args) => method === 'events.call' && args?.[0]?.mode === 'emit' ? args[0].name : undefined,
-    requires: [EVENTS_V2],
     report: bus.report,
     // A function or object a row hands over runs as that row's when
     // called (#688).
@@ -1093,11 +1079,6 @@ try {
     within: tracking.within,
   })
 } catch (error) {
-  // A host older than 0.13 (protocol §2.2).
-  if (error?.message === NO_EVENTS_V2) {
-    say(`rutis: refused: incompatible (${NO_EVENTS_V2}); stopping\n`)
-    process.exit(1)
-  }
   // The supervisor ended the session before it greeted, and said why.
   if (dialed) process.exit(1)
   throw error

@@ -202,7 +202,7 @@ async fn add_writes_the_file_back_in_its_own_order() {
          version: \"1.2.0\"\n  \
          inject: [\"notes\"]\n  \
          provides: {}\n  \
-         notes: add a row that provides it, or import it from a peer (import: [\"notes\"])\n\
+         notes: add a row that provides it\n\
          rutis.json: added row wordcount-2, runtimes.node\n"
     );
     assert_eq!(ran.status, 0);
@@ -271,8 +271,8 @@ async fn add_writes_the_file_back_in_its_own_order() {
     assert_eq!(written["rows"].as_array().unwrap().len(), 1);
 }
 
-/// A host running the file holds its listeners' ports and its remote
-/// runtimes' links: `add` checks the new rows without binding or dialing,
+/// A host running the file holds its listeners' ports and its connection
+/// rows' connections: `add` checks the new rows without binding or dialing,
 /// and writes the file (I10).
 /// guarantee: host/plugin-install
 #[tokio::test(flavor = "multi_thread")]
@@ -290,7 +290,7 @@ async fn add_beside_a_running_host_does_not_bind_its_ports() {
             ("index.mjs", WORDCOUNT),
         ],
     );
-    // The running host's port, and what its remote runtime `far` dials.
+    // The running host's port, and what its dial row `far` dials.
     let taken = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let address = taken.local_addr().unwrap();
     write(
@@ -301,11 +301,10 @@ async fn add_beside_a_running_host_does_not_bind_its_ports() {
                 "rutis.json",
                 &serde_json::json!({
                     "listen": [{ "name": "public", "address": address.to_string() }],
-                    "runtimes": { "remote": [
-                        { "name": "gpu", "language": "python", "listen": "public" },
-                        { "name": "far", "language": "python", "dial": format!("ws://{address}/rutis") }
-                    ] },
-                    "rows": []
+                    "rows": [
+                        { "id": "gpu", "name": "rutis-host/listen", "config": { "listener": "public" } },
+                        { "id": "far", "name": "rutis-host/dial", "config": { "address": format!("ws://{address}/rutis") } }
+                    ]
                 })
                 .to_string(),
             ),
@@ -395,7 +394,7 @@ async fn the_errors_say_what_to_do() {
         (
             vec!["add", "pypi:bo-llm"],
             None,
-            "rutis-host: cannot create the Python environment <dir>/.venv: install uv, or Python 3.10 or later",
+            "rutis-host: cannot create the Python environment <dir>/.venv: install uv, or Python 3.12 or later",
         ),
         (
             vec!["add", "npm:@ana/wordcount"],

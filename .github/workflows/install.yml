@@ -16,7 +16,7 @@
 #   by hand       any version and source; by default this commit's
 #                 packages on three platforms
 #
-# The minimum versions go on Linux (Node 22, Python 3.10, Bun 1.4.0, Go
+# The minimum versions go on Linux (Node 22, Python 3.12, Bun 1.4.0, Go
 # oldstable; websockets 15.0 is the PyPI cell's own);
 # macOS and Windows take the latest (docs/ci.md §9).
 #
@@ -105,8 +105,8 @@ jobs:
           // by hand: GitHub's.
           const selfHosted = process.env.SELF_HOSTED === 'true'
           const runners = {
-            'linux-x64': { os: 'ubuntu-24.04', target: 'x86_64-unknown-linux-musl', wheel: 'x86_64', node: '22', python: '3.10' },
-            'linux-arm64': { os: 'ubuntu-24.04-arm', target: 'aarch64-unknown-linux-musl', wheel: 'aarch64', node: '22', python: '3.10' },
+            'linux-x64': { os: 'ubuntu-24.04', target: 'x86_64-unknown-linux-musl', wheel: 'x86_64', node: '22', python: '3.12' },
+            'linux-arm64': { os: 'ubuntu-24.04-arm', target: 'aarch64-unknown-linux-musl', wheel: 'aarch64', node: '22', python: '3.12' },
             // The Intel macOS runner (macos-13 is retired).
             'darwin-x64': { os: 'macos-15-intel', target: 'x86_64-apple-darwin', wheel: 'x86_64-apple-darwin', node: '26', python: '3.x' },
             'darwin-arm64': { os: selfHosted ? JSON.parse(process.env.MACOS_RUNNER) : 'macos-15', target: 'aarch64-apple-darwin', wheel: 'aarch64-apple-darwin', node: '26', python: '3.x' },

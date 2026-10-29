@@ -3,11 +3,12 @@
 
 use std::path::{Path, PathBuf};
 
-use rutis_bridge::runtime::{Launcher, LocalRuntime};
+use rutis_bridge::runtime::Launcher;
 use serde_json::{json, Value};
 
 use super::{id_of, package_entry, rebase_program, Language};
 use crate::config::{BunRuntime, Restart, Runtimes};
+use crate::connect::SpawnPlugin;
 use crate::host::Error;
 
 pub struct Bun;
@@ -58,11 +59,7 @@ impl Language for Bun {
         }
     }
 
-    fn remote_names(&self) -> &'static [&'static str] {
-        &["bun"]
-    }
-
-    fn runtime(&self, runtimes: &Runtimes) -> Option<Result<LocalRuntime, Error>> {
+    fn runtime(&self, runtimes: &Runtimes) -> Option<Result<SpawnPlugin, Error>> {
         runtimes
             .bun
             .as_ref()
@@ -152,7 +149,7 @@ pub const INSPECT: &str = "127.0.0.1:6499/rutis";
 /// The Bun runtime of `bun.project`, with the `@arcships/rutis-bun` package
 /// installed there (or given), run by a Bun that answers; with `debug`, its
 /// inspector on [`INSPECT`].
-fn runtime(bun: &BunRuntime, debug: bool) -> Result<LocalRuntime, Error> {
+fn runtime(bun: &BunRuntime, debug: bool) -> Result<SpawnPlugin, Error> {
     let candidates = [
         bun.runtime.clone(),
         Some(bun.project.join("node_modules/@arcships/rutis-bun")),
@@ -184,7 +181,7 @@ fn runtime(bun: &BunRuntime, debug: bool) -> Result<LocalRuntime, Error> {
             .args
             .insert(0, format!("--inspect={INSPECT}").into());
     }
-    Ok(LocalRuntime::launcher("bun", launcher, &bun.project))
+    Ok(SpawnPlugin::new("bun", launcher, &bun.project))
 }
 
 const TEMPLATE: &[(&str, &str)] = &[

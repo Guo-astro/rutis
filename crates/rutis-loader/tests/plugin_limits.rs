@@ -1,6 +1,6 @@
 //! A host keeping third-party plugins apart
 //! (`docs/design-host-plugin-limits-2026-10-27.md`): one Node process per
-//! plugin with `RuntimeResolver::modules`, and a runtime waiting for a
+//! plugin, each a runtime of its own (`<name>:<file>` rows), and a runtime waiting for a
 //! debugger as `Loader::status` shows it.
 #![cfg(feature = "node")]
 
@@ -10,20 +10,19 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use common::runtimes::{layer, repo, COLD};
+use common::runtimes::{greet_as_main, layer, repo, TestRuntime, COLD};
 use rutis::host::CtxHost;
 use rutis::host::FiberState;
 use rutis::Ctx;
-use rutis_bridge::runtime::LocalRuntime;
 use rutis_bridge::session::{host_key, HostDispatch, Value as RpcValue};
 use rutis_loader::report::EntryStatus;
-use rutis_loader::runtime::{RuntimeResolver, RuntimeRowsPlugin};
+use rutis_loader::runtime::SessionResolver;
 use rutis_loader::status::{RuntimeState, Status};
 use rutis_loader::{Chain, Loader, LoaderOptions, LoaderPlugin};
 use serde_json::json;
 
-/// A host with the runtimes `runtimes` (each with its own resolver,
-/// `<name>:<file>` rows) and a loader.
+/// A host with the runtimes `runtimes` (`<name>:<file>` rows, one
+/// `SessionResolver` for all) and a loader.
 struct Host {
     root: Ctx,
     loader: Loader,
@@ -31,25 +30,22 @@ struct Host {
 }
 
 /// `started`: wait for each runtime to run before the loader is mounted.
-async fn host(runtimes: Vec<LocalRuntime>, started: bool) -> Host {
+async fn host(runtimes: Vec<TestRuntime>, started: bool) -> Host {
     let root = Ctx::root().unwrap();
-    let mut chain = Chain::new();
-    let mut resolvers = Vec::new();
+    greet_as_main(&root);
+    let options = LoaderOptions::default();
+    let sessions = Arc::new(SessionResolver::new(&options.catalog));
     for runtime in runtimes {
-        let rows = Arc::new(RuntimeResolver::modules(runtime.handle()));
+        sessions.runtime(runtime.handle());
         let view = root.plugin(runtime);
         if started {
             view.await.unwrap();
         }
-        chain = chain.with_shared(rows.clone());
-        resolvers.push(rows);
     }
-    let plugin = LoaderPlugin::new(chain, LoaderOptions::default());
+    let plugin = LoaderPlugin::new(Chain::new().with_shared(sessions.clone()), options);
     let loader = plugin.handle();
+    sessions.attach(&loader);
     root.plugin(plugin).await.unwrap();
-    for rows in resolvers {
-        root.plugin(RuntimeRowsPlugin::new(rows));
-    }
     Host {
         root,
         loader,
@@ -58,9 +54,8 @@ async fn host(runtimes: Vec<LocalRuntime>, started: bool) -> Host {
 }
 
 /// A Node runtime of its own, named `name`.
-fn node(name: &str) -> LocalRuntime {
-    let package = repo().join("node/rutis-runtime");
-    LocalRuntime::node(&package, package.join("package.json")).named(name)
+fn node(name: &str) -> TestRuntime {
+    TestRuntime::node(&repo().join("node/rutis-runtime/package.json")).named(name)
 }
 
 impl Host {
@@ -138,10 +133,10 @@ export default definePlugin({
 })
 "#;
 
-/// Two Node runtimes, each a process of its own with `modules`: rows go to
+/// Two Node runtimes, each a process of its own: rows go to
 /// the process their prefix names; one process ending leaves the other's
 /// row running.
-// guarantee: host/plugin-limits (a process per plugin with modules)
+// guarantee: host/plugin-limits (a process per plugin)
 #[tokio::test(flavor = "multi_thread")]
 async fn each_plugin_runs_in_its_own_process() {
     let host = host(vec![node("alpha"), node("beta")], true).await;
@@ -183,13 +178,14 @@ async fn each_plugin_runs_in_its_own_process() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_runtime_waiting_for_a_debugger_stays_starting() {
     let runtime = node("wordcount")
-        .env("NODE_OPTIONS", "--inspect-brk=127.0.0.1:0")
+        .launcher(|launcher| launcher.env("NODE_OPTIONS", "--inspect-brk=127.0.0.1:0"))
         .greeting(Duration::MAX);
     let host = host(vec![runtime], false).await;
     let ping = host.plugin("ping.mjs", &PING.replace("NAME", "ping"));
     host.rows(&[("wordcount", "wordcount", &ping)]).await;
-    // Well past the time Node takes to greet when nothing stops it.
-    tokio::time::sleep(Duration::from_secs(3)).await;
+    // Past the time Node takes to greet when nothing stops it, and past a
+    // session's own 10 s handshake.
+    tokio::time::sleep(Duration::from_secs(12)).await;
     let status = host.loader.status().to_string();
     // With its process id, to attach the debugger to. On Windows a local
     // runtime's process is known only once it connected back (loopback

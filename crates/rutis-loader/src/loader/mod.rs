@@ -51,35 +51,25 @@ pub(crate) use service::LoaderService;
 #[cfg_attr(not(feature = "runtimes"), allow(dead_code))]
 pub(crate) struct WeakLoader(std::sync::Weak<Inner>);
 
-#[cfg_attr(not(feature = "runtimes"), allow(dead_code))]
-impl WeakLoader {
-    /// The config step for a copy of row `row` in `instance` of a runtime
-    /// that dialed in, its plugin described there with `schema`: the filled
-    /// copy, extra keys warned about once per row, instance and value.
-    pub(crate) fn connection_step(
-        &self,
-        row: &str,
-        instance: &str,
-        schema: Option<&Value>,
-        cordis: bool,
-        config: &Value,
-    ) -> Result<Value, rutis::ConfigError> {
-        let Some(inner) = self.0.upgrade() else {
-            return Ok(config.clone());
-        };
-        let subject = config_step::Subject::connection(schema, cordis);
-        let purpose = config_step::Purpose::Run {
-            row,
-            instance: Some(instance),
-        };
-        inner.config_step(&subject, config, purpose)
-    }
-}
-
 impl Loader {
     #[cfg_attr(not(feature = "runtimes"), allow(dead_code))]
     pub(crate) fn downgrade(&self) -> WeakLoader {
         WeakLoader(Arc::downgrade(&self.inner))
+    }
+
+    /// The loader's own context while it is mounted: what plugins of its
+    /// resolvers are mounted under.
+    #[cfg(feature = "runtimes")]
+    pub(crate) fn ctx(&self) -> Option<Ctx> {
+        let state = self.inner.state.lock().unwrap();
+        state.groups.get(&None).map(|group| group.ctx.clone())
+    }
+}
+
+#[cfg(feature = "runtimes")]
+impl WeakLoader {
+    pub(crate) fn upgrade(&self) -> Option<Loader> {
+        self.0.upgrade().map(|inner| Loader { inner })
     }
 }
 pub use waits::{Wait, WaitReason};
@@ -362,32 +352,6 @@ impl Loader {
     #[cfg(feature = "runtimes")]
     pub(crate) fn catalog(&self) -> &ServiceCatalog {
         &self.inner.catalog
-    }
-
-    /// The key the catalog gives the service `name` for a copy running in
-    /// `build`'s instances.
-    #[cfg(feature = "peer")]
-    pub(crate) fn service_key_in(
-        &self,
-        name: &str,
-        build: &crate::resolver::Build,
-    ) -> Result<rutis::host::TypeKey, LoaderError> {
-        self.inner.catalog.key_in(name, build)
-    }
-
-    /// The key a service crossing between nodes or languages has in
-    /// `build`'s instances: a shared name through the catalog, any other
-    /// name `host_key(name)`.
-    #[cfg(feature = "peer")]
-    pub(crate) fn shared_key_in(
-        &self,
-        name: &str,
-        build: &crate::resolver::Build,
-    ) -> Result<rutis::host::TypeKey, LoaderError> {
-        match self.inner.catalog.is_shared(name) {
-            true => self.inner.catalog.key_in(name, build),
-            false => Ok(rutis_bridge::session::host_key(name).erase()),
-        }
     }
 }
 

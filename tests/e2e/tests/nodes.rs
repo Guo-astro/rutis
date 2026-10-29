@@ -14,7 +14,7 @@
 //!
 //! What A's link did is read from its rows' states, the calls' outcomes,
 //! B's output and the proxy's connections; why a dial was refused, from
-//! the link's lines in A's output (`gpu: link refused: <category> (…)`,
+//! the link's lines in A's output (`gpu: disconnected (<category>: …)`,
 //! #321).
 //!
 //! Waits: the link redials after 0.5 s, doubling each failure up to 30 s,
@@ -139,13 +139,12 @@ fn main_host(s: &Scenario, dial: &str, token: &str) -> (Host, Probe) {
             "id": "main",
             "runtimes": {
                 "node": {},
-                "remote": [{ "name": "gpu", "language": "python" }],
             },
             "rows": [
                 {
                     "id": "gpu",
-                    "name": "rutis-bridge/peer",
-                    "config": { "peer": "gpu", "dial": dial, "runtime": "gpu" },
+                    "name": "rutis-host/dial",
+                    "config": { "address": dial },
                 },
                 {
                     "id": "infer",
@@ -344,7 +343,7 @@ fn a_refused_reconnect_is_reported_by_its_category() {
     let s = Scenario::new("node-token-category");
     let (mut a, b) = refused_by_another_token(&s);
     a.wait_for("A reporting the refusal of gpu's credentials", |line| {
-        line.starts_with("gpu: link refused: auth-rejected (")
+        line.starts_with("gpu: disconnected (auth-rejected: ")
             && line.ends_with("; retrying in 30s")
     });
     stop(a, b);
@@ -412,7 +411,7 @@ fn a_refused_certificate_is_reported_by_its_category() {
     for cert in ["other-name", "expired"] {
         let (mut a, b) = over_tls(&s, cert, true);
         a.wait_for("A reporting the refusal of gpu's certificate", |line| {
-            line.starts_with("gpu: link refused: auth-rejected (")
+            line.starts_with("gpu: disconnected (auth-rejected: ")
                 && line.to_lowercase().contains("certificate")
                 && line.ends_with("; retrying in 30s")
         });

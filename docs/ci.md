@@ -105,8 +105,8 @@
 | `runtimes-windows` | Windows | `code`：只跑平台专项测试（§4） | bridge、loader 全部测试 | 同上，在 Windows 上（进程用 loopback 方式启动）；Go SDK 测试；E2E harness 和不限于 Unix 的 E2E 场景（`rutis-e2e`：Job Object、Ctrl-Break、残余检查）；整个工作区的编译检查 |
 | `runtimes-bun` | Linux | `bun`：Bun 1.4.0 | Linux 最新版；macOS 1.4.0 | Bun 运行时的全部测试，包括 loopback 方式启动的重跑 |
 | `runtimes-go` | Linux | `go`：Go oldstable；`gofmt`、`go vet`、`go test -race`、Go SDK 和 rutis-host 的 Go 测试 | Linux stable；macOS oldstable；Linux 上 loopback 方式启动的重跑；`rust` 已经跑过的那几套 cargo 测试（Go 运行时、契约套件、Go 行） | Go SDK 与 Go 运行时的全部测试，其中 `go/rutis/public_api_test.go` 把 `rutis`、`rutis/advanced`、`rutis/rutistest` 的导出声明和 `go/rutis/public-api.txt` 比对（#692；有意的改动用 `go test -run TestPublicAPI -update` 更新） |
-| `runtimes-kotlin` | Linux | `kotlin`：JDK 17 | — | Kotlin SDK（`kotlin/rutis`）的 Gradle 构建与测试：jvm target 的单元测试、测试工具对两份期望文件，以及 `check` 带的 `apiCheck`（Binary Compatibility Validator，公开面在 `kotlin/rutis/rutis/api/`：jvm 的在 `api/jvm/`，有 Android SDK 时 android 的在 `api/android/`；有意的改动用 `./gradlew apiDump` 更新，#692）；runner 有 Android SDK 时还编译 android target、出 AAR。然后跑带 Kotlin 的 Rust 套件（feature `kotlin`：会话与值、运行时契约、事件一致性中 Kotlin 作 X 与 Y、`kotlin_runtime`、多语言 `multilang_kotlin`、对象跨进程 `objects_cross` 的 Kotlin 用例；远程：拨出契约的 Kotlin 列、`kotlin_remote`、rutis-host 的 `--features kotlin --test kotlin`），Gradle 在 cargo 之前。`rust`、`network-macos`、`runtimes-windows` 的 bridge 全部 feature 也包含 `kotlin`：它们装 JDK 17，先用 Gradle 构建一致性 jar（`RUTIS_KOTLIN_JAR`） |
-| `runtimes-swift` | macOS（自托管，§10） | `swift`：runner 上 Xcode 的工具链 | — | Swift SDK 自己的测试（`swift run RutisSelfTest`）、`Rutis` 与 `RutisTest` 的公开面和 `swift/rutis/public-api.txt` 比对（`tools/public-api-swift.sh`，读 `swift package dump-symbol-graph`；有意的改动用 `--write` 更新，#692）、runner 有 iOS SDK 时为 iOS 构建库、带 Swift 会话与运行时的 Rust 契约套件、Swift 行与 Node / Python 行一起（`swift_rows`、`multilang_swift`、调用方的行、等待环、对象跨进程 `objects_cross` 的 Swift 用例）、远程的 Swift 运行时（`dial_conformance`、`swift_remote`）、rutis-host 的 `runtimes.swift` 与 Swift 插件开发循环（`rutis-host --test swift`、`rutis-e2e --test dev_loop`）、应用用 `RutisApp` 托管插件（`rutis-host --test swift_app`，以一个可执行程序代替应用），以及 X 为 Swift 插件的 `events_conformance`（PR 跑写定的组合，完整运行抽样） |
+| `runtimes-kotlin` | Linux | `kotlin`：JDK 17 | — | Kotlin SDK（`kotlin/rutis`）的 Gradle 构建与测试（先 `cargo build -p rutis-host`，测试工具跑在 `rutis-host test` 上，`RUTIS_HOST`）：jvm target 的单元测试、测试工具对两份期望文件，以及 `check` 带的 `apiCheck`（Binary Compatibility Validator，公开面在 `kotlin/rutis/rutis/api/`：jvm 的在 `api/jvm/`，有 Android SDK 时 android 的在 `api/android/`；有意的改动用 `./gradlew apiDump` 更新，#692）；runner 有 Android SDK 时还编译 android target、出 AAR。然后跑带 Kotlin 的 Rust 套件（feature `kotlin`：会话与值、运行时契约、事件一致性中 Kotlin 作 X 与 Y、`kotlin_runtime`、多语言 `multilang_kotlin`、对象跨进程 `objects_cross` 的 Kotlin 用例；远程：拨出契约的 Kotlin 列、`kotlin_remote`、rutis-host 的 `--features kotlin --test kotlin`），Gradle 在 cargo 之前。`rust`、`network-macos`、`runtimes-windows` 的 bridge 全部 feature 也包含 `kotlin`：它们装 JDK 17，先用 Gradle 构建一致性 jar（`RUTIS_KOTLIN_JAR`） |
+| `runtimes-swift` | macOS（自托管，§10） | `swift`：runner 上 Xcode 的工具链 | — | Swift SDK 自己的测试（`swift run RutisSelfTest`，`RutisTest` 用本仓库构建的 `rutis-host test`）、`Rutis` 与 `RutisTest` 的公开面和 `swift/rutis/public-api.txt` 比对（`tools/public-api-swift.sh`，读 `swift package dump-symbol-graph`；有意的改动用 `--write` 更新，#692）、runner 有 iOS SDK 时为 iOS 构建库、带 Swift 会话与运行时的 Rust 契约套件、Swift 行与 Node / Python 行一起（`swift_rows`、`multilang_swift`、调用方的行、等待环、对象跨进程 `objects_cross` 的 Swift 用例）、远程的 Swift 运行时（`dial_conformance`、`swift_remote`）、rutis-host 的 `runtimes.swift` 与 Swift 插件开发循环（`rutis-host --test swift`、`rutis-e2e --test dev_loop`）、应用用 `RutisApp` 托管插件（`rutis-host --test swift_app`，以一个可执行程序代替应用），以及 X 为 Swift 插件的 `events_conformance`（PR 跑写定的组合，完整运行抽样） |
 | `semver-rutis` | macOS（自托管，§10） | `packaging` | 整个任务 | 公开 API 和上次发布相比有没有不兼容的改动（只提示） |
 | `dylib-linux-launcher`、`dylib-linux-sdk-bundle` | Linux | `dylib` | — | dylib 测试，分两个任务同时跑 |
 | `dylib-linux-repro` | Linux | `repro` | 整个任务 | SDK 可复现构建（在一台机器上用两个目录各构建一次） |
@@ -154,7 +154,7 @@ bridge 的一致性套件在哪些实现、哪些通道、哪些平台上运行�
 | --- | --- | --- | --- | --- |
 | Node、Python、Go | 继承的 socket（`fd:3`） | 运行 | 运行 | 跳过：Windows 不交接描述符，只有 loopback |
 | Node、Python、Go | 回拨 socket 路径 | 运行 | 运行 | 跳过：同上 |
-| Node、Python、Go | loopback TCP（本地传输的 `Handover::Loopback`，与 `LocalRuntime` 启动运行时的方式相同，再 `Process::attach`） | 运行 | 运行 | 运行 |
+| Node、Python、Go | loopback TCP（本地传输的 `Handover::Loopback`，与 `Launcher::start` 启动运行时的方式相同，再 `Process::attach`） | 运行 | 运行 | 运行 |
 | Node、Python、Go | WebSocket（运行时监听，Rust 拨入） | 运行 | 运行 | 运行 |
 | Bun | `fd:3`、回拨 socket 路径 | 运行；`runtimes-bun` 用 `RUTIS_LOCAL_HANDOVER=loopback` 重跑 | 运行 | 不编译：同上 |
 | Bun | loopback TCP | 不跑单独的列：由上一行的重跑覆盖 | 同 Linux | 不编译：同上 |
@@ -168,13 +168,7 @@ bridge 的一致性套件在哪些实现、哪些通道、哪些平台上运行�
 
 前两列和最后一行经 `Process` 门面启动进程，契约还检查崩溃后的退出状态；loopback、WebSocket 两列接到通道上，只检查崩溃结束会话。Windows 上 `Process` 门面的 loopback 启动由 `python_runtime.rs`、`go_runtime.rs` 等覆盖。
 
-节点契约（`rutis_bridge::testing::node`）：
-
-| 实现 | 通道 | Linux | macOS | Windows |
-| --- | --- | --- | --- | --- |
-| Rust 节点 | memory（`tests/node_conformance.rs`） | 运行 | 完整运行中运行 | 完整运行中运行 |
-| Rust 节点 | WebSocket（`tests/websocket_conformance.rs`，两个 rutis 根经 loopback WebSocket 链接） | 运行 | 运行 | 运行 |
-| Cordis 节点 | WebSocket（`tests/websocket_conformance.rs`） | 运行 | 运行 | 运行 |
+两个 rutis 内核之间（节点）：`rutis-bridge/tests/session_plugin.rs`（内存通道上的会话）与 `rutis-host/tests/nodes.rs`（两个宿主经 loopback WebSocket，`rutis-host/dial` 与 `rutis-host/listen`）在三个平台运行。
 
 拨出契约（`tests/dial_conformance.rs`，rutis 起接入点，运行时以 `dial:ws://…` 连进来）：
 
@@ -291,7 +285,7 @@ CI 慢下来，通常是一项一项加检查加出来的。新增检查（新�
 
 ## 10. 自托管的 macOS runner
 
-`ci.yml` 的 `dylib-macos`、`sdk-repro-macos`，以及 `install.yml` 在每晚的运行中的 `darwin-arm64`，跑在自托管的 macOS runner 上：一台专用、隔离的 Mac，可以装多个 runner 实例，标签都是 `self-hosted, macOS, ARM64`（第一个实例叫 `macos-1`）。结果和操作系统无关的任务也在那里跑，免得排队等 GitHub 的 Linux runner：`ci.yml` 的 `js-py`（Node 22、Python 3.10、websockets 15，Python 由 uv 装）、`msrv`、`checks`、`release-dry-run`、`semver-rutis`、两个 SDK 比对，`runtimes-go`/`runtimes-bun` 在完整运行时的 macOS 矩阵项（Go oldstable、Bun 1.4.0，Node 22，Python 由 uv 装），以及 `install.yml`、`package.yml` 的 `plan`（发布时，即 tag 上，`plan` 仍用 `ubuntu-24.04`）。只有一个实例时它们会排在正在跑的 macOS 任务后面，所以要多加实例（现在有 `macos-1` 到 `macos-4`）。`msrv`、`checks` 在 macOS 上编译，不编译只在 Linux 上的 cfg 代码；这部分由 Linux 上的 `lint`（clippy，全部 feature）编译。留在 Linux 上的：`rust`、`e2e`、`links`、`lint`、`runtimes-go`/`runtimes-bun` 的 ubuntu 矩阵项、`dylib-linux-*`、`sdk-repro`，以及只做调度的 `changes`、`ci-ok`（它们不占 macOS 槽位）。`network-macos` 也在自托管的机器上跑（仓库变量 `NETWORK_MACOS_RUNNER` 为 `["self-hosted","macOS","ARM64"]`；删掉变量回到 GitHub 的 `macos-15`。曾因 #287 留在 GitHub 上，#344 修复后切过来）。其余任务仍用 GitHub 的 runner：`darwin-x64`（要 Intel 的 `macos-15-intel`）、`package.yml` 的 macOS 构建（发布用的文件）、`release.yml` 调用 `install.yml` 时和手动运行 `install.yml` 时的 `darwin-arm64`（发布前的检查用 `macos-15`）；Linux 和 Windows 的任务见 §11。
+`ci.yml` 的 `dylib-macos`、`sdk-repro-macos`，以及 `install.yml` 在每晚的运行中的 `darwin-arm64`，跑在自托管的 macOS runner 上：一台专用、隔离的 Mac，可以装多个 runner 实例，标签都是 `self-hosted, macOS, ARM64`（第一个实例叫 `macos-1`）。结果和操作系统无关的任务也在那里跑，免得排队等 GitHub 的 Linux runner：`ci.yml` 的 `js-py`（Node 22、Python 3.12、websockets 15，Python 由 uv 装）、`msrv`、`checks`、`release-dry-run`、`semver-rutis`、两个 SDK 比对，`runtimes-go`/`runtimes-bun` 在完整运行时的 macOS 矩阵项（Go oldstable、Bun 1.4.0，Node 22，Python 由 uv 装），以及 `install.yml`、`package.yml` 的 `plan`（发布时，即 tag 上，`plan` 仍用 `ubuntu-24.04`）。只有一个实例时它们会排在正在跑的 macOS 任务后面，所以要多加实例（现在有 `macos-1` 到 `macos-4`）。`msrv`、`checks` 在 macOS 上编译，不编译只在 Linux 上的 cfg 代码；这部分由 Linux 上的 `lint`（clippy，全部 feature）编译。留在 Linux 上的：`rust`、`e2e`、`links`、`lint`、`runtimes-go`/`runtimes-bun` 的 ubuntu 矩阵项、`dylib-linux-*`、`sdk-repro`，以及只做调度的 `changes`、`ci-ok`（它们不占 macOS 槽位）。`network-macos` 也在自托管的机器上跑（仓库变量 `NETWORK_MACOS_RUNNER` 为 `["self-hosted","macOS","ARM64"]`；删掉变量回到 GitHub 的 `macos-15`。曾因 #287 留在 GitHub 上，#344 修复后切过来）。其余任务仍用 GitHub 的 runner：`darwin-x64`（要 Intel 的 `macos-15-intel`）、`package.yml` 的 macOS 构建（发布用的文件）、`release.yml` 调用 `install.yml` 时和手动运行 `install.yml` 时的 `darwin-arm64`（发布前的检查用 `macos-15`）；Linux 和 Windows 的任务见 §11。
 
 **切回 GitHub 的 runner，不用改代码**：仓库变量 `MACOS_RUNNER`（Settings → Secrets and variables → Actions → Variables）是 `runs-on` 的 JSON 值，没设置时为 `["self-hosted","macOS","ARM64"]`。设成 `"macos-15"`（带引号）就全部回到 GitHub 的 macOS；删掉变量就回到自托管。`gh variable set MACOS_RUNNER --body '"macos-15"'`。调度任务用另一个变量 `GATE_RUNNER`：没设置时是 GitHub 的 `ubuntu-24.04`，要让它们回到自托管的 Mac 就设成 `'["self-hosted","macOS","ARM64"]'`。
 
@@ -339,8 +333,8 @@ CI 慢下来，通常是一项一项加检查加出来的。新增检查（新�
 | 测试 | 命令 | 要什么 |
 | --- | --- | --- |
 | Swift 插件的系统授权（EventKit，授权归属二进制） | `cargo test -p rutis-e2e --test tcc` | macOS、Xcode；第一次运行时在弹窗里选择 |
-| Android 应用托管（SDK 设备测试、示例应用拨出、两条连接、授权流程） | `tools/android-emulator.sh start`，再 `./gradlew :rutis:connectedDebugAndroidTest`（`kotlin/rutis`）与 `cargo test -p rutis-host --features android --test android -- --test-threads 1` | Android SDK、JDK 17、Python 3.10+；见 [Kotlin README](../kotlin/README.zh-CN.md) |
+| Android 应用托管（SDK 设备测试、示例应用拨出、两条连接、授权流程） | `tools/android-emulator.sh start`，再 `./gradlew :rutis:connectedDebugAndroidTest`（`kotlin/rutis`）与 `cargo test -p rutis-host --features android --test android -- --test-threads 1` | Android SDK、JDK 17、Python 3.12+；见 [Kotlin README](../kotlin/README.zh-CN.md) |
 | macOS 上在 Delve 下调试 Go 项目（`dev --debug`；CI 只在 Linux 上装 `dlv`，macOS 上第一次调试要允许开发者工具） | 装好 `dlv` 后 `RUTIS_TEST_DELVE=required cargo test -p rutis-host --test debug` | macOS、Xcode 命令行工具、`go install github.com/go-delve/delve/cmd/dlv@latest`；弹窗里允许 |
-| iOS 应用托管（SDK 自己的测试在模拟器里运行；示例应用在两台模拟器上连 `rutis-host`：实例、后台与前台、HealthKit 授权） | `bash tools/ios-selftest.sh` 与 `cargo test -p rutis-e2e --test ios_app -- --ignored` | macOS、带 iOS 模拟器运行时的 Xcode（`xcodebuild -downloadPlatform iOS`）、Python 3.10+ |
+| iOS 应用托管（SDK 自己的测试在模拟器里运行；示例应用在两台模拟器上连 `rutis-host`：实例、后台与前台、HealthKit 授权） | `bash tools/ios-selftest.sh` 与 `cargo test -p rutis-e2e --test ios_app -- --ignored` | macOS、带 iOS 模拟器运行时的 Xcode（`xcodebuild -downloadPlatform iOS`）、Python 3.12+ |
 
 真机上的检查清单在各自的指南里（Android：[Kotlin 应用](guide/kotlin-app.md) §8；iOS：[Swift 应用](guide/swift-app.md#8-示例应用) §8）。

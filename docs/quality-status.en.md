@@ -73,7 +73,7 @@ Status: **met**, **partly**, **not met**, **n/a**. The gaps column refers to ris
 | Q9.1.1 | Designs state levels, risks, acceptance | Partly | Most designs have acceptance sections; the PR template gained items for persisted formats and the guarantee register (#284, #276); designs do not state levels or risks |
 | Q9.3.2 | Incompatible changes detected; versions meeting across releases | Partly | `cargo semver-checks` only warns; a protocol version mismatch says which end to upgrade (#335); the previous release (runtimes, Go SDK, `rutis-host`, nodes) meeting the current code, asserted to work or to say at load or connection which end to upgrade (`tests/e2e/tests/cross_version.rs`, full runs, #209 → #426) |
 | Q9.4 | Guarantee register | Partly | The [register](guarantees.en.md) exists (#276, #310, then updated by each PR); test comments carry `guarantee: <id>`; 0.10 is the baseline and Q9.4.4 applies from 0.11 (plan Q3). The `loader/` family and the rest of `host/` are not registered yet (#181) |
-| Q10.2 | Minimum and latest versions in the support matrix | Met | Linux jobs use the minimum versions (Node 22, Python 3.10, websockets 15, Bun 1.4.0, Go oldstable), macOS and Windows the latest; MSRV 1.88 verified by the `msrv` job (#204 → #256; ci.md §9). The runtime × channel × platform matrix is in ci.md §4, with a reason for each cell that does not run (#176) |
+| Q10.2 | Minimum and latest versions in the support matrix | Met | Linux jobs use the minimum versions (Node 22, Python 3.12, websockets 15, Bun 1.4.0, Go oldstable), macOS and Windows the latest; MSRV 1.88 verified by the `msrv` job (#204 → #256; ci.md §9). The runtime × channel × platform matrix is in ci.md §4, with a reason for each cell that does not run (#176) |
 | Q11.3.2 | No coverage gate | Met | — |
 | Q12.1 | Verification at levels | Partly | PRs select by change; nightly (`nightly.yml`, when main has new commits) every job, installation on five platforms (`install.yml`), Windows dylib, MSRV, feature combinations, two-machine reproducibility, and `stress.yml` (core rounds, multi-process test rounds #245, two soaks, the shuttle models at a million iterations, three fuzz targets 20 minutes each #425); versions meeting across releases (`e2e` in `ci.yml`'s full run, #209), the baseline with the newest published Cordis plugins (report only, #190), S5 with containers + netem (report only, #341 → #433); weekly dependency checks and CI measurements. Missing: weekly long host soaks and benchmarks (#192) |
 | Q12.3 | Selection by change | Met | The `changes` job turns switches on by change; nightly `nightly.yml` runs every job when main has new commits (`ci.yml`'s `all`), and it can be run by hand (#203 → #213, #369; ci.md §3). Before a release: step 2 of release.md checks that the commit released has a passing nightly run; `release.yml` calling the full CI itself is step 3 of the CI redesign |
@@ -110,7 +110,7 @@ Status: **met**, **partly**, **not met**, **n/a**. The gaps column refers to ris
 | Condition | Value | Source |
 | --- | --- | --- |
 | Operating systems | Linux, macOS, Windows x64 (MSVC); Bun not on Windows | guide/README |
-| Language environments | Node ≥ 22, Python ≥ 3.10, Rust ≥ 1.88, Bun ≥ 1.4, Go ≥ 1.24 | guides, 0.10 release notes |
+| Language environments | Node ≥ 22, Python ≥ 3.12, Rust ≥ 1.88, Bun ≥ 1.4, Go ≥ 1.24 | guides, 0.10 release notes |
 | Optional dependencies | `websockets` ≥ 15 (Python networking) | pyproject |
 | Processes | The host is one process; each language runtime is at least one; plugins may start their own children | multilanguage design |
 | Network | Local: Unix socket / inherited fd / loopback TCP; across machines: WebSocket + TLS, possibly behind a reverse proxy, possibly disconnected, half-open, delayed | network stack design |
@@ -282,14 +282,14 @@ Each scenario first says what it is, which parts it goes through and under what 
 | B6 | Missing runtime package, interpreter not found, port in use, bad certificate file give insufficient errors | Diagnosability | Medium | High | P1 | G (a snapshot per error) | PR | Yes (`errors.rs`, #217) |
 | B7 | Credentials appear in logs, errors, status output, traces | Security | High | Low | P1 | Common E assertion: token values absent from all captured output | PR | Yes (E2E residue checks, #221, #277; S5 #322) |
 | B8 | A listener without TLS binds to a non-loopback address | Security | High | Low | P1 | U | PR | To check |
-| B9 | Status output format changes break operators' scripts | Compatibility | Low | Medium | P2 | G | PR | Partly: the link state and listening address lines are tested (`links.rs`, #336) |
+| B9 | Status output format changes break operators' scripts | Compatibility | Low | Medium | P2 | G | PR | Partly: the connection rows' state lines and the listening address line are tested (`rutis-host/src/connect/dial.rs`, `remote_runtimes.rs`, #336) |
 | B10 | When the process manager restarts the host, the previous socket file or port is not released and the new process fails to start | Residue | Medium | Medium | P1 | E (restart right after kill -9) | PR | Partly: restarting with the same configuration right after a Ctrl-C stop, binding the listener's port again (S3, #317); restarting right after the host is `kill -9`ed is not verified (the residue checks only confirm the ports can be bound again) |
 
 #### Scenario C: composing languages
 
 **What**: in one host, Rust, TS and Python plugins provide and use each other's services. Design philosophy §2: "multilanguage plugins are not an add-on; they are the reason it exists".
 
-**Through**: core gating, loader rows, two-phase readiness (`RuntimeRows`), runtime processes, session forwarding, service projection.
+**Through**: core gating, loader rows, two-phase readiness (`SessionRows`), runtime processes, session forwarding, service projection.
 
 **Conditions**: several runtimes cold-starting together; runtime processes may crash; synchronous and asynchronous calls interleave; three platforms (Windows over loopback TCP).
 
@@ -342,7 +342,7 @@ Each scenario first says what it is, which parts it goes through and under what 
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | E1 | When the network drops, calls in flight report success, or are retried automatically so side effects run twice | Faults | High | Medium | P0 | FI (`fault::drop_and_close` after frame N, the far end counts side effects) | PR | Yes (`fault_links.rs` #285; between two processes in S5, #322) |
 | E2 | A half-open connection is not found within 30 s | Faults | Medium | Medium | P1 | FI (`half_open` with a paused clock) | PR | Yes |
-| E3 | Reconnection backoff differs from the docs (from 0.5 s, capped at 30 s, ±20%, reset after 60 s stable; 30 s after rejected credentials; stop on incompatibility) | Correctness | Medium | Medium | P1 | U (paused clock, exact intervals asserted) | PR | Partly: a unit test in `link.rs` covers the backoff sequence (from 0.5 s, 30 s cap, ±20%, reset); the link's actual retry timing, the reset after 60 s stable and the 30 s after rejected credentials are untested |
+| E3 | Reconnection backoff differs from the docs (from 0.5 s, capped at 30 s, ±20%, reset after 60 s stable; 30 s after rejected credentials; stop on incompatibility) | Correctness | Medium | Medium | P1 | U (paused clock, exact intervals asserted) | PR | Partly: the tests of `rutis-host/src/connect/dial.rs` cover the backoff sequence (from 0.5 s, 30 s cap, ±20%, reset), the reset after 60 s stable and the 30 s after rejected credentials (paused clock) |
 | E4 | During takeover of a remote runtime, old and new leases coexist; late instructions of the old session act on the new lease | Correctness | High | Low | P1 | TLA (design); K (`leases.rs`) | Design, PR | Yes: TLA+ (`specs/remote-lease/`, #210) checks at most one lease during takeover, at most one instance per id at an access point, and that an old session's commands never act on a new lease; K (`leases.rs`) |
 | E5 | Connections still possible after credentials are revoked; a registration revoked mid-handshake still lets the old handshake hand over | Security | High | Low | P1 | K (`link.rs`); TLA | PR | Partly: TLA+ (#210) checks that an old handshake is not handed over after its registration is revoked; the identity layer's hook for revoking while running (#273) was removed in 0.19 (no production caller): existing connections are disconnected by stopping that row, changing a token takes a restart of rutis-host, and S5 has no such step |
 | E6 | TLS check holes: still connects with an expired certificate, wrong CA, hostname mismatch | Security | High | Medium | P0 | U (three negative cases, Rust and Python each) | PR | Yes (#297; S5 step 6, #322) |
@@ -358,7 +358,7 @@ Each scenario first says what it is, which parts it goes through and under what 
 
 #### Scenario F: existing Cordis plugins and Cordis applications
 
-**What**: three ways — Cordis plugins as rutis-loader rows; Cordis plugins mounted in a Rust application with Rust types generated at build time; existing Cordis applications joined as nodes with `@arcships/rutis-runtime/bridge`.
+**What**: two ways — Cordis plugins as rutis-loader rows; Cordis plugins mounted in a Rust application with Rust types generated at build time. Existing Cordis applications joined as nodes (`@arcships/rutis-runtime/bridge`) were removed in 0.19: a Cordis application runs its plugins in the Node runtime.
 
 **Through**: Node runtime, Cordis 4.0.4, the generator (`generate.mjs`), service projection, event forwarding, boundary rules.
 
@@ -587,7 +587,7 @@ The problems then: no `concurrency`; no selection by change, so a docs-only PR r
 | A new push to a PR cancels the old run; on main runs are grouped by ref and a running one is not cancelled | Q12.4 | #224 |
 | The `changes` job turns switches on by change, PRs run only the related jobs, main runs everything; the aggregate check `ci-ok` is the only required check; dylib on Linux split into launcher, sdk-bundle and repro jobs; `sdk-repro*` and packaging moved to main; weekly CI measurements (`ci-stats.yml`, `tools/ci-stats.mjs`) | Q12.1, Q12.3, Q12.5, Q12.6.1, Q12.7, Q12.9 | #213 |
 | CI design and process document `docs/ci.md` | Q12.8, Q12.10 | #237 |
-| `lint` (fmt, clippy `-D warnings`); MSRV 1.88; Linux on the minimum versions (Node 22, Python 3.10, websockets 15), macOS and Windows on the latest; weekly dependency vulnerability checks in `deps.yml` | Q5.3.7, Q10.2, ST | #256 |
+| `lint` (fmt, clippy `-D warnings`); MSRV 1.88; Linux on the minimum versions (Node 22, Python 3.12, websockets 15), macOS and Windows on the latest; weekly dependency vulnerability checks in `deps.yml` | Q5.3.7, Q10.2, ST | #256 |
 | Installation smoke tests in `install.yml`; installation on five platforms before a release, verification with registry packages after it | Q6.15, Q13 | #254 |
 | The `e2e` job (in parallel with `rust`); duplicate release builds removed | Q12.7 | #265 → #275 |
 | Platform-specific tests on macOS and Windows: first `value_roundtrip` and `fault_links` added, then every test file by default, excluding only the platform-independent ones (`PURE_TESTS_*`) | Q10.2, Q7.8 | #313, #328 |

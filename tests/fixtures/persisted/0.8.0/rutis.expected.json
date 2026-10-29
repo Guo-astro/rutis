@@ -9,17 +9,7 @@
     "py": {
       "project": "<dir>/plugins",
       "python": "<dir>/.venv/bin/python"
-    },
-    "remote": [
-      {
-        "name": "gpu",
-        "language": "python"
-      },
-      {
-        "name": "edge",
-        "language": "node"
-      }
-    ]
+    }
   },
   "listen": [
     {
@@ -82,55 +72,8 @@
       ]
     },
     {
-      "id": "office",
-      "name": "rutis-bridge/peer",
-      "config": {
-        "peer": "office",
-        "dial": "wss://office.example.com/rutis",
-        "export": [
-          "weather"
-        ],
-        "identity": "host"
-      }
-    },
-    {
-      "id": "branch",
-      "name": "rutis-bridge/peer",
-      "config": {
-        "peer": "branch",
-        "listen": "public",
-        "import": [
-          "clock"
-        ],
-        "identity": "host"
-      }
-    },
-    {
-      "id": "sidecar",
-      "name": "rutis-bridge/peer",
-      "config": {
-        "peer": "sidecar",
-        "dial": "/run/rutis/sidecar.sock",
-        "identity": "host"
-      }
-    },
-    {
-      "id": "gpu",
-      "name": "rutis-bridge/peer",
-      "config": {
-        "peer": "gpu",
-        "dial": "wss://gpu.example.com/rutis",
-        "runtime": "gpu",
-        "identity": "host"
-      }
-    },
-    {
       "id": "embedder",
       "name": "gpu:embedder"
-    },
-    {
-      "id": "clock",
-      "name": "peer:office/clock"
     }
   ]
 }

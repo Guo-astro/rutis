@@ -12,10 +12,9 @@
 //! progress whatever the caller's executor is doing.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::OnceLock;
 
-use crate::channel::{Channel, Close, ConnectError};
-use crate::{Credential, Presented, Refusal, Registrations};
+use crate::channel::{Channel, ConnectError};
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 
 mod config;
@@ -27,6 +26,27 @@ mod tls;
 
 pub use config::{Limits, ListenerConfig, ServerTls, Trust};
 pub use listen::{Admit, Admitted, Listener, Refused, Upgrade};
+
+/// What [`dial`] presents. Its `Debug` never shows the secret.
+#[derive(Clone)]
+pub enum Credential {
+    /// Sent as `Authorization: Bearer <token>`; never in a URL or a log.
+    Bearer(String),
+    /// A TLS client certificate chain and its private key, both PEM.
+    ClientCertificate {
+        chain_pem: Vec<u8>,
+        key_pem: Vec<u8>,
+    },
+}
+
+impl std::fmt::Debug for Credential {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Bearer(_) => f.write_str("Bearer(…)"),
+            Self::ClientCertificate { .. } => f.write_str("ClientCertificate(…)"),
+        }
+    }
+}
 
 /// The threads the connections of [`dial`] and [`listen`] run on, started
 /// on first use.
@@ -110,46 +130,6 @@ pub fn listen(config: &ListenerConfig, limits: &Limits, admit: Admit) -> Result<
     config.validate()?;
     limits.validate()?;
     listen::start(config, limits, admit, threads())
-}
-
-/// Let through the upgrades `registrations` routes on `listener`: to the
-/// registration of the far end the credentials verify, handed over if it
-/// is still the same one. Transitional (#695 S2): goes with links and
-/// access points.
-#[doc(hidden)]
-pub fn admit_registered(registrations: Registrations, listener: &str) -> Admit {
-    let listener = listener.to_owned();
-    Arc::new(move |upgrade: Upgrade<'_>| {
-        let presented = match (upgrade.bearer, upgrade.certificate) {
-            (Some(token), _) => Presented::Bearer(token),
-            (None, Some(der)) => Presented::Certificate(der),
-            (None, None) => return Err(Refused::Forbidden("not accepted here".into())),
-        };
-        let ticket = match registrations.route(&listener, presented) {
-            Ok(ticket) => ticket,
-            Err(Refusal::Unauthenticated) => {
-                return Err(Refused::Forbidden("not accepted here".into()))
-            }
-            // Good credentials, nobody listening for them yet: retry.
-            Err(Refusal::NotListening) => {
-                return Err(Refused::Unavailable(
-                    "not listening for this peer yet".into(),
-                ))
-            }
-            Err(Refusal::Ambiguous) => {
-                return Err(Refused::Forbidden("ambiguous credentials".into()))
-            }
-        };
-        let registrations = registrations.clone();
-        Ok(Admitted {
-            protocol: ticket.protocol.clone(),
-            deliver: Box::new(move |channel| {
-                if let Err(channel) = registrations.hand_over(&ticket, channel) {
-                    channel.closer.close(Close::Done);
-                }
-            }),
-        })
-    })
 }
 
 pub(crate) fn ws_config(limits: &Limits) -> WebSocketConfig {

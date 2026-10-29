@@ -47,7 +47,7 @@ impl Expressions for Mini {
 }
 
 fn catalog() -> ServiceCatalog {
-    // With runtimes or peers, a name not registered is shared by name;
+    // With runtimes, a name not registered is shared by name;
     // without them, it is unknown.
     let mut catalog = ServiceCatalog::new();
     catalog
@@ -164,15 +164,15 @@ async fn unknown_services_and_intercept_config_are_unresolved() {
         ]),
     )
     .await;
-    // With runtimes or peers, names not registered are shared by name: the
+    // With runtimes, names not registered are shared by name: the
     // row waits for `nope` to be provided.
-    #[cfg(any(feature = "runtimes", feature = "peer"))]
+    #[cfg(feature = "runtimes")]
     {
         assert_eq!(report.failures.len(), 1, "{report:?}");
         assert_eq!(state(&loader, "u"), Some(FiberState::Pending));
     }
     // Without them, a name not registered is unknown.
-    #[cfg(not(any(feature = "runtimes", feature = "peer")))]
+    #[cfg(not(feature = "runtimes"))]
     {
         assert_eq!(report.failures.len(), 2, "{report:?}");
         match loader.get("u").unwrap().status {
@@ -212,15 +212,15 @@ async fn changing_the_scope_respawns_and_persists() {
         store.patches(),
         patches(json!([{ "id": "e", "isolate": { "dep": "x" }, "inject": ["dep"] }]))
     );
-    // With runtimes or peers, a name not registered is shared by name and
+    // With runtimes, a name not registered is shared by name and
     // accepted; without them, it is refused before anything changes.
     let nope = loader.set_inject("e", vec!["nope".into()]).await;
-    #[cfg(any(feature = "runtimes", feature = "peer"))]
+    #[cfg(feature = "runtimes")]
     {
         nope.unwrap();
         assert_eq!(state(&loader, "e"), Some(FiberState::Pending));
     }
-    #[cfg(not(any(feature = "runtimes", feature = "peer")))]
+    #[cfg(not(feature = "runtimes"))]
     {
         let err = nope.unwrap_err();
         assert!(matches!(err, LoaderError::UnknownService(_)), "{err:?}");

@@ -122,7 +122,7 @@ class EventEmitter internal constructor(private val row: ParticipantRow) {
     /** Emits `spec` from the row, natively, and returns the result. */
     suspend fun dispatch(spec: Spec): Any? = row.dispatch(spec)
 
-    /** [dispatch] for `bail` and `waterfall-sync`. */
+    /** [dispatch] for `bail`. */
     suspend fun dispatchSync(spec: Spec): Any? = row.dispatch(spec)
 }
 
@@ -292,10 +292,11 @@ class ParticipantRow internal constructor(
             } finally {
                 add("${p.label}:cancelled")
             }
-            "calls" in does -> {
-                val fn = args.firstOrNull() as? RemoteFunction
-                    ?: throw IllegalArgumentException("conformance-events: ${p.label} needs a function, got ${args.firstOrNull()}")
-                fn("x")
+            "calls" in does -> when (val fn = args.firstOrNull()) {
+                is RemoteFunction -> fn("x")
+                // A function of this process, back home (the emitter is in this runtime too).
+                is Function1<*, *> -> @Suppress("UNCHECKED_CAST") (fn as (Any?) -> Any?)("x")
+                else -> throw IllegalArgumentException("conformance-events: ${p.label} needs a function, got $fn")
             }
             "emits" in does -> {
                 val emitted = RutisFormat.decode(Spec.serializer(), does["emits"])

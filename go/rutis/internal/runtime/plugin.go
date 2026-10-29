@@ -9,7 +9,6 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/arcships/rutis/go/rutis/internal/config"
 	"github.com/arcships/rutis/go/rutis/internal/convert"
 	"github.com/arcships/rutis/go/rutis/internal/peer"
 )
@@ -57,13 +56,8 @@ type Definition struct {
 	pkg      string
 	config   reflect.Type
 	apply    func(ctx *Ctx, config any) error
-	// The name it is served under when it has none of its own (rutistest
-	// serves such a definition alone): rows find it by it, while
-	// descriptors still call its rows by their ids.
-	served string
 	// Set instead of the rest for a definition another process handed
-	// over: what a test double receives in rutistest, which loads it in
-	// the runtime that defined it.
+	// over.
 	remote *peer.RemotePlugin
 }
 
@@ -83,20 +77,10 @@ func init() {
 		return peer.Plugin{Value: def}
 	}
 	convert.PluginFromPeer = func(remote *peer.RemotePlugin) any { return &Definition{remote: remote} }
-	convert.PluginServedAs = func(value any, name string) any {
-		served := *value.(*Definition)
-		served.served = name
-		return &served
-	}
 }
 
 // key is the name rows find it by in its binary.
-func (d *Definition) key() string {
-	if d.name != "" {
-		return d.name
-	}
-	return d.served
-}
+func (d *Definition) key() string { return d.name }
 
 // Define checks a plugin's declarations and makes it servable. It panics
 // on a declaration that cannot work, so a broken plugin fails at start.
@@ -141,16 +125,6 @@ func define[C any](p Plugin[C], frames int) *Definition {
 			pkg = packageOf(fn.Name())
 		}
 	}
-	// The schema as the config check reads it (numbers kept apart as
-	// integers and fractions).
-	var checked any
-	if schema != nil {
-		normalized, err := config.Normalize(schema)
-		if err != nil {
-			panic(fmt.Sprintf("rutis: %s: config schema: %v", called(p.Name), err))
-		}
-		checked = normalized
-	}
 	apply := p.Apply
 	return &Definition{
 		name:     p.Name,
@@ -161,11 +135,10 @@ func define[C any](p Plugin[C], frames int) *Definition {
 		pkg:      pkg,
 		config:   configType,
 		apply: func(ctx *Ctx, given any) error {
-			// Defaults filled and the config validated against the
-			// schema before Apply (config schema design §2.2).
-			value, err := configured(checked, given, configType)
+			// Decoded before Apply (config schema design §2.2).
+			value, err := configured(schema != nil, given, configType)
 			if err != nil {
-				if checked == nil {
+				if schema == nil {
 					return fmt.Errorf("config: %w", err)
 				}
 				return err
@@ -263,11 +236,14 @@ func Rename(method, wire string) ShapeOption {
 // MethodsOf is the shape of a service of type T: its exported methods,
 // asynchronous unless Sync says otherwise.
 func MethodsOf[T any](options ...ShapeOption) *Shape {
+	return shapeOf(reflect.TypeFor[T](), options)
+}
+
+func shapeOf(t reflect.Type, options []ShapeOption) *Shape {
 	var o shapeOptions
 	for _, option := range options {
 		option(&o)
 	}
-	t := reflect.TypeFor[T]()
 	shape := &Shape{typ: t, methods: map[string]shapeMethod{}}
 	goNames := map[string]bool{}
 	for i := 0; i < t.NumMethod(); i++ {

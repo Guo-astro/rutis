@@ -39,7 +39,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use common::runtimes::{repo, rows_stage, COLD};
+use common::runtimes::{greet_as_main, repo, rows_stage, TestRuntime, COLD};
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, FiberState, FiberView, PluginFactory};
 use rutis::internal::CtxInternal;
 use rutis::{Ctx, Error};
@@ -47,10 +47,10 @@ use rutis_bridge::events::testing::Tap;
 use rutis_bridge::runtime::testing::events::{
     self, Coverage, EventsLog, EventsLogService, Location, Row, Tally, World,
 };
-use rutis_bridge::runtime::{Launcher, LocalRuntime};
+use rutis_bridge::runtime::Launcher;
 use rutis_bridge::session::{host_key, HostDispatch};
 use rutis_loader::report::{EntryStatus, RowEventState};
-use rutis_loader::runtime::RuntimeResolver;
+use rutis_loader::runtime::SessionResolver;
 use rutis_loader::{
     Builtins, Chain, Layer, Loader, LoaderOptions, LoaderPlugin, Patch, RowEvent, ServiceCatalog,
 };
@@ -135,7 +135,7 @@ type Modules = BTreeMap<&'static str, String>;
 /// A runtime of `language` named `name`, started through [`recorded`] so
 /// that its pid and stderr are recorded under `dir` (`kill` and
 /// `reported`); and the modules its rows load.
-fn runtime(language: &str, name: &str, dir: &Path) -> (LocalRuntime, Modules) {
+fn runtime(language: &str, name: &str, dir: &Path) -> (TestRuntime, Modules) {
     let fixtures = repo().join("node/rutis-runtime/test/fixtures");
     let path = |file: PathBuf| file.to_string_lossy().into_owned();
     let variants = ["", "e", "f"];
@@ -258,9 +258,7 @@ fn runtime(language: &str, name: &str, dir: &Path) -> (LocalRuntime, Modules) {
         &dir.join(format!("{name}.pid")),
         &dir.join(format!("{name}.stderr")),
     );
-    let local =
-        LocalRuntime::launcher(name, recorded, anchor).host("events-log", EventsLog::methods());
-    (local, modules)
+    (TestRuntime::new(name, recorded, &anchor), modules)
 }
 
 /// `launcher` run by `sh`, which writes its pid to `pid` and appends its
@@ -533,8 +531,8 @@ impl Host {
         );
         let rust = rust_participant::register(&mut builtins, log.clone(), tap);
 
-        let mut chain = Chain::new().with(builtins);
-        let mut resolvers = Vec::new();
+        greet_as_main(&root);
+        let sessions = Arc::new(SessionResolver::new(&catalog));
         let mut runtimes = BTreeMap::new();
         let names = std::iter::once(("rt-x".to_owned(), x.to_owned())).chain(
             events::runtime_languages(&expected)
@@ -544,11 +542,8 @@ impl Host {
         );
         for (name, language) in names {
             let (local, modules) = runtime(&language, &name, dir.path());
-            let resolver =
-                Arc::new(RuntimeResolver::modules(local.handle()).with_catalog(&catalog));
+            sessions.runtime(local.handle());
             let view = root.plugin(local);
-            chain = chain.with_shared(resolver.clone());
-            resolvers.push(resolver);
             runtimes.insert(
                 name.clone(),
                 Runtime {
@@ -560,16 +555,17 @@ impl Host {
             );
         }
         let plugin = LoaderPlugin::new(
-            chain,
+            Chain::new().with(builtins).with_shared(sessions.clone()),
             LoaderOptions {
                 catalog,
                 ..LoaderOptions::default()
             },
         );
         let loader = plugin.handle();
+        sessions.attach(&loader);
         root.plugin(plugin).await.unwrap();
-        for resolver in resolvers {
-            rows_stage(&root, resolver).await;
+        for name in runtimes.keys() {
+            rows_stage(&root, &sessions, name).await;
         }
         let node = rust_participant::Node::start(&root, log.clone()).await;
         let host = Host {
@@ -794,17 +790,15 @@ impl Host {
         .await
     }
 
-    /// The listener of `row` is on the other node's bus too, when it is
-    /// shared there (a name the link shares, at the root): the link
-    /// announces it after it registered, and the case goes on once it has,
-    /// as it does once a row runs.
+    /// The listener of `row` is on the other node's bus too, when it is at
+    /// the root (one flat bus, every name): the session announces it after
+    /// it registered, and the case goes on once it has, as it does once a
+    /// row runs.
     async fn announced(&self, row: &Row) -> Result<(), String> {
         let Some(name) = row.config["name"].as_str() else {
             return Ok(());
         };
-        let shared = name.starts_with("t/") || name.starts_with("rutis/");
-        if !shared
-            || row.scope != "root"
+        if row.scope != "root"
             || row.config.get("fails").is_some()
             || row.config.get("typed").is_some()
         {
@@ -816,7 +810,7 @@ impl Host {
         };
         // How many remote entries of `name` the far side must have: on the
         // host, the runtimes' and the node's; on the node, the host's own
-        // at the root (the link's scope).
+        // at the root (the session's scope).
         let wanted = self
             .state
             .lock()

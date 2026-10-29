@@ -2,7 +2,7 @@
 
 [English](design-remote-runtime-consistency-2026-10-26.en.md)
 
-状态：定稿，未实现。日期：2026-10-26。基准：`main` `b4eee45e`（0.17.1）。排期：0.19。
+状态：被 [远程连接：只留一个会话插件](design-remote-session-2026-10-28.md) 取代。定稿，未实现。日期：2026-10-26。基准：`main` `b4eee45e`（0.17.1）。排期：0.19。
 Issue：[#695](https://github.com/arcships/rutis/issues/695)（实施 [#696](https://github.com/arcships/rutis/issues/696) loader、[#698](https://github.com/arcships/rutis/issues/698) rutis-host）。决策记录：[远程运行时一致性](decision-remote-runtime-consistency-2026-10-26.md)。
 修订：[远程运行时：拨出与动态接入](design-remote-runtime-dial-2026-10-14.md) §四"`listen` 与 `instances` 同时出现即为动态接入"一条，见 §六。
 

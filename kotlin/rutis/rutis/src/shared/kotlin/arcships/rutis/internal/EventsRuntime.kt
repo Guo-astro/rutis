@@ -20,37 +20,22 @@ import kotlinx.coroutines.withContext
 import java.util.concurrent.CompletableFuture
 
 // Events (#464, docs/design-events-2026-10-18.md): every listener on a host
-// is on one logical bus. A listener this process registers is registered with
-// the host too; an emission whose listeners are all in this process is
-// dispatched here (the fast path), any other by the host. The result is the
-// same either way.
+// is on one logical bus, which the host dispatches. A listener this process
+// registers is registered with the host, which invokes it (`events.call`);
+// every emission goes to the host (`events.dispatch`), its listeners here
+// included (docs/design-platform-cleanup-2026-10-28.md §7.5).
 
-/** A listener of this process. */
+/** A listener of this process: the host invokes it (`events.call`). */
 internal class LocalListener(
     val rt: RuntimeState,
     val id: String,
     val name: String,
     val row: Row,
     val fn: suspend (EventArgs) -> Any?,
-    val prepend: Boolean,
-    val global: Boolean,
-) : Entry {
-    /** Its position: the order of the listeners of one name. */
-    var position = 0L
-
+) {
     /** Withdrawn (rt.lock): no invocation starts any more. */
     var withdrawn = false
     val queue = Queue("listener-$id")
-
-    override fun info(): Listener = Listener(
-        name = name,
-        plugin = row.plugin.name,
-        row = row.name,
-        runtime = rt.runtimeName,
-        // A copy: a filter changing it changes nothing else.
-        scope = row.scope.toList(),
-        global = global,
-    )
 
     /** Whether invocations may start; rt.lock is held. */
     fun live(): Boolean = !withdrawn && rt.rows[row.key] === row
@@ -62,7 +47,8 @@ internal class LocalListener(
         true
     }
 
-    override fun begin(): Call? {
+    /** Reserves an invocation, unless the listener was withdrawn. */
+    fun begin(): (suspend (Mode, List<Any?>, Next?) -> Any?)? {
         if (!reserve()) return null
         return { mode, args, next ->
             try {
@@ -71,32 +57,6 @@ internal class LocalListener(
                 row.listening.done()
             }
         }
-    }
-
-    override fun emit(args: List<Any?>): Boolean {
-        if (!reserve()) return false
-        val chain = CallChain.current()
-        queue.push {
-            try {
-                if (synchronized(rt.lock) { live() }) {
-                    try {
-                        runBlocking(CallChain.element(chain)) { run(Mode.Emit, args, null) }
-                    } catch (e: Throwable) {
-                        failed(e)
-                    }
-                }
-            } finally {
-                row.listening.done()
-            }
-        }
-        return true
-    }
-
-    /** Reports an `emit` invocation's failure where the listener is (§5.6). */
-    fun failed(error: Throwable) {
-        // Cancelled because its row unloads (§7.1): not a failure.
-        if (error is CancellationException && row.job.isCancelled) return
-        Report.line("rutis: listener of $name in row ${row.name} failed: ${Report.failure(error)}")
     }
 
     /**
@@ -134,17 +94,7 @@ internal object EventsRuntime {
         synchronized(rt.lock) {
             if (rt.rows[row.key] !== row) throw IllegalStateException("rutis: row ${row.name} is not active")
             rt.listenerSeq++
-            listener = LocalListener(rt, rt.listenerSeq.toString(), name, row, fn, prepend, global)
-            val list = rt.listeners.getOrPut(name) { ArrayList() }
-            if (prepend) {
-                rt.first--
-                listener.position = rt.first
-                list.add(0, listener)
-            } else {
-                rt.last++
-                listener.position = rt.last
-                list.add(listener)
-            }
+            listener = LocalListener(rt, rt.listenerSeq.toString(), name, row, fn)
             rt.byId[listener.id] = listener
             // The host hears of it before any emission this process makes after
             // it (sent in order); a row loading answers once the host has it,
@@ -185,9 +135,6 @@ internal object EventsRuntime {
     fun withdraw(rt: RuntimeState, listener: LocalListener) {
         listener.withdrawn = true
         rt.byId.remove(listener.id)
-        val list = rt.listeners[listener.name] ?: return
-        list.remove(listener)
-        if (list.isEmpty()) rt.listeners.remove(listener.name)
     }
 
     /**
@@ -203,21 +150,7 @@ internal object EventsRuntime {
         if (ids.isNotEmpty() && session != null && !rt.closing) session.notify("", "events.off", listOf(ids.map { it.id }))
     }
 
-    /**
-     * Whether an emission of `name` goes through the host (§5.2): a listener
-     * of it may be elsewhere, or an earlier emit of it through the host is
-     * unanswered. rt.lock is held.
-     */
-    private fun viaHost(rt: RuntimeState, name: String, mode: Mode): Boolean {
-        val session = rt.session ?: return false
-        // Once the session ended, nothing is elsewhere.
-        if (rt.closing || session.error != null) return false
-        if (name in rt.elsewhere) return true
-        if (rt.elsewherePrefixes.any { name.startsWith(it) }) return true
-        return mode == Mode.Emit && (rt.hostEmits[name] ?: 0) > 0
-    }
-
-    /** Dispatches an emission of `row`; `terminal` only in a waterfall. */
+    /** Dispatches an emission of `row` through the host; `terminal` only in a waterfall. */
     suspend fun dispatch(
         rt: RuntimeState,
         row: Row,
@@ -229,43 +162,12 @@ internal object EventsRuntime {
     ): Any? {
         checkEmit(name)
         val values = args.map(Native::fromNative)
-        val snapshot: Dispatch
-        val viaHost: (suspend () -> Any?)?
-        synchronized(rt.lock) {
+        val wait = synchronized(rt.lock) {
             if (rt.rows[row.key] !== row) throw RutisException(RutisException.BINDING_ERROR, "row ${row.name} is not loaded in this runtime")
-            if (viaHost(rt, name, mode)) {
-                viaHost = sendViaHost(rt, row, name, mode, values, terminal, keep)
-                snapshot = Dispatch(name, emptyList())
-            } else {
-                viaHost = null
-                // The fast path (§5.2): the snapshot of this process's listeners, by name.
-                snapshot = Dispatch(name, rt.listeners[name] ?: emptyList(), keep?.let(::protect))
-            }
+            sendViaHost(rt, row, name, mode, values, terminal, keep)
         }
-        if (viaHost != null) return viaHost()
-        val last: (suspend (List<Any?>) -> Any?)? = terminal?.let { t -> { raw: List<Any?> -> Native.fromNative(t(EventArgs.of(raw, null))) } }
-        return when (mode) {
-            Mode.Emit -> {
-                try {
-                    snapshot.emit(values)
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Throwable) {
-                    Report.line("rutis: filter of $name from row ${row.name} failed: ${Report.failure(e)}")
-                }
-                null
-            }
-            Mode.Parallel -> {
-                snapshot.parallel(values)
-                null
-            }
-            Mode.Waterfall -> Native.toNative(snapshot.waterfall(mode, values, last))
-            else -> Native.toNative(snapshot.serial(mode, values))
-        }
+        return wait()
     }
-
-    /** The filter as the dispatcher asks it: what it throws is its failure. */
-    private fun protect(keep: suspend (Listener) -> Boolean): suspend (Listener) -> Boolean = { keep(it) }
 
     /**
      * Sends `events.dispatch` now (rt.lock is held, so it goes out behind
@@ -281,7 +183,8 @@ internal object EventsRuntime {
         terminal: (suspend (EventArgs) -> Any?)?,
         keep: (suspend (Listener) -> Boolean)?,
     ): suspend () -> Any? {
-        val session = rt.session!!
+        val session = rt.session?.takeIf { !rt.closing && it.error == null }
+            ?: throw IllegalStateException("rutis: emit of $name from row ${row.name}: the session with rutis has ended")
         val record = linkedMapOf<String, Any?>("row" to row.key, "name" to name, "mode" to mode.wire, "args" to values)
         if (keep != null) record["filter"] = selector(keep)
         if (terminal != null && mode == Mode.Waterfall) {
@@ -289,32 +192,20 @@ internal object EventsRuntime {
             record["terminal"] = Exported(terminal) { raw -> Native.fromNative(terminal(EventArgs.of(raw, null))) }
         }
         if (mode == Mode.Emit) {
-            // Its later emits of `name` follow it through the host until it
-            // is answered (§5.5). The emitter does not wait, nor cancel it.
-            rt.hostEmits[name] = (rt.hostEmits[name] ?: 0) + 1
+            // The emitter does not wait, nor cancel it.
             val answered = { error: Throwable? ->
-                synchronized(rt.lock) {
-                    val left = (rt.hostEmits[name] ?: 1) - 1
-                    if (left <= 0) rt.hostEmits.remove(name) else rt.hostEmits[name] = left
-                }
                 if (error != null) Report.line("rutis: emit of $name from row ${row.name} failed: ${Report.failure(error)}")
             }
-            try {
-                // The reply is taken as its frame is read, before the next
-                // one: an emit a later frame starts sees it answered (§5.5).
-                session.sendAnswered("", "events.dispatch", listOf(record)) { value, error ->
-                    if (error == null && value is RemoteFuture) {
-                        // An older host answers with a future: its settlement.
-                        Thread({
-                            answered(runCatching { session.settle(value) }.exceptionOrNull())
-                        }, "rutis-emit").apply { isDaemon = true }.start()
-                    } else {
-                        answered(error)
-                    }
+            // The host queues an emit while one of the same row runs, and
+            // answers with a future: its settlement.
+            session.sendAnswered("", "events.dispatch", listOf(record)) { value, error ->
+                if (error == null && value is RemoteFuture) {
+                    Thread({
+                        answered(runCatching { session.settle(value) }.exceptionOrNull())
+                    }, "rutis-emit").apply { isDaemon = true }.start()
+                } else {
+                    answered(error)
                 }
-            } catch (e: Throwable) {
-                answered(null)
-                throw e
             }
             return { null }
         }
@@ -375,32 +266,8 @@ internal object EventsRuntime {
 
     /** Takes the host's event calls on the reading thread, in frame order (§4.1, §5.5). */
     fun arrive(rt: RuntimeState, method: String, args: List<Any?>): (suspend () -> Any?)? = when (method) {
-        "events.elsewhere" -> {
-            val error = try {
-                elsewhere(rt, args)
-                null
-            } catch (e: Throwable) {
-                e
-            }
-            { if (error != null) throw error else null }
-        }
         "events.call" -> call(rt, args)
         else -> null
-    }
-
-    private fun elsewhere(rt: RuntimeState, args: List<Any?>) {
-        @Suppress("UNCHECKED_CAST")
-        val change = Native.toNative(if (args.isNotEmpty()) args[0] else Undefined) as? Map<String, Any?>
-            ?: throw IllegalArgumentException("events.elsewhere: expected a record")
-        fun names(key: String): List<String> = (change[key] as? List<*> ?: emptyList<Any?>()).map {
-            it as? String ?: throw IllegalArgumentException("events.elsewhere $key: expected strings")
-        }
-        synchronized(rt.lock) {
-            rt.elsewhere.addAll(names("add"))
-            rt.elsewhere.removeAll(names("remove").toSet())
-            rt.elsewherePrefixes.addAll(names("addPrefixes"))
-            rt.elsewherePrefixes.removeAll(names("removePrefixes").toSet())
-        }
     }
 
     /** A record received as a call argument: its fields as session values. */
@@ -435,18 +302,20 @@ internal object EventsRuntime {
                     if (!synchronized(rt.lock) { listener.live() }) {
                         done.complete(withdrawn)
                     } else {
-                        try {
+                        val failure = try {
                             runBlocking(CallChain.element(chain)) { listener.run(mode, values, null) }
+                            null
                         } catch (e: Throwable) {
-                            listener.failed(e)
+                            // Cancelled because its row unloads (§7.1): not a failure.
+                            if (e is CancellationException && listener.row.job.isCancelled) null else e
                         }
-                        done.complete(null)
+                        done.complete(failure)
                     }
                 } finally {
                     listener.row.listening.done()
                 }
             }
-            // Answered once it ran; its failure is reported here.
+            // Answered once it ran, with its failure, which rutis reports (§5.6).
             return {
                 done.await()?.let { throw it }
                 null
@@ -455,7 +324,7 @@ internal object EventsRuntime {
         var next: Next? = null
         if (mode.waterfall) {
             val remote = record["next"] as? RemoteFunction ?: return { throw IllegalArgumentException("events.call: a ${mode.wire} needs next") }
-            next = { remote.peer.callFunctionSuspend(remote, emptyList(), mode == Mode.WaterfallSync) }
+            next = { remote.peer.callFunctionSuspend(remote, emptyList(), false) }
         }
         val call = listener.begin() ?: return { throw withdrawn }
         return { call(mode, values, next) }

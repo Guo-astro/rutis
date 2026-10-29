@@ -87,7 +87,7 @@ def blocking_within(what: str, call):
 LOCAL = {"local": "py"}
 
 
-def hello(capabilities=("objects",)):
+def hello(capabilities=()):
     """The host's greeting, declaring `capabilities`."""
     from rutis.peer import ENDPOINT_PROTOCOL
 

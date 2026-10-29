@@ -347,20 +347,20 @@ impl Loader {
     /// describe it was unreachable) again: as [`Loader::reload`], except that
     /// a failure replaces the provisional resolution, so the row shows it
     /// (`Unresolved`) instead of starting on the placeholder.
-    #[cfg(any(feature = "runtimes", feature = "peer"))]
+    #[cfg(feature = "runtimes")]
     pub(crate) async fn refresh(&self, id: &str) -> Result<ReconcileReport, LoaderError> {
         self.resolve_again(id, true).await
     }
 
     /// What rebuilds, in the background, the copies whose keys are no
-    /// longer the ones they were built with: a name a runtime connection
-    /// provides without declaring it is its instance's own from when it
-    /// announces it, so the copies there that gate on it, built with the
-    /// global key, are rebuilt with the instance's (`RuntimeInstances`).
+    /// longer the ones they were built with: a name a marked Rust service
+    /// claims in an instance is that instance's own from when it is
+    /// claimed, so the copies there that gate on it, built with the global
+    /// key, are rebuilt with the instance's.
     /// A reconcile of the current layers, under the operation lock, which
     /// replaces only the copies whose keys changed; nothing once the loader
     /// is gone. One at a time is waiting: names announced before it reads
-    /// the keys are rebuilt by it (many connections announcing at once
+    /// the keys are rebuilt by it (many claims at once
     /// queue one reconcile, not one each).
     #[cfg(feature = "runtimes")]
     pub(crate) fn rekeying(&self) -> Arc<dyn Fn() + Send + Sync> {

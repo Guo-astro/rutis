@@ -5,8 +5,8 @@ import Foundation
 // operations of the runtime contract (§3, §4).
 
 /// What this runtime supports of the runtime contract. `rows.announce`:
-/// services rows provide without declaring them are announced with their
-/// methods, to a host whose mount says `announce`. `plugin-values`: a plugin
+/// services rows provide without declaring them are announced to the host
+/// with their methods. `plugin-values`: a plugin
 /// definition this runtime handed over comes back to be described
 /// (`plugins.read`) and loaded as a row's entry
 /// (docs/design-plugin-values-2026-10-25.md §5).
@@ -115,6 +115,9 @@ final class Row: @unchecked Sendable {
     let exports: [String: [String: String]]
     let isolate: [String: String]
     let scope: [Rutis.Advanced.Scope]
+    /// An app's own plugin, installed by the app (`install`), not by a row
+    /// of rutis's: its services are announced with `services.announce`.
+    let own: Bool
     /// Its runtime's: where its lines go, how long its listeners may take.
     let settings: Events.Settings
     var cleanups: [() async throws -> Void] = []
@@ -139,13 +142,12 @@ final class Row: @unchecked Sendable {
     private var spawned: [Int: Task<Void, Never>] = [:]
     private var nextTask = 0
     private var cancelled = false
-    /// What waits on a task of the row's that the unload lets go (`held`).
-    private var letGo: [Int: Event] = [:]
 
     init(key: String, name: String, entry: String, definition: Rutis.Definition, config: Value,
          exports: [String: [String: String]], isolate: [String: String], scope: [Rutis.Advanced.Scope],
-         settings: Events.Settings = Events.Settings())
+         own: Bool = false, settings: Events.Settings = Events.Settings())
     {
+        self.own = own
         self.settings = settings
         self.key = key
         self.name = name
@@ -210,31 +212,6 @@ final class Row: @unchecked Sendable {
         return try result.get()
     }
 
-    /// Runs `body` in a Task of the row's, cancelled when the row unloads,
-    /// and returns once it ended or the row unloads, whichever comes
-    /// first: a body that does not heed cancellation (a filter that never
-    /// answers) holds neither the caller nor the unload. Nothing runs when
-    /// the row unloads already.
-    func held(_ body: @escaping () async -> Void) async {
-        let done = Event()
-        let id: Int? = lock.withLock {
-            if cancelled { return nil }
-            nextTask += 1
-            running[nextTask] = Task {
-                await body()
-                done.fire()
-            }
-            letGo[nextTask] = done
-            return nextTask
-        }
-        guard let id else { return }
-        await done.wait()
-        lock.withLock {
-            running[id] = nil
-            letGo[id] = nil
-        }
-    }
-
     /// Runs `body` until the row unloads (ctx.spawn).
     func spawn(_ body: @escaping () async throws -> Void) {
         lock.lock()
@@ -265,17 +242,15 @@ final class Row: @unchecked Sendable {
     func stop() async {
         let budget = settings.shutdownTimeout
         let started = DispatchTime.now().uptimeNanoseconds
-        let (tasks, waiting, released): ([Task<Void, Never>], Event?, [Event]) = lock.withLock {
+        let (tasks, waiting): ([Task<Void, Never>], Event?) = lock.withLock {
             cancelled = true
             let tasks = Array(running.values) + Array(spawned.values)
-            let released = Array(letGo.values)
-            guard listening > 0 else { return (tasks, nil, released) }
+            guard listening > 0 else { return (tasks, nil) }
             let event = Event()
             idle.append(event)
-            return (tasks, event, released)
+            return (tasks, event)
         }
         for task in tasks { task.cancel() }
-        for event in released { event.fire() }
         if let waiting {
             if await !waiting.wait(seconds: budget) {
                 Events.report("rutis: listeners of row \(name) still running after \(Events.seconds(budget))s; unloading anyway", to: settings.log)
@@ -303,9 +278,30 @@ final class ResultBox: @unchecked Sendable {
     func get() throws -> Value { try lock.withLock { result }.get() }
 }
 
+/// Where an app's own plugin stands.
+enum OwnState { case waiting, loaded, failed }
+
+/// A service an app's own plugin provides, as rutis is told of it.
+struct Shared {
+    let row: String
+    let plugin: String
+    let value: RutisExportable
+    let shape: [String: String]
+    let version: Int
+}
+
+/// A service rutis announced to this side; withdrawn when `methods` is nil.
+struct FarService {
+    let version: Int
+    let methods: [String: String]?
+    let functions: [String: FarFunction]
+}
+
 /// The rows one controller loads into this process.
 final class Runtime: @unchecked Sendable {
     let definitions: [String: Rutis.Definition]
+    /// The plugins added while it runs, instead of `definitions` (RutisTest).
+    let shelf: Shelf?
     var session: Peer?
     let project: String
     let settings: Events.Settings
@@ -319,27 +315,30 @@ final class Runtime: @unchecked Sendable {
     var version = 0
     var loaded = 0
     var closing = false
-    // The listeners of each name, in position order, and by id.
-    var listeners: [String: [LocalListener]] = [:]
+    // The listeners of the rows here, by id.
     var byID: [String: LocalListener] = [:]
     var listenerSequence = 0
-    var first = 0
-    var last = 0
-    // The names and prefixes with listeners outside this process
-    // (events.elsewhere), and the emits through the host not answered yet.
-    var elsewhere = Set<String>()
-    var elsewherePrefixes = Set<String>()
-    var hostEmits: [String: Int] = [:]
-    /// Per name, the emits waiting behind a filtered one (§5.5): a filter
-    /// may wait, and a later emit of the name must not start before it.
-    var held: [String: (queue: SerialQueue, count: Int)] = [:]
     /// What the host calls this runtime (mount `runtime`), for descriptors.
     var runtimeName: String?
-    /// The host takes announced services (mount `announce`).
-    var announce = false
-    /// Mounted by a host; one without `announce` is older than 0.12.
-    var mounted = false
-    var told = Set<String>()
+    /// An app's own plugins, in order, with their configurations, and
+    /// where each stands; whether one task is installing or unloading them.
+    var own: [(definition: Rutis.Definition, config: Value)] = []
+    var ownStates: [String: OwnState] = [:]
+    var settling = false
+    /// The services an app's own plugins provide, by id: announced to
+    /// rutis once it offers `services`, again to every new offer of it.
+    var shared: [String: Shared] = [:]
+    /// The session's announcement sequence (`services.announce`,
+    /// `services.withdraw`).
+    var announcements = 0
+    /// Which offer of `services` rutis made last (`link.offers`): nil
+    /// while it offers none; and the version of its offers.
+    var servicesOffer: Int?
+    var farOffers = 0
+    /// The services rutis announced to this side, by name: the newest
+    /// version it said of each, nil methods once withdrawn (kept so that an
+    /// older announcement arriving later does not bring it back).
+    var far: [String: FarService] = [:]
 
     // Frames for the host, queued under `lock` in the order they are taken
     // and sent by flush once `lock` is released.
@@ -347,8 +346,9 @@ final class Runtime: @unchecked Sendable {
     private var outbox: [() -> Void] = []
     private let sendLock = Lock()
 
-    init(_ definitions: [Rutis.Definition], project: String, settings: Events.Settings = Events.Settings()) {
+    init(_ definitions: [Rutis.Definition], project: String, settings: Events.Settings = Events.Settings(), shelf: Shelf? = nil) {
         self.settings = settings
+        self.shelf = shelf
         var byName: [String: Rutis.Definition] = [:]
         for definition in definitions { byName[definition.name] = definition }
         self.definitions = byName
@@ -376,6 +376,12 @@ final class Runtime: @unchecked Sendable {
     var live: Bool { session != nil && !closing }
 
     func definition(_ entry: String) throws -> Rutis.Definition {
+        if let shelf {
+            guard let definition = shelf.get(entry) else {
+                throw RutisError(name: "NotFound", message: "plugin \(entry) is not in this test process")
+            }
+            return try supported(definition)
+        }
         guard let definition = definitions[entry] else {
             throw RutisError(name: "NotFound", message: "plugin \(entry) is not in this binary; it has: \(definitions.keys.sorted().joined(separator: ", "))")
         }
@@ -395,6 +401,20 @@ final class Runtime: @unchecked Sendable {
     /// Reports the object now in an exported slot under a new handle;
     /// `lock` is held, the report queued.
     func refresh(_ id: String) {
+        if let gone = shared[id], services[id]?.row != gone.row {
+            shared[id] = nil
+            announcements += 1
+            // Also while closing: rutis hears it before the plugin cleans up.
+            if servicesOffer != nil, let session {
+                let args = [servicesWithdraw(name: id, version: announcements)]
+                post {
+                    // Awaited, as an announcement is: rutis takes it then.
+                    guard let call = try? session.send(target: "", method: "services.withdraw", args: args, sync: false) else { return }
+                    Task.detached { _ = try? await settle(try await call.value()) }
+                }
+            }
+            reconcile()
+        }
         guard let slot = slots[id] else { return }
         var current: RutisExportable?
         var present = false
@@ -472,18 +492,19 @@ final class Runtime: @unchecked Sendable {
             fail(row, RutisError(name: "Error", message: "\(name) is already provided by \(owner)"))
             return {}
         }
+        if row.own, far[id]?.methods != nil {
+            lock.unlock()
+            fail(row, RutisError(name: "Error", message: "\(name) is already provided by rutis"))
+            return {}
+        }
         services[id] = Provided(row: row.key, value: value, shape: shape)
         row.provided.append(id)
-        // Not declared: announced, with its methods; a host older than 0.12
-        // does not take it, and the plugin is told, once per name.
-        if slots[id] == nil, !name.contains("#") {
-            if announce {
-                slots[id] = Slot(row: row.key, name: name, methods: nil, announced: true)
-                row.announced.append(id)
-            } else if mounted, !told.contains(name) {
-                told.insert(name)
-                settings.log("rutis: service \(name) is not declared in provides, and this host (older than 0.12) does not take undeclared services; declare it or upgrade rutis-host")
-            }
+        if row.own {
+            share(row, id, value, shape)
+        } else if slots[id] == nil, !name.contains("#") {
+            // Not declared: announced, with its methods.
+            slots[id] = Slot(row: row.key, name: name, methods: nil, announced: true)
+            row.announced.append(id)
         }
         refresh(id)
         lock.unlock()
@@ -498,6 +519,158 @@ final class Runtime: @unchecked Sendable {
             }
             lock.unlock()
             flush()
+        }
+    }
+
+    /// Shares the service `id` an app's own plugin provides: announced
+    /// once rutis offers `services`; `lock` is held, the frame queued.
+    private func share(_ row: Row, _ id: String, _ value: RutisExportable, _ declared: Rutis.Advanced.Shape?) {
+        var shape: [String: String] = [:]
+        for method in value.rutisMethods().keys { shape[method] = "async" }
+        for (method, kind) in declared?.kinds ?? [:] { shape[method] = kind.rawValue }
+        announcements += 1
+        let service = Shared(row: row.key, plugin: row.definition.name, value: value, shape: shape, version: announcements)
+        shared[id] = service
+        if servicesOffer != nil { announce(id, service) }
+        reconcile()
+    }
+
+    /// Sends `services.announce` for `service`; `lock` is held.
+    private func announce(_ id: String, _ service: Shared) {
+        guard live, let session else { return }
+        let args = [servicesAnnounce(plugin: service.plugin, name: id, service: service.value, shape: service.shape,
+                                     version: service.version)]
+        let log = settings.log
+        post {
+            guard let call = try? session.send(target: "", method: "services.announce", args: args, sync: false) else { return }
+            Task.detached {
+                do {
+                    // rutis answers with a result to await: the announcement
+                    // is taken (or refused) once it is awaited.
+                    _ = try await settle(try await call.value())
+                } catch {
+                    log("rutis: cannot announce \(id): \(Events.failure(error))")
+                }
+            }
+        }
+    }
+
+    /// rutis's offers (`link.offers`): every service shared is announced
+    /// to each new offer of `services`, as rutis nodes do.
+    private func offered(_ offers: JSON) {
+        lock.lock()
+        let version = offers["version"]?.int64Value.map(Int.init) ?? 0
+        guard version > farOffers else { return lock.unlock() }
+        farOffers = version
+        let families = offers["families"]?.arrayValue?.compactMap(\.stringValue) ?? []
+        let offer = families.contains("services") ? (offers["since"]?["services"]?.int64Value.map(Int.init) ?? 0) : nil
+        if offer != servicesOffer {
+            servicesOffer = offer
+            if offer != nil {
+                for (id, service) in shared.sorted(by: { $0.value.version < $1.value.version }) { announce(id, service) }
+            }
+        }
+        lock.unlock()
+        flush()
+    }
+
+    /// A service rutis announces or withdraws (`services.announce`,
+    /// `services.withdraw`): the newest version wins; the app's plugins
+    /// that inject it install or unload as it comes and goes.
+    private func heard(_ method: String, _ fields: Value) throws {
+        guard let name = fields["name"]?.string else {
+            throw RutisError(name: "TypeError", message: "\(method): no service name")
+        }
+        let version = fields["version"]?.plainJSON?.int64Value.map(Int.init) ?? 0
+        try lock.withLock {
+            if let known = far[name], known.version >= version { return }
+            guard method == "services.announce" else {
+                far[name] = FarService(version: version, methods: nil, functions: [:])
+                return reconcile()
+            }
+            if let existing = services[name] {
+                throw RutisError(name: "Error", message: "\(name) is already provided here by plugin \(rows[existing.row]?.name ?? existing.row)")
+            }
+            var methods: [String: String] = [:]
+            for (method, kind) in fields["shape"]?.plainJSON?.objectValue ?? [] { methods[method] = kind.stringValue ?? "async" }
+            var functions: [String: FarFunction] = [:]
+            if case let .record(entries)? = fields["service"] {
+                for (method, value) in entries { if case let .remoteFunction(function) = value { functions[method] = function } }
+            }
+            far[name] = FarService(version: version, methods: methods, functions: functions)
+            reconcile()
+        }
+    }
+
+    /// Whether the service `name` is there for an app's own plugin.
+    private func available(_ name: String) -> Bool {
+        services[name] != nil || far[name]?.methods != nil || hosts[name] != nil
+    }
+
+    /// Installs an app's own plugins once rutis greeted: offers `services`
+    /// (rutis's services come to this side), then each plugin, in order,
+    /// with its configuration, once every service it injects is there.
+    func install(_ plugins: [(definition: Rutis.Definition, config: Value)]) {
+        guard let session else { return }
+        lock.withLock { own = plugins }
+        _ = try? session.send(target: "", method: "link.offers", args: [linkOffers()], sync: false)
+        reconcile()
+    }
+
+    /// Brings the app's own plugins in line with the services there, in
+    /// order: one waiting whose injected services are all there loads, one
+    /// loaded that lacks one unloads (it loads again once they are back). A
+    /// plugin that fails is reported and waits until a service it injects
+    /// goes and comes back; the others go on. One task at a time; called
+    /// with `lock` held or not.
+    func reconcile() {
+        Task.detached { [weak self] in await self?.reconciling() }
+    }
+
+    private func reconciling() async {
+        guard lock.withLock({ () -> Bool in
+            if settling || own.isEmpty { return false }
+            settling = true
+            return true
+        }) else { return }
+        while true {
+            let next: (Rutis.Definition, Value, Bool)? = lock.withLock {
+                if !closing {
+                    for (definition, config) in own {
+                        let ready = definition.inject.allSatisfy(available)
+                        switch ownStates[definition.name] ?? .waiting {
+                        case .waiting where ready:
+                            return (definition, config, true)
+                        case .loaded where !ready:
+                            return (definition, config, false)
+                        case .failed where !ready:
+                            ownStates[definition.name] = .waiting
+                        default:
+                            continue
+                        }
+                    }
+                }
+                settling = false
+                return nil
+            }
+            guard let (definition, config, loading) = next else { return }
+            let name = definition.name
+            if loading {
+                do {
+                    try await load(key: name, name: name, entry: name, definition: try supported(definition), config: config,
+                                   exports: [:], isolate: [:], scope: [], own: true)
+                    lock.withLock { ownStates[name] = .loaded }
+                } catch {
+                    let closed = lock.withLock { () -> Bool in
+                        ownStates[name] = .failed
+                        return closing
+                    }
+                    if !closed { settings.log("rutis: plugin \(name): \(Events.failure(error))") }
+                }
+            } else {
+                try? await unload(name)
+                lock.withLock { ownStates[name] = .waiting }
+            }
         }
     }
 
@@ -527,12 +700,14 @@ final class Runtime: @unchecked Sendable {
     /// this binary, or a plugin definition this runtime handed over (a
     /// copy, `entry` its name).
     func load(key: String, name: String?, entry: String, definition: Rutis.Definition, config: Value,
-              exports: [String: [String: String]], isolate: [String: String], scope: [Rutis.Advanced.Scope]) async throws
+              exports: [String: [String: String]], isolate: [String: String], scope: [Rutis.Advanced.Scope],
+              own: Bool = false) async throws
     {
         let name = (name?.isEmpty ?? true) ? key : name!
         let row = Row(key: key, name: name, entry: entry, definition: definition, config: config, exports: exports,
-                      isolate: isolate, scope: scope, settings: settings)
+                      isolate: isolate, scope: scope, own: own, settings: settings)
         try lock.withLock {
+            if closing { throw RutisError(name: "Error", message: "runtime is closing") }
             if rows[key] != nil { throw RutisError(name: "Error", message: "row \(key) is already loaded") }
             for (service, label) in isolate { _ = try scopedID(service, label) }
             for service in exports.keys {
@@ -680,18 +855,27 @@ final class Runtime: @unchecked Sendable {
         case "mount":
             let mount = args.first ?? .undefined
             lock.withLock {
-                announce = mount["announce"].map { if case .data(.bool(true)) = $0 { return true } else { return false } } ?? false
                 runtimeName = mount["runtime"]?.string
-                mounted = true
             }
-            return .data(.object([
+            var answer: [(String, JSON)] = [
                 ("services", .object([])),
                 ("features", .array(runtimeFeatures.map(JSON.string))),
-                ("plugins", .object(definitions.keys.sorted().map { ($0, definitions[$0]!.described) })),
                 ("implementation", .object([("name", .string(Rutis.Advanced.implementation)), ("version", .string(Rutis.Advanced.sdkVersion))])),
                 ("engine", .object([("name", .string("swift")), ("version", .string(swiftVersion))])),
-            ]))
-        case "events.elsewhere", "events.call":
+            ]
+            // A shelf's plugins come later: the host asks for each
+            // (`rows.schema`).
+            if shelf == nil {
+                answer.insert(("plugins", .object(definitions.keys.sorted().map { ($0, definitions[$0]!.described) })), at: 2)
+            }
+            return .data(.object(answer))
+        case "link.offers":
+            offered((args.first ?? .undefined).plainJSON ?? .null)
+            return .undefined
+        case "services.announce", "services.withdraw":
+            try heard(method, args.first ?? .undefined)
+            return .undefined
+        case "events.call":
             // Served by arrive on the reading thread; here only when called
             // directly.
             guard let then = arrive(method, args) else { return .undefined }
@@ -794,7 +978,7 @@ final class Runtime: @unchecked Sendable {
                              code: "not-declared", data: ["service": name])
         }
         let id = row.id(name)
-        let (local, host) = lock.withLock { (services[id], hosts[id]) }
+        let (local, host, remote) = lock.withLock { (services[id], hosts[id], far[id]) }
         if let local {
             let table = local.value.rutisMethods()
             var methods: [String: String] = [:]
@@ -809,6 +993,16 @@ final class Runtime: @unchecked Sendable {
                 return try await body(Rutis._Generated.Arguments(args, callee: callee)).value
             }
             return (client, local.value)
+        }
+        if let remote, let methods = remote.methods {
+            // A service rutis announced: its methods are function references.
+            let client = Rutis.Advanced.Client(name: name, methods: methods) { method, args, sync in
+                guard let function = remote.functions[method] else {
+                    throw Refusal.noMethod(Refusal.Callee(service: name, method: method), methods.keys)
+                }
+                return try await settle(try await function.call(args, sync: sync))
+            }
+            return (client, nil)
         }
         if let host {
             let client = Rutis.Advanced.Client(name: name, methods: host) { [weak self] method, args, sync in
@@ -887,6 +1081,16 @@ extension Rutis.Advanced {
             return try ValueCodec.decode(R.self, from: value)
         }
 
+        /// Calls `method` with `args` as the session carries them: the
+        /// result as it came (RutisTest).
+        package func callValue(_ method: String, _ args: [Value]) async throws -> Value {
+            let kind = methods[method]
+            if kind == nil, object == nil {
+                throw Refusal.noMethod(Refusal.Callee(service: name, method: method), methods.keys)
+            }
+            return try await invoke(method, args, kind == "sync")
+        }
+
         /// Calls `method` with `args` of any type, its result as `R`.
         public func call<R>(_ method: String, values args: [Any?], as type: R.Type = R.self) async throws -> R {
             try await call(method, try args.map { Rutis._Generated.Encoded(try ValueCodec.encodeAny($0 as Any)) }, as: type)
@@ -913,3 +1117,4 @@ public protocol RutisProxy {
 /// `@RutisClient` adds an overload for its protocol, which makes its proxy;
 /// the macros call this, and the overload wins (#687 §四).
 public func rutisObjectProxy<T>(_: T.Type) -> ((Rutis.Advanced.Client) -> T)? { nil }
+

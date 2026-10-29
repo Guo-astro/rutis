@@ -1,7 +1,7 @@
 """Dialing out (dial-out design §六): how failures are classified, the
 backoff, and the loop that dials again, against stand-ins for the dial and
 the session. The real WebSocket dial is in test_websocket.py; the rules
-against a rutis access point are crates/rutis-bridge/tests/dial_conformance.rs."""
+against a rutis-host/listen row are crates/rutis-host/tests/dial_conformance.rs."""
 
 import asyncio
 import random

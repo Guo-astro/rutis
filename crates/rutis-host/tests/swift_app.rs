@@ -1,10 +1,11 @@
 //! Apps hosting Swift plugins with `RutisApp` (macOS here, as a stand-in;
-//! the iOS simulator in tests/e2e/tests/ios_app.rs): an app that dials in
-//! is an instance of the group `runtimes.remote[].instances` names; two
-//! apps with the same plugin are two instances, a local row in each using
-//! its own app's service; `stop` stops that app's users and `start` brings
-//! them back, as the app's observable state says. An app that listens is
-//! linked to like any remote runtime, and comes back after `stop`, `start`.
+//! the iOS simulator in tests/e2e/tests/ios_app.rs): apps dialing in to a
+//! `rutis-host/listen` row install their plugins, which rutis sees as
+//! `<id>:<plugin>`; their services are global, and a later app providing a
+//! name another app provides is refused, saying why; `stop` stops that
+//! app's users and `start` brings them back, as the app's observable state
+//! says. An app that listens is reached by a `rutis-host/dial` row and comes
+//! back after `stop`, `start`.
 //!
 //! The app is `RutisAppFixture` (swift/rutis/Sources/RutisAppFixture),
 //! driven on stdin as an app's business layer drives `RutisApp`.
@@ -29,7 +30,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 /// Runtimes start cold: twice the hang guard.
 const COLD: Guard = Guard(Duration::from_secs(2 * HANG_GUARD.as_secs()));
 
-/// The host's row in each app's instance: while it runs, the file named
+/// The host's row using an app's `device`: while it runs, the file named
 /// after the app (its `device` service says) is in `dir`.
 const USER: &str = r#"
 import os
@@ -75,8 +76,14 @@ struct App {
 impl App {
     /// The app `id`, `dial`ing or `listen`ing on `address`.
     fn new(mode: &str, address: &str, id: &str, token: &str) -> Self {
+        Self::with(mode, address, id, token, None)
+    }
+
+    /// [`App::new`], its service `device-<suffix>` with a suffix.
+    fn with(mode: &str, address: &str, id: &str, token: &str, suffix: Option<&str>) -> Self {
         let mut child = tokio::process::Command::new(fixture())
             .args([mode, address, id])
+            .args(suffix)
             .env("RUTIS_TOKEN", token)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
@@ -185,12 +192,19 @@ impl App {
     }
 }
 
-/// Two apps with the plugin `device` dial in: each is an instance, its
-/// `device` the service the host's row in that instance uses; one app's
-/// `stop` stops its users only, its `start` brings them back.
-/// guarantee: loader/runtime-connection-instances
+/// Two apps with the plugin `device` dial in to the listen row `phone`:
+/// both are connected; the first's `kim-iphone:device` provides `device`,
+/// which the host's row uses, and the host emits `rutis/service` for it;
+/// the second's is refused, as the name is taken. A third, naming its
+/// service `device-pat-iphone`, comes and goes with `rutis/service`. The first's `stop`
+/// withdraws it (`rutis/service`, not available) and stops its user; its
+/// `start` brings both back.
+/// guarantee: host/remote-runtimes
 #[tokio::test(flavor = "multi_thread")]
-async fn apps_that_dial_in_are_instances_their_users_stop_and_start_with_them() {
+async fn apps_on_one_listen_row_bring_their_plugins_the_later_name_refused() {
+    use rutis_bridge::events::ServiceEvent;
+    use std::sync::{Arc, Mutex};
+
     let _environment = environment();
     let dir = tempfile::tempdir().unwrap();
     let users = dir.path().join("users");
@@ -202,56 +216,98 @@ async fn apps_that_dial_in_are_instances_their_users_stop_and_start_with_them() 
     let mut config: HostConfig = serde_json::from_value(json!({
         "id": "test",
         "listen": [{ "name": "public", "address": "127.0.0.1:0" }],
-        "runtimes": {
-            "py": { "project": dir.path(), "python": python },
-            "remote": [{ "name": "phone", "language": "swift", "listen": "public", "instances": "phone" }]
-        },
-        "rows": [{ "id": "phone", "group": true, "instanced": true, "config": [
-            { "id": "device", "name": "phone:device" },
+        "runtimes": { "py": { "project": dir.path(), "python": python } },
+        "rows": [
+            { "id": "phone", "name": "rutis-host/listen", "config": { "listener": "public" } },
             { "id": "user", "name": "py:user", "config": { "dir": users } }
-        ] }]
+        ]
     }))
     .unwrap();
     config.rebase(dir.path());
     let host = Host::start(&config).await.unwrap();
+    let heard: Arc<Mutex<Vec<(String, bool)>>> = Arc::default();
+    let into = heard.clone();
+    host.root()
+        .on::<ServiceEvent>(move |event, _| {
+            into.lock()
+                .unwrap()
+                .push((event.name.clone(), event.available));
+            std::future::ready(Ok(None))
+        })
+        .unwrap();
     COLD.within("the Python runtime", host.runtimes_ready())
         .await
         .unwrap();
     host.load(config.rows()).await.unwrap();
     let address = format!("ws://{}/rutis", host.listening[0].1);
-
-    let mut kim = App::new("dial", &address, "kim-iphone", "shared");
-    let mut lee = App::new("dial", &address, "lee-iphone", "shared");
-    kim.command("start").await;
-    lee.command("start").await;
-    let running = |user: &str| users.join(user).exists();
-    let devices = || {
-        host.loader
-            .entries()
-            .into_iter()
-            .filter(|entry| entry.id == "device" && entry.instance.is_some())
+    let device = |available: bool| ("device".to_owned(), available);
+    let said = |event: (String, bool)| {
+        heard
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|e| **e == event)
             .count()
     };
+    let connected = || -> Vec<String> {
+        host.connections()
+            .into_iter()
+            .flat_map(|row| row.connected)
+            .map(|connected| connected.id)
+            .collect()
+    };
+    let running = |user: &str| users.join(user).exists();
+
+    let mut kim = App::new("dial", &address, "kim-iphone", "shared");
+    kim.command("start").await;
+    COLD.until(|| running("kim-iphone"), "the user, with kim's device")
+        .await;
+    assert_eq!(said(device(true)), 1, "{:?}", heard.lock().unwrap());
+    let mut lee = App::new("dial", &address, "lee-iphone", "shared");
+    lee.command("start").await;
     COLD.until(
-        || running("kim-iphone") && running("lee-iphone"),
-        "each app's user, with its own device",
+        || connected() == ["kim-iphone", "lee-iphone"],
+        "both connected",
     )
     .await;
-    assert_eq!(devices(), 2, "an instance per app");
-    // Outside the instances, there is no device.
-    assert!(host.service("device").is_none());
+    lee.said("state: connected", 1).await;
+    // lee's device is refused: the service stays kim's.
+    let name = || {
+        let service = host.service("device")?;
+        let value =
+            tokio::task::block_in_place(|| service.invoke("name", json!([]).into())).ok()?;
+        value.json().ok()
+    };
+    assert_eq!(name(), Some(json!("kim-iphone")));
+    assert!(!running("lee-iphone"));
 
-    // kim stops: its user stops, lee's runs on.
+    // A device naming its service after itself (decision 3): `device-<id>`,
+    // there while it is connected.
+    let mut pat = App::with("dial", &address, "pat-iphone", "shared", Some("pat-iphone"));
+    pat.command("start").await;
+    let pats = |available: bool| ("device-pat-iphone".to_owned(), available);
+    COLD.until(|| said(pats(true)) == 1, "pat's device-pat-iphone")
+        .await;
+    assert!(host.service("device-pat-iphone").is_some());
+    pat.command("quit").await;
+    COLD.until(|| said(pats(false)) == 1, "pat's device-pat-iphone gone")
+        .await;
+    let _ = pat.child.wait().await;
+
+    // kim stops: its device is withdrawn and its user stops.
     kim.command("stop").await;
     COLD.until(|| !running("kim-iphone"), "kim's user stopped")
         .await;
-    assert!(running("lee-iphone"));
-    COLD.until(|| devices() == 1, "kim's instance closed").await;
+    COLD.until(|| said(device(false)) == 1, "the device withdrawn")
+        .await;
+    COLD.until(|| connected() == ["lee-iphone"], "kim disconnected")
+        .await;
 
-    // kim starts again: a new connection, the user back.
+    // kim starts again: a new connection, the device and its user back.
     kim.command("start").await;
     COLD.until(|| running("kim-iphone"), "kim's user back")
         .await;
+    assert_eq!(said(device(true)), 2);
     kim.said("state: connected", 2).await;
     assert_eq!(
         kim.states(),
@@ -272,20 +328,68 @@ async fn apps_that_dial_in_are_instances_their_users_stop_and_start_with_them() 
     kim.command("quit").await;
     lee.command("quit").await;
     COLD.until(
-        || !running("kim-iphone") && !running("lee-iphone") && devices() == 0,
-        "both instances closed",
+        || !running("kim-iphone") && connected().is_empty(),
+        "both gone",
     )
     .await;
     let _ = (kim.child.wait().await, lee.child.wait().await);
     host.shut_down(HANG_GUARD).await.ok();
 }
 
-/// An app listening (on loopback here): the host links to it as to any
-/// remote runtime, `<runtime>:<plugin>` rows run on it; after `stop` the
-/// service is gone, after `start` the link connects again and it is back.
-/// guarantee: loader/remote-runtime-rows
+/// What `run` prints when two apps on one listen row provide the same
+/// name: each connection, and why the later app's plugin is refused.
+/// guarantee: host/remote-runtimes
 #[tokio::test(flavor = "multi_thread")]
-async fn an_app_that_listens_is_linked_to_and_comes_back_after_stop_and_start() {
+async fn run_says_why_the_later_apps_service_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = json!({
+        "id": "test",
+        "listen": [{ "name": "public", "address": "127.0.0.1:0" }],
+        "rows": [{ "id": "phone", "name": "rutis-host/listen", "config": { "listener": "public" } }]
+    });
+    std::fs::write(dir.path().join("rutis.json"), config.to_string()).unwrap();
+    let mut host = tokio::task::block_in_place(|| {
+        let mut host = common::process::Host::start_in_env(
+            &["run", "rutis.json"],
+            dir.path(),
+            &[("RUTIS_TOKEN_PHONE", "shared")],
+        );
+        let address = host.wait_line(|line| {
+            line.strip_prefix("rutis-host: listening on public ")
+                .map(str::to_owned)
+        });
+        (host, address)
+    });
+    let address = format!("ws://{}/rutis", host.1);
+    let mut kim = App::new("dial", &address, "kim-iphone", "shared");
+    kim.command("start").await;
+    tokio::task::block_in_place(|| {
+        host.0
+            .wait_line(|line| (line == "phone: connected kim-iphone").then_some(()))
+    });
+    let mut lee = App::new("dial", &address, "lee-iphone", "shared");
+    lee.command("start").await;
+    tokio::task::block_in_place(|| {
+        host.0.wait_lines(&[
+            "phone: connected lee-iphone",
+            "lee-iphone:device: device is provided here by row kim-iphone:device: \
+             not registered from lee-iphone",
+        ])
+    });
+    kim.command("quit").await;
+    lee.command("quit").await;
+    let _ = (kim.child.wait().await, lee.child.wait().await);
+    common::process::signal(&host.0, libc::SIGTERM, false);
+    let (status, _, _) = tokio::task::block_in_place(|| host.0.exit());
+    assert!(status.success(), "{status:?}");
+}
+
+/// An app listening (on loopback here): a dial row reaches it, and the
+/// plugin it installs is `pad:device`; after `stop` the service is gone,
+/// after `start` the row connects again and it is back.
+/// guarantee: host/remote-runtimes
+#[tokio::test(flavor = "multi_thread")]
+async fn an_app_that_listens_is_dialed_and_comes_back_after_stop_and_start() {
     let _environment = environment();
     // A free port the app picks (`:0`), and keeps across stop and start,
     // as a device's address stays the same.
@@ -294,11 +398,7 @@ async fn an_app_that_listens_is_linked_to_and_comes_back_after_stop_and_start() 
     std::env::set_var("RUTIS_TOKEN_PAD", "pad-token");
     let config: HostConfig = serde_json::from_value(json!({
         "id": "test",
-        "runtimes": { "remote": [{ "name": "pad", "language": "swift" }] },
-        "rows": [
-            { "id": "pad", "name": "rutis-bridge/peer", "config": { "peer": "pad", "dial": address, "runtime": "pad" } },
-            { "id": "device", "name": "pad:device" }
-        ]
+        "rows": [{ "id": "pad", "name": "rutis-host/dial", "config": { "address": address } }]
     }))
     .unwrap();
     let host = Host::start(&config).await.unwrap();
@@ -348,11 +448,7 @@ async fn an_apps_start_and_stop_take_effect_in_call_order() {
     std::env::set_var("RUTIS_TOKEN_PAD", "pad-token");
     let config: HostConfig = serde_json::from_value(json!({
         "id": "test",
-        "runtimes": { "remote": [{ "name": "pad", "language": "swift" }] },
-        "rows": [
-            { "id": "pad", "name": "rutis-bridge/peer", "config": { "peer": "pad", "dial": listen, "runtime": "pad" } },
-            { "id": "device", "name": "pad:device" }
-        ]
+        "rows": [{ "id": "pad", "name": "rutis-host/dial", "config": { "address": listen } }]
     }))
     .unwrap();
     let host = Host::start(&config).await.unwrap();

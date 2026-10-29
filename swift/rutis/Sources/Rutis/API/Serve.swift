@@ -1,8 +1,5 @@
 import Foundation
 
-/// Why a host that does not declare events-v2 is refused.
-let oldEventsHost = "this host does not declare events-v2 (the event protocol of rutis 0.13): upgrade rutis-host to 0.13 or later"
-
 let serveUsage = "usage: <binary> --rutis-manifest | <channel> --id <endpoint> [--peer <endpoint>] <project>"
 
 /// A session this side refused at its handshake (an old host): the runtime
@@ -75,13 +72,28 @@ extension Rutis {
         if let error = ended.block() { throw error }
     }
 
-    /// `started` sees the session once it starts (RutisTest reads the
-    /// plugin definitions it exports).
+    /// `started` sees the session once it starts.
     package static func serveSession(channel: Channel, endpoint: Endpoint, project: String, _ plugins: [Definition],
                                      started: ((Peer) -> Void)? = nil) async throws
     {
         let (session, runtime) = try startSession(channel: channel, project: project, plugins, endpoint: endpoint)
         started?(session)
+        try await served(channel, session, runtime)
+    }
+
+    /// Serves the plugins `shelf` has when each row loads, on `channel`,
+    /// until the session ends: RutisTest's runtime, one per test process,
+    /// its plugins added as the tests go. Its lines go to `log`.
+    package static func serveShelf(channel: Channel, endpoint: Endpoint, project: String, shelf: Shelf,
+                                   log: @escaping @Sendable (String) -> Void) async throws
+    {
+        let (session, runtime) = try startSession(channel: channel, project: project, [], endpoint: endpoint,
+                                                  settings: Events.Settings(log: log), shelf: shelf)
+        shelf.runtime = runtime
+        try await served(channel, session, runtime)
+    }
+
+    private static func served(_ channel: Channel, _ session: Peer, _ runtime: Runtime) async throws {
         await session.closed()
         if let ended = session.error as? SessionEnded, ended.kind == .refused {
             channel.close()
@@ -116,7 +128,7 @@ extension Rutis {
             let ca = environment["RUTIS_CA"] ?? ""
             mode = .dial(remote, trust: remote.hasPrefix("wss:") && !ca.isEmpty ? try caCertificates(ca) : [])
         }
-        let app = RutisApp(plugins: plugins, mode: mode, id: endpoint.local, peer: endpoint.expected, token: token,
+        let app = RutisApp(plugins: plugins, configs: nil, mode: mode, id: endpoint.local, peer: endpoint.expected, token: token,
                            project: project, settings: Events.Settings())
         let stop = StopSignal()
         let sources = onTermination(stop)
@@ -131,12 +143,11 @@ extension Rutis {
     }
     #endif
 
-    /// Starts a session serving `plugins`: a host older than 0.13 is
-    /// refused right after its handshake.
+    /// Starts a session serving `plugins`.
     static func startSession(channel: Channel, project: String, _ plugins: [Definition], endpoint: Endpoint,
-                             settings: Events.Settings = Events.Settings()) throws -> (Peer, Runtime)
+                             settings: Events.Settings = Events.Settings(), shelf: Shelf? = nil) throws -> (Peer, Runtime)
     {
-        let runtime = Runtime(plugins, project: project, settings: settings)
+        let runtime = Runtime(plugins, project: project, settings: settings, shelf: shelf)
         var options = PeerOptions(endpoint: endpoint)
         // Weak: a frame that arrives once the runtime is gone finds it gone.
         options.dispatch = { [weak runtime] target, method, args in
@@ -144,8 +155,6 @@ extension Rutis {
             return try await runtime.dispatch(target, method, args)
         }
         options.arrive = { [weak runtime] method, args in runtime?.arrive(method, args) }
-        options.require = [eventsCapability]
-        options.refuse = { _ in oldEventsHost }
         let session = try Peer(channel: channel, options: options)
         runtime.session = session
         try session.start()
@@ -258,5 +267,35 @@ final class ResultEvent: @unchecked Sendable {
     func block() -> Error? {
         semaphore.wait()
         return box.get()
+    }
+}
+
+/// The plugins a runtime serves when they are added while it runs, by the
+/// name its rows give them (`Rutis.serveShelf`).
+package final class Shelf: @unchecked Sendable {
+    private let lock = Lock()
+    private var plugins: [String: Rutis.Definition] = [:]
+    /// The runtime serving it, once it serves.
+    weak var runtime: Runtime?
+
+    package init() {}
+
+    /// Serves `definition` as `entry` from now on.
+    package func put(_ entry: String, _ definition: Rutis.Definition) { lock.withLock { plugins[entry] = definition } }
+
+    package func remove(_ entry: String) { lock.withLock { plugins[entry] = nil } }
+
+    package func get(_ entry: String) -> Rutis.Definition? { lock.withLock { plugins[entry] } }
+
+    /// Whether the row `id` has loaded: its plugin applied.
+    package func loaded(_ id: String) -> Bool {
+        guard let runtime else { return false }
+        return runtime.lock.withLock { runtime.rows.values.contains { $0.name == id && !$0.loading } }
+    }
+
+    /// The services the row `id` provides now.
+    package func provided(_ id: String) -> [String] {
+        guard let runtime else { return [] }
+        return runtime.lock.withLock { runtime.rows.values.first { $0.name == id }?.provided.sorted() ?? [] }
     }
 }

@@ -8,7 +8,9 @@
 //! directory as `<dir>`). Every sample must still be read as it was then.
 //! `tests/fixtures/persisted/rejected/<case>/rutis.json` is a file this
 //! release no longer reads; `rutis.error` beside it is the error, which says
-//! what to do.
+//! what to do. A file that still reads, but whose rows this release no
+//! longer runs (a plugin name it does not know), has `rutis.check`
+//! instead: what `rutis-host check` prints of it, its rows refused.
 //!
 //! Saving a release's sample (docs/release.md): copy the previous
 //! release's directory to `<version>/`, use the fields the release added,
@@ -140,24 +142,6 @@ fn normalized(config: &HostConfig, dir: &Path) -> Value {
         restart(go.restart, &mut fields);
         runtimes.insert(key.into(), fields.into());
     }
-    let remote: Vec<Value> = config
-        .runtimes
-        .remote
-        .iter()
-        .map(|remote| {
-            let mut fields = Map::new();
-            fields.insert("name".into(), json!(remote.name));
-            fields.insert("language".into(), json!(remote.language));
-            if let Some(listen) = &remote.listen {
-                fields.insert("listen".into(), json!(listen));
-            }
-            if let Some(instances) = &remote.instances {
-                fields.insert("instances".into(), json!(instances));
-            }
-            Value::Object(fields)
-        })
-        .collect();
-    runtimes.insert("remote".into(), remote.into());
     out.insert("runtimes".into(), runtimes.into());
     let listen: Vec<Value> = config
         .listen
@@ -239,10 +223,6 @@ fn every_release_s_rutis_json_reads_as_it_did() {
             "{version}: a field the release read is ignored now: {:?}",
             config.warnings
         );
-        config
-            .check_runtime_names()
-            .and_then(|()| config.check_dialing_runtimes())
-            .unwrap_or_else(|error| panic!("{version}: {error}"));
         let actual = normalized(&config, dir);
         let expected_file = dir.join("rutis.expected.json");
         if write.as_deref() == Some(version.as_str()) {
@@ -266,7 +246,8 @@ fn every_release_s_rutis_json_reads_as_it_did() {
 }
 
 /// Each file of a format this release no longer reads is refused, saying
-/// what to do.
+/// what to do; one whose rows it no longer runs, `rutis-host check` refuses
+/// them.
 /// risk: J3
 /// guarantee: host/rutis-json-format
 #[test]
@@ -279,6 +260,24 @@ fn formats_no_longer_read_are_refused() {
             continue;
         }
         cases += 1;
+        if dir.join("rutis.check").exists() {
+            let output = std::process::Command::new(env!("CARGO_BIN_EXE_rutis-host"))
+                .args(["check", "rutis.json"])
+                .current_dir(&dir)
+                .env_clear()
+                .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+                .output()
+                .expect("rutis-host runs");
+            assert_eq!(output.status.code(), Some(1), "{}", dir.display());
+            let printed = format!(
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let expected = std::fs::read_to_string(dir.join("rutis.check")).unwrap();
+            assert_eq!(normalize(&printed, &dir), expected, "{}", dir.display());
+            continue;
+        }
         let error = HostConfig::read(&dir.join("rutis.json"))
             .map(|_| ())
             .expect_err(&format!("{}: refused", dir.display()));

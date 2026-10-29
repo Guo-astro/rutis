@@ -68,14 +68,11 @@ func ToPeerArgs(args []any) ([]any, error) {
 // (docs/design-plugin-values-2026-10-25.md §5): PluginType is their type,
 // PluginToPeer the peer value of one (a peer.Plugin, by reference, not
 // data; a *peer.RemotePlugin for one another process handed over), and
-// PluginFromPeer the definition of a *peer.RemotePlugin. PluginServedAs
-// is a copy of a definition served under `name` when it has no name of its
-// own (rutistest serves one alone).
+// PluginFromPeer the definition of a *peer.RemotePlugin.
 var (
 	PluginType     reflect.Type
 	PluginToPeer   func(definition any) any
 	PluginFromPeer func(*peer.RemotePlugin) any
-	PluginServedAs func(definition any, name string) any
 )
 
 // The SDK's services used by name (*advanced.Service), set by
@@ -115,6 +112,9 @@ func toPeer(v any, levels, hops int) (any, error) {
 	case *Function:
 		if x == nil {
 			return nil, nil
+		}
+		if x.local != nil {
+			return x.local, nil
 		}
 		return x.remote, nil
 	case context.Context:

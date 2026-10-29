@@ -1,29 +1,25 @@
 //! Plugins of other languages as loader rows, each language in its own
-//! runtime process: one on this machine (`rutis_bridge::runtime::LocalRuntime`,
-//! the process started by the local transport and its session over a link),
-//! or one elsewhere ([`RuntimePlugin::remote`], its session over a link to
-//! it). Either way the rows are the same.
+//! runtime process, the far end of a session (`rutis_bridge::Session`):
+//! one on this machine (rutis-host's `runtimes.*`, the row named after the
+//! runtime) or elsewhere (a connection row).
 //!
-//! The runtime is a rutis plugin the application mounts first, then the
-//! loader, then a [`RuntimeRowsPlugin`] per runtime; every row depends on the
-//! [`RuntimeRows`] service that plugin provides once the rows' declarations
-//! are complete, so rows wait for their runtime and stop when its process
-//! goes away. Each row is loaded and disposed on its own.
+//! Every row depends on the [`SessionRows`] of its session's row, provided
+//! once the session is there and the rows' declarations are complete, so
+//! rows wait for their runtime and stop when its process goes away. Each
+//! row is loaded and disposed on its own.
 //!
-//! - **Node** (feature `node`, [`RuntimeResolver::node`]): all rows load into
-//!   one Cordis Context, so they resolve each other's services natively, as
-//!   in dsh. A row names an npm package (resolved from the runtime's anchor
-//!   `package.json`, `exports` honored), a subpath of one, or a file
-//!   (`file://`, absolute). Its `isolate` and `inject` name Cordis services,
-//!   so the resolver handles them itself (`Resolved::foreign_scope`) and
-//!   forwards them. Its schemastery `Config` becomes the row's JSON Schema
-//!   (`meta.volatile` → `x-volatile`), and a volatile-only change is handed
-//!   to Cordis, which commits it in place and emits `loader/volatile-update`
-//!   to the plugin, as dsh's loader does.
-//! - **Python** (feature `python`, [`RuntimeResolver::modules`]): a row named
-//!   `py:<module>` loads that module as a leaf plugin. A Node runtime named
-//!   otherwise takes rows `<runtime name>:<npm name or file>` the same way,
-//!   for a process per plugin.
+//! - [`SessionResolver`]: a row `<row>:<plugin>` runs `<plugin>` on the
+//!   session of the row `row`: `py:<module>` loads a Python module as a
+//!   leaf plugin, `bun:<module>` a Bun one. With [`SessionResolver::npm`],
+//!   the names no runtime prefixes (an npm package, a subpath of one, a
+//!   file) run in the Node runtime, where all rows load into one Cordis
+//!   Context, so they resolve each other's services natively, as in dsh.
+//!   Their `isolate` and `inject` name Cordis services, so the resolver
+//!   handles them itself (`Resolved::foreign_scope`) and forwards them. A
+//!   schemastery `Config` becomes the row's JSON Schema (`meta.volatile` →
+//!   `x-volatile`), and a volatile-only change is handed to Cordis, which
+//!   commits it in place and emits `loader/volatile-update` to the plugin,
+//!   as dsh's loader does.
 //! - **Go** (feature `go`, [`BinaryResolver`](binary::BinaryResolver)`<`[`Go`](go::Go)`>`,
 //!   [`BinaryRuntimes`](binary::BinaryRuntimes)`<Go>`): a row named
 //!   `go:<plugin>` runs the plugin in the Go binary that has it, one runtime
@@ -35,10 +31,6 @@
 //!   `BinaryRuntimes<Swift>`): a
 //!   row named `swift:<plugin>` runs the plugin in the Swift binary that has
 //!   it, as Go does.
-
-//! - **Runtimes that dial in** ([`RuntimeInstances`]): each connection an
-//!   access point admits is an instance of an `instanced` group, whose rows
-//!   `<runtime>:<plugin>` run on that connection.
 //!
 //! Services cross between the rows and the rest of rutis by name, as
 //! `dyn HostDispatch` at `host_key(name)`:
@@ -71,8 +63,7 @@ use std::sync::{Arc, Mutex};
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind, PluginFactory, TypeKey};
 use rutis::{Ctx, Error};
 use rutis_bridge::runtime::{
-    row_projection_of, ForeignPlugin, HostLease, PluginMounter, Process, Projection, Runtime,
-    RuntimeHandle, RuntimeState,
+    row_projection_of, ForeignPlugin, HostLease, PluginMounter, Process, Projection,
 };
 use rutis_bridge::session::Site;
 use rutis_bridge::session::{host_key, CallerRow, HostDispatch};
@@ -81,91 +72,25 @@ use serde_json::{json, Map, Value};
 use crate::resolver::Resolved;
 use crate::resolver::{Build, ScopedFactory};
 use crate::volatile::{volatile_key, VolatileUpdate};
-use crate::{Loader, LoaderError, Resolver, ServiceCatalog};
+use crate::{Loader, ServiceCatalog};
 
 /// Runtimes started from a binary that carries its own manifest.
 #[cfg(feature = "binary")]
 pub mod binary;
-mod connections;
 mod discover;
 /// Go runtimes: binaries built with the Go SDK.
 #[cfg(feature = "go")]
 pub mod go;
-mod rows;
+mod sessions;
 /// Swift runtimes: binaries built with the Swift SDK.
 #[cfg(feature = "swift")]
 pub mod swift;
-pub(crate) use connections::{claimed, claimed_names};
-pub use connections::{AcceptInstances, RuntimeConnection, RuntimeInstances};
-pub use rows::{RowsSource, RuntimeRows, RuntimeRowsPlugin};
+pub use sessions::{LoaderCatalog, SessionResolver, SessionRows};
 
 use rutis::internal::CtxInternal;
-#[cfg(doc)]
-use rutis_bridge::runtime::RuntimePlugin;
-
-/// How row names map to plugins: the part of resolution that differs by
-/// runtime. Everything else (asking the runtime what a plugin declares,
-/// gating, staleness, the rows themselves) is shared.
-enum Naming {
-    /// npm package names, subpaths and files, resolved from the runtime's
-    /// anchor (Node). A package says when it changed (`version`), so
-    /// resolutions are cached.
-    #[cfg(feature = "node")]
-    Npm,
-    /// `<prefix><module>`: names the runtime loads itself (Python modules;
-    /// later Swift bundles or plugins compiled into a Go binary). Nothing
-    /// says when one changed, so the runtime is asked every time.
-    Modules { prefix: String },
-}
-
-impl Naming {
-    /// The plugin a row name loads, or `None` when it is not this
-    /// runtime's.
-    fn entry(&self, runtime: &RuntimeHandle, name: &str) -> Option<PathBuf> {
-        match self {
-            // A remote runtime finds its plugins where it runs: the name
-            // goes as it is, and it answers `rows.schema` for it. Files and
-            // absolute paths are this machine's, so they are refused.
-            #[cfg(feature = "node")]
-            Naming::Npm if runtime.is_remote() => {
-                let local = name.starts_with("file:") || Path::new(name).is_absolute();
-                (!local && !runtime_prefixed(name)).then(|| PathBuf::from(name))
-            }
-            #[cfg(feature = "node")]
-            Naming::Npm => resolve_entry(runtime.anchor(), name),
-            Naming::Modules { prefix } => {
-                let _ = runtime;
-                name.strip_prefix(prefix.as_str())
-                    .filter(|module| !module.is_empty())
-                    .map(PathBuf::from)
-            }
-        }
-    }
-
-    /// Whether a resolution may be reused until its version changes.
-    fn caches(&self) -> bool {
-        match self {
-            #[cfg(feature = "node")]
-            Naming::Npm => true,
-            Naming::Modules { .. } => false,
-        }
-    }
-
-    /// What tells that the plugin at `entry` changed, if anything does.
-    fn version(&self, entry: &Path) -> Option<Value> {
-        match self {
-            #[cfg(feature = "node")]
-            Naming::Npm => package_version(entry),
-            Naming::Modules { .. } => {
-                let _ = entry;
-                None
-            }
-        }
-    }
-}
 
 /// Whether `name` may name a runtime, and so prefix its rows
-/// (`py:weather`, `bun:@acme/weather`, `<remote>:<module>`): two or more of
+/// (`py:weather`, `bun:@acme/weather`): two or more of
 /// `a-z`, `0-9` and `-`, and not `file`, so that neither a `file:` URL nor a
 /// one-letter Windows drive reads as a runtime's row.
 pub fn is_runtime_name(name: &str) -> bool {
@@ -176,297 +101,6 @@ pub fn is_runtime_name(name: &str) -> bool {
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
 }
 
-/// Whether `name` names a runtime before a colon: another runtime's row,
-/// never an npm name, which has no colon.
-#[cfg(feature = "node")]
-fn runtime_prefixed(name: &str) -> bool {
-    name.split_once(':')
-        .is_some_and(|(prefix, _)| is_runtime_name(prefix))
-}
-
-pub struct RuntimeResolver {
-    runtime: RuntimeHandle,
-    naming: Naming,
-    catalog: ServiceCatalog,
-    resolved: Mutex<HashMap<String, Arc<Resolved>>>,
-    /// Names whose resolution lacks the plugin's current declarations
-    /// (resolved while the runtime was not running, or their package
-    /// changed): [`RuntimeRowsPlugin`] resolves them again. A name leaves
-    /// the set only once it is resolved with the runtime, so a refresh that
-    /// is cut short is redone by the next one.
-    offline: Mutex<HashSet<String>>,
-    /// A remote runtime's names, each with the session that described it:
-    /// nothing says when a plugin over there changed, so a name described
-    /// by an earlier session is resolved again with the current one (#701).
-    described: Mutex<HashMap<String, String>>,
-}
-
-impl RuntimeResolver {
-    /// Rows of the Node runtime behind `runtime` ([`RuntimePlugin::handle`]):
-    /// npm names and files.
-    #[cfg(feature = "node")]
-    pub fn node(runtime: RuntimeHandle) -> Self {
-        Self::with_naming(runtime, Naming::Npm)
-    }
-
-    fn with_naming(runtime: RuntimeHandle, naming: Naming) -> Self {
-        Self {
-            runtime,
-            naming,
-            catalog: ServiceCatalog::default(),
-            resolved: Mutex::new(HashMap::new()),
-            offline: Mutex::new(HashSet::new()),
-            described: Mutex::new(HashMap::new()),
-        }
-    }
-
-    /// Rows named after their runtime: a row `<runtime name>:<plugin>`
-    /// loads `<plugin>` into that runtime. For a Python runtime
-    /// (`rutis_bridge::runtime::LocalRuntime::python`) the plugin is a
-    /// module (`py:weather.plugin`); for a Node runtime, an npm name or a
-    /// file, as [`RuntimeResolver::node`] takes them (`wordcount:wordcount-plugin`).
-    ///
-    /// One process per plugin (or per group of plugins): a
-    /// `LocalRuntime` of its own for each, named
-    /// (`LocalRuntime::named`), each with a resolver of this kind; rows
-    /// with the same prefix share that runtime's process. It asks the
-    /// runtime at every resolution, as for Python, rather than caching by
-    /// the package's `version`.
-    pub fn modules(runtime: RuntimeHandle) -> Self {
-        let prefix = format!("{}:", runtime.name());
-        Self::with_naming(runtime, Naming::Modules { prefix })
-    }
-
-    pub(crate) fn runtime_name(&self) -> &str {
-        self.runtime.name()
-    }
-
-    /// The catalog the loader uses (`LoaderOptions::catalog`): its shared
-    /// names are the injected services rows wait for in rutis.
-    pub fn with_catalog(mut self, catalog: &ServiceCatalog) -> Self {
-        self.catalog = catalog.clone();
-        self
-    }
-
-    /// Forget what is known about the row module `name`, for a package whose
-    /// content changed without a new `version` (a linked package during
-    /// development). Its next resolution asks the runtime again: at once
-    /// with `Loader::reload`, or when the runtime restarts, through
-    /// [`RuntimeRowsPlugin`].
-    ///
-    /// Node keeps the module code it has imported, so after a code change
-    /// restart the runtime (`FiberView::restart` on its fiber): the new
-    /// process imports the new code, and the invalidated rows are resolved
-    /// again before they start.
-    pub fn invalidate(&self, name: &str) {
-        self.resolved.lock().unwrap().remove(name);
-        self.offline.lock().unwrap().insert(name.to_owned());
-    }
-
-    /// [`RuntimeResolver::invalidate`] every row module resolved so far.
-    pub fn invalidate_all(&self) {
-        let names: Vec<String> = self
-            .resolved
-            .lock()
-            .unwrap()
-            .drain()
-            .map(|(name, _)| name)
-            .collect();
-        self.offline.lock().unwrap().extend(names);
-    }
-
-    /// Names whose resolution is out of date: resolved without the runtime,
-    /// or whose package version changed since. Their cached resolution is
-    /// dropped, so the next resolution asks the runtime again.
-    pub(crate) fn take_stale(&self) -> HashSet<String> {
-        let mut stale = self.offline.lock().unwrap();
-        // A remote runtime that runs again (a new session) may run other
-        // code: what an earlier session described is resolved again (#701).
-        if let RuntimeState::Ready(process) = self.runtime.state() {
-            let session = process.connection().tag();
-            for (name, by) in self.described.lock().unwrap().iter() {
-                if by != session {
-                    stale.insert(name.clone());
-                }
-            }
-        }
-        self.resolved.lock().unwrap().retain(|name, found| {
-            let current = Path::new(found.meta["entry"].as_str().unwrap_or_default());
-            let recorded = found.meta.get("version").filter(|v| !v.is_null()).cloned();
-            let fresh = self.naming.version(current) == recorded;
-            if !fresh {
-                stale.insert(name.clone());
-            }
-            fresh
-        });
-        stale.clone()
-    }
-}
-
-impl Resolver for RuntimeResolver {
-    fn runtimes(&self) -> Vec<RuntimeHandle> {
-        vec![self.runtime.clone()]
-    }
-
-    fn resolve<'a>(&'a self, name: &'a str) -> BoxFuture<'a, Result<Arc<Resolved>, LoaderError>> {
-        Box::pin(async move {
-            let Some(entry) = self.naming.entry(&self.runtime, name) else {
-                return Err(LoaderError::NotFound {
-                    name: name.to_owned(),
-                });
-            };
-            // A runtime that loads by module name is asked every time: a
-            // reload must see the module's current declarations, and there
-            // is no package version to tell that it changed.
-            // Nothing here says when a remote runtime's plugin changed.
-            let caches = self.naming.caches() && !self.runtime.is_remote();
-            if caches {
-                if let Some(found) = self.resolved.lock().unwrap().get(name) {
-                    return Ok(found.clone());
-                }
-            }
-            // The declarations need the runtime. Without a running runtime
-            // (one still starting included: it may take long, as one waiting
-            // for a debugger does, and the other runtimes' rows must not
-            // wait for it) the row still resolves (it waits for the runtime
-            // like any dependency), and says why it has no schema; it is not
-            // cached, and `RuntimeRowsPlugin` resolves it again once the
-            // runtime is up, before the row may start.
-            // Marked to be resolved again first: a runtime turning ready
-            // between reading its state and marking the name would leave
-            // the name unmarked.
-            let marked_before = !self.offline.lock().unwrap().insert(name.to_owned());
-            let running = match self.runtime.state() {
-                RuntimeState::Ready(process) => Some(process),
-                _ => None,
-            };
-            let Some(process) = running else {
-                let module = JsModule {
-                    name: name.to_owned(),
-                    runtime: self.runtime.name().to_owned(),
-                    entry: entry.clone(),
-                    gated: Vec::new(),
-                    provides: Map::new(),
-                    catalog: self.catalog.clone(),
-                };
-                return Ok(Arc::new(Resolved {
-                    factory: Arc::new(JsFactory::new(
-                        name,
-                        self.runtime.name(),
-                        entry.clone(),
-                        Vec::new(),
-                        Map::new(),
-                    )),
-                    schema: None,
-                    meta: json!({
-                        "source": "runtime",
-                        "entry": entry,
-                        "schema": "unavailable: the Cordis runtime is not running",
-                    }),
-                    foreign_scope: true,
-                    scoped: Some(module.scoped()),
-                    declares: Some(unknown(format!(
-                        "the {} runtime is not running",
-                        self.runtime.name()
-                    ))),
-                }));
-            };
-            let described = match self.runtime.is_remote() {
-                // As for a runtime that comes in many times: a plugin the
-                // runtime does not contain fails the row, unavailable, and
-                // is read again when the runtime runs again.
-                true => match discover::describe(&process, &entry).await {
-                    discover::Described::Found(found) => Ok(found),
-                    discover::Described::Missing => {
-                        self.offline.lock().unwrap().remove(name);
-                        self.described
-                            .lock()
-                            .unwrap()
-                            .insert(name.to_owned(), process.connection().tag().to_owned());
-                        let plugin = entry.to_string_lossy();
-                        let why = discover::missing(self.runtime.name(), &plugin);
-                        return Ok(Arc::new(unavailable_resolved(name, &entry, why)));
-                    }
-                    discover::Described::Failed(message) => Err(LoaderError::Resolve {
-                        name: name.to_owned(),
-                        message,
-                    }),
-                },
-                false => process
-                    .describe_row(&entry)
-                    .await
-                    .map_err(|error| match error {
-                        // The runtime looked and found no such plugin.
-                        rutis_bridge::session::Error::Remote { name: kind, .. }
-                            if kind == "NotFound" =>
-                        {
-                            LoaderError::NotFound {
-                                name: name.to_owned(),
-                            }
-                        }
-                        error => LoaderError::Resolve {
-                            name: name.to_owned(),
-                            message: error.to_string(),
-                        },
-                    }),
-            };
-            if described.is_err() && !marked_before {
-                // Resolved with the runtime, if to an error: not again,
-                // unless it was waiting to be (a restart may help).
-                self.offline.lock().unwrap().remove(name);
-            }
-            let described = described?;
-            // A leaf runtime has no dependency resolution of its own: every
-            // service its plugins inject waits in rutis. In Cordis, only the
-            // shared names do; the others resolve natively.
-            let leaf = self.runtime.supports("leaf");
-            let gated: Vec<String> = described
-                .inject
-                .iter()
-                .filter(|name| leaf || self.catalog.is_shared(name))
-                .cloned()
-                .collect();
-            self.offline.lock().unwrap().remove(name);
-            if self.runtime.is_remote() {
-                self.described
-                    .lock()
-                    .unwrap()
-                    .insert(name.to_owned(), process.connection().tag().to_owned());
-            }
-            let resolved = Arc::new(leaf_resolved(
-                name,
-                self.runtime.name(),
-                entry.clone(),
-                gated,
-                &described,
-                &self.catalog,
-                json!({
-                    "source": "runtime",
-                    "entry": entry,
-                    // The package's version where this side can read it,
-                    // else what the runtime reported.
-                    "version": (!self.runtime.is_remote())
-                        .then(|| self.naming.version(&entry))
-                        .flatten()
-                        .or_else(|| described.version.clone().map(Value::String)),
-                    "inject": described.inject,
-                    "provides": described.provides,
-                    // A Cordis row: its dependencies on the Cordis rows of
-                    // this runtime resolve in Cordis.
-                    "cordis": described.cordis,
-                }),
-            ));
-            if caches {
-                self.resolved
-                    .lock()
-                    .unwrap()
-                    .insert(name.to_owned(), resolved.clone());
-            }
-            Ok(resolved)
-        })
-    }
-}
-
 /// Declarations not known, and why.
 pub(crate) fn unknown(why: String) -> crate::resolver::Declarations {
     Arc::new(move |_: &Value| Err(why.clone()))
@@ -475,7 +109,11 @@ pub(crate) fn unknown(why: String) -> crate::resolver::Declarations {
 /// The resolution of a row `name` whose runtime does not contain its plugin
 /// `entry`: the row fails with `why`, alone, and an edit adding it is not
 /// refused.
-fn unavailable_resolved(name: &str, entry: &Path, why: crate::error::Unavailable) -> Resolved {
+pub(crate) fn unavailable_resolved(
+    name: &str,
+    entry: &Path,
+    why: crate::error::Unavailable,
+) -> Resolved {
     Resolved {
         factory: Arc::new(UnavailableFactory {
             name: name.to_owned(),
@@ -509,12 +147,12 @@ impl PluginFactory<Value> for UnavailableFactory {
     }
 }
 
-/// The resolution of a row `name` whose plugin `entry` runs in the runtime
-/// named `runtime` and declares `described`; `gated` are the injected names
-/// rutis gates it on.
-pub(crate) fn leaf_resolved(
+/// The resolution of a row `name` whose plugin `entry` runs on `runtime`
+/// and declares `described`; `gated` are the injected names rutis gates it
+/// on.
+pub(crate) fn leaf_resolved_on(
     name: &str,
-    runtime: &str,
+    runtime: RowRuntime,
     entry: PathBuf,
     gated: Vec<String>,
     described: &rutis_bridge::runtime::RowSchema,
@@ -528,14 +166,14 @@ pub(crate) fn leaf_resolved(
     };
     let module = JsModule {
         name: name.to_owned(),
-        runtime: runtime.to_owned(),
+        runtime: runtime.clone(),
         entry: entry.clone(),
         gated: gated.clone(),
         provides: described.provides.clone(),
         catalog: catalog.clone(),
     };
     Resolved {
-        factory: Arc::new(JsFactory::new(
+        factory: Arc::new(JsFactory::on(
             name,
             runtime,
             entry,
@@ -553,18 +191,18 @@ pub(crate) fn leaf_resolved(
 /// What a row module declares, from which each copy's factory is built
 /// with the keys of the instances it runs in.
 #[derive(Clone)]
-struct JsModule {
-    name: String,
-    runtime: String,
-    entry: PathBuf,
+pub(crate) struct JsModule {
+    pub(crate) name: String,
+    pub(crate) runtime: RowRuntime,
+    pub(crate) entry: PathBuf,
     /// The injected services that gate the row in rutis.
-    gated: Vec<String>,
-    provides: Map<String, Value>,
-    catalog: ServiceCatalog,
+    pub(crate) gated: Vec<String>,
+    pub(crate) provides: Map<String, Value>,
+    pub(crate) catalog: ServiceCatalog,
 }
 
 impl JsModule {
-    fn scoped(self) -> ScopedFactory {
+    pub(crate) fn scoped(self) -> ScopedFactory {
         Arc::new(move |build: &Build| {
             let factory: Arc<dyn PluginFactory<Value>> = Arc::new(self.factory(build)?);
             Ok(factory)
@@ -604,7 +242,7 @@ impl JsModule {
         });
         Ok(JsFactory::with_keys(
             &self.name,
-            RowRuntime::Named(self.runtime.clone()),
+            self.runtime.clone(),
             RowEntry::Module(self.entry.clone()),
             keyed(&mut self.gated.iter())?,
             self.provides.clone(),
@@ -618,12 +256,12 @@ impl JsModule {
 /// Where a row's runtime comes from.
 #[derive(Clone)]
 pub(crate) enum RowRuntime {
-    /// The runtime named so, through its [`RuntimeRows`]: rows wait for
-    /// it and stop when it goes.
-    Named(String),
-    /// One runtime connection's process ([`RuntimeInstances`]): the row
-    /// runs in that connection's instance, which ends with it.
+    /// One process, for a copy of a plugin definition it handed over.
     Connection(Arc<Process>),
+    /// The session of the row so named (a connection row's, a local
+    /// runtime's), through its [`SessionRows`]: rows wait for it and stop
+    /// when it goes.
+    Session(String),
 }
 
 /// What a row loads: a module, or one copy of a plugin definition the
@@ -707,10 +345,10 @@ impl Refusals {
 }
 
 impl JsFactory {
-    /// The factory of a copy outside instances.
-    fn new(
+    /// The factory of a copy outside instances, its rows on `runtime`.
+    pub(crate) fn on(
         name: &str,
-        runtime: &str,
+        runtime: RowRuntime,
         entry: PathBuf,
         gated: Vec<String>,
         provides: Map<String, Value>,
@@ -727,15 +365,7 @@ impl JsFactory {
             .keys()
             .map(|name| (name.clone(), host_key(name).erase()))
             .collect();
-        Self::with_keys(
-            name,
-            RowRuntime::Named(runtime.to_owned()),
-            entry,
-            gated,
-            provides,
-            provided,
-            Vec::new(),
-        )
+        Self::with_keys(name, runtime, entry, gated, provides, provided, Vec::new())
     }
 
     pub(crate) fn with_keys(
@@ -748,8 +378,8 @@ impl JsFactory {
         scopes: Vec<(String, String)>,
     ) -> Self {
         let rows = match &runtime {
-            RowRuntime::Named(runtime) => Some(RuntimeRows::key(runtime)),
             RowRuntime::Connection(_) => None,
+            RowRuntime::Session(row) => Some(SessionRows::key(row)),
         };
         let injects = rows
             .into_iter()
@@ -871,15 +501,12 @@ impl DynPlugin for JsRow {
             if let Some(error) = self.refused.take(ctx.instance()) {
                 return Err(failed(error));
             }
-            let (process, runtime) = match &self.runtime {
-                RowRuntime::Named(name) => {
-                    let runtime = ctx
-                        .require_key::<RuntimeRows>(RuntimeRows::key(name))?
-                        .runtime()
-                        .clone();
-                    (runtime.process().clone(), Some(runtime))
-                }
-                RowRuntime::Connection(process) => (process.clone(), None),
+            let process = match &self.runtime {
+                RowRuntime::Connection(process) => process.clone(),
+                RowRuntime::Session(row) => ctx
+                    .require_key::<SessionRows>(SessionRows::key(row))?
+                    .process()
+                    .clone(),
             };
             // Every lease taken is released: by the cleanup once the row
             // runs, here when it does not get that far. The kernel waits for
@@ -887,9 +514,7 @@ impl DynPlugin for JsRow {
             // panic in it leaves them raised, in a runtime whose state is
             // then unknown anyway.
             let mut leases: Vec<HostLease> = Vec::new();
-            let started = self
-                .start(ctx, &process, runtime.as_deref(), &mut leases)
-                .await;
+            let started = self.start(ctx, &process, &mut leases).await;
             let (key, projection) = match started {
                 Ok(started) => started,
                 Err(error) => {
@@ -897,13 +522,14 @@ impl DynPlugin for JsRow {
                     // The runtime's process ended while the row loaded:
                     // not the row's failure, whichever row's code ended it.
                     // The row waits for its runtime, as the others in it do
-                    // (#682). Only a named runtime's row: nothing ends the
-                    // wait of a row on a connection, which does not come
-                    // back (a runtime connection's instance waits for this
-                    // load before it can end with its connection), nor of
-                    // a copy of a definition. They fail at once.
+                    // (#682). Only a named runtime's row, or a session's
+                    // (its session's end withdraws `SessionRows`): nothing
+                    // ends the wait of a row on a connection, which does not
+                    // come back (a runtime connection's instance waits for
+                    // this load before it can end with its connection), nor
+                    // of a copy of a definition. They fail at once.
                     if let Some(ended) = process.connection().close_reason() {
-                        if matches!(self.runtime, RowRuntime::Named(_)) {
+                        if matches!(self.runtime, RowRuntime::Session(_)) {
                             return wait_for_the_runtime(ctx, ended).await;
                         }
                     }
@@ -952,7 +578,6 @@ impl JsRow {
         &self,
         ctx: &Ctx,
         process: &Arc<Process>,
-        runtime: Option<&Runtime>,
         leases: &mut Vec<HostLease>,
     ) -> Result<(String, Arc<Projection>), Error> {
         let row = match &self.id {
@@ -1013,13 +638,7 @@ impl JsRow {
             }
             let label = label_of(&isolate, name);
             let lease = process
-                .lease_host_for(
-                    name,
-                    label.as_deref(),
-                    &caller,
-                    dispatch,
-                    runtime.and_then(|runtime| runtime.host_methods(name)),
-                )
+                .lease_host_for(name, label.as_deref(), &caller, dispatch, None)
                 .await
                 .map_err(failed)?;
             if let Some(own) = lease.label().filter(|own| Some(*own) != label.as_deref()) {
@@ -1281,335 +900,3 @@ impl Forward {
         Ok(None)
     }
 }
-
-#[cfg(feature = "node")]
-/// The `version` of the package a plugin file belongs to (the nearest
-/// `package.json` above it), if it has one. A module name (a relative path)
-/// has none.
-fn package_version(entry: &Path) -> Option<Value> {
-    if entry.is_relative() {
-        return None;
-    }
-    let manifest = entry
-        .ancestors()
-        .skip(1)
-        .map(|dir| dir.join("package.json"))
-        .find(|path| path.exists())?;
-    let manifest: Value = serde_json::from_str(&std::fs::read_to_string(manifest).ok()?).ok()?;
-    manifest.get("version").cloned()
-}
-
-#[cfg(test)]
-mod stale_tests {
-    use super::*;
-
-    /// A refusal fails the apply of the restart it causes, and no other:
-    /// not one already on its way when it was recorded, nor any after its
-    /// restart has run.
-    #[tokio::test]
-    async fn a_refusal_fails_only_the_generation_its_restart_runs() {
-        let root = rutis::Ctx::root().unwrap();
-        let instance = root.instance();
-        let refusals = Refusals::default();
-
-        let taken = |refusals: &Refusals| refusals.take(instance).map(|error| error.to_string());
-
-        refusals.record(instance, provide_error("clash".into()));
-        assert_eq!(taken(&refusals), None, "a restart already on its way");
-        refusals.arm(instance);
-        assert_eq!(taken(&refusals).as_deref(), Some("clash"));
-        assert_eq!(taken(&refusals), None, "taken once");
-
-        // Its restart ran without applying (it waited for a dependency):
-        // the generation that applies later, the clash gone, runs.
-        refusals.record(instance, provide_error("clash".into()));
-        refusals.arm(instance);
-        refusals.forget(instance);
-        assert_eq!(taken(&refusals), None);
-    }
-
-    /// A remote Node runtime takes npm names, not another runtime's rows.
-    #[cfg(feature = "node")]
-    #[test]
-    fn runtime_prefixes_are_not_npm_names() {
-        for name in [
-            "py:weather",
-            "bun:@acme/weather",
-            "bun:./plugin.ts",
-            "gpu-1:model",
-        ] {
-            assert!(runtime_prefixed(name), "{name}");
-        }
-        for name in [
-            "@acme/weather",
-            "weather/sub",
-            "file:///p.mjs",
-            "C:\\p.mjs",
-            "./a:b.ts",
-        ] {
-            assert!(!runtime_prefixed(name), "{name}");
-        }
-    }
-
-    fn cached(entry: &Path, version: Option<Value>) -> Arc<Resolved> {
-        Arc::new(Resolved {
-            factory: Arc::new(JsFactory::new(
-                "x",
-                "t",
-                entry.to_owned(),
-                Vec::new(),
-                Map::new(),
-            )),
-            schema: None,
-            meta: json!({ "entry": entry, "version": version }),
-            foreign_scope: true,
-            scoped: None,
-            declares: None,
-        })
-    }
-
-    #[cfg(feature = "node")]
-    #[test]
-    fn stale_rows_are_those_without_current_declarations() {
-        let dir = tempfile::tempdir().unwrap();
-        let versioned = dir.path().join("pkg/index.mjs");
-        std::fs::create_dir_all(versioned.parent().unwrap()).unwrap();
-        std::fs::write(
-            dir.path().join("pkg/package.json"),
-            r#"{ "version": "2.0.0" }"#,
-        )
-        .unwrap();
-        let loose = Path::new("/nowhere/loose.mjs");
-        let runtime = rutis_bridge::runtime::RuntimePlugin::session("t", dir.path());
-        let resolver = RuntimeResolver::node(runtime.handle());
-        {
-            let mut resolved = resolver.resolved.lock().unwrap();
-            // No package version, recorded as null: unchanged.
-            resolved.insert("loose".into(), cached(loose, None));
-            resolved.insert("same".into(), cached(&versioned, Some(json!("2.0.0"))));
-            resolved.insert("older".into(), cached(&versioned, Some(json!("1.0.0"))));
-        }
-        resolver.offline.lock().unwrap().insert("offline".into());
-        let stale = resolver.take_stale();
-        assert_eq!(
-            stale,
-            HashSet::from(["older".to_owned(), "offline".to_owned()])
-        );
-        assert!(!resolver.resolved.lock().unwrap().contains_key("older"));
-        // A refresh that never finished leaves them stale for the next one.
-        assert_eq!(resolver.take_stale(), stale);
-    }
-
-    #[test]
-    fn module_rows_have_no_version_and_are_never_cached() {
-        let dir = tempfile::tempdir().unwrap();
-        let runtime = rutis_bridge::runtime::RuntimePlugin::session("py", dir.path());
-        let naming = Naming::Modules {
-            prefix: "py:".into(),
-        };
-        assert_eq!(
-            naming.entry(&runtime.handle(), "py:weather.plugin"),
-            Some(PathBuf::from("weather.plugin"))
-        );
-        assert_eq!(naming.entry(&runtime.handle(), "py:"), None);
-        assert_eq!(naming.entry(&runtime.handle(), "weather"), None);
-        assert!(!naming.caches());
-        assert_eq!(naming.version(Path::new("weather.plugin")), None);
-    }
-
-    #[test]
-    fn invalidated_rows_are_stale_until_resolved_again() {
-        let dir = tempfile::tempdir().unwrap();
-        let entry = dir.path().join("p.mjs");
-        let runtime = rutis_bridge::runtime::RuntimePlugin::session("t", dir.path());
-        let resolver = RuntimeResolver::modules(runtime.handle());
-        {
-            let mut resolved = resolver.resolved.lock().unwrap();
-            resolved.insert("a".into(), cached(&entry, None));
-            resolved.insert("b".into(), cached(&entry, None));
-        }
-        assert!(resolver.take_stale().is_empty());
-        resolver.invalidate("a");
-        assert_eq!(resolver.take_stale(), HashSet::from(["a".to_owned()]));
-        resolver.invalidate_all();
-        assert_eq!(
-            resolver.take_stale(),
-            HashSet::from(["a".to_owned(), "b".to_owned()])
-        );
-        assert!(resolver.resolved.lock().unwrap().is_empty());
-    }
-}
-
-#[cfg(feature = "node")]
-mod npm {
-    use super::*;
-
-    // ── Node's package resolution ───────────────────────────────────
-
-    fn package_dir(anchor: &Path, package: &str) -> Option<PathBuf> {
-        let start = anchor.parent()?;
-        start
-            .ancestors()
-            .filter(|dir| dir.file_name().is_none_or(|n| n != "node_modules"))
-            .map(|dir| dir.join("node_modules").join(package))
-            .find(|candidate| candidate.join("package.json").exists())
-    }
-
-    /// The `exports` target for `subpath` under the `node`/`import`/`default`
-    /// conditions.
-    fn export_target(exports: &Value, subpath: &str) -> Option<String> {
-        fn pick(value: &Value) -> Option<String> {
-            match value {
-                Value::String(target) => Some(target.clone()),
-                Value::Object(conditions) => ["node", "import", "default"]
-                    .iter()
-                    .find_map(|c| conditions.get(*c).and_then(pick)),
-                Value::Array(options) => options.iter().find_map(pick),
-                _ => None,
-            }
-        }
-        match exports {
-            Value::String(_) | Value::Array(_) if subpath == "." => pick(exports),
-            Value::Object(map) if map.keys().any(|k| k.starts_with('.')) => {
-                map.get(subpath).and_then(pick)
-            }
-            Value::Object(_) if subpath == "." => pick(exports),
-            _ => None,
-        }
-    }
-
-    /// The module file a row name loads, or `None` when it is not a resolvable
-    /// JavaScript plugin name.
-    pub fn resolve_entry(anchor: &Path, name: &str) -> Option<PathBuf> {
-        if name.starts_with("file:") {
-            // A URL: percent-decoded, query and fragment dropped, as Node's
-            // fileURLToPath; a remote host is not a local file.
-            return url::Url::parse(name).ok()?.to_file_path().ok();
-        }
-        // As in Node: `/…` is absolute on Windows too (on the current drive).
-        if name.starts_with('/') || Path::new(name).is_absolute() {
-            return Some(PathBuf::from(name));
-        }
-        let mut parts = name.splitn(if name.starts_with('@') { 3 } else { 2 }, '/');
-        let package = if name.starts_with('@') {
-            format!("{}/{}", parts.next()?, parts.next()?)
-        } else {
-            parts.next()?.to_owned()
-        };
-        if package.is_empty() || package.contains(':') {
-            return None;
-        }
-        let subpath = match parts.next() {
-            Some(rest) => format!("./{rest}"),
-            None => ".".to_owned(),
-        };
-        let dir = package_dir(anchor, &package)?;
-        let manifest: Value =
-            serde_json::from_str(&std::fs::read_to_string(dir.join("package.json")).ok()?).ok()?;
-        let relative = match manifest.get("exports") {
-            Some(exports) => export_target(exports, &subpath)?,
-            None if subpath == "." => manifest
-                .get("module")
-                .or_else(|| manifest.get("main"))
-                .and_then(Value::as_str)
-                .unwrap_or("index.js")
-                .to_owned(),
-            None => subpath,
-        };
-        Some(dir.join(relative.trim_start_matches("./")))
-    }
-
-    #[cfg(test)]
-    mod tests {
-        use super::*;
-
-        #[test]
-        fn resolves_like_node() {
-            let dir = tempfile::tempdir().unwrap();
-            let anchor = dir.path().join("app/package.json");
-            let modules = dir.path().join("node_modules");
-            let write = |path: PathBuf, text: &str| {
-                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-                std::fs::write(path, text).unwrap();
-            };
-            write(anchor.clone(), "{}");
-            write(
-                modules.join("@s/a/package.json"),
-                r#"{ "exports": { ".": { "require": "./c.cjs", "import": "./lib/index.js" }, "./tools": "./lib/tools.js" } }"#,
-            );
-            write(modules.join("b/package.json"), r#"{ "main": "main.js" }"#);
-            write(
-                modules.join("c/package.json"),
-                r#"{ "exports": "./only.mjs" }"#,
-            );
-            assert_eq!(
-                resolve_entry(&anchor, "@s/a"),
-                Some(modules.join("@s/a/lib/index.js"))
-            );
-            assert_eq!(
-                resolve_entry(&anchor, "@s/a/tools"),
-                Some(modules.join("@s/a/lib/tools.js"))
-            );
-            assert_eq!(resolve_entry(&anchor, "@s/a/hidden"), None, "not exported");
-            assert_eq!(resolve_entry(&anchor, "b"), Some(modules.join("b/main.js")));
-            assert_eq!(
-                resolve_entry(&anchor, "c"),
-                Some(modules.join("c/only.mjs"))
-            );
-            assert_eq!(resolve_entry(&anchor, "missing"), None);
-            assert_eq!(resolve_entry(&anchor, "dylib:x"), None);
-            assert_eq!(
-                resolve_entry(&anchor, "/abs/p.mjs"),
-                Some(PathBuf::from("/abs/p.mjs"))
-            );
-        }
-
-        #[test]
-        #[cfg(unix)]
-        fn file_urls_are_decoded() {
-            let cases = [
-                ("file:///abs/p.mjs", "/abs/p.mjs"),
-                ("file:///my%20plugins/p.mjs", "/my plugins/p.mjs"),
-                ("file:///%E6%8F%92%E4%BB%B6/p.mjs", "/插件/p.mjs"),
-                ("file:///a%23b/p.mjs", "/a#b/p.mjs"),
-                ("file:///100%25/p.mjs", "/100%/p.mjs"),
-                ("file:///p.mjs#fragment", "/p.mjs"),
-                ("file:///p.mjs?v=2", "/p.mjs"),
-                ("file://localhost/p.mjs", "/p.mjs"),
-            ];
-            let anchor = Path::new("/nowhere/package.json");
-            for (url, path) in cases {
-                assert_eq!(
-                    resolve_entry(anchor, url),
-                    Some(PathBuf::from(path)),
-                    "{url}"
-                );
-            }
-            assert_eq!(resolve_entry(anchor, "file://server/share/p.mjs"), None);
-        }
-
-        #[test]
-        #[cfg(windows)]
-        fn file_urls_are_decoded() {
-            let cases = [
-                ("file:///C:/abs/p.mjs", r"C:\abs\p.mjs"),
-                ("file:///C:/my%20plugins/p.mjs", r"C:\my plugins\p.mjs"),
-                ("file:///C:/%E6%8F%92%E4%BB%B6/p.mjs", r"C:\插件\p.mjs"),
-                ("file:///C:/p.mjs#fragment", r"C:\p.mjs"),
-                ("file:///C:/p.mjs?v=2", r"C:\p.mjs"),
-                ("file://server/share/p.mjs", r"\\server\share\p.mjs"),
-            ];
-            let anchor = Path::new(r"C:\nowhere\package.json");
-            for (url, path) in cases {
-                assert_eq!(
-                    resolve_entry(anchor, url),
-                    Some(PathBuf::from(path)),
-                    "{url}"
-                );
-            }
-        }
-    }
-}
-#[cfg(feature = "node")]
-#[doc(hidden)]
-pub use npm::resolve_entry;

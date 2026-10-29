@@ -1,0 +1,8 @@
+{
+  "format": 1,
+  "id": "main",
+  "runtimes": { "go": { "dir": "plugins/go" } },
+  "rows": [
+    { "id": "dns", "name": "go-dns:resolver" }
+  ]
+}

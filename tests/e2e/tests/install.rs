@@ -814,13 +814,12 @@ fn listen(s: &Scenario, venv: &Path) {
             "id": "main",
             "runtimes": {
                 "py": { "python": venv_python(venv) },
-                "remote": [{ "name": "gpu", "language": "python" }],
             },
             "rows": [
                 {
                     "id": "gpu",
-                    "name": "rutis-bridge/peer",
-                    "config": { "peer": "gpu", "dial": url, "runtime": "gpu" },
+                    "name": "rutis-host/dial",
+                    "config": { "address": url },
                 },
                 { "id": "greeter", "name": "gpu:greeter" },
                 probe.row(),

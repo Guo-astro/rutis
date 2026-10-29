@@ -1,14 +1,17 @@
 # 写一个 TypeScript 插件
 
-从创建项目到发布，再到被宿主使用。JavaScript 写法相同，去掉类型即可。
+[English](typescript-plugin.en.md)
 
-## 1. 创建项目
+从生成项目到发布，八步。全篇是同一个插件 `greeter`：它提供 `greeter` 服务，用别的插件提供的 `translate` 服务把问候语翻译出来。JavaScript 写法相同，去掉类型即可。需要 Node 22 或更高。
+
+## 1. 起项目
 
 <!-- example: typescript run -->
 ```bash
-npx @arcships/rutis-host new weather --lang node
-cd weather
+npx @arcships/rutis-host new greeter --lang node
+cd greeter
 npm install
+npm test
 ```
 
 得到的项目：
@@ -17,74 +20,183 @@ npm install
 | --- | --- |
 | `src/index.ts` | 插件本身 |
 | `test/index.test.ts` | 单元测试，不需要宿主 |
-| `rutis.dev.json` | 本地运行时的配置和测试用的其他插件 |
-| `package.json` | 依赖 `@arcships/rutis`（`^` 范围，见 §5）；开发依赖 `@arcships/rutis-host`、`@arcships/rutis-runtime`；`npm pack`、`npm publish` 前先构建（`prepack`） |
-| `.github/workflows/publish.yml` | 打 `v*` tag 时测试并发布到 npm |
+| `rutis.dev.json` | 本地运行时的几行（第 7 步） |
+| `package.json` | 依赖 `@arcships/rutis`；开发依赖 `@arcships/rutis-host`、`@arcships/rutis-runtime` |
+| `.github/workflows/publish.yml` | 打 `v*` tag 时测试并发布到 npm（第 8 步） |
 
-## 2. 写插件
+## 2. 提供服务
 
-生成的 `src/index.ts` 是一个不用任何服务的 `greeter`，`test/index.test.ts` 是它的测试，`npm test` 直接能过。下面把它换成一个用到 `llm` 服务的 `weather`：`src/index.ts` 换成这段，`test/index.test.ts` 同时换成 §3 的那段（两个文件一起换；只换一个，模板自带的测试会失败）。
+生成的 `src/index.ts` 就是一个插件：
 
-<!-- example: typescript file=weather/src/index.ts -->
+<!-- example: typescript file=greeter/src/index.ts -->
 ```ts
 import { definePlugin } from '@arcships/rutis'
 
 export interface Config {
-  city: string
+  // Filled from the schema's default when the row leaves it out.
+  greeting: string
 }
 
-interface Llm {
-  ask(question: string): Promise<string>
-}
+class Greeter {
+  constructor(private readonly greeting: string) {}
 
-class Weather {
-  constructor(private readonly llm: Llm, private readonly city: string) {}
-
-  async today(): Promise<string> {
-    return `${await this.llm.ask(`weather in ${this.city}`)} in ${this.city}`
+  hello(name: string): string {
+    return `${this.greeting}, ${name}!`
   }
 }
 
+// The steps of the TypeScript plugin guide:
+// https://github.com/arcships/rutis/blob/main/docs/guide/typescript-plugin.en.md
 export default definePlugin<Config>({
-  inject: ['llm'],                                 // 用到的服务：都就绪才启动，任何一个撤销就停下
-  provides: { weather: { today: 'async' } },      // 提供的服务：check 运行前就知道；只有声明的方法能调用
-  config: { type: 'object', properties: { city: { type: 'string', default: 'Oslo' } } },  // 配置的 JSON Schema
+  // Services this plugin uses (step 3): `inject: ['translate']`, then
+  // `ctx.use('translate')`. It starts once they are all available.
+  inject: [],
+  // The services it provides and their methods (step 2). Only the methods
+  // listed here can be called: add each new one.
+  provides: { greeter: { hello: 'async' } },
+  // The JSON Schema of its config (step 4): the config apply receives has
+  // the defaults filled in.
+  config: { type: 'object', properties: { greeting: { type: 'string', default: 'Hello' } } },
   apply(ctx, config) {
-    ctx.provide('weather', new Weather(ctx.use<Llm>('llm'), config.city))
-    return () => {}                                // 清理；也可以用 ctx.effect(cleanup)，或不返回
+    ctx.provide('greeter', new Greeter(config.greeting))
   },
 })
 ```
 
-`apply` 之前，rutis 给配置补上 Schema 里的默认值（行里不写 `city` 时就是 `Oslo`）并校验：配置不合格的行以 `config: …` 失败，不调用 `apply`（[插件 API：配置](plugin-api.md#配置)）；测试工具也一样。
+- `definePlugin` 定义插件；模块的默认导出就是它。
+- `apply` 在插件启动时运行，`ctx.provide('greeter', 对象)` 把对象作为服务 `greeter` 提供出去。别的插件（任何语言）按名字 `greeter` 使用它，调用它的方法。
+- `provides` 写出提供哪些服务、各有哪些方法：只有写在这里的方法能被调用，加方法时也加到这里。别的插件调用时都是异步的（`'async'`），所以 `hello` 返回字符串也可以。
+- 插件停止时，它提供的服务随之撤掉。
 
-插件只依赖 `@arcships/rutis`。它不认识宿主是谁、`llm` 由哪种语言或哪台机器提供，也不管自己什么时候启动和停止：这些由宿主决定。能做什么、值怎样传递，见 [插件 API](plugin-api.md)。
+## 3. 使用服务
 
-`provides` 写出插件提供什么，`rutis-host check` 不运行插件就知道 `weather` 由这一行提供：宿主在 CI 里用 `check --strict` 检查配置时，用到 `weather` 的行才能通过（模板默认就写了）。写了的服务按声明：只有声明的方法能调用，加方法时也加到这里；`'sync'` 把方法标成同步。不写也能运行：`ctx.provide` 提供的服务照样自动对外，方法取对象上的函数，都按 `async` 调用，只是 `check` 要等插件运行才知道，`--strict` 会报错。
+`greeter` 改成用 `translate` 服务翻译问候语：`inject` 写上 `translate`，`ctx.use('translate')` 拿到它。把 `src/index.ts` 换成：
 
-插件本身也是一个值，可以交给服务、在别处挂很多次：见 [插件 API：插件定义](plugin-api.md#插件定义)。
+<!-- example: typescript file=greeter/src/index.ts -->
+```ts
+import { definePlugin } from '@arcships/rutis'
 
-### 带方法的对象
+export interface Config {
+  greeting: string
+}
 
-类的实例、有函数属性的普通对象按引用交给别的语言，对方拿到代理：见 [插件 API：带方法的对象](plugin-api.md#带方法的对象)。
+interface Translate {
+  text(text: string): Promise<string>
+}
 
-## 3. 测试
+class Greeter {
+  constructor(
+    private readonly translate: Translate,
+    private readonly greeting: string,
+  ) {}
 
-`@arcships/rutis/testing` 不需要宿主，给插件提供假服务、调用它提供的服务：
+  async hello(name: string): Promise<string> {
+    return `${await this.translate.text(this.greeting)}, ${name}!`
+  }
+}
 
-<!-- example: typescript file=weather/test/index.test.ts -->
+export default definePlugin<Config>({
+  inject: ['translate'],
+  provides: { greeter: { hello: 'async' } },
+  config: { type: 'object', properties: { greeting: { type: 'string', default: 'Hello' } } },
+  apply(ctx, config) {
+    ctx.provide('greeter', new Greeter(ctx.use<Translate>('translate'), config.greeting))
+  },
+})
+```
+
+`inject` 里的服务都就绪了插件才启动，其中一个撤掉时插件停下，它回来时插件再启动。`translate` 由哪个插件、哪种语言提供，插件不用管。别的插件的方法调用都是异步的，所以要 `await`。
+
+模板自带的测试这时不再通过（它没有给出 `translate`），第 6 步换掉它。
+
+## 4. 配置
+
+`config` 是配置的 JSON Schema。`apply` 收到的 `config` 已经补上 Schema 里的默认值：没有给出 `greeting` 时它是 `'Hello'`。配置不合 Schema 时插件不启动。
+
+配置从哪里来：测试里由 `load(plugin, { config })` 传入（第 6 步）；运行时来自宿主里这个插件的那一行（第 7 步的 `rutis.dev.json`、宿主的 `rutis.json`）。
+
+## 5. 发出和监听事件
+
+每次问候后发出事件 `greeter/greeted`，参数是名字；`greeter` 自己也监听这个事件，数一数一共问候过几次，用新方法 `count` 返回。`src/index.ts` 换成：
+
+<!-- example: typescript file=greeter/src/index.ts -->
+```ts
+import { definePlugin, type Context } from '@arcships/rutis'
+
+export interface Config {
+  greeting: string
+}
+
+interface Translate {
+  text(text: string): Promise<string>
+}
+
+class Greeter {
+  greeted = 0
+
+  constructor(
+    private readonly ctx: Context,
+    private readonly translate: Translate,
+    private readonly greeting: string,
+  ) {}
+
+  async hello(name: string): Promise<string> {
+    const text = `${await this.translate.text(this.greeting)}, ${name}!`
+    this.ctx.emit('greeter/greeted', name)
+    return text
+  }
+
+  async count(): Promise<number> {
+    return this.greeted
+  }
+}
+
+export default definePlugin<Config>({
+  inject: ['translate'],
+  provides: { greeter: { hello: 'async', count: 'async' } },
+  config: { type: 'object', properties: { greeting: { type: 'string', default: 'Hello' } } },
+  apply(ctx, config) {
+    const greeter = new Greeter(ctx, ctx.use<Translate>('translate'), config.greeting)
+    ctx.on('greeter/greeted', () => { greeter.greeted += 1 })
+    ctx.provide('greeter', greeter)
+  },
+})
+```
+
+- `ctx.emit(名字, ...参数)` 发出事件，马上返回。
+- `ctx.on(名字, 监听器)` 监听事件：不论发出方是这个插件、同一进程里的另一个插件、另一种语言的插件还是宿主，都送到。不用声明；插件停止时监听器随之撤掉。
+- `count` 是新方法，所以也加进了 `provides`。
+
+其余发出方式（等每个监听器返回的、拿到返回值的）见 [插件 API：事件](plugin-api.md#事件)。
+
+## 6. 测试
+
+`@arcships/rutis/testing` 的 `load` 不需要宿主：给插件配置和假的 `translate`，取它提供的服务来调用，像宿主一样监听它发出的事件，最后卸载。`test/index.test.ts` 换成：
+
+<!-- example: typescript file=greeter/test/index.test.ts -->
 ```ts
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { load } from '@arcships/rutis/testing'
 import plugin from '../src/index.ts'
 
-test('reports the weather of the configured city', async () => {
-  const t = await load(plugin, {
-    config: { city: 'Oslo' },
-    services: { llm: { ask: async () => 'sunny' } },
-  })
-  assert.equal(await t.service('weather').today(), 'sunny in Oslo')
+const french: Record<string, string> = { Hello: 'Bonjour', Hi: 'Salut' }
+const translate = { text: async (text: string) => french[text] ?? text }
+
+test('greets with the translated greeting', async () => {
+  const t = await load(plugin, { config: { greeting: 'Hi' }, services: { translate } })
+  const greeted: string[] = []
+  t.on('greeter/greeted', (name: string) => { greeted.push(name) })
+  const greeter = t.service('greeter')
+  assert.equal(await greeter.hello('Ada'), 'Salut, Ada!')
+  assert.deepEqual(greeted, ['Ada'])
+  assert.equal(await greeter.count(), 1)
+  await t.unload()
+})
+
+test('the greeting is Hello when the config leaves it out', async () => {
+  const t = await load(plugin, { services: { translate } })
+  assert.equal(await t.service('greeter').hello('Ada'), 'Bonjour, Ada!')
   await t.unload()
 })
 ```
@@ -94,92 +206,115 @@ test('reports the weather of the configured city', async () => {
 npm test
 ```
 
-`load` 会检查宿主会检查的事：插件只用 `inject` 里声明的服务；不提供 `services` 里已有的名字（那是宿主提供的：`PluginTestError: wordcount: notes is already provided by the host`）；提供的服务带着 `provides` 里声明的每个方法（没有声明的服务，像 rutis 一样按对象上的方法、都按 async 调用；`t.methods(name)` 返回 rutis 看到的方法）；卸载时清理函数都运行了。默认是严格模式，值按跨进程的规则传递，见 [插件 API：严格模式](plugin-api.md#严格模式)；测试工具的其余接口见 [插件 API：TypeScript 与 Bun 的测试工具](plugin-api.md#typescript-与-bun-的测试工具)。
+- `services` 是插件 `inject` 的服务的假实现，按名字给出。
+- `t.service('greeter')` 是插件提供的服务，只有 `provides` 里写的方法能调用，和在宿主里一样。
+- `t.on(名字, 监听器)` 像宿主一样监听事件，插件发出的都送到。
+- `load` 也检查宿主会检查的事：配置合不合 Schema、插件只用 `inject` 里写的服务。值按跨进程的规则传递，所以测试过了，插件在另一个进程里被调用时也一样。
 
-### 事件
+宿主给了服务的 TypeScript 声明（`.d.ts`）时，用它代替自己写的 `Translate` 接口，例如 `ctx.use<Services['translate']>('translate')`，编辑器和 `tsc` 在运行前检查调用；测试里的假实现照同一个接口写。测试工具的其余接口见 [插件 API：TypeScript 与 Bun 的测试工具](plugin-api.md#typescript-与-bun-的测试工具)。
 
-`ctx.on(name, listener)` 监听事件，`ctx.emit(name, ...args)` 发出事件。监听器自动登记给宿主，什么都不用声明：发出方是同一个进程里的另一个插件、另一种语言的插件、宿主里的 Rust 代码还是相连的节点，结果都一样。其余发出方式（`parallel`、`serial`、`waterfall`、`bail`）、过滤与作用域见 [插件 API：事件](plugin-api.md#事件)。
+## 7. 本地运行并试一下
 
-测试要确认插件发出了某个事件，用 `t.on(name, listener, options)` 像宿主一样在根作用域监听：插件发出的、测试自己发出的都送到；严格模式下参数像从另一个进程收到的；选项与 `ctx.on` 相同（`prepend`、`global`）；返回撤销函数，不撤销时随这一行卸载撤掉。`host()` 装载的每一行都有它，共用一条总线。
+`rutis-host dev` 在本地运行插件，改了文件就重新加载。宿主里每个插件是一「行」：行写出运行哪个插件、给它什么配置。`dev` 运行的几行写在 `rutis.dev.json` 里。
 
-<!-- example: typescript file=weather/test/asked.test.ts order=2 -->
+先写一个假的 `translate`，也是一个插件，放在 `dev/` 下：
+
+<!-- example: typescript file=greeter/dev/fake-translate.ts -->
 ```ts
-import { test } from 'node:test'
-import assert from 'node:assert/strict'
 import { definePlugin } from '@arcships/rutis'
-import { load } from '@arcships/rutis/testing'
 
-const asking = definePlugin({
-  apply(ctx, config: { city: string }) {
-    ctx.provide('weather', {
-      async today() {
-        ctx.emit('weather/asked', config.city)
-        return 'sunny'
-      },
-    })
+const french: Record<string, string> = { Hello: 'Bonjour', Hi: 'Salut' }
+
+export default definePlugin({
+  provides: { translate: { text: 'async' } },
+  apply(ctx) {
+    ctx.provide('translate', { text: async (text: string) => french[text] ?? text })
   },
 })
-
-test('each call emits weather/asked', async () => {
-  const t = await load(asking, { config: { city: 'Oslo' } })
-  const asked: string[] = []
-  const off = t.on('weather/asked', (city: string) => { asked.push(city) })
-  await t.service('weather').today()
-  assert.deepEqual(asked, ['Oslo'])
-  off()
-  await t.unload()
-})
 ```
 
-## 4. 在本地宿主里运行
+`rutis.dev.json` 换成两行：
 
-<!-- example: typescript run until="weather: running" order=99 -->
-```bash
-npx rutis-host dev
-```
-
-`dev` 把这个项目作为一行运行（源码 `src/index.ts`，不需要先构建），改了它的文件就重新加载它；只有文件变了的行重新加载，`rutis.dev.json` 改了也在运行中生效（见 [用 dev 开发插件](rutis-host.md#用-dev-开发插件)）。插件需要的其他服务写在 `rutis.dev.json` 里，例如一个假的 `llm`：
-
-<!-- example: typescript file=weather/rutis.dev.json -->
+<!-- example: typescript file=greeter/rutis.dev.json -->
 ```json
 {
+  "format": 1,
   "rows": [
-    { "id": "weather", "config": { "city": "Oslo" } },
-    { "id": "llm", "name": "./dev/fake-llm.ts" }
+    { "id": "greeter", "config": { "greeting": "Hello" } },
+    { "id": "translate", "name": "./dev/fake-translate.ts" }
   ]
 }
 ```
 
-<!-- example: typescript file=weather/dev/fake-llm.ts -->
-```ts
-// dev/fake-llm.ts
-import { definePlugin } from '@arcships/rutis'
-export default definePlugin({
-  provides: { llm: { ask: 'async' } },
-  apply(ctx) { ctx.provide('llm', { ask: async () => 'sunny' }) },
-})
+- 和插件同 id 的那一行（`greeter`）就是这个项目的插件自己，`config` 是给它的配置。
+- 另一行是假的 `translate`：`name` 写插件在哪里。
+
+<!-- example: typescript run until="rutis-host dev: services: greeter (greeter), loader (host), translate (translate)" -->
+```bash
+npx rutis-host dev
 ```
 
-和插件 id 相同的那一行给插件本身加配置；其他行是一起运行的插件。`npx rutis-host check` 列出每一行的依赖、提供的服务和配置 Schema，有问题时以非零状态退出，适合放进 CI。
+```text
+rutis-host dev: running greeter; changes reload it (Ctrl-C ends)
+greeter: starting
+translate: running
+rutis-host dev: services: greeter (greeter), loader (host), translate (translate)
+greeter: running
+```
 
-### 调用一个方法
-
-`dev` 启动后和每次重新加载后，打印现在有哪些服务、各由哪一行提供：`rutis-host dev: services: llm (llm), loader (host), weather (weather)`。
-
-`dev` 运行时，另开一个终端，在项目目录里调用插件提供的服务，看它返回什么、出错时报什么，不用另写一个调用它的插件：
+`greeter` 等 `translate` 就绪后才运行，几行的先后可能和这里不同。`rutis-host dev: services:` 一行是现在的服务和提供它的行（`loader` 由宿主提供），这一行在所有行都已运行、等待或失败后打印一次，之后服务变化时再打印，和各行状态行的先后不固定。`dev` 运行时，另开一个终端，在项目目录里看状态、调一次 `greeter`：
 
 ```console
-$ npx rutis-host call weather.today
-"sunny in Oslo"
+$ npx rutis-host status
+rows:
+  greeter: running
+  translate: running
+services:
+  greeter: greeter
+  loader: host
+  translate: translate
+runtimes:
+  node: running (pid 63145)
+calls:
+  none
+$ npx rutis-host call greeter.hello '"Ada"'
+"Bonjour, Ada!"
+$ npx rutis-host call greeter.count
+1
 ```
 
-每个参数是一个 JSON 值（字符串带引号：`'"Oslo"'`），结果打印成 JSON；错误写到标准错误并以 1 退出。见 [rutis-host：调用一个服务](rutis-host.md#调用一个服务)。
+`call` 的每个参数是一个 JSON 值，字符串要带引号；不带时报 `rutis-host: argument 1 is not JSON: write a string in quotes, as '"Ada"'`。
 
-### 调试
+改代码：把 `src/index.ts` 里的 `` `, ${name}!` `` 改成 `` `, ${name}! Welcome.` `` 并保存，`dev` 打印：
+
+```text
+greeter: reloaded (src/index.ts changed)
+rutis-host dev: services: greeter (greeter), loader (host), translate (translate)
+```
+
+再调一次，返回 `"Bonjour, Ada! Welcome."`。只有文件变了的那一行重新加载；`rutis.dev.json` 改了也在运行中生效。Ctrl-C 结束 `dev`。`dev` 的全部规则见 [rutis-host：用 dev 开发插件](rutis-host.md#用-dev-开发插件)。
+
+在另一台机器上运行见 [rutis-host.md 的远程一节](rutis-host.md#远程运行时)。
+
+## 8. 发布
+
+先给包起一个你自己的名字：`greeter` 这样的短名字在 npm 上早被占用了。改 `package.json` 的 `name`，用带作用域的名字，例如 `"@your-name/greeter"`（作用域是你的 npm 用户名或组织）。
+
+```bash
+npm publish --access public   # 先运行 prepack：tsc 生成 dist/
+```
+
+或者推一个 `v0.1.0` 这样的 tag：模板里的 `.github/workflows/publish.yml` 测试并发布（仓库里需要 `NPM_TOKEN` secret）。
+
+依赖写 `"@arcships/rutis": "^0.18.0"` 这样的范围（`rutis-host new` 写的是它自己的版本）；宿主里装着别的版本时，npm 给插件装它自己的一份，几份可以并存。
+
+宿主怎样装你的插件见 [rutis-host：宿主怎样装插件](rutis-host.md#宿主怎样装插件)。
+
+## 调试
 
 `--debug` 打开 Node 运行时进程自己的检查器，监听 `127.0.0.1:9229`：
 
-<!-- example: typescript run until="weather: running" order=100 -->
+<!-- example: typescript run until="greeter: running" -->
 ```bash
 npx rutis-host dev --debug
 ```
@@ -192,34 +327,6 @@ npx rutis-host dev --debug
 - 端口 9229 已被占用时，Node 打印 `Starting inspector on 127.0.0.1:9229 failed` 并照常运行，没有检查器：先结束占用端口的进程。
 - `console.log` 的内容出现在 `dev` 的输出里。
 
-## 5. 发布
+## 进阶：插件 API
 
-```bash
-npm publish --access public   # 先运行 prepack：tsc 生成 dist/
-```
-
-或者推一个 `v0.1.0` 这样的 tag，模板里的工作流会测试、`check` 并发布（仓库里需要 `NPM_TOKEN` secret）。`npm pack` 和 `npm publish` 都会先运行 `prepack`（`npm run build`），所以包里总有 `dist/`。
-
-发布前给包起一个你自己的名字：`weather`、`greeter` 这样的短名字在 npm 上早被占用了。用带作用域的名字，改 `package.json` 的 `name`，例如 `"@your-name/weather"`（作用域是你的 npm 用户名或组织；首次发布带作用域的公开包要 `--access public`，模板的工作流已经带上）。宿主的行名就是这个包名。
-
-依赖写 `"@arcships/rutis": "^0.18.0"` 这样的范围（`rutis-host new` 写的是它自己的版本）。插件用的是它写时那个次版本的 SDK：宿主里装着别的版本时，npm 给插件装它自己的一份，几个版本的 SDK 可以并存（插件靠 `Symbol.for` 的标记被认出，与是哪一份 SDK 无关）。插件上带有它所用的插件 API 版本（`definePlugin` 自动标记），宿主的运行时比它旧时会明确报错，而不是加载后出错。
-
-## 6. 被宿主使用
-
-宿主怎样装这个插件见 [rutis-host：宿主怎样装插件](rutis-host.md#宿主怎样装插件)。
-
-## 已有的 Cordis 插件
-
-不用改写，也不用改包：`rutis.json` 的行里写包名（已发布的包也一样）：
-
-```json
-{ "id": "storage", "name": "@deepseek-ai/dsh-storage" }
-```
-
-它在 Node 运行时的 Cordis Context 里运行，和叶子插件、其他 Cordis 行在同一个进程：同一个运行时里的行按 Cordis 的原生规则互相使用服务，拿到对象本身。它提供的服务自动投到 rutis，别的运行时和 Rust 按名字使用，方法取服务对象上的函数，按 `async` 调用。要把某些方法标成 `sync`，或者让 `rutis-host check` 在运行前就知道它提供什么，在包的 `package.json` 里声明（声明了就按声明）：
-
-```json
-"rutis": { "provides": { "weather": { "today": "sync" } } }
-```
-
-重名的规则、`check` 怎样报告见 [Cordis](cordis.md)。
+插件作为值、其余事件方式、带方法的对象、清理、同步方法、版本等见 [插件 API](plugin-api.md)；已有的 Cordis 插件不用改写，见 [Cordis](cordis.md)。

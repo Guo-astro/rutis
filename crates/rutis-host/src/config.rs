@@ -13,7 +13,8 @@
 //!   "listen": [{ "name": "public", "address": "0.0.0.0:7443", "cert": "server.pem", "key": "server.key" }],
 //!   "rows": [
 //!     { "id": "weather", "name": "weather-plugin", "config": { "city": "Oslo" } },
-//!     { "id": "office", "name": "rutis-bridge/peer", "config": { "peer": "office", "dial": "wss://office.example.com/rutis" } }
+//!     { "id": "office", "name": "rutis-host/dial", "config": { "address": "wss://office.example.com/rutis" } },
+//!     { "id": "scanner", "name": "office:scanner", "config": { "dpi": 300 } }
 //!   ]
 //! }
 //! ```
@@ -43,13 +44,13 @@ pub struct HostConfig {
     /// The file's format (1 when absent); at most [`FORMAT`].
     #[serde(default = "default_format", deserialize_with = "format")]
     pub format: u64,
-    /// This node's endpoint id, which linked peers see.
+    /// This node's endpoint id, which the far ends of its sessions see.
     #[serde(default = "default_id")]
     pub id: String,
     #[serde(default)]
     pub runtimes: Runtimes,
-    /// WebSocket listeners links can register on (`"listen": "<name>"` in a
-    /// `rutis-bridge/peer` row).
+    /// WebSocket listeners `rutis-host/listen` rows take connections on
+    /// (`"listener": "<name>"`).
     #[serde(default)]
     pub listen: Vec<Listener>,
     /// The plugins `rutis-host add` installed, by row name (`@ana/wordcount`,
@@ -122,14 +123,6 @@ pub struct Runtimes {
     /// Swift binaries (macOS), one runtime each, started when a row uses
     /// them: the same settings as Go's.
     pub swift: Option<SwiftRuntime>,
-    /// Runtimes on other machines, each written whole in one entry
-    /// ([`RemoteRuntime::connect`]): rutis dials it (`dial`), it dials in
-    /// (`listen`), or it dials in many times, each connection an instance
-    /// of a group (`listen` and `instances`). A runtime with none of these
-    /// is reached through a `rutis-bridge/peer` row with
-    /// `"runtime": "<name>"`.
-    #[serde(default)]
-    pub remote: Vec<RemoteRuntime>,
     /// The local runtimes (by key) that rows enabled with their defaults,
     /// the file not declaring them ([`HostConfig::enable_used_runtimes`]):
     /// one that cannot start is a warning, its rows fail, the host runs.
@@ -145,89 +138,6 @@ pub struct Runtimes {
     /// (`--prefix-output`; on in `dev`, off in `run`). Not in the file.
     #[serde(skip)]
     pub prefix_output: bool,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RemoteRuntime {
-    pub name: String,
-    /// `python`: rows `<name>:<module>`; `go`: rows `<name>:<plugin>`;
-    /// `node`: npm names, resolved there when no runtime before it has them.
-    pub language: String,
-    /// The address rutis dials the runtime at (`wss://gpu.example.com:7443/rutis`):
-    /// one runtime, which greets as `name`.
-    #[serde(default)]
-    pub dial: Option<String>,
-    /// The listener of `listen` the runtime dials in to, with the token
-    /// `RUTIS_TOKEN_<NAME>`.
-    /// Alone, one runtime, whose `--id` is `name`; with `instances`, many,
-    /// each with an id of its own.
-    #[serde(default)]
-    pub listen: Option<String>,
-    /// The top-level `instanced` group each connection is an instance of:
-    /// its rows `<name>:<plugin>` run on that connection. Goes with
-    /// `listen`.
-    #[serde(default)]
-    pub instances: Option<String>,
-}
-
-/// How rutis and a remote runtime connect ([`RemoteRuntime::connect`]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Connect<'a> {
-    /// No connection of its own: a `rutis-bridge/peer` row with
-    /// `"runtime"`, or a program embedding the host, provides its session.
-    Elsewhere,
-    /// One runtime, which rutis dials at this address.
-    Dial(&'a str),
-    /// One runtime, which dials in to this listener.
-    Listen(&'a str),
-    /// Many, which dial in to `listen`, each connection an instance of
-    /// `group`.
-    Instances { listen: &'a str, group: &'a str },
-}
-
-impl RemoteRuntime {
-    /// How rutis and the runtime connect: `dial`, `listen` and `instances`
-    /// (`docs/design-remote-runtime-consistency-2026-10-26.md` §四). Who
-    /// dials is `dial` or `listen`; one runtime or many is `instances`.
-    pub fn connect(&self) -> Result<Connect<'_>, String> {
-        let name = &self.name;
-        match (&self.dial, &self.listen, &self.instances) {
-            (Some(_), Some(_), _) => Err(format!(
-                "remote runtime {name}: dial and listen both set: rutis dials the runtime \
-                 (dial) or the runtime dials in (listen), not both"
-            )),
-            (Some(_), None, Some(_)) => Err(format!(
-                "remote runtime {name}: dial and instances both set: rutis dials one runtime; \
-                 for an instance per connection, the runtimes dial in: use listen with instances"
-            )),
-            (None, None, Some(_)) => Err(format!(
-                "remote runtime {name}: instances needs listen: name the listener its \
-                 runtimes dial in to"
-            )),
-            (Some(address), None, None) => Ok(Connect::Dial(address)),
-            (None, Some(listen), None) => Ok(Connect::Listen(listen)),
-            (None, Some(listen), Some(group)) => Ok(Connect::Instances { listen, group }),
-            (None, None, None) => Ok(Connect::Elsewhere),
-        }
-    }
-
-    /// The listener and group of a runtime that dials in many times, each
-    /// connection an instance; `None` otherwise.
-    pub fn dials_in(&self) -> Result<Option<(&str, &str)>, String> {
-        Ok(match self.connect()? {
-            Connect::Instances { listen, group } => Some((listen, group)),
-            _ => None,
-        })
-    }
-
-    /// The listener the runtime dials in to, one runtime or many.
-    pub fn listens(&self) -> Result<Option<&str>, String> {
-        Ok(match self.connect()? {
-            Connect::Listen(listen) | Connect::Instances { listen, .. } => Some(listen),
-            _ => None,
-        })
-    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -334,16 +244,6 @@ pub enum Restart {
     OnFailure,
     /// Stop the host, which exits 3, for its process manager to restart.
     Exit,
-}
-
-impl From<Restart> for rutis_loader::runtime::binary::RestartPolicy {
-    fn from(restart: Restart) -> Self {
-        match restart {
-            Restart::No => Self::No,
-            Restart::OnFailure => Self::OnFailure,
-            Restart::Exit => Self::Exit,
-        }
-    }
 }
 
 impl Restart {
@@ -503,12 +403,13 @@ impl HostConfig {
         let mut said = Vec::new();
         for language in LANGUAGES {
             let key = language.key();
-            // A remote runtime of that name takes its rows.
-            let remote =
-                self.runtimes.remote.iter().any(|remote| {
-                    remote.name == key || (key == "node" && remote.language == "node")
-                });
-            if language.configured(&self.runtimes) || language.configured(provided) || remote {
+            // A connection row of that name takes its rows (`gpu:embedder`).
+            let connection = self.rows.iter().any(|row| {
+                row["id"] == key
+                    && (row["name"] == crate::connect::DIAL
+                        || row["name"] == crate::connect::LISTEN)
+            });
+            if language.configured(&self.runtimes) || language.configured(provided) || connection {
                 continue;
             }
             let rows: Vec<&str> = names
@@ -597,203 +498,49 @@ impl HostConfig {
                 self.runtimes.implicit.push(key.to_owned());
             }
         }
-        self.runtimes.remote.extend(other.runtimes.remote);
         self.listen.extend(other.listen);
         self.rows.extend(other.rows);
         self.warnings.extend(other.warnings);
     }
 
-    /// Each runtime's name, which is also the prefix of its rows
-    /// (`py:<module>`, `bun:<module>`, `<remote>:<module>`), names one
-    /// runtime only.
-    pub fn check_runtime_names(&self) -> Result<(), String> {
-        let mut seen: Vec<&str> = Vec::new();
-        for remote in &self.runtimes.remote {
-            let name = remote.name.as_str();
-            if !rutis_loader::runtime::is_runtime_name(name) {
-                return Err(format!(
-                    "remote runtime {name:?}: a runtime name is two or more of a-z, 0-9 and -, and not file"
-                ));
-            }
-            // A local language's own (`py`), or its rows' prefix (`go-<binary>`).
-            let local = LANGUAGES
-                .iter()
-                .filter(|language| language.configured(&self.runtimes))
-                .find_map(|language| language.claims(name));
-            if let Some(error) = local {
-                return Err(error);
-            }
-            if seen.contains(&name) {
-                return Err(crate::languages::taken(name));
-            }
-            seen.push(name);
-        }
-        Ok(())
+    /// No two `rutis-host/listen` rows on one listener accept the same
+    /// token (#702): a connection presenting it could not be told apart. A
+    /// disabled row counts: enabling it would clash. The tokens are read
+    /// from the environment.
+    pub fn check_listener_tokens(&self) -> Result<(), String> {
+        shared_tokens(&self.accepting(), &|name| std::env::var(name).ok())
     }
 
-    /// Each remote runtime connects one way ([`RemoteRuntime::connect`]);
-    /// one that dials in names a listener of `listen`, and one with `instances` a top-level `instanced` group of
-    /// `rows`. One that connects itself is not also a link row's runtime.
-    pub fn check_dialing_runtimes(&self) -> Result<(), String> {
-        for remote in &self.runtimes.remote {
-            let name = &remote.name;
-            let connect = remote.connect()?;
-            if connect != Connect::Elsewhere {
-                let linked = self.rows.iter().find(|row| {
-                    row["name"] == "rutis-bridge/peer" && row["config"]["runtime"] == **name
-                });
-                if let Some(row) = linked {
-                    let id = row["id"].as_str().unwrap_or(name);
-                    return Err(format!(
-                        "remote runtime {name}: link row {id} connects it too: remove the link \
-                         row, as runtimes.remote connects it itself"
-                    ));
-                }
-            }
-            if let Some(listen) = remote.listens()? {
-                if !self.listen.iter().any(|listener| listener.name == listen) {
-                    return Err(format!(
-                        "remote runtime {name}: no listener named {listen}: add it to listen"
-                    ));
-                }
-            }
-            let Some((_, group)) = remote.dials_in()? else {
-                continue;
-            };
-            let row = self.rows.iter().find(|row| row["id"] == group);
-            let Some(row) = row else {
-                return Err(format!(
-                    "remote runtime {name}: no top-level row {group}: instances names a group \
-                     with \"instanced\": true"
-                ));
-            };
-            if row["group"] != true || row["instanced"] != true {
-                return Err(format!(
-                    "remote runtime {name}: row {group} is not an instanced group: give it \
-                     \"group\": true and \"instanced\": true"
-                ));
-            }
-        }
-        Ok(())
-    }
-
-    /// No two entries on one listener accept the same token (#702): a
-    /// connection presenting it could not be told apart (two runtimes, or
-    /// a runtime and a link row: refused as ambiguous, 403, the runtime
-    /// retrying as if its credential were wrong; two link rows: it reaches
-    /// the last). Nor do two listening link rows on any listeners (#726):
-    /// they share the host's one identity, which answers a token with the
-    /// last of them, so the other never connects. A disabled row counts:
-    /// enabling it would clash. The tokens are read from the environment;
-    /// `links`: the link rows take theirs from it too (not when the program
-    /// embedding the host brings an identity of its own).
-    pub fn check_listener_tokens(&self, links: bool) -> Result<(), String> {
-        let entries: Vec<Accepting> = self
-            .accepting()
-            .into_iter()
-            .filter(|entry| links || !entry.link)
-            .collect();
-        shared_tokens(&entries, &|name| std::env::var(name).ok())
-    }
-
-    /// What accepts connections with the host's tokens, or whose peer the
-    /// host's identity holds: every top-level link row that does not dial
-    /// (disabled ones too, named so; [`Accepting::host`] says whether it
-    /// takes its connections through the host's identity) and the runtimes
-    /// that dial in.
+    /// What accepts connections with the host's tokens: every
+    /// `rutis-host/listen` row, its own token `RUTIS_TOKEN_<row id>` on its
+    /// listener (disabled ones too, named so).
     pub fn accepting(&self) -> Vec<Accepting> {
         let mut entries = Vec::new();
         for row in &self.rows {
-            let config = &row["config"];
-            // Every top-level peer row that does not dial: the host's
-            // identity accepts each one's peer with its token (as
-            // `listening_peers` in host.rs), whatever the row itself uses.
-            let Some(peer) = config["peer"].as_str() else {
+            let (Some(id), Some(listener)) =
+                (row["id"].as_str(), row["config"]["listener"].as_str())
+            else {
                 continue;
             };
-            if row["name"] != "rutis-bridge/peer" || config.get("dial").is_some() {
+            if row["name"] != crate::connect::LISTEN {
                 continue;
             }
-            // Another identity: the row's own credentials; only the
-            // host's identity reads its token.
-            let other =
-                |field: &str, own: &str| config.get(field).is_some_and(|value| value != own);
-            let host = config["listen"].is_string() && !other("identity", "host");
-            let id = row["id"].as_str().unwrap_or(peer);
             let disabled = match row["disabled"] == true {
                 true => " (disabled)",
                 false => "",
             };
             entries.push(Accepting {
-                listener: config["listen"].as_str().unwrap_or_default().to_owned(),
-                entry: format!("link row {id}{disabled}"),
-                name: peer.to_owned(),
-                link: true,
-                host,
-            });
-        }
-        for remote in &self.runtimes.remote {
-            let entry = |listener: &str, link: bool| Accepting {
                 listener: listener.to_owned(),
-                entry: format!("remote runtime {}", remote.name),
-                name: remote.name.clone(),
-                link,
-                host: true,
-            };
-            match remote.connect() {
-                // Admitted with its token, as an access point admits.
-                Ok(Connect::Instances { listen, .. }) => entries.push(entry(listen, false)),
-                // A link listening for it, through the host's identity, as a
-                // listening link row's.
-                Ok(Connect::Listen(listen)) => entries.push(entry(listen, true)),
-                _ => {}
-            }
+                entry: format!("row {id}{disabled}"),
+                name: id.to_owned(),
+            });
         }
         entries
     }
 
-    /// The rows as the loader takes them: `rutis-bridge/peer` rows get this
-    /// host's identity.
+    /// The rows as the loader takes them.
     pub fn rows(&self) -> Vec<Value> {
-        self.rows
-            .iter()
-            .map(|row| {
-                let mut row = row.clone();
-                if row["name"] == "rutis-bridge/peer" {
-                    let config = &mut row["config"];
-                    if config.is_null() {
-                        *config = json!({});
-                    }
-                    if config.get("identity").is_none() {
-                        config["identity"] = json!("host");
-                    }
-                }
-                row
-            })
-            .collect()
-    }
-
-    /// The peers rows link to: (peer, dials); and the remote runtimes
-    /// that connect one at a time, by their name.
-    pub fn peers(&self) -> Vec<(String, bool)> {
-        let rows = self
-            .rows
-            .iter()
-            .filter(|row| row["name"] == "rutis-bridge/peer")
-            .filter_map(|row| {
-                let peer = row["config"]["peer"].as_str()?.to_owned();
-                Some((peer, row["config"].get("dial").is_some()))
-            });
-        let runtimes = self
-            .runtimes
-            .remote
-            .iter()
-            .filter_map(|remote| match remote.connect() {
-                Ok(Connect::Dial(_)) => Some((remote.name.clone(), true)),
-                Ok(Connect::Listen(_)) => Some((remote.name.clone(), false)),
-                _ => None,
-            });
-        rows.chain(runtimes).collect()
+        self.rows.clone()
     }
 }
 
@@ -845,13 +592,8 @@ fn check_rows(rows: &[Value], at: &str, ignored: &mut Vec<String>) -> Result<(),
                     .join(", ")
             ));
         }
-        // A 0.12 link's `events: { out, in }`: refused here, so `check`
-        // says so, not only `run` once the loader builds the link.
-        if row["name"] == "rutis-bridge/peer" && row["config"].get("events").is_some() {
-            return Err(format!(
-                "{place}: {}",
-                rutis_loader::internal::REMOVED_EVENTS
-            ));
+        if let Some(error) = row["name"].as_str().and_then(binary_qualified) {
+            return Err(format!("{place}: {error}"));
         }
         let group = !matches!(
             fields.get("group"),
@@ -862,6 +604,24 @@ fn check_rows(rows: &[Value], at: &str, ignored: &mut Vec<String>) -> Result<(),
         }
     }
     Ok(())
+}
+
+/// A row name that picks a Go or Swift binary (`go-<binary>:<plugin>`),
+/// which 0.19 removed: what to write instead.
+fn binary_qualified(name: &str) -> Option<String> {
+    let (runtime, plugin) = name.split_once(':')?;
+    let (key, title) = [("go", "Go"), ("swift", "Swift")]
+        .into_iter()
+        .find(|(key, _)| {
+            runtime
+                .strip_prefix(key)
+                .is_some_and(|rest| rest.len() > 1 && rest.starts_with('-'))
+        })?;
+    Some(format!(
+        "the row name {name} names a {title} binary, which rutis 0.19 removed: \
+         write {key}:{plugin}; a plugin name is in one binary only \
+         (https://github.com/arcships/rutis/blob/main/docs/migration-0.19.md)"
+    ))
 }
 
 /// The names of the rows in `rows` and the groups in it that are not
@@ -884,21 +644,21 @@ fn rows_named(rows: &[Value], names: &mut Vec<String>) {
     }
 }
 
-/// The token presented to, or accepted from, `peer`:
-/// `RUTIS_TOKEN_<PEER>` (upper case, `-` as `_`).
-pub fn token(peer: &str) -> Option<String> {
-    token_in(peer, &|name| std::env::var(name).ok()).map(|(_, token)| token)
+/// The token of the connection row `row` (presented when it dials,
+/// accepted when it listens): `RUTIS_TOKEN_<ROW>` (upper case, `-` as `_`).
+pub fn token(row: &str) -> Option<String> {
+    token_in(row, &|name| std::env::var(name).ok()).map(|(_, token)| token)
 }
 
-/// `RUTIS_TOKEN_<PEER>` for `peer`: upper case, `-` as `_`.
-fn token_variable(peer: &str) -> String {
-    format!("RUTIS_TOKEN_{}", peer.to_uppercase().replace('-', "_"))
+/// `RUTIS_TOKEN_<NAME>` for `name`: upper case, `-` as `_`.
+fn token_variable(name: &str) -> String {
+    format!("RUTIS_TOKEN_{}", name.to_uppercase().replace('-', "_"))
 }
 
 /// [`token`] with the variables `env` gives: the variable it came from,
 /// and the token.
-fn token_in(peer: &str, env: &dyn Fn(&str) -> Option<String>) -> Option<(String, String)> {
-    let variable = token_variable(peer);
+fn token_in(name: &str, env: &dyn Fn(&str) -> Option<String>) -> Option<(String, String)> {
+    let variable = token_variable(name);
     env(&variable).map(|token| (variable, token))
 }
 
@@ -908,25 +668,16 @@ fn token_in(peer: &str, env: &dyn Fn(&str) -> Option<String>) -> Option<(String,
 pub struct Accepting {
     /// The listener's name (of `listen`).
     pub listener: String,
-    /// How an error names it: `link row main`, `remote runtime phone`.
+    /// How an error names it: `row phone`.
     pub entry: String,
     /// The name its token is for: `RUTIS_TOKEN_<NAME>`.
     pub name: String,
-    /// A link row (its token from the host's identity), not a runtime.
-    pub link: bool,
-    /// It takes connections with the host's tokens: a runtime that dials
-    /// in, or a link row with the host's identity. A link row of another
-    /// identity does not, but
-    /// the host's identity still holds its peer, and can answer another
-    /// row's token with it.
-    pub host: bool,
 }
 
-/// An error for the first two `entries` that accept the same token (the
-/// variables `env` gives), naming both and the variable to set: two on one
-/// listener, or two link rows on any (they share the host's identity,
-/// #726). Entries without a token are not compared, nor two with one name
-/// (a link and a runtime of one name cannot both register on a listener).
+/// An error for the first two `entries` on one listener that accept the
+/// same token (the variables `env` gives), naming both and the variable to
+/// set. Entries without a token are not compared, nor two with one name
+/// (row ids are unique).
 /// No token is ever printed (#702).
 pub fn shared_tokens(
     entries: &[Accepting],
@@ -934,17 +685,7 @@ pub fn shared_tokens(
 ) -> Result<(), String> {
     for (index, first) in entries.iter().enumerate() {
         for second in &entries[index + 1..] {
-            // Two link rows: the host's one identity holds both peers, on
-            // any listeners, and answers a token with one of them; it
-            // matters when one of them takes its connections through it.
-            // A runtime: only an entry on its listener taking connections
-            // the same way.
-            let one_listener = first.listener == second.listener;
-            let compared = match first.link && second.link {
-                true => first.host || second.host,
-                false => one_listener && first.host && second.host,
-            };
-            if first.name == second.name || !compared {
+            if first.name == second.name || first.listener != second.listener {
                 continue;
             }
             let (Some((first_variable, first_token)), Some((second_variable, second_token))) =
@@ -965,21 +706,10 @@ pub fn shared_tokens(
                     first.entry, second.entry
                 ),
             };
-            let listeners = match (
-                one_listener,
-                first.listener.is_empty(),
-                second.listener.is_empty(),
-            ) {
-                (true, ..) => format!("listener {}", first.listener),
-                (false, false, false) => {
-                    format!("listeners {} and {}", first.listener, second.listener)
-                }
-                (false, true, _) => format!("listener {}", second.listener),
-                (false, false, true) => format!("listener {}", first.listener),
-            };
             return Err(format!(
-                "{listeners}: {accept}, so a connection presenting it cannot be told \
-                 apart: give {first_variable} or {second_variable} another value"
+                "listener {}: {accept}, so a connection presenting it cannot be told \
+                 apart: give {first_variable} or {second_variable} another value",
+                first.listener
             ));
         }
     }
@@ -995,8 +725,6 @@ mod tests {
             listener: listener.to_owned(),
             entry: entry.to_owned(),
             name: name.to_owned(),
-            link: entry.starts_with("link"),
-            host: true,
         }
     }
 
@@ -1018,8 +746,8 @@ mod tests {
     #[test]
     fn entries_accepting_one_token_on_a_listener_are_refused() {
         let entries = [
-            accepting("public", "link row main", "main"),
-            accepting("public", "remote runtime phone", "phone"),
+            accepting("public", "row main", "main"),
+            accepting("public", "row phone", "phone"),
         ];
         let refused = shared_tokens(
             &entries,
@@ -1031,7 +759,7 @@ mod tests {
         .unwrap_err();
         assert_eq!(
             refused,
-            "listener public: link row main accepts RUTIS_TOKEN_MAIN and remote runtime phone \
+            "listener public: row main accepts RUTIS_TOKEN_MAIN and row phone \
              accepts RUTIS_TOKEN_PHONE, the same token, so a connection presenting it \
              cannot be told apart: give RUTIS_TOKEN_MAIN or RUTIS_TOKEN_PHONE another value"
         );
@@ -1045,125 +773,44 @@ mod tests {
         let set = variables(&[("RUTIS_TOKEN", "secret")]);
         assert_eq!(token_in("main", &set), None);
         let entries = [
-            accepting("public", "link row main", "main"),
-            accepting("public", "remote runtime phone", "phone"),
+            accepting("public", "row main", "main"),
+            accepting("public", "row phone", "phone"),
         ];
         assert!(shared_tokens(&entries, &set).is_ok());
     }
 
-    /// The two ways a runtime dials in (`listen`, `listen` + `instances`)
-    /// are checked as a link row and a runtime are (#702, #726): one
-    /// runtime's link takes its connections through the host's identity, as
-    /// a listening link row's does.
-    /// guarantee: host/remote-runtimes
+    /// Two `rutis-host/listen` rows on one listener with one token cannot
+    /// be told apart (#702); on two listeners they can.
     #[test]
-    fn runtimes_that_dial_in_accept_tokens_as_link_rows_and_runtimes_do() {
+    fn listen_rows_on_one_listener_need_their_own_tokens() {
         let config: HostConfig = serde_json::from_value(json!({
-            "listen": [{ "name": "public", "address": "127.0.0.1:0" }],
-            "runtimes": { "remote": [
-                { "name": "mac", "language": "swift", "listen": "public" },
-                { "name": "worker", "language": "python", "listen": "public", "instances": "worker" },
-                { "name": "gpu", "language": "python", "dial": "wss://gpu/rutis" }
-            ] },
+            "listen": [
+                { "name": "public", "address": "127.0.0.1:0" },
+                { "name": "private", "address": "127.0.0.1:0" }
+            ],
             "rows": [
-                { "id": "pi", "name": "rutis-bridge/peer", "config": { "peer": "pi", "listen": "private" } }
+                { "id": "phone", "name": "rutis-host/listen", "config": { "listener": "public" } },
+                { "id": "watch", "name": "rutis-host/listen", "config": { "listener": "public" }, "disabled": true },
+                { "id": "tablet", "name": "rutis-host/listen", "config": { "listener": "private" } }
             ]
         }))
         .unwrap();
         let entries = config.accepting();
-        let named: Vec<(&str, bool, bool)> = entries
-            .iter()
-            .map(|entry| (entry.entry.as_str(), entry.link, entry.host))
-            .collect();
-        assert_eq!(
-            named,
-            [
-                ("link row pi", true, true),
-                ("remote runtime mac", true, true),
-                ("remote runtime worker", false, true),
-            ]
-        );
-        let refused = shared_tokens(
-            &entries,
-            &variables(&[
-                ("RUTIS_TOKEN_PI", "secret"),
-                ("RUTIS_TOKEN_MAC", "secret"),
-                ("RUTIS_TOKEN_WORKER", "secret"),
-                ("RUTIS_TOKEN_PHONE", "secret"),
-            ]),
-        );
-        assert_eq!(
-            refused.unwrap_err(),
-            "listeners private and public: link row pi accepts RUTIS_TOKEN_PI and remote \
-             runtime mac accepts RUTIS_TOKEN_MAC, the same token, so a connection presenting \
-             it cannot be told apart: give RUTIS_TOKEN_PI or RUTIS_TOKEN_MAC another value"
-        );
-        // The listening runtime's peer is the host identity's to accept.
-        assert_eq!(
-            config.peers(),
-            vec![
-                ("pi".to_owned(), false),
-                ("mac".to_owned(), false),
-                ("gpu".to_owned(), true)
-            ]
-        );
-    }
-
-    /// Two link rows on different listeners accepting one token: they share
-    /// the host's identity, so the error names both listeners (#726).
-    #[test]
-    fn link_rows_accepting_one_token_on_different_listeners_are_refused() {
-        let entries = [
-            accepting("public", "link row mac", "mac"),
-            accepting("private", "link row pi", "pi"),
-        ];
-        let refused = shared_tokens(
-            &entries,
-            &variables(&[("RUTIS_TOKEN_MAC", "secret"), ("RUTIS_TOKEN_PI", "secret")]),
-        )
-        .unwrap_err();
-        assert_eq!(
-            refused,
-            "listeners public and private: link row mac accepts RUTIS_TOKEN_MAC and link \
-             row pi accepts RUTIS_TOKEN_PI, the same token, so a connection presenting it \
-             cannot be told apart: give RUTIS_TOKEN_MAC or RUTIS_TOKEN_PI another value"
-        );
-        // Tokens of their own: no error.
-        assert!(shared_tokens(
-            &entries,
-            &variables(&[("RUTIS_TOKEN_MAC", "a"), ("RUTIS_TOKEN_PI", "b")])
-        )
-        .is_ok());
-    }
-
-    /// A link row of another identity holds its peer in the host's identity
-    /// all the same: sharing a token with a row that takes its connections
-    /// through it, it would take them (#726). Two rows of their own
-    /// identities, a runtime on another listener than the row, one peer on
-    /// two listeners: no error.
-    #[test]
-    fn a_row_of_another_identity_counts_against_one_of_the_hosts() {
-        let mut edge = accepting("private", "link row branch", "branch");
-        edge.host = false;
-        let host_row = accepting("public", "link row mac", "mac");
-        let set = variables(&[
-            ("RUTIS_TOKEN_BRANCH", "shared"),
-            ("RUTIS_TOKEN_MAC", "shared"),
-            ("RUTIS_TOKEN_SHOP", "shared"),
-            ("RUTIS_TOKEN_PHONE", "shared"),
+        let same = variables(&[
+            ("RUTIS_TOKEN_PHONE", "secret"),
+            ("RUTIS_TOKEN_WATCH", "secret"),
         ]);
-        let refused = shared_tokens(&[host_row.clone(), edge.clone()], &set).unwrap_err();
-        assert!(
-            refused.starts_with("listeners public and private: link row mac accepts RUTIS_TOKEN_MAC and link row branch accepts RUTIS_TOKEN_BRANCH"),
-            "{refused}"
+        assert_eq!(
+            shared_tokens(&entries, &same).unwrap_err(),
+            "listener public: row phone accepts RUTIS_TOKEN_PHONE and row watch (disabled) \
+             accepts RUTIS_TOKEN_WATCH, the same token, so a connection presenting it cannot \
+             be told apart: give RUTIS_TOKEN_PHONE or RUTIS_TOKEN_WATCH another value"
         );
-        let mut other_edge = accepting("public", "link row shop", "shop");
-        other_edge.host = false;
-        assert!(shared_tokens(&[edge, other_edge], &set).is_ok());
-        let runtime = accepting("private", "remote runtime phone", "phone");
-        assert!(shared_tokens(&[host_row.clone(), runtime], &set).is_ok());
-        let again = accepting("private", "link row mac-private", "mac");
-        assert!(shared_tokens(&[host_row, again], &set).is_ok());
+        let apart = variables(&[
+            ("RUTIS_TOKEN_PHONE", "secret"),
+            ("RUTIS_TOKEN_TABLET", "secret"),
+        ]);
+        assert!(shared_tokens(&entries, &apart).is_ok());
     }
 
     /// Tokens of their own, other listeners, an entry without a token, or
@@ -1171,8 +818,8 @@ mod tests {
     #[test]
     fn entries_with_tokens_of_their_own_pass() {
         let one = [
-            accepting("public", "link row main", "main"),
-            accepting("public", "remote runtime phone", "phone"),
+            accepting("public", "row main", "main"),
+            accepting("public", "row phone", "phone"),
         ];
         let passes = |entries: &[Accepting], set: &[(&str, &str)]| {
             shared_tokens(entries, &variables(set)).is_ok()
@@ -1184,120 +831,18 @@ mod tests {
         assert!(passes(&one, &[("RUTIS_TOKEN_PHONE", "b")]));
         assert!(passes(&one, &[]));
         let apart = [
-            accepting("public", "link row main", "main"),
-            accepting("private", "remote runtime phone", "phone"),
+            accepting("public", "row main", "main"),
+            accepting("private", "row phone", "phone"),
         ];
         assert!(passes(
             &apart,
             &[("RUTIS_TOKEN_MAIN", "a"), ("RUTIS_TOKEN_PHONE", "a")]
         ));
         let named_twice = [
-            accepting("public", "link row phone", "phone"),
-            accepting("public", "remote runtime phone", "phone"),
+            accepting("public", "row phone", "phone"),
+            accepting("public", "row phone", "phone"),
         ];
         assert!(passes(&named_twice, &[("RUTIS_TOKEN_PHONE", "a")]));
-    }
-
-    /// The entries of a configuration: listening link rows (disabled ones
-    /// too), and the runtimes that dial in; a dialing link row accepts
-    /// nothing, and one with another identity does not take the host's
-    /// tokens on its listeners.
-    #[test]
-    fn a_listeners_entries_are_its_listening_rows_and_dialing_runtimes() {
-        let entries = |link: Value| -> Vec<(String, String, String)> {
-            let config: HostConfig = serde_json::from_value(json!({
-                "listen": [{ "name": "public", "address": "127.0.0.1:0" }],
-                "runtimes": { "remote": [
-                    { "name": "phone", "language": "python", "listen": "public", "instances": "phone" },
-                    { "name": "gpu", "language": "python" }
-                ] },
-                "rows": [link, { "id": "phone", "group": true, "instanced": true, "config": [] }]
-            }))
-            .unwrap();
-            config
-                .accepting()
-                .into_iter()
-                .map(|entry| (entry.listener, entry.entry, entry.name))
-                .collect()
-        };
-        let phone = (
-            "public".to_owned(),
-            "remote runtime phone".to_owned(),
-            "phone".to_owned(),
-        );
-        let listening = json!({ "id": "home", "name": "rutis-bridge/peer",
-            "config": { "peer": "main", "listen": "public" } });
-        assert_eq!(
-            entries(listening.clone()),
-            [
-                (
-                    "public".to_owned(),
-                    "link row home".to_owned(),
-                    "main".to_owned()
-                ),
-                phone.clone()
-            ]
-        );
-        // A disabled row counts: enabling it would clash (#726).
-        let mut disabled = listening.clone();
-        disabled["disabled"] = json!(true);
-        assert_eq!(
-            entries(disabled),
-            [
-                (
-                    "public".to_owned(),
-                    "link row home (disabled)".to_owned(),
-                    "main".to_owned()
-                ),
-                phone.clone()
-            ]
-        );
-        // Another identity: still an entry, the host's
-        // identity holding its peer (#726), but not taking connections
-        // with the host's tokens.
-        let hosts = |link: Value| -> Vec<bool> {
-            let config: HostConfig = serde_json::from_value(json!({
-                "listen": [{ "name": "public", "address": "127.0.0.1:0" }],
-                "rows": [link]
-            }))
-            .unwrap();
-            config
-                .accepting()
-                .into_iter()
-                .map(|entry| entry.host)
-                .collect()
-        };
-        let mut own_identity = listening.clone();
-        own_identity["config"]["identity"] = json!("edge");
-        assert_eq!(entries(own_identity.clone()).len(), 2);
-        assert_eq!(hosts(own_identity), [false]);
-        let mut host_identity = listening.clone();
-        host_identity["config"]["identity"] = json!("host");
-        assert_eq!(hosts(host_identity), [true]);
-        let mut dialing = listening;
-        dialing["config"] = json!({ "peer": "main", "dial": "ws://127.0.0.1:1/rutis" });
-        assert_eq!(entries(dialing), [phone]);
-    }
-
-    #[test]
-    fn peer_rows_get_the_hosts_identity() {
-        let config: HostConfig = serde_json::from_value(json!({
-            "rows": [
-                { "id": "a", "name": "rutis-bridge/peer", "config": { "peer": "a", "dial": "wss://a/rutis" } },
-                { "id": "b", "name": "rutis-bridge/peer", "config": { "peer": "b", "listen": "public" } },
-                { "id": "c", "name": "rutis-bridge/peer", "config": { "peer": "c", "dial": "/tmp/c.sock" } },
-                { "id": "w", "name": "weather" }
-            ]
-        }))
-        .unwrap();
-        let rows = config.rows();
-        assert_eq!(rows[0]["config"]["identity"], "host");
-        assert_eq!(rows[2]["config"].get("transport"), None);
-        assert_eq!(rows[3], json!({ "id": "w", "name": "weather" }));
-        assert_eq!(
-            config.peers(),
-            vec![("a".into(), true), ("b".into(), false), ("c".into(), true)]
-        );
     }
 
     /// guarantee: host/config-paths-and-defaults
@@ -1328,7 +873,7 @@ mod tests {
 
     /// Rows of a language whose runtime `runtimes` does not declare enable
     /// it with its defaults, saying so once (#666); a declared runtime, a
-    /// remote one of that name, a disabled row or an npm name do not.
+    /// connection row of that name, a disabled row or an npm name do not.
     /// guarantee: host/config-paths-and-defaults
     #[test]
     #[cfg(unix)]
@@ -1359,10 +904,14 @@ mod tests {
                 "/srv/app/rutis.json: rows use the py runtime (py:llmbox and 1 more), which runtimes does not declare: it runs with its defaults; declare \"runtimes\": { \"py\": {} } to say so",
             ]
         );
-        // Declared, or a remote runtime's: nothing added, nothing said.
+        // Declared, or a connection row's: nothing added, nothing said.
         let declared = json!({
-            "runtimes": { "py": { "python": "/usr/bin/python3" }, "remote": [{ "name": "bun", "language": "bun" }] },
-            "rows": [{ "id": "a", "name": "py:a" }, { "id": "b", "name": "bun:b" }],
+            "runtimes": { "py": { "python": "/usr/bin/python3" } },
+            "rows": [
+                { "id": "a", "name": "py:a" },
+                { "id": "bun", "name": "rutis-host/dial", "config": { "address": "wss://edge/rutis" } },
+                { "id": "b", "name": "bun:b" }
+            ],
         })
         .to_string();
         let config = HostConfig::parse(&declared, Path::new("/srv/app/rutis.json")).unwrap();

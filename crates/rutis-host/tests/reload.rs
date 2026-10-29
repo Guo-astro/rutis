@@ -5,8 +5,8 @@
 //! guarantee: host/reload-config — rows added, removed and changed apply;
 //! a row that would fail, or fails, leaves the old rows running untouched
 //! (no cleanup ran: risk B4); what needs a restart is refused; a removed
-//! local runtime stops after its rows; a peer row a reload adds presents
-//! its token.
+//! local runtime stops after its rows; a connection row a reload adds
+//! presents its token.
 
 // The tests hold the environment until they end, across their awaits: the
 // variables they set are for the hosts they start.
@@ -22,7 +22,6 @@ use std::time::Duration;
 
 use common::{environment, repo};
 use rutis_bridge::session::{settle, Value as CallValue};
-use rutis_bridge::LinkState;
 use rutis_host::config::HostConfig;
 use rutis_host::host::Host;
 use rutis_test_support::{scaled, Guard, HANG_GUARD};
@@ -525,9 +524,8 @@ def apply(ctx, config):
     }
 }
 
-/// A reload adding a listening peer row on the listener a runtime dials in
-/// to, with the same value in RUTIS_TOKEN_MAIN and RUTIS_TOKEN_PHONE, is
-/// refused, naming both and the variables to change; nothing changes
+/// A reload adding a second listen row on one listener, with the same
+/// value in RUTIS_TOKEN_MAIN and RUTIS_TOKEN_PHONE, is refused, naming both and the variables to change; nothing changes
 /// (#702).
 /// guarantee: host/reload-config, host/credentials-from-env
 #[tokio::test(flavor = "multi_thread")]
@@ -538,24 +536,21 @@ async fn a_reload_making_two_entries_accept_one_token_is_refused() {
     let phone: HostConfig = serde_json::from_value(json!({
         "id": "office",
         "listen": [{ "name": "public", "address": "127.0.0.1:0" }],
-        "runtimes": {
-            "remote": [{ "name": "phone", "language": "python", "listen": "public", "instances": "phone" }]
-        },
-        "rows": [{ "id": "phone", "group": true, "instanced": true, "config": [] }]
+        "rows": [{ "id": "phone", "name": "rutis-host/listen", "config": { "listener": "public" } }]
     }))
     .unwrap();
     let mut host = Host::start(&phone).await.unwrap();
     host.load(phone.rows()).await.unwrap();
     let mut both = phone.clone();
     both.rows.push(
-        json!({ "id": "main", "name": "rutis-bridge/peer", "config": { "peer": "main", "listen": "public" } }),
+        json!({ "id": "main", "name": "rutis-host/listen", "config": { "listener": "public" } }),
     );
     let error = host.reload(both).await.unwrap_err();
     assert_eq!(
         error,
-        "listener public: link row main accepts RUTIS_TOKEN_MAIN and remote runtime phone \
-         accepts RUTIS_TOKEN_PHONE, the same token, so a connection presenting it cannot be \
-         told apart: give RUTIS_TOKEN_MAIN or RUTIS_TOKEN_PHONE another value"
+        "listener public: row phone accepts RUTIS_TOKEN_PHONE and row main \
+         accepts RUTIS_TOKEN_MAIN, the same token, so a connection presenting it cannot be \
+         told apart: give RUTIS_TOKEN_PHONE or RUTIS_TOKEN_MAIN another value"
     );
     assert!(host.loader.entries().iter().all(|entry| entry.id != "main"));
     host.shut_down(HANG_GUARD).await.ok();
@@ -563,12 +558,12 @@ async fn a_reload_making_two_entries_accept_one_token_is_refused() {
     std::env::remove_var("RUTIS_TOKEN_PHONE");
 }
 
-/// A peer row a reload adds dials with the token the environment has for
-/// its peer, and the far end accepts it; neither host had a peer row at
-/// first.
+/// A dial row a reload adds dials with the token the environment has for
+/// it, and the far end's listen row a reload added accepts it; neither
+/// host had a connection row at first.
 /// guarantee: host/reload-config, host/credentials-from-env
 #[tokio::test(flavor = "multi_thread")]
-async fn a_peer_row_a_reload_adds_presents_its_token() {
+async fn a_dial_row_a_reload_adds_presents_its_token() {
     let _environment = environment();
     std::env::set_var("RUTIS_TOKEN_MAIN", "shared");
     std::env::set_var("RUTIS_TOKEN_OFFICE", "shared");
@@ -584,33 +579,33 @@ async fn a_peer_row_a_reload_adds_presents_its_token() {
     let mut main_host = Host::start(&main).await.unwrap();
     main_host.load(main.rows()).await.unwrap();
 
-    // The listening end first: its row names who may dial in.
+    // The listening end first: its row takes RUTIS_TOKEN_MAIN.
     let mut accepting = office.clone();
     accepting.rows = vec![
-        json!({ "id": "main", "name": "rutis-bridge/peer", "config": { "peer": "main", "listen": "local" } }),
+        json!({ "id": "main", "name": "rutis-host/listen", "config": { "listener": "local" } }),
     ];
     office_host.reload(accepting).await.unwrap();
+    // The dialing end presents RUTIS_TOKEN_OFFICE.
     let mut dialing = main.clone();
     dialing.rows = vec![
-        json!({ "id": "office", "name": "rutis-bridge/peer", "config": { "peer": "office", "dial": format!("ws://{address}/rutis") } }),
+        json!({ "id": "office", "name": "rutis-host/dial", "config": { "address": format!("ws://{address}/rutis") } }),
     ];
     main_host.reload(dialing).await.unwrap();
 
     let connected = |host: &Host, row: &str| {
-        let entry = host
-            .loader
-            .entries()
+        host.connections()
             .into_iter()
-            .find(|entry| entry.id == row)?;
-        let link = host.peers.link_state(entry.view?.instance())?;
-        let ready = matches!(*link.borrow(), LinkState::Ready { .. });
-        ready.then_some(())
+            .find(|connection| connection.id == row && !connection.connected.is_empty())
+            .map(|_| ())
     };
-    COLD.eventually(|| connected(&main_host, "office"), "main's link to office")
-        .await;
+    COLD.eventually(
+        || connected(&main_host, "office"),
+        "main's connection to office",
+    )
+    .await;
     COLD.eventually(
         || connected(&office_host, "main"),
-        "office's link from main",
+        "office's connection from main",
     )
     .await;
     main_host.shut_down(HANG_GUARD).await.ok();
@@ -733,11 +728,12 @@ fn a_watched_configuration_reloads_when_it_changes() {
     assert!(rejected.ends_with("; nothing changed"), "{rejected}");
     assert!(rejected.contains("rutis.json"), "{rejected}");
 
-    // A link to a port nothing listens on: a row that runs, its link down.
+    // A dial row to a port nothing listens on: a row that runs, not
+    // connected.
     let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let address = closed.local_addr().unwrap();
     drop(closed);
-    let rows = json!([{ "id": "office", "name": "rutis-bridge/peer", "config": { "peer": "office", "dial": format!("ws://{address}/rutis") } }]);
+    let rows = json!([{ "id": "office", "name": "rutis-host/dial", "config": { "address": format!("ws://{address}/rutis") } }]);
     std::fs::write(&file, config(rows)).unwrap();
     // The row's state line and the reload's come either way round.
     let reloaded = format!("rutis-host: reloaded {} (1 row changed)", file.display());

@@ -138,21 +138,6 @@ test('a method an object passed by reference lacks is no-method, saying what it 
   peer.close()
 })
 
-// objects-case(bun): no-objects-declared
-test('an object with methods goes only to a far end that declared objects', async () => {
-  class Counter { n = 0; inc() { return ++this.n } }
-  const sent: any[] = []
-  const session = new Session({ dispatch: () => new Counter(), send: (line: string) => sent.push(JSON.parse(line)), pump: () => {}, endpoint: { local: 'bun', expected: 'main' } })
-  session.start()
-  session.receive({ op: 'hello', version: ENDPOINT_PROTOCOL, endpoint: 'main', capabilities: ['events-v2'] })
-  await session.ready
-  session.receive({ op: 'invoke', id: 'main:1', path: [], target: 'svc', method: 'get', args: data([]) })
-  await tick()
-  expect(sent.at(-1).error.message).toBe('svc.get: the result cannot be sent: an object with methods (Counter) cannot cross to main; pass plain data or a function instead, or upgrade main to rutis 0.18')
-  expect(() => session.invoke('host:svc', 'take', [new Counter()])).toThrow('svc.take: argument 1 cannot be sent: an object with methods (Counter) cannot cross to main; pass plain data or a function instead, or upgrade main to rutis 0.18')
-  session.close()
-})
-
 // objects-case(bun): undefined-nested-null
 test('undefined is null inside a value, and kept as a whole argument', async () => {
   // eslint-disable-next-line no-sparse-arrays

@@ -1,9 +1,8 @@
 import Foundation
 
 // The dispatch of unified events (docs/design-events-protocol-2026-10-18.md
-// §5): the five modes over a snapshot of entries, wherever each entry runs.
-// The runtime dispatches its fast path with it (every entry a listener of
-// its own process); RutisTest dispatches as a host with it.
+// §5): what plugins see of them, and the rules the runtime checks. The host
+// dispatches every event.
 
 extension Rutis.Advanced {
     /// One loader instance of a scope chain (a group copy, such as a tenant
@@ -108,9 +107,6 @@ protocol NextConstructible {
 /// How a dispatch runs its listeners.
 package enum Mode: String, Sendable {
     case emit, parallel, serial, waterfall, bail
-    case waterfallSync = "waterfall-sync"
-
-    var isWaterfall: Bool { self == .waterfall || self == .waterfallSync }
 }
 
 /// The rest of a waterfall, as the dispatch runs it.
@@ -120,19 +116,8 @@ package typealias NextFunction = () async throws -> Value
 /// and, in a waterfall, `next`.
 package typealias EventCall = (_ mode: Mode, _ args: [Value], _ next: NextFunction?) async throws -> Value
 
-/// One listener of a dispatch's snapshot.
-package protocol EventEntry: AnyObject {
-    var info: Rutis.Advanced.Listener { get }
-    /// Reserves an invocation, unless the entry was withdrawn: then it is
-    /// skipped, as if it had never been in the snapshot.
-    func begin() -> EventCall?
-    /// Starts an `emit` invocation after the earlier ones of this entry
-    /// (§5.5), unless withdrawn. Its failure is reported by the entry.
-    @discardableResult
-    func emit(_ args: [Value]) -> Bool
-}
 
-/// The events' rules shared by the runtime and RutisTest.
+/// The events' rules the runtime checks.
 package enum Events {
     /// Refuses what no plugin may emit: `internal/*` (the runtime's own)
     /// and `rutis/*` (rutis's own, ReservedEvent).
@@ -185,31 +170,15 @@ package enum Events {
         value == value.rounded() && abs(value) < 1e15 ? String(Int64(value)) : String(value)
     }
 
-    private static let reportLock = Lock()
-    nonisolated(unsafe) private static var reporters: [Int: (String) -> Void] = [:]
-    nonisolated(unsafe) private static var nextReporter = 0
-
     /// Writes one line of §5.6 to `log` (stderr unless an app gave its
-    /// own), and to every hook.
+    /// own).
     package static func report(_ line: String, to log: (String) -> Void = standardError) {
-        let hooks = reportLock.withLock { Array(reporters.values) }
         log(line)
-        for hook in hooks { hook(line) }
     }
 
     /// Writes `line` on stderr: where a binary's lines go.
     @Sendable package static func standardError(_ line: String) {
         FileHandle.standardError.write(Data((line + "\n").utf8))
-    }
-
-    /// Hears every line reported until the returned function is called.
-    package static func hear(_ hook: @escaping (String) -> Void) -> () -> Void {
-        let id = reportLock.withLock { () -> Int in
-            nextReporter += 1
-            reporters[nextReporter] = hook
-            return nextReporter
-        }
-        return { reportLock.withLock { reporters[id] = nil } }
     }
 
     /// An error as the lines of §5.6 show it: `<ErrorName>: <message>`.
@@ -219,117 +188,6 @@ package enum Events {
     }
 }
 
-/// One dispatch: the snapshot, in registration order, already limited to
-/// the emitter's scope (§5.1 step 1).
-package struct Dispatch {
-    package var name: String
-    package var entries: [EventEntry]
-    /// The filter (§6), nil for none: asked once per non-global entry, in
-    /// order, before any invocation starts.
-    package var keep: ((Rutis.Advanced.Listener) async throws -> Bool)?
-
-    package init(name: String, entries: [EventEntry], keep: ((Rutis.Advanced.Listener) async throws -> Bool)? = nil) {
-        self.name = name
-        self.entries = entries
-        self.keep = keep
-    }
-
-    private func selected() async throws -> [EventEntry] {
-        guard let keep else { return entries }
-        var kept: [EventEntry] = []
-        for entry in entries {
-            let info = entry.info
-            if !info.global, try await !keep(info) { continue }
-            kept.append(entry)
-        }
-        return kept
-    }
-
-    /// Starts every invocation in order and waits for none. A filter's
-    /// failure is thrown, for the dispatcher to report (§5.6).
-    /// `unlessCancelled`: the dispatching task cancelled once the filter
-    /// decided, nothing starts.
-    package func emit(_ args: [Value], unlessCancelled: Bool = false) async throws {
-        let entries = try await selected()
-        if unlessCancelled, Task.isCancelled { return }
-        for entry in entries { entry.emit(args) }
-    }
-
-    /// Starts every invocation in order and waits for all; failures are an
-    /// AggregateError in registration order, even a single one. The emitter
-    /// giving up (its Task cancelled) cancels those running.
-    package func parallel(_ args: [Value]) async throws {
-        let entries = try await selected()
-        var calls: [EventCall] = []
-        for entry in entries {
-            if Task.isCancelled { break }
-            if let call = entry.begin() { calls.append(call) }
-        }
-        let failures = await withTaskGroup(of: (Int, Error?).self) { group -> [(Int, Error)] in
-            for (index, call) in calls.enumerated() {
-                group.addTask {
-                    do {
-                        _ = try await call(.parallel, args, nil)
-                        return (index, nil)
-                    } catch {
-                        return (index, error)
-                    }
-                }
-            }
-            var failures: [(Int, Error)] = []
-            for await (index, error) in group {
-                if let error { failures.append((index, error)) }
-            }
-            return failures.sorted { $0.0 < $1.0 }
-        }
-        try Task.checkCancellation()
-        if !failures.isEmpty {
-            throw RutisError(name: RutisError.Name.aggregateError, message: "\(failures.count) listeners of \(name) failed",
-                             errors: failures.map { asRutisError($0.1) })
-        }
-    }
-
-    /// Runs one invocation at a time and returns the first result; a
-    /// failure stops it. `mode` is serial or bail.
-    package func serial(_ mode: Mode, _ args: [Value]) async throws -> Value {
-        for entry in try await selected() {
-            try Task.checkCancellation()
-            guard let call = entry.begin() else { continue }
-            let value = try await call(mode, args, nil)
-            if Events.hasResult(value) { return value }
-        }
-        return .undefined
-    }
-
-    /// Calls the outermost entry with `next`, each `next` calling the entry
-    /// after it and the last one `terminal` with the event's arguments (nil:
-    /// no result), and returns the outermost value as it is.
-    package func waterfall(_ mode: Mode, _ args: [Value], terminal: (([Value]) async throws -> Value)?) async throws -> Value {
-        let entries = try await selected()
-        let ended = Flag()
-        defer { ended.set() }
-        let name = self.name
-        func run(_ from: Int) async throws -> Value {
-            for index in from ..< entries.count {
-                guard let call = entries[index].begin() else { continue }
-                let called = Flag()
-                let next: NextFunction = {
-                    if called.testAndSet() {
-                        throw RutisError(name: RutisError.Name.waterfallNext, message: "next of \(name) was already called")
-                    }
-                    if ended.isSet || Task.isCancelled {
-                        throw RutisError(name: RutisError.Name.waterfallNext, message: "next of \(name) was called after its waterfall ended")
-                    }
-                    return try await run(index + 1)
-                }
-                return try await call(mode, args, next)
-            }
-            if let terminal { return try await terminal(args) }
-            return .undefined
-        }
-        return try await run(0)
-    }
-}
 
 /// An error as a RutisError: its name and message (and the graph of one
 /// received).

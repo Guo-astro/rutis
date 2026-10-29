@@ -1,6 +1,6 @@
 """Dialing out to a rutis access point, and dialing again: the rules every
 runtime follows (docs/design-remote-runtime-dial-2026-10-14.md §六), as
-rutis-bridge's dialing link does (`link.rs`).
+rutis-host's `rutis-host/dial` row does (`connect/dial.rs`).
 
 A failure is retryable (backoff from 0.5 s, doubling up to 30 s, reset by
 a session that lasted 60 s), an authentication failure (again every 30 s:
@@ -35,7 +35,7 @@ class DialError(Exception):
 
 @dataclass
 class Retry:
-    """Reconnection, in seconds: rutis-bridge's `Retry` defaults."""
+    """Reconnection, in seconds: the defaults of `rutis-host/dial`."""
 
     # The first wait after a retryable failure; doubled each time.
     initial: float = 0.5
@@ -85,13 +85,8 @@ def session_failure(error: BaseException | None, far_close: int | None) -> str:
     expected, is an authentication failure; a greeting this side cannot
     speak is incompatible (the session's own handshake errors); anything
     else, being replaced (4002) too, is retryable."""
-    from .peer import Incompatible
-
     if far_close == REJECTED:
         return AUTH_REJECTED
-    # A host that does not speak the event protocol of rutis 0.13.
-    if isinstance(error, Incompatible):
-        return INCOMPATIBLE
     reason = str(error or "")
     if isinstance(error, ValueError) and reason.startswith("incompatible session"):
         return INCOMPATIBLE

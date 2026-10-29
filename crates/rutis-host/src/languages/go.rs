@@ -1,6 +1,6 @@
 //! Go: `runtimes.go`, a directory of compiled binaries, one runtime each
 //! (`go-<binary>`), started when a row uses it (or with the host); rows
-//! `go:<plugin>` and `go-<binary>:<plugin>`.
+//! `go:<plugin>`.
 //!
 //! Unlike the interpreted languages it has no single runtime: it overrides
 //! [`Language::start`] with what the compiled languages share
@@ -9,7 +9,7 @@
 use std::path::{Path, PathBuf};
 
 use rutis::host::BoxFuture;
-use rutis_bridge::runtime::{Launcher, LocalRuntime};
+use rutis_bridge::runtime::Launcher;
 use serde_json::{json, Value};
 
 use super::binary::{self, DevBuild};
@@ -63,15 +63,6 @@ impl Language for Go {
         }
     }
 
-    /// `go:<plugin>` and `go-<binary>:<plugin>` are the Go runtimes' rows.
-    fn claims(&self, name: &str) -> Option<String> {
-        binary::claims("go", "Go", name)
-    }
-
-    fn remote_names(&self) -> &'static [&'static str] {
-        &["go"]
-    }
-
     /// The binaries' resolver now; their runtimes once the loader runs,
     /// under Delve with `dev --debug`.
     fn start(&self, config: &HostConfig, mount: &mut Mount<'_>) -> Result<(), Error> {
@@ -105,15 +96,15 @@ impl Language for Go {
     }
 
     /// Build it (unless `built`, the first build the caller made without
-    /// blocking), then one row per plugin of its binary, named with its
-    /// runtime (`go-<name>:<plugin>`).
+    /// blocking), then one row per plugin of its binary (`go:<plugin>`):
+    /// under `dev` the Go runtimes see only the development build.
     fn dev(&self, dir: &Path, built: Option<&Path>) -> Result<(Vec<Value>, Runtimes), String> {
         let go = GoDev::of(dir).ok_or_else(|| format!("{}: no go.mod", dir.display()))?;
         let binary = match built {
             Some(binary) => binary.to_owned(),
             None => binary::building(&go.name, || go.build(1))?,
         };
-        let (rows, settings) = dev_rows(&binary, &go.runtime, &go.dir, &go.package)?;
+        let (rows, settings) = dev_rows("go", &binary, &go.runtime, &go.dir, &go.package)?;
         Ok((
             rows,
             Runtimes {
@@ -158,10 +149,11 @@ pub(super) fn rebase(settings: &mut GoRuntime, at: &dyn Fn(&mut PathBuf)) {
 }
 
 /// The rows of a compiled language's development build `binary`, one per
-/// plugin of its manifest named with its runtime (`<runtime>:<plugin>`),
-/// and the settings that run it from `project`; `what` names it when it
-/// serves nothing.
+/// plugin of its manifest named with the language's prefix
+/// (`<prefix>:<plugin>`), and the settings that run it, as `runtime`, from
+/// `project`; `what` names it when it serves nothing.
 pub(super) fn dev_rows(
+    prefix: &str,
     binary: &Path,
     runtime: &str,
     project: &Path,
@@ -172,7 +164,7 @@ pub(super) fn dev_rows(
     let rows: Vec<Value> = manifest
         .plugins
         .keys()
-        .map(|plugin| json!({ "id": id_of(plugin), "name": format!("{runtime}:{plugin}"), "config": {} }))
+        .map(|plugin| json!({ "id": id_of(plugin), "name": format!("{prefix}:{plugin}"), "config": {} }))
         .collect();
     if rows.is_empty() {
         return Err(format!("{what} serves no plugins"));
@@ -338,8 +330,8 @@ impl rutis_loader::runtime::binary::BinaryLanguage for Delve {
         rutis_bridge::runtime::go_runtime_name(path)
     }
 
-    fn launch(binary: &Path, project: &Path) -> LocalRuntime {
-        let launcher = Launcher::new(DELVE)
+    fn launch(binary: &Path, project: &Path) -> Launcher {
+        Launcher::new(DELVE)
             .arg("exec")
             .arg("--headless")
             .arg(format!("--listen={DELVE_ADDRESS}"))
@@ -348,8 +340,7 @@ impl rutis_loader::runtime::binary::BinaryLanguage for Delve {
             .arg("--continue")
             .arg(binary)
             .arg("--")
-            .cwd(project);
-        LocalRuntime::launcher(Self::runtime_name(binary), launcher, project)
+            .cwd(project)
     }
 }
 

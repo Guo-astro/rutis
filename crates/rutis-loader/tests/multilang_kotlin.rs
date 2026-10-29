@@ -15,12 +15,14 @@ mod common;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex};
 
-use common::runtimes::{kotlin_launcher, layer, repo, row_state, rows_stage, Llm, Probe, COLD};
+use common::runtimes::{
+    greet_as_main, kotlin_launcher, layer, repo, row_state, rows_stage, Llm, Probe, TestRuntime,
+    COLD,
+};
 use rutis::host::{CtxHost, FiberState};
 use rutis::Ctx;
-use rutis_bridge::runtime::LocalRuntime;
 use rutis_bridge::session::{host_key, HostDispatch, Reply, Value as RpcValue};
-use rutis_loader::runtime::RuntimeResolver;
+use rutis_loader::runtime::SessionResolver;
 use rutis_loader::{Chain, Loader, LoaderOptions, LoaderPlugin, ServiceCatalog};
 use rutis_test_support::{Guard, HANG_GUARD};
 use serde_json::{json, Value};
@@ -119,18 +121,14 @@ fn write(dir: &Path, name: &str, text: &str) -> PathBuf {
     path
 }
 
-fn node(name: &str) -> LocalRuntime {
-    LocalRuntime::node(
-        repo().join("node/rutis-runtime"),
-        repo().join("node/rutis-runtime/package.json"),
-    )
-    .named(name)
+fn node(name: &str) -> TestRuntime {
+    TestRuntime::node(&repo().join("node/rutis-runtime/package.json")).named(name)
 }
 
 /// The Kotlin runtime `kt` (rows `kt:<plugin>`), in `project`.
-fn kotlin(project: &Path) -> LocalRuntime {
+fn kotlin(project: &Path) -> TestRuntime {
     std::fs::create_dir_all(project).unwrap();
-    LocalRuntime::launcher("kt", kotlin_launcher(project), project)
+    TestRuntime::new("kt", kotlin_launcher(project), project)
 }
 
 struct Fixture {
@@ -140,17 +138,18 @@ struct Fixture {
     dir: tempfile::TempDir,
 }
 
-/// A loader over `runtimes` (`true`: resolved as an npm package, Node's
-/// way), with the host services `probe` and `extra` and the shared
+/// A loader over `runtimes` (`<name>:<plugin>` rows; the one marked `true`
+/// also runs the npm names and paths, Node's way), with the host services `probe` and `extra` and the shared
 /// `services`.
 async fn fixture(
     dir: tempfile::TempDir,
-    runtimes: Vec<(LocalRuntime, bool)>,
+    runtimes: Vec<(TestRuntime, bool)>,
     services: &[&str],
     extra: Vec<(&str, Arc<dyn HostDispatch>)>,
 ) -> Fixture {
     let probe = Probe::default();
     let root = Ctx::root().unwrap();
+    greet_as_main(&root);
     root.provide_at(host_key("probe"), Arc::new(probe.clone()))
         .unwrap();
     for (name, service) in extra {
@@ -160,31 +159,32 @@ async fn fixture(
     for name in services {
         catalog.register_shared(*name);
     }
-    let mut chain = Chain::new();
-    let mut resolvers = Vec::new();
-    for (runtime, npm) in runtimes {
-        let resolver = Arc::new(
-            match npm {
-                true => RuntimeResolver::node(runtime.handle()),
-                false => RuntimeResolver::modules(runtime.handle()),
-            }
-            .with_catalog(&catalog),
-        );
+    let npm = runtimes
+        .iter()
+        .find(|(_, npm)| *npm)
+        .map(|(runtime, _)| runtime.handle().name().to_owned());
+    let sessions = Arc::new(match &npm {
+        Some(npm) => SessionResolver::npm(&catalog, npm),
+        None => SessionResolver::new(&catalog),
+    });
+    let mut names = Vec::new();
+    for (runtime, _) in runtimes {
+        names.push(runtime.handle().name().to_owned());
+        sessions.runtime(runtime.handle());
         root.plugin(runtime);
-        chain = chain.with_shared(resolver.clone());
-        resolvers.push(resolver);
     }
     let plugin = LoaderPlugin::new(
-        chain,
+        Chain::new().with_shared(sessions.clone()),
         LoaderOptions {
             catalog,
             ..LoaderOptions::default()
         },
     );
     let loader = plugin.handle();
+    sessions.attach(&loader);
     root.plugin(plugin).await.unwrap();
-    for resolver in resolvers {
-        rows_stage(&root, resolver).await;
+    for name in &names {
+        rows_stage(&root, &sessions, name).await;
     }
     Fixture {
         root,
@@ -211,7 +211,7 @@ async fn three() -> Fixture {
     ] {
         write(&js, file, text);
     }
-    let python = LocalRuntime::python(&py).python_path(repo().join("python/rutis"));
+    let python = TestRuntime::python(&py);
     let kt = kotlin(&dir.path().join("kt"));
     let services = [
         "probe",

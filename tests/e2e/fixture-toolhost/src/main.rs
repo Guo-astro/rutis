@@ -1,6 +1,6 @@
 //! A small host with an extension point (#690, the host owner's check of
 //! #663): a Rust application embedding rutis, as `docs/guide/rust-host.md`
-//! says, whose plugins register "tools". It offers the service `tools`
+//! says (its Node runtime rutis-host's `SpawnPlugin`), whose plugins register "tools". It offers the service `tools`
 //! (`tools.register(name, description, run)`, `run` a function the plugin
 //! passes), lists the tools registered and calls them. When a tool fails,
 //! the host reads the plugin's error with `rutis_bridge::thrown`: its name,
@@ -29,9 +29,11 @@ use std::time::Duration;
 
 use rutis::host::{BoxFuture, CtxHost, FiberState};
 use rutis::Ctx;
-use rutis_bridge::runtime::{LocalRuntime, Stdio};
+use rutis_bridge::runtime::{Launcher, Stdio};
+use rutis_bridge::{LocalId, PeerId};
+use rutis_host::connect::SpawnPlugin;
 use rutis_loader::report::EntryStatus;
-use rutis_loader::runtime::{RuntimeResolver, RuntimeRowsPlugin};
+use rutis_loader::runtime::SessionResolver;
 use rutis_loader::{Chain, Layer, LoaderOptions, LoaderPlugin, Patch, ServiceCatalog};
 use serde_json::{json, Value};
 
@@ -163,25 +165,37 @@ async fn start() -> Result<(Ctx, Arc<Tools>), String> {
         .ok_or("RUTIS_NODE_RUNTIME is not set")?;
 
     let root = Ctx::root().map_err(|e| e.to_string())?;
+    // The id this host greets its runtimes with.
+    let main = PeerId::new("main").map_err(|e| e.to_string())?;
+    root.provide(LocalId(main)).map_err(|e| e.to_string())?;
     // The extension point, served to the plugins of every language by name.
     root.provide(Tools::default()).map_err(|e| e.to_string())?;
     let tools = root.get::<Tools>().ok_or("the tools service")?;
 
     let catalog = ServiceCatalog::new();
-    // Only this program writes to stdout: its answers are whole lines.
-    let node = LocalRuntime::node(node_package, dir.join("package.json")).stdout(Stdio::Null);
-    let rows = Arc::new(RuntimeResolver::node(node.handle()).with_catalog(&catalog));
+    // The Node runtime, the row `node`. Only this program writes to
+    // stdout: its answers are whole lines.
+    let node = SpawnPlugin::new(
+        "node",
+        Launcher::node(&node_package),
+        dir.join("package.json"),
+    )
+    .stdio(Stdio::Null, Stdio::Null, Stdio::Inherit);
+    // The plugins' paths run on the session of the row `node`.
+    let sessions = Arc::new(SessionResolver::npm(&catalog, "node"));
+    sessions.runtime(node.handle());
     root.plugin(node);
     let plugin = LoaderPlugin::new(
-        Chain::new().with_shared(rows.clone()),
+        Chain::new().with_shared(sessions.clone()),
         LoaderOptions {
             catalog,
             ..LoaderOptions::default()
         },
     );
     let loader = plugin.handle();
+    sessions.attach(&loader);
     root.plugin(plugin).await.map_err(|e| e.to_string())?;
-    root.plugin(RuntimeRowsPlugin::new(rows));
+    sessions.follow_row("node");
 
     let patches: Vec<Patch> =
         serde_json::from_value(json!([{ "insert": config["plugins"].clone() }]))

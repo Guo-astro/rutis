@@ -1,12 +1,9 @@
-//! What a remote runtime's plugin declares, read the same way whether rutis
-//! reaches the runtime over one link ([`RuntimeResolver`](super::RuntimeResolver)
-//! of a [`RuntimePlugin::remote`](rutis_bridge::runtime::RuntimePlugin::remote))
-//! or the runtime comes in many times, one instance per connection
-//! ([`RuntimeInstances`](super::RuntimeInstances)): the plugins its `mount`
+//! What a plugin of the far end of a session declares
+//! ([`SessionResolver`](super::SessionResolver)): the plugins its `mount`
 //! reply listed, else `rows.schema` for each
-//! (`docs/design-remote-runtime-consistency-2026-10-26.md` §五).
+//! (`docs/design-remote-session-2026-10-28.md` §4.3).
 //!
-//! A runtime without the plugin fails the row with [`Unavailable`] in both:
+//! A runtime without the plugin fails the row with [`Unavailable`]:
 //! other rows are not affected, and an edit adding the row is not refused
 //! because of it.
 

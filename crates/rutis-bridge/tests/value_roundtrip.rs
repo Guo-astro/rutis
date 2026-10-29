@@ -96,16 +96,6 @@ async fn far_end(
     far_end_with(command, main_endpoint(far)).await
 }
 
-/// `main` as a far end that takes no objects with methods, as every
-/// runtime is: what the far end would send it fails (#675).
-fn main_without_objects(far: &str) -> Endpoint {
-    let mut endpoint = Endpoint::rust(id("main")).expect(id(far));
-    endpoint
-        .capabilities
-        .retain(|capability| capability != "objects");
-    endpoint
-}
-
 /// [`far_end`], with this side greeting in `format`.
 async fn far_end_with(
     mut command: tokio::process::Command,
@@ -1000,32 +990,6 @@ fn relayed_throw(far: &Connection, name: &str) {
     }
 }
 
-/// guarantee: bridge/bad-values.
-///
-/// To a far end that takes no objects with methods (`main` without
-/// `objects`, as every runtime is), the far end's result holding one fails
-/// that call before it is sent, naming the call and the far end; the
-/// session goes on.
-fn objects_refused(far: &Connection, name: &str) {
-    match far.invoke("conformance", "object", Value::List(vec![])) {
-        Err(Error::Remote { message, .. })
-            if message.contains(
-                "conformance.object: the result cannot be sent: an object with methods",
-            ) && message
-                .contains("cannot cross to main; pass plain data or a function instead") => {}
-        other => panic!("{name}: an object to a far end that takes none: {other:?}"),
-    }
-    let back = far
-        .invoke(
-            "conformance",
-            "echo",
-            Value::List(vec![Value::Data(json!("after"))]),
-        )
-        .and_then(Value::json);
-    assert_eq!(back.unwrap(), json!("after"), "{name}: a call after it");
-    assert!(far.close_reason().is_none(), "{name}: the session ended");
-}
-
 // ── Release counts ───────────────────────────────────────────────────
 
 const SLOTS: u8 = 4;
@@ -1247,10 +1211,6 @@ async fn node_bad_values() {
     tokio::task::spawn_blocking(move || bad_values(&near, "node"))
         .await
         .unwrap();
-    let (near, _second) = far_end_with(node(), main_without_objects("node")).await;
-    tokio::task::spawn_blocking(move || objects_refused(&near, "node"))
-        .await
-        .unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1284,10 +1244,6 @@ async fn python_depth_limit() {
 async fn python_bad_values() {
     let (near, _child) = far_end(python(), "python").await;
     tokio::task::spawn_blocking(move || bad_values(&near, "python"))
-        .await
-        .unwrap();
-    let (near, _second) = far_end_with(python(), main_without_objects("python")).await;
-    tokio::task::spawn_blocking(move || objects_refused(&near, "python"))
         .await
         .unwrap();
 }
@@ -1490,10 +1446,6 @@ async fn swift_bad_values() {
     tokio::task::spawn_blocking(move || bad_values(&near, "swift"))
         .await
         .unwrap();
-    let (near, _second) = far_end_with(swift(), main_without_objects("swift")).await;
-    tokio::task::spawn_blocking(move || objects_refused(&near, "swift"))
-        .await
-        .unwrap();
 }
 
 #[cfg(all(feature = "swift", target_os = "macos"))]
@@ -1555,10 +1507,6 @@ async fn bun_bad_values() {
     tokio::task::spawn_blocking(move || bad_values(&near, "bun"))
         .await
         .unwrap();
-    let (near, _second) = far_end_with(bun(), main_without_objects("bun")).await;
-    tokio::task::spawn_blocking(move || objects_refused(&near, "bun"))
-        .await
-        .unwrap();
 }
 
 // ── Kotlin: values only (its fixture has no reference tables) ────────
@@ -1598,10 +1546,6 @@ async fn kotlin_depth_limit() {
 async fn kotlin_bad_values() {
     let (near, _child) = far_end(kotlin::session(), "kotlin").await;
     tokio::task::spawn_blocking(move || bad_values(&near, "kotlin"))
-        .await
-        .unwrap();
-    let (near, _second) = far_end_with(kotlin::session(), main_without_objects("kotlin")).await;
-    tokio::task::spawn_blocking(move || objects_refused(&near, "kotlin"))
         .await
         .unwrap();
 }

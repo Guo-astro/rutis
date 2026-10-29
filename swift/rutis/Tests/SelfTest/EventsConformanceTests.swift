@@ -37,7 +37,6 @@ private final class EventRun: @unchecked Sendable {
     let caseJSON: JSON
     let caseID: String
     let name: String
-    let groups: [String: String]
     let log: EventsLogService
     var root: Loaded!
     var rows: [String: Loaded] = [:]
@@ -46,21 +45,11 @@ private final class EventRun: @unchecked Sendable {
     var pending: Task<Outcome, Never>?
     var reported = 0
 
-    init(caseJSON: JSON, groups: [String: String], log: EventsLogService) {
+    init(caseJSON: JSON, log: EventsLogService) {
         self.caseJSON = caseJSON
         caseID = caseJSON["case"]?.stringValue ?? ""
         name = caseJSON["name"]?.stringValue ?? ""
-        self.groups = groups
         self.log = log
-    }
-
-    func scope(_ path: String?) -> [Rutis.Advanced.Scope] {
-        guard let path, path != "root", !path.isEmpty else { return [] }
-        let segments = path.split(separator: "/").map(String.init)
-        return segments.indices.map { i in
-            let id = segments[...i].joined(separator: "/")
-            return Rutis.Advanced.Scope(id: id, group: groups[id] ?? segments[i])
-        }
     }
 
     func native(_ json: JSON) -> Any? {
@@ -81,7 +70,7 @@ private final class EventRun: @unchecked Sendable {
         if listener["name"] == nil { fields.append(("name", .string(name))) }
         let label = listener["label"]?.stringValue ?? ""
         let config = JSON.object(fields)
-        rows[label] = try await root.load(config: Value.data(config), row: label, scope: scope(listener["scope"]?.stringValue))
+        rows[label] = try await root.load(config: Value.data(config), row: label)
         participants[label] = config
     }
 
@@ -96,15 +85,13 @@ private final class EventRun: @unchecked Sendable {
         participants[label] = config
     }
 
-    /// The emitter row of `label` in `scope`, created on first use.
-    func emitter(_ label: String, _ path: String?) async throws -> (Loaded, String) {
-        var key = label
-        if let path, path != "root", !path.isEmpty { key = label + "-" + path.replacingOccurrences(of: "/", with: "-") }
-        if rows[key] == nil {
-            rows[key] = try await root.load(config: Value.data(.object([("label", .string(key)), ("emitter", .bool(true))])),
-                                            row: key, scope: scope(path))
+    /// The emitter row of `label`, created on first use.
+    func emitter(_ label: String) async throws -> (Loaded, String) {
+        if rows[label] == nil {
+            rows[label] = try await root.load(config: Value.data(.object([("label", .string(label)), ("emitter", .bool(true))])),
+                                              row: label)
         }
-        return (rows[key]!, key)
+        return (rows[label]!, label)
     }
 
     /// A value as the expectations write it, as the session carries it.
@@ -132,14 +119,14 @@ private final class EventRun: @unchecked Sendable {
         let row = spec["row"]?.stringValue ?? "e"
         let event = spec["name"]?.stringValue ?? name
         do {
-            let (loaded, key) = try await emitter(row, spec["scope"]?.stringValue)
+            let (loaded, key) = try await emitter(row)
             let args = (spec["args"]?.arrayValue ?? []).map(fromWritten)
             var request: [(String, Value)] = [("mode", .data(spec["mode"] ?? .null)), ("name", .data(.string(event))), ("args", .list(of: args))]
             for field in ["filter", "terminal", "cancel"] {
                 if let value = spec[field] { request.append((field, .data(value))) }
             }
             let mode = spec["mode"]?.stringValue ?? ""
-            let method = mode == "bail" || mode == "waterfall-sync" ? "dispatchSync" : "dispatch"
+            let method = mode == "bail" ? "dispatchSync" : "dispatch"
             let service = try await loaded.service("emitter-" + key)
             let value = try await service.callValue(method, [.record(of: request)])
             return Outcome(value: value)
@@ -195,16 +182,20 @@ private final class EventRun: @unchecked Sendable {
         }
     }
 
-    /// The error name of a §5.6 line about `event` naming `row`, or nil.
+    /// The error name of a §5.6 line about `event` naming `row`, or nil:
+    /// as the runtime writes it, or as the host does (`rutis-host/test`'s
+    /// `reported`).
     static func reports(_ line: String, _ event: String, _ filter: Bool, _ row: String) -> String? {
-        let prefix = filter ? "rutis: filter of \(event) from row \(row) failed: " : "rutis: listener of \(event) in row \(row) failed: "
-        guard line.hasPrefix(prefix) else { return nil }
+        let prefixes = filter
+            ? ["rutis: filter of \(event) from row \(row) failed: ", "filter of \(event) from row \(row) failed: "]
+            : ["rutis: listener of \(event) in row \(row) failed: ", "\(row): listener of \(event) failed: "]
+        guard let prefix = prefixes.first(where: { line.hasPrefix($0) }) else { return nil }
         let rest = line.dropFirst(prefix.count)
         guard let colon = rest.range(of: ": ") else { return nil }
         return String(rest[..<colon.lowerBound])
     }
 
-    func logProblems(_ expect: JSON, _ event: String) -> String? {
+    func logProblems(_ expect: JSON, _ event: String) async -> String? {
         let log = self.log.list
         var out: [String] = []
         func strings(_ key: String) -> [String]? { expect[key]?.arrayValue?.compactMap(\.stringValue) }
@@ -220,7 +211,7 @@ private final class EventRun: @unchecked Sendable {
             let seen = log.filter { $0.hasPrefix("filter:") }.map { String($0.dropFirst(7)) }
             if seen != want { out.append("the filter saw \(seen), want \(want)") }
         }
-        let lines = Array(root.reported.dropFirst(reported))
+        let lines = Array(await root.reported.dropFirst(reported))
         for want in expect["reported"]?.arrayValue ?? [] {
             let label = want["label"]?.stringValue ?? ""
             let filter = want["filter"] == .bool(true)
@@ -236,7 +227,7 @@ private final class EventRun: @unchecked Sendable {
 
     func checkLog(_ where_: String, _ expect: JSON, _ event: String) async {
         let deadline = Date().addingTimeInterval(eventSettle)
-        while let problem = logProblems(expect, event) {
+        while let problem = await logProblems(expect, event) {
             if Date() > deadline {
                 record("\(where_): \(problem)")
                 return
@@ -245,7 +236,7 @@ private final class EventRun: @unchecked Sendable {
         }
         if expect["logLacks"] != nil || expect["reported"] != nil {
             try? await Task.sleep(nanoseconds: UInt64(eventLacks * 1e9))
-            if let problem = logProblems(expect, event) { record("\(where_): \(problem) (after the step had settled)") }
+            if let problem = await logProblems(expect, event) { record("\(where_): \(problem) (after the step had settled)") }
         }
     }
 
@@ -260,7 +251,6 @@ private final class EventRun: @unchecked Sendable {
     func step(_ index: Int, _ step: JSON) async throws {
         let where_ = "\(caseID) step \(index)"
         let expect = step["expect"] ?? .object([])
-        if expect["viaHost"] == .bool(true) { record("\(where_): the testing tool always dispatches on the fast path") }
         let event = step["emit"]?["name"]?.stringValue ?? name
         var outcomes: [Outcome] = []
         let started = Date()
@@ -327,9 +317,24 @@ struct EventsConformanceTests {
         return true
     }
 
+    /// Whether a case places a row in a scope: the testing tool loads rows
+    /// at the root only.
+    func scoped(_ caseJSON: JSON) -> Bool {
+        func inScope(_ json: JSON?) -> Bool { (json?["scope"]?.stringValue ?? "root") != "root" }
+        func emits(_ step: JSON) -> [JSON] {
+            if let emit = step["emit"] { return [emit] }
+            return (step["concurrent"]?.arrayValue ?? []).flatMap(emits)
+        }
+        if (caseJSON["listeners"]?.arrayValue ?? []).contains(where: inScope) { return true }
+        for step in caseJSON["steps"]?.arrayValue ?? [] {
+            if inScope(step["load"]) || emits(step).contains(where: inScope) { return true }
+        }
+        return false
+    }
+
     /// Whether a case runs on the Swift testing tool (events.rs `tool_combo`).
     func forSwift(_ caseJSON: JSON) -> Bool {
-        if caseJSON["tool"] == .bool(false) { return false }
+        if caseJSON["tool"] == .bool(false) || scoped(caseJSON) { return false }
         let labels = labels(caseJSON)
         for limit in caseJSON["only"]?.arrayValue ?? [] where !holds(limit, labels) { return false }
         for limit in caseJSON["except"]?.arrayValue ?? [] where holds(limit, labels) { return false }
@@ -338,8 +343,6 @@ struct EventsConformanceTests {
 
     func rutisTestMeetsTheEventExpectations() async throws {
         let expected = try expectations("events.expected.json")
-        var groups: [String: String] = [:]
-        for (path, group) in expected["scopes"]?.objectValue ?? [] { groups[path] = group.stringValue }
         let only = ProcessInfo.processInfo.environment["RUTIS_EVENTS_CASE"]
         var ran = 0
         for caseJSON in expected["cases"]!.arrayValue! where forSwift(caseJSON) {
@@ -348,11 +351,11 @@ struct EventsConformanceTests {
             if let only, !only.split(separator: ",").contains(where: { id.hasPrefix($0) }) { continue }
             resetConformanceLog()
             let log = EventsLogService()
-            let run = EventRun(caseJSON: caseJSON, groups: groups, log: log)
+            let run = EventRun(caseJSON: caseJSON, log: log)
             run.root = try await RutisTest.load(conformanceEventsPlugin, config: Value.data(.object([("label", .string("e")), ("emitter", .bool(true))])),
                                                 services: ["events-log": log], row: "e")
             run.rows["e"] = run.root
-            run.reported = run.root.reported.count
+            run.reported = await run.root.reported.count
             do {
                 for listener in caseJSON["listeners"]?.arrayValue ?? [] { try await run.load(listener) }
                 for (i, step) in (caseJSON["steps"]?.arrayValue ?? []).enumerated() { try await run.step(i, step) }

@@ -14,6 +14,7 @@
 pub const ENDPOINT_PROTOCOL: u32 = 4;
 
 mod objects;
+pub(crate) mod plugin;
 pub(crate) mod protocol;
 pub(crate) mod rpc;
 mod services;

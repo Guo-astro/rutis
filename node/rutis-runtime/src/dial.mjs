@@ -50,8 +50,7 @@ export async function dialOut({ spec, id, peer, anchor }) {
   }
   // Spent once read: what this process starts does not inherit it.
   delete process.env.RUTIS_TOKEN
-  // A host older than 0.13 is refused at its hello, and not dialed again.
-  const endpoint = { local: id, expected: peer, requires: ['events-v2'] }
+  const endpoint = { local: id, expected: peer }
   let stop
   const stopped = new Promise(resolve => { stop = resolve })
   for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => stop())

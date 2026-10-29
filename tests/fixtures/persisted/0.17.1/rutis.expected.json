@@ -31,49 +31,7 @@
       "idle": 120,
       "project": "<dir>",
       "restart": "exit"
-    },
-    "remote": [
-      {
-        "name": "gpu",
-        "language": "python"
-      },
-      {
-        "name": "office-node",
-        "language": "node"
-      },
-      {
-        "name": "edge-bun",
-        "language": "bun"
-      },
-      {
-        "name": "phone",
-        "language": "python",
-        "listen": "public",
-        "instances": "phones"
-      },
-      {
-        "name": "kiosk",
-        "language": "bun",
-        "listen": "public",
-        "instances": "kiosks"
-      },
-      {
-        "name": "iphone",
-        "language": "swift",
-        "listen": "public",
-        "instances": "iphones"
-      },
-      {
-        "name": "android",
-        "language": "kotlin",
-        "listen": "public",
-        "instances": "androids"
-      },
-      {
-        "name": "tablet",
-        "language": "kt"
-      }
-    ]
+    }
   },
   "listen": [
     {
@@ -108,10 +66,6 @@
     {
       "id": "edge-fn",
       "name": "bun:./fn/edge.ts"
-    },
-    {
-      "id": "dns",
-      "name": "go-dns:resolver"
     },
     {
       "id": "probe",
@@ -154,58 +108,8 @@
       ]
     },
     {
-      "id": "office",
-      "name": "rutis-bridge/peer",
-      "config": {
-        "peer": "office",
-        "dial": "wss://office.example.com/rutis",
-        "export": [
-          "weather",
-          "order/*"
-        ],
-        "import": [
-          "stock/changed"
-        ],
-        "runtime": "office-node",
-        "identity": "host"
-      }
-    },
-    {
-      "id": "branch",
-      "name": "rutis-bridge/peer",
-      "config": {
-        "peer": "branch",
-        "listen": "public",
-        "identity": "edge"
-      }
-    },
-    {
-      "id": "gpu",
-      "name": "rutis-bridge/peer",
-      "config": {
-        "peer": "gpu",
-        "dial": "wss://gpu.example.com/rutis",
-        "runtime": "gpu",
-        "identity": "host"
-      }
-    },
-    {
       "id": "embedder",
       "name": "gpu:embedder"
-    },
-    {
-      "id": "clock",
-      "name": "peer:office/clock"
-    },
-    {
-      "id": "edge-bun",
-      "name": "rutis-bridge/peer",
-      "config": {
-        "peer": "edge-bun",
-        "dial": "wss://edge.example.com/rutis",
-        "runtime": "edge-bun",
-        "identity": "host"
-      }
     },
     {
       "id": "render",
@@ -234,10 +138,6 @@
       ]
     },
     {
-      "id": "clipboard",
-      "name": "swift-MacKit:clipboard"
-    },
-    {
       "id": "iphones",
       "group": true,
       "instanced": true,
@@ -258,16 +158,6 @@
           "name": "android:notify"
         }
       ]
-    },
-    {
-      "id": "tablet",
-      "name": "rutis-bridge/peer",
-      "config": {
-        "peer": "tablet",
-        "dial": "wss://tablet.local:7443/rutis",
-        "runtime": "tablet",
-        "identity": "host"
-      }
     },
     {
       "id": "device",

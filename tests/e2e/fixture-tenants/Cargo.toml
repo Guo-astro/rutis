@@ -9,9 +9,10 @@ publish = false
 
 # The system under test, not the harness: the harness (tests/e2e) only runs
 # this program (quality standard Q7.6). It is assembled from the crates as
-# docs/guide/rust-host.md says, not from rutis-host.
+# docs/guide/rust-host.md says, its runtimes rutis-host's `SpawnPlugin`.
 [dependencies]
 rutis = { path = "../../../crates/rutis" }
+rutis-host = { path = "../../../crates/rutis-host" }
 rutis-bridge = { path = "../../../crates/rutis-bridge", default-features = false, features = ["node", "python"] }
 rutis-loader = { path = "../../../crates/rutis-loader", default-features = false, features = ["node", "python"] }
 schemars = "1"

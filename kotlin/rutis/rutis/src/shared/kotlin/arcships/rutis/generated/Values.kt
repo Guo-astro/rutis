@@ -420,6 +420,24 @@ internal object DecodePaths {
         val missing = (error as? kotlinx.serialization.MissingFieldException)?.missingFields?.firstOrNull()
         return if (missing != null) path + missing else path
     }
+
+    /** How a path is written: `home.lat`, `cities[2]`, `headers["x-api"]`; `config` for the root. */
+    fun text(path: List<Any>): String {
+        val out = StringBuilder()
+        path.forEachIndexed { position, segment ->
+            val first = if (position == 0) "config" else ""
+            when {
+                segment is Int -> out.append("$first[$segment]")
+                identifier(segment as String) -> out.append(if (position == 0) segment else ".$segment")
+                else -> out.append("$first[${kotlinx.serialization.json.JsonPrimitive(segment)}]")
+            }
+        }
+        return if (out.isEmpty()) "config" else out.toString()
+    }
+
+    private fun identifier(key: String): Boolean =
+        key.isNotEmpty() && (key[0] in 'A'..'Z' || key[0] in 'a'..'z' || key[0] == '_') &&
+            key.all { it in 'A'..'Z' || it in 'a'..'z' || it in '0'..'9' || it == '_' }
 }
 
 private class ListDecoder(private val items: List<Any?>) : ElementsDecoder() {

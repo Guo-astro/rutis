@@ -1,17 +1,14 @@
-//! What the host prints: each row's state as it changes, the state of
-//! each peer row's link as it changes, and a local runtime that went down
-//! or came back (`docs/guide/rutis-host.md`, "What `run` prints").
+//! What the host prints: each row's state as it changes, and a local
+//! runtime that went down or came back (`docs/guide/rutis-host.md`, "What
+//! `run` prints"). Connection rows print their own lines (`connect`).
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
 use std::time::Duration;
 
 use rutis::host::FiberState;
 
 use crate::errln;
 use rutis_bridge::runtime::{RuntimeHandle, RuntimeState};
-use rutis_bridge::{Failure, LinkState};
-use rutis_loader::peer::PeerResolver;
 use rutis_loader::report::{EntryInfo, EntryStatus, Wait};
 use rutis_loader::Loader;
 
@@ -73,81 +70,14 @@ fn phase(state: &RuntimeState) -> (rutis_loader::status::RuntimeState, Option<St
 
 pub use rutis_loader::status::how_it_ended;
 
-/// The category of a link failure, as printed: from [`Failure`], never
-/// from the error's text.
-pub fn category(failure: Failure) -> &'static str {
-    match failure {
-        Failure::Retryable => "unreachable",
-        Failure::AuthRejected => "auth-rejected",
-        Failure::Incompatible => "incompatible",
-    }
-}
-
 /// A wait as printed: whole seconds as `30s`, otherwise to a tenth,
 /// `2.1s`.
-fn seconds(wait: Duration) -> String {
+pub(crate) fn seconds(wait: Duration) -> String {
     let tenths = (wait.as_millis() + 50) / 100;
     match tenths % 10 {
         0 => format!("{}s", tenths / 10),
         tenth => format!("{}.{tenth}s", tenths / 10),
     }
-}
-
-/// A link's state against what was shown of it before (`shown`: whether it
-/// was ready, and the line last printed): what to keep for next time, and
-/// the line to print when it says something new. Node rows and the remote
-/// runtimes `runtimes.remote` connects both print their links this way.
-fn link_change(
-    shown: Option<(bool, Option<String>)>,
-    state: &LinkState,
-) -> ((bool, Option<String>), Option<String>) {
-    let (was_ready, printed) = shown.unwrap_or_default();
-    let ready = matches!(state, LinkState::Ready { .. });
-    match describe_link(state, was_ready) {
-        Some(line) if printed.as_ref() != Some(&line) => ((ready, Some(line.clone())), Some(line)),
-        _ => ((ready, printed), None),
-    }
-}
-
-/// One line for a link's state, after `was_ready` (whether the state
-/// last seen was `Ready`); `None` for states not printed (not started,
-/// dialing, a listener waiting for its first connection). The detail in
-/// parentheses is the error the link reports, which names no credentials:
-/// the transports never put a token in a reason.
-pub fn describe_link(state: &LinkState, was_ready: bool) -> Option<String> {
-    let retry = |wait: &Duration| match wait.is_zero() {
-        // A listening link does not retry: the far end connects again.
-        true => String::new(),
-        false => format!("; retrying in {}", seconds(*wait)),
-    };
-    Some(match state {
-        LinkState::Idle => return None,
-        // A listening link whose connection ended waits for the far end.
-        LinkState::Connecting if was_ready => "link down (the connection ended)".into(),
-        LinkState::Connecting => return None,
-        LinkState::Ready { .. } => "link connected".into(),
-        LinkState::Waiting {
-            failure: Failure::Retryable,
-            error,
-            retry_in,
-        } => format!("link down ({error}){}", retry(retry_in)),
-        LinkState::Waiting {
-            failure,
-            error,
-            retry_in,
-        } => format!(
-            "link refused: {} ({error}){}",
-            category(*failure),
-            retry(retry_in)
-        ),
-        LinkState::Stopped {
-            failure: Failure::Retryable,
-            error,
-        } => format!("link stopped ({error})"),
-        LinkState::Stopped { failure, error } => {
-            format!("link stopped: {} ({error})", category(*failure))
-        }
-    })
 }
 
 /// A runtime's state, as far as its line goes.
@@ -183,170 +113,45 @@ pub fn describe_runtime(state: Runtime<'_>, was_down: bool) -> Option<String> {
     }
 }
 
-/// The remote runtimes that `runtimes.remote` connects itself
-/// (`dial`, `listen`, `listen` + `instances`): their lines as they change,
-/// and their part of `rutis-host status`
-/// (`docs/design-remote-runtime-consistency-2026-10-26.md` §五).
-#[derive(Clone, Default)]
-pub struct Connections {
-    inner: Arc<std::sync::Mutex<Connected>>,
-}
-
-#[derive(Default)]
-struct Connected {
-    runtimes: Vec<(String, Connection)>,
-    /// The lines of instances' connections not printed yet: printed by
-    /// [`follow`], the oldest dropped past [`UNPRINTED`] when nothing
-    /// prints them.
-    lines: std::collections::VecDeque<String>,
-}
-
-/// How many lines of connections wait for [`follow`] at most.
-const UNPRINTED: usize = 256;
-
-#[derive(Clone)]
-enum Connection {
-    /// One runtime over a link: rutis dials it (`dials`), or it dials in.
-    Link {
-        state: tokio::sync::watch::Receiver<LinkState>,
-        dials: bool,
-    },
-    /// Many, each connection an instance: the ids connected now.
-    Instances(Vec<String>),
-}
-
-impl Connections {
-    /// The runtime `name`, connected over the link whose state is `state`.
-    pub fn link(&self, name: &str, state: tokio::sync::watch::Receiver<LinkState>, dials: bool) {
-        let mut inner = self.inner.lock().unwrap();
-        inner
-            .runtimes
-            .push((name.to_owned(), Connection::Link { state, dials }));
+/// The connection rows' part of `rutis-host status`, `connections:` with a
+/// line per row, the far ends connected and the remote plugins each
+/// registered; nothing when there is no connection row:
+///
+/// ```text
+/// connections:
+///   gpu: connected (gpu:embedder)
+///   phone: phone-1, phone-2
+/// ```
+pub fn connections(rows: &[crate::connect::Row]) -> String {
+    if rows.is_empty() {
+        return String::new();
     }
-
-    /// The runtime `name`, whose connections come in through an access
-    /// point, each an instance: its events from now on make its lines.
-    pub fn instances(
-        &self,
-        name: &str,
-        mut events: tokio::sync::broadcast::Receiver<rutis_bridge::AccessEvent>,
-    ) {
-        self.inner
-            .lock()
-            .unwrap()
-            .runtimes
-            .push((name.to_owned(), Connection::Instances(Vec::new())));
-        let (connections, name) = (self.clone(), name.to_owned());
-        tokio::spawn(async move {
-            use tokio::sync::broadcast::error::RecvError;
-            loop {
-                match events.recv().await {
-                    Ok(event) => connections.heard(&name, event),
-                    Err(RecvError::Lagged(_)) => continue,
-                    Err(RecvError::Closed) => return,
-                }
-            }
-        });
-    }
-
-    /// What `event` changes for the runtime `name`, and its line.
-    fn heard(&self, name: &str, event: rutis_bridge::AccessEvent) {
-        use rutis_bridge::AccessEvent;
-        let mut inner = self.inner.lock().unwrap();
-        let Some(Connection::Instances(ids)) = inner
-            .runtimes
-            .iter_mut()
-            .find(|(runtime, _)| runtime == name)
-            .map(|(_, connection)| connection)
-        else {
-            return;
+    let far = |connected: &crate::connect::Connected, name: &str| match connected.plugins.is_empty()
+    {
+        true => name.to_owned(),
+        false => format!("{name} ({})", connected.plugins.join(", ")),
+    };
+    let mut out = String::from("connections:\n");
+    for row in rows {
+        let line = match (row.dials, row.connected.as_slice()) {
+            (true, []) => "disconnected".to_owned(),
+            (true, [connected, ..]) => far(connected, "connected"),
+            (false, []) => "none connected".to_owned(),
+            (false, connected) => connected
+                .iter()
+                .map(|connected| far(connected, &connected.id))
+                .collect::<Vec<_>>()
+                .join(", "),
         };
-        let line = match event {
-            AccessEvent::Connected { id, .. } => {
-                ids.push(id.to_string());
-                format!("connected {id}")
-            }
-            AccessEvent::Replaced { id, .. } => {
-                // The newer connection's `connected` follows.
-                if let Some(at) = ids.iter().position(|known| *known == id.as_str()) {
-                    ids.remove(at);
-                }
-                format!("disconnected {id} (a newer connection of {id} took over)")
-            }
-            AccessEvent::Disconnected { id, reason, .. } => {
-                if let Some(at) = ids.iter().position(|known| *known == id.as_str()) {
-                    ids.remove(at);
-                }
-                format!("disconnected {id} ({reason})")
-            }
-            AccessEvent::Rejected { .. } => "refused (auth-rejected)".to_owned(),
-            AccessEvent::Failed { reason } => format!("refused ({reason})"),
-        };
-        if inner.lines.len() == UNPRINTED {
-            inner.lines.pop_front();
-        }
-        inner.lines.push_back(format!("runtime {name}: {line}"));
+        out.push_str(&format!("  {}: {line}\n", row.id));
     }
-
-    /// The lines of instances' connections since the last call.
-    fn take_lines(&self) -> Vec<String> {
-        self.inner.lock().unwrap().lines.drain(..).collect()
-    }
-
-    /// Each runtime over a link and its link's state now.
-    fn links(&self) -> Vec<(String, LinkState)> {
-        let inner = self.inner.lock().unwrap();
-        inner
-            .runtimes
-            .iter()
-            .filter_map(|(name, connection)| match connection {
-                Connection::Link { state, .. } => Some((name.clone(), state.borrow().clone())),
-                Connection::Instances(_) => None,
-            })
-            .collect()
-    }
-
-    /// Their part of `rutis-host status`, `connections:` with a line per
-    /// runtime; nothing when `runtimes.remote` connects none:
-    ///
-    /// ```text
-    /// connections:
-    ///   gpu: link connected
-    ///   mac: waiting for it to connect
-    ///   worker: worker-1, worker-2
-    /// ```
-    pub fn status(&self) -> String {
-        let inner = self.inner.lock().unwrap();
-        if inner.runtimes.is_empty() {
-            return String::new();
-        }
-        let mut out = String::from("connections:\n");
-        for (name, connection) in &inner.runtimes {
-            let line = match connection {
-                Connection::Link { state, dials } => {
-                    let state = state.borrow().clone();
-                    match describe_link(&state, false) {
-                        Some(line) => line,
-                        None if *dials => "connecting".to_owned(),
-                        None => "waiting for it to connect".to_owned(),
-                    }
-                }
-                Connection::Instances(ids) if ids.is_empty() => "none connected".to_owned(),
-                Connection::Instances(ids) => ids.join(", "),
-            };
-            out.push_str(&format!("  {name}: {line}\n"));
-        }
-        out
-    }
+    out
 }
 
-/// What [`follow`] watches: the rows, their links and the runtimes.
+/// What [`follow`] watches: the rows and the runtimes.
 #[derive(Clone)]
 pub struct Followed {
     pub loader: Loader,
-    pub peers: Arc<PeerResolver>,
-    /// The remote runtimes `runtimes.remote` connects itself.
-    pub connections: Connections,
     /// The local runtimes (`node`, `py`, `bun`) by name.
     pub runtimes: Vec<(String, RuntimeHandle)>,
     /// The compiled languages' runtimes (Go, Swift), those the
@@ -374,20 +179,14 @@ impl Followed {
 #[derive(Default)]
 pub struct Shown {
     rows: BTreeMap<String, String>,
-    /// Per peer row: whether its link was last seen ready, and the last
-    /// line printed for it.
-    links: BTreeMap<String, (bool, Option<String>)>,
     /// Per runtime: the last line printed for it, and how many times it
     /// had started then.
     runtimes: BTreeMap<String, (String, u64)>,
-    /// Per remote runtime over a link of its own: whether its link was
-    /// last seen ready, and the last line printed for it.
-    remote_links: BTreeMap<String, (bool, Option<String>)>,
 }
 
 impl Shown {
     /// The lines for what changed since the last call: runtimes' states,
-    /// then rows' states, then links' states.
+    /// then rows' states.
     pub fn changes(&mut self, followed: &Followed) -> Vec<String> {
         let states = followed.runtime_states();
         let mut out = self.runtime_changes(&states);
@@ -401,22 +200,7 @@ impl Shown {
         let any_away = states
             .iter()
             .any(|(_, state, _)| matches!(state, RuntimeState::Down(_) | RuntimeState::Starting));
-        out.extend(self.row_changes(&followed.loader, &followed.peers, &runtime, any_away));
-        out.extend(self.connection_changes(&followed.connections));
-        out
-    }
-
-    /// The lines for the remote runtimes `runtimes.remote` connects: each
-    /// link's state as it changes (`runtime gpu: link connected`), and each
-    /// instance's connection as it comes and goes.
-    fn connection_changes(&mut self, connections: &Connections) -> Vec<String> {
-        let mut out = Vec::new();
-        for (name, state) in connections.links() {
-            let (shown, line) = link_change(self.remote_links.remove(&name), &state);
-            out.extend(line.map(|line| format!("runtime {name}: {line}")));
-            self.remote_links.insert(name, shown);
-        }
-        out.extend(connections.take_lines());
+        out.extend(self.row_changes(&followed.loader, &runtime, any_away));
         out
     }
 
@@ -449,13 +233,10 @@ impl Shown {
     fn row_changes(
         &mut self,
         loader: &Loader,
-        peers: &PeerResolver,
         runtime: &dyn Fn(&str) -> Option<RuntimeState>,
         any_away: bool,
     ) -> Vec<String> {
-        let mut lines = Vec::new();
         let mut rows = BTreeMap::new();
-        let mut links = BTreeMap::new();
         let entries = loader.entries();
         // What every waiting row waits for, from one snapshot per look.
         let pending = |entry: &EntryInfo| matches!(&entry.status, EntryStatus::Running(snapshot) if snapshot.state == FiberState::Pending);
@@ -475,16 +256,6 @@ impl Shown {
                 Some(instance) => format!("{} in {:?}", entry.id, instance.plugin),
                 None => entry.id.clone(),
             };
-            let link = match (&entry.status, &entry.view) {
-                (EntryStatus::Running(_), Some(view)) => peers.link_state(view.instance()),
-                _ => None,
-            };
-            if let Some(link) = link {
-                let state = link.borrow().clone();
-                let (shown, line) = link_change(self.links.remove(&key), &state);
-                lines.extend(line.map(|line| (key.clone(), line)));
-                links.insert(key.clone(), shown);
-            }
             let line = match pending(entry) {
                 true => describe_waits(&waits.next().unwrap_or_default(), runtime),
                 false => describe(&entry.status),
@@ -515,9 +286,7 @@ impl Shown {
         for id in self.rows.keys().filter(|id| !rows.contains_key(*id)) {
             out.push(format!("{id}: removed"));
         }
-        out.extend(lines.into_iter().map(|(id, line)| format!("{id}: {line}")));
         self.rows = rows;
-        self.links = links;
         out
     }
 }
@@ -655,80 +424,6 @@ mod tests {
             "call to forecast.tomorrow failed: KeyError: 'region'\n    in weather:"
         );
         assert_eq!(describe(&failed(None)), "failed: KeyError: 'region'");
-    }
-
-    fn waiting(failure: Failure, error: &str, retry_in: Duration) -> LinkState {
-        LinkState::Waiting {
-            failure,
-            error: error.into(),
-            retry_in,
-        }
-    }
-
-    /// guarantee: host/link-state-output
-    #[test]
-    fn each_link_state_has_its_line() {
-        let cases = [
-            (LinkState::Idle, false, None),
-            (LinkState::Connecting, false, None),
-            (
-                LinkState::Connecting,
-                true,
-                Some("link down (the connection ended)"),
-            ),
-            (LinkState::Ready { generation: 3 }, false, Some("link connected")),
-            (
-                waiting(
-                    Failure::Retryable,
-                    "127.0.0.1:1: refused",
-                    Duration::from_millis(2_140),
-                ),
-                true,
-                Some("link down (127.0.0.1:1: refused); retrying in 2.1s"),
-            ),
-            (
-                waiting(
-                    Failure::AuthRejected,
-                    "gpu: upgrade refused with 401 Unauthorized",
-                    Duration::from_secs(30),
-                ),
-                false,
-                Some("link refused: auth-rejected (gpu: upgrade refused with 401 Unauthorized); retrying in 30s"),
-            ),
-            (
-                waiting(Failure::AuthRejected, "identity mismatch", Duration::ZERO),
-                false,
-                Some("link refused: auth-rejected (identity mismatch)"),
-            ),
-            (
-                waiting(Failure::Retryable, "did not greet", Duration::ZERO),
-                false,
-                Some("link down (did not greet)"),
-            ),
-            (
-                LinkState::Stopped {
-                    failure: Failure::Incompatible,
-                    error: "gpu does not declare runtime".into(),
-                },
-                false,
-                Some("link stopped: incompatible (gpu does not declare runtime)"),
-            ),
-            (
-                LinkState::Stopped {
-                    failure: Failure::Retryable,
-                    error: "the process exited".into(),
-                },
-                true,
-                Some("link stopped (the process exited)"),
-            ),
-        ];
-        for (state, was_ready, line) in cases {
-            assert_eq!(
-                describe_link(&state, was_ready).as_deref(),
-                line,
-                "{state:?}"
-            );
-        }
     }
 
     /// guarantee: host/runtime-state-lines
@@ -954,11 +649,12 @@ mod tests {
                 "waiting for runtime py (down: exited with exit status: 1)",
             ),
             (Some(RuntimeState::Idle), "waiting for runtime py (stopped)"),
-            (None, "waiting for runtime py"),
         ];
         for (state, line) in cases {
             assert_eq!(own_runtime_line("py", state.as_ref()), line);
         }
+        // Not a local runtime: a connection row's far end.
+        assert_eq!(own_runtime_line("gpu", None), "waiting for gpu");
     }
 
     #[test]

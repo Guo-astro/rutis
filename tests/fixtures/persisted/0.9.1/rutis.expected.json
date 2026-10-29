@@ -19,17 +19,7 @@
       ],
       "start": "eager",
       "project": "<dir>"
-    },
-    "remote": [
-      {
-        "name": "gpu",
-        "language": "python"
-      },
-      {
-        "name": "office-node",
-        "language": "node"
-      }
-    ]
+    }
   },
   "listen": [
     {
@@ -64,10 +54,6 @@
     {
       "id": "edge-fn",
       "name": "bun:./fn/edge.ts"
-    },
-    {
-      "id": "dns",
-      "name": "go-dns:resolver"
     },
     {
       "id": "probe",
@@ -110,44 +96,8 @@
       ]
     },
     {
-      "id": "office",
-      "name": "rutis-bridge/peer",
-      "config": {
-        "peer": "office",
-        "dial": "wss://office.example.com/rutis",
-        "export": [
-          "weather"
-        ],
-        "runtime": "office-node",
-        "identity": "host"
-      }
-    },
-    {
-      "id": "branch",
-      "name": "rutis-bridge/peer",
-      "config": {
-        "peer": "branch",
-        "listen": "public",
-        "identity": "edge"
-      }
-    },
-    {
-      "id": "gpu",
-      "name": "rutis-bridge/peer",
-      "config": {
-        "peer": "gpu",
-        "dial": "wss://gpu.example.com/rutis",
-        "runtime": "gpu",
-        "identity": "host"
-      }
-    },
-    {
       "id": "embedder",
       "name": "gpu:embedder"
-    },
-    {
-      "id": "clock",
-      "name": "peer:office/clock"
     }
   ]
 }

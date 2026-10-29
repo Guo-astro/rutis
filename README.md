@@ -224,7 +224,7 @@ The [design philosophy](docs/design-philosophy.en.md) explains these choices, an
 
 Go plugins use the module [`github.com/arcships/rutis/go/rutis`](go/rutis): the SDK, and the runtime each plugin binary carries. Swift plugins (macOS) use the Swift package of this repository, [`Rutis`](swift/README.md) (`.package(url: "https://github.com/arcships/rutis", from: "0.18.0")`), the same way.
 
-All of these form a release train: released together at one version, currently 0.17. Use the same version for every rutis package.
+All of these form a release train: released together at one version. Use the same version for every rutis package.
 
 ## Built with rutis
 
@@ -237,7 +237,11 @@ All of these form a release train: released together at one version, currently 0
 
 ## Documentation
 
-- **[Guides](docs/guide/README.en.md)**: organized by task. Plugins in Rust, TypeScript, Bun, Python, Go and Swift, running rutis-host, linking nodes, embedding in Rust, working with Cordis.
+- **[Guides](docs/guide/README.en.md)**, by layer:
+  - write plugins for a host: [TypeScript](docs/guide/typescript-plugin.en.md), [Bun](docs/guide/bun-plugin.en.md), [Python](docs/guide/python-plugin.en.md), [Go](docs/guide/go-plugin.en.md), [Rust](docs/guide/rust-plugin.en.md), [Swift](docs/guide/swift-plugin.en.md);
+  - assemble plugins with rutis-host: [rutis-host and rutis.json](docs/guide/rutis-host.en.md);
+  - build a host open to plugins: [in your own Rust product](docs/guide/open-host.en.md);
+  - reference: [plugin API](docs/guide/plugin-api.en.md), [embedding in Rust](docs/guide/rust-host.en.md), [connecting nodes](docs/guide/nodes.en.md), [Cordis](docs/guide/cordis.en.md).
 - **[Design philosophy](docs/design-philosophy.en.md)**: why rutis exists, the shape that follows, its costs and principles.
 - **[Application design guide](docs/development-guide.en.md)**: splitting an app into plugins, drawing the dependency graph, designing reloads and multiple instances.
 - **[Development handbook](docs/development-handbook.en.md)**: API usage, resource cleanup, events, troubleshooting and verification.
@@ -245,14 +249,14 @@ All of these form a release train: released together at one version, currently 0
 - **[Guarantee registry](docs/guarantees.en.md)**: what rutis promises, at what level, and which tests verify each promise.
 - **[API docs](https://docs.rs/rutis)**: the complete reference on docs.rs.
 - **Design records**: the [core design](docs/design-rust-port.en.md), the [spec-by-spec parity check against Cordis](docs/cordis-spec-parity-2026-08-18.en.md), and every design record in [docs](docs).
-- **Upgrading**: [0.16 → 0.17](docs/migration-0.17.en.md) · [0.8 → 0.9](docs/migration-0.8-to-0.9.en.md) · [0.7 → 0.8](docs/migration-0.7-to-0.8.en.md) · [from rutis-interop to 0.7](docs/migration-interop-to-0.7.en.md) · [0.6.0 → 0.6.1](docs/migration-0.6.0-to-0.6.1.en.md) · [0.5 → 0.6](docs/migration-0.5-to-0.6.en.md) · [0.3 → 0.5](docs/migration-0.3-to-0.5.en.md) · [0.1 → 0.2](docs/migration-0.1-to-0.2.en.md)
+- **Upgrading**: [0.18 → 0.19](docs/migration-0.19.en.md) · [0.17 → 0.18](docs/migration-0.18.en.md) · [0.16 → 0.17](docs/migration-0.17.en.md) · [0.13–0.15.1 → 0.16](docs/migration-0.16.en.md) · [0.12 → 0.13](docs/migration-0.13.en.md) · [0.8 → 0.9](docs/migration-0.8-to-0.9.en.md) · [0.7 → 0.8](docs/migration-0.7-to-0.8.en.md) · [from rutis-interop to 0.7](docs/migration-interop-to-0.7.en.md) · [0.6.0 → 0.6.1](docs/migration-0.6.0-to-0.6.1.en.md) · [0.5 → 0.6](docs/migration-0.5-to-0.6.en.md) · [0.3 → 0.5](docs/migration-0.3-to-0.5.en.md) · [0.1 → 0.2](docs/migration-0.1-to-0.2.en.md)
 
 ## Platforms and status
 
 rutis is at 0.x and its API is still evolving. Breaking changes are listed in the release notes and come with a migration guide.
 
 - **The core** is pure Rust with tokio, tokio-util, thiserror, serde and serde_json as its only dependencies; it needs Rust 1.88 or later.
-- **Language runtimes and rutis-host** (Node, Bun, Python and Go rows, remote runtimes, shared services, peers, Cordis mounts) run on Linux, macOS and Windows x64 (MSVC); they need Node 22+, Bun 1.4+ or Python 3.10+; Go plugins are compiled binaries, built with Go 1.24+. Swift plugins are compiled binaries for macOS 14+, built with a Swift 6.2 toolchain. The Bun runtime is not tested on Windows yet.
+- **Language runtimes and rutis-host** (Node, Bun, Python and Go rows, remote runtimes, shared services, peers, Cordis mounts) run on Linux, macOS and Windows x64 (MSVC); they need Node 22+, Bun 1.4+ or Python 3.12+; Go plugins are compiled binaries, built with Go 1.24+. Swift plugins are compiled binaries for macOS 14+, built with a Swift 6.2 toolchain. The Bun runtime is not tested on Windows yet.
 - **dylib plugins** load on Linux, macOS and Windows x64 (MSVC).
 
 ## Contributing

@@ -451,7 +451,7 @@ public let greeter = Rutis.define(Plugin(name: "greeter") { ctx in
 
 #### Rust
 
-事件类型怎样写、`ctx.on` 与 `ctx.emit` 见 [写一个 Rust 插件：事件](rust-plugin.md#事件)。监听器看 `call.mode()` 知道这次分发的方式；`on_sync` 登记同步监听器；`listen::<E>()` 给出名字、前缀与选项：
+事件类型怎样写、`ctx.on` 与 `ctx.emit` 见 [写一个 Rust 插件：事件](rust-plugin.md#5-发出和监听事件)。监听器看 `call.mode()` 知道这次分发的方式；`on_sync` 登记同步监听器；`listen::<E>()` 给出名字、前缀与选项：
 
 ```rust
 use rutis::events::Mode;
@@ -719,8 +719,6 @@ incompatible session: the far end speaks protocol 2, this side 4: upgrade the fa
 
 一个服务名在 rutis 里只有一个提供者：别的插件（任何语言、任何节点）已经提供同名服务时，后提供的插件失败（装载时提供的装载失败，装载后才提供的在提供时失败），错误写明双方，例如 `service weather is already provided by row forecast: row weather cannot provide it too`。只有这个插件失败：其他插件（同一运行时里的也一样）继续用原来的提供者。没有声明的服务在插件运行后才出现，依赖它的插件照常等它出现；`rutis-host check` 对这类依赖写一条告警 `nothing declares <服务>; it may be provided at runtime by …`，不算失败（`check --strict` 时算，见 [检查配置](rutis-host.md#检查配置)）。从线程或 goroutine 里在 `apply` 返回前提供的也一样：插件装载完成前宿主已经处理完它，重名时装载就失败。
 
-0.12 的运行时被比 0.12 旧的宿主挂载时，宿主不接收没有声明的服务，它们只在本进程里可见；插件提供这样的服务时，运行时按名字只在 stderr 提示一次：`rutis: service <名字> is not declared in provides, and this host (older than 0.12) does not take undeclared services; declare it or upgrade rutis-host`。在 `provides` 里声明它，或者升级 rutis-host。
-
 宿主停止时卸载所有插件，每个清理执行一次，然后运行时进程退出。宿主没有卸载就没了（被强制结束、崩溃）时，运行时发现和宿主的连接断开，自己卸载所有插件，然后退出进程；插件留下的定时器、套接字、线程、goroutine 不会让它继续运行。
 
 清理有截止时间：宿主停止时是 `rutis-host` 的 `--shutdown-timeout`（默认 10 秒，见 [rutis-host](rutis-host.md#停止与退出码)）；宿主没了时，运行时用同一个时间（`rutis-host` 把它放在环境变量 `RUTIS_SHUTDOWN_TIMEOUT` 里传给运行时，没有时 10 秒）。过了截止时间还没完成的清理，以及排在它后面的，不再等待：运行时在 stderr 写一行说明，以退出码 1 退出。所以必须完成的工作不要只靠清理；清理里不要无限等待。Node 和 Bun 里，同步阻塞的清理（死循环）占住线程，截止时间无法打断。
@@ -840,7 +838,7 @@ Python 里看方法的每一段：`def` 方法整个，`async def` 方法两次 
 
 插件没处理的错误（JavaScript 里没处理的 promise 拒绝、定时器里抛出的异常，Python 任务里没处理的异常）不结束进程（0.18 起，#688）：
 
-- **追得到是哪一行时，这一行失败**，写明原因和位置，例如 `weather: failed: unhandled rejection: Error: no region`，下面是插件自己的堆栈（`at … (file:///…/weather.mjs:12:9)`）；错误自己的 `code`、`data` 照常带着。正在加载的行加载失败（`failed in apply: unhandled rejection: …`）。同一运行时里的其他行继续运行。行的 `apply`、服务方法、监听器、交出去的函数带着这一行的上下文运行，它们启动的任务、promise 也带着。一行直接调用同一运行时里另一行的服务、错误的堆栈里最内层的插件文件是另一行的时，分不清是哪一行没处理它（堆栈只说明它在哪里抛出），按来源不明报告，不记到任何一行。Python 总是这样追（3.12 起读任务的上下文，3.10、3.11 在任务创建时记下）；插件还拿着的任务，异常不算没处理，不报告。Node 只在 `rutis-host dev` 下追：它给每个 promise 记下所属的行（`async_hooks`），这对每个 promise 都有开销。
+- **追得到是哪一行时，这一行失败**，写明原因和位置，例如 `weather: failed: unhandled rejection: Error: no region`，下面是插件自己的堆栈（`at … (file:///…/weather.mjs:12:9)`）；错误自己的 `code`、`data` 照常带着。正在加载的行加载失败（`failed in apply: unhandled rejection: …`）。同一运行时里的其他行继续运行。行的 `apply`、服务方法、监听器、交出去的函数带着这一行的上下文运行，它们启动的任务、promise 也带着。一行直接调用同一运行时里另一行的服务、错误的堆栈里最内层的插件文件是另一行的时，分不清是哪一行没处理它（堆栈只说明它在哪里抛出），按来源不明报告，不记到任何一行。Python 总是这样追（读任务的上下文）；插件还拿着的任务，异常不算没处理，不报告。Node 只在 `rutis-host dev` 下追：它给每个 promise 记下所属的行（`async_hooks`），这对每个 promise 都有开销。
 - **追不到时，写明来源不明**：`runtime node: an unhandled error from an unknown row: <堆栈>`（只列插件自己的帧，一帧都不是插件的时候列出完整堆栈），哪一行都不失败。Node 在 `rutis-host run` 下、Bun 总是这样；Python 里不在任何一行里运行的任务和回调也是这样。Python 线程里没处理的异常照 Python 自己的规则打印，线程结束，进程继续。要知道是哪一行，用 `rutis-host dev` 再跑一次。
 - **插件自己结束进程**（`process.exit`、`os._exit`）：进程照常结束，同一运行时里的行都停下等待运行时（见[生命周期](#生命周期)），运行时先写一行 `runtime node: row weather called process.exit(1)`。是哪一行，`dev` 下的 Node 与 Python 按当前在跑的行，其余按栈上插件的文件认（只有一行对得上时才写）；Bun 的尾调用（`() => process.exit(1)`）不留插件的栈帧，那时不写行名。
 - Go、Swift、Kotlin 运行时不变：panic、未捕获的异常照各语言自己的规则处理。
@@ -1012,7 +1010,6 @@ final class Warmer: @unchecked Sendable {
 - 只有写在文件顶层的 `@RutisClient` 协议能收对象：宏为它生成的 `rutisObjectProxy` 重载只在文件顶层对 Swift 可见。嵌在别的类型里的 `@RutisClient` 协议照常可以 `ctx.use`，但用它做参数类型时收不了对象（`bad-argument`）。可选类型（`(any Cache)?`）的参数和返回值在 0.18 里也收不了对象，写 `any Cache`。
 - 参数类型是数据（`Codable` 类型、`String` 等）时，这次调用以 `bad-argument` 失败：`warmer.place: argument 1 should be a Spot, got an object (an object is received only as a @RutisClient protocol or Any)`。
 - 把收到的代理或 `Rutis.Advanced.Client` 再交出去，发出的是原来那个对象。
-- 对象不能交给 0.18 之前的一端：直接连着这样的一端时，这次调用以 `bad-value` 失败（`… cannot cross to main; pass plain data or a function instead, or upgrade main to rutis 0.18`），会话继续。
 
 Swift 应用、Kotlin 应用、Rust 见 [Swift 应用](swift-app.md#带方法的对象)、[Kotlin 应用](kotlin-app.md#带方法的对象)、[Rust 插件](rust-plugin.md#对其他语言提供服务)。
 
@@ -1064,7 +1061,7 @@ export default definePlugin({
 ```
 
 - 能交出的：Node、Bun 的 `definePlugin` 结果；Node 里的 Cordis 插件（函数、类、带 `apply` 的对象）；Python 的 `define_plugin` 结果；Go 的 `rutis.Define` 结果（`*rutis.Definition`，客户端的函数字段直接写这个类型）；Swift、Kotlin 的 `Rutis.define` 结果（客户端的参数类型写 `Rutis.Definition`、`Plugin`，见下面的[各语言怎样交出插件定义](#各语言怎样交出插件定义)、[Kotlin 应用](kotlin-app.md#2-写插件)）。
-- 连进来的应用（Swift、Kotlin 的 `RutisApp`）交出的插件定义只能挂在这个连接所在的实例里，或更里面。
+- 连进来的应用（Swift、Kotlin 的 `RutisApp`）交出的插件定义在这个应用里运行；应用的连接断开时，从它挂出的每一份随之结束。
 - 收的一方是 Rust：参数或返回值的类型写 `rutis::Definition`，用 `ctx.plugin(def.at(&ctx, config)?)` 挂上，见 [Rust 宿主](rust-host.md#收插件定义)。其他类型的参数照旧：要数据的参数收到插件定义时这次调用失败。
 - 每一份在定义它的运行时里运行，按挂上它的实例隔离，按它的 `inject` 门控。
 - 插件定义属于交出它的那一行的这一代：这一行卸载、重载或结束时，先结束从它挂出的每一份，等它们清理完，再卸载这一行。之后再挂会失败。运行时进程退出时，这些副本也结束。
@@ -1260,18 +1257,21 @@ Go 的 `rutistest` 和 Swift 的 `RutisTest` 让插件在它真正的运行时�
 
 ### Go 的测试工具
 
-`github.com/arcships/rutis/go/rutis/rutistest`。测试一侧就是总线的宿主：
+`github.com/arcships/rutis/go/rutis/rutistest`。测试进程跑 Go 运行时，并启动一次 `rutis-host test`（`rutis-host` 在 `PATH` 上，或由 `RUTIS_HOST` 给出路径）：一个自己没有行的宿主，与这个运行时建一条会话（Unix 上是一对 socket，`--channel fd:3`；Windows 上与 `RUTIS_LOCAL_HANDOVER=loopback` 下是一条回环连接）。每次 `Load` 都是这个宿主的一行：宿主检查它的配置并补上默认值，等它注入的服务，分发它的事件。测试给的服务、测试的监听和发出，都是测试自己在同一个运行时里的插件，用的是每个插件都用的接口。行在所属测试结束时卸载；宿主留给下一个测试，随测试进程结束。测试与插件之间的调用，是同一个 Go 运行时里两行之间的调用。
 
 | 名字 | 作用 |
 | --- | --- |
-| `loaded.Emit`、`Parallel`、`Serial`、`Waterfall`、`Bail`、`Filter` | 从这一行的作用域发出 |
-| `loaded.On(name, fn, options...)` | 像宿主一样监听：插件发出这个名字的事件随后经测试一侧，就像经 rutis；选项是 `advanced.Prepend()`、`advanced.Global()`；返回撤销函数 |
-| `loaded.Load(config, options...)` | 在同一个运行时里再加载一行 |
-| `loaded.Update(config)` | 像 rutis 一样修改一行的配置，也就是重启这一行：先卸载，再用新配置装载，监听器重新登记，排在其他监听器之后（rutis 不给 Go 的行发 `rows.update`，配置变了就重启；清理运行时这一行已经不在，清理里发出的事件会失败） |
-| `loaded.Reported()` | 运行时报告的 `Emit` 监听器失败 |
-| `loaded.Provided()`、`loaded.Scope()`、`loaded.Unload()` | 插件现在提供的服务名；这一行的作用域链；卸载 |
-| `loaded.Service(name)` | `Call(ctx, method, &result, args...)`、`Methods()`，`Bind(&target)` 像 `ctx.Use` 一样填好函数字段的结构体 |
-| `Load`、`TryLoad`、`loaded.Load` 的选项 | `rutistest.InScope("t1/s1", groups...)` 加载到一个作用域；`InChain(chain...)` 加载到一条作用域链（最外层在前）；`Row(key)` 行名（默认 `test`，然后 `test-2`、`test-3`……）；`RuntimeName(name)` 描述里的运行时名（默认 `go`，只有 `Load` 的算数：所有行都在一个运行时里） |
+| `loaded.Emit`、`Parallel`、`Serial`、`Waterfall`、`Bail`、`Filter` | 从测试的插件、在宿主的总线上发出 |
+| `loaded.On(name, fn, options...)` | 以测试的插件监听；选项是 `advanced.Prepend()`、`advanced.Global()`；返回撤销函数 |
+| `loaded.Load(config, options...)` | 再加载插件的一行，用同样的服务 |
+| `loaded.Update(config)` | 像 rutis 对 Go 的行那样改配置，也就是重启；Schema 不接受的配置让测试失败，这一行保持原配置 |
+| `loaded.Reported()` | 这一行加载以来运行时和宿主报告的：失败的 `Emit` 监听器、过滤器、发出 |
+| `loaded.Provided()`、`loaded.Unload()` | 这一行现在提供的服务名；卸载 |
+| `loaded.Service(name)` | 注入它的插件拿到的那个服务：`Call(ctx, method, &result, args...)`、`Methods()`，`Bind(&target)` 像 `ctx.Use` 一样填好函数字段的结构体 |
+| `TryLoad` | 行起不来时交回它那一行（`weather: config: city is required`）的 `Load` |
+| `Load`、`TryLoad`、`loaded.Load` 的选项 | `Row(key)` 给行 id（默认插件名，然后 `<名字>-2`、`<名字>-3`……） |
+
+宿主里一个服务名只有一个提供者：测试给两次 `Load` 的同名服务，两行都还加载着时是同一个提供者，两行拿到同一个值；给另一个值时第二次 `Load` 失败。用它的最后一行卸载时，提供者随之卸载。
 
 [上面 Go 的 `greeter`](#go) 的测试：
 
@@ -1280,7 +1280,7 @@ func TestEvents(t *testing.T) {
 	loaded := rutistest.Load(t, Plugin, struct{}{}, nil)
 	said := make(chan any, 1)
 	loaded.On("greeting/said", func(_ context.Context, args ...any) (any, error) {
-		said <- args[0] // 测试一侧像宿主一样监听
+		said <- args[0] // 测试的插件在宿主的总线上监听
 		return nil, nil
 	})
 	var text string
@@ -1297,7 +1297,7 @@ func TestEvents(t *testing.T) {
 }
 ```
 
-插件交给测试替身的定义（替身方法的参数是 `*rutis.Definition`）可以直接交给 `rutistest.Load`：它像 rutis 挂一份那样，在定义它的那个运行时里再加载一行，用的是插件 `Apply` 里准备好的东西；这次传的 `services` 是这一份自己的，像它所在实例的服务；它在 `Provides` 里声明的服务也只属于这一份。所以只提供声明过的服务时，同一个定义的几份可以同时加载；没声明的服务名提前不知道，不隔离。描述和报告里，副本的行用来源行的 id。定义属于交出它（作为参数、作为它提供的服务的返回值，或在它发出的事件里）的那一行：这一行卸载或被 `Update`（重启）时，这些副本先卸载，之后再 `Load` 这个定义会失败。副本的配置挂上后不变：在副本上调用 `Update` 或 `Load` 会失败。没有 `Name` 的定义也可以直接 `rutistest.Load`。
+插件交给测试替身的定义（替身方法的参数是 `*rutis.Definition`）可以直接交给 `rutistest.Load`：在定义它的那个运行时里再加载一行，用的是插件 `Apply` 里准备好的东西。没有 `Name` 的定义也可以直接 `rutistest.Load`。
 
 ### Swift 的测试工具
 
@@ -1305,13 +1305,15 @@ func TestEvents(t *testing.T) {
 
 | 名字 | 作用 |
 | --- | --- |
-| `loaded.emit`、`parallel`、`serial`、`waterfall`、`bail` | 从这一行的作用域发出 |
-| `loaded.on(name, prepend:, global:) { ... }` | 像宿主一样监听 |
-| `loaded.load(config:row:scope:)` | 再装载一行；作用域写 `RutisTest.scope("t1/s1")` |
-| `loaded.update(config:)` | 像 rutis 一样改一行的配置 |
-| `loaded.reported` | 运行时报告的 `emit` 监听器失败 |
-| `loaded.provided`、`loaded.row`、`loaded.scope`、`loaded.unload()`、`loaded.close()` | 插件现在提供的服务名；行名；作用域；卸载这一行；结束测试的宿主 |
-| `RutisTest.load(_:config:services:row:scope:runtimeName:)` | `runtimeName` 是描述里的运行时名 |
+| `loaded.emit`、`parallel`、`serial`、`waterfall`、`bail` | 像同一运行时里的插件一样发出 |
+| `loaded.on(name, prepend:, global:) { ... }` | 像同一运行时里的插件一样监听 |
+| `loaded.load(config:row:isolate:)` | 再装载插件的一行 |
+| `loaded.update(config:)` | 改一行的配置：宿主检查它，插件重新 apply |
+| `await loaded.reported` | 测试开始以来报告的：运行时写的 `emit` 监听器失败的行，再加宿主为测试的行写的行 |
+| `loaded.provided`、`loaded.row`、`loaded.unload()`、`loaded.close()` | 这一行现在提供的服务名；行 id；卸载这一行；卸载测试的所有行 |
+| `RutisTest.load(_:config:services:row:isolate:)` | `row` 是行 id（默认是插件名）；`isolate` 是这一行的 `isolate`（服务名：`true` 或标签），与 rutis.json 相同 |
+
+插件作为真实宿主的一行运行：测试进程跑 Swift 运行时，`rutis-host test`（在 `PATH` 上，或 `RUTIS_HOST` 给的路径）跑一个与它建会话的宿主。宿主检查这一行的配置并填默认值，等它 inject 的服务都在了才启动它，并分发所有事件。测试一方（它的服务、`on` 与五种发出）是同一运行时里的一个插件，所以测试与插件之间的值不跨进程；跨进程的行为由各运行时自己的测试检查。整个测试进程共用一个宿主；`close()` 卸掉这个测试的行。行都装在根上：测试工具不把行放进作用域。设备和 iOS 模拟器上没有 `rutis-host`：在那里用自己装插件的应用（`RutisApp`，[Swift 应用指南](swift-app.md)）测试。
 
 替身收到的插件定义就是这个定义本身，可以直接 `RutisTest.load(definition, config: ...)`，和宿主挂它一样；替身把它交回插件时，插件拿到的也是原来那个。
 
@@ -1331,7 +1333,7 @@ func TestEvents(t *testing.T) {
 
 需要等待事件循环推进的结果（例如在同步方法里等一个 Promise）不能放在同步方法里，会得到 `SyncWaitCycle` 错误：改成 `async`。
 
-`async` 方法在回复之前就执行到它的第一个 `await`，和 JS 的 async 函数一样；从不挂起的 `async` 方法因此在同步调用链上也能被等待。各个支持的 Python 版本都是这样（3.12 起是 asyncio 自带的 eager start，3.10、3.11 由 rutis 实现）。
+`async` 方法在回复之前就执行到它的第一个 `await`，和 JS 的 async 函数一样；从不挂起的 `async` 方法因此在同步调用链上也能被等待。
 
 ## 调用等多久
 
@@ -1355,6 +1357,42 @@ async 方法的调用方放弃等待（例如超时）时，调用被取消：�
 - **Swift**：调用方放弃时取消方法的 Task（`Task.checkCancellation()` 抛 `CancellationError`）；在已取消的 Task 里发出的调用抛 `CancellationError`；取消后仍要调用（比如报告自己已停下）时在 `Task { … }` 里调用，它带着调用链、不带取消。
 - **Rust**：丢弃调用的 future 即取消。
 - 事件的分发怎样取消见[事件：生命周期](#生命周期)。
+
+## 自建连接：`sessions.open`
+
+要让 rutis 经一条自己的连接（中继、蓝牙、别的传输）使用对面的插件，写一个连接插件：拿到一条能收发二进制消息的连接，交给服务 `sessions`。对面可以是语言运行时、自己装插件的应用，或另一个 rutis。
+
+```ts
+type Close = { kind: 'done' } | { kind: 'replaced' } | { kind: 'rejected'; reason: string }
+interface Far  { send(message: Uint8Array): void; close(why: Close): void }
+interface Near { receive(message: Uint8Array): Promise<void>; end(why: Close): void }
+sessions.open(far: Far): Near
+```
+
+```ts
+export default definePlugin({
+  name: 'relay',
+  inject: ['sessions'],
+  async apply(ctx, config: { url: string }) {
+    const ws = new WebSocket(config.url)
+    ws.binaryType = 'arraybuffer'
+    await new Promise(ok => ws.addEventListener('open', ok, { once: true }))
+    const near = ctx.sessions.open({
+      send: m => ws.send(m),
+      close: why => ws.close(why.kind === 'rejected' ? 4003 : why.kind === 'replaced' ? 4002 : 1000),
+    })
+    ws.onmessage = e => near.receive(new Uint8Array(e.data))
+    ws.onclose = () => near.end({ kind: 'done' })
+    ctx.effect(() => () => ws.close())
+  },
+})
+```
+
+- 要在 `inject` 里写 `sessions`；没写时 `open` 失败：`declare sessions in inject`。
+- 会话挂在调用 `open` 的插件下面：这个插件卸载，它的会话与对面的插件全部卸载。
+- `receive` 在消息进入会话的接收队列后完成；队列 64 条，满了就等，背压由此传回连接。
+- 对面的插件在本端叫 `<对面 id>:<插件>`；要让对面运行一个插件，在 rutis.json 里写行 `<连接行>:<插件>`（例如 `relay:contacts`），对面不在时这一行等待。
+- Rust 宿主里的连接插件直接用 `rutis_bridge::Session`：`ctx.plugin(Session::new(channel))`，宿主要在根 ctx 提供 `LocalId`（rutis-host 已经提供）。
 
 ## 版本
 

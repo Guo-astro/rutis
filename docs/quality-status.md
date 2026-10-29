@@ -73,7 +73,7 @@
 | Q9.1.1 | 设计文档包含级别、风险、验收 | 部分 | 多数设计有验收节；PR 模板加了持久化格式与保证登记的检查项（#284、#276）；设计文档没有标级别与风险 |
 | Q9.3.2 | 不兼容变化检测与跨版本相遇 | 部分 | `cargo semver-checks` 只提示；协议版本不匹配时说明升级哪一端（#335）；上一个发布版本（运行时、Go SDK、`rutis-host`、节点）与当前代码相遇，断言正常工作或在加载、连接时说明升级哪一端（`tests/e2e/tests/cross_version.rs`，完整运行，#209 → #426） |
 | Q9.4 | 保证登记 | 部分 | [登记表](guarantees.md)已建立（#276、#310，之后各 PR 顺带登记），测试注释写 `guarantee: <编号>`；0.10 作为基线，Q9.4.4 从 0.11 起执行（方案 Q3）。`loader/` 族与 `host/` 其余条目未登记（#181） |
-| Q10.2 | 支持矩阵最低与最新版本 | 满足 | Linux 任务用最低版本（Node 22、Python 3.10、websockets 15、Bun 1.4.0、Go oldstable），macOS、Windows 用最新版本；MSRV 1.88 由 `msrv` 任务验证（#204 → #256；ci.md §9）。运行时 × 通道 × 平台矩阵写在 ci.md §4，不运行的格子写原因（#176） |
+| Q10.2 | 支持矩阵最低与最新版本 | 满足 | Linux 任务用最低版本（Node 22、Python 3.12、websockets 15、Bun 1.4.0、Go oldstable），macOS、Windows 用最新版本；MSRV 1.88 由 `msrv` 任务验证（#204 → #256；ci.md §9）。运行时 × 通道 × 平台矩阵写在 ci.md §4，不运行的格子写原因（#176） |
 | Q11.3.2 | 不以覆盖率为门槛 | 满足 | — |
 | Q12.1 | 分级运行 | 部分 | PR 按改动选择；每晚（`nightly.yml`，main 有新提交时）运行全部任务、五平台安装（`install.yml`）、Windows dylib、MSRV、feature 组合、两机可复现，以及 `stress.yml`（内核多轮、多进程测试多轮 #245、两个浸泡、shuttle 模型一百万次迭代、三个模糊测试目标各 20 分钟 #425）；跨版本相遇（`ci.yml` 完整运行的 `e2e`，#209）、最新已发布 Cordis 插件的基线（只报告，#190）、S5 容器 + netem（只报告，#341 → #433）；每周依赖检查与 CI 度量。缺：每周的长时间宿主浸泡与基准测试（#192） |
 | Q12.3 | 按改动选择 | 满足 | `changes` 任务按改动打开开关；每晚 `nightly.yml` 在 main 有新提交时运行全部任务（`ci.yml` 的 `all`），也可以手动运行（#203 → #213、#369；ci.md §3）。发布前：release.md 第 2 步确认发布的提交上有通过的每晚运行；`release.yml` 自己调用完整 CI 见 CI 重新设计的第 3 步 |
@@ -110,7 +110,7 @@
 | 条件 | 取值 | 来源 |
 | --- | --- | --- |
 | 操作系统 | Linux、macOS、Windows x64（MSVC）；Bun 不含 Windows | guide/README |
-| 语言环境 | Node ≥ 22、Python ≥ 3.10、Rust ≥ 1.88、Bun ≥ 1.4、Go ≥ 1.24 | guide、0.10 发布说明 |
+| 语言环境 | Node ≥ 22、Python ≥ 3.12、Rust ≥ 1.88、Bun ≥ 1.4、Go ≥ 1.24 | guide、0.10 发布说明 |
 | 可选依赖 | `websockets` ≥ 15（Python 网络） | pyproject |
 | 进程结构 | 宿主一个进程；每种语言运行时至少一个进程；插件可能自己再启动子进程 | 多语言设计 |
 | 网络 | 本机：Unix socket / 继承 fd / loopback TCP；跨机：WebSocket + TLS，可能经过反向代理，可能断网、半开、延迟 | 网络栈设计 |
@@ -282,14 +282,14 @@ CI：`ci.yml`（PR 按改动选择任务，每晚全部运行；Linux 全量与�
 | B6 | 运行时包缺失、解释器找不到、端口被占、证书文件错误时，错误信息不足 | 诊断 | 中 | 高 | P1 | G（每种错误一个快照） | PR | 有（`errors.rs`，#217） |
 | B7 | 凭据出现在日志、错误信息、状态输出、trace 里 | 安全 | 高 | 低 | P1 | E 的公共断言：所有捕获输出中查不到 token 值 | PR | 有（E2E 残余检查，#221、#277；S5 #322） |
 | B8 | 无 TLS 的监听绑定到非回环地址 | 安全 | 高 | 低 | P1 | U | PR | 需核对 |
-| B9 | 状态输出格式变化，破坏运维脚本 | 兼容 | 低 | 中 | P2 | G | PR | 部分：link 状态与监听地址的行有测试（`links.rs`，#336） |
+| B9 | 状态输出格式变化，破坏运维脚本 | 兼容 | 低 | 中 | P2 | G | PR | 部分：连接行的状态与监听地址的行有测试（`rutis-host/src/connect/dial.rs`、`remote_runtimes.rs`，#336） |
 | B10 | 进程管理器重启宿主时，上一次的 socket 文件或端口没有释放，新进程起不来 | 残留 | 中 | 中 | P1 | E（kill -9 后立即重启） | PR | 部分：Ctrl-C 停止后用同一份配置立即重启、监听端口能再次绑定（S3，#317）；宿主被 `kill -9` 后立即重启没有验证（残余检查只确认端口可以再绑定） |
 
 #### 场景 C：跨语言组合
 
 **内容**：同一个宿主里，Rust、TS、Python 插件互相提供和使用服务。设计哲学 §二："多语言插件不是附加功能，而是它存在的理由"。
 
-**经过**：内核门控、loader 行、两段放行（`RuntimeRows`）、运行时进程、会话转发、服务投影。
+**经过**：内核门控、loader 行、两段放行（`SessionRows`）、运行时进程、会话转发、服务投影。
 
 **条件**：多个运行时同时冷启动；运行时进程可能崩溃；同步和异步调用交织；三个平台（Windows 走 loopback TCP）。
 
@@ -342,7 +342,7 @@ CI：`ci.yml`（PR 按改动选择任务，每晚全部运行；Linux 全量与�
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | E1 | 断网时进行中的调用报告成功，或被自动重试导致副作用执行两次 | 故障 | 高 | 中 | P0 | FI（`fault::drop_and_close` 在第 N 帧后断开，对端计数副作用） | PR | 有（`fault_links.rs` #285；S5 两个进程之间 #322） |
 | E2 | 半开连接没有在 30 s 内发现 | 故障 | 中 | 中 | P1 | FI（`half_open` + 暂停时钟） | PR | 有 |
-| E3 | 重连退避参数不符合文档（0.5 s 起、30 s 封顶、±20%、稳定 60 s 后重置；凭据被拒 30 s；不兼容停止） | 语义 | 中 | 中 | P1 | U（暂停时钟，精确断言每次间隔） | PR | 部分：`link.rs` 单元测试覆盖退避序列（0.5 s 起、30 s 封顶、±20%、reset）；link 实际重试时序、稳定 60 s 后重置、凭据被拒后 30 s 未测 |
+| E3 | 重连退避参数不符合文档（0.5 s 起、30 s 封顶、±20%、稳定 60 s 后重置；凭据被拒 30 s；不兼容停止） | 语义 | 中 | 中 | P1 | U（暂停时钟，精确断言每次间隔） | PR | 部分：`rutis-host/src/connect/dial.rs` 的测试覆盖退避序列（0.5 s 起、30 s 封顶、±20%、reset）、稳定 60 s 后重置、凭据被拒后 30 s（暂停时钟） |
 | E4 | 远程运行时接管时新旧租约同时存在；旧会话的迟到指令作用于新租约 | 语义 | 高 | 低 | P1 | TLA（设计）；K（`leases.rs`） | 设计、PR | 有：TLA+（`specs/remote-lease/`，#210）检查接管时最多一个租约、接入点每个 id 最多一个实例、旧会话的指令不作用于新租约；K（`leases.rs`） |
 | E5 | 吊销凭据后仍能连接；握手进行中撤销注册，旧握手仍完成移交 | 安全 | 高 | 低 | P1 | K（`link.rs`）；TLA | PR | 部分：TLA+（#210）检查注册撤销后旧握手不移交；运行中吊销的身份层钩子（#273）在 0.19 删除（没有生产调用方），断开现有连接靠停掉那一行，换 token 要重启 rutis-host，S5 没有这一步 |
 | E6 | TLS 校验漏洞：证书过期、CA 不符、主机名不匹配时仍然连接 | 安全 | 高 | 中 | P0 | U（三种负向，Rust 和 Python 各自） | PR | 有（#297；S5 第 6 步 #322） |
@@ -358,7 +358,7 @@ CI：`ci.yml`（PR 按改动选择任务，每晚全部运行；Linux 全量与�
 
 #### 场景 F：接入已有的 Cordis 插件与 Cordis 应用
 
-**内容**：三种方式——Cordis 插件作为 rutis-loader 的行运行；在 Rust 应用里挂载 Cordis 插件，构建时生成 Rust 类型；已有的 Cordis 应用用 `@arcships/rutis-runtime/bridge` 接成节点。
+**内容**：两种方式——Cordis 插件作为 rutis-loader 的行运行；在 Rust 应用里挂载 Cordis 插件，构建时生成 Rust 类型。已有的 Cordis 应用作为节点（`@arcships/rutis-runtime/bridge`）在 0.19 删除：Cordis 应用用 Node 运行时跑它的插件。
 
 **经过**：Node 运行时、Cordis 4.0.4、生成器（`generate.mjs`）、服务投影、事件转发、边界规则。
 
@@ -587,7 +587,7 @@ TLC 找到过两处握手期间吊销身份仍建立会话，已修复（#432）
 | PR 上新推送取消旧运行；main 上按 ref 分组，运行中的不取消 | Q12.4 | #224 |
 | `changes` 任务按改动打开开关，PR 只跑相关任务，main 全部运行；汇总检查 `ci-ok` 作为唯一必需检查；Linux 上 dylib 拆成 launcher、sdk-bundle、repro 三个任务；`sdk-repro*` 和打包移到 main；每周 CI 度量（`ci-stats.yml`、`tools/ci-stats.mjs`） | Q12.1、Q12.3、Q12.5、Q12.6.1、Q12.7、Q12.9 | #213 |
 | CI 设计与流程文档 `docs/ci.md` | Q12.8、Q12.10 | #237 |
-| `lint`（fmt、clippy `-D warnings`）；MSRV 1.88；Linux 用最低版本（Node 22、Python 3.10、websockets 15），macOS、Windows 用最新；每周依赖漏洞检查 `deps.yml` | Q5.3.7、Q10.2、ST | #256 |
+| `lint`（fmt、clippy `-D warnings`）；MSRV 1.88；Linux 用最低版本（Node 22、Python 3.12、websockets 15），macOS、Windows 用最新；每周依赖漏洞检查 `deps.yml` | Q5.3.7、Q10.2、ST | #256 |
 | 安装冒烟 `install.yml`；发布前五平台安装、发布后用注册表上的包验证 | Q6.15、Q13 | #254 |
 | `e2e` 任务（与 `rust` 并行）；去掉重复的发布构建 | Q12.7 | #265 → #275 |
 | macOS、Windows 上跑和平台有关的测试：先加入 `value_roundtrip`、`fault_links`，再改为默认全部测试文件、只排除与平台无关的（`PURE_TESTS_*`） | Q10.2、Q7.8 | #313、#328 |

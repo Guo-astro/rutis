@@ -30,23 +30,28 @@ sealed interface RutisState {
     /** Connecting, or waiting to connect again; `retrying` is the last failure, if any. */
     data class Connecting(val retrying: String? = null) : RutisState
 
-    /** rutis is connected and drives the plugins. */
+    /** rutis is connected: the plugins are installed, and rutis uses them. */
     data class Connected(val address: String) : RutisState
 }
 
 /**
- * An application hosting rutis plugins (design-android-runtime §五): it
- * reports [plugins] to rutis, which decides which of them load, with what
- * configuration, and when they unload.
+ * An application hosting rutis plugins (design-android-runtime §五): once
+ * connected it offers rutis the `services` family and installs [plugins],
+ * in order, each with its configuration ([configs], by plugin name; without
+ * one, its schema's defaults) once every service it injects is there (its
+ * own plugins' or rutis's); the services they provide reach rutis, as
+ * `<id>:<plugin>`, once rutis offers `services`
+ * (docs/design-remote-session-2026-10-28.md §2.6, decision 2).
  *
  * ```kotlin
  * val rutis = RutisApp(
  *     plugins = listOf(contacts, notify, device),
+ *     configs = mapOf("notify" to NotifyConfig(channel = "rutis sample")),
  *     connect = "wss://rutis.example.com:7443/rutis",
  *     id = "kim-pixel",
  *     token = secrets.rutisToken,
  * )
- * rutis.start()   // connects, and stays connected until stop()
+ * rutis.start()   // connects, installs the plugins, and stays connected until stop()
  * rutis.stop()    // every plugin's cleanups in reverse, then disconnects
  * ```
  *
@@ -57,18 +62,21 @@ sealed interface RutisState {
  * holds the PEM certificates of CAs trusted besides the system's, for a
  * self-signed access point; [certificate] the PEM certificate chain and
  * private key a `wss://` listener serves. [id] is this connection's
- * self-reported id (`[a-z0-9-]+`), its instance's name in rutis; [token] the
+ * self-reported id (`[a-z0-9-]+`): rutis registers its plugins as `<id>:<plugin>`; [token] the
  * shared token rutis expects; [peer] rutis's own id, when it must be checked.
  *
  * The SDK only connects: when to [start] and [stop] (foreground,
  * background, a foreground service) is the application's business. Lost
  * connections are dialed again by the rules every runtime follows
  * (0.5 s doubling up to 30 s; 30 s after refused credentials); every
- * connection is a new session, loaded afresh by rutis's configuration.
+ * connection is a new session: the plugins clean up when one is lost,
+ * latest first, and are installed again on the next.
  * [state] says where it stands; the SDK decides nothing by it.
  */
 class RutisApp(
     val plugins: List<Plugin>,
+    /** The configurations of plugins, by plugin name: values of their configuration types; a plugin without one gets its schema's defaults. */
+    configs: Map<String, Any?> = emptyMap(),
     val connect: String? = null,
     val listen: String? = null,
     val id: String,
@@ -82,6 +90,9 @@ class RutisApp(
     private val log: (String) -> Unit = { System.err.println("rutis: $it") },
 ) {
     private val endpoint: Endpoint
+
+    /** The plugins with their configurations, encoded. */
+    private val own: List<Pair<Plugin, Any?>>
     private val states = MutableStateFlow<RutisState>(RutisState.Stopped())
 
     /** Where the application stands with rutis. */
@@ -109,11 +120,24 @@ class RutisApp(
             require(!at.secure || certificate != null) { "rutis: $listen: wss needs a certificate (its PEM chain and private key)" }
         }
         endpoint = Endpoint(id, peer, listOf("runtime"))
+        val names = plugins.map { it.name }.toSet()
+        configs.keys.sorted().firstOrNull { it !in names }?.let {
+            throw IllegalArgumentException("rutis: configs names $it, which is not one of the plugins: ${names.sorted().joinToString(", ")}")
+        }
+        own = plugins.map { plugin ->
+            if (!configs.containsKey(plugin.name)) return@map plugin to arcships.rutis.internal.peer.Undefined
+            val config = configs[plugin.name]
+            plugin to try {
+                arcships.rutis.advanced.RutisFormat.encode(plugin.config, config)
+            } catch (e: Exception) {
+                throw IllegalArgumentException("rutis: plugin ${plugin.name}: $config is not its configuration: ${e.message}", e)
+            }
+        }
     }
 
     /**
-     * Connects (or listens), reports the plugins, and from then on rutis
-     * drives them; lost connections are dialed again, until [stop]. Returns
+     * Connects (or listens) and, once rutis greeted, installs the plugins;
+     * lost connections are dialed again, until [stop]. Returns
      * at once; [state] follows. Starting while running does nothing;
      * starting while a stop is still unloading starts once it is done.
      */
@@ -186,7 +210,7 @@ class RutisApp(
         try {
             val dialing = Dialing(
                 address, endpoint, plugins, retry, dialer::dial,
-                say = log, status = status(run), shutdownMillis = shutdownTimeout.inWholeMilliseconds,
+                say = log, status = status(run), shutdownMillis = shutdownTimeout.inWholeMilliseconds, own = own,
             )
             stopping(run, dialing::stop)
             return dialing.run()
@@ -200,7 +224,7 @@ class RutisApp(
         val tls = if (at.secure) Tls.server(certificate!!, certificate) else null
         val server = WebSocketServer(at, PROTOCOL, token, tls, Heartbeat())
         log("listening on ${server.address}")
-        val listening = Listening(server, endpoint, plugins, status = status(run), shutdownMillis = shutdownTimeout.inWholeMilliseconds)
+        val listening = Listening(server, endpoint, plugins, status = status(run), shutdownMillis = shutdownTimeout.inWholeMilliseconds, own = own)
         stopping(run, listening::stop)
         return listening.run()
     }

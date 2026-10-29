@@ -30,17 +30,17 @@ use std::sync::{Arc, Mutex};
 use common::runtimes::go_binary;
 #[cfg(any(feature = "node", feature = "bun", feature = "python"))]
 use common::runtimes::repo;
-use common::runtimes::{title, NoConfig, Probe, Title, Tools, COLD};
-use common::Scoped;
-use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, FiberState, FiberView, PluginFactory};
-use rutis::{Ctx, Definition, Error};
 #[cfg(any(
     feature = "node",
     feature = "bun",
     feature = "python",
     feature = "kotlin"
 ))]
-use rutis_bridge::runtime::LocalRuntime;
+use common::runtimes::TestRuntime;
+use common::runtimes::{greet_as_main, title, NoConfig, Probe, Title, Tools, COLD};
+use common::Scoped;
+use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, FiberState, FiberView, PluginFactory};
+use rutis::{Ctx, Definition, Error};
 use rutis_bridge::session::{host_key, host_key_in};
 use rutis_loader::edit::Instance;
 #[cfg(feature = "go")]
@@ -53,7 +53,7 @@ use rutis_loader::runtime::go::Go;
     feature = "python",
     feature = "kotlin"
 ))]
-use rutis_loader::runtime::{RuntimeResolver, RuntimeRowsPlugin};
+use rutis_loader::runtime::SessionResolver;
 use rutis_loader::{
     Chain, Layer, Loader, LoaderOptions, LoaderPlugin, Patch, Resolver, ServiceCatalog,
 };
@@ -365,19 +365,36 @@ struct Fixture {
 }
 
 /// What starts a runtime's rows, once the loader is mounted.
-type Start = Box<dyn FnOnce(&Ctx)>;
+type Start = Box<dyn FnOnce(&Ctx, &Loader)>;
 
-/// Starts the rows of a runtime resolver, once the loader is mounted.
+/// The rows of the local runtime `runtime` (`SessionResolver`, with `npm`
+/// the Node names too), mounted now: the resolver, and what attaches the
+/// loader and releases the rows once it is mounted.
 #[cfg(any(
     feature = "node",
     feature = "bun",
     feature = "python",
     feature = "kotlin"
 ))]
-fn rows_plugin(rows: Arc<RuntimeResolver>) -> Start {
-    Box::new(move |root: &Ctx| {
-        root.plugin(RuntimeRowsPlugin::new(rows));
-    })
+fn session_rows(
+    root: &Ctx,
+    runtime: TestRuntime,
+    catalog: &ServiceCatalog,
+    npm: bool,
+) -> (Arc<dyn Resolver>, Start) {
+    let name = runtime.handle().name().to_owned();
+    let sessions = Arc::new(match npm {
+        true => SessionResolver::npm(catalog, &name),
+        false => SessionResolver::new(catalog),
+    });
+    sessions.runtime(runtime.handle());
+    root.plugin(runtime);
+    let rows: Arc<dyn Resolver> = sessions.clone();
+    let start: Start = Box::new(move |_: &Ctx, loader: &Loader| {
+        sessions.attach(loader);
+        sessions.follow_row(&name);
+    });
+    (rows, start)
 }
 
 /// The JavaScript origin, `origin.mjs` in `dir`.
@@ -402,6 +419,7 @@ async fn fixture(lang: Lang) -> Fixture {
 
     let probe = Probe::default();
     let root = Ctx::root().unwrap();
+    greet_as_main(&root);
     root.provide_at(host_key("probe"), Arc::new(probe.clone()))
         .unwrap();
     root.provide(Parts::default()).unwrap();
@@ -418,31 +436,22 @@ async fn fixture(lang: Lang) -> Fixture {
         #[cfg(feature = "node")]
         Lang::Node => {
             let file = js_origin(dir.path());
-            let node = LocalRuntime::node(
-                repo().join("node/rutis-runtime"),
-                repo().join("node/rutis-runtime/package.json"),
-            );
-            let rows = Arc::new(RuntimeResolver::node(node.handle()).with_catalog(&catalog));
-            root.plugin(node);
-            let start = rows_plugin(rows.clone());
+            let node = TestRuntime::node(&repo().join("node/rutis-runtime/package.json"));
+            let (rows, start) = session_rows(&root, node, &catalog, true);
             (rows, json!(file.to_string_lossy()), start)
         }
         #[cfg(feature = "bun")]
         Lang::Bun => {
             js_origin(dir.path());
-            let bun = LocalRuntime::bun(repo().join("bun/rutis-bun"), dir.path());
-            let rows = Arc::new(RuntimeResolver::modules(bun.handle()).with_catalog(&catalog));
-            root.plugin(bun);
-            let start = rows_plugin(rows.clone());
+            let bun = TestRuntime::bun(dir.path());
+            let (rows, start) = session_rows(&root, bun, &catalog, false);
             (rows, json!("bun:./origin.mjs"), start)
         }
         #[cfg(feature = "python")]
         Lang::Python => {
             std::fs::write(dir.path().join("origin.py"), PY_ORIGIN).unwrap();
-            let python = LocalRuntime::python(dir.path()).python_path(repo().join("python/rutis"));
-            let rows = Arc::new(RuntimeResolver::modules(python.handle()).with_catalog(&catalog));
-            root.plugin(python);
-            let start = rows_plugin(rows.clone());
+            let python = TestRuntime::python(dir.path());
+            let (rows, start) = session_rows(&root, python, &catalog, false);
             (rows, json!("py:origin"), start)
         }
         #[cfg(feature = "go")]
@@ -450,8 +459,10 @@ async fn fixture(lang: Lang) -> Fixture {
             let go = Arc::new(
                 BinaryResolver::<Go>::new(Binaries::new().file(go_binary())).with_catalog(&catalog),
             );
-            let runtimes = BinaryRuntimes::<Go>::new(go.clone(), dir.path()).idle(None);
-            let start: Start = Box::new(move |root: &Ctx| {
+            let runtimes =
+                BinaryRuntimes::<Go>::new(go.clone(), dir.path(), common::runtimes::spawner())
+                    .idle(None);
+            let start: Start = Box::new(move |root: &Ctx, _: &Loader| {
                 root.plugin(runtimes);
             });
             (go, json!("go:pv_origin"), start)
@@ -470,8 +481,13 @@ async fn fixture(lang: Lang) -> Fixture {
             let swift = Arc::new(
                 BinaryResolver::<Swift>::new(Binaries::new().dir(&plugins)).with_catalog(&catalog),
             );
-            let runtimes = BinaryRuntimes::<Swift>::new(swift.clone(), dir.path()).eager();
-            let start: Start = Box::new(move |root: &Ctx| {
+            let runtimes = BinaryRuntimes::<Swift>::new(
+                swift.clone(),
+                dir.path(),
+                common::runtimes::spawner(),
+            )
+            .eager();
+            let start: Start = Box::new(move |root: &Ctx, _: &Loader| {
                 root.plugin(runtimes);
             });
             (swift, json!("swift:values_origin"), start)
@@ -480,11 +496,8 @@ async fn fixture(lang: Lang) -> Fixture {
         Lang::Kotlin => {
             let project = dir.path().join("kt");
             std::fs::create_dir_all(&project).unwrap();
-            let kt =
-                LocalRuntime::launcher("kt", common::runtimes::kotlin_launcher(&project), &project);
-            let rows = Arc::new(RuntimeResolver::modules(kt.handle()).with_catalog(&catalog));
-            root.plugin(kt);
-            let start = rows_plugin(rows.clone());
+            let kt = TestRuntime::new("kt", common::runtimes::kotlin_launcher(&project), &project);
+            let (rows, start) = session_rows(&root, kt, &catalog, false);
             (rows, json!("kt:values_origin"), start)
         }
     };
@@ -500,7 +513,7 @@ async fn fixture(lang: Lang) -> Fixture {
     );
     let loader = plugin.handle();
     root.plugin(plugin).await.unwrap();
-    start(&root);
+    start(&root, &loader);
 
     let report = loader
         .reconcile(rows_with(Some(&origin), &[]), None)
@@ -1019,207 +1032,5 @@ mod kotlin {
     #[tokio::test(flavor = "multi_thread")]
     async fn a_returned_definition_belongs_to_the_row_providing_the_service() {
         super::a_returned_definition_belongs_to_the_row_providing_the_service(Lang::Kotlin).await
-    }
-}
-
-/// An application's runtime that dials in (R4): its connection is an
-/// instance of `phone`, and what its rows hand over mounts only in that
-/// instance. The Kotlin conformance jar and the Swift `RutisMultilang`
-/// binary, each dialing over WebSocket through `RutisApp` (Swift's on
-/// macOS: no system permission involved).
-#[cfg(any(feature = "kotlin", all(feature = "swift", target_os = "macos")))]
-mod dialed_in {
-    use super::*;
-    use common::runtimes::id;
-    use rutis_bridge::websocket::{Limits, ListenerConfig};
-    use rutis_bridge::{
-        Accepting, AccessPointConfig, AccessPointPlugin, AdmissionPlugin, Registrations,
-        SharedToken,
-    };
-    use rutis_loader::runtime::{RuntimeConnection, RuntimeInstances};
-    use rutis_test_support::{scaled, HANG_GUARD};
-    use tokio::io::AsyncBufReadExt;
-
-    /// The connection's id: the title of its instance's `tools`.
-    fn connection(build: &rutis_loader::resolve::Build) -> String {
-        build
-            .value::<RuntimeConnection>()
-            .map(|connection| connection.id().to_string())
-            .unwrap_or_default()
-    }
-
-    /// The Kotlin conformance jar, served by `Rutis.serve`.
-    #[cfg(feature = "kotlin")]
-    fn kotlin() -> tokio::process::Command {
-        let mut command = tokio::process::Command::new("java");
-        command
-            .args(["-XX:TieredStopAtLevel=1", "-XX:+UseSerialGC", "-jar"])
-            .arg(common::runtimes::kotlin_jar());
-        command
-    }
-
-    /// The Swift `RutisMultilang` binary, served by `Rutis.serve`.
-    #[cfg(all(feature = "swift", target_os = "macos"))]
-    fn swift() -> tokio::process::Command {
-        tokio::process::Command::new(common::runtimes::swift_binary(
-            "RutisMultilang",
-            "multilang",
-        ))
-    }
-
-    /// Dial the access point as the endpoint `name`, with `command`.
-    fn dial(
-        mut command: tokio::process::Command,
-        port: u16,
-        name: &str,
-        project: &std::path::Path,
-    ) -> tokio::process::Child {
-        let mut child = command
-            .arg(format!("dial:ws://127.0.0.1:{port}/rutis"))
-            .args(["--id", name, "--peer", "main"])
-            .arg(project)
-            .env("RUTIS_TOKEN", "shared")
-            .stderr(std::process::Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .expect("the app starts");
-        let mut stderr = tokio::io::BufReader::new(child.stderr.take().unwrap()).lines();
-        tokio::spawn(async move {
-            while let Ok(Some(line)) = stderr.next_line().await {
-                eprintln!("[app] {line}");
-            }
-        });
-        child
-    }
-
-    /// The `phone` group: the origin, then `tools`, then the host parts
-    /// `hosts` names (mounting every registered part).
-    fn rows(hosts: &[&str]) -> Vec<Layer> {
-        let mut config = vec![
-            json!({ "id": "origin", "name": "phone:values_origin" }),
-            json!({ "id": "tools", "name": "tools" }),
-        ];
-        config.extend(hosts.iter().map(|id| json!({ "id": id, "name": "host" })));
-        let patches: Vec<Patch> = serde_json::from_value(json!([{ "insert": [{
-            "id": "phone", "group": true, "instanced": true, "config": config
-        }] }]))
-        .unwrap();
-        vec![Layer::new("rows", patches)]
-    }
-
-    #[cfg(feature = "kotlin")]
-    #[tokio::test(flavor = "multi_thread")]
-    async fn a_dialed_in_kotlin_app_s_definitions_mount_only_in_its_instance() {
-        mount_only_in_its_instance(kotlin()).await
-    }
-
-    #[cfg(all(feature = "swift", target_os = "macos"))]
-    #[tokio::test(flavor = "multi_thread")]
-    async fn a_dialed_in_swift_app_s_definitions_mount_only_in_its_instance() {
-        mount_only_in_its_instance(swift()).await
-    }
-
-    async fn mount_only_in_its_instance(app: tokio::process::Command) {
-        let dir = tempfile::tempdir().unwrap();
-        let probe = Probe::default();
-        let root = Ctx::root().unwrap();
-        root.provide_at(host_key("probe"), Arc::new(probe.clone()))
-            .unwrap();
-        root.provide(Parts::default()).unwrap();
-        let parts = root.get::<Parts>().unwrap();
-
-        let registrations = Registrations::new();
-        let listener = rutis_bridge::websocket::listen(
-            &ListenerConfig::new("public", ([127, 0, 0, 1], 0).into()),
-            &Limits::default(),
-            rutis_bridge::websocket::admit_registered(registrations.clone(), "public"),
-        )
-        .unwrap();
-        let port = listener.local_addr().port();
-        (&root.plugin(AdmissionPlugin::new(
-            "phone",
-            SharedToken::new(id("main"), "shared"),
-        )))
-            .await
-            .unwrap();
-
-        let mut catalog = ServiceCatalog::new();
-        catalog.register_shared("probe");
-        catalog.register_shared("parts");
-        catalog.register_shared("maker");
-        catalog.register_shared_instance("tools", "phone");
-        let mounted = Arc::new(Mutex::new(Vec::new()));
-        let mut builtins = Scoped::new();
-        {
-            let mounted = mounted.clone();
-            builtins.register::<NoConfig, _, _>("host", move |build| {
-                Ok(HostFactory {
-                    title: connection(build),
-                    mounted: mounted.clone(),
-                })
-            });
-        }
-        builtins.register::<NoConfig, _, _>("tools", |build| {
-            let instance = build.instance("phone")?;
-            Ok(ToolsFactory(
-                host_key_in("tools", instance),
-                connection(build),
-            ))
-        });
-        let instances = RuntimeInstances::new("phone", "phone", &catalog);
-        let plugin = LoaderPlugin::new(
-            Chain::new().with(builtins).with(instances.clone()),
-            LoaderOptions {
-                catalog,
-                ..LoaderOptions::default()
-            },
-        );
-        let loader = plugin.handle();
-        (&root.plugin(plugin)).await.unwrap();
-        let report = loader.reconcile(rows(&[]), None).await.unwrap();
-        assert!(report.failures.is_empty(), "{report:?}");
-        let access = AccessPointPlugin::new(
-            AccessPointConfig::new(
-                id("phone"),
-                "phone",
-                Accepting {
-                    registrations,
-                    listener: "public".into(),
-                    local: id("main"),
-                },
-            )
-            .require("runtime")
-            .handshake(scaled(HANG_GUARD)),
-        )
-        .accept(instances.accept(loader.clone(), root.clone()));
-        (&root.plugin(access)).await.unwrap();
-
-        let mut pixel = dial(app, port, "pixel", dir.path());
-        parts.wait_for(1).await;
-        let definition = parts.of("session").pop().unwrap();
-        // Outside the connection's instance, it does not mount.
-        let refused = definition
-            .at(&root, json!({ "n": "root" }))
-            .err()
-            .expect("outside the app's instance");
-        assert!(
-            refused.to_string().contains("inside instance phone "),
-            "{refused}"
-        );
-        // A host part in the instance mounts it there.
-        let report = loader.reconcile(rows(&["host"]), None).await.unwrap();
-        assert!(report.failures.is_empty(), "{report:?}");
-        probe
-            .wait_for("part pixel sees pixel with prepared in apply")
-            .await;
-        // The app goes: its copies end with it.
-        pixel.kill().await.unwrap();
-        tokio::time::timeout(std::time::Duration::from_secs(20), definition.ended())
-            .await
-            .expect("ended with the app's connection");
-        for copy in mounted.lock().unwrap().iter() {
-            assert_eq!(copy.state().state, FiberState::Disposed);
-        }
-        root.shutdown().await.unwrap();
     }
 }

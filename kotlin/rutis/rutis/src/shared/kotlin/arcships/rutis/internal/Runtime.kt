@@ -20,6 +20,7 @@ import kotlinx.coroutines.CompletableJob
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.future.await
 import kotlinx.coroutines.runInterruptible
 import kotlinx.coroutines.withContext
@@ -30,21 +31,12 @@ import arcships.rutis.advanced.PLUGIN_API
 
 /**
  * What this runtime supports of the runtime contract. `rows.announce`:
- * services rows provide without declaring them are announced with their
- * methods, to a host whose mount says `announce`. Events are the capability
- * `events-v2` (#464), not a feature. `plugin-values`: a plugin definition
+ * services rows provide without declaring them are announced to the host
+ * with their methods. `plugin-values`: a plugin definition
  * this runtime handed over comes back to be described (`plugins.read`) and
  * loaded as a row's entry (docs/design-plugin-values-2026-10-25.md §5).
  */
 val FEATURES: List<String> = listOf("rows.v2", "hosts", "leaf", "scopes", "rows.announce", "plugin-values")
-
-/** Where a plugin is told that the host does not take an undeclared service. */
-@Volatile
-var oldHostOutput: (String) -> Unit = { System.err.println(it) }
-
-/** What a plugin providing the undeclared service `name` is told by a host older than 0.12. */
-fun oldHost(name: String): String =
-    "rutis: service $name is not declared in provides, and this host (older than 0.12) does not take undeclared services; declare it or upgrade rutis-host"
 
 /** How the service `name` is identified in the scope `label`: the name, or the name, NUL and the label. */
 fun scopedId(name: String, label: String?, scoped: Boolean): String {
@@ -86,6 +78,15 @@ class Counter {
     }
 }
 
+/** Where an application's own plugin stands. */
+internal enum class OwnState { Waiting, Loaded, Failed }
+
+/** A service an application's own plugin provides, as rutis is told of it. */
+internal class Shared(val row: String, val plugin: String, val value: Any, val table: ServiceTable<Any>, val shape: Map<String, String>, val version: Long)
+
+/** A service rutis announced to this side; withdrawn when `methods` is null. */
+internal class FarService(val version: Long, val methods: Map<String, String>?, val functions: Map<String, arcships.rutis.advanced.RemoteFunction>)
+
 internal class Provided(val row: String, val value: Any, val shape: ServiceShape?, val table: ServiceTable<Any>)
 
 internal class Slot(val row: String, val name: String, var methods: Set<String>?, val announced: Boolean = false) {
@@ -113,6 +114,8 @@ internal class Row(
     val scope: List<Scope>,
     /** The chain of the call that loaded it, which its own code keeps. */
     val chain: List<String>,
+    /** An application's own plugin, installed by it ([RuntimeState.install]), not by a row of rutis's: its services are announced with `services.announce`. */
+    val own: Boolean = false,
 ) {
     val job: CompletableJob = SupervisorJob()
     val cleanups = ArrayList<suspend () -> Unit>()
@@ -136,8 +139,20 @@ internal class Row(
 }
 
 /** The rows one controller loads into this process. */
-class RuntimeState(plugins: List<Plugin>) {
-    internal val plugins: Map<String, Plugin> = plugins.associateBy { it.name }
+class RuntimeState(plugins: List<Plugin>, private val open: Boolean = false) {
+    internal val plugins: MutableMap<String, Plugin> = java.util.concurrent.ConcurrentHashMap(plugins.associateBy { it.name })
+
+    /**
+     * The plugins `mount` lists, or null when more may come ([register]):
+     * then rutis asks for each one's declarations (`rows.schema`).
+     */
+    internal fun listed(): Map<String, Plugin>? = if (open) null else plugins
+
+    /** Adds `plugin`, or replaces the one of its name, for the rows rutis loads from now on (an open runtime only). */
+    fun register(plugin: Plugin) {
+        check(open) { "plugins are registered only in a runtime served in this process" }
+        plugins[plugin.name] = supported(plugin)
+    }
 
     /**
      * How long a row's listeners and cleanups may take when it goes, and
@@ -162,29 +177,29 @@ class RuntimeState(plugins: List<Plugin>) {
     @Volatile
     internal var closing = false
 
-    // The listeners of each name, in position order, and by id.
-    internal val listeners = HashMap<String, MutableList<LocalListener>>()
+    // The listeners of this process, by id, which the host invokes.
     internal val byId = HashMap<String, LocalListener>()
     internal var listenerSeq = 0L
-    internal var first = 0L
-    internal var last = 0L
 
-    // The names and prefixes with listeners outside this process
-    // (events.elsewhere), and the emits through the host not answered yet.
-    internal val elsewhere = HashSet<String>()
-    internal val elsewherePrefixes = HashSet<String>()
-    internal val hostEmits = HashMap<String, Int>()
+    /** An application's own plugins, in order, with their configurations, and where each stands. */
+    private var own: List<Pair<Plugin, Any?>> = emptyList()
+    private val ownStates = HashMap<String, OwnState>()
 
-    /** What the host calls this runtime (mount `runtime`), for descriptors. */
-    @Volatile
-    internal var runtimeName: String? = null
+    /** Whether a coroutine is installing or unloading the application's own plugins. */
+    private var settling = false
 
-    /** The host takes announced services (mount `announce`). */
-    private var announce = false
+    /** The services an application's own plugins provide, by id: announced once rutis offers `services`, again to every new offer of it. */
+    private val shared = HashMap<String, Shared>()
 
-    /** Mounted by a host; one without `announce` is older than 0.12. */
-    private var mounted = false
-    private val told = HashSet<String>()
+    /** The session's announcement sequence (`services.announce`, `services.withdraw`). */
+    private var announcements = 0L
+
+    /** Which offer of `services` rutis made last (`link.offers`), null while it offers none; and the version of its offers. */
+    private var servicesOffer: Long? = null
+    private var farOffers = 0L
+
+    /** The services rutis announced, by name: the newest version it said of each, null methods once withdrawn. */
+    internal val far = HashMap<String, FarService>()
 
     private fun names(): String = plugins.keys.sorted().joinToString(", ")
 
@@ -201,6 +216,14 @@ class RuntimeState(plugins: List<Plugin>) {
 
     /** Reports the object now in an exported slot under a new handle; `lock` is held. */
     internal fun refresh(id: String) {
+        val gone = shared[id]
+        if (gone != null && services[id]?.row != gone.row) {
+            shared.remove(id)
+            announcements++
+            // Also while closing: rutis hears it before the plugin cleans up.
+            if (servicesOffer != null) told("services.withdraw", servicesWithdraw(id, announcements)) {}
+            reconcile()
+        }
         val slot = slots[id] ?: return
         val provided = services[id]?.takeIf { it.row == slot.row }
         val present = provided != null
@@ -258,17 +281,15 @@ class RuntimeState(plugins: List<Plugin>) {
                 inactive = true
             } else {
                 services[id]?.let { throw IllegalStateException("$name is already provided by ${rows[it.row]?.name ?: it.row}") }
+                if (row.own && far[id]?.methods != null) throw IllegalStateException("$name is already provided by rutis")
                 services[id] = Provided(row.key, value, shape, table)
                 row.provided.add(id)
-                // Not declared: announced, with its methods; a host older than
-                // 0.12 does not take it, and the plugin is told, once per name.
-                if (slots[id] == null && '#' !in name) {
-                    if (announce) {
-                        slots[id] = Slot(row.key, name, null, announced = true)
-                        row.announced.add(id)
-                    } else if (mounted && told.add(name)) {
-                        oldHostOutput(oldHost(name))
-                    }
+                if (row.own) {
+                    share(row, id, value, table, shape)
+                } else if (slots[id] == null && '#' !in name) {
+                    // Not declared: announced, with its methods.
+                    slots[id] = Slot(row.key, name, null, announced = true)
+                    row.announced.add(id)
                 }
                 refresh(id)
             }
@@ -289,6 +310,154 @@ class RuntimeState(plugins: List<Plugin>) {
         }
     }
 
+    /** Shares the service `id` an application's own plugin provides: announced once rutis offers `services`; `lock` is held. */
+    private fun share(row: Row, id: String, value: Any, table: ServiceTable<Any>, declared: ServiceShape?) {
+        val shape = LinkedHashMap<String, String>()
+        for (method in table.methods) shape[method] = "async"
+        declared?.kinds?.let(shape::putAll)
+        announcements++
+        val service = Shared(row.key, row.plugin.name, value, table, shape, announcements)
+        shared[id] = service
+        if (servicesOffer != null) announce(id, service)
+        reconcile()
+    }
+
+    /** Sends `services.announce` for `service`; `lock` is held. */
+    private fun announce(id: String, service: Shared) {
+        val session = session ?: return
+        if (closing) return
+        val frame = servicesAnnounce(service.plugin, id, service.value, service.table, service.shape, service.version)
+        told("services.announce", frame) { error -> Report.line("rutis: cannot announce $id: ${Report.failure(error)}") }
+    }
+
+    /**
+     * Sends `method` with `frame` now, in order, and awaits rutis's answer:
+     * it answers with a result to await, and takes the frame (or refuses
+     * it, which `refused` hears) once it is awaited.
+     */
+    private fun told(method: String, frame: Map<String, Any?>, refused: (Throwable) -> Unit) {
+        val session = session ?: return
+        val answer = try {
+            session.send("", method, listOf(frame), false)
+        } catch (_: Exception) {
+            return
+        }
+        installing.launch {
+            try {
+                answer()
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                if (!closing) refused(e)
+            }
+        }
+    }
+
+    /** rutis's offers (`link.offers`): every service shared is announced to each new offer of `services`, as rutis nodes do. */
+    internal fun offered(offers: Map<*, *>) = synchronized(lock) {
+        val version = (offers["version"] as? Number)?.toLong() ?: 0
+        if (version <= farOffers) return@synchronized
+        farOffers = version
+        val families = (offers["families"] as? List<*>).orEmpty()
+        val offer = if ("services" in families) ((offers["since"] as? Map<*, *>)?.get("services") as? Number)?.toLong() ?: 0 else null
+        if (offer == servicesOffer) return@synchronized
+        servicesOffer = offer
+        if (offer != null) for ((id, service) in shared.entries.sortedBy { it.value.version }) announce(id, service)
+    }
+
+    /**
+     * A service rutis announces or withdraws (`services.announce`,
+     * `services.withdraw`): the newest version wins; the application's
+     * plugins that inject it install or unload as it comes and goes.
+     */
+    internal fun heard(method: String, fields: Map<*, *>) = synchronized(lock) {
+        val name = fields["name"] as? String ?: throw IllegalArgumentException("$method: no service name")
+        val version = (fields["version"] as? Number)?.toLong() ?: 0
+        val known = far[name]
+        if (known != null && known.version >= version) return@synchronized
+        if (method == "services.withdraw") {
+            far[name] = FarService(version, null, emptyMap())
+            reconcile()
+            return@synchronized
+        }
+        services[name]?.let { throw IllegalStateException("$name is already provided here by plugin ${rows[it.row]?.name ?: it.row}") }
+        val methods = (fields["shape"] as? Map<*, *>).orEmpty().entries.associate { (k, v) -> k.toString() to (v as? String ?: "async") }
+        val functions = (fields["service"] as? Map<*, *>).orEmpty().entries
+            .mapNotNull { (k, v) -> (v as? arcships.rutis.advanced.RemoteFunction)?.let { k.toString() to it } }.toMap()
+        far[name] = FarService(version, methods, functions)
+        reconcile()
+    }
+
+    /** Whether the service `name` is there for an application's own plugin; `lock` is held. */
+    private fun available(name: String): Boolean = services.containsKey(name) || far[name]?.methods != null || hosts.containsKey(name)
+
+    /**
+     * Installs an application's own plugins once rutis greeted: offers
+     * `services` (rutis's services come to this side), then each plugin, in
+     * order, with its configuration, once every service it injects is there.
+     */
+    fun install(plugins: List<Pair<Plugin, Any?>>) {
+        val session = session ?: return
+        synchronized(lock) { own = plugins }
+        session.notify("", "link.offers", listOf(linkOffers()))
+        reconcile()
+    }
+
+    private val installing = kotlinx.coroutines.CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    /**
+     * Brings the application's own plugins in line with the services there,
+     * in order: one waiting whose injected services are all there loads, one
+     * loaded that lacks one unloads (it loads again once they are back). A
+     * plugin that fails is reported and waits until a service it injects
+     * goes and comes back; the others go on. One coroutine at a time; called
+     * with `lock` held or not.
+     */
+    private fun reconcile() {
+        if (own.isEmpty()) return
+        installing.launch { reconciling() }
+    }
+
+    private suspend fun reconciling() {
+        synchronized(lock) {
+            if (settling) return
+            settling = true
+        }
+        while (true) {
+            val next = synchronized(lock) {
+                var found: Triple<Plugin, Any?, Boolean>? = null
+                if (!closing) {
+                    for ((plugin, config) in own) {
+                        val ready = plugin.inject.all(::available)
+                        when (ownStates[plugin.name] ?: OwnState.Waiting) {
+                            OwnState.Waiting -> if (ready) found = Triple(plugin, config, true)
+                            OwnState.Loaded -> if (!ready) found = Triple(plugin, config, false)
+                            OwnState.Failed -> if (!ready) ownStates[plugin.name] = OwnState.Waiting
+                        }
+                        if (found != null) break
+                    }
+                }
+                if (found == null) settling = false
+                found
+            } ?: return
+            val (plugin, config, loading) = next
+            val name = plugin.name
+            if (loading) {
+                try {
+                    load(name, name, name, config, emptyMap(), emptyMap(), emptyList(), supported(plugin), own = true)
+                    synchronized(lock) { ownStates[name] = OwnState.Loaded }
+                } catch (e: Throwable) {
+                    synchronized(lock) { ownStates[name] = OwnState.Failed }
+                    if (e is kotlinx.coroutines.CancellationException) throw e
+                    if (!closing) Report.line("rutis: plugin $name: ${Report.failure(e)}")
+                }
+            } else {
+                runCatching { unload(name) }
+                synchronized(lock) { ownStates[name] = OwnState.Waiting }
+            }
+        }
+    }
+
     // ── Rows ─────────────────────────────────────────────────────
 
     /**
@@ -305,9 +474,11 @@ class RuntimeState(plugins: List<Plugin>) {
         isolate: Map<String, String>,
         scope: List<Scope>,
         plugin: Plugin = definition(entry),
+        own: Boolean = false,
     ) {
-        val row = Row(key, name.ifEmpty { key }, entry, plugin, config, exports, isolate, scope, CallChain.current())
+        val row = Row(key, name.ifEmpty { key }, entry, plugin, config, exports, isolate, scope, CallChain.current(), own)
         synchronized(lock) {
+            if (closing) throw IllegalStateException("runtime is closing")
             if (rows.containsKey(key)) throw IllegalStateException("row $key is already loaded")
             for ((service, label) in isolate) scopedId(service, label, true)
             for (service in exports.keys) {
@@ -320,7 +491,7 @@ class RuntimeState(plugins: List<Plugin>) {
             for ((service, methods) in exports) slots[row.id(service)] = Slot(key, service, methods.keys.toSet())
         }
         val failure = try {
-            val decoded = decodeConfig(plugin, config)
+            val decoded = decodeConfig(plugin, config, own)
             withContext(row.job + CallChain.element(row.chain)) {
                 plugin.apply(Ctx(this@RuntimeState, row), decoded)
             }
@@ -361,66 +532,39 @@ class RuntimeState(plugins: List<Plugin>) {
         }
     }
 
-    private fun decodeConfig(plugin: Plugin, raw: Any?): Any? {
-        // Defaults filled and the config validated against the plugin's
-        // schema before decoding (config schema design §2.2); a decoder
-        // error after that is the schema and the type disagreeing (§3.3).
-        var config = raw
-        val schema = plugin.schema
-        if (schema is kotlinx.serialization.json.JsonObject) {
-            // A config of plain data (one holding dates or bytes, which only
-            // Kotlin's own callers send, is decoded as it is).
-            val data = try {
-                Result.success(ConfigSchema.fromValue(raw))
-            } catch (e: ConfigSchema.NotData) {
-                Result.failure(e)
-            }
-            if (data.isSuccess) {
-                val checked = ConfigSchema.check(ConfigSchema.fromValue(schema), data.getOrNull())
-                if (checked.errors.isNotEmpty()) throw configError(checked.errors)
-                config = ConfigSchema.toJson(checked.config)
-            }
-            // No config: `{}` for a class, as before (a nullable value gets null).
-            val kind = plugin.config.descriptor.kind
-            val structured = kind == kotlinx.serialization.descriptors.StructureKind.CLASS || kind == kotlinx.serialization.descriptors.StructureKind.OBJECT
-            val absent = config == null || config === Undefined || config == kotlinx.serialization.json.JsonNull
-            return try {
-                RutisFormat.decode(plugin.config, if (absent && structured) JsonObject(emptyMap()) else config)
-            } catch (e: Exception) {
-                // Any failure of decoding (the decoder's, or an `init` check
-                // of the type's): one sentence, as in Swift.
-                if (e is kotlinx.coroutines.CancellationException) throw e
-                throw configError(listOf(ConfigSchema.Issue(DecodePaths.of(e), "${ConfigSchema.pathText(DecodePaths.of(e))} is not a value the plugin accepts")))
-            }
-        }
-        val value = if ((config == null || config === Undefined || config == kotlinx.serialization.json.JsonNull) &&
-            plugin.config.descriptor.kind.let { it == kotlinx.serialization.descriptors.StructureKind.CLASS || it == kotlinx.serialization.descriptors.StructureKind.OBJECT }
-        ) {
-            JsonObject(emptyMap())
-        } else {
-            config
-        }
+    /**
+     * The row's config decoded into the plugin's config type. A row of
+     * rutis's: rutis checked it against the plugin's schema and filled its
+     * defaults (docs/design-platform-cleanup-2026-10-28.md §7.5), so a
+     * decoder error is the schema and the type disagreeing (config schema
+     * design §3.3). An application's own plugin ([own]): nothing checked it;
+     * a missing key takes its constructor default, and a decoder error names
+     * the key as rutis's check words it.
+     */
+    private fun decodeConfig(plugin: Plugin, raw: Any?, own: Boolean): Any? {
+        // No config: `{}` for a class (a nullable value gets null).
+        val kind = plugin.config.descriptor.kind
+        val structured = kind == kotlinx.serialization.descriptors.StructureKind.CLASS || kind == kotlinx.serialization.descriptors.StructureKind.OBJECT
+        val absent = raw == null || raw === Undefined || raw == kotlinx.serialization.json.JsonNull
+        val value = if (absent && structured) JsonObject(emptyMap()) else raw
         return try {
             RutisFormat.decode(plugin.config, value)
-        } catch (e: kotlinx.serialization.SerializationException) {
-            throw IllegalArgumentException("config: ${e.message}", e)
-        } catch (e: arcships.rutis.internal.peer.ValueException) {
-            throw IllegalArgumentException("config: ${e.message}", e)
+        } catch (e: Exception) {
+            // Any failure of decoding (the decoder's, or an `init` check of
+            // the type's): one sentence, as in Swift.
+            if (e is kotlinx.coroutines.CancellationException) throw e
+            val path = DecodePaths.of(e)
+            val problem = (if (own) ConfigText.problem(plugin.config.descriptor, value, path, e) else null)
+                ?: "is not a value the plugin accepts"
+            val message = "${DecodePaths.text(path)} $problem"
+            throw arcships.rutis.RutisException(
+                "BindingError",
+                "config: $message",
+                code = "bad-config",
+                data = mapOf("issues" to listOf(mapOf("path" to path, "message" to message))),
+            )
         }
     }
-
-    /**
-     * The error a row fails with when its config does not match: a
-     * BindingError with code `bad-config`, its message a `config: …` line
-     * per problem, its data `{ issues: [{ path, message }] }` (design §5.2).
-     */
-    private fun configError(issues: List<ConfigSchema.Issue>): arcships.rutis.RutisException =
-        arcships.rutis.RutisException(
-            "BindingError",
-            ConfigSchema.lines(issues).joinToString("\n"),
-            code = "bad-config",
-            data = mapOf("issues" to issues.map { mapOf("path" to it.path, "message" to it.message) }),
-        )
 
     /**
      * Unloads row `key`. Returns false when it gave up (listeners or
@@ -573,12 +717,6 @@ class RuntimeState(plugins: List<Plugin>) {
             throw noMethod(entry.name, method, methods ?: entry.table.methods)
         }
         return entry.table.serve(entry.obj, method, args, entry.name)
-    }
-
-    internal fun mounted(announce: Boolean, runtime: String?) = synchronized(lock) {
-        this.announce = announce
-        this.runtimeName = runtime
-        this.mounted = true
     }
 
     internal fun released(handle: String) = synchronized(lock) {

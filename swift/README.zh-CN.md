@@ -50,7 +50,7 @@ Rutis.serve(weather)
 - 值：SDK 自己的编码器与解码器，由 `Codable` 驱动（不用 `JSONEncoder`）。`Date`、`Data`、`Decimal`、`UUID`、`Set` 和键不是 `String` 的字典按 rutis 的带标记的值跨进程；`Rutis.Advanced.DateTime`、`Rutis.Advanced.CalendarDate`、`Rutis.Advanced.TimeOfDay`、`Rutis.Advanced.BigInt` 是 Swift 没有的类型。`@RutisService` 类型的实例与闭包按引用。
 - 错误带着名字（类型名）、信息、`code` 与 `data`（同名存储属性）跨进程；收到的错误是 `RutisError`，按 `name` 匹配。
 - 事件：`ctx.on`、`emit`、`parallel`、`serial`、`waterfall`、`bail`、`filter`（见[插件 API](../docs/guide/plugin-api.md#事件)）。
-- 测试：`RutisTest`（产品 `RutisTest`）让插件经真实的内存会话运行，测试一方是它的宿主：
+- 测试：`RutisTest`（产品 `RutisTest`，macOS）把插件作为真实宿主 `rutis-host test` 的一行运行（`rutis-host` 在 `PATH` 上，或 `RUTIS_HOST`）；测试的服务、监听与发出是同一运行时里的一个插件：
 
 ```swift
 let loaded = try await RutisTest.load(weather, config: ["city": "Oslo"], services: ["llm": FakeLLM()])
@@ -58,4 +58,4 @@ let answer = try await loaded.service("weather").call("today", "rain?", as: Stri
 await loaded.close()
 ```
 
-平台：macOS 14、iOS 17。应用里用 `RutisApp(plugins:connect:id:token:)` 在开始后提供编进应用的插件（`start()`、`stop()`、可观察的 `state`）：[在应用里托管插件](../docs/guide/swift-app.md)。Swift 5 语言模式，Swift 6.2 工具链及以上（宏使用 swift-syntax 602–603）。SDK 自己的测试：`swift run RutisSelfTest`。
+平台：macOS 14、iOS 17。应用里用 `RutisApp(plugins:connect:id:token:)` 在开始后提供编进应用的插件（`start()`、`stop()`、可观察的 `state`）：[在应用里托管插件](../docs/guide/swift-app.md)。Swift 5 语言模式，Swift 6.2 工具链及以上（宏使用 swift-syntax 602–603）。SDK 自己的测试：先 `cargo build -p rutis-host`，再 `RUTIS_HOST=$PWD/target/debug/rutis-host swift run RutisSelfTest`。

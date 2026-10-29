@@ -1,9 +1,15 @@
-// An app hosting a plugin, on macOS (crates/rutis-host/tests/swift.rs): what
-// an iOS app does with `RutisApp`, driven by lines on stdin as an app's
-// business layer would drive it.
+// An app hosting a plugin, on macOS (crates/rutis-host/tests/swift_app.rs):
+// what an iOS app does with `RutisApp`, driven by lines on stdin as an app's
+// business layer would drive it. Once connected the app installs `device`
+// with its configuration (the app's id, and the name of its service), and
+// rutis sees `<id>:device`.
 //
-//   RutisAppFixture dial <ws://…> <id>     dials rutis as <id>
-//   RutisAppFixture listen <ws://…> <id>   listens for rutis
+//   RutisAppFixture dial <ws://…> <id> [<suffix>]     dials rutis as <id>
+//   RutisAppFixture listen <ws://…> <id> [<suffix>]   listens for rutis
+//
+// The service is `device`, or `device-<suffix>` with a suffix: two apps on
+// one rutis provide their services under different names, as two devices
+// must (a second `device` is refused).
 //
 // The token is RUTIS_TOKEN. stdin: `start`, `stop`, `quit`; `start&` and
 // `stop&` call it in a Task of its own and go on, as an app reacting to
@@ -39,24 +45,33 @@ func blocking(_ body: @escaping @Sendable () async -> Void) {
 }
 
 let arguments = CommandLine.arguments
-guard arguments.count == 4, ["dial", "listen"].contains(arguments[1]) else {
-    FileHandle.standardError.write(Data("usage: RutisAppFixture dial|listen <address> <id>\n".utf8))
+guard [4, 5].contains(arguments.count), ["dial", "listen"].contains(arguments[1]) else {
+    FileHandle.standardError.write(Data("usage: RutisAppFixture dial|listen <address> <id> [<suffix>]\n".utf8))
     exit(2)
 }
 let (mode, address, id) = (arguments[1], arguments[2], arguments[3])
+let suffix = arguments.count == 5 ? arguments[4] : nil
 let token = ProcessInfo.processInfo.environment["RUTIS_TOKEN"] ?? ""
+
+struct DeviceConfig: Codable {
+    var name: String
+    /// The name it provides its service as.
+    var service: String
+}
 
 let device = Rutis.define(Plugin(
     name: "device",
     provides: ["device": .of(Device.self, sync: ["name"])],
-    apply: { ctx in
-        ctx.provide("device", Device(id: id))
+    config: DeviceConfig.self,
+    apply: { ctx, config in
+        ctx.provide(config.service, Device(id: config.name))
         ctx.effect { try? await Task.sleep(nanoseconds: 300_000_000) }
     }))
 
+let configs: [String: any Encodable] = ["device": DeviceConfig(name: id, service: suffix.map { "device-\($0)" } ?? "device")]
 let app = mode == "dial"
-    ? RutisApp(plugins: [device], connect: address, id: id, token: token, peer: "test")
-    : RutisApp(plugins: [device], listen: address, id: id, token: token)
+    ? RutisApp(plugins: [device], configs: configs, connect: address, id: id, token: token, peer: "test")
+    : RutisApp(plugins: [device], configs: configs, listen: address, id: id, token: token)
 
 Task.detached {
     for await state in app.states { say("state: \(state)") }
