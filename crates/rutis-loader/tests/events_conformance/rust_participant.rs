@@ -613,8 +613,6 @@ fn peer_id(s: &str) -> rutis_bridge::PeerId {
 
 impl Node {
     pub async fn start(host: &Ctx, log: Arc<EventsLog>) -> Node {
-        // The id the host greets the node with.
-        host.provide(rutis_bridge::LocalId(peer_id("host"))).unwrap();
         let node = Node {
             host: host.clone(),
             node: Default::default(),
