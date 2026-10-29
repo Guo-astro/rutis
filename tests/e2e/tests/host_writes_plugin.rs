@@ -151,7 +151,7 @@ fn a_plugin_writes_loads_fixes_and_removes_a_plugin_while_the_host_runs() {
     assert!(s.path("weather.py").is_file());
     assert_eq!(
         seen,
-        json!({ "rows": ["maker"], "services": ["loader", "maker"] })
+        json!({ "rows": ["maker"], "services": ["loader", "maker", "sessions"] })
     );
 
     // 2: the row is added, runs, and is written into rutis.json.
@@ -217,7 +217,7 @@ fn a_plugin_writes_loads_fixes_and_removes_a_plugin_while_the_host_runs() {
     let seen = result(&s, &["maker.step", "6"]);
     assert_eq!(
         seen,
-        json!({ "rows": ["maker"], "services": ["loader", "maker"] })
+        json!({ "rows": ["maker"], "services": ["loader", "maker", "sessions"] })
     );
     expect_line(&mut host, "weather: removed");
     assert_eq!(
@@ -229,7 +229,7 @@ fn a_plugin_writes_loads_fixes_and_removes_a_plugin_while_the_host_runs() {
         (
             Some(1),
             String::new(),
-            "rutis-host: no row provides weather (services: loader, maker)\n".into()
+            "rutis-host: no row provides weather (services: loader, maker, sessions)\n".into()
         )
     );
 

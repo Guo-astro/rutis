@@ -168,13 +168,7 @@ bridge 的一致性套件在哪些实现、哪些通道、哪些平台上运行�
 
 前两列和最后一行经 `Process` 门面启动进程，契约还检查崩溃后的退出状态；loopback、WebSocket 两列接到通道上，只检查崩溃结束会话。Windows 上 `Process` 门面的 loopback 启动由 `python_runtime.rs`、`go_runtime.rs` 等覆盖。
 
-节点契约（`rutis_bridge::testing::node`）：
-
-| 实现 | 通道 | Linux | macOS | Windows |
-| --- | --- | --- | --- | --- |
-| Rust 节点 | memory（`tests/node_conformance.rs`） | 运行 | 完整运行中运行 | 完整运行中运行 |
-| Rust 节点 | WebSocket（`tests/websocket_conformance.rs`，两个 rutis 根经 loopback WebSocket 链接） | 运行 | 运行 | 运行 |
-| Cordis 节点 | WebSocket（`tests/websocket_conformance.rs`） | 运行 | 运行 | 运行 |
+两个 rutis 内核之间（节点）：`rutis-bridge/tests/session_plugin.rs`（内存通道上的会话）与 `rutis-host/tests/nodes.rs`（两个宿主经 loopback WebSocket，`rutis-host/dial` 与 `rutis-host/listen`）在三个平台运行。
 
 拨出契约（`tests/dial_conformance.rs`，rutis 起接入点，运行时以 `dial:ws://…` 连进来）：
 

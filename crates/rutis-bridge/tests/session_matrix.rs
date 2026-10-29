@@ -184,8 +184,8 @@ async fn handed_over(launcher: Launcher, anchor: &Path, ctx: &Ctx) -> Arc<Proces
 /// Start the runtime listening on a loopback WebSocket, dial it, attach.
 async fn listening(launcher: Launcher, anchor: &Path, ctx: &Ctx) -> Arc<Process> {
     use rutis_bridge::channel::PeerId;
+    use rutis_bridge::websocket::Credential;
     use rutis_bridge::websocket::{Limits, Trust};
-    use rutis_bridge::Credential;
     use tokio::io::AsyncBufReadExt;
 
     let mut command = tokio::process::Command::new(&launcher.program);

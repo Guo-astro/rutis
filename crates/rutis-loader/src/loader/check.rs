@@ -151,7 +151,7 @@ pub enum Supply {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Provider {
-    /// The row with this id (a `rutis-bridge/peer` row for what it imports).
+    /// The row with this id.
     Row(String),
     /// The application, under the name it registered in the catalog.
     Host,
@@ -172,8 +172,7 @@ impl Loader {
     /// Check `layers` without running anything of them (nor changing what
     /// runs): every plugin row resolves and passes the dry run, and every
     /// service it waits for in rutis is provided by another row (as its
-    /// plugin declares; a `rutis-bridge/peer` row provides what it imports)
-    /// or by the application (a name it registered in the catalog).
+    /// plugin declares) or by the application (a name it registered in the catalog).
     ///
     /// Resolving asks runtimes to describe their plugins, which imports
     /// them there. What a copy uses inside isolated scopes and instances is

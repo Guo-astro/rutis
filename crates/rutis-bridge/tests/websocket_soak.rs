@@ -1,5 +1,6 @@
-//! Soak: two nodes over a loopback WebSocket, the session cut and relinked
-//! over and over, a service imported and called through each session. What
+//! Soak: two kernels over a loopback WebSocket, a session mounted on each
+//! connection and unmounted, over and over, a service of the far kernel
+//! called through each session. What
 //! the process holds (file descriptors, threads) must not grow with the
 //! number of sessions. Ignored by default; run it with
 //! `RUTIS_SOAK_SECS=600 cargo test -p rutis-bridge --features websocket --test websocket_soak -- --ignored`
@@ -10,16 +11,15 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use rutis::host::CtxHost;
+use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect};
 use rutis::Ctx;
-use rutis_bridge::channel::PeerId;
-use rutis_bridge::session::{host_key, Error, HostDispatch};
+use rutis_bridge::channel::{Channel, PeerId};
+use rutis_bridge::session::{host_key, HostDispatch};
 use rutis_bridge::session::{Reply, Value};
-use rutis_bridge::websocket::{self, Limits, ListenerConfig, Trust};
-use rutis_bridge::{
-    peer_key, Accepting, Credential, ExportPlugin, IdentityPlugin, ImportPlugin, LinkConfig,
-    LinkPlugin, Peer, Registrations, Retry, StaticIdentity,
+use rutis_bridge::websocket::{
+    self, Admitted, Credential, Limits, ListenerConfig, Refused, Trust, Upgrade,
 };
+use rutis_bridge::{LocalId, Session};
 use rutis_test_support::eventually;
 use serde_json::{json, Value as Json};
 
@@ -34,6 +34,22 @@ impl HostDispatch for Clock {
     }
     fn methods(&self) -> Option<Json> {
         Some(json!({ "now": "sync" }))
+    }
+}
+
+/// Provides the clock (a plugin's service is shared with far ends).
+struct ProvidesClock;
+
+impl DynPlugin for ProvidesClock {
+    fn name(&self) -> &str {
+        "clock"
+    }
+
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, rutis::Error>> {
+        Box::pin(async move {
+            ctx.provide_at(host_key("clock"), Arc::new(Clock(AtomicU64::new(0))))?;
+            Ok(Effect::Done)
+        })
     }
 }
 
@@ -64,90 +80,65 @@ fn held() -> (usize, usize) {
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "soak: run with --ignored, RUTIS_SOAK_SECS sets the duration"]
-async fn relinking_over_and_over_holds_nothing_more() {
+async fn sessions_over_and_over_hold_nothing_more() {
     let duration = Duration::from_secs(
         std::env::var("RUTIS_SOAK_SECS")
             .ok()
             .and_then(|secs| secs.parse().ok())
             .unwrap_or(60),
     );
-    let quick = Retry {
-        initial: Duration::from_millis(10),
-        max: Duration::from_millis(50),
-        ..Retry::default()
-    };
+    let protocol = format!("rutis.{}", rutis_bridge::session::ENDPOINT_PROTOCOL);
 
     let main = Ctx::root().unwrap();
-    let registrations = Registrations::new();
+    main.provide(LocalId(id("main"))).unwrap();
+    main.plugin(ProvidesClock);
+    let (deliver, mut accepted) = tokio::sync::mpsc::unbounded_channel::<Channel>();
+    let admitted = protocol.clone();
     let listener = websocket::listen(
         &ListenerConfig::new("public", "127.0.0.1:0".parse().unwrap()),
         &Limits::default(),
-        websocket::admit_registered(registrations.clone(), "public"),
+        Arc::new(move |upgrade: Upgrade<'_>| {
+            if upgrade.bearer != Some("mac-token") {
+                return Err(Refused::Forbidden("not accepted here".into()));
+            }
+            let deliver = deliver.clone();
+            Ok(Admitted {
+                protocol: admitted.clone(),
+                deliver: Box::new(move |channel| {
+                    let _ = deliver.send(channel);
+                }),
+            })
+        }),
     )
     .unwrap();
     let address = format!("ws://{}/rutis", listener.local_addr());
-    main.provide_at(host_key("clock"), Arc::new(Clock(AtomicU64::new(0))))
-        .unwrap();
-    main.plugin(IdentityPlugin::new(
-        "main",
-        StaticIdentity::new(id("main")).accept_token("mac-token", id("mac")),
-    ));
-    main.plugin(LinkPlugin::new(
-        LinkConfig::listen(
-            id("mac"),
-            "main",
-            Accepting {
-                registrations,
-                listener: "public".into(),
-                local: id("main"),
-            },
-        )
-        .retry(quick.clone()),
-    ));
-    main.plugin(ExportPlugin::new(id("mac"), ["clock"]));
+    // Each connection a session of its own, until its far end leaves.
+    let serving = main.clone();
+    tokio::spawn(async move {
+        while let Some(channel) = accepted.recv().await {
+            serving.plugin(Session::new(channel));
+        }
+    });
 
     let mac = Ctx::root().unwrap();
-    mac.plugin(IdentityPlugin::new(
-        "mac",
-        StaticIdentity::new(id("mac")).present(id("main"), Credential::Bearer("mac-token".into())),
-    ));
-    mac.plugin(LinkPlugin::new(
-        LinkConfig::dial(
-            id("main"),
-            "mac",
-            Arc::new(move |credential: Option<Credential>| {
-                let address = address.clone();
-                Box::pin(async move {
-                    websocket::dial(
-                        &address,
-                        &rutis_bridge::protocol(),
-                        credential.as_ref(),
-                        &Trust::default(),
-                        &Limits::default(),
-                    )
-                    .await
-                })
-            }),
-        )
-        .retry(quick),
-    ));
-    mac.plugin(ImportPlugin::new(id("main"), ["clock"]));
+    mac.provide(LocalId(id("mac"))).unwrap();
+    let credential = Credential::Bearer("mac-token".into());
 
     let started = Instant::now();
     let mut baseline = None;
     let mut sessions = 0u64;
-    let mut generation = 0;
     while started.elapsed() < duration {
-        // A new session, the clock imported through it and called.
-        let peer = eventually(
-            || {
-                mac.get_at::<Peer>(&peer_key(&id("main")))
-                    .filter(|peer| peer.generation() > generation)
-            },
-            "a new session",
+        // A new session, the clock seen through it and called.
+        let channel = websocket::dial(
+            &address,
+            &protocol,
+            Some(&credential),
+            &Trust::default(),
+            &Limits::default(),
         )
-        .await;
-        generation = peer.generation();
+        .await
+        .expect("the dial");
+        let session = mac.plugin(Session::new(channel));
         let clock = eventually(
             || mac.get_at::<dyn HostDispatch>(&host_key("clock")),
             "the clock",
@@ -162,7 +153,16 @@ async fn relinking_over_and_over_holds_nothing_more() {
         if sessions == 20 {
             baseline = Some((held(), resident()));
         }
-        peer.connection().close(Error::Transport("soak".into()));
+        session.dispose().await.unwrap();
+        eventually(
+            || {
+                mac.get_at::<dyn HostDispatch>(&host_key("clock"))
+                    .is_none()
+                    .then_some(())
+            },
+            "the clock gone with its session",
+        )
+        .await;
     }
 
     let (fds, threads) = held();

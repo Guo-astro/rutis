@@ -284,19 +284,6 @@ impl Builtins {
         self.insert_resolved(name, factory, schema, None)
     }
 
-    /// Register a factory taking the raw JSON config, built per copy from
-    /// the instances it runs in.
-    #[cfg(feature = "peer")]
-    pub(crate) fn register_raw_with(
-        &mut self,
-        name: impl Into<String>,
-        factory: Arc<dyn PluginFactory<Value>>,
-        scoped: ScopedFactory,
-        schema: Option<Value>,
-    ) -> &mut Self {
-        self.insert_resolved(name, factory, schema, Some(scoped))
-    }
-
     fn insert_resolved(
         &mut self,
         name: impl Into<String>,

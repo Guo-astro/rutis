@@ -11,7 +11,7 @@
 
 | 模型部分 | 设计 | 实现 |
 | --- | --- | --- |
-| 控制方 link：拨号、退避重连、按失败类型等待、停止 | [远程插件](../../docs/design-remote-plugins-2026-10-03.md) §3.2；[拨出稿](../../docs/design-remote-runtime-dial-2026-10-14.md) §六 | `crates/rutis-bridge/src/link.rs`：`dialing`、`start` |
+| 控制方（`rutis-host/dial` 行）：拨号、退避重连、按失败类型等待、停止 | [远程插件](../../docs/design-remote-plugins-2026-10-03.md) §3.2；[拨出稿](../../docs/design-remote-runtime-dial-2026-10-14.md) §六；[远程会话](../../docs/design-remote-session-2026-10-28.md) §4.1 | `crates/rutis-host/src/connect/dial.rs`：拨号、握手、装上会话、等它卸载、退避 |
 | 运行时的租约与接管顺序（鉴权 → 关闭旧会话 → 清理旧租约 → 回应新 hello） | 远程插件 §4.4 | `python/rutis/rutis/__main__.py` `serve`；`go/rutis/internal/runtime/listen.go` `listen`；`node/rutis-runtime/src/serve.mjs` `serve`（Bun 的 `src/remote.ts` 同） |
 | listen：握手并行，同 id 顶替（旧 session 卸载完 → 旧 Channel 以 4002 关闭 → 装新 session） | [远程会话](../../docs/design-remote-session-2026-10-28.md) §4.2 | `crates/rutis-host/src/connect/listen.rs`：`Listening::run`、`Replaceable` |
 | 拨出方的重连规则 | 拨出稿 §六 | `python/rutis/rutis/dialing.py` `keep_dialing`（Go、Node、Bun 各有一份同样的规则） |
@@ -22,8 +22,8 @@
 
 ### `RemoteLease.tla`
 
-- **参与者**：控制方 `c1`、`c2`（rutis 的拨号 link），一个监听的远端运行时。连接 `<<c, n>>` 是 `c` 第 n 次拨号。
-- **控制方**（`link.rs` `dialing`）：拨号成功后升级完成，运行时的监听器把连接排进队列；等运行时的 hello（`start`），收到后提供 Peer、状态 `Ready`；之后 loader 经 Peer 装载行（`load` 帧）。会话结束（被接管 4002，或运行时结束会话）按可重试处理，退避后重连。停止（dispose）中止任务：关闭会话、取消重试。环境：拨号失败、握手超时或断线（`Lose`）、停止。
+- **参与者**：控制方 `c1`、`c2`（rutis 的 `rutis-host/dial` 行），一个监听的远端运行时。连接 `<<c, n>>` 是 `c` 第 n 次拨号。
+- **控制方**（`connect/dial.rs`）：拨号成功后升级完成，运行时的监听器把连接排进队列；等运行时的 hello（握手），收到后装上会话、状态 `Ready`；之后 loader 经会话装载行（`load` 帧）。会话结束（被接管 4002，或运行时结束会话）按可重试处理，退避后重连。停止（dispose）中止任务：关闭会话、取消重试。环境：拨号失败、握手超时或断线（`Lose`）、停止。
 - **运行时**（Python `serve` 等）：一次只服务一个控制方。取下一个连接时若有当前会话，按 §4.4 分三步：① 关闭旧会话的通道（4002），不再读它的帧；② 清理旧租约（行全部卸载）；③ 新会话开始，回应 hello。会话的对端关闭时清理它的租约。
 - **重连次数**：每个控制方最多拨 4 次（3 次重连）。
 
@@ -115,4 +115,4 @@ TLC_WORKERS=4 TLA2TOOLS=/tmp/tla2tools.jar specs/remote-lease/run.sh       # 限
 
 ## 维护
 
-远程插件 §3.2、§4.4、拨出稿 §六 或远程会话 §4.2 修改时，或 `link.rs`（`dialing`、`listening`、`start`）、`listen.rs`（`Listening::run`）、各语言监听端的接管顺序、拨出方的重连规则改变时，同步修改这个模型和 `expected.txt`（规范 Q11.2.3）。
+远程插件 §3.2、§4.4、拨出稿 §六 或远程会话 §4.2 修改时，或 `connect/dial.rs`、`listen.rs`（`Listening::run`）、各语言监听端的接管顺序、拨出方的重连规则改变时，同步修改这个模型和 `expected.txt`（规范 Q11.2.3）。

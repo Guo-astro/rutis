@@ -1,15 +1,12 @@
-//! Events between nodes (events protocol §9): the listeners of one node
-//! become entries of the other's logical bus, as the link's `export` and
-//! `import` select them.
+//! Events between two rutis kernels on a session (events protocol §9):
+//! the listeners of one become entries of the other's logical bus, every
+//! name, as the listeners of a runtime are (one flat bus).
 //!
-//! `export: [x]` here means this node's emissions of `x` reach the peer's
-//! listeners; `import: [x]` means this node's listeners hear the peer's
-//! `x`. Entries therefore travel from importer to exporter: this node
-//! announces its own entries matching its `import` (`events.on`), and
-//! accepts those the peer announces that match its `export`. An accepted
-//! entry carries the link's scope as a descriptor; a call of it is one
-//! `events.call` back to the peer, which runs that one entry. Entries
-//! imported over a link are never announced again: events go one hop.
+//! Each kernel announces its own entries (`events.on`) and accepts those
+//! the far end announces. An accepted entry carries the session's scope as
+//! a descriptor; a call of it is one `events.call` back to the far end,
+//! which runs that one entry. Entries that came over a session are never
+//! announced again: events go one hop.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, Weak};
@@ -26,9 +23,9 @@ use super::args::{from_wire, result_from_wire, result_to_wire, SessionTranscoder
 use super::errors::{binding, to_cordis, to_session};
 use super::hub::{dispose_now, next_origin, WireEntry};
 use crate::channel::PeerId;
+use crate::peer::{peer_key, Offered, Peer};
 use crate::session::rpc::with_caller;
 use crate::session::{settle, Connection, Error, Reference, Reply, Value, WeakConnection};
-use crate::{peer_key, Offered, Peer};
 
 /// The origins of entries imported over links: never announced again.
 static LINK_ORIGINS: Mutex<Vec<u64>> = Mutex::new(Vec::new());
@@ -37,99 +34,19 @@ fn imported(origin: Option<u64>) -> bool {
     origin.is_some_and(|origin| LINK_ORIGINS.lock().unwrap().contains(&origin))
 }
 
-/// An item of `export` / `import`: a name, or a prefix (`session/*`, `*`).
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum Item {
-    Name(String),
-    Prefix(String),
-}
-
-impl Item {
-    fn parse(item: &str) -> Self {
-        match item.strip_suffix('*') {
-            Some(prefix) => Item::Prefix(prefix.to_owned()),
-            None => Item::Name(item.to_owned()),
-        }
-    }
-}
-
-/// What both an entry (`name`, a prefix when `prefix`) and `item` match
-/// (events protocol §9): a name, a prefix, or nothing.
-fn narrowed(name: &str, prefix: bool, item: &Item) -> Option<(String, bool)> {
-    match (prefix, item) {
-        (false, Item::Name(n)) => (n == name).then(|| (name.to_owned(), false)),
-        (false, Item::Prefix(p)) => name.starts_with(p).then(|| (name.to_owned(), false)),
-        (true, Item::Name(n)) => n.starts_with(name).then(|| (n.clone(), false)),
-        (true, Item::Prefix(p)) => {
-            if p.starts_with(name) {
-                Some((p.clone(), true))
-            } else if name.starts_with(p.as_str()) {
-                Some((name.to_owned(), true))
-            } else {
-                None
-            }
-        }
-    }
-}
-
-/// Everything `items` select of an entry, each once.
-fn selected(name: &str, prefix: bool, items: &[Item]) -> Vec<(String, bool)> {
-    let mut out: Vec<(String, bool)> = Vec::new();
-    for item in items {
-        if let Some(found) = narrowed(name, prefix, item) {
-            if !out.contains(&found) {
-                out.push(found);
-            }
-        }
-    }
-    // A prefix another selected prefix covers is that one's already
-    // (`t/*` with `t/a/*`): an event under both would be delivered twice.
-    let covering: Vec<String> = out
-        .iter()
-        .filter(|(_, prefix)| *prefix)
-        .map(|(p, _)| p.clone())
-        .collect();
-    out.retain(|(p, prefix)| {
-        !*prefix
-            || !covering
-                .iter()
-                .any(|q| q.len() < p.len() && p.starts_with(q.as_str()))
-    });
-    // A name a prefix also selects is that prefix's already.
-    let prefixes: Vec<String> = out
-        .iter()
-        .filter(|(_, prefix)| *prefix)
-        .map(|(p, _)| p.clone())
-        .collect();
-    out.retain(|(n, prefix)| *prefix || !prefixes.iter().any(|p| n.starts_with(p.as_str())));
-    out
-}
-
-/// The events of one link, on its `Peer#<peer>`.
-pub struct LinkEventsPlugin {
+/// The events of a session with a far rutis kernel, on its `Peer#<peer>`.
+pub(crate) struct NodeEvents {
     label: String,
     injects: [TypeKey; 1],
     peer: PeerId,
-    export: Vec<Item>,
-    import: Vec<Item>,
 }
 
-impl LinkEventsPlugin {
-    /// Share events with `peer`: `export` and `import` are its link's lists
-    /// (names, `*` prefixes); service names in them select those events
-    /// too.
-    pub fn new(
-        peer: PeerId,
-        export: impl IntoIterator<Item = impl Into<String>>,
-        import: impl IntoIterator<Item = impl Into<String>>,
-    ) -> Self {
-        let items = |items: Vec<String>| items.iter().map(|item| Item::parse(item)).collect();
+impl NodeEvents {
+    pub(crate) fn new(peer: PeerId) -> Self {
         Self {
             label: format!("rutis-bridge/events#{peer}"),
             injects: [peer_key(&peer).erase()],
             peer,
-            export: items(export.into_iter().map(Into::into).collect()),
-            import: items(import.into_iter().map(Into::into).collect()),
         }
     }
 }
@@ -139,8 +56,6 @@ struct Link {
     ctx: Ctx,
     peer: PeerId,
     connection: WeakConnection,
-    export: Vec<Item>,
-    import: Vec<Item>,
     /// Where the link is, and so where what it imports sits.
     scope: Vec<Scope>,
     origin: u64,
@@ -189,8 +104,7 @@ fn epoch_of(id: &str) -> Option<u64> {
 
 impl Link {
     /// Whether this node's entry goes to the peer at all: its own (not
-    /// imported). Delivery is by name; the link's `export` / `import`
-    /// lists are the only boundary.
+    /// imported). Delivery is by name.
     fn own(&self, entry: &TableEntry) -> bool {
         !imported(entry.origin) && !super::hub::process_local(&entry.name)
     }
@@ -213,13 +127,14 @@ impl Link {
         }
     }
 
-    /// Announce `entry` to the peer, as `import` narrows it.
+    /// Announce `entry` to the peer.
     fn announce(&self, state: &mut LinkState, entry: &TableEntry) {
         if !self.own(entry) || state.announced.contains_key(&entry.id) {
             return;
         }
         let mut sent = Vec::new();
-        for (name, prefix) in selected(&entry.name, entry.prefix, &self.import) {
+        {
+            let (name, prefix) = (entry.name.clone(), entry.prefix);
             state.next += 1;
             let id = format!("{}.{}", state.epoch, state.next);
             state.calls.insert(id.clone(), entry.id);
@@ -400,7 +315,8 @@ impl Link {
             }
         }
         let mut disposers = Vec::new();
-        for (name, prefix) in selected(&announced.name, announced.prefix, &self.export) {
+        {
+            let (name, prefix) = (announced.name.clone(), announced.prefix);
             let info = ListenerInfo {
                 name: name.clone(),
                 prefix,
@@ -588,7 +504,7 @@ fn next_terminal(next: Reference, mode: Mode) -> RawTerminal {
 /// Serves `events.*` from the peer.
 struct Handler(Weak<Link>);
 
-impl crate::Handler for Handler {
+impl crate::peer::Handler for Handler {
     fn invoke(&self, connection: &Connection, _: &str, method: &str, args: Value) -> Reply {
         let link = self
             .0
@@ -604,7 +520,7 @@ impl crate::Handler for Handler {
     }
 }
 
-impl DynPlugin for LinkEventsPlugin {
+impl DynPlugin for NodeEvents {
     fn platform(&self) -> bool {
         true
     }
@@ -633,8 +549,6 @@ impl DynPlugin for LinkEventsPlugin {
                 ctx: ctx.clone(),
                 peer: self.peer.clone(),
                 connection: peer.connection().downgrade(),
-                export: self.export.clone(),
-                import: self.import.clone(),
                 scope: ctx.scope(),
                 origin,
                 state: Mutex::default(),
@@ -704,45 +618,6 @@ impl DynPlugin for LinkEventsPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn items_narrow_entries() {
-        let items = |list: &[&str]| list.iter().map(|i| Item::parse(i)).collect::<Vec<_>>();
-        assert_eq!(
-            selected("session/created", false, &items(&["session/*"])),
-            vec![("session/created".to_owned(), false)]
-        );
-        assert!(selected("t/x", false, &items(&["n/*", "t/y"])).is_empty());
-        // A prefix entry narrowed by a longer prefix, and by a name.
-        assert_eq!(
-            selected("t/", true, &items(&["t/a/*", "t/b"])),
-            vec![("t/a/".to_owned(), true), ("t/b".to_owned(), false)]
-        );
-        // A shorter item keeps the entry's prefix.
-        assert_eq!(
-            selected("t/a/", true, &items(&["*"])),
-            vec![("t/a/".to_owned(), true)]
-        );
-        // A name a selected prefix covers is not selected twice.
-        assert_eq!(
-            selected("t/", true, &items(&["t/*", "t/b"])),
-            vec![("t/".to_owned(), true)]
-        );
-        // Nor a prefix another selected prefix covers, in either order: an
-        // event under both would reach the entry twice.
-        assert_eq!(
-            selected("t/", true, &items(&["t/*", "t/a/*"])),
-            vec![("t/".to_owned(), true)]
-        );
-        assert_eq!(
-            selected("t/", true, &items(&["t/a/*", "t/*"])),
-            vec![("t/".to_owned(), true)]
-        );
-        assert_eq!(
-            selected("", true, &items(&["t/a/*", "t/*", "u/x"])),
-            vec![("t/".to_owned(), true), ("u/x".to_owned(), false)]
-        );
-    }
 
     /// The peer's `events.on` can come before its `link.offers` (the offer
     /// is announced on a task, the entry as the peer sees this node's

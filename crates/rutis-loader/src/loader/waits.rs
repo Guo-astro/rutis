@@ -405,7 +405,7 @@ pub(crate) fn key_name(catalog: &crate::ServiceCatalog, key: &TypeKey) -> Option
     if let Some(name) = catalog.name_of(key) {
         return Some(name);
     }
-    #[cfg(any(feature = "runtimes", feature = "peer"))]
+    #[cfg(feature = "runtimes")]
     if key.type_id() == std::any::TypeId::of::<dyn rutis_bridge::session::HostDispatch>() {
         return key.name().map(str::to_owned);
     }
@@ -427,9 +427,9 @@ pub(super) fn own_runtime(key: &TypeKey) -> bool {
 /// Why `name` is missing, when rutis knows more (see
 /// `rutis_bridge::exports::unexported`).
 fn unexported(root: &rutis::Ctx, name: &str) -> Option<String> {
-    #[cfg(any(feature = "runtimes", feature = "peer"))]
+    #[cfg(feature = "runtimes")]
     return rutis_bridge::exports::unexported(root, name);
-    #[cfg(not(any(feature = "runtimes", feature = "peer")))]
+    #[cfg(not(feature = "runtimes"))]
     {
         let _ = (root, name);
         None

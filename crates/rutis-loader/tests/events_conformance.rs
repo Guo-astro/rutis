@@ -790,17 +790,15 @@ impl Host {
         .await
     }
 
-    /// The listener of `row` is on the other node's bus too, when it is
-    /// shared there (a name the link shares, at the root): the link
-    /// announces it after it registered, and the case goes on once it has,
-    /// as it does once a row runs.
+    /// The listener of `row` is on the other node's bus too, when it is at
+    /// the root (one flat bus, every name): the session announces it after
+    /// it registered, and the case goes on once it has, as it does once a
+    /// row runs.
     async fn announced(&self, row: &Row) -> Result<(), String> {
         let Some(name) = row.config["name"].as_str() else {
             return Ok(());
         };
-        let shared = name.starts_with("t/") || name.starts_with("rutis/");
-        if !shared
-            || row.scope != "root"
+        if row.scope != "root"
             || row.config.get("fails").is_some()
             || row.config.get("typed").is_some()
         {
@@ -812,7 +810,7 @@ impl Host {
         };
         // How many remote entries of `name` the far side must have: on the
         // host, the runtimes' and the node's; on the node, the host's own
-        // at the root (the link's scope).
+        // at the root (the session's scope).
         let wanted = self
             .state
             .lock()

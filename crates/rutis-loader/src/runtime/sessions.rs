@@ -462,3 +462,33 @@ impl DynPlugin for SessionRowsPlugin {
         })
     }
 }
+
+/// The plugins this loader can resolve, as what a far rutis kernel may run
+/// here through a session (`rutis-bridge/session` answers its `run` from
+/// it): provided at [`rutis_bridge::catalog_key`] by the loader.
+pub struct LoaderCatalog {
+    loader: Loader,
+}
+
+impl LoaderCatalog {
+    pub fn new(loader: Loader) -> Self {
+        Self { loader }
+    }
+}
+
+impl rutis_bridge::PluginCatalog for LoaderCatalog {
+    fn find<'a>(&'a self, name: &'a str) -> BoxFuture<'a, Option<rutis_bridge::Installed>> {
+        Box::pin(async move {
+            let resolved = self.loader.resolve(name).await.ok()?;
+            let factory = match &resolved.scoped {
+                Some(scoped) => scoped(&crate::resolver::Build::default()).ok()?,
+                None => resolved.factory.clone(),
+            };
+            Some(rutis_bridge::Installed {
+                schema: resolved.schema.clone(),
+                version: resolved.meta["version"].as_str().map(str::to_owned),
+                factory,
+            })
+        })
+    }
+}

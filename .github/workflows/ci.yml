@@ -71,11 +71,10 @@ env:
   # a test that starts nothing and opens nothing belongs in PURE_TESTS_*. A
   # name here without its file fails the `lint` job.
   PURE_TESTS_BRIDGE: >-
-    link memory_mux memory_session multihop node
-    node_conformance
+    memory_session multihop
   PURE_TESTS_LOADER: >-
-    check instance_peers instance_services instances lifecycle loader
-    migration_example patch_parity peer_rows regressions reload scope
+    check instance_services instances lifecycle loader migration_example
+    patch_parity regressions reload scope
   # What the pull-request jobs on macOS and Windows skip besides PURE_TESTS_*:
   # tests of runtime and event behavior that is the same on Linux, where the
   # `rust` job runs them with every runtime's features. What is platform
@@ -90,15 +89,15 @@ env:
     marked_services python_runtime runtime_conformance swift_runtime
     value_roundtrip
   MACOS_SKIP_TESTS_LOADER: >-
-    events_conformance events_nodes go_rows go_stop instance_go
+    events_conformance go_rows go_stop instance_go
     marked_services multilang_go runtime_rows sync_cycles
   WINDOWS_SKIP_TESTS_BRIDGE: >-
     dsh_baseline event_hub events_expected go_runtime kotlin_runtime
     marked_services python_runtime runtime_conformance swift_runtime
     value_roundtrip
   WINDOWS_SKIP_TESTS_LOADER: >-
-    bun_instances bun_multilang bun_rows events_conformance events_nodes
-    multilang_swift swift_rows
+    bun_instances bun_multilang bun_rows events_conformance multilang_swift
+    swift_rows
   # The jobs only build to run the tests and checks, and none reads a
   # backtrace: leaving debug info out of the dev and test profiles keeps the
   # target directories (and Swatinem/rust-cache's archives) smaller and the
@@ -527,7 +526,7 @@ jobs:
           RUTIS_EVENTS_PLACEMENTS: ${{ needs.changes.outputs.all == 'true' && 'sampled' || 'written' }}
           RUTIS_EVENTS_REQUIRE: node,python,go,bun
           RUTIS_EVENTS_SETTLE_SCALE: '2'
-        run: cargo test -p rutis-loader --features node,python,go,bun,peer
+        run: cargo test -p rutis-loader --features node,python,go,bun
 
       # Both runtimes, every transport, and the conformance suites.
       - name: cargo test (rutis-bridge, all features)
@@ -544,7 +543,7 @@ jobs:
           RUTIS_EVENTS_PLACEMENTS: written
           RUTIS_EVENTS_REQUIRE: node,python,go,bun
           RUTIS_EVENTS_SETTLE_SCALE: '2'
-        run: cargo test -p rutis-loader --features node,python,go,bun,peer --test runtime_rows --test python_rows --test multilang --test instance_runtimes --test go_rows --test go_stop --test multilang_go --test instance_go --test sync_cycles --test events_conformance
+        run: cargo test -p rutis-loader --features node,python,go,bun --test runtime_rows --test python_rows --test multilang --test instance_runtimes --test go_rows --test go_stop --test multilang_go --test instance_go --test sync_cycles --test events_conformance
       - name: job time
         if: always()
         run: echo "rust job, $(( ($(date +%s) - RUTIS_JOB_STARTED) / 60 )) min" >> "$GITHUB_STEP_SUMMARY"
@@ -874,7 +873,7 @@ jobs:
           cargo check -p rutis-loader --features python --all-targets
           cargo check -p rutis-loader --no-default-features --features bun --all-targets
           cargo check -p rutis-loader --features go --all-targets
-          cargo check -p rutis-loader --features peer --all-targets
+          cargo check -p rutis-loader --features runtimes --all-targets
 
       # The loader test targets compile under each single feature.
       - name: cargo test --no-run (rutis-loader, node)
@@ -883,8 +882,8 @@ jobs:
       - name: cargo test --no-run (rutis-loader, python)
         run: cargo test -p rutis-loader --features python --no-run
 
-      - name: cargo test --no-run (rutis-loader, peer)
-        run: cargo test -p rutis-loader --features peer --no-run
+      - name: cargo test --no-run (rutis-loader, runtimes)
+        run: cargo test -p rutis-loader --features runtimes --no-run
 
       - name: cargo test --no-run (rutis-loader, go)
         run: cargo test -p rutis-loader --features go --no-run
@@ -1377,7 +1376,7 @@ jobs:
             LOADER_TESTS=$(bash tools/platform-tests.sh crates/rutis-loader $PURE_TESTS_LOADER $MACOS_SKIP_TESTS_LOADER)
           fi
           cargo test -p rutis-bridge --all-features $BRIDGE_TESTS
-          cargo test -p rutis-loader --features node,python,go,peer,bun $LOADER_TESTS
+          cargo test -p rutis-loader --features node,python,go,bun $LOADER_TESTS
           cargo test -p rutis-host
       # The published Cordis plugins S6 mounts (tests/e2e/tests/cordis.rs),
       # at the lockfile's versions.
@@ -1760,7 +1759,7 @@ jobs:
           if [ "$ALL" != true ]; then
             LOADER_TESTS=$(bash tools/platform-tests.sh crates/rutis-loader $PURE_TESTS_LOADER $WINDOWS_SKIP_TESTS_LOADER)
           fi
-          cargo test -p rutis-loader --features node,python,go,peer --no-fail-fast $LOADER_TESTS
+          cargo test -p rutis-loader --features node,python,go --no-fail-fast $LOADER_TESTS
       - name: cargo test (rutis-bridge, all features)
         if: '!cancelled()'
         env:

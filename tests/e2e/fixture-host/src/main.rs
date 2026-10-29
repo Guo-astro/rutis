@@ -22,8 +22,8 @@
 //! - `stop`, or the end of stdin: shut down (every cleanup runs), then exit
 //!   0; 2 when the shutdown did not finish.
 //!
-//! Links present `RUTIS_TOKEN_<PEER>`, read when they dial, so a link
-//! added by a reload has its credential too.
+//! Connection rows present `RUTIS_TOKEN_<ROW>`, read when they dial, so a
+//! row added by a reload has its token too.
 
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
@@ -70,7 +70,6 @@ async fn run(path: &Path) -> i32 {
         builtins: Some(Box::new(|builtins| {
             builtins.register::<serde_json::Value, _, _>("fixture/calendar", |_| Ok(RustCalendar));
         })),
-        identity: None,
         rows_file: None,
         observe: None,
     };

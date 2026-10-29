@@ -16,7 +16,7 @@ use rutis_bridge::session::{
     Reply, Value, ENDPOINT_PROTOCOL,
 };
 use rutis_bridge::{
-    catalog_key, session_key, Described, LocalId, PeerId, PluginCatalog, Session, StaticCatalog,
+    catalog_key, session_key, Installed, LocalId, PeerId, PluginCatalog, Session, StaticCatalog,
 };
 use rutis_test_support::{eventually, within};
 use serde_json::{json, Value as Json};
@@ -606,7 +606,7 @@ impl DynPlugin for Connection {
 async fn run_on_a_rutis_kernel() {
     let (main, office) = (kernel("main"), kernel("office"));
     let catalog: Arc<dyn PluginCatalog> =
-        Arc::new(StaticCatalog::new().with("contacts", Described::default(), Contacts));
+        Arc::new(StaticCatalog::new().with("contacts", Installed::new(Contacts)));
     let _catalog = office.provide_at(catalog_key(), catalog).unwrap();
     let (ours, theirs) = rutis_bridge::memory::pair();
     let _at_office = office.plugin(Session::new(theirs));

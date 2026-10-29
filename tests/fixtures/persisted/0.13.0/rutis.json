@@ -25,12 +25,7 @@
     { "id": "per-session", "group": true, "instanced": true, "config": [
       { "id": "session-state", "name": "session-state-plugin" }
     ] },
-    { "id": "office", "name": "rutis-bridge/peer", "config": { "peer": "office", "dial": "wss://office.example.com/rutis", "export": ["weather", "order/*"], "import": ["stock/changed"] } },
-    { "id": "branch", "name": "rutis-bridge/peer", "config": { "peer": "branch", "listen": "public", "identity": "edge" } },
-    { "id": "gpu", "name": "rutis-bridge/peer", "config": { "peer": "gpu", "dial": "wss://gpu.example.com/rutis" } },
     { "id": "embedder", "name": "gpu:embedder" },
-    { "id": "clock", "name": "peer:office/clock" },
-    { "id": "edge-bun", "name": "rutis-bridge/peer", "config": { "peer": "edge-bun", "dial": "wss://edge.example.com/rutis" } },
     { "id": "render", "name": "edge-bun:render" },
     { "id": "phones", "group": true, "instanced": true, "config": [
       { "id": "camera", "name": "phone:camera" }

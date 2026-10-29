@@ -29,19 +29,13 @@ use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use rutis_bridge::channel::PeerId;
 use rutis_bridge::websocket::{self, Limits, ListenerConfig};
-use rutis_bridge::{Registration, Registrations, StaticIdentity};
 use rutis_host::config::HostConfig;
 use rutis_host::host::Host;
 use rutis_test_support::{within, HANG_GUARD};
 use serde_json::json;
 use tokio::io::AsyncBufReadExt;
 use tokio::sync::mpsc;
-
-fn id(s: &str) -> PeerId {
-    PeerId::new(s).unwrap()
-}
 
 fn repo() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -384,27 +378,21 @@ async fn a_wrong_token_is_retried_as_rejected(language: Language) {
 /// A listener speaking another session protocol (400 at the upgrade): the
 /// dialer stops and reports, exiting non-zero.
 async fn an_incompatible_listener_stops_the_dialer(language: Language) {
-    let registrations = Registrations::new();
+    // Takes the token, speaking only `rutis.9`.
     let listener = websocket::listen(
         &ListenerConfig::new("public", "127.0.0.1:0".parse().unwrap()),
         &Limits::default(),
-        websocket::admit_registered(registrations.clone(), "public"),
-    )
-    .unwrap();
-    let _registered = registrations
-        .register(
-            &id("main"),
-            Registration {
-                listener: "public".into(),
-                peer: id("phone"),
-                identity: Arc::new(
-                    StaticIdentity::new(id("main")).accept_token(TOKEN, id("phone")),
-                ),
+        Arc::new(|upgrade: websocket::Upgrade<'_>| {
+            if upgrade.bearer != Some(TOKEN) {
+                return Err(websocket::Refused::Forbidden("not accepted here".into()));
+            }
+            Ok(websocket::Admitted {
                 protocol: "rutis.9".into(),
                 deliver: Box::new(|_| {}),
-            },
-        )
-        .unwrap();
+            })
+        }),
+    )
+    .unwrap();
     let address = format!("ws://{}/rutis", listener.local_addr());
     let mut pixel = Dialer::start(language, &address, "pixel", TOKEN);
     let line = pixel.expect("rutis: refused: incompatible (").await;

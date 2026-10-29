@@ -19,8 +19,6 @@ mod error;
 mod framework;
 mod loader;
 mod patch;
-#[cfg(feature = "peer")]
-pub mod peer;
 mod persist;
 mod resolver;
 #[cfg(feature = "runtimes")]
@@ -57,8 +55,6 @@ pub mod resolve {
 pub mod internal {
     pub use crate::loader::followed_rows;
     pub use crate::patch::{apply_patches, Composed, ComposedRow, Owner, PatchWarning};
-    #[cfg(feature = "peer")]
-    pub use crate::peer::{node_schema, REMOVED_EVENTS};
     #[cfg(feature = "binary")]
     pub use crate::runtime::binary::read_binary_manifest;
     #[cfg(feature = "go")]
