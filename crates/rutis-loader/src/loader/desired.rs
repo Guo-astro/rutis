@@ -105,7 +105,7 @@ impl Row {
         catalog: &ServiceCatalog,
         build: &Build,
     ) -> Result<BoundScope, LoaderError> {
-        #[cfg(any(feature = "runtimes", feature = "peer"))]
+        #[cfg(feature = "runtimes")]
         {
             let isolate = self
                 .raw_scope
@@ -124,7 +124,7 @@ impl Row {
                 inject: Vec::new(),
             })
         }
-        #[cfg(not(any(feature = "runtimes", feature = "peer")))]
+        #[cfg(not(feature = "runtimes"))]
         {
             let _ = (catalog, build);
             Ok(BoundScope::default())
