@@ -245,16 +245,6 @@ pub enum Restart {
     Exit,
 }
 
-impl From<Restart> for rutis_loader::runtime::binary::RestartPolicy {
-    fn from(restart: Restart) -> Self {
-        match restart {
-            Restart::No => Self::No,
-            Restart::OnFailure => Self::OnFailure,
-            Restart::Exit => Self::Exit,
-        }
-    }
-}
-
 impl Restart {
     /// As `rutis.json` writes it.
     pub fn name(self) -> &'static str {

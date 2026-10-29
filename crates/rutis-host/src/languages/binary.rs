@@ -17,7 +17,7 @@ use rutis::Ctx;
 use rutis_bridge::runtime::{RuntimeState, Stdio};
 use rutis_loader::runtime::binary::{
     Binaries, BinaryFile, BinaryLanguage, BinaryResolver, BinaryRuntimeInfo, BinaryRuntimes,
-    BinaryRuntimesHandle, RestartPolicy, RuntimeEnd, Spawn, Spawned,
+    BinaryRuntimesHandle, Spawn, Spawned,
 };
 use rutis_loader::ServiceCatalog;
 
@@ -25,6 +25,7 @@ use super::{Language, Mount, LANGUAGES};
 use crate::config::{BinaryRuntime, BinaryStart, HostConfig, Restart};
 use crate::connect::SpawnPlugin;
 use crate::host::Error;
+use crate::restart::Starts;
 
 /// A compiled language's binaries and runtimes in a running host.
 #[derive(Clone)]
@@ -33,6 +34,8 @@ pub struct BinaryHost {
     pub key: &'static str,
     /// What `runtimes.<key>.restart` says, for each of its runtimes.
     pub restart: Restart,
+    /// Each start of its runtimes, for supervising them.
+    pub starts: Starts,
     side: Arc<dyn Side>,
 }
 
@@ -67,17 +70,6 @@ impl BinaryHost {
         self.side.restart(runtime)
     }
 
-    /// From now on, do what `policy` says when one of its runtimes ends on
-    /// its own, telling `report`.
-    pub fn supervise(&self, policy: RestartPolicy, report: Box<dyn Fn(RuntimeEnd) + Send + Sync>) {
-        self.side.supervise(policy, report)
-    }
-
-    /// Stop supervising its runtimes.
-    pub fn unsupervise(&self) {
-        self.side.unsupervise()
-    }
-
     /// The state of each runtime started and not stopped since, by name.
     pub fn states(&self) -> Vec<(String, RuntimeState)> {
         self.side.states()
@@ -104,8 +96,6 @@ trait Side: Send + Sync {
     fn diagnostics(&self) -> Vec<String>;
     fn replace(&self, runtime: &str, path: &Path);
     fn restart<'a>(&'a self, runtime: &'a str) -> BoxFuture<'a, Result<(), String>>;
-    fn supervise(&self, policy: RestartPolicy, report: Box<dyn Fn(RuntimeEnd) + Send + Sync>);
-    fn unsupervise(&self);
     fn states(&self) -> Vec<(String, RuntimeState)>;
     fn states_started(&self) -> Vec<(String, RuntimeState, u64)>;
     fn runtimes(&self) -> Vec<BinaryRuntimeInfo>;
@@ -141,14 +131,6 @@ impl<L: BinaryLanguage> Side for Of<L> {
         Box::pin(self.runtimes.restart(runtime))
     }
 
-    fn supervise(&self, policy: RestartPolicy, report: Box<dyn Fn(RuntimeEnd) + Send + Sync>) {
-        self.runtimes.supervise(policy, report)
-    }
-
-    fn unsupervise(&self) {
-        self.runtimes.unsupervise()
-    }
-
     fn states(&self) -> Vec<(String, RuntimeState)> {
         self.runtimes.states()
     }
@@ -179,11 +161,13 @@ pub(super) fn start<L: BinaryLanguage>(
     // One plugin in each process: the host starts its lines with the
     // runtime's name (#678).
     let prefix_output = mount.prefix_output;
+    let starts = Starts::default();
     mount.later.push(Box::new(move |root: Ctx| {
         Box::pin(async move {
-            let mut plugin = BinaryRuntimes::<L>::new(resolver.clone(), &project, spawn())
-                .output(Stdio::Lines, Stdio::Lines)
-                .prefix_output(prefix_output);
+            let mut plugin =
+                BinaryRuntimes::<L>::new(resolver.clone(), &project, spawn(starts.clone()))
+                    .output(Stdio::Lines, Stdio::Lines)
+                    .prefix_output(prefix_output);
             plugin = match start {
                 BinaryStart::Eager => plugin.eager(),
                 BinaryStart::OnDemand => plugin.idle(Some(Duration::from_secs(idle.unwrap_or(60)))),
@@ -195,6 +179,7 @@ pub(super) fn start<L: BinaryLanguage>(
             Ok(Some(BinaryHost {
                 key,
                 restart,
+                starts,
                 side: Arc::new(Of { resolver, runtimes }),
             }))
         })
@@ -203,10 +188,11 @@ pub(super) fn start<L: BinaryLanguage>(
 }
 
 /// What starts a compiled language's runtime: a `rutis-host/spawn` row,
-/// named after it.
-fn spawn() -> Spawn {
-    Arc::new(|name: &str, launcher, anchor: &Path| {
+/// named after it, each start told to `starts`.
+fn spawn(starts: Starts) -> Spawn {
+    Arc::new(move |name: &str, launcher, anchor: &Path| {
         let plugin = SpawnPlugin::new(name, launcher, anchor);
+        starts.started(name, plugin.handle());
         Spawned {
             handle: plugin.handle(),
             processes: plugin.processes(),

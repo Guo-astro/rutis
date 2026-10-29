@@ -13,7 +13,6 @@
 //! resolver). [`internal`] is for rutis-host and tests, with no stability
 //! promise.
 
-pub mod backoff;
 mod catalog;
 pub mod edit;
 mod error;
