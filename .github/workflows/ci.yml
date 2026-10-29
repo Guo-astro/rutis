@@ -685,7 +685,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.98.1
       - run: |
           cargo build -p rutis-host
-          echo "RUTIS_HOST=$GITHUB_WORKSPACE/target/debug/rutis-host" >> "$GITHUB_ENV"
+          echo "RUTIS_HOST=${CARGO_TARGET_DIR:-$GITHUB_WORKSPACE/target}/debug/rutis-host" >> "$GITHUB_ENV"
       - run: npm --prefix node/rutis-runtime ci
       - run: npm --prefix node/rutis ci
       - run: npm --prefix node/rutis test
@@ -716,10 +716,8 @@ jobs:
       # rutis.testing runs plugins on rutis-host (`rutis-host test`).
       - uses: dtolnay/rust-toolchain@1.98.1
       - run: cargo build -p rutis-host
-      - run: python3 -m unittest discover -s tests
+      - run: RUTIS_HOST="${CARGO_TARGET_DIR:-$GITHUB_WORKSPACE/target}/debug/rutis-host" python3 -m unittest discover -s tests
         working-directory: python/rutis
-        env:
-          RUTIS_HOST: ${{ github.workspace }}/target/debug/rutis-host
       - name: self-hosted runner, end
         if: always() && runner.environment == 'self-hosted'
         env:
@@ -1139,7 +1137,7 @@ jobs:
         run: |
           cargo build -p rutis-host
           swift build
-          RUTIS_HOST="$PWD/target/debug/rutis-host" swift run RutisSelfTest
+          RUTIS_HOST="${CARGO_TARGET_DIR:-$PWD/target}/debug/rutis-host" swift run RutisSelfTest
       # The public API of Rutis and RutisTest against
       # swift/rutis/public-api.txt (SDK entry design §6, #692).
       - name: public API of the Swift SDK
@@ -1288,7 +1286,7 @@ jobs:
       # (`rutis-host test`); the SDK links this runtime.
       - run: |
           cargo build -p rutis-host
-          echo "RUTIS_HOST=$GITHUB_WORKSPACE/target/debug/rutis-host" >> "$GITHUB_ENV"
+          echo "RUTIS_HOST=${CARGO_TARGET_DIR:-$GITHUB_WORKSPACE/target}/debug/rutis-host" >> "$GITHUB_ENV"
       - run: npm --prefix node/rutis ci
       - run: bun test
         working-directory: bun/rutis-bun
@@ -1371,32 +1369,33 @@ jobs:
       # The SDK's own tests do not depend on the platform: full runs only.
       - run: |
           cargo build -p rutis-host
-          RUTIS_HOST="$GITHUB_WORKSPACE/target/debug/rutis-host" npm --prefix node/rutis test
+          RUTIS_HOST="${CARGO_TARGET_DIR:-$GITHUB_WORKSPACE/target}/debug/rutis-host" npm --prefix node/rutis test
         if: needs.changes.outputs.all == 'true'
       # The runtime's channels, handshake and WebSocket.
       - run: npm --prefix node/rutis-runtime test
       # setup-python's macOS builds install only under /Users/runner (the
       # hosted image's user): a self-hosted runner takes uv's latest Python,
-      # in a virtual environment with pip.
+      # in a virtual environment with pip. Also after a failed step: the
+      # end-to-end scenarios below run anyway, and their Python rows need
+      # this one (0.19 needs 3.12 or later), not the system's.
       - uses: actions/setup-python@v5
-        if: runner.environment == 'github-hosted'
+        if: "!cancelled() && runner.environment == 'github-hosted'"
         with:
           python-version: '3.x'
       - uses: astral-sh/setup-uv@v6
-        if: runner.environment == 'self-hosted'
+        if: "!cancelled() && runner.environment == 'self-hosted'"
       - name: Python (self-hosted runner)
-        if: runner.environment == 'self-hosted'
+        if: "!cancelled() && runner.environment == 'self-hosted'"
         run: |
           uv python install 3
           uv venv --seed --python-preference only-managed --python 3 "$RUNNER_TEMP/python"
           echo "$RUNNER_TEMP/python/bin" >> "$GITHUB_PATH"
       - run: python3 -m pip install "websockets>=15"
+        if: '!cancelled()'
       # rutis.testing runs plugins on rutis-host (`rutis-host test`).
       - run: cargo build -p rutis-host
-      - run: python3 -m unittest discover -s tests
+      - run: RUTIS_HOST="${CARGO_TARGET_DIR:-$GITHUB_WORKSPACE/target}/debug/rutis-host" python3 -m unittest discover -s tests
         working-directory: python/rutis
-        env:
-          RUTIS_HOST: ${{ github.workspace }}/target/debug/rutis-host
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
