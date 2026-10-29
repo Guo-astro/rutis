@@ -1,3 +1,4 @@
+// guarantee: bridge/dial-out-rules
 // Dialing out (dial-out design §六): how failures are classified, the
 // backoff, and the loop that dials again, against stand-ins for the dial
 // and the session; what is checked before dialing. The rules against a

@@ -1,3 +1,4 @@
+//! guarantee: sdk/testing-matches-runtime
 //! `rutis-host test` (`docs/design-platform-cleanup-2026-10-28.md` §7.5),
 //! end to end, as a test tool runs it: `rutis-host test tester -- <runtime
 //! command> <project>` starts a real runtime as a local runtime and loads

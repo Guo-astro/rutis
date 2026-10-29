@@ -1,3 +1,4 @@
+//! guarantee: host/plugin-install
 //! Each kind of reference (§四): the source and language it reads as, and
 //! the package manager commands it runs, with recording programs on `PATH`
 //! in place of npm, bun, uv and go.

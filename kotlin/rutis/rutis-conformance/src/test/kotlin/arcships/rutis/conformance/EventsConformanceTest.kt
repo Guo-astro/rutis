@@ -1,3 +1,4 @@
+// guarantee: events/one-bus
 package arcships.rutis.conformance
 
 import arcships.rutis.RutisException

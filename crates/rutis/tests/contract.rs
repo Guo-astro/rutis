@@ -205,6 +205,7 @@ async fn turns(n: usize) {
 
 // ── assembly(支柱 1)──────────────────────────────────────────────
 
+/// guarantee: core/D19
 #[tokio::test]
 async fn plugin_provides_n_services() {
     let ctx = Ctx::root().unwrap();
@@ -223,6 +224,7 @@ async fn plugin_provides_n_services() {
     assert!(ctx.get::<Dep1>().is_none());
 }
 
+/// guarantee: core/D3
 #[tokio::test]
 async fn plugin_registers_n_listeners() {
     let ctx = Ctx::root().unwrap();
@@ -267,6 +269,7 @@ async fn plugin_registers_n_listeners() {
     assert_eq!(hits.load(Ordering::SeqCst), 2); // 卸载后不再分发
 }
 
+/// guarantee: core/D18, core/D23
 #[tokio::test]
 async fn effect_yields_disposer() {
     let ctx = Ctx::root().unwrap();
@@ -281,6 +284,7 @@ async fn effect_yields_disposer() {
     assert_eq!(counter.load(Ordering::SeqCst), 1);
 }
 
+/// guarantee: core/D28
 #[tokio::test]
 async fn auto_ownership() {
     let ctx = Ctx::root().unwrap();
@@ -413,6 +417,7 @@ async fn root_restart_dispose_cycle() {
     assert_eq!(root.state().state, FiberState::Disposed);
 }
 
+/// guarantee: core/D6
 #[tokio::test]
 async fn concurrent_dispose_join() {
     let ctx = Ctx::root().unwrap();
@@ -445,6 +450,7 @@ async fn concurrent_dispose_join() {
     assert_eq!(counter.load(Ordering::SeqCst), 1);
 }
 
+/// guarantee: core/D9
 #[tokio::test]
 async fn cross_generation_isolation() {
     let ctx = Ctx::root().unwrap();
@@ -528,6 +534,7 @@ async fn late_provider_activates() {
     reach(&view, FiberState::Active).await;
 }
 
+/// guarantee: core/D22
 #[tokio::test]
 async fn pending_not_failed() {
     let ctx = Ctx::root().unwrap();
@@ -625,6 +632,7 @@ async fn aggregate_no_flatten() {
     }
 }
 
+/// guarantee: core/D25
 #[tokio::test]
 async fn exactly_once_same_error() {
     let ctx = Ctx::root().unwrap();
@@ -718,6 +726,7 @@ async fn effect_during_cleanup_fails() {
 
 // ── events(四分发)───────────────────────────────────────────────
 
+/// guarantee: core/D2, core/D4, core/D16
 #[tokio::test]
 async fn emit_async_safe() {
     let ctx = Ctx::root().unwrap();
@@ -807,6 +816,7 @@ async fn emit_error_sink() {
         .any(|e| matches!(e, ErrorKind::PluginFailed(_)))); // panic 包装
 }
 
+/// guarantee: events/parallel
 #[tokio::test]
 async fn parallel_aggregates() {
     let ctx = Ctx::root().unwrap();
@@ -926,6 +936,7 @@ async fn serial_bails() {
     assert_eq!(hits2.load(Ordering::SeqCst), 1); // 第二个未调用
 }
 
+/// guarantee: core/D17
 #[tokio::test]
 async fn waterfall_veto_around() {
     struct Wf {
@@ -1150,6 +1161,7 @@ async fn listener_unload_race() {
 
 // ── registry(支柱 3)──────────────────────────────────────────────
 
+/// guarantee: core/D13
 #[tokio::test]
 async fn typed_roundtrip() {
     let ctx = Ctx::root().unwrap();
@@ -1258,6 +1270,7 @@ async fn apply_panic_regression() {
     soon(poll_panic.dispose()).await.unwrap();
 }
 
+/// guarantee: core/D30
 #[tokio::test(flavor = "current_thread")]
 async fn apply_panics_complete_and_roll_back_current_thread() {
     apply_panic_regression().await;
@@ -1301,6 +1314,7 @@ async fn keyed_multi_instance() {
     assert!(ctx.get::<LlmSvc>().is_none()); // 默认键空
 }
 
+/// guarantee: core/D21
 #[tokio::test]
 async fn isolate_scoping() {
     let key = TypeKey::of::<LlmSvc>();
@@ -1329,6 +1343,7 @@ async fn parent_chain_lookup() {
 
 // ── reload(支柱 5)────────────────────────────────────────────────
 
+/// guarantee: core/D14
 #[tokio::test]
 async fn eviction_order() {
     let ctx = Ctx::root().unwrap();
@@ -1502,6 +1517,7 @@ async fn single_service_evict() {
 
 // ── cancel(D27)───────────────────────────────────────────────────
 
+/// guarantee: core/D7
 #[tokio::test]
 async fn cancel_wakes_awaiters() {
     let ctx = Ctx::root().unwrap();
@@ -1676,6 +1692,7 @@ async fn root_shutdown_releases_driver_and_rejects_new_work() {
     }
 }
 
+/// guarantee: core/features.shutdown-timeout-names-stuck
 // Paused clock: the deadline is measured on a clock the test controls.
 #[tokio::test(start_paused = true)]
 async fn shutdown_deadline_can_resume_after_noncooperative_apply() {
@@ -1989,6 +2006,7 @@ impl DynPlugin for PanicValidate {
     }
 }
 
+/// guarantee: core/D12
 #[tokio::test]
 async fn validate_panic_marks_failed() {
     let ctx = Ctx::root().unwrap();
@@ -2257,6 +2275,7 @@ async fn restart_cleanup_errors_to_sink() {
     assert!(matches!(&*err, ErrorKind::InactiveEffect));
 }
 
+/// guarantee: core/D5
 // Settle 栅栏:并发 settle/restart/dispose 混合投递,全部完成无挂起
 #[tokio::test]
 async fn mixed_concurrent_ops_complete() {

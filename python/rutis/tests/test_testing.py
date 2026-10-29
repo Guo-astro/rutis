@@ -1,3 +1,5 @@
+# guarantee: sdk/undeclared-use
+# guarantee: sdk/testing-matches-runtime
 """rutis.testing: plugins tested on a real host (`rutis-host test`), run by
 this process's runtime."""
 
@@ -59,6 +61,7 @@ class Testing(background.TestCase):
 
         run(go())
 
+    # guarantee: sdk/config-schema
     def test_the_hosts_loader_checks_the_config_and_fills_its_defaults(self):
         plugin, _ = weather_plugin()
 
@@ -226,6 +229,7 @@ class Testing(background.TestCase):
 
         run(go())
 
+    # guarantee: sdk/leaf-events
     def test_plugins_on_one_bus_hear_each_other_and_filter(self):
         # #464 §4.3, §6: prepend, global, the filter seeing descriptors.
         async def go():

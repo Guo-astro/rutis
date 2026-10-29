@@ -122,7 +122,7 @@ fn root_with_sink() -> (Ctx, Arc<Mutex<Vec<Arc<ErrorKind>>>>) {
 
 /// A listener registered once is called by every mode, and sees which.
 ///
-/// guarantee: events/one-table
+/// guarantee: events/one-table, core/D16
 #[tokio::test]
 async fn one_listener_is_called_by_every_mode() {
     let root = Ctx::root().unwrap();
@@ -149,7 +149,7 @@ async fn one_listener_is_called_by_every_mode() {
 /// `next` is only in a waterfall; a synchronous listener cannot call it in
 /// an async waterfall.
 ///
-/// guarantee: events/next-misuse
+/// guarantee: events/one-table
 #[tokio::test]
 async fn next_outside_a_waterfall_is_an_error() {
     let root = Ctx::root().unwrap();
@@ -216,7 +216,7 @@ async fn a_long_waterfall_passes_through_every_listener() {
 /// A listener's `next`, called once its call is over (from a task the
 /// listener left behind), is `Ended`: the waterfall already has its result.
 ///
-/// guarantee: events/next-misuse
+/// guarantee: events/one-table
 #[tokio::test]
 async fn next_after_the_call_ended_is_an_error() {
     let root = Ctx::root().unwrap();
@@ -322,7 +322,7 @@ async fn emit_does_not_wait_and_contains_failures() {
 /// The calls of one name's emits start in emit order at each listener, also
 /// when a listener is still busy with an earlier one.
 ///
-/// guarantee: events/emit-order
+/// guarantee: events/emit, core/D31
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn emits_of_one_name_start_in_emit_order() {
     let root = Ctx::root().unwrap();
@@ -404,7 +404,7 @@ async fn parallel_aggregates_in_registration_order() {
 
 /// `None` and `false` are no result; anything else is (`0`, `""`).
 ///
-/// guarantee: events/no-result
+/// guarantee: events/serial-bail
 #[tokio::test]
 async fn serial_and_bail_skip_no_result() {
     let root = Ctx::root().unwrap();
@@ -446,7 +446,7 @@ async fn serial_and_bail_skip_no_result() {
 
 /// A listener's error stops `serial` and is returned as it is.
 ///
-/// guarantee: events/serial-error
+/// guarantee: events/serial-bail
 #[tokio::test]
 async fn serial_stops_at_an_error() {
     let root = Ctx::root().unwrap();
@@ -468,7 +468,7 @@ async fn serial_stops_at_an_error() {
 /// A synchronous dispatch meeting an async listener fails with
 /// `AsyncListener`; listeners before it ran.
 ///
-/// guarantee: events/async-listener
+/// guarantee: events/serial-bail
 #[tokio::test]
 async fn bail_meets_an_async_listener() {
     let root = Ctx::root().unwrap();
@@ -507,7 +507,7 @@ fn wrap(log: &Log, label: &'static str) -> impl Listener<Ping> {
 /// Outer to inner with `next`; not calling it vetoes the rest; the last
 /// `next` is the terminal; the outermost value comes back as it is.
 ///
-/// guarantee: events/waterfall
+/// guarantee: events/waterfall, core/D17
 #[tokio::test]
 async fn waterfall_chains_vetoes_and_ends_in_the_terminal() {
     let root = Ctx::root().unwrap();
@@ -574,7 +574,7 @@ async fn waterfall_chains_vetoes_and_ends_in_the_terminal() {
 /// same name hears the event, converted by serde, and its result comes back
 /// as the emitter's type.
 ///
-/// guarantee: events/by-name
+/// guarantee: events/by-name, core/D2, core/D33
 #[tokio::test]
 async fn listeners_of_another_type_hear_the_same_name() {
     let root = Ctx::root().unwrap();
@@ -689,7 +689,7 @@ async fn rutis_events_are_reserved() {
 /// every dispatch, wherever its scope is (Cordis's rule). A listener's scope
 /// is a descriptor for filters, not a routing rule.
 ///
-/// guarantee: events/flat
+/// guarantee: events/flat, core/D29
 #[tokio::test]
 async fn events_reach_every_listener_on_the_bus() {
     let root = Ctx::root().unwrap();
@@ -811,7 +811,7 @@ async fn filters_see_descriptors_and_global_entries_skip_them() {
 
 /// In `emit`, a failing filter delivers to nobody and is reported.
 ///
-/// guarantee: events/filter-emit
+/// guarantee: events/filter
 #[tokio::test]
 async fn a_failing_emit_filter_is_reported() {
     let (root, errors) = root_with_sink();
@@ -832,7 +832,7 @@ async fn a_failing_emit_filter_is_reported() {
 /// fiber's unload waits for its running calls while signalling them to
 /// stop (its `ctx.cancelled()`).
 ///
-/// guarantee: events/unload-waits
+/// guarantee: events/lifecycle
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn unload_cancels_and_waits_for_running_listeners() {
     let root = Ctx::root().unwrap();
@@ -876,7 +876,7 @@ async fn unload_cancels_and_waits_for_running_listeners() {
 
 /// Once a listener's fiber is unloading or gone, no new call reaches it.
 ///
-/// guarantee: events/liveness
+/// guarantee: events/lifecycle, core/D28
 #[tokio::test]
 async fn unloaded_listeners_are_not_called() {
     let root = Ctx::root().unwrap();
@@ -993,7 +993,7 @@ fn remote_entry(name: &str, info: ListenerInfo, options: EventOptions) -> Remote
 /// sees its descriptor, its scope is a descriptor, its disposer withdraws
 /// it.
 ///
-/// guarantee: events/remote-entry
+/// guarantee: events/remote
 #[tokio::test]
 async fn remote_entries_take_part_like_any_listener() {
     let root = Ctx::root().unwrap();
@@ -1069,7 +1069,7 @@ async fn remote_entries_take_part_like_any_listener() {
 /// the chain once; a second call fails, as does a call after the entry's
 /// call ended.
 ///
-/// guarantee: events/remote-next
+/// guarantee: events/remote
 #[tokio::test]
 async fn remote_waterfall_next_runs_once() {
     let root = Ctx::root().unwrap();
@@ -1149,7 +1149,7 @@ async fn remote_waterfall_next_runs_once() {
 
 /// `bail` calls a remote entry's `call_sync` inline.
 ///
-/// guarantee: events/remote-sync
+/// guarantee: events/remote
 #[tokio::test]
 async fn remote_entries_in_synchronous_modes() {
     let root = Ctx::root().unwrap();
@@ -1176,7 +1176,7 @@ async fn remote_entries_in_synchronous_modes() {
 /// The table watcher gets the current entries, then every change; a Rust
 /// registration is reported before `on` returns.
 ///
-/// guarantee: events/table-watch
+/// guarantee: events/one-table
 #[tokio::test]
 async fn the_table_is_watched() {
     let root = Ctx::root().unwrap();
@@ -1226,7 +1226,7 @@ async fn the_table_is_watched() {
 /// The raw API: an erased dispatch with a batch filter and a terminal, an
 /// emit that resolves once every call started, and calling one entry by id.
 ///
-/// guarantee: events/raw
+/// guarantee: events/one-table
 #[tokio::test]
 async fn raw_dispatch_and_entry_calls() {
     let root = Ctx::root().unwrap();

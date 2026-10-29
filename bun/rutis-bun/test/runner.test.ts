@@ -157,7 +157,7 @@ async function eventRows(run: (runtime: Runtime, a: Context, b: Context, host: R
   }
 }
 
-// guarantee: events/bun-runtime (one bus for the rows; disposers; unload; reserved names)
+// guarantee: sdk/leaf-events (one bus for the rows; disposers; unload; reserved names)
 test('rows share the bus; listeners dispose independently and leave with their row', () => eventRows(async (runtime, a, b, host) => {
   const received: number[] = []
   const listener = (value: number) => { received.push(value) }
@@ -199,7 +199,7 @@ test('rows share the bus; listeners dispose independently and leave with their r
   expect(() => a.serial('rutis/row')).toThrow('rutis/* events are emitted by rutis only: rutis/row')
 }))
 
-// guarantee: events/bun-runtime (the five modes; emit's failures go back to the host)
+// guarantee: sdk/leaf-events (the five modes; emit's failures go back to the host)
 test('the five modes, prepend, global and filter', () => eventRows(async (_runtime, a, b, host) => {
   const write = process.stderr.write
   const written: string[] = []
@@ -241,7 +241,7 @@ test('the five modes, prepend, global and filter', () => eventRows(async (_runti
   expect(descriptors.map(d => [d.row, d.global, d.prefix, d.node])).toEqual([['a', false, false, null]])
 }))
 
-// guarantee: events/bun-runtime (unload signals and waits)
+// guarantee: sdk/leaf-events (unload signals and waits)
 test('unload aborts the row signal and waits for its running listeners', () => eventRows(async (runtime, a, b, host) => {
   const order: string[] = []
   let started!: () => void
@@ -259,7 +259,7 @@ test('unload aborts the row signal and waits for its running listeners', () => e
   await running
 }))
 
-// guarantee: events/bun-runtime (events.call; withdrawn; the host's messages)
+// guarantee: sdk/leaf-events (events.call; withdrawn; the host's messages)
 test('the host registers, dispatches and calls back through the session', async () => {
   const dir = project({ 'events.ts': 'export function apply(ctx) { ctx.on("t/x", x => `x${x}`); ctx.provide("me", ctx) }' })
   const runtime = new Runtime(dir)

@@ -128,7 +128,7 @@ async fn swift_rows_follow_the_row_contract() {
         .unwrap();
 }
 
-/// guarantee: bridge/cancellation
+/// guarantee: bridge/cancel-reaches-callee
 #[tokio::test(flavor = "multi_thread")]
 async fn a_dropped_async_call_cancels_the_methods_task() {
     if !rutis_test_support::runtimes::enabled("swift") {

@@ -284,7 +284,7 @@ impl Fixture {
 /// Two instances, the same names: each instance's TS and Python rows see
 /// that instance's Rust `tools`, and its Rust reader reads that instance's
 /// rows' timelines, through one process per language.
-/// guarantee: loader/instance-services
+/// guarantee: loader/instance-services, bridge/caller-row
 #[tokio::test(flavor = "multi_thread")]
 async fn each_instance_sees_its_own_services_across_languages() {
     if !rutis_test_support::runtimes::all_enabled(&["node", "python"]) {

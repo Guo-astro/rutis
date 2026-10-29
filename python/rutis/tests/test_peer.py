@@ -1,3 +1,5 @@
+# guarantee: sdk/error-rethrown
+# guarantee: bridge/bad-values
 """The session layer against a scripted peer on a socketpair."""
 
 import asyncio
@@ -767,6 +769,7 @@ class ErrorGraphTests(unittest.TestCase):
         },
     }
 
+    # guarantee: bridge/error-code-and-data
     def test_a_rust_service_error_has_its_code_and_data(self):
         # As rutis-bridge's `exports::failure` sends it (#440): a bigint in data.
         error = decode_error({

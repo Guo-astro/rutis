@@ -95,7 +95,7 @@ async fn owner(host: &Host) -> Value {
 /// A dial row `gpu` to a runtime that listens: the row `gpu:contacts_plugin`
 /// runs there, `status` says the row is connected; when the runtime goes,
 /// the row's service goes with it and `status` says disconnected.
-/// guarantee: host/remote-runtimes
+/// guarantee: host/connection-plugins
 #[tokio::test(flavor = "multi_thread")]
 async fn a_dial_row_runs_the_rows_of_a_runtime_that_listens() {
     let _environment = environment();
@@ -137,7 +137,7 @@ async fn a_dial_row_runs_the_rows_of_a_runtime_that_listens() {
 
 /// What `run` prints of a dial row: `gpu: connected` once the far end
 /// greeted, `gpu: disconnected (<why>); retrying in <s>s` when it went.
-/// guarantee: host/remote-runtimes
+/// guarantee: host/connection-plugins, host/link-state-output
 #[cfg(unix)]
 #[test]
 fn run_says_when_a_dial_row_connects_and_disconnects() {

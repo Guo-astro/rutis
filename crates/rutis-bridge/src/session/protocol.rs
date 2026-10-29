@@ -255,6 +255,7 @@ mod tests {
         }
     }
 
+    /// guarantee: sdk/error-codes
     /// rutis's own errors cross as `BindingError`s carrying the code a
     /// program decides by, and its details as `data` (#677).
     #[test]

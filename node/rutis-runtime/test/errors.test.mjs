@@ -1,3 +1,6 @@
+// guarantee: sdk/error-rethrown
+// guarantee: sdk/error-positions
+// guarantee: bridge/error-code-and-data
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { encodeError, decodeError, hostGone, noMethod, notDeclared, unavailable } from '../src/errors.mjs'

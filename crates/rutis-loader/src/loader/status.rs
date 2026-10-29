@@ -687,6 +687,7 @@ mod tests {
         })
     }
 
+    /// guarantee: loader/status
     /// One item a line under each heading; a waiting row's line is its
     /// reason; a call names the row called when it is not the service's
     /// name; empty parts say `none`.

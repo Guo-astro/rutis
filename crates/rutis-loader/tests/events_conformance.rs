@@ -1,3 +1,4 @@
+//! guarantee: bridge/value-tags
 //! The unified events conformance suite on the real runtimes (#464 step 7):
 //! every case of `events.expected.json`
 //! (`rutis_bridge::runtime::testing::events`) in the placements
@@ -1289,14 +1290,14 @@ async fn conformance(x: &str) {
     assert_eq!(tally.failed(), 0, "X={x}:\n{tally}");
 }
 
-/// guarantee: events/one-bus (#464): every case of events.expected.json
+/// guarantee: events/framework, events/one-bus (#464): every case of events.expected.json
 /// with X a Node Cordis plugin.
 #[tokio::test(flavor = "multi_thread")]
 async fn events_with_x_a_cordis_plugin() {
     conformance("node").await;
 }
 
-/// guarantee: events/one-bus, X a Node leaf plugin.
+/// guarantee: events/one-bus, X a Node leaf plugin., sdk/leaf-events
 #[tokio::test(flavor = "multi_thread")]
 async fn events_with_x_a_node_leaf_plugin() {
     conformance("node-leaf").await;

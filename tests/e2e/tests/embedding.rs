@@ -334,7 +334,7 @@ fn inspect_settled(app: &mut Host, what: &str, gone: Option<&Value>) -> Value {
 /// risk: D1 (a tenant sees another's services), D2 (a closed instance
 /// leaves registrations, in rutis or in the runtimes), D4 (an edit half
 /// applied), D5 (the state differs after a restart)
-/// guarantee: loader/instance-services, loader/instance-close-leaves-nothing,
+/// guarantee: loader/instance-services, loader/instance-close-leaves-nothing,, loader/saved-layers-restore
 /// loader/instance-edits-all-or-none, loader/saved-layers-restore
 #[test]
 fn tenants_are_created_edited_closed_and_restored_after_a_restart() {

@@ -1,3 +1,5 @@
+// guarantee: bridge/grant-rollback
+// guarantee: bridge/reference-release-count
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { Session, ENDPOINT_PROTOCOL, MAX_MESSAGE, overLimit } from '../src/session.mjs'

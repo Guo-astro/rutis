@@ -1917,6 +1917,7 @@ mod tests {
         }
     }
 
+    /// guarantee: loader/announced-services
     /// A service a row announces is followed once its observer accepts it,
     /// and is forgotten with the row; one it declines, or one of a row
     /// loaded without an observer, is not followed at all.

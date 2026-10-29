@@ -1,3 +1,4 @@
+//! guarantee: sdk/rust-compile-errors
 //! The plugin-facing event API: listeners are closures, and the five modes
 //! are methods on [`Ctx`] named as in every other language.
 

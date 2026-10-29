@@ -1,3 +1,4 @@
+//! guarantee: bridge/marked-services
 //! Serving `#[rutis::service]` types by name: the [`Exposer`] that rutis
 //! calls when such a type is provided, and the [`Wire`] its generated
 //! dispatch reaches the session's values through.

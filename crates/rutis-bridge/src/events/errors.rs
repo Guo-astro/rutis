@@ -253,6 +253,7 @@ mod tests {
         );
     }
 
+    /// guarantee: events/hub-errors
     /// An aggregate keeps its children in order, each with its own graph.
     #[test]
     fn aggregates_carry_their_children_in_order() {

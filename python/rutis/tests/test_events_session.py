@@ -188,6 +188,7 @@ class Session(background.IsolatedAsyncioTestCase):
 
 
 class Handshake(Session):
+    # guarantee: sdk/leaf-events
     async def test_mount_has_no_events_feature(self):
         outcome, reply = await self.mount()
         self.assertEqual(outcome, "return")

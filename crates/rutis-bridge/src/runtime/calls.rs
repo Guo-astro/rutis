@@ -100,6 +100,7 @@ impl Calls {
 mod tests {
     use super::*;
 
+    /// guarantee: loader/status
     /// A call is listed while its guard lives, oldest first, and gone once
     /// the guard is dropped.
     #[test]

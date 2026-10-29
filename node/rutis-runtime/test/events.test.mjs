@@ -1,4 +1,4 @@
-// guarantee: events/js-bus — the logical bus as one JavaScript process
+// guarantee: sdk/leaf-events — the logical bus as one JavaScript process
 // takes part in it (#464, docs/design-events-protocol-2026-10-18.en.md):
 // it dispatches through its host only (platform cleanup §7.5; the five
 // modes, filters and order are the host's): the host messages (events.on /
