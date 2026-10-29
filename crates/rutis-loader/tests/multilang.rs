@@ -9,12 +9,13 @@ mod common;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use common::runtimes::{layer, repo, row_state, rows_stage, Llm, Probe, COLD};
+use common::runtimes::{
+    greet_as_main, layer, repo, row_state, rows_stage, Llm, Probe, TestRuntime, COLD,
+};
 use rutis::host::{CtxHost, FiberState, FiberView};
 use rutis::Ctx;
-use rutis_bridge::runtime::LocalRuntime;
 use rutis_bridge::session::host_key;
-use rutis_loader::runtime::RuntimeResolver;
+use rutis_loader::runtime::SessionResolver;
 use rutis_loader::{Chain, Loader, LoaderOptions, LoaderPlugin, ServiceCatalog};
 use serde_json::{json, Value};
 
@@ -215,27 +216,24 @@ async fn fixture() -> Fixture {
     for name in ["probe", "llm", "py_weather", "js_weather", "js_relay"] {
         catalog.register_shared(name);
     }
-    let node = LocalRuntime::node(
-        repo().join("node/rutis-runtime"),
-        repo().join("node/rutis-runtime/package.json"),
-    );
-    let python = LocalRuntime::python(&py).python_path(repo().join("python/rutis"));
-    let node_rows = Arc::new(RuntimeResolver::node(node.handle()).with_catalog(&catalog));
-    let python_rows = Arc::new(RuntimeResolver::modules(python.handle()).with_catalog(&catalog));
+    greet_as_main(&root);
+    let node = TestRuntime::node(&repo().join("node/rutis-runtime/package.json"));
+    let python = TestRuntime::python(&py);
+    let sessions = Arc::new(SessionResolver::npm(&catalog, "node"));
+    sessions.runtime(node.handle());
+    sessions.runtime(python.handle());
     let node = root.plugin(node);
     let python = root.plugin(python);
     let options = LoaderOptions {
         catalog,
         ..LoaderOptions::default()
     };
-    let chain = Chain::new()
-        .with_shared(python_rows.clone())
-        .with_shared(node_rows.clone());
-    let plugin = LoaderPlugin::new(chain, options);
+    let plugin = LoaderPlugin::new(Chain::new().with_shared(sessions.clone()), options);
     let loader = plugin.handle();
+    sessions.attach(&loader);
     root.plugin(plugin).await.unwrap();
-    rows_stage(&root, node_rows).await;
-    rows_stage(&root, python_rows).await;
+    rows_stage(&root, &sessions, "node").await;
+    rows_stage(&root, &sessions, "py").await;
     Fixture {
         root,
         loader,

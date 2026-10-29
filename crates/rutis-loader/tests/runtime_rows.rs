@@ -9,16 +9,16 @@ mod common;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use common::runtimes::{layer, row_state, rows_stage, Probe};
+use common::runtimes::{greet_as_main, layer, row_state, rows_stage, Probe, TestRuntime};
 use rutis::host::{
     BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind, FiberState, FiberView, TypeKey,
 };
 use rutis::{Ctx, Error};
-use rutis_bridge::runtime::LocalRuntime;
+use rutis_bridge::runtime::Launcher;
 use rutis_bridge::session::{host_key, HostDispatch};
 use rutis_bridge::session::{settle, Reply, Site, Value as RpcValue};
 use rutis_loader::report::{EntryStatus, LoaderChanged, RowStatus, Supply};
-use rutis_loader::runtime::{RuntimeResolver, RuntimeRows, RuntimeRowsPlugin};
+use rutis_loader::runtime::{SessionResolver, SessionRows};
 use rutis_loader::{
     Chain, Layer, Loader, LoaderError, LoaderOptions, LoaderPlugin, Patch, ServiceCatalog,
 };
@@ -252,7 +252,7 @@ async fn volatile_changes_reach_cordis_in_place() {
     // recorded inside `apply`, before the row runs in rutis (`rows.load`
     // returns once the Cordis fiber settled). `reconcile` does not wait
     // for that when the rows wait for the runtime's rows stage
-    // (`RuntimeRows`), so wait here: a change to a row still loading is an
+    // (`SessionRows`), so wait here: a change to a row still loading is an
     // ordinary update, a restart.
     until(
         || {
@@ -338,18 +338,29 @@ async fn mount(root: &Ctx, package: PathBuf, shared: &[&str]) -> (Loader, FiberV
     for name in shared {
         catalog.register_shared(*name);
     }
-    let runtime = LocalRuntime::node(package, node_package().join("package.json"))
-        .host("probe", json!({ "record": "sync" }));
-    let resolver = Arc::new(RuntimeResolver::node(runtime.handle()).with_catalog(&catalog));
+    mount_with(root, package, catalog).await
+}
+
+/// [`mount`] with `catalog`.
+async fn mount_with(root: &Ctx, package: PathBuf, catalog: ServiceCatalog) -> (Loader, FiberView) {
+    greet_as_main(root);
+    let runtime = TestRuntime::new(
+        "node",
+        Launcher::node(&package),
+        &node_package().join("package.json"),
+    );
+    let sessions = Arc::new(SessionResolver::npm(&catalog, "node"));
+    sessions.runtime(runtime.handle());
     let runtime = root.plugin(runtime);
     let options = LoaderOptions {
         catalog,
         ..LoaderOptions::default()
     };
-    let plugin = LoaderPlugin::new(Chain::new().with_shared(resolver.clone()), options);
+    let plugin = LoaderPlugin::new(Chain::new().with_shared(sessions.clone()), options);
     let loader = plugin.handle();
+    sessions.attach(&loader);
     root.plugin(plugin).await.unwrap();
-    rows_stage(root, resolver).await;
+    rows_stage(root, &sessions, "node").await;
     (loader, runtime)
 }
 
@@ -499,7 +510,7 @@ async fn a_dead_process_stops_the_rows_until_restart() {
     )
     .await;
     assert_eq!(runtime.state().state, FiberState::Active);
-    let runtime_key = RuntimeRows::key("node");
+    let runtime_key = SessionRows::key("node");
     let waiting = root
         .diagnostics()
         .plugins
@@ -597,17 +608,18 @@ async fn rows_resolved_offline_wait_for_what_they_inject() {
         .unwrap();
     let mut catalog = ServiceCatalog::new();
     catalog.register_shared("probe").register_shared("greeter");
-    let runtime = LocalRuntime::node(node_package(), node_package().join("package.json"))
-        .host("probe", json!({ "record": "sync" }));
-    let resolver = Arc::new(RuntimeResolver::node(runtime.handle()).with_catalog(&catalog));
+    greet_as_main(&root);
+    let runtime = TestRuntime::node(&node_package().join("package.json"));
+    let sessions = Arc::new(SessionResolver::npm(&catalog, "node"));
+    sessions.runtime(runtime.handle());
     let options = LoaderOptions {
         catalog,
         ..LoaderOptions::default()
     };
-    let plugin = LoaderPlugin::new(Chain::new().with_shared(resolver.clone()), options);
+    let plugin = LoaderPlugin::new(Chain::new().with_shared(sessions.clone()), options);
     let loader = plugin.handle();
+    sessions.attach(&loader);
     root.plugin(plugin).await.unwrap();
-    root.plugin(RuntimeRowsPlugin::new(resolver));
 
     // No runtime yet: the row resolves without its declarations.
     let base = vec![row("c", &consumer, json!({ "tag": "c" }), json!(null))];
@@ -664,14 +676,22 @@ async fn a_runtime_that_cannot_start_does_not_block_resolution() {
     let dir = tempfile::tempdir().unwrap();
     let (provider, _, _) = write_plugins(dir.path());
     let root = Ctx::root().unwrap();
+    greet_as_main(&root);
     // No Node runtime here: the mount fails.
-    let runtime = LocalRuntime::node(dir.path(), node_package().join("package.json"));
-    let resolver = RuntimeResolver::node(runtime.handle());
+    let runtime = TestRuntime::new(
+        "node",
+        Launcher::node(dir.path()),
+        &node_package().join("package.json"),
+    );
+    let options = LoaderOptions::default();
+    let sessions = Arc::new(SessionResolver::npm(&options.catalog, "node"));
+    sessions.runtime(runtime.handle());
     let runtime = root.plugin(runtime);
     let _ = (&runtime).await;
     assert_eq!(runtime.state().state, FiberState::Failed);
-    let plugin = LoaderPlugin::new(Chain::new().with(resolver), LoaderOptions::default());
+    let plugin = LoaderPlugin::new(Chain::new().with_shared(sessions.clone()), options);
     let loader = plugin.handle();
+    sessions.attach(&loader);
     root.plugin(plugin).await.unwrap();
 
     let report = within(
@@ -749,7 +769,12 @@ async fn a_starting_runtime_can_be_disposed_or_restarted() {
     let dir = tempfile::tempdir().unwrap();
     let package = hanging_runtime(dir.path());
     let root = Ctx::root().unwrap();
-    let runtime = LocalRuntime::node(&package, node_package().join("package.json"));
+    greet_as_main(&root);
+    let runtime = TestRuntime::new(
+        "node",
+        Launcher::node(&package),
+        &node_package().join("package.json"),
+    );
     let handle = runtime.handle();
     let runtime = root.plugin(runtime);
 
@@ -1032,20 +1057,7 @@ async fn a_service_provided_twice_fails_the_later_row() {
 
 /// [`mount`] with a catalog sharing every name, as rutis-host's does.
 async fn mount_by_name(root: &Ctx) -> (Loader, FiberView) {
-    let catalog = ServiceCatalog::new();
-    let runtime = LocalRuntime::node(node_package(), node_package().join("package.json"))
-        .host("probe", json!({ "record": "sync" }));
-    let resolver = Arc::new(RuntimeResolver::node(runtime.handle()).with_catalog(&catalog));
-    let runtime = root.plugin(runtime);
-    let options = LoaderOptions {
-        catalog,
-        ..LoaderOptions::default()
-    };
-    let plugin = LoaderPlugin::new(Chain::new().with_shared(resolver.clone()), options);
-    let loader = plugin.handle();
-    root.plugin(plugin).await.unwrap();
-    rows_stage(root, resolver).await;
-    (loader, runtime)
+    mount_with(root, node_package(), ServiceCatalog::new()).await
 }
 
 // ── A row removed while it loads ────────────────────────────────
