@@ -774,7 +774,7 @@ $ npx rutis-host call commands.run '"count"'
 
 - 测试里的假服务直接写在 `load` 的 `services` 里；`dev` 里的假服务是 `rutis.dev.json` 里的一行。
 - 用 Python 写命令的作者用 `--python` 写出的 `jot_types.py`；假的 jot 可以照样用 TypeScript 写：`rutis.dev.json` 里不同语言的行可以放在一起。
-- 测试工具、`dev`、`rutis-host call` 的用法见各语言的插件指南（[TypeScript](typescript-plugin.md#3-测试)、[Python](python-plugin.md#3-测试)）与 [rutis-host：用 dev 开发插件](rutis-host.md#用-dev-开发插件)。
+- 测试工具、`dev`、`rutis-host call` 的用法见各语言的插件指南（[TypeScript](typescript-plugin.md#6-测试)、[Python](python-plugin.md#6-测试)）与 [rutis-host：用 dev 开发插件](rutis-host.md#用-dev-开发插件)。
 
 ### 开发循环
 

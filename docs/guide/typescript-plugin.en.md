@@ -1,90 +1,202 @@
-# Write a TypeScript Plugin
+# Write a TypeScript plugin
 
-This guide covers creating a project, publishing it, and using it from a host. JavaScript uses the same approach without the types.
+[中文](typescript-plugin.md)
 
-## 1. Create a project
+From a generated project to a published one, in eight steps. The whole guide is one plugin, `greeter`: it provides the `greeter` service and uses the `translate` service, which another plugin provides, to translate its greeting. JavaScript is written the same way, without the types. You need Node 22 or later.
+
+## 1. Start a project
 
 <!-- example: typescript-en run -->
 ```bash
-npx @arcships/rutis-host new weather --lang node
-cd weather
+npx @arcships/rutis-host new greeter --lang node
+cd greeter
 npm install
+npm test
 ```
 
-The generated project contains:
+The project:
 
-| File | Purpose |
+| File | What it is |
 | --- | --- |
-| `src/index.ts` | The plugin itself. |
-| `test/index.test.ts` | Unit tests that do not need a host. |
-| `rutis.dev.json` | Local runtime configuration and other plugins used for testing. |
-| `package.json` | Depends on `@arcships/rutis` (a caret range, see §5); development dependencies include `@arcships/rutis-host` and `@arcships/rutis-runtime`; builds before `npm pack` and `npm publish` (`prepack`). |
-| `.github/workflows/publish.yml` | Tests and publishes to npm when a `v*` tag is pushed. |
+| `src/index.ts` | The plugin |
+| `test/index.test.ts` | Unit tests; no host needed |
+| `rutis.dev.json` | The rows to run locally (step 7) |
+| `package.json` | Depends on `@arcships/rutis`; dev dependencies `@arcships/rutis-host`, `@arcships/rutis-runtime` |
+| `.github/workflows/publish.yml` | Tests and publishes to npm on a `v*` tag (step 8) |
 
-## 2. Write the plugin
+## 2. Provide a service
 
-The generated `src/index.ts` is a `greeter` that uses no service, `test/index.test.ts` is its test, and `npm test` passes as generated. Here it becomes a `weather` that uses an `llm` service: replace `src/index.ts` with the code below, and `test/index.test.ts` with the one in §3 at the same time (the two files go together; replacing only one makes the template's own test fail).
+The generated `src/index.ts` is a plugin:
 
-<!-- example: typescript-en file=weather/src/index.ts -->
+<!-- example: typescript-en file=greeter/src/index.ts -->
 ```ts
 import { definePlugin } from '@arcships/rutis'
 
 export interface Config {
-  city: string
+  // Filled from the schema's default when the row leaves it out.
+  greeting: string
 }
 
-interface Llm {
-  ask(question: string): Promise<string>
-}
+class Greeter {
+  constructor(private readonly greeting: string) {}
 
-class Weather {
-  constructor(private readonly llm: Llm, private readonly city: string) {}
-
-  async today(): Promise<string> {
-    return `${await this.llm.ask(`weather in ${this.city}`)} in ${this.city}`
+  hello(name: string): string {
+    return `${this.greeting}, ${name}!`
   }
 }
 
+// The steps of the TypeScript plugin guide:
+// https://github.com/arcships/rutis/blob/main/docs/guide/typescript-plugin.en.md
 export default definePlugin<Config>({
-  inject: ['llm'],                                 // Services used: start when all are ready; stop if any is revoked
-  provides: { weather: { today: 'async' } },      // What it provides: check knows before running; only declared methods are callable
-  config: { type: 'object', properties: { city: { type: 'string', default: 'Oslo' } } },  // Configuration JSON Schema
+  // Services this plugin uses (step 3): `inject: ['translate']`, then
+  // `ctx.use('translate')`. It starts once they are all available.
+  inject: [],
+  // The services it provides and their methods (step 2). Only the methods
+  // listed here can be called: add each new one.
+  provides: { greeter: { hello: 'async' } },
+  // The JSON Schema of its config (step 4): the config apply receives has
+  // the defaults filled in.
+  config: { type: 'object', properties: { greeting: { type: 'string', default: 'Hello' } } },
   apply(ctx, config) {
-    ctx.provide('weather', new Weather(ctx.use<Llm>('llm'), config.city))
-    return () => {}                                // Cleanup; ctx.effect(cleanup) also works, or return nothing
+    ctx.provide('greeter', new Greeter(config.greeting))
   },
 })
 ```
 
-Before `apply`, rutis fills the config with the schema's defaults (`city` is `Oslo` when the row leaves it out) and validates it: a row whose config does not match fails with `config: …`, and `apply` is not called ([plugin API: configuration](plugin-api.en.md#configuration)); the testing tool does the same.
+- `definePlugin` defines the plugin; it is the module's default export.
+- `apply` runs when the plugin starts. `ctx.provide('greeter', object)` provides the object as the service `greeter`. Other plugins, in any language, use it by the name `greeter` and call its methods.
+- `provides` says which services the plugin provides and their methods: only the methods listed there can be called, so add each new one there too. Other plugins always call them asynchronously (`'async'`), so `hello` may return a plain string.
+- When the plugin stops, the services it provides go with it.
 
-The plugin depends only on `@arcships/rutis`. It does not need to know which host runs it, which language or machine provides `llm`, or when it starts and stops; the host decides those things. See [Plugin API](plugin-api.en.md) for capabilities and value passing rules.
+## 3. Use a service
 
-`provides` says what the plugin provides, so `rutis-host check` knows without running the plugin that this row provides `weather`: when a host checks its configuration with `check --strict` in CI, the rows that use `weather` pass (the template declares it by default). A declared service follows its declaration: only the declared methods can be called, so add each new method here too; `'sync'` marks a method synchronous. It also runs without one: what `ctx.provide` provides still reaches rutis by itself, its methods the object's functions, all called as `async`; `check` then only knows once the plugin runs, and `--strict` reports an error.
+Make `greeter` translate its greeting with the `translate` service: add `translate` to `inject`, and get it with `ctx.use('translate')`. Replace `src/index.ts` with:
 
-A plugin is itself a value, to hand to a service and mount elsewhere many times: see [plugin API: plugin definitions](plugin-api.en.md#plugin-definitions).
+<!-- example: typescript-en file=greeter/src/index.ts -->
+```ts
+import { definePlugin } from '@arcships/rutis'
 
-### Objects with methods
+export interface Config {
+  greeting: string
+}
 
-A class instance, or a plain object with function-valued properties, goes to another language by reference, the far end getting a proxy: see [plugin API: objects with methods](plugin-api.en.md#objects-with-methods).
+interface Translate {
+  text(text: string): Promise<string>
+}
 
-## 3. Test
+class Greeter {
+  constructor(
+    private readonly translate: Translate,
+    private readonly greeting: string,
+  ) {}
 
-`@arcships/rutis/testing` provides fake services and calls the services provided by the plugin without requiring a host:
+  async hello(name: string): Promise<string> {
+    return `${await this.translate.text(this.greeting)}, ${name}!`
+  }
+}
 
-<!-- example: typescript-en file=weather/test/index.test.ts -->
+export default definePlugin<Config>({
+  inject: ['translate'],
+  provides: { greeter: { hello: 'async' } },
+  config: { type: 'object', properties: { greeting: { type: 'string', default: 'Hello' } } },
+  apply(ctx, config) {
+    ctx.provide('greeter', new Greeter(ctx.use<Translate>('translate'), config.greeting))
+  },
+})
+```
+
+The plugin starts once every service in `inject` is available; when one goes, the plugin stops, and it starts again when the service is back. Which plugin, in which language, provides `translate` is not the plugin's concern. Calls to another plugin's methods are asynchronous, hence the `await`.
+
+The template's own test no longer passes now (it gives no `translate`); step 6 replaces it.
+
+## 4. Configuration
+
+`config` is the JSON Schema of the configuration. The `config` that `apply` receives has the schema's defaults filled in: without a `greeting`, it is `'Hello'`. With a configuration that does not match the schema, the plugin does not start.
+
+Where the configuration comes from: in a test, `load(plugin, { config })` passes it (step 6); when it runs, the host's row for this plugin gives it (`rutis.dev.json` in step 7, a host's `rutis.json`).
+
+## 5. Emit and listen to events
+
+After each greeting, emit the event `greeter/greeted` with the name; `greeter` listens to that event itself too, counts the greetings, and returns the count from a new method, `count`. Replace `src/index.ts` with:
+
+<!-- example: typescript-en file=greeter/src/index.ts -->
+```ts
+import { definePlugin, type Context } from '@arcships/rutis'
+
+export interface Config {
+  greeting: string
+}
+
+interface Translate {
+  text(text: string): Promise<string>
+}
+
+class Greeter {
+  greeted = 0
+
+  constructor(
+    private readonly ctx: Context,
+    private readonly translate: Translate,
+    private readonly greeting: string,
+  ) {}
+
+  async hello(name: string): Promise<string> {
+    const text = `${await this.translate.text(this.greeting)}, ${name}!`
+    this.ctx.emit('greeter/greeted', name)
+    return text
+  }
+
+  async count(): Promise<number> {
+    return this.greeted
+  }
+}
+
+export default definePlugin<Config>({
+  inject: ['translate'],
+  provides: { greeter: { hello: 'async', count: 'async' } },
+  config: { type: 'object', properties: { greeting: { type: 'string', default: 'Hello' } } },
+  apply(ctx, config) {
+    const greeter = new Greeter(ctx, ctx.use<Translate>('translate'), config.greeting)
+    ctx.on('greeter/greeted', () => { greeter.greeted += 1 })
+    ctx.provide('greeter', greeter)
+  },
+})
+```
+
+- `ctx.emit(name, ...args)` emits an event and returns at once.
+- `ctx.on(name, listener)` listens to an event: it arrives whether this plugin emitted it, another plugin in the same process, a plugin in another language, or the host. Nothing to declare; the listener goes when the plugin stops.
+- `count` is a new method, so it is added to `provides` too.
+
+The other ways to emit (waiting for every listener, getting a value back) are in [plugin API: events](plugin-api.en.md#events).
+
+## 6. Test
+
+`load` from `@arcships/rutis/testing` needs no host: give the plugin a configuration and a fake `translate`, call the service it provides, listen to the events it emits as a host does, and unload it. Replace `test/index.test.ts` with:
+
+<!-- example: typescript-en file=greeter/test/index.test.ts -->
 ```ts
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { load } from '@arcships/rutis/testing'
 import plugin from '../src/index.ts'
 
-test('reports the weather of the configured city', async () => {
-  const t = await load(plugin, {
-    config: { city: 'Oslo' },
-    services: { llm: { ask: async () => 'sunny' } },
-  })
-  assert.equal(await t.service('weather').today(), 'sunny in Oslo')
+const french: Record<string, string> = { Hello: 'Bonjour', Hi: 'Salut' }
+const translate = { text: async (text: string) => french[text] ?? text }
+
+test('greets with the translated greeting', async () => {
+  const t = await load(plugin, { config: { greeting: 'Hi' }, services: { translate } })
+  const greeted: string[] = []
+  t.on('greeter/greeted', (name: string) => { greeted.push(name) })
+  const greeter = t.service('greeter')
+  assert.equal(await greeter.hello('Ada'), 'Salut, Ada!')
+  assert.deepEqual(greeted, ['Ada'])
+  assert.equal(await greeter.count(), 1)
+  await t.unload()
+})
+
+test('the greeting is Hello when the config leaves it out', async () => {
+  const t = await load(plugin, { services: { translate } })
+  assert.equal(await t.service('greeter').hello('Ada'), 'Bonjour, Ada!')
   await t.unload()
 })
 ```
@@ -94,132 +206,127 @@ test('reports the weather of the configured city', async () => {
 npm test
 ```
 
-`load` checks the same things as the host: the plugin uses only services declared in `inject`; it does not provide a name already in `services` (the host provides it: `PluginTestError: wordcount: notes is already provided by the host`); its provided service has every method declared in `provides` (an undeclared service is called as rutis calls it, by the object's methods, all async; `t.methods(name)` returns the methods rutis sees); and all cleanup functions run when it unloads. Strict mode is the default: values follow cross-process rules, see [plugin API: strict mode](plugin-api.en.md#strict-mode); the rest of the test tool's interface is in [plugin API: the TypeScript and Bun test tool](plugin-api.en.md#the-typescript-and-bun-test-tool).
+- `services` gives fakes of the services the plugin injects, by name.
+- `t.service('greeter')` is the service the plugin provides; only the methods in `provides` can be called, as in a host.
+- `t.on(name, listener)` listens to an event as a host does: whatever the plugin emits arrives.
+- `load` also checks what a host checks: that the configuration matches the schema, and that the plugin uses only the services in `inject`. Values pass by the rules between processes, so a plugin that passes its tests behaves the same when called from another process.
 
-### Events
+When the host gives TypeScript declarations of its services (a `.d.ts`), use them in place of your own `Translate` interface, as in `ctx.use<Services['translate']>('translate')`; your editor and `tsc` then check the calls before anything runs, and the fake in the test follows the same interface. The rest of the test tool is in [plugin API: the TypeScript and Bun test tool](plugin-api.en.md#the-typescript-and-bun-test-tool).
 
-`ctx.on(name, listener)` listens to an event, `ctx.emit(name, ...args)` emits one. Listeners register themselves with the host and nothing is declared: whether the emitter is another plugin in the same process, a plugin in another language, Rust code in the host or a linked node, the result is the same. The other ways to emit (`parallel`, `serial`, `waterfall`, `bail`), filters and scopes are in [plugin API: events](plugin-api.en.md#events).
+## 7. Run it locally and try it
 
-To check that the plugin emits an event, listen with `t.on(name, listener, options)` as the host does, at the root scope: the plugin's emissions and the test's own reach it; in strict mode it gets the arguments as from another process; the options are those of `ctx.on` (`prepend`, `global`); it returns the function that stops it, and without it, it stops when the row unloads. Every row `host()` loads has it, on their one bus.
+`rutis-host dev` runs the plugin locally and reloads it when its files change. Each plugin in a host is a "row": a row says which plugin to run and what configuration to give it. The rows `dev` runs are in `rutis.dev.json`.
 
-<!-- example: typescript-en file=weather/test/asked.test.ts order=2 -->
+First write a fake `translate`. It is a plugin too, under `dev/`:
+
+<!-- example: typescript-en file=greeter/dev/fake-translate.ts -->
 ```ts
-import { test } from 'node:test'
-import assert from 'node:assert/strict'
 import { definePlugin } from '@arcships/rutis'
-import { load } from '@arcships/rutis/testing'
 
-const asking = definePlugin({
-  apply(ctx, config: { city: string }) {
-    ctx.provide('weather', {
-      async today() {
-        ctx.emit('weather/asked', config.city)
-        return 'sunny'
-      },
-    })
+const french: Record<string, string> = { Hello: 'Bonjour', Hi: 'Salut' }
+
+export default definePlugin({
+  provides: { translate: { text: 'async' } },
+  apply(ctx) {
+    ctx.provide('translate', { text: async (text: string) => french[text] ?? text })
   },
 })
-
-test('each call emits weather/asked', async () => {
-  const t = await load(asking, { config: { city: 'Oslo' } })
-  const asked: string[] = []
-  const off = t.on('weather/asked', (city: string) => { asked.push(city) })
-  await t.service('weather').today()
-  assert.deepEqual(asked, ['Oslo'])
-  off()
-  await t.unload()
-})
 ```
 
-## 4. Run in a local host
+Replace `rutis.dev.json` with two rows:
 
-<!-- example: typescript-en run until="weather: running" order=99 -->
-```bash
-npx rutis-host dev
-```
-
-`dev` runs this project as a row using the source file `src/index.ts`, without a build, and reloads it when its files change; only the rows whose files changed reload, and a change to `rutis.dev.json` applies while it runs (see [Developing a plugin with `dev`](rutis-host.en.md#developing-a-plugin-with-dev)). Add other required services to `rutis.dev.json`, such as a fake `llm`:
-
-<!-- example: typescript-en file=weather/rutis.dev.json -->
+<!-- example: typescript-en file=greeter/rutis.dev.json -->
 ```json
 {
+  "format": 1,
   "rows": [
-    { "id": "weather", "config": { "city": "Oslo" } },
-    { "id": "llm", "name": "./dev/fake-llm.ts" }
+    { "id": "greeter", "config": { "greeting": "Hello" } },
+    { "id": "translate", "name": "./dev/fake-translate.ts" }
   ]
 }
 ```
 
-<!-- example: typescript-en file=weather/dev/fake-llm.ts -->
-```ts
-// dev/fake-llm.ts
-import { definePlugin } from '@arcships/rutis'
-export default definePlugin({
-  provides: { llm: { ask: 'async' } },
-  apply(ctx) { ctx.provide('llm', { ask: async () => 'sunny' }) },
-})
+- The row with the plugin's id (`greeter`) is this project's plugin itself; `config` is its configuration.
+- The other row is the fake `translate`; `name` says where that plugin is.
+
+<!-- example: typescript-en run until="rutis-host dev: services: greeter (greeter), loader (host), translate (translate)" -->
+```bash
+npx rutis-host dev
 ```
 
-The row with the same ID as the plugin supplies its configuration; the other rows are additional plugins to run. `npx rutis-host check` lists each row's dependencies, provided services, and configuration schema, and exits with a nonzero status if there is a problem. It is suitable for CI.
+```text
+rutis-host dev: running greeter; changes reload it (Ctrl-C ends)
+greeter: starting
+translate: running
+rutis-host dev: services: greeter (greeter), loader (host), translate (translate)
+greeter: running
+```
 
-### Calling a method
-
-After it starts and after each reload, `dev` prints which services there are and the row that provides each: `rutis-host dev: services: llm (llm), loader (host), weather (weather)`.
-
-While `dev` runs, in another terminal in the project's directory, call a service the plugin provides, to see what it returns and what it says when it fails, without writing a plugin to call it:
+`greeter` runs once `translate` is available; the lines may come in another order. The `rutis-host dev: services:` line lists the services now and the row providing each (`loader` comes from the host). While `dev` runs, in another terminal in the project directory, look at the state and call `greeter` once:
 
 ```console
-$ npx rutis-host call weather.today
-"sunny in Oslo"
+$ npx rutis-host status
+rows:
+  greeter: running
+  translate: running
+services:
+  greeter: greeter
+  loader: host
+  translate: translate
+runtimes:
+  node: running (pid 63145)
+calls:
+  none
+$ npx rutis-host call greeter.hello '"Ada"'
+"Bonjour, Ada!"
+$ npx rutis-host call greeter.count
+1
 ```
 
-Each argument is a JSON value (a string with its quotes: `'"Oslo"'`); the result is printed as JSON; an error goes to stderr with exit status 1. See [rutis-host: Calling a service](rutis-host.en.md#calling-a-service).
+Each argument of `call` is a JSON value, so a string has quotes; without them it says `rutis-host: argument 1 is not JSON: write a string in quotes, as '"Ada"'`.
 
-### Debugging
+Change the code: in `src/index.ts`, change `` `, ${name}!` `` to `` `, ${name}! Welcome.` `` and save. `dev` prints:
+
+```text
+greeter: reloaded (src/index.ts changed)
+rutis-host dev: services: greeter (greeter), loader (host), translate (translate)
+```
+
+Call it again: it returns `"Bonjour, Ada! Welcome."`. Only the row whose files changed reloads; a change to `rutis.dev.json` also takes effect while it runs. Ctrl-C ends `dev`. All of `dev`'s rules are in [rutis-host: developing a plugin with `dev`](rutis-host.en.md#developing-a-plugin-with-dev).
+
+To run on another machine, see [the remote section of rutis-host.en.md](rutis-host.en.md#remote-runtimes).
+
+## 8. Publish
+
+First give the package a name of your own: short names like `greeter` were taken on npm long ago. Change `name` in `package.json` to a scoped name, such as `"@your-name/greeter"` (the scope is your npm user name or organization).
+
+```bash
+npm publish --access public   # runs prepack first: tsc writes dist/
+```
+
+Or push a tag such as `v0.1.0`: the template's `.github/workflows/publish.yml` tests and publishes it (the repository needs an `NPM_TOKEN` secret).
+
+The dependency is a range such as `"@arcships/rutis": "^0.18.0"` (`rutis-host new` writes its own version); when a host has another version installed, npm gives the plugin its own copy, and several copies can coexist.
+
+How a host installs your plugin: [rutis-host: how a host installs plugins](rutis-host.en.md#how-a-host-installs-plugins).
+
+## Debugging
 
 `--debug` opens the Node runtime process's own inspector, on `127.0.0.1:9229`:
 
-<!-- example: typescript-en run until="weather: running" order=100 -->
+<!-- example: typescript-en run until="greeter: running" -->
 ```bash
 npx rutis-host dev --debug
 ```
 
-The output has `Debugger listening on ws://127.0.0.1:9229/…`. Open `chrome://inspect` in Chrome and click inspect under Remote Target, or attach VS Code to port 9229. Open `src/index.ts` in Sources and set a breakpoint, or write `debugger;` in the code.
+The output has `Debugger listening on ws://127.0.0.1:9229/…`. Open `chrome://inspect` in Chrome and click inspect under Remote Target, or attach VS Code to port 9229. Open `src/index.ts` under Sources and set a breakpoint, or write `debugger;` in the code.
 
-- The npm launcher that starts `rutis-host` does not take the port. Do not use `NODE_OPTIONS=--inspect`: it opens an inspector in the launcher too, which starts first and takes the port, so you would attach to the launcher; `--inspect-brk` stops the launcher.
-- After a reload the module's URL ends in `?rutis-reload=<n>`, a new script: set the breakpoint again in it, or use `debugger;`.
-- While it is stopped at a breakpoint, the whole Node runtime waits: calls to its other rows wait too.
-- When port 9229 is taken, Node prints `Starting inspector on 127.0.0.1:9229 failed` and runs without an inspector: end the process holding the port first.
-- What `console.log` prints shows in `dev`'s output.
+- The npm launcher that starts `rutis-host` does not take the port. Do not use `NODE_OPTIONS=--inspect`: it opens an inspector in the launcher too, the launcher starts first and takes the port, and you attach to the launcher; `--inspect-brk` stops the launcher.
+- After a reload the module's URL carries `?rutis-reload=<n>` and is a new script: set the breakpoints again in the new script, or use `debugger;`.
+- While stopped at a breakpoint the whole Node runtime is stopped: calls to the other rows in that runtime wait too.
+- When port 9229 is taken, Node prints `Starting inspector on 127.0.0.1:9229 failed` and runs on without an inspector: end the process holding the port first.
+- What `console.log` writes shows in `dev`'s output.
 
-## 5. Publish
+## Advanced: plugin API
 
-```bash
-npm publish --access public   # runs prepack first: tsc generates dist/
-```
-
-Alternatively, push a tag such as `v0.1.0`. The generated workflow tests, runs `check`, and publishes (the repository needs an `NPM_TOKEN` secret). `npm pack` and `npm publish` both run `prepack` (`npm run build`) first, so the package always has `dist/`.
-
-Before publishing, give the package a name of your own: short names such as `weather` and `greeter` were taken on npm long ago. Use a scoped name: change `name` in `package.json`, for example to `"@your-name/weather"` (the scope is your npm user or organization; the first publish of a public scoped package needs `--access public`, which the template's workflow passes). A host's row names the plugin by this package name.
-
-Declare a version range such as `"@arcships/rutis": "^0.18.0"` (`rutis-host new` writes its own version). The plugin uses the SDK of the minor version it was written against: when the host has another version, npm installs the plugin a copy of its own, and SDKs of several versions work side by side (plugins are recognized by a `Symbol.for` marker, whichever copy made them). The plugin is tagged with its plugin API version (`definePlugin` adds this automatically). If the host runtime is older, it reports the problem clearly instead of failing later during execution.
-
-## 6. Use from a host
-
-How a host installs this plugin: [rutis-host: How a host installs plugins](rutis-host.en.md#how-a-host-installs-plugins).
-
-## Existing Cordis plugins
-
-No rewrite is needed, and no change to the package: name the package in a row of `rutis.json` (a published package as well):
-
-```json
-{ "id": "storage", "name": "@deepseek-ai/dsh-storage" }
-```
-
-The plugin runs in the Node runtime's Cordis Context, in the same process as leaf plugins and other Cordis rows: rows of the same runtime use each other's services by Cordis's native rules and receive the objects themselves. The services it provides reach rutis by themselves, and other runtimes and Rust use them by name; the methods are the functions of the service object, called as `async`. To mark some methods `sync`, or to let `rutis-host check` know before running what it provides, declare them in the package's `package.json` (a declaration applies when present):
-
-```json
-"rutis": { "provides": { "weather": { "today": "sync" } } }
-```
-
-For name clashes and what `check` reports, see [Cordis](cordis.en.md).
+Plugins as values, the other ways to emit, objects with methods, cleanup, synchronous methods, versions and more: [plugin API](plugin-api.en.md). Existing Cordis plugins run unchanged: see [Cordis](cordis.en.md).

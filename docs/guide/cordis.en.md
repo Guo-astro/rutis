@@ -5,7 +5,7 @@ rutis and Cordis (the Node plugin framework) interoperate in two ways:
 - **Use a Cordis application as a node:** connect an existing Cordis application to a rutis node so they can use each other's services, share events, and let rutis run plugins inside it. Use `@arcships/rutis-runtime/bridge`.
 - **Mount Cordis plugins in a Rust application:** run published Cordis plugins in a real Cordis context without changing their source, and use Rust types generated at build time from their type declarations. Enable the `cordis` feature of `rutis-bridge`.
 
-A Cordis plugin can also run as a row in rutis-loader: name its package in `rutis.json`, with the package unchanged; see [Write a TypeScript plugin](typescript-plugin.en.md#existing-cordis-plugins):
+A Cordis plugin can also run as a row in rutis-loader: name its package in a row of `rutis.json` (a published package too), with the package unchanged, as in `{ "id": "storage", "name": "@deepseek-ai/dsh-storage" }`:
 
 - Cordis rows in the same Node runtime use each other's services by Cordis's native rules, getting the objects themselves.
 - The services a row provides reach rutis by themselves: rows of other runtimes, other nodes and Rust plugins use them by name. The methods are the functions of the service object (its own and its prototype chain's, not `constructor`), all called as `async`. When the package's `package.json` declares `rutis.provides`, that declaration applies (to mark some methods `sync`, say).
