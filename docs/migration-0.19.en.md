@@ -44,7 +44,43 @@ Local runtimes (`runtimes.node` / `py` / `go` / `swift` / `bun`) are written as 
 - A plugin run on the far end is still the row `<connection row>:<plugin>` (`gpu:embedder`), its config in that row. Such rows go with `rutis-host/dial`: a runtime that connected in under 0.18 with rutis choosing its plugins now listens, and rutis dials it.
 - On `rutis-host/listen`, a newer connection with an id replaces the older: the older's remote plugins all unload first, then the older is closed with close code 4002, and only then are the newer's plugins registered. When the host stops, connections close with close code 1000.
 - The host no longer creates an instance per connection: the plugins a far end brings register as `<far end's id>:<plugin>`, their services visible everywhere; same names follow the kernel's rule, the later one refused.
-- Node rows (`rutis-bridge/peer`) are not covered by this section.
+
+### Nodes
+
+Nodes connect with connection rows too: `rutis-host/dial` on one end, `rutis-host/listen` on the other ([connect nodes](guide/nodes.en.md)). `rutis-bridge/peer` rows and `peer:` rows are removed, not deprecated and not converted; `rutis-bridge/peer` is a plugin name 0.19 does not know, refused by the 0.18 rules with no hint of its own:
+
+```
+office (rutis-bridge/peer): no plugin named "rutis-bridge/peer"
+```
+
+```json
+// 0.18: main's side
+{ "id": "office", "name": "rutis-bridge/peer", "config": { "peer": "office", "dial": "wss://office.example.com/rutis", "export": ["weather"], "import": ["clock"], "rows": true } },
+{ "id": "scanner", "name": "peer:office/scanner", "config": { "dpi": 300 } }
+
+// 0.19: main's side
+{ "id": "office", "name": "rutis-host/dial", "config": { "address": "wss://office.example.com/rutis" } },
+{ "id": "scanner", "name": "office:scanner", "config": { "dpi": 300 } }
+
+// 0.19: office's side (in 0.18, a rutis-bridge/peer row with listen, and host: true)
+{ "id": "main", "name": "rutis-host/listen", "config": { "listener": "public" } }
+```
+
+| 0.18 | 0.19 |
+| --- | --- |
+| `dial` of a `rutis-bridge/peer` node row | One `rutis-host/dial` row, `"address": "<address>"` |
+| `listen` of a `rutis-bridge/peer` node row | One `rutis-host/listen` row, `"listener": "<listener>"` |
+| `export`, `import` (services and events, `*` prefixes included) | Not written: services are seen on both sides, events are one bus |
+| `host: true` + `rows: true` + the row `peer:office/scanner` | The row `office:scanner` (nothing to open on the far end) |
+| `peer` | Not written: the far end's id comes from the handshake (its rutis.json's `id`) |
+| `require`, `declare`, `transport`, `identity` | Not written; your own way of connecting and its credentials are a connection plugin, registered through `Embedding.builtins` |
+| `@arcships/rutis-runtime/bridge` (a Cordis application as a node: `Link`, `Export`, `Import`, `Host`, `Events`) | Removed: a Cordis application joins rutis by running its plugins in the Node runtime (`<package name>` rows) |
+
+- Tokens go by the connection row's id: `main`'s row `office` presents `RUTIS_TOKEN_OFFICE`, `office`'s row `main` checks `RUTIS_TOKEN_MAIN` (it was the node row's `peer`, usually the same name).
+- One name on both sides: an `import` of a name already provided here used to be refused; now the kernel's rule refuses the one registered later, and that remote plugin fails: `office:weather: weather is provided here by row weather: not registered from office`.
+- Connected nodes see each other's shareable services, and can have this node run any plugin its loader resolves (the far end used to need `host: true`): connect only to trusted nodes; use `isolate` on the row providing a service the far end should not see.
+- A service a node gets over one connection reaches a third node over another (services and events used to go one hop).
+- `run`'s output: `office: link connected` / `link down (…)` / `link refused: …` / `link stopped: …` become `office: connected` / `office: disconnected (…); retrying in …` / `office: disconnected (incompatible: …); stopped`; the listening side writes `main: connected main`, `main: disconnected main (…)`.
 
 ### What behaves differently
 
@@ -80,7 +116,7 @@ Local runtimes (`runtimes.node` / `py` / `go` / `swift` / `bun`) are written as 
 
    Scripts reading `run` that matched `runtime <name>: link` or `link connected` match `<row id>: connected` / `disconnected` instead.
 
-4. **Persisted rutis.json files.** Files of 0.8–0.18 with `runtimes.remote` are not read by 0.19 (the unknown field above); this is one exception to rutis.json staying readable across versions, `format` still 1.
+4. **Persisted rutis.json files.** Files of 0.8–0.18 with `runtimes.remote` are not read by 0.19 (the unknown field above); files with `rutis-bridge/peer` node rows are read, but those rows fail as an unknown plugin name (see [Nodes](#nodes)). These are exceptions to rutis.json staying readable across versions, `format` still 1.
 
 ### Apps (Kotlin, Swift)
 
@@ -107,13 +143,19 @@ Local runtimes (`runtimes.node` / `py` / `go` / `swift` / `bun`) are written as 
   | `Connection::open(channel, dispatch)`, `Connection::open_with(channel, dispatch, Format::Endpoint(e))`, `Format` | `Connection::open(channel, dispatch, e)`: only the endpoint format, this side always names itself |
   | `Process::attach(channel, mount, Format::Endpoint(e))` | `Process::attach(channel, mount, e)` |
   | `session::PROTOCOL` (2), `cordis::PROTOCOL`; `session::ENDPOINT_PROTOCOL` at 3 | removed; `session::ENDPOINT_PROTOCOL` and `cordis::ENDPOINT_PROTOCOL` are 4 |
-  | `LinkConfig`'s `compat` | removed |
+  | `LinkPlugin`, `LinkConfig` (and its `compat`), `LinkState`, `Connect`, `Dialer`, `Failure`, `Retry`; `pipe::dial`, `memory::dialer`, `websocket::admit_registered`, `protocol()` | removed: dialing and redialing are `rutis-host/dial`'s, or your own connection plugin's; the subprotocol is `format!("rutis.{}", session::ENDPOINT_PROTOCOL)` |
+  | `PeerPlugin`, `PeerHandle`, `Features`; `Peer`, `peer_key`, `Handler`, `Offered`, `Offers`, `family()` | removed: a node is a `Session` too, the far end's plugins `<id>:<plugin>` |
+  | `ExportPlugin`, `ImportPlugin`, `HostPlugin`, `LinkEventsPlugin`, `ServiceKeys` | not needed: services are seen on both sides, events are one bus, the far end runs plugins through `run` |
+  | `Identity`, `IdentityPlugin`, `identity_key`, `StaticIdentity`, `Presented`; `Registration`, `Registered`, `RegistrationError`, `Registrations`, `Accepting`, `Ticket`, `Refusal`, `Deliver` | the connection plugin's own authentication; ids come from the handshake. `fingerprint` stays |
+  | `rutis_bridge::Credential` | `rutis_bridge::websocket::Credential` (what `websocket::dial` presents) |
+  | `Installed { described: Described { schema, version, integrity }, factory }`; `StaticCatalog::with(name, described, factory)` | `Installed { schema, version, factory }`; `StaticCatalog::with(name, Installed::new(factory))` |
+  | rutis-loader's feature `peer` and `rutis_loader::peer` (`PeerResolver`, `PeerRows`, `PeerRowsPlugin`, `register_peer_node`, `node_schema`, `LoaderCatalog`) | removed; rows `<connection row>:<plugin>` are resolved by `runtime::SessionResolver`, `LoaderCatalog` is in `rutis_loader::runtime` |
+  | `identity` of `rutis_host::host::Embedding` | removed |
   | a connection of your own implementing `Transport` | hand over a `Channel`: `ctx.plugin(Session::new(channel))`, or `Session::handshake(&ctx, channel).await` then `ctx.plugin(greeted)`; other languages use `open` of the service `sessions` |
 
 - A Rust embedding that mounts `Session` itself provides, in the root ctx, the id this end gives in the handshake: `root.provide(rutis_bridge::LocalId(id))`; without it the session fails: `the host provides no id for its sessions`. rutis-host provides it (rutis.json's `id`, `main` by default).
 
 - A connection of your own: hand over a `Channel`: write a connection plugin that calls `Session::new(channel)`; other languages use `sessions.open`.
-- The `transport` field of `rutis-bridge/peer` rows is removed: a rutis.json that sets it is refused at startup as an unknown field.
 
 ## Upgrade together (#695)
 
@@ -156,12 +198,12 @@ If you start runtime processes yourself, or implement a runtime:
 
 **Tokens**: the host side reads only `RUTIS_TOKEN_<NAME>`; a host that set only `RUTIS_TOKEN` sets it by name instead. `RUTIS_TOKEN` on the runtime side is unchanged.
 
-`<NAME>` is a peer row's `peer` or the id of a connection row (`rutis-host/dial`, `rutis-host/listen`), in upper case, `-` as `_`:
+`<NAME>` is the id of a connection row (`rutis-host/dial`, `rutis-host/listen`), in upper case, `-` as `_`:
 
 ```bash
 # 0.18: one RUTIS_TOKEN for every peer
 RUTIS_TOKEN=secret rutis-host run rutis.json
-# 0.19: one for each peer and each connection row
+# 0.19: one for each connection row
 RUTIS_TOKEN_OFFICE=secret RUTIS_TOKEN_GPU=secret rutis-host run rutis.json
 ```
 
@@ -173,12 +215,12 @@ What you see when it is not changed:
   phone: set RUTIS_TOKEN_PHONE: the token the far ends present when they connect
   ```
 
-- A dialing peer row presents no token, the far end refuses it, and `run` retries every 30 s: `office: link refused: auth-rejected (…); retrying in 30s`. A listening peer row without a token refuses the far end when it connects in.
+- A `rutis-host/dial` row presents no token, the far end refuses it, and `run` retries every 30 s: `office: disconnected (auth-rejected: …); retrying in 30s`.
 
 Two entries on one listener whose `RUTIS_TOKEN_<NAME>` variables have the same value still fail before starting (#702); the text now names both variables:
 
 ```
-rutis-host: listener public: link row main accepts RUTIS_TOKEN_MAIN and row phone accepts RUTIS_TOKEN_PHONE, the same token, so a connection presenting it cannot be told apart: give RUTIS_TOKEN_MAIN or RUTIS_TOKEN_PHONE another value
+rutis-host: listener public: row main accepts RUTIS_TOKEN_MAIN and row phone accepts RUTIS_TOKEN_PHONE, the same token, so a connection presenting it cannot be told apart: give RUTIS_TOKEN_MAIN or RUTIS_TOKEN_PHONE another value
 ```
 
 ## The SDKs' default entry points (#692)

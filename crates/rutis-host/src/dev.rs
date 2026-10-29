@@ -618,7 +618,7 @@ fn same(path: &Path) -> PathBuf {
 /// The local runtime (`node`, `py`, `bun`) of the row named `name`, among
 /// `runtimes`: the prefix of its name, or Node for a file or package.
 fn runtime_of<'a>(name: &str, runtimes: &'a [String]) -> Option<&'a str> {
-    if name == crate::connect::DIAL || name == crate::connect::LISTEN {
+    if name == rutis_host::connect::DIAL || name == rutis_host::connect::LISTEN {
         return None;
     }
     let prefixed = name

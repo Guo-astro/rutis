@@ -44,7 +44,43 @@ rutis-host: rutis.json: unknown field `remote`, expected one of …
 - 在对面运行的插件仍写成 `<连接行>:<插件>`（`gpu:embedder`），配置写在这一行里。 这样的行用于 `rutis-host/dial`：0.18 里由运行时连进来、rutis 决定它跑什么插件的，改为运行时监听、rutis 去连。
 - `rutis-host/listen` 上同一个 id 的新连接顶替旧的：旧连接的远程插件先全部卸载，旧连接再以关闭码 4002 关闭，然后才注册新连接的插件。宿主停止时连接以关闭码 1000 关闭。
 - 宿主不再为每条连接建实例：对面带来的插件注册为 `<对面的 id>:<插件>`，服务全局可见，同名的按内核规则，后注册的被拒绝。
-- 节点行（`rutis-bridge/peer`）的写法这一节不涉及。
+
+### 节点
+
+节点之间也用连接行连：一端 `rutis-host/dial`，另一端 `rutis-host/listen`（[连接节点](guide/nodes.md)）。`rutis-bridge/peer` 行与 `peer:` 行删除，不标弃用，不做转换；`rutis-bridge/peer` 是 0.19 不认识的插件名，按 0.18 的规则报错，没有专门的提示：
+
+```
+office (rutis-bridge/peer): no plugin named "rutis-bridge/peer"
+```
+
+```json
+// 0.18：main 一侧
+{ "id": "office", "name": "rutis-bridge/peer", "config": { "peer": "office", "dial": "wss://office.example.com/rutis", "export": ["weather"], "import": ["clock"], "rows": true } },
+{ "id": "scanner", "name": "peer:office/scanner", "config": { "dpi": 300 } }
+
+// 0.19：main 一侧
+{ "id": "office", "name": "rutis-host/dial", "config": { "address": "wss://office.example.com/rutis" } },
+{ "id": "scanner", "name": "office:scanner", "config": { "dpi": 300 } }
+
+// 0.19：office 一侧（0.18 是带 listen 的 rutis-bridge/peer 行，host: true）
+{ "id": "main", "name": "rutis-host/listen", "config": { "listener": "public" } }
+```
+
+| 0.18 | 0.19 |
+| --- | --- |
+| 节点行 `rutis-bridge/peer` 的 `dial` | 一行 `rutis-host/dial`，`"address": "<地址>"` |
+| 节点行 `rutis-bridge/peer` 的 `listen` | 一行 `rutis-host/listen`，`"listener": "<监听器>"` |
+| `export`、`import`（服务与事件，含 `*` 前缀） | 不写：服务两边都全局可见，事件一条总线 |
+| `host: true` + `rows: true` + 行 `peer:office/scanner` | 行 `office:scanner`（对面不用打开什么） |
+| `peer` | 不写：对面的 id 来自握手（它 rutis.json 的 `id`） |
+| `require`、`declare`、`transport`、`identity` | 不写；自己的连接方式与凭据写成连接插件，经 `Embedding.builtins` 注册 |
+| `@arcships/rutis-runtime/bridge`（Cordis 应用作为节点：`Link`、`Export`、`Import`、`Host`、`Events`） | 删除：Cordis 应用接 rutis：用 Node 运行时跑它的插件（`<包名>` 行） |
+
+- token 按连接行的 id：`main` 的 `office` 行出示 `RUTIS_TOKEN_OFFICE`，`office` 的 `main` 行核对 `RUTIS_TOKEN_MAIN`（以前是节点行的 `peer`，名字通常相同）。
+- 同名服务：以前 `import` 一个本地已有的名字时拒绝这次导入；现在按内核规则后注册的被拒，那个远程插件失败：`office:weather: weather is provided here by row weather: not registered from office`。
+- 相连的节点互相看到对方全部可共享的服务，并能让本节点运行这里的加载器能解析的任何插件（以前要对方打开 `host: true`）：只连可信的节点；不给对面看的服务在提供它的行上用 `isolate`。
+- 一个节点经一条连接收到的服务，经别的连接继续到达第三个节点（以前事件与服务只走一跳）。
+- `run` 的输出：`office: link connected` / `link down (…)` / `link refused: …` / `link stopped: …` 改为 `office: connected` / `office: disconnected (…); retrying in …` / `office: disconnected (incompatible: …); stopped`；listen 一侧写 `main: connected main`、`main: disconnected main (…)`。
 
 ### 行为变化
 
@@ -80,7 +116,7 @@ rutis-host: rutis.json: unknown field `remote`, expected one of …
 
    读 `run` 输出的脚本按 `runtime <名>: link` 或 `link connected` 匹配的，改为按 `<行 id>: connected` / `disconnected` 匹配。
 
-4. **持久化的 rutis.json。** 0.8–0.18 写了 `runtimes.remote` 的文件 0.19 不再读（上面的不认识的字段）；这是 rutis.json 跨版本可读的一处例外，`format` 仍为 1。
+4. **持久化的 rutis.json。** 0.8–0.18 写了 `runtimes.remote` 的文件 0.19 不再读（上面的不认识的字段）；写了节点行 `rutis-bridge/peer` 的文件，0.19 读得出、但这些行以不认识的插件名失败（见[节点](#节点)）。这是 rutis.json 跨版本可读的例外，`format` 仍为 1。
 
 ### 应用（Kotlin、Swift）
 
@@ -107,13 +143,19 @@ rutis-host: rutis.json: unknown field `remote`, expected one of …
   | `Connection::open(channel, dispatch)`、`Connection::open_with(channel, dispatch, Format::Endpoint(e))`、`Format` | `Connection::open(channel, dispatch, e)`：只有 endpoint 格式，本端总要报自己的 id |
   | `Process::attach(channel, mount, Format::Endpoint(e))` | `Process::attach(channel, mount, e)` |
   | `session::PROTOCOL`（2）、`cordis::PROTOCOL`；`session::ENDPOINT_PROTOCOL` 为 3 | 删；`session::ENDPOINT_PROTOCOL` 与 `cordis::ENDPOINT_PROTOCOL` 为 4 |
-  | `LinkConfig` 的 `compat` | 删 |
+  | `LinkPlugin`、`LinkConfig`（及其 `compat`）、`LinkState`、`Connect`、`Dialer`、`Failure`、`Retry`；`pipe::dial`、`memory::dialer`、`websocket::admit_registered`、`protocol()` | 删：去连与重连在 `rutis-host/dial`，或自己的连接插件；子协议是 `format!("rutis.{}", session::ENDPOINT_PROTOCOL)` |
+  | `PeerPlugin`、`PeerHandle`、`Features`；`Peer`、`peer_key`、`Handler`、`Offered`、`Offers`、`family()` | 删：节点也是一个 `Session`，对面的插件是 `<id>:<插件>` |
+  | `ExportPlugin`、`ImportPlugin`、`HostPlugin`、`LinkEventsPlugin`、`ServiceKeys` | 不需要：服务两边都全局可见，事件一条总线，对面经 `run` 运行插件 |
+  | `Identity`、`IdentityPlugin`、`identity_key`、`StaticIdentity`、`Presented`；`Registration`、`Registered`、`RegistrationError`、`Registrations`、`Accepting`、`Ticket`、`Refusal`、`Deliver` | 连接插件自己的认证；id 来自握手。`fingerprint` 保留 |
+  | `rutis_bridge::Credential` | `rutis_bridge::websocket::Credential`（`websocket::dial` 出示的凭据） |
+  | `Installed { described: Described { schema, version, integrity }, factory }`；`StaticCatalog::with(名, described, factory)` | `Installed { schema, version, factory }`；`StaticCatalog::with(名, Installed::new(factory))` |
+  | rutis-loader 的 feature `peer` 与 `rutis_loader::peer`（`PeerResolver`、`PeerRows`、`PeerRowsPlugin`、`register_peer_node`、`node_schema`、`LoaderCatalog`） | 删；`<连接行>:<插件>` 的行由 `runtime::SessionResolver` 解析，`LoaderCatalog` 在 `rutis_loader::runtime` |
+  | `rutis_host::host::Embedding` 的 `identity` | 删 |
   | 自建连接实现 `Transport` | 交出一条 `Channel`：`ctx.plugin(Session::new(channel))`，或先 `Session::handshake(&ctx, channel).await` 再 `ctx.plugin(greeted)`；其他语言用服务 `sessions` 的 `open` |
 
 - 自己挂 `Session` 的 Rust 嵌入要在根 ctx 提供本端在握手里报的 id：`root.provide(rutis_bridge::LocalId(id))`；没有时会话失败：`the host provides no id for its sessions`。rutis-host 已经提供（rutis.json 的 `id`，默认 `main`）。
 
 - 自建连接：交出一条 `Channel`：写一个连接插件，调 `Session::new(channel)`；其他语言用 `sessions.open`。
-- `rutis-bridge/peer` 行的 `transport` 字段删除：写了它的 rutis.json 在启动时报不认识的字段。
 
 ## 一起升级（#695）
 
@@ -156,12 +198,12 @@ rutis-host: rutis.json: unknown field `remote`, expected one of …
 
 **token**：宿主一侧只认 `RUTIS_TOKEN_<名字>`；只设了 `RUTIS_TOKEN` 的宿主改为按名字设。运行时一侧的 `RUTIS_TOKEN` 不变。
 
-`<名字>` 是节点行的 `peer` 或连接行（`rutis-host/dial`、`rutis-host/listen`）的 id，大写，`-` 写作 `_`：
+`<名字>` 是连接行（`rutis-host/dial`、`rutis-host/listen`）的 id，大写，`-` 写作 `_`：
 
 ```bash
 # 0.18：一个 RUTIS_TOKEN 给所有对端
 RUTIS_TOKEN=secret rutis-host run rutis.json
-# 0.19：每个对端、每个连接行一个
+# 0.19：每个连接行一个
 RUTIS_TOKEN_OFFICE=secret RUTIS_TOKEN_GPU=secret rutis-host run rutis.json
 ```
 
@@ -173,12 +215,12 @@ RUTIS_TOKEN_OFFICE=secret RUTIS_TOKEN_GPU=secret rutis-host run rutis.json
   phone: set RUTIS_TOKEN_PHONE: the token the far ends present when they connect
   ```
 
-- 拨出的节点行不出示 token，对端拒绝，`run` 每 30 秒重试一次：`office: link refused: auth-rejected (…); retrying in 30s`。监听的节点行没有 token 时，对端连进来同样被拒。
+- `rutis-host/dial` 的行不出示 token，对面拒绝，`run` 每 30 秒重试一次：`office: disconnected (auth-rejected: …); retrying in 30s`。
 
 同一个监听器上两个条目的 `RUTIS_TOKEN_<名字>` 设成同一个值时仍在启动前报错（#702），文字改为写明两个变量：
 
 ```
-rutis-host: listener public: link row main accepts RUTIS_TOKEN_MAIN and row phone accepts RUTIS_TOKEN_PHONE, the same token, so a connection presenting it cannot be told apart: give RUTIS_TOKEN_MAIN or RUTIS_TOKEN_PHONE another value
+rutis-host: listener public: row main accepts RUTIS_TOKEN_MAIN and row phone accepts RUTIS_TOKEN_PHONE, the same token, so a connection presenting it cannot be told apart: give RUTIS_TOKEN_MAIN or RUTIS_TOKEN_PHONE another value
 ```
 
 ## SDK 的默认入口（#692）

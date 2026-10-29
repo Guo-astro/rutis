@@ -168,13 +168,7 @@ The runtime contract (`runtime::testing::runtime`, `tests/session_matrix.rs`):
 
 The first two columns and the last row start the process through the `Process` facade, and the contract also checks the exit status after the crash; the loopback and WebSocket columns attach to a channel and check only that the crash ends the session. On Windows, `python_runtime.rs`, `go_runtime.rs` and others cover the facade's loopback start.
 
-The node contract (`rutis_bridge::testing::node`):
-
-| Implementation | Channel | Linux | macOS | Windows |
-| --- | --- | --- | --- | --- |
-| Rust node | memory (`tests/node_conformance.rs`) | Runs | Runs in full runs | Runs in full runs |
-| Rust node | WebSocket (`tests/websocket_conformance.rs`, two rutis roots linked over a loopback WebSocket) | Runs | Runs | Runs |
-| Cordis node | WebSocket (`tests/websocket_conformance.rs`) | Runs | Runs | Runs |
+Between two rutis kernels (nodes): `rutis-bridge/tests/session_plugin.rs` (sessions over a memory channel) and `rutis-host/tests/nodes.rs` (two hosts over a loopback WebSocket, `rutis-host/dial` and `rutis-host/listen`) run on the three platforms.
 
 The dial-out contract (`tests/dial_conformance.rs`: rutis runs an access point, the runtime connects in with `dial:ws://…`):
 

@@ -9,7 +9,7 @@ This is the API reference. To build a host open to plugins from the start, follo
 ```toml
 [dependencies]
 rutis = "0.17"
-rutis-loader = { version = "0.17", features = ["node", "python", "peer"] }
+rutis-loader = { version = "0.17", features = ["node", "python"] }
 rutis-bridge = { version = "0.17", features = ["python", "websocket"] }   # node is enabled by default
 schemars = "1"                     # the config types Builtins::register decodes derive schemars::JsonSchema
 serde = { version = "1", features = ["derive"] }
@@ -19,7 +19,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 | Crate / feature | Contents |
 | --- | --- |
 | `rutis` | Core: plugins, dependencies, and services. |
-| `rutis-loader` | Loads plugins from data rows. `node` / `python` / `go` enable rows for those languages; `peer` enables node rows and `peer:` rows. |
+| `rutis-loader` | Loads plugins from data rows. `node` / `python` / `go` enable rows for those languages (and `<connection row>:<plugin>` rows). |
 | `rutis-bridge` | Connects processes, languages, and machines. `node` (default), `python` and `go` enable local runtimes; `websocket` enables the WebSocket transport; `cordis` mounts Cordis plugins and generates Rust bindings (see [Cordis](cordis.en.md)); `testing` enables compatibility tests. |
 | `rutis-types` | In `[build-dependencies]`: writes the TypeScript declarations and Python types of [marked Rust services](#mark-the-type-rutisservice) from `build.rs`. |
 
@@ -330,7 +330,7 @@ Services provided by plugins also appear in rutis under `host_key(name)`, so Rus
 
 ### Call a service by name from Rust
 
-A host, or a test, calls any service provided by name (a marked type, a service of a row of any language, a peer's, a hand-written `HostDispatch`) in one line with `rutis_bridge::session::call_service`, as a row of another language would:
+A host, or a test, calls any service provided by name (a marked type, a service of a row of any language, a connected node's, a hand-written `HostDispatch`) in one line with `rutis_bridge::session::call_service`, as a row of another language would:
 
 ```rust
 # use rutis::host::*;
@@ -393,7 +393,7 @@ impl HostDispatch for Tools {
 ```
 
 - Two rows of one runtime are two callers, with different `key()` and `instance()`.
-- A call from Rust, from a peer node (including `peer:` rows, whose calls arrive through the services between nodes), from a runtime outside any row (a service from `Mount::hosts`), or from code of a row that uses the service without declaring it (a Cordis `ctx.get`, which finds the registration shared by all rows) is `None`.
+- A call from Rust, from a connected node, from a runtime outside any row (a service from `Mount::hosts`), or from code of a row that uses the service without declaring it (a Cordis `ctx.get`, which finds the registration shared by all rows) is `None`.
 - Read it in `invoke` itself: a future that `invoke` returns runs later, elsewhere, and does not see it.
 - It comes from how rutis-loader's rows lease services (`Process::lease_host_for`): each row has the services it leases registered in a scope of its own (besides the registration shared by all rows, as before), so the wire is unchanged and it works with Node, Bun, Python and Go runtimes, 0.11 ones included. When you load rows with `Process` yourself, lease with `lease_host_for` and isolate the name under `HostLease::label()`; calls through `lease_host` / `lease_host_in` are `None`.
 
@@ -591,7 +591,7 @@ In 0.19 a remote connection has one shape ([Remote connections: one session plug
 
 ```rust,ignore
 use rutis::host::FiberState;
-use rutis_bridge::{websocket, Credential, LocalId, PeerId, Session};
+use rutis_bridge::{websocket, LocalId, PeerId, Session};
 
 root.provide(LocalId(PeerId::new("main")?));
 
@@ -599,8 +599,8 @@ root.provide(LocalId(PeerId::new("main")?));
 loop {
     let channel = websocket::dial(
         "wss://office.example.com/rutis",
-        &rutis_bridge::protocol(),
-        Some(&Credential::Bearer(token.clone())),
+        &format!("rutis.{}", rutis_bridge::session::ENDPOINT_PROTOCOL),
+        Some(&websocket::Credential::Bearer(token.clone())),
         &websocket::Trust::default(),
         &websocket::Limits::default(),
     )
@@ -616,7 +616,7 @@ loop {
 - Without this end's id the session fails: `the host provides no id for its sessions`. rutis-host provides it (rutis.json's `id`, `main` by default).
 - Plugins in other languages hand over a connection through the `open` of the service `sessions`; see [Plugin API: your own connection](plugin-api.en.md#your-own-connection-sessionsopen).
 
-The 0.18 node form still works in 0.19 and is being replaced: For rutis-loader configuration, `rutis_loader::peer::register_peer_node` registers the `rutis-bridge/peer` row (the same format as `rutis.json`), and `rutis_loader::peer::PeerResolver` resolves `peer:` rows. A remote runtime goes through a connection plugin: a `rutis-host/dial` or `rutis-host/listen` row, or your own connection plugin calling `Session::new(channel)`; its rows are `<connection row>:<plugin>`. See [Connect nodes](nodes.en.md) for concepts and security.
+With rutis-loader, the rows `<connection row>:<plugin>` are resolved by `rutis_loader::runtime::SessionResolver`: put `SessionResolver::new(&catalog)` last in the chain (`Chain::with_shared`) and `attach(&loader)` before mounting the loader. The loader gives sessions the plugins it can resolve (`rutis_loader::runtime::LoaderCatalog`), so a far rutis can have this side run them: connect only to trusted nodes. rutis-host's `rutis-host/dial` and `rutis-host/listen` rows are such connection plugins. See [Connect nodes](nodes.en.md) for concepts and security.
 
 ## Events
 
@@ -675,7 +675,7 @@ off.dispose().await?;
 | Failures | A failing `emit` listener reaches the error sink as `ErrorKind::ListenerFailed` (`Ctx::root_with_sink`), and `rutis_bridge::events::report_line` gives the line rutis-host prints; `parallel` gives `ErrorKind::ListenersFailed` (registration order); errors of listeners elsewhere arrive with their name and message |
 | Unload and cancellation | When a plugin unloads, its listeners leave the bus, running calls see `ctx.cancelled()`, and the unload waits for them (up to the shutdown deadline). Dropping the future of `parallel` / `serial` / `waterfall` cancels the dispatch |
 | Framework events | `rutis_loader::RowEvent` (`rutis/row`), `rutis_bridge::events::{ServiceEvent, RuntimeEvent}` (`rutis/service`, `rutis/runtime`): listen with `ctx.on`; emitting `rutis/*` fails with `ReservedEvent` |
-| Nodes | `Features { export, import }` of `PeerPlugin` select events too (names or `*` prefixes), see [nodes](#nodes) and [connecting nodes](nodes.en.md#events-between-nodes) |
+| Nodes | A connected node's listeners are entries of this bus, every name, without any list, see [nodes](#nodes) and [connecting nodes](nodes.en.md#once-connected) |
 
 Tests need no separate tool: in a `#[tokio::test]`, take `Ctx::root()` (or `Ctx::root_with_sink` to collect `emit` failures), load the plugins, and emit and assert as above ([write a Rust plugin: test](rust-plugin.en.md#6-test)). Listeners in runtimes need a real runtime (`LocalRuntime`), as in production.
 
@@ -720,7 +720,7 @@ Arguments are decoded with serde (any `Deserialize`), results encoded with serde
 
 **Cancellation:** a call the caller stops waiting for (an `AbortSignal`, a dropped future) drops the method's future on the Rust side, as for every call.
 
-**The calling row's context:** a parameter `&rutis::Ctx` (or `Ctx`) is not a parameter in TypeScript: it is the context of the row making the call (`rutis_bridge::session::caller_row()`), so what the method registers on it (`ctx.effect`, a listener) is that row's and goes when the row unloads or restarts, for example a subscription. Called from outside any row (from Rust, from a peer node), such a method fails, saying it needs the calling row's context.
+**The calling row's context:** a parameter `&rutis::Ctx` (or `Ctx`) is not a parameter in TypeScript: it is the context of the row making the call (`rutis_bridge::session::caller_row()`), so what the method registers on it (`ctx.effect`, a listener) is that row's and goes when the row unloads or restarts, for example a subscription. Called from outside any row (from Rust, from a connected node), such a method fails, saying it needs the calling row's context.
 
 ### Errors
 

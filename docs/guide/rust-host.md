@@ -9,7 +9,7 @@
 ```toml
 [dependencies]
 rutis = "0.17"
-rutis-loader = { version = "0.17", features = ["node", "python", "peer"] }
+rutis-loader = { version = "0.17", features = ["node", "python"] }
 rutis-bridge = { version = "0.17", features = ["python", "websocket"] }   # node 默认开
 schemars = "1"                     # Builtins::register 解码的配置类型派生 schemars::JsonSchema
 serde = { version = "1", features = ["derive"] }
@@ -19,7 +19,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 | crate / feature | 内容 |
 | --- | --- |
 | `rutis` | 内核：插件、依赖、服务 |
-| `rutis-loader` | 按数据（行）加载插件。`node` / `python` / `go`：这几种语言的行；`peer`：节点行和 `peer:` 行 |
+| `rutis-loader` | 按数据（行）加载插件。`node` / `python` / `go`：这几种语言的行（以及 `<连接行>:<插件>` 行） |
 | `rutis-bridge` | 连接其他进程、语言、机器。`node`（默认）、`python`、`go`：本机运行时；`websocket`：WebSocket 承载；`cordis`：挂载 Cordis 插件并生成 Rust 绑定（见 [Cordis](cordis.md)）；`testing`：一致性测试 |
 | `rutis-types` | 放在 `[build-dependencies]`：在 `build.rs` 里为[带标注的 Rust 服务](#在类型上标注-rutisservice)写 TypeScript 声明与 Python 类型 |
 
@@ -330,7 +330,7 @@ root.provide_at(host_key("clock"), Arc::new(Clock))?; // host_key 返回 Key<dyn
 
 ### 在 Rust 里按名字调用服务
 
-宿主或测试用 `rutis_bridge::session::call_service` 一行就能调用任何按名字提供的服务（标注类型、任何语言的行提供的服务、对端节点的、手写的 `HostDispatch`），和别的语言的行调用它一样：
+宿主或测试用 `rutis_bridge::session::call_service` 一行就能调用任何按名字提供的服务（标注类型、任何语言的行提供的服务、相连节点的、手写的 `HostDispatch`），和别的语言的行调用它一样：
 
 ```rust
 # use rutis::host::*;
@@ -393,7 +393,7 @@ impl HostDispatch for Tools {
 ```
 
 - 同一个运行时里的两行是两个调用方，`key()` 和 `instance()` 各不相同。
-- 来自 Rust 的调用、来自对端节点的调用（包括 `peer:` 行，它们的调用经节点之间的服务到达）、运行时里不属于任何行的调用（`Mount::hosts` 提供的服务）、行里没有声明就使用这个服务的代码的调用（Cordis 的 `ctx.get`，找到的是所有行共享的那份注册）都是 `None`。
+- 来自 Rust 的调用、来自相连节点的调用、运行时里不属于任何行的调用（`Mount::hosts` 提供的服务）、行里没有声明就使用这个服务的代码的调用（Cordis 的 `ctx.get`，找到的是所有行共享的那份注册）都是 `None`。
 - 只在 `invoke` 本身里读它：`invoke` 返回的 future 之后在别处运行，读不到。
 - 它来自 rutis-loader 的行租用服务的方式（`Process::lease_host_for`）：每一行把它租用的服务注册在自己的作用域里（另有与以前一样、所有行共享的那份注册），所以线上格式不变，Node、Bun、Python、Go 的运行时都可以用，0.11 的也可以。自己用 `Process` 加载行时，用 `lease_host_for` 并按 `HostLease::label()` 隔离这个名字；`lease_host` / `lease_host_in` 的调用是 `None`。
 
@@ -590,7 +590,7 @@ rutis 不带 `tracing` / `log` 集成，宿主自己的日志照常用。环境�
 
 ```rust,ignore
 use rutis::host::FiberState;
-use rutis_bridge::{websocket, Credential, LocalId, PeerId, Session};
+use rutis_bridge::{websocket, LocalId, PeerId, Session};
 
 root.provide(LocalId(PeerId::new("main")?));
 
@@ -598,8 +598,8 @@ root.provide(LocalId(PeerId::new("main")?));
 loop {
     let channel = websocket::dial(
         "wss://office.example.com/rutis",
-        &rutis_bridge::protocol(),
-        Some(&Credential::Bearer(token.clone())),
+        &format!("rutis.{}", rutis_bridge::session::ENDPOINT_PROTOCOL),
+        Some(&websocket::Credential::Bearer(token.clone())),
         &websocket::Trust::default(),
         &websocket::Limits::default(),
     )
@@ -615,7 +615,7 @@ loop {
 - 本端 id 没有提供时，会话失败：`the host provides no id for its sessions`。rutis-host 已经提供（rutis.json 的 `id`，默认 `main`）。
 - 别的语言的插件经服务 `sessions` 的 `open` 交出连接，见 [插件 API：自建连接](plugin-api.md#自建连接sessionsopen)。
 
-0.18 的节点写法在 0.19 仍可用、将被替换：用 rutis-loader 配置时，`rutis_loader::peer::register_peer_node` 注册 `rutis-bridge/peer` 行（与 rutis.json 相同），`rutis_loader::peer::PeerResolver` 解析 `peer:` 行。远程运行时用连接插件：`rutis-host/dial`、`rutis-host/listen` 的行，或自己的连接插件调 `Session::new(channel)`，行写 `<连接行>:<插件>`。概念与安全见 [连接节点](nodes.md)。
+用 rutis-loader 时，`<连接行>:<插件>` 的行由 `rutis_loader::runtime::SessionResolver` 解析：`SessionResolver::new(&catalog)` 放在解析链最后（`Chain::with_shared`），挂上加载器之前 `attach(&loader)`。加载器把自己能解析的插件提供给会话（`rutis_loader::runtime::LoaderCatalog`），所以对面的 rutis 可以让这里运行它们：只连可信的节点。rutis-host 的 `rutis-host/dial`、`rutis-host/listen` 行就是这样的连接插件。概念与安全见 [连接节点](nodes.md)。
 
 ## 事件
 
@@ -674,7 +674,7 @@ off.dispose().await?;
 | 失败 | `emit` 的监听器失败以 `ErrorKind::ListenerFailed` 进入错误汇集（`Ctx::root_with_sink`），`rutis_bridge::events::report_line` 给出 rutis-host 打印的那一行；`parallel` 是 `ErrorKind::ListenersFailed`（按登记顺序）；别处监听器的错误带着名字与信息到达 |
 | 卸载与取消 | 插件卸载时它的监听器撤下，正在运行的调用看到 `ctx.cancelled()`，卸载等它们结束（最多到关闭截止时间）。丢弃 `parallel` / `serial` / `waterfall` 的 future 即取消这次分发 |
 | 框架事件 | `rutis_loader::RowEvent`（`rutis/row`）、`rutis_bridge::events::{ServiceEvent, RuntimeEvent}`（`rutis/service`、`rutis/runtime`）：用 `ctx.on` 监听；发出 `rutis/*` 以 `ReservedEvent` 失败 |
-| 节点 | `PeerPlugin` 的 `Features { export, import }` 同时选择事件（名字或 `*` 前缀），见[节点](#节点)与[连接节点](nodes.md#节点之间的事件) |
+| 节点 | 相连节点的监听器是这条总线上的条目，每个名字都在，不用列名单，见[节点](#节点)与[连接节点](nodes.md#连上之后) |
 
 测试不需要单独的工具：在 `#[tokio::test]` 里用 `Ctx::root()`（或 `Ctx::root_with_sink` 收集 `emit` 的失败），加载插件，再按上面的方式发出、断言（[写一个 Rust 插件：测试](rust-plugin.md#6-测试)）。运行时里的监听器要用真实的运行时（`LocalRuntime`），与生产相同。
 
@@ -719,7 +719,7 @@ Rust 服务由各语言的行（TypeScript、JavaScript、Python、Go）按名�
 
 **取消：** 调用方不再等待的调用（`AbortSignal`、丢弃 future）会在 Rust 一侧丢弃方法的 future，与所有调用相同。
 
-**调用方行的上下文：** `&rutis::Ctx`（或 `Ctx`）参数在 TypeScript 里不是参数：它是发起调用的那一行的上下文（`rutis_bridge::session::caller_row()`），方法在上面登记的东西（`ctx.effect`、监听）属于那一行，随该行卸载或重启而移除，例如订阅。不在任何行里调用时（从 Rust、从对端节点），这样的方法失败，错误写明它需要调用方行的上下文。
+**调用方行的上下文：** `&rutis::Ctx`（或 `Ctx`）参数在 TypeScript 里不是参数：它是发起调用的那一行的上下文（`rutis_bridge::session::caller_row()`），方法在上面登记的东西（`ctx.effect`、监听）属于那一行，随该行卸载或重启而移除，例如订阅。不在任何行里调用时（从 Rust、从相连节点），这样的方法失败，错误写明它需要调用方行的上下文。
 
 ### 错误
 
