@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::task::Poll;
 use std::time::Duration;
 
-use common::runtimes::{layer, row_state, COLD};
+use common::runtimes::{greet_as_main, layer, row_state, spawner, COLD};
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, FiberState, TypeKey};
 use rutis::{Ctx, Error};
 use rutis_bridge::runtime::RuntimeState;
@@ -24,7 +24,7 @@ use rutis_loader::runtime::binary::{
 };
 use rutis_loader::runtime::binary::{RestartPolicy, RuntimeEnd};
 use rutis_loader::runtime::go::Go;
-use rutis_loader::runtime::RuntimeRows;
+use rutis_loader::runtime::SessionRows;
 use rutis_loader::{Chain, Loader, LoaderError, LoaderOptions, LoaderPlugin, ServiceCatalog};
 use serde_json::{json, Value};
 use tokio::sync::oneshot;
@@ -82,6 +82,7 @@ async fn fixture(idle: Option<Duration>, binaries: &[(&str, &str)]) -> Fixture {
         install(&plugins, name, as_name);
     }
     let root = Ctx::root().unwrap();
+    greet_as_main(&root);
     let catalog = ServiceCatalog::new();
     let resolver = Arc::new(
         BinaryResolver::<Go>::new(Binaries::new().dir(&plugins))
@@ -97,7 +98,7 @@ async fn fixture(idle: Option<Duration>, binaries: &[(&str, &str)]) -> Fixture {
     );
     let loader = plugin.handle();
     root.plugin(plugin).await.unwrap();
-    let go = BinaryRuntimes::<Go>::new(resolver.clone(), dir.path()).idle(idle);
+    let go = BinaryRuntimes::<Go>::new(resolver.clone(), dir.path(), spawner()).idle(idle);
     let runtimes = go.handle();
     root.plugin(go).await.unwrap();
     Fixture {
@@ -1013,7 +1014,7 @@ async fn a_restart_given_up_half_way_still_finishes_before_the_next() {
     let (began, began_rx) = oneshot::channel();
     let (release, release_rx) = oneshot::channel();
     let gate = fixture.root.plugin(Gate {
-        injects: [RuntimeRows::key("go-netkit")],
+        injects: [SessionRows::key("go-netkit")],
         hold: Arc::new(Mutex::new(Some((began, release_rx)))),
     });
     COLD.until(|| gate.state().state == FiberState::Active, "the gate")

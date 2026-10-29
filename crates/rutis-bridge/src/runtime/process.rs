@@ -948,8 +948,9 @@ impl Process {
                 ))
             }
         };
+        // The endpoint the process greets as: the runtime's name.
         let id = crate::channel::PeerId::new(name)
-            .unwrap_or_else(|_| crate::channel::PeerId::new("runtime").expect("a valid id"));
+            .map_err(|error| Error::refused(format!("the runtime's name: {error}")))?;
         let (command, connect) = crate::runtime::spawn::command(launcher, node_package)?;
         let spawned = crate::runtime::spawn::spawn(command, id.as_str(), plugin, connect).await?;
         let main = crate::channel::PeerId::new("main").expect("a valid id");

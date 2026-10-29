@@ -256,17 +256,10 @@ impl Host {
         if let Some(register) = embedding.builtins {
             register(&mut builtins);
         }
-        // The rows `<row>:<plugin>` (a connection row's, a local runtime's),
-        // and with Node the names no runtime prefixes; last in the chain.
-        let sessions = Arc::new(match config.runtimes.node.is_some() {
-            true => SessionResolver::npm(&catalog, "node"),
-            false => SessionResolver::new(&catalog),
-        });
         let mut mount = Mount {
             root: &root,
             catalog: &catalog,
             chain: Chain::new().with(builtins).with_shared(peers.clone()),
-            sessions: sessions.clone(),
             runtimes: Vec::new(),
             fibers: Vec::new(),
             processes: Vec::new(),
@@ -297,7 +290,17 @@ impl Host {
             }
         }
 
-        // Last: a name another resolver takes stays theirs.
+        // The rows `<row>:<plugin>` (a connection row's, a local runtime's),
+        // and with a Node runtime the names no runtime prefixes. Last: a
+        // name another resolver takes stays theirs.
+        let node = mount.runtimes.iter().any(|(name, _)| name == "node");
+        let sessions = Arc::new(match node {
+            true => SessionResolver::npm(mount.catalog, "node"),
+            false => SessionResolver::new(mount.catalog),
+        });
+        for (_, handle) in &mount.runtimes {
+            sessions.runtime(handle.clone());
+        }
         mount.chain = std::mem::take(&mut mount.chain).with_shared(sessions.clone());
         let Mount {
             chain,

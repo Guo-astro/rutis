@@ -22,7 +22,9 @@
 //! resolver takes (`go:`, `swift:`, `peer:`) stays theirs. It resolves
 //! every `<x>:<plugin>` whose `x` may name a runtime, whether or not a row
 //! `x` is there yet (it may come in the same batch, or later): until its
-//! session is there, the row waits for it. With [`SessionResolver::npm`],
+//! session is there, the row waits for it. A local runtime without the
+//! plugin leaves the name to the next resolver ([`LoaderError::NotFound`]),
+//! as an unknown name. With [`SessionResolver::npm`],
 //! the other names (npm names, `file:` URLs, absolute paths) run on the
 //! Node runtime's session.
 //!
@@ -297,6 +299,14 @@ impl Resolver for SessionResolver {
             let entry = PathBuf::from(plugin);
             let described = match discover::describe(&process, Path::new(plugin)).await {
                 Described::Found(found) => found,
+                // A local runtime without the plugin: no plugin by this
+                // name (installed where the runtime finds it, it would be).
+                Described::Missing if self.is_local(row) => {
+                    if !marked_before {
+                        self.inner.offline.lock().unwrap().remove(name);
+                    }
+                    return Err(not_found());
+                }
                 Described::Missing => {
                     self.inner.offline.lock().unwrap().remove(name);
                     self.inner

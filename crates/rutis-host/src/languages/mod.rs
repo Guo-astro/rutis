@@ -18,7 +18,6 @@ use rutis::host::{BoxFuture, FiberView};
 use rutis::Ctx;
 use rutis_bridge::pipe::Processes;
 use rutis_bridge::runtime::{RuntimeHandle, Stdio};
-use rutis_loader::runtime::SessionResolver;
 use rutis_loader::{Chain, Resolver, ServiceCatalog};
 use serde_json::Value;
 
@@ -220,9 +219,6 @@ pub struct Mount<'a> {
     pub catalog: &'a ServiceCatalog,
     /// The loader's resolvers, tried in order.
     pub chain: Chain,
-    /// What resolves the rows on sessions, the local runtimes' among them:
-    /// last in the chain.
-    pub sessions: Arc<SessionResolver>,
     /// The local runtimes by name, to wait for until they run.
     pub runtimes: Vec<(String, RuntimeHandle)>,
     /// The local runtimes' plugins by name, to stop one.
@@ -288,7 +284,6 @@ impl Mount<'_> {
             runtime = runtime.env(DEBUGGING, "1");
         }
         let handle = runtime.handle();
-        self.sessions.runtime(handle.clone());
         self.processes.push((name.to_owned(), runtime.processes()));
         self.fibers
             .push((name.to_owned(), self.root.plugin(runtime)));

@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use common::runtimes::{layer, row_state, swift_binary, COLD};
+use common::runtimes::{greet_as_main, layer, row_state, spawner, swift_binary, COLD};
 use rutis::host::{CtxHost, FiberState};
 use rutis::Ctx;
 use rutis_bridge::session::{host_key, settle, HostDispatch};
@@ -57,6 +57,7 @@ async fn fixture(start: Start, binaries: &[(&str, &str)]) -> Fixture {
         install(&plugins, product, name);
     }
     let root = Ctx::root().unwrap();
+    greet_as_main(&root);
     let catalog = ServiceCatalog::new();
     let resolver = Arc::new(
         BinaryResolver::<Swift>::new(Binaries::new().dir(&plugins))
@@ -72,7 +73,7 @@ async fn fixture(start: Start, binaries: &[(&str, &str)]) -> Fixture {
     );
     let loader = plugin.handle();
     root.plugin(plugin).await.unwrap();
-    let swift = BinaryRuntimes::<Swift>::new(resolver.clone(), dir.path());
+    let swift = BinaryRuntimes::<Swift>::new(resolver.clone(), dir.path(), spawner());
     let swift = match start {
         Start::Eager => swift.eager(),
         Start::OnDemand(idle) => swift.idle(idle),
