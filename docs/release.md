@@ -72,6 +72,16 @@ cargo run -p rutis-bridge --features websocket --example smoke -- \
 
 每晚的 stress 工作流还跑两个浸泡测试（link 反复断开重连、进程反复拉起结束），检查文件描述符、线程数不增长、进程都被回收。
 
+## 0.19.0
+
+0.19.0 面向宿主持有者（#694）：远程连接重做（#695，S1–S5），平台清理（#694、#813），宿主自己写插件（#185），插件安装（#691），SDK 的默认入口（#692），指南按层重写（#671）。所有包均为 0.19.0；见[发布说明](releases/0.19.0.md)与[迁移到 0.19](migration-0.19.md)。
+
+`rutis-types`（#844）首次发布到 crates.io，排在 `rutis-host` 之前（`rutis-host` 依赖它）：`CARGO_TOKEN` 要能发布新的 crate。`rutis-migrate` 退出列车，crates.io 上停在 0.18.0，不 yank（迁移指南仍写着 `cargo install rutis-migrate --version 0.18.0`）。Kotlin SDK 这一版不发布到 Maven Central（environment `maven` 没有凭据，`maven` 任务照常跳过）。
+
+0.x 的次版本号变化允许不兼容的改动，所以 `cargo-semver-checks` 与 0.18.0 比较时接受 Rust API 的改动（连接、会话与本机运行时的 API，平台清理删掉的名字，见迁移指南）。会话协议从 3 升到 4：发布门的跨版本测试（`RUTIS_E2E_ONLY_OLDER=1`）与 0.18.0 相遇，只验证握手时拒绝并写明升级哪一端。`rutis.json` 的 `format` 仍是 1，但这是持久化样本第一次有例外：0.8–0.18 的样本删掉了 `runtimes.remote`、`rutis-bridge/peer` 行与 `peer:` 行（S4、S5），写了它们的文件在 `rejected/` 下检查被拒的文字；0.19.0 的样本从 0.18.0 复制，加上 `installed` 字段（#805）与 `rutis-host/dial`、`rutis-host/listen` 行；dsh 的用户层没有变化，`cordis.patch.yml` 原样复制。
+
+这一版不做网络冒烟（维护者的决定）。
+
 ## 0.18.0
 
 0.18.0 的主题是「出错时看得懂」（#694）：#677、#678、#679、#669、#676 的后半、#687、#688、#690、#702、#726，以及依赖的安全更新 #755。所有包均为 0.18.0；见[发布说明](releases/0.18.0.md)与[迁移到 0.18](migration-0.18.md)。

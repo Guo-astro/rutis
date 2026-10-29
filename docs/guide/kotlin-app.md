@@ -19,11 +19,11 @@ plugins {
 }
 
 dependencies {
-    implementation("io.github.arcships:rutis:0.18.0")
-    ksp("io.github.arcships:rutis-ksp:0.18.0")
+    implementation("io.github.arcships:rutis:0.19.0")
+    ksp("io.github.arcships:rutis-ksp:0.19.0")
     // 测试工具，在 JVM 上跑插件的单元测试（§7）。
-    testImplementation("io.github.arcships:rutis-testing:0.18.0")
-    kspTest("io.github.arcships:rutis-ksp:0.18.0")
+    testImplementation("io.github.arcships:rutis-testing:0.19.0")
+    kspTest("io.github.arcships:rutis-ksp:0.19.0")
 }
 ```
 

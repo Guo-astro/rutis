@@ -8,10 +8,10 @@ The plugins are the same as [Swift plugins](swift-plugin.en.md) for Mac binaries
 
 ## 1. Add the SDK
 
-In Xcode: File → Add Package Dependencies…, `https://github.com/arcships/rutis`, from `0.18.0`, and add the library `Rutis` to the app target. In a package:
+In Xcode: File → Add Package Dependencies…, `https://github.com/arcships/rutis`, from `0.19.0`, and add the library `Rutis` to the app target. In a package:
 
 ```swift
-.package(url: "https://github.com/arcships/rutis", from: "0.18.0"),
+.package(url: "https://github.com/arcships/rutis", from: "0.19.0"),
 // in the target:
 .product(name: "Rutis", package: "rutis"),
 ```

@@ -72,6 +72,16 @@ Expected behavior: the dialer prints `clock: <n>` every second. After a network 
 
 The nightly stress workflow also runs two soak tests (repeated link disconnect/reconnect and repeated process start/exit) and checks that file descriptor and thread counts do not grow and all processes are reaped.
 
+## 0.19.0
+
+0.19.0 is for host owners (#694): remote connections rebuilt (#695, S1–S5), the platform cleanup (#694, #813), hosts writing plugins (#185), installing plugins (#691), the SDKs' default entry (#692), and the guides rewritten by layer (#671). All packages are at 0.19.0; see [the release notes](releases/0.19.0.en.md) and [migrating to 0.19](migration-0.19.en.md).
+
+`rutis-types` (#844) is published to crates.io for the first time, before `rutis-host` in the train (`rutis-host` depends on it): `CARGO_TOKEN` must be able to publish a new crate. `rutis-migrate` leaves the train and stays at 0.18.0 on crates.io, not yanked (the migration guide still says `cargo install rutis-migrate --version 0.18.0`). The Kotlin SDK is not published to Maven Central in this release (the environment `maven` has no credentials, and the `maven` job skips as usual).
+
+A minor version change of 0.x allows breaking changes, so `cargo-semver-checks` accepts the Rust API changes when it compares with 0.18.0 (the connection, session and local runtime API, and the names the platform cleanup removes; see the migration guide). The session protocol goes from 3 to 4: the release gate's cross-version tests (`RUTIS_E2E_ONLY_OLDER=1`) meet 0.18.0 and check only that the handshake refuses and says which end to upgrade. `format` of `rutis.json` stays 1, but this is the first exception in the persisted samples: the 0.8–0.18 samples drop `runtimes.remote`, `rutis-bridge/peer` rows and `peer:` rows (S4, S5), and files written with them are checked under `rejected/` for the refusal's text; the 0.19.0 sample is copied from 0.18.0 and adds the `installed` field (#805) and `rutis-host/dial` and `rutis-host/listen` rows; dsh's user layer has not changed, so `cordis.patch.yml` is copied as is.
+
+There is no network smoke test for this release (the maintainer's decision).
+
 ## 0.18.0
 
 The theme of 0.18.0 is "errors you can understand" (#694): #677, #678, #679, #669, the second half of #676, #687, #688, #690, #702, #726, and the dependency security update #755. All packages are at 0.18.0; see [the release notes](releases/0.18.0.en.md) and [migrating to 0.18](migration-0.18.en.md).

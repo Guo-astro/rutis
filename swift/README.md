@@ -5,7 +5,7 @@
 Write rutis plugins in Swift and run them as a macOS plugin binary, or host them in an iOS, iPadOS or macOS app (`RutisApp`). The package is the repository root's `Package.swift` (targets under `swift/rutis`); it follows the release train's `v` tags. Design: [Swift SDK](../docs/design-swift-sdk-2026-10-12.en.md). The guide: [Write a Swift plugin](../docs/guide/swift-plugin.en.md) (`rutis-host new <name> --lang swift` makes a project).
 
 ```swift
-// Package.swift: .package(url: "https://github.com/arcships/rutis", from: "0.18.0")
+// Package.swift: .package(url: "https://github.com/arcships/rutis", from: "0.19.0")
 //                .product(name: "Rutis", package: "rutis")
 import Rutis
 

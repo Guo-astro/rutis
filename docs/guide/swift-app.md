@@ -8,10 +8,10 @@ iOS、iPadOS 或 macOS 应用可以把它自己和所在设备的能力（健康
 
 ## 1. 加入 SDK
 
-在 Xcode 里：File → Add Package Dependencies…，填 `https://github.com/arcships/rutis`，从 `0.18.0` 起，把库 `Rutis` 加到应用的 target。在包里：
+在 Xcode 里：File → Add Package Dependencies…，填 `https://github.com/arcships/rutis`，从 `0.19.0` 起，把库 `Rutis` 加到应用的 target。在包里：
 
 ```swift
-.package(url: "https://github.com/arcships/rutis", from: "0.18.0"),
+.package(url: "https://github.com/arcships/rutis", from: "0.19.0"),
 // target 里：
 .product(name: "Rutis", package: "rutis"),
 ```
