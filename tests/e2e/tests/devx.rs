@@ -613,11 +613,13 @@ fn a_python_plugin_is_written_tested_reloaded_and_packed() {
         ],
         &[],
     );
-    // The venv's rutis-host, the one the PyPI package installs.
+    // The venv's rutis-host, the one the PyPI package installs; the
+    // testing tool runs the plugin on it.
     let venv_host = venv_program(&venv, "rutis-host");
+    let tested = [("RUTIS_HOST", venv_host.to_str().expect("the venv's path"))];
     // The template as it comes: its example and its tests.
     let unittest = ["-m", "unittest", "discover", "-s", "tests"];
-    run(&s, &project, &python, &unittest, &[]);
+    run(&s, &project, &python, &unittest, &tested);
     check_template(&s, &project, &venv_host, &[]);
     // The weather plugin.
     s.replace(format!("{project}/src/weather/__init__.py"), WEATHER_PY);
@@ -633,7 +635,7 @@ fn a_python_plugin_is_written_tested_reloaded_and_packed() {
             ],
         }),
     );
-    run(&s, &project, &python, &unittest, &[]);
+    run(&s, &project, &python, &unittest, &tested);
     check(&s, &project, &venv_host, &[]);
     dev(
         &s,

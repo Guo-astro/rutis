@@ -1,4 +1,4 @@
-"""rutis.testing: the test listens as the host does (`t.on`, #670 C4)."""
+"""rutis.testing: the test listens on the host (`t.on`, #670 C4)."""
 
 import asyncio
 import unittest
@@ -25,9 +25,9 @@ class Weather:
         return entry["city"]
 
 
-def weather():
+def weather(service="weather"):
     def apply(ctx, config):
-        ctx.provide("weather", Weather(ctx, config["city"]))
+        ctx.provide(service, Weather(ctx, config["city"]))
 
     return define_plugin(apply, name="weather")
 
@@ -43,6 +43,8 @@ class On(background.TestCase):
                 asked = []
                 off = t.on("weather/asked", lambda city: asked.append(city))
                 await t.service("weather").today()
+                # Through the host: a round trip after the emit, in order.
+                await t.parallel("weather/sync")
                 self.assertEqual(asked, ["Oslo"])
                 off()
 
@@ -59,21 +61,18 @@ class On(background.TestCase):
 
         run(go())
 
-    def test_strict_it_gets_the_arguments_as_another_process_would(self):
+    def test_it_gets_the_arguments_as_the_host_sends_them(self):
+        # objects-case(python): data-stays-data
         async def go():
             entry = {"city": "Oslo", "tags": ("a", "b")}
             got = []
             async with load(weather(), config={"city": "Oslo"}) as t:
                 t.on("weather/told", got.append)
                 await t.service("weather").tell(entry)
-            # A copy, a tuple arriving as a list, as from another process.
+                await t.parallel("weather/sync")
+            # A copy, a tuple arriving as a list: the event went through the host.
             self.assertIsNot(got[0], entry)
             self.assertEqual(got[0], {"city": "Oslo", "tags": ["a", "b"]})
-            same = []
-            async with load(weather(), config={"city": "Oslo"}, strict=False) as t:
-                t.on("weather/told", same.append)
-                await t.service("weather").tell(entry)
-            self.assertIs(same[0], entry)
 
         run(go())
 
@@ -85,6 +84,7 @@ class On(background.TestCase):
                 off()
                 off()
                 await t.service("weather").today()
+                await t.parallel("weather/sync")
                 self.assertEqual(asked, [])
 
         run(go())
@@ -93,10 +93,11 @@ class On(background.TestCase):
         async def go():
             bus = Bus()
             asked = []
-            async with load(weather(), config={"city": "Bergen"}, bus=bus, row="second") as other:
+            async with load(weather("forecast"), config={"city": "Bergen"}, bus=bus, row="second") as other:
                 async with load(weather(), config={"city": "Oslo"}, bus=bus) as t:
                     t.on("weather/asked", asked.append)
-                await other.service("weather").today()
+                await other.service("forecast").today()
+                await other.parallel("weather/sync")
                 self.assertEqual(asked, [])
                 with self.assertRaisesRegex(PluginTestError, "the plugin is unloaded"):
                     t.on("weather/asked", asked.append)
@@ -125,6 +126,7 @@ class On(background.TestCase):
                 t.on("weather/asked", asked.append)
                 await t.update({"city": "Bergen"})
                 await t.service("weather").today()
+                await t.parallel("weather/sync")
                 self.assertEqual(asked, ["Bergen"])
 
         run(go())

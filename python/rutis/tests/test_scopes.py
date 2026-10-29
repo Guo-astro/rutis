@@ -4,14 +4,12 @@ looks like one, reaches."""
 
 import asyncio
 import sys
-import subprocess
 import types
 import unittest
 
 import background
 
 from rutis.runner import Runtime, handle_of, scoped_id
-from support import HANG_GUARD
 
 
 def module(name: str, apply) -> str:
@@ -68,33 +66,6 @@ class ScopedIds(background.TestCase):
         with self.assertRaises(ValueError):
             asyncio.run(runtime.load("p", provider, {}, None, {"x": ""}))
         self.assertNotIn("x", runtime.services)
-
-    def test_a_failing_async_emit_listener_is_reported_and_the_process_goes_on(self):
-        # #464 §5.6: no longer the end of the runtime process (0.12 exited).
-        script = """
-import asyncio, sys, types
-from rutis.runner import Runtime
-async def fail():
-    await asyncio.sleep(0)
-    raise ValueError('unhandled leaf event')
-def apply(ctx, config):
-    ctx.on('tick', fail)
-    ctx.emit('tick')
-plugin = types.ModuleType('fatal_event')
-plugin.apply = apply
-sys.modules[plugin.__name__] = plugin
-async def run():
-    await Runtime().load('fatal', plugin.__name__, {}, None)
-    for _ in range(3):
-        await asyncio.sleep(0)
-    print('still running')
-asyncio.run(run())
-"""
-        result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=HANG_GUARD)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout, "still running\n")
-        self.assertEqual(result.stderr, "rutis: listener of tick in row fatal failed: ValueError: unhandled leaf event\n")
-
 
 class Inspect(background.TestCase):
     """The test control method `inspect` (RUTIS_TEST_INSPECT): what the

@@ -302,8 +302,8 @@ class Events(unittest.TestCase):
             async with load(greeter, bus=bus, row="greeter") as t, load(shout, bus=bus, row="shout"):
                 self.assertEqual(await t.service("greeter").hello("Ada", "sv"), "Hej, Ada!")
                 self.assertEqual(await t.service("greeter").hello("Bo", "en"), "Hello, Bo!")
-                self.assertEqual(said, ["Ada", "Bo"])
                 self.assertEqual(await t.serial("greeting/pick", "sv"), "Hej")  # the test can emit too
+                self.assertEqual(said, ["Ada", "Bo"])    # emits go through the host: delivered once the serial after them is back
 
         asyncio.run(go())
 ```
@@ -313,10 +313,9 @@ class Events(unittest.TestCase):
 uv run python -m unittest discover -s tests
 ```
 
-- `emit` returns at once; a failing listener reaches neither the emitter nor the other listeners and is reported in one line where it runs (in a test, in `t.reported`). To wait for every listener and get their errors, use `await ctx.parallel(...)`: failures are a `rutis.advanced.AggregateError` whose `errors` are in registration order.
+- `emit` returns at once; a failing listener reaches neither the emitter nor the other listeners and the host reports it in one line (in a test, in `await t.reported()`). To wait for every listener and get their errors, use `await ctx.parallel(...)`: failures are a `rutis.advanced.AggregateError` whose `errors` are in registration order.
 - `bail` is a synchronous `serial`: an `async def` listener (or a function returning a coroutine) fails it with `rutis.advanced.AsyncListener`.
 - `ctx.filter(lambda d: d["row"] == "audit")` returns an object with the five methods that delivers only to the listeners the filter keeps; `ctx.on(name, fn, prepend=True)` goes first, `global_=True` is exempt from filters.
-- Scopes: `load(plugin, bus=bus, scope="t1/s1")` loads a plugin into an instance (`Bus(scopes={"t1": "tenant"})` names the groups); a listener receives every event of the name on the root bus.
 - On unload, the tasks of running listeners are cancelled and waited for (at most `RUTIS_SHUTDOWN_TIMEOUT`) before the cleanups run. When the emitter gives up (its task is cancelled), the listeners in progress are cancelled too.
 
 #### Go
@@ -1177,11 +1176,10 @@ The test tools (`@arcships/rutis/testing`, `rutis.testing`, Go's `rutistest`) an
 | A plugin that ends its process (`process.exit`, `os._exit`) ends the test | The test tool runs the plugin in the test's process; the expectations file marks this entry `allowed`, and the test tool does not make that call |
 | No restarts: a config change or a withdrawn injected service does not stop and start the plugin | `load` starts it once; the host decides the lifecycle (see above) |
 | Sync calls do not block, so there is no `SyncWaitCycle`; no cancellation (`AbortSignal`, coroutine cancellation) | The plugin and the test share one event loop |
-| Python: an exception that crosses is a `RemoteError` whose `__cause__` is the original exception | For debugging; a real runtime's `RemoteError` has no `__cause__` |
-| Descriptors call the runtime by the language (`node`, `bun`, `python`, `go`; a host uses the names its configuration gives); unloading waits at most `RUTIS_SHUTDOWN_TIMEOUT`, as a runtime, or the tool's own option: TypeScript `host({ deadline })` / `load(…, { deadline, runtime })` in ms, Python `load(…, deadline=, runtime=)` in seconds, Go `rutistest.RuntimeName` and other options | Each tool follows its language's conventions for options |
+| Descriptors call the runtime by the language (`node`, `bun`, `python`, `go`; a host uses the names its configuration gives); unloading waits at most `RUTIS_SHUTDOWN_TIMEOUT`, as a runtime, or the tool's own option: TypeScript `host({ deadline })` / `load(…, { deadline, runtime })` in ms, Go `rutistest.RuntimeName` and other options | Each tool follows its language's conventions for options |
 | TypeScript: only plugins written with `definePlugin` load, not Cordis plugins | The tool has no Cordis plugin model, services or dependency gating |
 | The 16 MiB message limit is not checked | The tool does not encode values into messages; the real runtimes fail a call whose message is over the limit (see [Passing values](#passing-values)) |
-| Events: every listener is in the test's process (always dispatched locally), with no other process or node, and no `rutis/*` events | The test tool runs the plugins in one process. The five modes, filters, scopes (TypeScript `host()` with `scope`, Python `Bus` and `scope=`, Go `rutistest.InScope`), unload waiting and cancelling, and reporting `emit` failures (`reported`) are as on a real runtime, checked against the same [events expectations file](../../crates/rutis-bridge/src/runtime/testing/events.expected.json) |
+| Events: every listener is in the test's process (always dispatched locally), with no other process or node, and no `rutis/*` events | The test tool runs the plugins in one process. The five modes, filters, scopes (TypeScript `host()` with `scope`, Go `rutistest.InScope`), unload waiting and cancelling, and reporting `emit` failures (`reported`) are as on a real runtime, checked against the same [events expectations file](../../crates/rutis-bridge/src/runtime/testing/events.expected.json) |
 
 The ten values cross by the same rules on both sides, so they are not a difference. Nor are objects with methods: in strict mode the test tool of every language hands them over as a proxy shaped as across processes (methods only, every call asynchronous), as a real runtime does. With strict mode off (`strict: false`), values skip the table above and other differences can appear.
 
@@ -1228,30 +1226,28 @@ The `t` that `load` and `h.load` return:
 
 `rutis.testing`:
 
+`load` starts `rutis-host test` (the file `RUTIS_HOST` names, else `rutis-host` on `PATH`; the plugin project's dev dependency `rutis-host` installs it) and connects the Python runtime in the test's process to it, in the test's event loop. The plugin is a row of that host and runs as it does on any host: the host's loader checks its config and fills in the defaults, every event goes through the host, and the host unloads it. The services the test gives (`services`) and the test's own listeners (`t.on`) belong to the test's plugin `tester`, in the same runtime.
+
 | Parameter of `load(plugin, *, …)` | What it does |
 | --- | --- |
-| `config` | The plugin's config; with a `config` declaration, defaults are filled in and it is validated |
+| `config` | The plugin's config; the host's loader fills in the defaults of the plugin's `config` declaration and checks it, and a config that does not match fails `load` with the row's state line (`weather: config: city is required`) |
 | `services` | The services the plugin `inject`s, by name |
-| `strict` | Values follow cross-process rules (default `True`) |
-| `bus` | Share events with the plugins on the same `Bus` (default: one of its own) |
-| `scope` | The scope path it is loaded in (`t1/s1`; default the root) |
-| `row` | Its row name on the bus (default the plugin's declared name, else its module's) |
-| `runtime` | What listener descriptors give as `runtime` (default `"python"`) |
-| `deadline` | How many seconds unloading waits for running listeners (default `RUTIS_SHUTDOWN_TIMEOUT`, 10) |
+| `bus` | Share one host with the plugins on the same `Bus` (default: one of its own) |
+| `row` | Its row's id (default the plugin's declared name, else its module's); the host adds `-2`, `-3`… to an id taken |
 
 | Member of `Loaded` (`async with load(...) as t`) | What it does |
 | --- | --- |
 | `t.service(name)` | The service the plugin provides, as rutis sees it: its declared methods, or, undeclared, the object's public methods, all async |
 | `t.methods(name)` | The methods rutis sees: `{"today": "async"}` |
 | `t.provided()` | The names of the services the plugin provides now |
-| `t.on(name, listener, *, prepend=False, global_=False)` | Listen as the host does, at the root scope: the plugin's emissions and the test's own reach it; in strict mode it gets the arguments as from another process; returns the function that stops it, and without it, it stops when the plugin unloads |
-| `t.emit`, `t.parallel`, `t.serial`, `t.waterfall`, `t.bail` | Emit from the plugin's row and scope |
+| `t.on(name, listener, *, prepend=False, global_=False)` | Listen from the test's plugin: the plugin's emissions and the test's own reach it, its arguments sent by the host; returns the function that stops it, and without it, it stops when the plugin unloads |
+| `t.emit`, `t.parallel`, `t.serial`, `t.waterfall`, `t.bail` | Emit from the plugin's row, through the host |
 | `t.filter(predicate)` | The five methods, delivering only to the listeners `predicate(descriptor)` keeps |
-| `t.reported` | The failures nobody received (listeners failing in an `emit`, filters) |
-| `await t.update(config)` | Change the config as a host's `rows.update` does: unload, then run again with the new config |
-| `await t.unload()` | Unload as the runtime does: withdraw listeners and services, cancel and wait for running listeners, then run the cleanups, latest first (done when the `async with` block exits) |
+| `await t.reported()` | What the host reported of this row (listeners failing in an `emit`, filters of its `emit`), each a `Reported` whose `line` is the host's line |
+| `await t.update(config)` | The host changes the config: unload, then run again with the new config; a config that does not match fails in the host's words, and the row keeps its config |
+| `await t.unload()` | The host unloads it: withdraw listeners and services, cancel and wait for running listeners, then run the cleanups, latest first (done when the `async with` block exits) |
 
-`Bus(scopes=...)`: a bus for tests; the plugins on the same `bus` hear each other, and `scopes` names the group of a scope path. It has `reported`, `listeners(name)` (the descriptors a filter sees) and `emitter(row=..., strict=...)` (emit as a given row). `Reported`: one failure nobody received, with the fields `kind` (`"listener"` or `"filter"`), `name`, `row` and `error`. `PluginTestError`: the plugin did something a host would refuse or that would fail across processes; a subclass of `AssertionError`.
+`Bus()`: a host for tests; the plugins on the same `bus` are on one host and hear each other; it starts with the first `load` and stops when the last one ends. It has `await bus.reported()` (of the rows on the bus, row by row) and `emitter()` (emit as the test's plugin). `Reported`: one failure nobody received, with the field `line`, the line the host prints (`ticker: listener of tick failed: ValueError: boom`, then the stack). `PluginTestError`: the host refused to load the plugin or change its config (the text is the host's), the plugin does not provide the service asked for, or `rutis-host` cannot be started; a subclass of `AssertionError`.
 
 A plugin definition a test double receives can be passed to `load` as it is.
 

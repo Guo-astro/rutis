@@ -15,7 +15,7 @@
 
 use std::path::{Path, PathBuf};
 
-use rutis_e2e::{build_guard, repo, Host, Lang, Probe, Scenario};
+use rutis_e2e::{build_guard, host_program, repo, Host, Lang, Probe, Scenario};
 use serde_json::{json, Value};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -375,13 +375,16 @@ fn template_tests(s: &Scenario, kind: Kind) -> Host {
             let path = std::env::join_paths([PathBuf::from("src"), repo().join("python/rutis")])
                 .expect("PYTHONPATH");
             let path = path.to_string_lossy();
+            // The testing tool runs the plugin on this checkout's rutis-host.
+            let host = host_program();
+            let host = host.to_string_lossy();
             // By absolute path: a relative program is not looked up in the
             // child's directory on Windows.
             s.program(
                 "demo",
                 venv_python(&s.path("demo/.venv")),
                 ["-m", "unittest", "discover", "-s", "tests"],
-                &[("PYTHONPATH", &path)],
+                &[("PYTHONPATH", &path), ("RUTIS_HOST", &host)],
             )
         }
         Kind::Go => s.program("demo", "go", ["test", "./..."], GO_ENV),

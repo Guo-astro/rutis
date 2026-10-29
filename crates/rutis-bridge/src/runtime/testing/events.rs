@@ -8,7 +8,6 @@
 //! host with its runtimes and a second node
 //! (`crates/rutis-loader/tests/events_conformance.rs`); the SDK testing tools
 //! run the same file in one process (`node/rutis/test/events-conformance.test.mjs`,
-//! `python/rutis/tests/test_events_conformance.py`,
 //! `go/rutis/rutistest/events_conformance_test.go`).
 //!
 //! # The plugin `conformance-events`

@@ -253,3 +253,16 @@ Kotlin 另有两点：
 ### Python
 
 最低版本 3.12（3.10、3.11 不再支持）。
+
+`rutis.testing` 改为在真实宿主上测试（#813 §7.5）：`load` 起一个 `rutis-host test`（`RUTIS_HOST` 指定的文件，没有时用 `PATH` 上的 `rutis-host`；模板的开发依赖 `rutis-host` 装好了它），插件跑在测试进程里的 Python 运行时上。
+
+| 0.18 | 0.19 |
+| --- | --- |
+| `load(..., strict=)`、`scope=`、`runtime=`、`deadline=` | 删：值经真实运行时传递，没有作用域、运行时名、卸载等待的选项（卸载等待按 `RUTIS_SHUTDOWN_TIMEOUT`） |
+| `Bus(scopes=)`、`bus.listeners(name)`、`bus.emitter(row=, strict=)` | `Bus()`、`bus.emitter()`（以测试的插件发出） |
+| `t.reported`、`bus.reported`（列表，`Reported(kind, name, row, error)`） | `await t.reported()`、`await bus.reported()`，`Reported(line)`：宿主报告的那一行 |
+| 配置不合格时 `load` 抛出 `BindingError`（`bad-config`） | `PluginTestError`，文字是宿主写的这一行的状态行（`weather: config: city is required`） |
+| 测试给的服务与插件提供的同名时 `… is already provided by the host` | 运行时的话：`… is already provided by tester` |
+| `rutis.config`（`check`、`configured` 等） | 删：配置只由宿主的 loader 校验并补默认值，插件拿到的就是补好的配置 |
+
+运行时不再在本进程里分发事件：每次发出都经宿主，`emit` 里失败的监听器也由宿主报告（`<行>: listener of <事件> failed: …`）。插件在同一个进程里的 `emit` 之后马上看监听器的结果，要等一次经宿主的往返（如 `await ctx.parallel(...)`）。

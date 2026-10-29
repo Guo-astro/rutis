@@ -253,3 +253,16 @@ The row names `go-<binary>:<plugin>` and `swift-<binary>:<plugin>` are removed; 
 ### Python
 
 The minimum is 3.12 (3.10 and 3.11 are no longer supported).
+
+`rutis.testing` tests on a real host (#813 §7.5): `load` starts `rutis-host test` (the file `RUTIS_HOST` names, else `rutis-host` on `PATH`; the template's dev dependency `rutis-host` installs it), and the plugin runs on the Python runtime in the test's process.
+
+| 0.18 | 0.19 |
+| --- | --- |
+| `load(..., strict=)`, `scope=`, `runtime=`, `deadline=` | Removed: values cross through the real runtime, and there are no options for scopes, the runtime's name or the unload wait (unloading waits `RUTIS_SHUTDOWN_TIMEOUT`) |
+| `Bus(scopes=)`, `bus.listeners(name)`, `bus.emitter(row=, strict=)` | `Bus()`, `bus.emitter()` (emit as the test's plugin) |
+| `t.reported`, `bus.reported` (lists of `Reported(kind, name, row, error)`) | `await t.reported()`, `await bus.reported()`, `Reported(line)`: the line the host reported |
+| A config that does not match makes `load` raise `BindingError` (`bad-config`) | `PluginTestError`, its text the row's state line the host writes (`weather: config: city is required`) |
+| A service the test gives that the plugin provides too: `… is already provided by the host` | The runtime's words: `… is already provided by tester` |
+| `rutis.config` (`check`, `configured`, …) | Removed: only the host's loader checks a config and fills its defaults; the plugin gets the filled config |
+
+The runtime no longer dispatches events in its own process: every emission goes through the host, and the host reports a listener failing in `emit` too (`<row>: listener of <event> failed: …`). To see the listeners' results right after an `emit` in the same process, wait for one round trip through the host (`await ctx.parallel(...)`, say).

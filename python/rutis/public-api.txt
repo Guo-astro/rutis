@@ -37,18 +37,17 @@ class WaterfallNext(rutis.peer._Named)(message: str, graph: Any = None)
     NAME = 'WaterfallNext'
 
 ## rutis.testing
-class Bus(object)(*, scopes: dict | None = None) -> None
-    def chain(self, path: str | None) -> list
-    def listeners(self, name: str | None = None) -> list[dict]
-    def emitter(self, *, row: str = 'test', strict: bool = True) -> Emitter
-class Loaded(object)(plugin: sdk.Plugin, strict: bool, bus: Bus, row: str, scope: list, name: str, runtime: str | None = 'python', deadline: float | None = None) -> None
+class Bus(object)() -> None
+    async def reported(self) -> list[Reported]
+    def emitter(self) -> Emitter
+class Loaded(object)(host: _Host, row: str, entry: str, plugin: sdk.Plugin) -> None
     def emit(self, name: str, *args: Any) -> None
     def parallel(self, name: str, *args: Any)
     def serial(self, name: str, *args: Any)
     def waterfall(self, name: str, *args: Any, terminal: Callable | None = None)
     def bail(self, name: str, *args: Any) -> Any
     def filter(self, predicate: Callable[[dict], Any]) -> Emitter
-    property reported: list[Reported]
+    async def reported(self) -> list[Reported]
     def on(self, name: str, listener: Callable, *, prepend: bool = False, global_: bool = False) -> Callable[[], None]
     def service(self, name: str) -> Any
     def methods(self, name: str) -> dict
@@ -56,10 +55,6 @@ class Loaded(object)(plugin: sdk.Plugin, strict: bool, bus: Bus, row: str, scope
     async def update(self, config: Any) -> None
     async def unload(self) -> None
 class PluginTestError(AssertionError)(…)
-    why: str | None
-class Reported(tuple)(kind: str, name: str, row: str | None, error: BaseException)
-    kind: str
-    name: str
-    row: str | None
-    error: BaseException
-def load(plugin: sdk.Plugin | ModuleType, *, config: Any = None, services: dict | None = None, strict: bool = True, bus: Bus | None = None, scope: str | None = 'root', row: str | None = None, runtime: str | None = 'python', deadline: float | None = None) -> AsyncIterator[Loaded]
+class Reported(tuple)(line: str)
+    line: str
+def load(plugin: sdk.Plugin | ModuleType, *, config: Any = None, services: dict | None = None, bus: Bus | None = None, row: str | None = None) -> AsyncIterator[Loaded]

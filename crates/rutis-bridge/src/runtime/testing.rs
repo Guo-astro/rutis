@@ -15,8 +15,8 @@ use rutis::internal::CtxInternal;
 pub mod events;
 
 /// What calls on the conformance plugin return: the one list both the real
-/// runtimes ([`runtime`]) and the SDK testing tools (`@arcships/rutis/testing`,
-/// `rutis.testing`) are checked against (issue #206, risk A1, Q6.7.2). Its
+/// runtimes ([`runtime`]) and the SDK testing tools (`@arcships/rutis/testing`)
+/// are checked against (issue #206, risk A1, Q6.7.2). Its
 /// `about` says how to read it.
 pub const WEATHER_EXPECTED: &str = include_str!("testing/weather.expected.json");
 

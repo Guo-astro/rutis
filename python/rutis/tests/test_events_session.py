@@ -1,7 +1,7 @@
 """Unified events between the runtime and its host (#464), against a
-scripted host on a socketpair: the `events-v2` handshake, registration,
-name presence, dispatch through the host, and the host calling this
-process's listeners. docs/design-events-protocol-2026-10-18.md §2, §4, §5,
+scripted host on a socketpair: the handshake, registration, every
+dispatch through the host, and the host calling this process's
+listeners. docs/design-events-protocol-2026-10-18.md §2, §4, §5,
 §7."""
 
 import asyncio
@@ -162,8 +162,7 @@ class Session(background.IsolatedAsyncioTestCase):
         await asyncio.to_thread(self.host.start)
         await within("the handshake", self.host.peer.ready)
 
-    async def mount(self, elsewhere=None):
-        self.host.invoke("events.elsewhere", data([elsewhere or {"add": []}]))
+    async def mount(self):
         call = self.host.invoke("mount", data({"plugins": [], "announce": True, "runtime": "py"}))
         return await self.host.outcome(call)
 
@@ -186,12 +185,6 @@ class Session(background.IsolatedAsyncioTestCase):
             self.host.answer(frame)
         self.assertEqual(await self.host.outcome(call), ("return", None))
         return registered
-
-    async def elsewhere(self, **change):
-        self.host.invoke("events.elsewhere", data([change]))
-        # Handled in frame order: a call after it sees it.
-        call = self.host.invoke("rows.schema", data(["events_session_probe_missing"]))
-        await self.host.outcome(call)
 
 
 class Handshake(Session):
@@ -253,9 +246,10 @@ class Registration(Session):
 
 
 class ThroughTheHost(Session):
-    async def test_a_name_listened_to_elsewhere_is_dispatched_by_the_host(self):
-        # §5.2, §5.3: the request names the row, never a scope.
-        await self.mount({"add": ["t/x"]})
+    async def test_every_emission_is_dispatched_by_the_host(self):
+        # §5.2, §5.3: the request names the row, never a scope; the row's
+        # own listener is called back by the host.
+        await self.mount()
         log = []
         await self.load("a", lambda ctx, config: ctx.on("t/x", lambda value: log.append(value)), registrations=1)
         ctx = self.contexts["a"]
@@ -265,19 +259,10 @@ class ThroughTheHost(Session):
         self.assertEqual(log, [], "its own listener is called back by the host, not here")
         self.host.answer(frame, "R")
         self.assertEqual(await within("the dispatch", dispatch), "R")
-        # Prefixes count too; removed names are dispatched here again.
-        await self.elsewhere(remove=["t/x"], addPrefixes=["t/"])
-        dispatch = asyncio.ensure_future(ctx.parallel("t/x", 2))
-        frame = await self.host.request("events.dispatch")
-        self.host.answer(frame)
-        self.assertIsNone(await within("the dispatch", dispatch))
-        await self.elsewhere(removePrefixes=["t/"])
-        self.assertIsNone(await ctx.serial("t/x", 3))
-        self.assertEqual(log, [3])
 
     async def test_the_filter_runs_here_as_a_selector(self):
         # §6: one call with the descriptors, a boolean each.
-        await self.mount({"add": ["t/f"]})
+        await self.mount()
         await self.load("a")
         seen = []
         dispatch = asyncio.ensure_future(
@@ -293,7 +278,7 @@ class ThroughTheHost(Session):
         await within("the dispatch", dispatch)
 
     async def test_the_terminal_is_a_function_the_host_calls(self):
-        await self.mount({"add": ["t/wf"]})
+        await self.mount()
         await self.load("a")
         dispatch = asyncio.ensure_future(self.contexts["a"].waterfall("t/wf", "Oslo", terminal=lambda city: f"end {city}"))
         frame = await self.host.request("events.dispatch")
@@ -305,7 +290,7 @@ class ThroughTheHost(Session):
         self.assertEqual(await within("the dispatch", dispatch), "end Oslo")
 
     async def test_a_host_aggregate_error_is_a_rutis_aggregate_error(self):
-        await self.mount({"add": ["t/par"]})
+        await self.mount()
         await self.load("a")
         dispatch = asyncio.ensure_future(self.contexts["a"].parallel("t/par"))
         frame = await self.host.request("events.dispatch")
@@ -326,63 +311,38 @@ class ThroughTheHost(Session):
         self.assertIsInstance(raised.exception.errors[1], BindingError)
 
     async def test_emits_through_the_host_keep_their_order(self):
-        # §5.5: while an emit of a name through the host is unanswered, the
-        # next ones follow it there, even once nothing is elsewhere.
-        await self.mount({"add": ["t/e"]})
+        # §5.5: emits of a name reach the host in the order they were made.
+        await self.mount()
         log = []
         await self.load("a", lambda ctx, config: ctx.on("t/e", lambda n: log.append(n)), registrations=1)
         ctx = self.contexts["a"]
         self.assertIsNone(ctx.emit("t/e", 1))
-        first = await self.host.request("events.dispatch")
-        await self.elsewhere(remove=["t/e"])
         ctx.emit("t/e", 2)
+        first = await self.host.request("events.dispatch")
         second = await self.host.request("events.dispatch")
         self.assertEqual([first["value"][0]["args"], second["value"][0]["args"]], [[1], [2]])
         self.assertEqual(log, [])
         self.host.answer(first)
         self.host.answer(second)
-        await eventually("both answered", lambda: not self.host.runtime.unanswered)
-        ctx.emit("t/e", 3)
-        self.assertEqual(log, [3], "the fast path again")
 
-    async def test_an_emit_reply_is_taken_before_the_next_frame(self):
-        # §5.5 (2026-10-21): the reply counts the emit as answered as its
-        # frame is read, so a call the host sends right after sees it.
-        await self.mount({"add": ["t/e"]})
-        seen = []
-        runtime = self.host.runtime
-        registered = await self.load(
-            "a", lambda ctx, config: ctx.on("t/e", lambda n: seen.append((n, dict(runtime.unanswered)))), registrations=1
-        )
-        self.contexts["a"].emit("t/e", 1)
-        frame = await self.host.request("events.dispatch")
-        self.assertEqual(runtime.unanswered, {"t/e": 1})
-        # The host's listener call for it, its reply, a call after both.
-        self.host.invoke("events.call", data([{"listener": registered[0]["id"], "dispatch": "d1", "own": True, "name": "t/e", "mode": "emit", "args": [1]}]))
-        self.host.answer(frame)
-        self.host.invoke("events.call", data([{"listener": registered[0]["id"], "dispatch": "d2", "own": False, "name": "t/e", "mode": "emit", "args": [2]}]))
-        await eventually("both listener calls", lambda: len(seen) == 2)
-        # In frame order; the call after the reply sees the emit answered.
-        self.assertEqual([n for n, _ in seen], [1, 2])
-        self.assertEqual(seen[1], (2, {}))
-
-    async def test_a_0_13_hosts_future_answer_counts_once_it_settles(self):
-        # A 0.13 host answers a queued emit with a future: the emit stays
-        # unanswered until it settles.
-        await self.mount({"add": ["t/e"]})
+    async def test_a_future_answer_is_awaited_and_its_failure_reported(self):
+        # A host answering an emit with a future: its settlement is the
+        # emit's outcome.
+        await self.mount()
         await self.load("a")
-        runtime = self.host.runtime
-        self.contexts["a"].emit("t/e", 1)
-        frame = await self.host.request("events.dispatch")
-        self.host.send({"op": "return", "id": frame["id"], "value": {"type": "reference", "value": {"id": 1, "kind": "future", "home": False, "origin": []}}})
-        waited = await self.host.next(lambda f: f["op"] == "await")
-        self.assertEqual(waited["reference"], 1)
-        self.assertEqual(runtime.unanswered, {"t/e": 1})
-        self.host.send({"op": "return", "id": waited["id"], "value": {"type": "undefined"}})
-        await eventually("answered once settled", lambda: not runtime.unanswered)
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            self.contexts["a"].emit("t/e", 1)
+            frame = await self.host.request("events.dispatch")
+            self.host.send({"op": "return", "id": frame["id"], "value": {"type": "reference", "value": {"id": 1, "kind": "future", "home": False, "origin": []}}})
+            waited = await self.host.next(lambda f: f["op"] == "await")
+            self.assertEqual(waited["reference"], 1)
+            self.host.fail(waited, {"name": "BindingError", "message": "gone"})
+            await eventually("the report", stderr.getvalue)
+        self.assertEqual(stderr.getvalue(), "rutis: emit of t/e from row a failed: BindingError: gone\n")
 
     async def test_a_failed_emit_through_the_host_is_reported(self):
-        await self.mount({"add": ["t/e"]})
+        await self.mount()
         await self.load("a")
         stderr = io.StringIO()
         with contextlib.redirect_stderr(stderr):
@@ -393,7 +353,7 @@ class ThroughTheHost(Session):
         self.assertEqual(stderr.getvalue(), "rutis: emit of t/e from row a failed: BindingError: row a is not loaded in this runtime\n")
 
     async def test_bail_through_the_host_is_a_synchronous_call(self):
-        await self.mount({"add": ["t/b"]})
+        await self.mount()
         await self.load("a")
         seen = []
 
@@ -424,7 +384,8 @@ class CalledByTheHost(Session):
         outcome, error = await self.host.outcome(self.call("9", "serial"))
         self.assertEqual((error["name"], error["message"]), ("BindingError", "the listener of t/x is withdrawn"))
 
-    async def test_an_emit_listener_answers_undefined_and_reports_its_failure(self):
+    async def test_an_emit_listener_failure_goes_back_to_the_host(self):
+        # The host reports it; this process says nothing.
         await self.mount()
 
         async def fail():
@@ -433,8 +394,9 @@ class CalledByTheHost(Session):
         await self.load("a", lambda ctx, config: ctx.on("t/x", fail), registrations=1)
         stderr = io.StringIO()
         with contextlib.redirect_stderr(stderr):
-            self.assertEqual(await self.host.outcome(self.call("1", "emit")), ("return", None))
-        self.assertEqual(stderr.getvalue(), "rutis: listener of t/x in row a failed: LookupError: a failed\n")
+            outcome, error = await self.host.outcome(self.call("1", "emit"))
+        self.assertEqual((outcome, error["name"], error["message"]), ("throw", "LookupError", "a failed"))
+        self.assertEqual(stderr.getvalue(), "")
 
     async def test_a_waterfall_listener_gets_next_last(self):
         await self.mount()
@@ -516,7 +478,7 @@ class Review(Session):
     async def test_the_selector_hides_the_hosts_listener_field(self):
         # The host marks the emitter's own session's entries with their
         # `listener` id; the plugin's filter sees the fast path's shape.
-        await self.mount({"add": ["t/f"]})
+        await self.mount()
         await self.load("a")
         seen = []
         dispatch = asyncio.ensure_future(self.contexts["a"].filter(lambda d: seen.append(d) or True).serial("t/f"))
@@ -601,7 +563,7 @@ class Review(Session):
     async def test_a_threads_registration_goes_out_before_its_emission(self):
         # §4.4 rule 1 from a plugin's own thread: both marshalled onto the
         # loop, in call order.
-        await self.mount({"add": ["t/th"]})
+        await self.mount()
         await self.load("a")
         ctx = self.contexts["a"]
 
@@ -619,7 +581,7 @@ class Review(Session):
 
     async def test_a_dispatch_through_the_host_is_sent_when_called(self):
         # §5.1 as on the fast path: the frame goes out at the call.
-        await self.mount({"add": ["t/now"]})
+        await self.mount()
         await self.load("a")
         dispatch = self.contexts["a"].serial("t/now")
         frame = await self.host.request("events.dispatch")
