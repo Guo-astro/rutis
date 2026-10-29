@@ -1086,32 +1086,33 @@ impl Inner {
 
     /// Wait until no running record is in transition: every record, or with
     /// `scope`, those of one instance. Groups spawn children while loading,
-    /// so repeat until the set of records stops changing.
+    /// and a record settling can restart those that use it (after a record
+    /// was already waited for: a `Pending` one goes on to load once what it
+    /// uses runs), so repeat until neither the set of records nor any of
+    /// their states changed while waiting.
     pub(super) async fn settle(&self, scope: Option<u64>) {
+        let states = |views: &[FiberView]| -> HashSet<(PluginId, u64)> {
+            views
+                .iter()
+                .map(|view| (view.id, view.sequenced_state().0))
+                .collect()
+        };
+        let views = || -> Vec<FiberView> {
+            let state = self.state.lock().unwrap();
+            state
+                .running
+                .iter()
+                .filter(|(slot, _)| scope.is_none() || slot.scope == scope)
+                .map(|(_, r)| r.view.clone())
+                .collect()
+        };
         loop {
-            let views: Vec<FiberView> = {
-                let state = self.state.lock().unwrap();
-                state
-                    .running
-                    .iter()
-                    .filter(|(slot, _)| scope.is_none() || slot.scope == scope)
-                    .map(|(_, r)| r.view.clone())
-                    .collect()
-            };
-            let before: HashSet<PluginId> = views.iter().map(|v| v.id).collect();
-            for view in &views {
+            let waited = views();
+            let before = states(&waited);
+            for view in &waited {
                 let _ = view.await;
             }
-            let after: HashSet<PluginId> = {
-                let state = self.state.lock().unwrap();
-                state
-                    .running
-                    .iter()
-                    .filter(|(slot, _)| scope.is_none() || slot.scope == scope)
-                    .map(|(_, r)| r.view.id)
-                    .collect()
-            };
-            if before == after {
+            if states(&views()) == before {
                 return;
             }
         }
