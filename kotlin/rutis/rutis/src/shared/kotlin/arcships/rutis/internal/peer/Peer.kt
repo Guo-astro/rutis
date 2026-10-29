@@ -44,6 +44,9 @@ const val ENDPOINT_PROTOCOL: Int = 4
 /** How deep a value crossing a session may nest (#279): each list, record, map or set is a level. */
 const val MAX_DEPTH: Int = 64
 
+/** How long [Peer.shutdown] waits for the frames already queued to go out. */
+private const val SHUTDOWN_FLUSH_NANOS: Long = 2_000_000_000
+
 /**
  * What this side declares: `reentrant-sync` (a thread per incoming call);
  * not `sync-stack`; every `value-<tag>`.
@@ -205,6 +208,14 @@ class Peer(private val channel: Channel, private val opts: Options) {
     private val draining = ArrayList<CompletableFuture<Unit>>()
 
     private val outbox = LinkedBlockingQueue<ByteArray>()
+
+    /** Frames queued and not yet written (or given up): [shutdown] lets them go out first. */
+    private val unsent = java.util.concurrent.atomic.AtomicInteger()
+
+    private fun enqueue(data: ByteArray) {
+        unsent.incrementAndGet()
+        outbox.offer(data)
+    }
     private val ready = CompletableFuture<Unit>()
     private val closed = CompletableFuture<Unit>()
 
@@ -228,7 +239,7 @@ class Peer(private val channel: Channel, private val opts: Options) {
             put("implementation", JsonObject(opts.implementation.mapValues { JsonPrimitive(it.value) }))
             put("capabilities", JsonArray(declaredHere().map(::JsonPrimitive)))
         }
-        outbox.offer(compact(hello))
+        enqueue(compact(hello))
     }
 
     /** Completes once the far end greeted (or the session closed). */
@@ -266,12 +277,14 @@ class Peer(private val channel: Channel, private val opts: Options) {
                 if (closeError != null && outbox.isEmpty()) return
                 continue
             }
-            if (closeError != null) return
             try {
+                if (closeError != null) return
                 channel.send(data)
             } catch (e: Exception) {
                 fault(HostGoneException(e.message ?: e.javaClass.simpleName, e))
                 return
+            } finally {
+                unsent.decrementAndGet()
             }
         }
     }
@@ -348,6 +361,10 @@ class Peer(private val channel: Channel, private val opts: Options) {
 
     /** Ends the session and its channel. */
     fun shutdown(reason: String) {
+        // What this side said before (the withdrawals of a stop, say) goes
+        // out first, while the connection works, within a short while.
+        val deadline = System.nanoTime() + SHUTDOWN_FLUSH_NANOS
+        while (unsent.get() > 0 && closeError == null && System.nanoTime() < deadline) Thread.sleep(2)
         close(IOException(reason))
         channel.close(reason)
     }
@@ -370,7 +387,7 @@ class Peer(private val channel: Channel, private val opts: Options) {
             if (imports[record.id] === record) imports.remove(record.id)
             count = record.grants
         }
-        outbox.offer(compact(buildJsonObject {
+        enqueue(compact(buildJsonObject {
             put("op", "release")
             put("reference", record.id)
             put("count", count)
@@ -740,7 +757,7 @@ class Peer(private val channel: Channel, private val opts: Options) {
             // completes the waiter, the reader as it takes the reply.
             if (answered != null) waiter.thenAccept(answered)
             pending[id] = waiter
-            outbox.offer(data)
+            enqueue(data)
             return id to waiter
         }
     }
@@ -785,7 +802,7 @@ class Peer(private val channel: Channel, private val opts: Options) {
     private fun abandon(id: String, cancellable: Boolean) {
         val waiting = synchronized(lock) { pending.remove(id) != null }
         if (waiting && cancellable && closeError == null) {
-            outbox.offer(compact(buildJsonObject {
+            enqueue(compact(buildJsonObject {
                 put("op", "cancel")
                 put("id", id)
             }))
@@ -1344,7 +1361,7 @@ class Peer(private val channel: Channel, private val opts: Options) {
                 short(error?.message ?: "")
             }
         }
-        outbox.offer(data)
+        enqueue(data)
     }
 }
 
