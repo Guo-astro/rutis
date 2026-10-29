@@ -510,6 +510,9 @@ async fn a_greeted_session_dropped_unmounted_closes_with_done() {
     let greeted = within("the handshake", Session::handshake(&main, ours))
         .await
         .unwrap();
+    // Time for anything a greeted session might send on its own: it sends
+    // nothing until it is mounted.
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     drop(greeted);
     let (frames, ended) = joined(far).await;
     assert_eq!(frames.len(), 1, "only the greeting: {frames:?}");
