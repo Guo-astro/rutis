@@ -278,6 +278,7 @@ A host using `LoaderPlugin` (rutis-host included) now provides a service named `
 | `ctx.plugin_from(\|cfg\| …)` | Implement `rutis::host::PluginFactory` and call `ctx.plugin_with(factory, config)` |
 | `rutis_loader::status::RowState` (the type of `status::Row::state`) | `rutis_loader::report::EntryStatus`: waiting is `Running` with the `Pending` phase, starting is the `Loading` phase; what `Display` prints is unchanged |
 | `rutis_loader::report::RowState` (the values of the `rutis/row` event) | Renamed `rutis_loader::report::RowEventState`; the values are unchanged |
+| `rutis_loader::internal::*` | `rutis_loader::patch::{apply_patches, Composed, ComposedRow, Owner, PatchWarning}`, `rutis_loader::runtime::is_runtime_name`, `rutis_loader::runtime::binary::read_binary_manifest`; the plugin API version is `Go::PLUGIN_API`, `Swift::PLUGIN_API` (constants of `BinaryLanguage`) |
 | `take_cleanup_errors()` | A cleanup's error is in the unload result (the error `dispose` returns) |
 | `FiberView::effects()`, `EffectMeta`, `EffectPhase` | No replacement; for diagnostics use `diagnostics()` |
 | `EventBus::observe_dispatch` | No replacement; to observe, register an ordinary listener |
@@ -308,13 +309,49 @@ The row names `go-<binary>:<plugin>` and `swift-<binary>:<plugin>` are removed; 
 - The runtime no longer checks a row's config against the schema or fills its defaults: the host does, and sends the filled config; the runtime only decodes it (`config: <path> is not a value the plugin accepts` when it does not decode into the config type).
 - Every emission goes through the host, also when every listener is in the same binary. `ctx.Emit` (and the other modes) after the session ended, in a cleanup run then, fails with `the host disconnected` instead of reaching the listeners of the same binary.
 
+### TypeScript and Bun plugins
+
+`@arcships/rutis/testing` runs the plugin on a real host (`rutis-host test`; see [plugin API: the TypeScript and Bun test tool](guide/plugin-api.en.md#the-typescript-and-bun-test-tool)):
+
+- Add `@arcships/rutis-runtime` (`@arcships/rutis-bun` under Bun) and `@arcships/rutis-host` as dev dependencies (a project `rutis-host new` made has them), or set `RUTIS_HOST` to a `rutis-host`.
+- The plugin must be the default export of its module: move a plugin made with `definePlugin` inside a test file into a file of its own, or `load` fails with `load needs a plugin that its module exports as default`.
+- Removed options: `strict`, `scope`, `scopes`, `deadline`, `runtime`, and `h.at(scope)`: the test tool offers nothing a host cannot do, and scopes come from a row's `isolate`. `row` is now `id`; `h.load` also takes `isolate`, as in a row of `rutis.json`.
+- `t.reported` and `h.reported` are methods: `await t.reported()`, each entry `{ line }`, `line` the line the host prints.
+- Values between the test and the plugin cross by the rules between processes; the events `t.on` receives arrive through the host, a little after the emitter returns.
+- The host checks the config and fills its defaults; a load that fails is a `PluginTestError` whose text is the row's status, such as `weather: config: city is required`.
+- The runtimes no longer dispatch events in their own process: every emission goes through the host (a median of about 71 microseconds for `emit`; see the [events benchmark](performance-events-2026-10-28.en.md)).
+
 ### Python
 
 The minimum is 3.12 (3.10 and 3.11 are no longer supported).
 
+`rutis.testing` tests on a real host (#813 §7.5): `load` starts `rutis-host test` (the file `RUTIS_HOST` names, else `rutis-host` on `PATH`; the template's dev dependency `rutis-host` installs it), and the plugin runs on the Python runtime in the test's process.
+
+| 0.18 | 0.19 |
+| --- | --- |
+| `load(..., strict=)`, `scope=`, `runtime=`, `deadline=` | Removed: values cross through the real runtime, and there are no options for scopes, the runtime's name or the unload wait (unloading waits `RUTIS_SHUTDOWN_TIMEOUT`); rows in scopes are a host configuration's |
+| `load(..., row=)` | `load(..., id=)`; and `isolate=`, as a row's `isolate` in `rutis.json` |
+| `Bus(scopes=)`, `bus.listeners(name)`, `bus.emitter(row=, strict=)` | `Bus()`, `bus.emitter()` (emit as the test's plugin) |
+| `t.reported`, `bus.reported` (lists of `Reported(kind, name, row, error)`) | `await t.reported()`, `await bus.reported()`, `Reported(line)`: the line the host reported |
+| A config that does not match makes `load` raise `BindingError` (`bad-config`) | `PluginTestError`, its text the row's state line the host writes (`weather: config: city is required`) |
+| A service the test gives that the plugin provides too: `… is already provided by the host` | The runtime's words: `… is already provided by tester` |
+| `rutis.config` (`check`, `configured`, …) | Removed: only the host's loader checks a config and fills its defaults; the plugin gets the filled config |
+
+The runtime no longer dispatches events in its own process: every emission goes through the host, and the host reports a listener failing in `emit` too (`<row>: listener of <event> failed: …`). To see the listeners' results right after an `emit` in the same process, wait for one round trip through the host (`await ctx.parallel(...)`, say).
+
+### Swift
+
+- `RutisTest` runs the plugin as a row of a real host, `rutis-host test`, which it starts: put `rutis-host` on `PATH` (`npm install --global @arcships/rutis-host`) or set `RUTIS_HOST` to its path. One host serves the test process; `close()` unloads the test's rows.
+- The test tool no longer has scope: `RutisTest.scope(_:groups:)`, the `scope:` parameters and `Loaded.scope` are removed, and so is `runtimeName:`. `row:` is the row's id (by default the plugin's name); `isolate:` is the row's `isolate`, as in rutis.json.
+- `loaded.reported` is read with `await`. A config the host refuses fails `load` with the host's line of the row: `weather: config: city is required`.
+- The test's services, `on` and emits are a plugin in the plugin's runtime: values between the test and the plugin no longer cross processes.
+- On a device or in the iOS simulator `RutisTest` is an app installing its own plugins, connected to a host on the development machine (`RUTIS_TEST_CONNECT`, `RUTIS_TEST_TOKEN`; [Swift app guide](guide/swift-app.en.md)); `Loaded.load` and `update` are macOS only there.
+- The Swift SDK no longer validates configs: the host checks a row's config and fills its defaults before the runtime gets it. An app's own plugins are decoded only: with `@RutisConfig`, a missing key takes the literal initial value, and a missing required key or a value of another type fails with `config: <key> is required` or `config: <key> should be <type>, got <value>`.
+- Every event of a Swift plugin is dispatched by the host; the listeners and emits of an app's own plugins are the connection's.
+
 ### Kotlin
 
-- The testing tool is an artifact of its own, `io.github.arcships:rutis-testing` (jvm): `testImplementation("io.github.arcships:rutis-testing:<version>")`, with `kspTest("io.github.arcships:rutis-ksp:<version>")`. It runs the plugin's real runtime in the test process, as a row of `rutis-host test`, and needs `rutis-host` (on `PATH` or at `RUTIS_HOST`).
+- The testing tool is an artifact of its own, `io.github.arcships:rutis-testing` (jvm): `testImplementation("io.github.arcships:rutis-testing")`, with `kspTest("io.github.arcships:rutis-ksp")` (the SDK is used from source, with no version: see [kotlin-app](guide/kotlin-app.en.md#1-dependencies)). It runs the plugin's real runtime in the test process, as a row of `rutis-host test`, and needs `rutis-host` (on `PATH` or at `RUTIS_HOST`).
 - The testing tool no longer has scope: `RutisTest.load(scope:)`, `Loaded.load(scope:)` and `RutisTest.scope(...)` are removed; so are `RutisTest.load(runtime:)` and `Loaded.provided`. Without `row`, rutis gives the row an id from the plugin's name (no longer `test`); a load that fails fails with the row's line (`weather: config: city is required`); `loaded.reported()` is the lines rutis reported (`weather: listener of x failed: …`).
 - The test's services, `loaded.on`, `emit` and so on are a plugin of the same runtime: values do not cross between processes.
 - Tests on a device no longer use `RutisTest`: they install their own plugins with `RutisApp`, dialing a rutis on the development machine.

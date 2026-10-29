@@ -128,18 +128,19 @@ export function apply(ctx) {
 
 /// #428: the services a row provides without declaring them are announced
 /// with the methods each object has (own and inherited, `async`; not its
-/// fields), and published before its load returns; one the row keeps to
-/// its own scope is not; unloading withdraws them.
+/// fields), and published before its load returns, each in the scope the
+/// projection runs in: one that scope isolates is seen there only;
+/// unloading withdraws them.
 #[tokio::test(flavor = "multi_thread")]
 async fn services_a_row_does_not_declare_are_announced_with_their_methods() {
     let dir = tempfile::tempdir().unwrap();
     let process = rows_process(dir.path()).await;
     assert!(process.supports("rows.announce"));
     let entry = write(dir.path(), "store.mjs", STORE);
-    let ctx = Ctx::root().unwrap();
-    let projection = row_projection_of("row store", &serde_json::Map::new(), host_key, |name| {
-        name == "kept"
-    });
+    let root = Ctx::root().unwrap();
+    // The row keeps `kept` to an isolate of its own, as the loader runs it.
+    let ctx = root.isolate(host_key("kept").erase(), "rutis-loader/entry/store");
+    let projection = row_projection_of("row store", &serde_json::Map::new(), host_key);
     projection.attach(&ctx, process.clone()).unwrap();
     process
         .load_row_exporting(
@@ -173,13 +174,14 @@ async fn services_a_row_does_not_declare_are_announced_with_their_methods() {
         "a field is not a method"
     );
     drop(store);
-    assert!(ctx.get_at::<dyn HostDispatch>(&host_key("kept")).is_none());
+    assert!(ctx.get_at::<dyn HostDispatch>(&host_key("kept")).is_some());
+    assert!(root.get_at::<dyn HostDispatch>(&host_key("kept")).is_none());
 
     projection.withdraw().await;
     process.unload_row("store").await.unwrap();
     assert!(ctx.get_at::<dyn HostDispatch>(&host_key("store")).is_none());
     process.dispose().await.unwrap();
-    ctx.shutdown().await.unwrap();
+    root.shutdown().await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread")]

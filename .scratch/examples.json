@@ -1,0 +1,1172 @@
+[
+  {
+    "name": "bun-en",
+    "guide": "bun-plugin.en.md",
+    "steps": [
+      {
+        "where": "bun-plugin.en.md:7",
+        "body": "bunx --bun @arcships/rutis-host new greeter --lang bun\ncd greeter\nbun install\nbun test\n",
+        "run": true,
+        "position": 0
+      },
+      {
+        "where": "bun-plugin.en.md:35",
+        "body": "import { definePlugin } from '@arcships/rutis'\n\n// Each part below is a step of the Bun plugin guide:\n// https://github.com/arcships/rutis/blob/main/docs/guide/bun-plugin.en.md\n\nexport interface Config {\n  // Filled from the schema's default when the row leaves it out (step 4).\n  greeting: string\n}\n\nclass Greeter {\n  constructor(private readonly greeting: string) {}\n\n  hello(name: string): string {\n    return `${this.greeting}, ${name}!`\n  }\n}\n\nexport default definePlugin<Config>({\n  // Services this plugin uses: `inject: ['translate']`, then\n  // `ctx.use('translate')` (step 3).\n  inject: [],\n  // The services it provides, with their methods (step 2).\n  provides: { greeter: { hello: 'async' } },\n  // The JSON Schema of its config (step 4).\n  config: { type: 'object', properties: { greeting: { type: 'string', default: 'Hello' } } },\n  apply(ctx, config) {\n    ctx.provide('greeter', new Greeter(config.greeting))\n  },\n})\n",
+        "file": "greeter/src/index.ts",
+        "position": 1
+      },
+      {
+        "where": "bun-plugin.en.md:77",
+        "body": "import { definePlugin } from '@arcships/rutis'\n\nexport interface Config {\n  greeting: string\n}\n\ninterface Translate {\n  text(text: string): Promise<string>\n}\n\nclass Greeter {\n  constructor(private readonly translate: Translate, private readonly greeting: string) {}\n\n  async hello(name: string): Promise<string> {\n    return `${await this.translate.text(this.greeting)}, ${name}!`\n  }\n}\n\nexport default definePlugin<Config>({\n  inject: ['translate'],\n  provides: { greeter: { hello: 'async' } },\n  config: { type: 'object', properties: { greeting: { type: 'string', default: 'Hello' } } },\n  apply(ctx, config) {\n    ctx.provide('greeter', new Greeter(ctx.use<Translate>('translate'), config.greeting))\n  },\n})\n",
+        "file": "greeter/src/index.ts",
+        "position": 2
+      },
+      {
+        "where": "bun-plugin.en.md:119",
+        "body": "import { definePlugin, type Context } from '@arcships/rutis'\n\nexport interface Config {\n  greeting: string\n}\n\ninterface Translate {\n  text(text: string): Promise<string>\n}\n\nclass Greeter {\n  greeted = 0\n\n  constructor(\n    private readonly ctx: Context,\n    private readonly translate: Translate,\n    private readonly greeting: string,\n  ) {}\n\n  async hello(name: string): Promise<string> {\n    const greeting = await this.translate.text(this.greeting)\n    this.ctx.emit('greeter/greeted', name)\n    return `${greeting}, ${name}!`\n  }\n\n  async count(): Promise<number> {\n    return this.greeted\n  }\n}\n\nexport default definePlugin<Config>({\n  inject: ['translate'],\n  provides: { greeter: { hello: 'async', count: 'async' } },\n  config: { type: 'object', properties: { greeting: { type: 'string', default: 'Hello' } } },\n  apply(ctx, config) {\n    const greeter = new Greeter(ctx, ctx.use<Translate>('translate'), config.greeting)\n    ctx.on('greeter/greeted', () => { greeter.greeted++ })\n    ctx.provide('greeter', greeter)\n  },\n})\n",
+        "file": "greeter/src/index.ts",
+        "position": 3
+      },
+      {
+        "where": "bun-plugin.en.md:170",
+        "body": "import { expect, test } from 'bun:test'\nimport { load } from '@arcships/rutis/testing'\nimport plugin from '../src/index.ts'\n\nconst words: Record<string, string> = { Hello: 'Bonjour', Hi: 'Salut' }\n\ntest('greets with the translated greeting', async () => {\n  const t = await load(plugin, {\n    config: { greeting: 'Hi' },\n    services: { translate: { text: async (text: string) => words[text] ?? text } },\n  })\n  const greeted: string[] = []\n  t.on('greeter/greeted', (name: string) => { greeted.push(name) })\n  expect(await t.service('greeter').hello('Ada')).toBe('Salut, Ada!')\n  expect(greeted).toEqual(['Ada'])\n  expect(await t.service('greeter').count()).toBe(1)\n  await t.unload()\n})\n",
+        "file": "greeter/test/index.test.ts",
+        "position": 4
+      },
+      {
+        "where": "bun-plugin.en.md:192",
+        "body": "bun test\nbun run check\n",
+        "run": true,
+        "position": 5
+      },
+      {
+        "where": "bun-plugin.en.md:207",
+        "body": "{\n  \"format\": 1,\n  \"rows\": [\n    { \"id\": \"greeter\", \"config\": { \"greeting\": \"Hello\" } },\n    { \"id\": \"translate\", \"name\": \"bun:./dev/fake-translate.ts\" }\n  ]\n}\n",
+        "file": "greeter/rutis.dev.json",
+        "position": 6
+      },
+      {
+        "where": "bun-plugin.en.md:223",
+        "body": "import { definePlugin } from '@arcships/rutis'\n\nconst words: Record<string, string> = { Hello: 'Bonjour', Hi: 'Salut' }\n\nexport default definePlugin({\n  provides: { translate: { text: 'async' } },\n  apply(ctx) {\n    ctx.provide('translate', { text: async (text: string) => words[text] ?? text })\n  },\n})\n",
+        "file": "greeter/dev/fake-translate.ts",
+        "position": 7
+      },
+      {
+        "where": "bun-plugin.en.md:237",
+        "body": "bunx --bun rutis-host dev\n",
+        "run": true,
+        "until": "greeter: running",
+        "position": 8
+      }
+    ]
+  },
+  {
+    "name": "bun",
+    "guide": "bun-plugin.md",
+    "steps": [
+      {
+        "where": "bun-plugin.md:7",
+        "body": "bunx --bun @arcships/rutis-host new greeter --lang bun\ncd greeter\nbun install\nbun test\n",
+        "run": true,
+        "position": 0
+      },
+      {
+        "where": "bun-plugin.md:35",
+        "body": "import { definePlugin } from '@arcships/rutis'\n\n// Each part below is a step of the Bun plugin guide:\n// https://github.com/arcships/rutis/blob/main/docs/guide/bun-plugin.en.md\n\nexport interface Config {\n  // Filled from the schema's default when the row leaves it out (step 4).\n  greeting: string\n}\n\nclass Greeter {\n  constructor(private readonly greeting: string) {}\n\n  hello(name: string): string {\n    return `${this.greeting}, ${name}!`\n  }\n}\n\nexport default definePlugin<Config>({\n  // Services this plugin uses: `inject: ['translate']`, then\n  // `ctx.use('translate')` (step 3).\n  inject: [],\n  // The services it provides, with their methods (step 2).\n  provides: { greeter: { hello: 'async' } },\n  // The JSON Schema of its config (step 4).\n  config: { type: 'object', properties: { greeting: { type: 'string', default: 'Hello' } } },\n  apply(ctx, config) {\n    ctx.provide('greeter', new Greeter(config.greeting))\n  },\n})\n",
+        "file": "greeter/src/index.ts",
+        "position": 1
+      },
+      {
+        "where": "bun-plugin.md:77",
+        "body": "import { definePlugin } from '@arcships/rutis'\n\nexport interface Config {\n  greeting: string\n}\n\ninterface Translate {\n  text(text: string): Promise<string>\n}\n\nclass Greeter {\n  constructor(private readonly translate: Translate, private readonly greeting: string) {}\n\n  async hello(name: string): Promise<string> {\n    return `${await this.translate.text(this.greeting)}, ${name}!`\n  }\n}\n\nexport default definePlugin<Config>({\n  inject: ['translate'],\n  provides: { greeter: { hello: 'async' } },\n  config: { type: 'object', properties: { greeting: { type: 'string', default: 'Hello' } } },\n  apply(ctx, config) {\n    ctx.provide('greeter', new Greeter(ctx.use<Translate>('translate'), config.greeting))\n  },\n})\n",
+        "file": "greeter/src/index.ts",
+        "position": 2
+      },
+      {
+        "where": "bun-plugin.md:119",
+        "body": "import { definePlugin, type Context } from '@arcships/rutis'\n\nexport interface Config {\n  greeting: string\n}\n\ninterface Translate {\n  text(text: string): Promise<string>\n}\n\nclass Greeter {\n  greeted = 0\n\n  constructor(\n    private readonly ctx: Context,\n    private readonly translate: Translate,\n    private readonly greeting: string,\n  ) {}\n\n  async hello(name: string): Promise<string> {\n    const greeting = await this.translate.text(this.greeting)\n    this.ctx.emit('greeter/greeted', name)\n    return `${greeting}, ${name}!`\n  }\n\n  async count(): Promise<number> {\n    return this.greeted\n  }\n}\n\nexport default definePlugin<Config>({\n  inject: ['translate'],\n  provides: { greeter: { hello: 'async', count: 'async' } },\n  config: { type: 'object', properties: { greeting: { type: 'string', default: 'Hello' } } },\n  apply(ctx, config) {\n    const greeter = new Greeter(ctx, ctx.use<Translate>('translate'), config.greeting)\n    ctx.on('greeter/greeted', () => { greeter.greeted++ })\n    ctx.provide('greeter', greeter)\n  },\n})\n",
+        "file": "greeter/src/index.ts",
+        "position": 3
+      },
+      {
+        "where": "bun-plugin.md:170",
+        "body": "import { expect, test } from 'bun:test'\nimport { load } from '@arcships/rutis/testing'\nimport plugin from '../src/index.ts'\n\nconst words: Record<string, string> = { Hello: 'Bonjour', Hi: 'Salut' }\n\ntest('greets with the translated greeting', async () => {\n  const t = await load(plugin, {\n    config: { greeting: 'Hi' },\n    services: { translate: { text: async (text: string) => words[text] ?? text } },\n  })\n  const greeted: string[] = []\n  t.on('greeter/greeted', (name: string) => { greeted.push(name) })\n  expect(await t.service('greeter').hello('Ada')).toBe('Salut, Ada!')\n  expect(greeted).toEqual(['Ada'])\n  expect(await t.service('greeter').count()).toBe(1)\n  await t.unload()\n})\n",
+        "file": "greeter/test/index.test.ts",
+        "position": 4
+      },
+      {
+        "where": "bun-plugin.md:192",
+        "body": "bun test\nbun run check\n",
+        "run": true,
+        "position": 5
+      },
+      {
+        "where": "bun-plugin.md:207",
+        "body": "{\n  \"format\": 1,\n  \"rows\": [\n    { \"id\": \"greeter\", \"config\": { \"greeting\": \"Hello\" } },\n    { \"id\": \"translate\", \"name\": \"bun:./dev/fake-translate.ts\" }\n  ]\n}\n",
+        "file": "greeter/rutis.dev.json",
+        "position": 6
+      },
+      {
+        "where": "bun-plugin.md:223",
+        "body": "import { definePlugin } from '@arcships/rutis'\n\nconst words: Record<string, string> = { Hello: 'Bonjour', Hi: 'Salut' }\n\nexport default definePlugin({\n  provides: { translate: { text: 'async' } },\n  apply(ctx) {\n    ctx.provide('translate', { text: async (text: string) => words[text] ?? text })\n  },\n})\n",
+        "file": "greeter/dev/fake-translate.ts",
+        "position": 7
+      },
+      {
+        "where": "bun-plugin.md:237",
+        "body": "bunx --bun rutis-host dev\n",
+        "run": true,
+        "until": "greeter: running",
+        "position": 8
+      }
+    ]
+  },
+  {
+    "name": "go-en",
+    "guide": "go-plugin.en.md",
+    "steps": [
+      {
+        "where": "go-plugin.en.md:9",
+        "body": "npm install --global @arcships/rutis-host\nnpx @arcships/rutis-host new greeter --lang go\ncd greeter\ngo mod tidy\ngo test ./...\n",
+        "run": true,
+        "position": 0
+      },
+      {
+        "where": "go-plugin.en.md:35",
+        "body": "// Package greeter is a rutis plugin. The Go plugin guide\n// (docs/guide/go-plugin.en.md) takes it on from here: step 2 explains this\n// file, step 3 adds a service it uses.\npackage greeter\n\nimport (\n\t\"github.com/arcships/rutis/go/rutis\"\n)\n\n// Config is the plugin's configuration; its JSON Schema is derived from it\n// (step 4 of the guide).\ntype Config struct {\n\tGreeting string `json:\"greeting,omitempty\" doc:\"how to greet\"`\n}\n\n// Greeter is the service the plugin provides: its exported methods are the\n// service's methods (Hello is `hello` to other languages).\ntype Greeter struct {\n\tgreeting string\n}\n\nfunc (g *Greeter) Hello(name string) string { return g.greeting + \", \" + name + \"!\" }\n\nvar Plugin = rutis.Define(rutis.Plugin[Config]{\n\tName: \"greeter\",\n\t// Services this plugin uses: Inject: []string{\"translate\"}, then\n\t// ctx.Use(\"translate\", &translate) (step 3 of the guide).\n\tInject: []string{},\n\t// The services it provides, and their methods.\n\tProvides: rutis.Provides{\"greeter\": rutis.MethodsOf[*Greeter]()},\n\tApply: func(ctx *rutis.Ctx, config Config) error {\n\t\tgreeting := config.Greeting\n\t\tif greeting == \"\" {\n\t\t\tgreeting = \"Hello\" // a field the row leaves out is the zero value\n\t\t}\n\t\tctx.Provide(\"greeter\", &Greeter{greeting: greeting})\n\t\treturn nil\n\t},\n})\n",
+        "file": "greeter/plugin.go",
+        "position": 1
+      },
+      {
+        "where": "go-plugin.en.md:86",
+        "body": "package greeter\n\nimport (\n\t\"context\"\n\n\t\"github.com/arcships/rutis/go/rutis\"\n)\n\ntype Config struct {\n\tGreeting string `json:\"greeting,omitempty\" doc:\"how to greet\"`\n}\n\n// The service it uses: one function field per method (Text is text).\ntype Translate struct {\n\tText func(ctx context.Context, text string) (string, error)\n}\n\ntype Greeter struct {\n\ttranslate Translate\n\tgreeting  string\n}\n\nfunc (g *Greeter) Hello(ctx context.Context, name string) (string, error) {\n\tword, err := g.translate.Text(ctx, g.greeting) // pass ctx on\n\tif err != nil {\n\t\treturn \"\", err\n\t}\n\treturn word + \", \" + name + \"!\", nil\n}\n\nvar Plugin = rutis.Define(rutis.Plugin[Config]{\n\tName:     \"greeter\",\n\tInject:   []string{\"translate\"},\n\tProvides: rutis.Provides{\"greeter\": rutis.MethodsOf[*Greeter]()},\n\tApply: func(ctx *rutis.Ctx, config Config) error {\n\t\tvar translate Translate\n\t\tif err := ctx.Use(\"translate\", &translate); err != nil {\n\t\t\treturn err\n\t\t}\n\t\tgreeting := config.Greeting\n\t\tif greeting == \"\" {\n\t\t\tgreeting = \"Hello\"\n\t\t}\n\t\tctx.Provide(\"greeter\", &Greeter{translate: translate, greeting: greeting})\n\t\treturn nil\n\t},\n})\n",
+        "file": "greeter/plugin.go",
+        "position": 2
+      },
+      {
+        "where": "go-plugin.en.md:157",
+        "body": "package greeter\n\nimport (\n\t\"context\"\n\t\"sync/atomic\"\n\n\t\"github.com/arcships/rutis/go/rutis\"\n)\n\ntype Config struct {\n\tGreeting string `json:\"greeting,omitempty\" doc:\"how to greet\"`\n}\n\n// The service it uses: one function field per method (Text is text).\ntype Translate struct {\n\tText func(ctx context.Context, text string) (string, error)\n}\n\ntype Greeter struct {\n\tplugin    *rutis.Ctx\n\ttranslate Translate\n\tgreeting  string\n\tgreeted   atomic.Int64\n}\n\nfunc (g *Greeter) Hello(ctx context.Context, name string) (string, error) {\n\tword, err := g.translate.Text(ctx, g.greeting) // pass ctx on\n\tif err != nil {\n\t\treturn \"\", err\n\t}\n\tif err := g.plugin.Emit(ctx, \"greeter/greeted\", name); err != nil {\n\t\treturn \"\", err\n\t}\n\treturn word + \", \" + name + \"!\", nil\n}\n\nfunc (g *Greeter) Count() int64 { return g.greeted.Load() }\n\nvar Plugin = rutis.Define(rutis.Plugin[Config]{\n\tName:     \"greeter\",\n\tInject:   []string{\"translate\"},\n\tProvides: rutis.Provides{\"greeter\": rutis.MethodsOf[*Greeter]()},\n\tApply: func(ctx *rutis.Ctx, config Config) error {\n\t\tvar translate Translate\n\t\tif err := ctx.Use(\"translate\", &translate); err != nil {\n\t\t\treturn err\n\t\t}\n\t\tgreeting := config.Greeting\n\t\tif greeting == \"\" {\n\t\t\tgreeting = \"Hello\"\n\t\t}\n\t\tgreeter := &Greeter{plugin: ctx, translate: translate, greeting: greeting}\n\t\tctx.On(\"greeter/greeted\", func(context.Context, ...any) (any, error) {\n\t\t\tgreeter.greeted.Add(1)\n\t\t\treturn nil, nil\n\t\t})\n\t\tctx.Provide(\"greeter\", greeter)\n\t\treturn nil\n\t},\n})\n",
+        "file": "greeter/plugin.go",
+        "position": 3
+      },
+      {
+        "where": "go-plugin.en.md:230",
+        "body": "package greeter\n\nimport (\n\t\"context\"\n\t\"testing\"\n\n\t\"github.com/arcships/rutis/go/rutis/rutistest\"\n)\n\n// The fake translate: a Go value whose exported methods are the service's.\ntype fakeTranslate struct{}\n\nfunc (fakeTranslate) Text(text string) string {\n\twords := map[string]string{\"Hello\": \"Bonjour\", \"Hi\": \"Salut\"}\n\tif word, ok := words[text]; ok {\n\t\treturn word\n\t}\n\treturn text\n}\n\nfunc TestHello(t *testing.T) {\n\tloaded := rutistest.Load(t, Plugin, Config{Greeting: \"Hi\"}, map[string]any{\"translate\": fakeTranslate{}})\n\tgreeted := make(chan []any, 1)\n\tloaded.On(\"greeter/greeted\", func(_ context.Context, args ...any) (any, error) {\n\t\tgreeted <- args\n\t\treturn nil, nil\n\t})\n\n\tgreeter := loaded.Service(\"greeter\")\n\tvar text string\n\tif err := greeter.Call(context.Background(), \"hello\", &text, \"Ada\"); err != nil {\n\t\tt.Fatal(err)\n\t}\n\tif text != \"Salut, Ada!\" {\n\t\tt.Fatalf(\"hello: got %q\", text)\n\t}\n\tif args := <-greeted; len(args) != 1 || args[0] != \"Ada\" {\n\t\tt.Fatalf(\"greeter/greeted: got %v\", args)\n\t}\n\tvar count int64\n\tif err := greeter.Call(context.Background(), \"count\", &count); err != nil {\n\t\tt.Fatal(err)\n\t}\n\tif count != 1 {\n\t\tt.Fatalf(\"count: got %d\", count)\n\t}\n\tloaded.Unload()\n}\n",
+        "file": "greeter/plugin_test.go",
+        "position": 4
+      },
+      {
+        "where": "go-plugin.en.md:282",
+        "body": "go test ./...\n",
+        "run": true,
+        "position": 5
+      },
+      {
+        "where": "go-plugin.en.md:300",
+        "body": "{\n  \"format\": 1,\n  \"runtimes\": { \"py\": { \"project\": \"dev\" } },\n  \"rows\": [\n    { \"id\": \"greeter\", \"config\": { \"greeting\": \"Hello\" } },\n    { \"id\": \"translate\", \"name\": \"py:fake_translate\" }\n  ]\n}\n",
+        "file": "greeter/rutis.dev.json",
+        "position": 6
+      },
+      {
+        "where": "go-plugin.en.md:317",
+        "body": "from rutis import define_plugin\n\nWORDS = {\"Hello\": \"Bonjour\", \"Hi\": \"Salut\"}\n\n\nclass FakeTranslate:\n    async def text(self, text):\n        return WORDS.get(text, text)\n\n\ndef apply(ctx, config):\n    ctx.provide(\"translate\", FakeTranslate())\n\n\nplugin = define_plugin(apply, provides={\"translate\": FakeTranslate})\n",
+        "file": "greeter/dev/fake_translate.py",
+        "position": 7
+      },
+      {
+        "where": "go-plugin.en.md:338",
+        "body": "uv venv dev/.venv\nuv pip install --python dev/.venv/bin/python rutis\n",
+        "run": true,
+        "position": 8
+      },
+      {
+        "where": "go-plugin.en.md:348",
+        "body": "npx @arcships/rutis-host dev\n",
+        "run": true,
+        "until": "greeter: running",
+        "position": 9
+      }
+    ]
+  },
+  {
+    "name": "go",
+    "guide": "go-plugin.md",
+    "steps": [
+      {
+        "where": "go-plugin.md:9",
+        "body": "npm install --global @arcships/rutis-host\nnpx @arcships/rutis-host new greeter --lang go\ncd greeter\ngo mod tidy\ngo test ./...\n",
+        "run": true,
+        "position": 0
+      },
+      {
+        "where": "go-plugin.md:35",
+        "body": "// Package greeter is a rutis plugin. The Go plugin guide\n// (docs/guide/go-plugin.en.md) takes it on from here: step 2 explains this\n// file, step 3 adds a service it uses.\npackage greeter\n\nimport (\n\t\"github.com/arcships/rutis/go/rutis\"\n)\n\n// Config is the plugin's configuration; its JSON Schema is derived from it\n// (step 4 of the guide).\ntype Config struct {\n\tGreeting string `json:\"greeting,omitempty\" doc:\"how to greet\"`\n}\n\n// Greeter is the service the plugin provides: its exported methods are the\n// service's methods (Hello is `hello` to other languages).\ntype Greeter struct {\n\tgreeting string\n}\n\nfunc (g *Greeter) Hello(name string) string { return g.greeting + \", \" + name + \"!\" }\n\nvar Plugin = rutis.Define(rutis.Plugin[Config]{\n\tName: \"greeter\",\n\t// Services this plugin uses: Inject: []string{\"translate\"}, then\n\t// ctx.Use(\"translate\", &translate) (step 3 of the guide).\n\tInject: []string{},\n\t// The services it provides, and their methods.\n\tProvides: rutis.Provides{\"greeter\": rutis.MethodsOf[*Greeter]()},\n\tApply: func(ctx *rutis.Ctx, config Config) error {\n\t\tgreeting := config.Greeting\n\t\tif greeting == \"\" {\n\t\t\tgreeting = \"Hello\" // a field the row leaves out is the zero value\n\t\t}\n\t\tctx.Provide(\"greeter\", &Greeter{greeting: greeting})\n\t\treturn nil\n\t},\n})\n",
+        "file": "greeter/plugin.go",
+        "position": 1
+      },
+      {
+        "where": "go-plugin.md:86",
+        "body": "package greeter\n\nimport (\n\t\"context\"\n\n\t\"github.com/arcships/rutis/go/rutis\"\n)\n\ntype Config struct {\n\tGreeting string `json:\"greeting,omitempty\" doc:\"how to greet\"`\n}\n\n// 用到的服务：一个方法一个函数字段（Text 是 text）。\ntype Translate struct {\n\tText func(ctx context.Context, text string) (string, error)\n}\n\ntype Greeter struct {\n\ttranslate Translate\n\tgreeting  string\n}\n\nfunc (g *Greeter) Hello(ctx context.Context, name string) (string, error) {\n\tword, err := g.translate.Text(ctx, g.greeting) // 把 ctx 传下去\n\tif err != nil {\n\t\treturn \"\", err\n\t}\n\treturn word + \", \" + name + \"!\", nil\n}\n\nvar Plugin = rutis.Define(rutis.Plugin[Config]{\n\tName:     \"greeter\",\n\tInject:   []string{\"translate\"},\n\tProvides: rutis.Provides{\"greeter\": rutis.MethodsOf[*Greeter]()},\n\tApply: func(ctx *rutis.Ctx, config Config) error {\n\t\tvar translate Translate\n\t\tif err := ctx.Use(\"translate\", &translate); err != nil {\n\t\t\treturn err\n\t\t}\n\t\tgreeting := config.Greeting\n\t\tif greeting == \"\" {\n\t\t\tgreeting = \"Hello\"\n\t\t}\n\t\tctx.Provide(\"greeter\", &Greeter{translate: translate, greeting: greeting})\n\t\treturn nil\n\t},\n})\n",
+        "file": "greeter/plugin.go",
+        "position": 2
+      },
+      {
+        "where": "go-plugin.md:157",
+        "body": "package greeter\n\nimport (\n\t\"context\"\n\t\"sync/atomic\"\n\n\t\"github.com/arcships/rutis/go/rutis\"\n)\n\ntype Config struct {\n\tGreeting string `json:\"greeting,omitempty\" doc:\"how to greet\"`\n}\n\n// 用到的服务：一个方法一个函数字段（Text 是 text）。\ntype Translate struct {\n\tText func(ctx context.Context, text string) (string, error)\n}\n\ntype Greeter struct {\n\tplugin    *rutis.Ctx\n\ttranslate Translate\n\tgreeting  string\n\tgreeted   atomic.Int64\n}\n\nfunc (g *Greeter) Hello(ctx context.Context, name string) (string, error) {\n\tword, err := g.translate.Text(ctx, g.greeting) // 把 ctx 传下去\n\tif err != nil {\n\t\treturn \"\", err\n\t}\n\tif err := g.plugin.Emit(ctx, \"greeter/greeted\", name); err != nil {\n\t\treturn \"\", err\n\t}\n\treturn word + \", \" + name + \"!\", nil\n}\n\nfunc (g *Greeter) Count() int64 { return g.greeted.Load() }\n\nvar Plugin = rutis.Define(rutis.Plugin[Config]{\n\tName:     \"greeter\",\n\tInject:   []string{\"translate\"},\n\tProvides: rutis.Provides{\"greeter\": rutis.MethodsOf[*Greeter]()},\n\tApply: func(ctx *rutis.Ctx, config Config) error {\n\t\tvar translate Translate\n\t\tif err := ctx.Use(\"translate\", &translate); err != nil {\n\t\t\treturn err\n\t\t}\n\t\tgreeting := config.Greeting\n\t\tif greeting == \"\" {\n\t\t\tgreeting = \"Hello\"\n\t\t}\n\t\tgreeter := &Greeter{plugin: ctx, translate: translate, greeting: greeting}\n\t\tctx.On(\"greeter/greeted\", func(context.Context, ...any) (any, error) {\n\t\t\tgreeter.greeted.Add(1)\n\t\t\treturn nil, nil\n\t\t})\n\t\tctx.Provide(\"greeter\", greeter)\n\t\treturn nil\n\t},\n})\n",
+        "file": "greeter/plugin.go",
+        "position": 3
+      },
+      {
+        "where": "go-plugin.md:230",
+        "body": "package greeter\n\nimport (\n\t\"context\"\n\t\"testing\"\n\n\t\"github.com/arcships/rutis/go/rutis/rutistest\"\n)\n\n// 假的 translate：一个 Go 值，导出的方法就是服务的方法。\ntype fakeTranslate struct{}\n\nfunc (fakeTranslate) Text(text string) string {\n\twords := map[string]string{\"Hello\": \"Bonjour\", \"Hi\": \"Salut\"}\n\tif word, ok := words[text]; ok {\n\t\treturn word\n\t}\n\treturn text\n}\n\nfunc TestHello(t *testing.T) {\n\tloaded := rutistest.Load(t, Plugin, Config{Greeting: \"Hi\"}, map[string]any{\"translate\": fakeTranslate{}})\n\tgreeted := make(chan []any, 1)\n\tloaded.On(\"greeter/greeted\", func(_ context.Context, args ...any) (any, error) {\n\t\tgreeted <- args\n\t\treturn nil, nil\n\t})\n\n\tgreeter := loaded.Service(\"greeter\")\n\tvar text string\n\tif err := greeter.Call(context.Background(), \"hello\", &text, \"Ada\"); err != nil {\n\t\tt.Fatal(err)\n\t}\n\tif text != \"Salut, Ada!\" {\n\t\tt.Fatalf(\"hello: got %q\", text)\n\t}\n\tif args := <-greeted; len(args) != 1 || args[0] != \"Ada\" {\n\t\tt.Fatalf(\"greeter/greeted: got %v\", args)\n\t}\n\tvar count int64\n\tif err := greeter.Call(context.Background(), \"count\", &count); err != nil {\n\t\tt.Fatal(err)\n\t}\n\tif count != 1 {\n\t\tt.Fatalf(\"count: got %d\", count)\n\t}\n\tloaded.Unload()\n}\n",
+        "file": "greeter/plugin_test.go",
+        "position": 4
+      },
+      {
+        "where": "go-plugin.md:282",
+        "body": "go test ./...\n",
+        "run": true,
+        "position": 5
+      },
+      {
+        "where": "go-plugin.md:300",
+        "body": "{\n  \"format\": 1,\n  \"runtimes\": { \"py\": { \"project\": \"dev\" } },\n  \"rows\": [\n    { \"id\": \"greeter\", \"config\": { \"greeting\": \"Hello\" } },\n    { \"id\": \"translate\", \"name\": \"py:fake_translate\" }\n  ]\n}\n",
+        "file": "greeter/rutis.dev.json",
+        "position": 6
+      },
+      {
+        "where": "go-plugin.md:317",
+        "body": "from rutis import define_plugin\n\nWORDS = {\"Hello\": \"Bonjour\", \"Hi\": \"Salut\"}\n\n\nclass FakeTranslate:\n    async def text(self, text):\n        return WORDS.get(text, text)\n\n\ndef apply(ctx, config):\n    ctx.provide(\"translate\", FakeTranslate())\n\n\nplugin = define_plugin(apply, provides={\"translate\": FakeTranslate})\n",
+        "file": "greeter/dev/fake_translate.py",
+        "position": 7
+      },
+      {
+        "where": "go-plugin.md:338",
+        "body": "uv venv dev/.venv\nuv pip install --python dev/.venv/bin/python rutis\n",
+        "run": true,
+        "position": 8
+      },
+      {
+        "where": "go-plugin.md:348",
+        "body": "npx @arcships/rutis-host dev\n",
+        "run": true,
+        "until": "greeter: running",
+        "position": 9
+      }
+    ]
+  },
+  {
+    "name": "jot-en",
+    "guide": "open-host.en.md",
+    "steps": [
+      {
+        "where": "open-host.en.md:13",
+        "body": "[package]\nname = \"jot\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\nrutis = \"0.19\"\nrutis-loader = { version = \"0.19\", features = [\"node\", \"python\"] }\nrutis-bridge = { version = \"0.19\", features = [\"python\"] }\nrutis-host = \"0.19\"\nserde_json = \"1\"\ntokio = { version = \"1\", features = [\"rt-multi-thread\", \"macros\"] }\n",
+        "file": "jot/Cargo.toml",
+        "position": 0
+      },
+      {
+        "where": "open-host.en.md:31",
+        "body": "use std::collections::BTreeMap;\nuse std::io::Write;\nuse std::path::{Path, PathBuf};\nuse std::sync::{Arc, Mutex};\n\nuse rutis::host::*;\nuse rutis::Ctx;\nuse rutis_bridge::runtime::Launcher;\nuse rutis_bridge::{session, LocalId, PeerId};\nuse rutis_host::connect::SpawnPlugin;\nuse rutis_loader::runtime::SessionResolver;\nuse rutis_loader::{Chain, Layer, LoaderOptions, LoaderPlugin, Patch, ServiceCatalog};\nuse serde_json::{json, Value};\n\n/// The notes: one per line of `notes.txt`.\npub struct Notes {\n    file: PathBuf,\n}\n\n#[rutis::service]                                     // plugins use it by the name \"notes\"\nimpl Notes {\n    /// Add a note.\n    pub fn add(&self, text: String) -> std::io::Result<()> {\n        let mut file = std::fs::OpenOptions::new().create(true).append(true).open(&self.file)?;\n        writeln!(file, \"{text}\")\n    }\n\n    /// Every note, oldest first.\n    pub fn list(&self) -> Vec<String> {\n        let text = std::fs::read_to_string(&self.file).unwrap_or_default();\n        text.lines().map(str::to_owned).collect()\n    }\n}\n\n/// A command: given its arguments, the text jot prints.\npub type Run = Arc<dyn Fn(Vec<String>) -> BoxFuture<'static, rutis::Result<String>> + Send + Sync>;\n\n/// The commands plugins add.\n#[derive(Clone, Default)]\npub struct Commands(Arc<Mutex<BTreeMap<String, Run>>>);\n\n#[rutis::service]                                     // plugins use it by the name \"commands\"\nimpl Commands {\n    /// Add the command `name`. It goes when the plugin that added it unloads.\n    pub fn register(&self, ctx: &Ctx, name: String, run: Run) -> rutis::Result<()> {\n        self.0.lock().unwrap().insert(name.clone(), run);\n        let commands = self.0.clone();\n        ctx.effect(|| async move {                    // ctx is the calling row's: runs when it unloads\n            commands.lock().unwrap().remove(&name);\n            Ok(())\n        })?;\n        Ok(())\n    }\n}\n\nimpl Commands {                                       // not marked: for jot itself\n    fn get(&self, name: &str) -> Option<Run> {\n        self.0.lock().unwrap().get(name).cloned()\n    }\n\n    fn names(&self) -> Vec<String> {\n        self.0.lock().unwrap().keys().cloned().collect()\n    }\n}\n\n/// A row for each file in commands/: .ts runs in Node, .py in Python.\nfn command_rows(dir: &Path) -> std::io::Result<Vec<Value>> {\n    let mut rows = Vec::new();\n    for entry in std::fs::read_dir(dir)? {\n        let path = entry?.path();\n        let Some(id) = path.file_stem().and_then(|stem| stem.to_str()) else { continue };\n        match path.extension().and_then(|extension| extension.to_str()) {\n            Some(\"ts\") => rows.push(json!({ \"id\": id, \"name\": path })),\n            Some(\"py\") => rows.push(json!({ \"id\": id, \"name\": format!(\"py:{id}\") })),\n            _ => {}\n        }\n    }\n    Ok(rows)\n}\n\n#[tokio::main]\nasync fn main() -> Result<(), Box<dyn std::error::Error>> {\n    let args: Vec<String> = std::env::args().skip(1).collect();\n    let Some((name, args)) = args.split_first() else {\n        eprintln!(\"usage: jot <command> [<argument>...]\");\n        std::process::exit(2);\n    };\n    let dir = std::env::current_dir()?;               // absolute paths: each runtime's process starts in a directory of its own\n\n    let root = Ctx::root()?;\n    root.provide(LocalId(PeerId::new(\"main\")?))?;    // the id jot greets its runtimes with\n    root.provide(Notes { file: dir.join(\"notes.txt\") })?;\n    let commands = Commands::default();\n    root.provide(commands.clone())?;\n\n    let catalog = ServiceCatalog::new();\n    let node = SpawnPlugin::new(\"node\", Launcher::node(&dir.join(\"node_modules/@arcships/rutis-runtime\")), dir.join(\"package.json\"));\n    let python = SpawnPlugin::new(\"py\", Launcher::python(&dir.join(\"commands\")), dir.join(\"commands\"))\n        .interpreter(dir.join(\".venv/bin/python\"));\n    let sessions = Arc::new(SessionResolver::npm(&catalog, \"node\")); // py:<module> on py; files and npm names on node\n    sessions.runtime(node.handle());\n    sessions.runtime(python.handle());\n    let runtimes = [node.handle(), python.handle()];\n    root.plugin(node);\n    root.plugin(python);\n\n    let loader = LoaderPlugin::new(\n        Chain::new().with_shared(sessions.clone()),\n        LoaderOptions { catalog, ..LoaderOptions::default() },\n    );\n    let handle = loader.handle();\n    sessions.attach(&handle);\n    root.plugin(loader).await?;\n    sessions.follow_row(\"node\");\n    sessions.follow_row(\"py\");\n\n    for runtime in &runtimes {\n        runtime.ready().await;\n    }\n    let rows: Vec<Patch> = serde_json::from_value(json!([{ \"insert\": command_rows(&dir.join(\"commands\"))? }]))?;\n    handle.reconcile(vec![Layer::new(\"commands\", rows)], None).await?; // returns once every row's apply has ended\n\n    let code = match commands.get(name) {\n        Some(run) => match run(args.to_vec()).await {\n            Ok(text) => {\n                println!(\"{text}\");\n                0\n            }\n            Err(error) => {\n                // A command's own usage error (code \"usage\") is told to the user as it is\n                match rutis_bridge::thrown(&error).filter(|thrown| thrown.code() == Some(\"usage\")) {\n                    Some(session::Error::Remote { message, .. }) => eprintln!(\"jot: {message}\"),\n                    _ => eprintln!(\"jot: {name} failed: {error}\"),\n                }\n                1\n            }\n        },\n        None => {\n            eprintln!(\"jot: no command {name} (commands: {})\", commands.names().join(\", \"));\n            2\n        }\n    };\n    root.shutdown().await?;\n    std::process::exit(code);\n}\n",
+        "file": "jot/src/main.rs",
+        "position": 1
+      },
+      {
+        "where": "open-host.en.md:182",
+        "body": "import { definePlugin } from '@arcships/rutis'\n\ninterface Notes {\n  list(): Promise<string[]>\n}\n\ninterface Commands {\n  register(name: string, run: (args: string[]) => Promise<string>): Promise<void>\n}\n\nexport default definePlugin({\n  inject: ['notes', 'commands'],\n  async apply(ctx) {\n    const notes = ctx.use<Notes>('notes')\n    await ctx.use<Commands>('commands').register('count', async () => {\n      const all = await notes.list()\n      const words = all.join(' ').split(/\\s+/).filter(Boolean).length\n      return `${all.length} notes, ${words} words`\n    })\n  },\n})\n",
+        "file": "jot/commands/count.ts",
+        "position": 2
+      },
+      {
+        "where": "open-host.en.md:207",
+        "body": "from rutis import define_plugin\n\n\nclass UsageError(Exception):\n    code = \"usage\"\n\n\nasync def apply(ctx, config):\n    notes = ctx.use(\"notes\")\n\n    async def shout(args):\n        if not args:\n            raise UsageError(\"say what to shout: jot shout <text>\")\n        text = \" \".join(args).upper()\n        await notes.add(text)\n        return f\"added: {text}\"\n\n    await ctx.use(\"commands\").register(\"shout\", shout)\n\n\nplugin = define_plugin(apply, inject=[\"notes\", \"commands\"])\n",
+        "file": "jot/commands/shout.py",
+        "position": 3
+      },
+      {
+        "where": "open-host.en.md:234",
+        "body": "cd jot\nnpm init -y\nnpm install @arcships/rutis-runtime @arcships/rutis\npython3 -m venv .venv\n.venv/bin/pip install rutis\ncargo run -q -- shout buy milk\ncargo run -q -- count\n",
+        "run": true,
+        "position": 4
+      },
+      {
+        "where": "open-host.en.md:594",
+        "body": "import { definePlugin } from '@arcships/rutis'\n\ninterface Loader {\n  status(): Promise<{ rows: { id: string; state: string; reason?: string }[] }>\n}\n\ninterface Commands {\n  register(name: string, run: (args: string[]) => Promise<string>): Promise<void>\n}\n\nexport default definePlugin({\n  inject: ['loader', 'commands'],\n  async apply(ctx) {\n    const loader = ctx.use<Loader>('loader')\n    await ctx.use<Commands>('commands').register('plugins', async () => {\n      const { rows } = await loader.status()   // called in the command, not in apply\n      return rows.map(row => `${row.id}: ${row.state}`).join('\\n')\n    })\n  },\n})\n",
+        "file": "jot/commands/plugins.ts",
+        "position": 5
+      },
+      {
+        "where": "open-host.en.md:618",
+        "body": "cargo run -q -- plugins\n",
+        "run": true,
+        "position": 6
+      }
+    ]
+  },
+  {
+    "name": "jot-command-en",
+    "guide": "open-host.en.md",
+    "steps": [
+      {
+        "where": "open-host.en.md:640",
+        "body": "npx @arcships/rutis-host new count --lang node\ncd count\nnpm install\n",
+        "run": true,
+        "position": 0
+      },
+      {
+        "where": "open-host.en.md:649",
+        "body": "// Generated from the service declarations; do not edit.\n\n/** What a method's `Err(e)` throws: named after `e`'s type, `code` its variant, `message` its `Display`, `data` its serde value. */\nexport interface RustError<Name extends string = string, Code extends string = string, Data = unknown> extends Error {\n  readonly name: Name\n  readonly code: Code\n  readonly data: Data\n}\n\n/** The notes: one per line of `notes.txt`. */\nexport interface Notes {\n  /**\n   * Add a note.\n   * @throws {IoErrorThrown}\n   */\n  add(text: string): Promise<void>\n  /** Every note, oldest first. */\n  list(): Promise<string[]>\n}\n\n/** The commands plugins add. */\nexport interface Commands {\n  /**\n   * Add the command `name`. It goes when the plugin that added it unloads.\n   * @throws {ErrorThrown}\n   */\n  register(name: string, run: (arg0: string[]) => string | Promise<string>): Promise<void>\n}\n\n/** What a method returning `Err(Error)` throws. */\nexport type ErrorThrown = RustError<\"Error\", string, undefined>\n\n/** What a method returning `Err(io::Error)` throws. */\nexport type IoErrorThrown = RustError<\"Error\", \"Error\", undefined>\n\n/** The exported services by name: `ctx.use<Services['name']>('name')`. */\nexport interface Services {\n  notes: Notes\n  commands: Commands\n}\n",
+        "file": "count/src/jot.d.ts",
+        "position": 1
+      },
+      {
+        "where": "open-host.en.md:695",
+        "body": "import { definePlugin } from '@arcships/rutis'\n\nconst commands = new Map<string, (args: string[]) => Promise<string>>()\n\nexport default definePlugin({\n  provides: { notes: { add: 'async', list: 'async' }, commands: { register: 'async', run: 'async' } },\n  apply(ctx) {\n    const notes = ['buy milk', 'call Ada back']\n    ctx.provide('notes', {\n      add: async (text: string) => { notes.push(text) },\n      list: async () => notes,\n    })\n    ctx.provide('commands', {\n      register: async (name: string, run: (args: string[]) => Promise<string>) => { commands.set(name, run) },\n      run: async (name: string, args: string[] = []) => commands.get(name)!(args),\n    })\n  },\n})\n",
+        "file": "count/dev/fake-jot.ts",
+        "position": 2
+      },
+      {
+        "where": "open-host.en.md:717",
+        "body": "{\n  \"format\": 1,\n  \"rows\": [\n    { \"id\": \"count\" },\n    { \"id\": \"jot\", \"name\": \"./dev/fake-jot.ts\" }\n  ]\n}\n",
+        "file": "count/rutis.dev.json",
+        "position": 3
+      },
+      {
+        "where": "open-host.en.md:730",
+        "body": "import { definePlugin } from '@arcships/rutis'\nimport type { Services } from './jot.js'\n\nexport default definePlugin({\n  inject: ['notes', 'commands'],\n  async apply(ctx) {\n    const notes = ctx.use<Services['notes']>('notes')\n    await ctx.use<Services['commands']>('commands').register('count', async () => {\n      const all = await notes.list()\n      const words = all.join(' ').split(/\\s+/).filter(Boolean).length\n      return `${all.length} notes, ${words} words`\n    })\n  },\n})\n",
+        "file": "count/src/index.ts",
+        "position": 4
+      },
+      {
+        "where": "open-host.en.md:748",
+        "body": "import { test } from 'node:test'\nimport assert from 'node:assert/strict'\nimport { load } from '@arcships/rutis/testing'\nimport plugin from '../src/index.ts'\n\ntest('counts the notes and their words', async () => {\n  const commands = new Map<string, (args: string[]) => Promise<string>>()\n  const t = await load(plugin, {\n    services: {\n      notes: { list: async () => ['buy milk', 'call Ada back'] },\n      commands: { register: async (name: string, run: (args: string[]) => Promise<string>) => { commands.set(name, run) } },\n    },\n  })\n  assert.equal(await commands.get('count')!([]), '2 notes, 5 words')\n  await t.unload()\n})\n",
+        "file": "count/test/index.test.ts",
+        "position": 5
+      },
+      {
+        "where": "open-host.en.md:768",
+        "body": "npm test\n",
+        "run": true,
+        "position": 6
+      },
+      {
+        "where": "open-host.en.md:773",
+        "body": "npx rutis-host dev\n",
+        "run": true,
+        "until": "count: running",
+        "position": 7
+      }
+    ]
+  },
+  {
+    "name": "jot",
+    "guide": "open-host.md",
+    "steps": [
+      {
+        "where": "open-host.md:13",
+        "body": "[package]\nname = \"jot\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\nrutis = \"0.19\"\nrutis-loader = { version = \"0.19\", features = [\"node\", \"python\"] }\nrutis-bridge = { version = \"0.19\", features = [\"python\"] }\nrutis-host = \"0.19\"\nserde_json = \"1\"\ntokio = { version = \"1\", features = [\"rt-multi-thread\", \"macros\"] }\n",
+        "file": "jot/Cargo.toml",
+        "position": 0
+      },
+      {
+        "where": "open-host.md:31",
+        "body": "use std::collections::BTreeMap;\nuse std::io::Write;\nuse std::path::{Path, PathBuf};\nuse std::sync::{Arc, Mutex};\n\nuse rutis::host::*;\nuse rutis::Ctx;\nuse rutis_bridge::runtime::Launcher;\nuse rutis_bridge::{session, LocalId, PeerId};\nuse rutis_host::connect::SpawnPlugin;\nuse rutis_loader::runtime::SessionResolver;\nuse rutis_loader::{Chain, Layer, LoaderOptions, LoaderPlugin, Patch, ServiceCatalog};\nuse serde_json::{json, Value};\n\n/// The notes: one per line of `notes.txt`.\npub struct Notes {\n    file: PathBuf,\n}\n\n#[rutis::service]                                     // 插件按名字 \"notes\" 使用它\nimpl Notes {\n    /// Add a note.\n    pub fn add(&self, text: String) -> std::io::Result<()> {\n        let mut file = std::fs::OpenOptions::new().create(true).append(true).open(&self.file)?;\n        writeln!(file, \"{text}\")\n    }\n\n    /// Every note, oldest first.\n    pub fn list(&self) -> Vec<String> {\n        let text = std::fs::read_to_string(&self.file).unwrap_or_default();\n        text.lines().map(str::to_owned).collect()\n    }\n}\n\n/// A command: given its arguments, the text jot prints.\npub type Run = Arc<dyn Fn(Vec<String>) -> BoxFuture<'static, rutis::Result<String>> + Send + Sync>;\n\n/// The commands plugins add.\n#[derive(Clone, Default)]\npub struct Commands(Arc<Mutex<BTreeMap<String, Run>>>);\n\n#[rutis::service]                                     // 插件按名字 \"commands\" 使用它\nimpl Commands {\n    /// Add the command `name`. It goes when the plugin that added it unloads.\n    pub fn register(&self, ctx: &Ctx, name: String, run: Run) -> rutis::Result<()> {\n        self.0.lock().unwrap().insert(name.clone(), run);\n        let commands = self.0.clone();\n        ctx.effect(|| async move {                    // ctx 是调用方那一行的：它卸载时运行\n            commands.lock().unwrap().remove(&name);\n            Ok(())\n        })?;\n        Ok(())\n    }\n}\n\nimpl Commands {                                       // 没有标注：只给 jot 自己用\n    fn get(&self, name: &str) -> Option<Run> {\n        self.0.lock().unwrap().get(name).cloned()\n    }\n\n    fn names(&self) -> Vec<String> {\n        self.0.lock().unwrap().keys().cloned().collect()\n    }\n}\n\n/// commands/ 里每个文件一行：.ts 在 Node 里运行，.py 在 Python 里运行。\nfn command_rows(dir: &Path) -> std::io::Result<Vec<Value>> {\n    let mut rows = Vec::new();\n    for entry in std::fs::read_dir(dir)? {\n        let path = entry?.path();\n        let Some(id) = path.file_stem().and_then(|stem| stem.to_str()) else { continue };\n        match path.extension().and_then(|extension| extension.to_str()) {\n            Some(\"ts\") => rows.push(json!({ \"id\": id, \"name\": path })),\n            Some(\"py\") => rows.push(json!({ \"id\": id, \"name\": format!(\"py:{id}\") })),\n            _ => {}\n        }\n    }\n    Ok(rows)\n}\n\n#[tokio::main]\nasync fn main() -> Result<(), Box<dyn std::error::Error>> {\n    let args: Vec<String> = std::env::args().skip(1).collect();\n    let Some((name, args)) = args.split_first() else {\n        eprintln!(\"usage: jot <command> [<argument>...]\");\n        std::process::exit(2);\n    };\n    let dir = std::env::current_dir()?;               // 绝对路径：每个运行时的进程在它自己的目录里启动\n\n    let root = Ctx::root()?;\n    root.provide(LocalId(PeerId::new(\"main\")?))?;    // jot 与运行时的会话里，jot 问候用的 id\n    root.provide(Notes { file: dir.join(\"notes.txt\") })?;\n    let commands = Commands::default();\n    root.provide(commands.clone())?;\n\n    let catalog = ServiceCatalog::new();\n    let node = SpawnPlugin::new(\"node\", Launcher::node(&dir.join(\"node_modules/@arcships/rutis-runtime\")), dir.join(\"package.json\"));\n    let python = SpawnPlugin::new(\"py\", Launcher::python(&dir.join(\"commands\")), dir.join(\"commands\"))\n        .interpreter(dir.join(\".venv/bin/python\"));\n    let sessions = Arc::new(SessionResolver::npm(&catalog, \"node\")); // py:<模块> 在 py 上；文件、npm 名在 node 上\n    sessions.runtime(node.handle());\n    sessions.runtime(python.handle());\n    let runtimes = [node.handle(), python.handle()];\n    root.plugin(node);\n    root.plugin(python);\n\n    let loader = LoaderPlugin::new(\n        Chain::new().with_shared(sessions.clone()),\n        LoaderOptions { catalog, ..LoaderOptions::default() },\n    );\n    let handle = loader.handle();\n    sessions.attach(&handle);\n    root.plugin(loader).await?;\n    sessions.follow_row(\"node\");\n    sessions.follow_row(\"py\");\n\n    for runtime in &runtimes {\n        runtime.ready().await;\n    }\n    let rows: Vec<Patch> = serde_json::from_value(json!([{ \"insert\": command_rows(&dir.join(\"commands\"))? }]))?;\n    handle.reconcile(vec![Layer::new(\"commands\", rows)], None).await?; // 每一行的 apply 都结束后返回\n\n    let code = match commands.get(name) {\n        Some(run) => match run(args.to_vec()).await {\n            Ok(text) => {\n                println!(\"{text}\");\n                0\n            }\n            Err(error) => {\n                // 命令自己的用法错误（code 是 \"usage\"）照原样说给用户\n                match rutis_bridge::thrown(&error).filter(|thrown| thrown.code() == Some(\"usage\")) {\n                    Some(session::Error::Remote { message, .. }) => eprintln!(\"jot: {message}\"),\n                    _ => eprintln!(\"jot: {name} failed: {error}\"),\n                }\n                1\n            }\n        },\n        None => {\n            eprintln!(\"jot: no command {name} (commands: {})\", commands.names().join(\", \"));\n            2\n        }\n    };\n    root.shutdown().await?;\n    std::process::exit(code);\n}\n",
+        "file": "jot/src/main.rs",
+        "position": 1
+      },
+      {
+        "where": "open-host.md:182",
+        "body": "import { definePlugin } from '@arcships/rutis'\n\ninterface Notes {\n  list(): Promise<string[]>\n}\n\ninterface Commands {\n  register(name: string, run: (args: string[]) => Promise<string>): Promise<void>\n}\n\nexport default definePlugin({\n  inject: ['notes', 'commands'],\n  async apply(ctx) {\n    const notes = ctx.use<Notes>('notes')\n    await ctx.use<Commands>('commands').register('count', async () => {\n      const all = await notes.list()\n      const words = all.join(' ').split(/\\s+/).filter(Boolean).length\n      return `${all.length} notes, ${words} words`\n    })\n  },\n})\n",
+        "file": "jot/commands/count.ts",
+        "position": 2
+      },
+      {
+        "where": "open-host.md:207",
+        "body": "from rutis import define_plugin\n\n\nclass UsageError(Exception):\n    code = \"usage\"\n\n\nasync def apply(ctx, config):\n    notes = ctx.use(\"notes\")\n\n    async def shout(args):\n        if not args:\n            raise UsageError(\"say what to shout: jot shout <text>\")\n        text = \" \".join(args).upper()\n        await notes.add(text)\n        return f\"added: {text}\"\n\n    await ctx.use(\"commands\").register(\"shout\", shout)\n\n\nplugin = define_plugin(apply, inject=[\"notes\", \"commands\"])\n",
+        "file": "jot/commands/shout.py",
+        "position": 3
+      },
+      {
+        "where": "open-host.md:234",
+        "body": "cd jot\nnpm init -y\nnpm install @arcships/rutis-runtime @arcships/rutis\npython3 -m venv .venv\n.venv/bin/pip install rutis\ncargo run -q -- shout buy milk\ncargo run -q -- count\n",
+        "run": true,
+        "position": 4
+      },
+      {
+        "where": "open-host.md:594",
+        "body": "import { definePlugin } from '@arcships/rutis'\n\ninterface Loader {\n  status(): Promise<{ rows: { id: string; state: string; reason?: string }[] }>\n}\n\ninterface Commands {\n  register(name: string, run: (args: string[]) => Promise<string>): Promise<void>\n}\n\nexport default definePlugin({\n  inject: ['loader', 'commands'],\n  async apply(ctx) {\n    const loader = ctx.use<Loader>('loader')\n    await ctx.use<Commands>('commands').register('plugins', async () => {\n      const { rows } = await loader.status()   // 在命令里调用，不在 apply 里\n      return rows.map(row => `${row.id}: ${row.state}`).join('\\n')\n    })\n  },\n})\n",
+        "file": "jot/commands/plugins.ts",
+        "position": 5
+      },
+      {
+        "where": "open-host.md:618",
+        "body": "cargo run -q -- plugins\n",
+        "run": true,
+        "position": 6
+      }
+    ]
+  },
+  {
+    "name": "jot-command",
+    "guide": "open-host.md",
+    "steps": [
+      {
+        "where": "open-host.md:640",
+        "body": "npx @arcships/rutis-host new count --lang node\ncd count\nnpm install\n",
+        "run": true,
+        "position": 0
+      },
+      {
+        "where": "open-host.md:649",
+        "body": "// Generated from the service declarations; do not edit.\n\n/** What a method's `Err(e)` throws: named after `e`'s type, `code` its variant, `message` its `Display`, `data` its serde value. */\nexport interface RustError<Name extends string = string, Code extends string = string, Data = unknown> extends Error {\n  readonly name: Name\n  readonly code: Code\n  readonly data: Data\n}\n\n/** The notes: one per line of `notes.txt`. */\nexport interface Notes {\n  /**\n   * Add a note.\n   * @throws {IoErrorThrown}\n   */\n  add(text: string): Promise<void>\n  /** Every note, oldest first. */\n  list(): Promise<string[]>\n}\n\n/** The commands plugins add. */\nexport interface Commands {\n  /**\n   * Add the command `name`. It goes when the plugin that added it unloads.\n   * @throws {ErrorThrown}\n   */\n  register(name: string, run: (arg0: string[]) => string | Promise<string>): Promise<void>\n}\n\n/** What a method returning `Err(Error)` throws. */\nexport type ErrorThrown = RustError<\"Error\", string, undefined>\n\n/** What a method returning `Err(io::Error)` throws. */\nexport type IoErrorThrown = RustError<\"Error\", \"Error\", undefined>\n\n/** The exported services by name: `ctx.use<Services['name']>('name')`. */\nexport interface Services {\n  notes: Notes\n  commands: Commands\n}\n",
+        "file": "count/src/jot.d.ts",
+        "position": 1
+      },
+      {
+        "where": "open-host.md:695",
+        "body": "import { definePlugin } from '@arcships/rutis'\n\nconst commands = new Map<string, (args: string[]) => Promise<string>>()\n\nexport default definePlugin({\n  provides: { notes: { add: 'async', list: 'async' }, commands: { register: 'async', run: 'async' } },\n  apply(ctx) {\n    const notes = ['buy milk', 'call Ada back']\n    ctx.provide('notes', {\n      add: async (text: string) => { notes.push(text) },\n      list: async () => notes,\n    })\n    ctx.provide('commands', {\n      register: async (name: string, run: (args: string[]) => Promise<string>) => { commands.set(name, run) },\n      run: async (name: string, args: string[] = []) => commands.get(name)!(args),\n    })\n  },\n})\n",
+        "file": "count/dev/fake-jot.ts",
+        "position": 2
+      },
+      {
+        "where": "open-host.md:717",
+        "body": "{\n  \"format\": 1,\n  \"rows\": [\n    { \"id\": \"count\" },\n    { \"id\": \"jot\", \"name\": \"./dev/fake-jot.ts\" }\n  ]\n}\n",
+        "file": "count/rutis.dev.json",
+        "position": 3
+      },
+      {
+        "where": "open-host.md:730",
+        "body": "import { definePlugin } from '@arcships/rutis'\nimport type { Services } from './jot.js'\n\nexport default definePlugin({\n  inject: ['notes', 'commands'],\n  async apply(ctx) {\n    const notes = ctx.use<Services['notes']>('notes')\n    await ctx.use<Services['commands']>('commands').register('count', async () => {\n      const all = await notes.list()\n      const words = all.join(' ').split(/\\s+/).filter(Boolean).length\n      return `${all.length} notes, ${words} words`\n    })\n  },\n})\n",
+        "file": "count/src/index.ts",
+        "position": 4
+      },
+      {
+        "where": "open-host.md:748",
+        "body": "import { test } from 'node:test'\nimport assert from 'node:assert/strict'\nimport { load } from '@arcships/rutis/testing'\nimport plugin from '../src/index.ts'\n\ntest('counts the notes and their words', async () => {\n  const commands = new Map<string, (args: string[]) => Promise<string>>()\n  const t = await load(plugin, {\n    services: {\n      notes: { list: async () => ['buy milk', 'call Ada back'] },\n      commands: { register: async (name: string, run: (args: string[]) => Promise<string>) => { commands.set(name, run) } },\n    },\n  })\n  assert.equal(await commands.get('count')!([]), '2 notes, 5 words')\n  await t.unload()\n})\n",
+        "file": "count/test/index.test.ts",
+        "position": 5
+      },
+      {
+        "where": "open-host.md:768",
+        "body": "npm test\n",
+        "run": true,
+        "position": 6
+      },
+      {
+        "where": "open-host.md:773",
+        "body": "npx rutis-host dev\n",
+        "run": true,
+        "until": "count: running",
+        "position": 7
+      }
+    ]
+  },
+  {
+    "name": "plugin-api-ts-en",
+    "guide": "plugin-api.en.md",
+    "steps": [
+      {
+        "where": "plugin-api.en.md:142",
+        "body": "npx @arcships/rutis-host new greeter --lang node\ncd greeter\nnpm install\n",
+        "run": true,
+        "position": 0
+      },
+      {
+        "where": "plugin-api.en.md:151",
+        "body": "import { test } from 'node:test'\nimport assert from 'node:assert/strict'\nimport { definePlugin } from '@arcships/rutis'\nimport { host } from '@arcships/rutis/testing'\n\nconst greeter = definePlugin({\n  apply(ctx) {\n    // undefined / null / false is \"no result\": serial asks the next listener\n    ctx.on('greeting/pick', (lang: string) => (lang === 'sv' ? 'Hej' : undefined))\n    ctx.provide('greeter', {\n      async hello(name: string, lang: string) {\n        const word = (await ctx.serial<string>('greeting/pick', lang)) ?? 'Hello'\n        // every argument is the event's; `with` gives the terminal, the innermost end of the chain\n        const text = await ctx.waterfall.with((text: string) => text)<string>('greeting/format', `${word}, ${name}`)\n        ctx.emit('greeting/said', name)                  // returns at once, waits for no listener\n        return text\n      },\n    })\n  },\n})\n\nconst said: string[] = []\nconst shout = definePlugin({\n  apply(ctx) {\n    // a waterfall listener gets next last: it runs the rest of the chain\n    ctx.on('greeting/format', async (text: string, next: () => Promise<string>) => `${await next()}!`)\n    ctx.on('greeting/said', (name: string) => { said.push(name) })\n  },\n})\n\ntest('plugins hear each other', async () => {\n  const h = host()\n  const t = await h.load(greeter)\n  await h.load(shout)\n  assert.equal(await t.service('greeter').hello('Ada', 'sv'), 'Hej, Ada!')\n  assert.equal(await t.service('greeter').hello('Bo', 'en'), 'Hello, Bo!')\n  assert.deepEqual(said, ['Ada', 'Bo'])\n  assert.equal(await h.serial('greeting/pick', 'sv'), 'Hej')   // the test can emit too\n  await h.unload()\n})\n",
+        "file": "greeter/test/events.test.ts",
+        "position": 1
+      },
+      {
+        "where": "plugin-api.en.md:195",
+        "body": "npm test\n",
+        "run": true,
+        "position": 2
+      }
+    ]
+  },
+  {
+    "name": "plugin-api-py-en",
+    "guide": "plugin-api.en.md",
+    "steps": [
+      {
+        "where": "plugin-api.en.md:250",
+        "body": "uvx rutis-host new greeter --lang python\ncd greeter\nuv sync\n",
+        "run": true,
+        "position": 0
+      },
+      {
+        "where": "plugin-api.en.md:259",
+        "body": "import asyncio\nimport unittest\n\nfrom rutis import define_plugin\nfrom rutis.testing import Bus, load\n\n\ndef greeter_apply(ctx, config):\n    # None or False is \"no result\": serial asks the next listener\n    ctx.on(\"greeting/pick\", lambda lang: \"Hej\" if lang == \"sv\" else None)\n\n    class Greeter:\n        async def hello(self, name, lang):\n            word = await ctx.serial(\"greeting/pick\", lang) or \"Hello\"\n            # terminal: the innermost end of the chain, given the event's arguments\n            text = await ctx.waterfall(\"greeting/format\", f\"{word}, {name}\", terminal=lambda text: text)\n            ctx.emit(\"greeting/said\", name)      # returns at once, waits for no listener\n            return text\n\n    ctx.provide(\"greeter\", Greeter())\n\n\ngreeter = define_plugin(greeter_apply)\nsaid = []\n\n\ndef shout_apply(ctx, config):\n    async def exclaim(text, next):           # a waterfall listener gets next last\n        return f\"{await next()}!\"\n\n    ctx.on(\"greeting/format\", exclaim)\n    ctx.on(\"greeting/said\", said.append)\n\n\nshout = define_plugin(shout_apply)\n\n\nclass Events(unittest.TestCase):\n    def test_plugins_hear_each_other(self):\n        async def go():\n            bus = Bus()                          # plugins on one bus hear each other\n            async with load(greeter, bus=bus, id=\"greeter\") as t, load(shout, bus=bus, id=\"shout\"):\n                self.assertEqual(await t.service(\"greeter\").hello(\"Ada\", \"sv\"), \"Hej, Ada!\")\n                self.assertEqual(await t.service(\"greeter\").hello(\"Bo\", \"en\"), \"Hello, Bo!\")\n                self.assertEqual(await t.serial(\"greeting/pick\", \"sv\"), \"Hej\")  # the test can emit too\n                self.assertEqual(said, [\"Ada\", \"Bo\"])    # emits go through the host: delivered once the serial after them is back\n\n        asyncio.run(go())\n",
+        "file": "greeter/tests/test_events.py",
+        "position": 1
+      },
+      {
+        "where": "plugin-api.en.md:311",
+        "body": "uv run python -m unittest discover -s tests\n",
+        "run": true,
+        "position": 2
+      }
+    ]
+  },
+  {
+    "name": "plugin-api-ts",
+    "guide": "plugin-api.md",
+    "steps": [
+      {
+        "where": "plugin-api.md:142",
+        "body": "npx @arcships/rutis-host new greeter --lang node\ncd greeter\nnpm install\n",
+        "run": true,
+        "position": 0
+      },
+      {
+        "where": "plugin-api.md:151",
+        "body": "import { test } from 'node:test'\nimport assert from 'node:assert/strict'\nimport { definePlugin } from '@arcships/rutis'\nimport { host } from '@arcships/rutis/testing'\n\nconst greeter = definePlugin({\n  apply(ctx) {\n    // 返回 undefined / null / false 是\"没有结果\"，serial 接着问下一个监听器\n    ctx.on('greeting/pick', (lang: string) => (lang === 'sv' ? 'Hej' : undefined))\n    ctx.provide('greeter', {\n      async hello(name: string, lang: string) {\n        const word = (await ctx.serial<string>('greeting/pick', lang)) ?? 'Hello'\n        // 参数都是事件的；终态用 `with` 给出：链的最里面\n        const text = await ctx.waterfall.with((text: string) => text)<string>('greeting/format', `${word}, ${name}`)\n        ctx.emit('greeting/said', name)                  // 立即返回，不等监听器\n        return text\n      },\n    })\n  },\n})\n\nconst said: string[] = []\nconst shout = definePlugin({\n  apply(ctx) {\n    // waterfall 的监听器最后一个参数是 next：执行链上其余部分\n    ctx.on('greeting/format', async (text: string, next: () => Promise<string>) => `${await next()}!`)\n    ctx.on('greeting/said', (name: string) => { said.push(name) })\n  },\n})\n\ntest('plugins hear each other', async () => {\n  const h = host()\n  const t = await h.load(greeter)\n  await h.load(shout)\n  assert.equal(await t.service('greeter').hello('Ada', 'sv'), 'Hej, Ada!')\n  assert.equal(await t.service('greeter').hello('Bo', 'en'), 'Hello, Bo!')\n  assert.deepEqual(said, ['Ada', 'Bo'])\n  assert.equal(await h.serial('greeting/pick', 'sv'), 'Hej')   // 测试自己也能发出\n  await h.unload()\n})\n",
+        "file": "greeter/test/events.test.ts",
+        "position": 1
+      },
+      {
+        "where": "plugin-api.md:195",
+        "body": "npm test\n",
+        "run": true,
+        "position": 2
+      }
+    ]
+  },
+  {
+    "name": "plugin-api-py",
+    "guide": "plugin-api.md",
+    "steps": [
+      {
+        "where": "plugin-api.md:250",
+        "body": "uvx rutis-host new greeter --lang python\ncd greeter\nuv sync\n",
+        "run": true,
+        "position": 0
+      },
+      {
+        "where": "plugin-api.md:259",
+        "body": "import asyncio\nimport unittest\n\nfrom rutis import define_plugin\nfrom rutis.testing import Bus, load\n\n\ndef greeter_apply(ctx, config):\n    # 返回 None 或 False 是\"没有结果\"，serial 接着问下一个监听器\n    ctx.on(\"greeting/pick\", lambda lang: \"Hej\" if lang == \"sv\" else None)\n\n    class Greeter:\n        async def hello(self, name, lang):\n            word = await ctx.serial(\"greeting/pick\", lang) or \"Hello\"\n            # terminal：链的最里面，收到事件参数\n            text = await ctx.waterfall(\"greeting/format\", f\"{word}, {name}\", terminal=lambda text: text)\n            ctx.emit(\"greeting/said\", name)      # 立即返回，不等监听器\n            return text\n\n    ctx.provide(\"greeter\", Greeter())\n\n\ngreeter = define_plugin(greeter_apply)\nsaid = []\n\n\ndef shout_apply(ctx, config):\n    async def exclaim(text, next):           # waterfall 的监听器最后一个参数是 next\n        return f\"{await next()}!\"\n\n    ctx.on(\"greeting/format\", exclaim)\n    ctx.on(\"greeting/said\", said.append)\n\n\nshout = define_plugin(shout_apply)\n\n\nclass Events(unittest.TestCase):\n    def test_plugins_hear_each_other(self):\n        async def go():\n            bus = Bus()                          # 同一个 bus 上的插件互相听得到\n            async with load(greeter, bus=bus, id=\"greeter\") as t, load(shout, bus=bus, id=\"shout\"):\n                self.assertEqual(await t.service(\"greeter\").hello(\"Ada\", \"sv\"), \"Hej, Ada!\")\n                self.assertEqual(await t.service(\"greeter\").hello(\"Bo\", \"en\"), \"Hello, Bo!\")\n                self.assertEqual(await t.serial(\"greeting/pick\", \"sv\"), \"Hej\")  # 测试自己也能发出\n                self.assertEqual(said, [\"Ada\", \"Bo\"])    # emit 经宿主，在它之后的 serial 回来时已送到\n\n        asyncio.run(go())\n",
+        "file": "greeter/tests/test_events.py",
+        "position": 1
+      },
+      {
+        "where": "plugin-api.md:311",
+        "body": "uv run python -m unittest discover -s tests\n",
+        "run": true,
+        "position": 2
+      }
+    ]
+  },
+  {
+    "name": "python-en",
+    "guide": "python-plugin.en.md",
+    "steps": [
+      {
+        "where": "python-plugin.en.md:7",
+        "body": "uvx rutis-host new greeter --lang python\ncd greeter\nuv sync\nuv run python -m unittest discover -s tests\n",
+        "run": true,
+        "position": 0
+      },
+      {
+        "where": "python-plugin.en.md:29",
+        "body": "\"\"\"greeter: a rutis plugin.\"\"\"\n\n# Guide: https://github.com/arcships/rutis/blob/main/docs/guide/python-plugin.en.md\n\nfrom rutis import define_plugin\n\n\nclass Greeter:\n    def __init__(self, greeting: str) -> None:\n        self.greeting = greeting\n\n    async def hello(self, name: str) -> str:\n        return f\"{self.greeting}, {name}!\"\n\n\ndef apply(ctx, config):\n    # config has the schema's default when the row leaves greeting out.\n    ctx.provide(\"greeter\", Greeter(config[\"greeting\"]))\n\n\nplugin = define_plugin(\n    apply,\n    # The services it uses (step 3 of the guide): inject=[\"translate\"], then\n    # ctx.use(\"translate\") in apply.\n    inject=[],\n    # The services it provides, so a host knows them before the plugin runs:\n    # the class's public methods.\n    provides={\"greeter\": Greeter},\n    # The JSON Schema of its config (step 4).\n    config={\"type\": \"object\", \"properties\": {\"greeting\": {\"type\": \"string\", \"default\": \"Hello\"}}},\n)\n",
+        "file": "greeter/src/greeter/__init__.py",
+        "position": 1
+      },
+      {
+        "where": "python-plugin.en.md:72",
+        "body": "from rutis import define_plugin\n\n\nclass Greeter:\n    def __init__(self, translate, greeting: str) -> None:\n        self.translate = translate\n        self.greeting = greeting\n\n    async def hello(self, name: str) -> str:\n        return f\"{await self.translate.text(self.greeting)}, {name}!\"\n\n\ndef apply(ctx, config):\n    ctx.provide(\"greeter\", Greeter(ctx.use(\"translate\"), config[\"greeting\"]))\n\n\nplugin = define_plugin(\n    apply,\n    inject=[\"translate\"],\n    provides={\"greeter\": Greeter},\n    config={\"type\": \"object\", \"properties\": {\"greeting\": {\"type\": \"string\", \"default\": \"Hello\"}}},\n)\n",
+        "file": "greeter/src/greeter/__init__.py",
+        "position": 2
+      },
+      {
+        "where": "python-plugin.en.md:112",
+        "body": "from rutis import define_plugin\n\n\nclass Greeter:\n    def __init__(self, ctx, greeting: str) -> None:\n        self.ctx = ctx\n        self.translate = ctx.use(\"translate\")\n        self.greeting = greeting\n        self.greeted = 0\n\n    async def hello(self, name: str) -> str:\n        word = await self.translate.text(self.greeting)\n        self.ctx.emit(\"greeter/greeted\", name)\n        return f\"{word}, {name}!\"\n\n    async def count(self) -> int:\n        return self.greeted\n\n\ndef apply(ctx, config):\n    greeter = Greeter(ctx, config[\"greeting\"])\n\n    def greeted(name):\n        greeter.greeted += 1\n\n    ctx.on(\"greeter/greeted\", greeted)\n    ctx.provide(\"greeter\", greeter)\n\n\nplugin = define_plugin(\n    apply,\n    inject=[\"translate\"],\n    provides={\"greeter\": Greeter},\n    config={\"type\": \"object\", \"properties\": {\"greeting\": {\"type\": \"string\", \"default\": \"Hello\"}}},\n)\n",
+        "file": "greeter/src/greeter/__init__.py",
+        "position": 3
+      },
+      {
+        "where": "python-plugin.en.md:157",
+        "body": "import asyncio\nimport unittest\n\nfrom rutis.testing import load\n\nfrom greeter import plugin\n\n\nclass FakeTranslate:\n    async def text(self, text: str) -> str:\n        return {\"Hello\": \"Bonjour\", \"Hi\": \"Salut\"}.get(text, text)\n\n\nclass Plugin(unittest.TestCase):\n    def test_greets_with_the_translated_greeting(self):\n        async def go():\n            async with load(plugin, config={\"greeting\": \"Hi\"}, services={\"translate\": FakeTranslate()}) as t:\n                greeted = []\n                t.on(\"greeter/greeted\", greeted.append)\n                self.assertEqual(await t.service(\"greeter\").hello(\"Ada\"), \"Salut, Ada!\")\n                # The test can emit too; parallel waits for every listener, by then the emit before it has arrived\n                await t.parallel(\"greeter/greeted\", \"Bo\")\n                self.assertEqual(greeted, [\"Ada\", \"Bo\"])\n                self.assertEqual(await t.service(\"greeter\").count(), 2)\n\n        asyncio.run(go())\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n",
+        "file": "greeter/tests/test_plugin.py",
+        "position": 4
+      },
+      {
+        "where": "python-plugin.en.md:191",
+        "body": "uv run python -m unittest discover -s tests\n",
+        "run": true,
+        "position": 5
+      },
+      {
+        "where": "python-plugin.en.md:202",
+        "body": "{\n  \"format\": 1,\n  \"rows\": [\n    { \"id\": \"greeter\", \"config\": { \"greeting\": \"Hello\" } },\n    { \"id\": \"translate\", \"name\": \"py:fake_translate\" }\n  ]\n}\n",
+        "file": "greeter/rutis.dev.json",
+        "position": 6
+      },
+      {
+        "where": "python-plugin.en.md:216",
+        "body": "from rutis import define_plugin\n\n\nclass FakeTranslate:\n    async def text(self, text: str) -> str:\n        return {\"Hello\": \"Bonjour\", \"Hi\": \"Salut\"}.get(text, text)\n\n\ndef apply(ctx, config):\n    ctx.provide(\"translate\", FakeTranslate())\n\n\nplugin = define_plugin(apply, provides={\"translate\": FakeTranslate})\n",
+        "file": "greeter/src/fake_translate.py",
+        "position": 7
+      },
+      {
+        "where": "python-plugin.en.md:233",
+        "body": "uv run rutis-host dev\n",
+        "run": true,
+        "until": "greeter: running",
+        "position": 8
+      },
+      {
+        "where": "python-plugin.en.md:304",
+        "body": "uv run rutis-host dev --debug\n",
+        "run": true,
+        "until": "greeter: running",
+        "position": 9
+      }
+    ]
+  },
+  {
+    "name": "python",
+    "guide": "python-plugin.md",
+    "steps": [
+      {
+        "where": "python-plugin.md:7",
+        "body": "uvx rutis-host new greeter --lang python\ncd greeter\nuv sync\nuv run python -m unittest discover -s tests\n",
+        "run": true,
+        "position": 0
+      },
+      {
+        "where": "python-plugin.md:29",
+        "body": "\"\"\"greeter: a rutis plugin.\"\"\"\n\n# Guide: https://github.com/arcships/rutis/blob/main/docs/guide/python-plugin.en.md\n\nfrom rutis import define_plugin\n\n\nclass Greeter:\n    def __init__(self, greeting: str) -> None:\n        self.greeting = greeting\n\n    async def hello(self, name: str) -> str:\n        return f\"{self.greeting}, {name}!\"\n\n\ndef apply(ctx, config):\n    # config has the schema's default when the row leaves greeting out.\n    ctx.provide(\"greeter\", Greeter(config[\"greeting\"]))\n\n\nplugin = define_plugin(\n    apply,\n    # The services it uses (step 3 of the guide): inject=[\"translate\"], then\n    # ctx.use(\"translate\") in apply.\n    inject=[],\n    # The services it provides, so a host knows them before the plugin runs:\n    # the class's public methods.\n    provides={\"greeter\": Greeter},\n    # The JSON Schema of its config (step 4).\n    config={\"type\": \"object\", \"properties\": {\"greeting\": {\"type\": \"string\", \"default\": \"Hello\"}}},\n)\n",
+        "file": "greeter/src/greeter/__init__.py",
+        "position": 1
+      },
+      {
+        "where": "python-plugin.md:72",
+        "body": "from rutis import define_plugin\n\n\nclass Greeter:\n    def __init__(self, translate, greeting: str) -> None:\n        self.translate = translate\n        self.greeting = greeting\n\n    async def hello(self, name: str) -> str:\n        return f\"{await self.translate.text(self.greeting)}, {name}!\"\n\n\ndef apply(ctx, config):\n    ctx.provide(\"greeter\", Greeter(ctx.use(\"translate\"), config[\"greeting\"]))\n\n\nplugin = define_plugin(\n    apply,\n    inject=[\"translate\"],\n    provides={\"greeter\": Greeter},\n    config={\"type\": \"object\", \"properties\": {\"greeting\": {\"type\": \"string\", \"default\": \"Hello\"}}},\n)\n",
+        "file": "greeter/src/greeter/__init__.py",
+        "position": 2
+      },
+      {
+        "where": "python-plugin.md:112",
+        "body": "from rutis import define_plugin\n\n\nclass Greeter:\n    def __init__(self, ctx, greeting: str) -> None:\n        self.ctx = ctx\n        self.translate = ctx.use(\"translate\")\n        self.greeting = greeting\n        self.greeted = 0\n\n    async def hello(self, name: str) -> str:\n        word = await self.translate.text(self.greeting)\n        self.ctx.emit(\"greeter/greeted\", name)\n        return f\"{word}, {name}!\"\n\n    async def count(self) -> int:\n        return self.greeted\n\n\ndef apply(ctx, config):\n    greeter = Greeter(ctx, config[\"greeting\"])\n\n    def greeted(name):\n        greeter.greeted += 1\n\n    ctx.on(\"greeter/greeted\", greeted)\n    ctx.provide(\"greeter\", greeter)\n\n\nplugin = define_plugin(\n    apply,\n    inject=[\"translate\"],\n    provides={\"greeter\": Greeter},\n    config={\"type\": \"object\", \"properties\": {\"greeting\": {\"type\": \"string\", \"default\": \"Hello\"}}},\n)\n",
+        "file": "greeter/src/greeter/__init__.py",
+        "position": 3
+      },
+      {
+        "where": "python-plugin.md:157",
+        "body": "import asyncio\nimport unittest\n\nfrom rutis.testing import load\n\nfrom greeter import plugin\n\n\nclass FakeTranslate:\n    async def text(self, text: str) -> str:\n        return {\"Hello\": \"Bonjour\", \"Hi\": \"Salut\"}.get(text, text)\n\n\nclass Plugin(unittest.TestCase):\n    def test_greets_with_the_translated_greeting(self):\n        async def go():\n            async with load(plugin, config={\"greeting\": \"Hi\"}, services={\"translate\": FakeTranslate()}) as t:\n                greeted = []\n                t.on(\"greeter/greeted\", greeted.append)\n                self.assertEqual(await t.service(\"greeter\").hello(\"Ada\"), \"Salut, Ada!\")\n                # 测试也能发出；parallel 等全部监听器做完，之前的 emit 也已送到\n                await t.parallel(\"greeter/greeted\", \"Bo\")\n                self.assertEqual(greeted, [\"Ada\", \"Bo\"])\n                self.assertEqual(await t.service(\"greeter\").count(), 2)\n\n        asyncio.run(go())\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n",
+        "file": "greeter/tests/test_plugin.py",
+        "position": 4
+      },
+      {
+        "where": "python-plugin.md:191",
+        "body": "uv run python -m unittest discover -s tests\n",
+        "run": true,
+        "position": 5
+      },
+      {
+        "where": "python-plugin.md:202",
+        "body": "{\n  \"format\": 1,\n  \"rows\": [\n    { \"id\": \"greeter\", \"config\": { \"greeting\": \"Hello\" } },\n    { \"id\": \"translate\", \"name\": \"py:fake_translate\" }\n  ]\n}\n",
+        "file": "greeter/rutis.dev.json",
+        "position": 6
+      },
+      {
+        "where": "python-plugin.md:216",
+        "body": "from rutis import define_plugin\n\n\nclass FakeTranslate:\n    async def text(self, text: str) -> str:\n        return {\"Hello\": \"Bonjour\", \"Hi\": \"Salut\"}.get(text, text)\n\n\ndef apply(ctx, config):\n    ctx.provide(\"translate\", FakeTranslate())\n\n\nplugin = define_plugin(apply, provides={\"translate\": FakeTranslate})\n",
+        "file": "greeter/src/fake_translate.py",
+        "position": 7
+      },
+      {
+        "where": "python-plugin.md:233",
+        "body": "uv run rutis-host dev\n",
+        "run": true,
+        "until": "greeter: running",
+        "position": 8
+      },
+      {
+        "where": "python-plugin.md:304",
+        "body": "uv run rutis-host dev --debug\n",
+        "run": true,
+        "until": "greeter: running",
+        "position": 9
+      }
+    ]
+  },
+  {
+    "name": "rust-en",
+    "guide": "rust-plugin.en.md",
+    "steps": [
+      {
+        "where": "rust-plugin.en.md:11",
+        "body": "cargo new --lib greeter\ncd greeter\ncargo add rutis serde --features serde/derive\ncargo add --dev tokio --features macros,rt-multi-thread\ncargo test\n",
+        "run": true,
+        "position": 0
+      },
+      {
+        "where": "rust-plugin.en.md:30",
+        "body": "use rutis::{Ctx, Plugin, Result};\n\n/// The service greeter provides.\npub struct Greeter;\n\nimpl Greeter {\n    pub fn hello(&self, name: &str) -> String {\n        format!(\"Hello, {name}!\")\n    }\n}\n\n/// The plugin.\npub struct GreeterPlugin;\n\nimpl Plugin for GreeterPlugin {\n    type Deps = ();\n\n    async fn apply(&self, ctx: &Ctx, _: ()) -> Result {\n        ctx.provide(Greeter)?;\n        Ok(())\n    }\n}\n",
+        "file": "greeter/src/lib.rs",
+        "position": 1
+      },
+      {
+        "where": "rust-plugin.en.md:65",
+        "body": "use std::sync::Arc;\n\nuse rutis::{Ctx, Plugin, Result};\n\n/// The service greeter uses, provided by another plugin.\npub trait Translate: Send + Sync {\n    fn text(&self, text: &str) -> String;\n}\n\n/// The service greeter provides.\npub struct Greeter {\n    translate: Arc<dyn Translate>,\n}\n\nimpl Greeter {\n    pub fn hello(&self, name: &str) -> String {\n        format!(\"{}, {name}!\", self.translate.text(\"Hello\"))\n    }\n}\n\n/// The plugin.\npub struct GreeterPlugin;\n\nimpl Plugin for GreeterPlugin {\n    type Deps = Arc<dyn Translate>;\n\n    async fn apply(&self, ctx: &Ctx, translate: Arc<dyn Translate>) -> Result {\n        ctx.provide(Greeter { translate })?;\n        Ok(())\n    }\n}\n",
+        "file": "greeter/src/lib.rs",
+        "position": 2
+      },
+      {
+        "where": "rust-plugin.en.md:106",
+        "body": "use std::sync::Arc;\n\nuse rutis::{Ctx, Plugin, Result};\nuse serde::Deserialize;\n\n/// The service greeter uses, provided by another plugin.\npub trait Translate: Send + Sync {\n    fn text(&self, text: &str) -> String;\n}\n\n/// The configuration. A field left out takes its value from Default.\n#[derive(Clone, Deserialize)]\n#[serde(default)]\npub struct Config {\n    pub greeting: String,\n}\n\nimpl Default for Config {\n    fn default() -> Self {\n        Config { greeting: \"Hello\".into() }\n    }\n}\n\n/// The service greeter provides.\npub struct Greeter {\n    greeting: String,\n    translate: Arc<dyn Translate>,\n}\n\nimpl Greeter {\n    pub fn hello(&self, name: &str) -> String {\n        format!(\"{}, {name}!\", self.translate.text(&self.greeting))\n    }\n}\n\n/// The plugin.\npub struct GreeterPlugin {\n    config: Config,\n}\n\nimpl GreeterPlugin {\n    pub fn new(config: &Config) -> Result<Self> {\n        Ok(GreeterPlugin { config: config.clone() })\n    }\n}\n\nimpl Plugin for GreeterPlugin {\n    type Deps = Arc<dyn Translate>;\n\n    async fn apply(&self, ctx: &Ctx, translate: Arc<dyn Translate>) -> Result {\n        ctx.provide(Greeter {\n            greeting: self.config.greeting.clone(),\n            translate,\n        })?;\n        Ok(())\n    }\n}\n",
+        "file": "greeter/src/lib.rs",
+        "position": 3
+      },
+      {
+        "where": "rust-plugin.en.md:173",
+        "body": "use std::sync::Arc;\nuse std::sync::atomic::{AtomicU64, Ordering};\n\nuse rutis::{Ctx, Event, Plugin, Result};\nuse serde::{Deserialize, Serialize};\n\n/// The service greeter uses, provided by another plugin.\npub trait Translate: Send + Sync {\n    fn text(&self, text: &str) -> String;\n}\n\n/// The configuration. A field left out takes its value from Default.\n#[derive(Clone, Deserialize)]\n#[serde(default)]\npub struct Config {\n    pub greeting: String,\n}\n\nimpl Default for Config {\n    fn default() -> Self {\n        Config { greeting: \"Hello\".into() }\n    }\n}\n\n/// Emitted on every greeting, with the name.\n#[derive(Serialize, Deserialize)]\npub struct Greeted(pub String);\n\nimpl Event for Greeted {\n    const NAME: &'static str = \"greeter/greeted\";\n    type Value = (); // emitted only, no result asked for\n}\n\n/// The service greeter provides.\npub struct Greeter {\n    greeting: String,\n    translate: Arc<dyn Translate>,\n    greeted: Arc<AtomicU64>,\n    ctx: Ctx,\n}\n\nimpl Greeter {\n    pub fn hello(&self, name: &str) -> Result<String> {\n        self.ctx.emit(Greeted(name.into()))?; // returns at once, without waiting for listeners\n        Ok(format!(\"{}, {name}!\", self.translate.text(&self.greeting)))\n    }\n\n    pub fn count(&self) -> u64 {\n        self.greeted.load(Ordering::SeqCst)\n    }\n}\n\n/// The plugin.\npub struct GreeterPlugin {\n    config: Config,\n}\n\nimpl GreeterPlugin {\n    pub fn new(config: &Config) -> Result<Self> {\n        Ok(GreeterPlugin { config: config.clone() })\n    }\n}\n\nimpl Plugin for GreeterPlugin {\n    type Deps = Arc<dyn Translate>;\n\n    async fn apply(&self, ctx: &Ctx, translate: Arc<dyn Translate>) -> Result {\n        let greeted = Arc::new(AtomicU64::new(0));\n        let count = greeted.clone();\n        ctx.on::<Greeted>(move |_, _| {\n            count.fetch_add(1, Ordering::SeqCst);\n            async { Ok(None) } // Ok(None): no result\n        })?;\n        ctx.provide(Greeter {\n            greeting: self.config.greeting.clone(),\n            translate,\n            greeted,\n            ctx: ctx.clone(),\n        })?;\n        Ok(())\n    }\n}\n",
+        "file": "greeter/src/lib.rs",
+        "position": 4
+      },
+      {
+        "where": "rust-plugin.en.md:267",
+        "body": "use std::sync::Arc;\nuse std::sync::atomic::{AtomicU64, Ordering};\n\nuse rutis::{Ctx, Event, Plugin, Result};\nuse serde::{Deserialize, Serialize};\n\n/// The service greeter uses, provided by another plugin.\npub trait Translate: Send + Sync {\n    fn text(&self, text: &str) -> String;\n}\n\n/// The configuration. A field left out takes its value from Default.\n#[derive(Clone, Deserialize)]\n#[serde(default)]\npub struct Config {\n    pub greeting: String,\n}\n\nimpl Default for Config {\n    fn default() -> Self {\n        Config { greeting: \"Hello\".into() }\n    }\n}\n\n/// Emitted on every greeting, with the name.\n#[derive(Serialize, Deserialize)]\npub struct Greeted(pub String);\n\nimpl Event for Greeted {\n    const NAME: &'static str = \"greeter/greeted\";\n    type Value = (); // emitted only, no result asked for\n}\n\n/// The service greeter provides.\npub struct Greeter {\n    greeting: String,\n    translate: Arc<dyn Translate>,\n    greeted: Arc<AtomicU64>,\n    ctx: Ctx,\n}\n\nimpl Greeter {\n    pub fn hello(&self, name: &str) -> Result<String> {\n        self.ctx.emit(Greeted(name.into()))?; // returns at once, without waiting for listeners\n        Ok(format!(\"{}, {name}!\", self.translate.text(&self.greeting)))\n    }\n\n    pub fn count(&self) -> u64 {\n        self.greeted.load(Ordering::SeqCst)\n    }\n}\n\n/// The plugin.\npub struct GreeterPlugin {\n    config: Config,\n}\n\nimpl GreeterPlugin {\n    pub fn new(config: &Config) -> Result<Self> {\n        Ok(GreeterPlugin { config: config.clone() })\n    }\n}\n\nimpl Plugin for GreeterPlugin {\n    type Deps = Arc<dyn Translate>;\n\n    async fn apply(&self, ctx: &Ctx, translate: Arc<dyn Translate>) -> Result {\n        let greeted = Arc::new(AtomicU64::new(0));\n        let count = greeted.clone();\n        ctx.on::<Greeted>(move |_, _| {\n            count.fetch_add(1, Ordering::SeqCst);\n            async { Ok(None) } // Ok(None): no result\n        })?;\n        ctx.provide(Greeter {\n            greeting: self.config.greeting.clone(),\n            translate,\n            greeted,\n            ctx: ctx.clone(),\n        })?;\n        Ok(())\n    }\n}\n\n#[cfg(test)]\nmod tests {\n    use super::*;\n    use rutis::host::*;\n    use tokio::sync::mpsc;\n\n    /// A fake Translate: knows two words, returns the rest as they are.\n    struct FakeTranslate;\n\n    impl Translate for FakeTranslate {\n        fn text(&self, text: &str) -> String {\n            match text {\n                \"Hello\" => \"Bonjour\".into(),\n                \"Hi\" => \"Salut\".into(),\n                other => other.into(),\n            }\n        }\n    }\n\n    #[tokio::test]\n    async fn greets_with_the_configured_greeting() -> Result {\n        let root = Ctx::root()?;\n        root.provide_as::<dyn Translate>(Arc::new(FakeTranslate))?;\n        let plugin = root.plugin(GreeterPlugin::new(&Config { greeting: \"Hi\".into() })?);\n        (&plugin).await?; // apply has run\n\n        // Listen on the root, as a host does, to the events the plugin emits\n        let (sender, mut greeted) = mpsc::unbounded_channel();\n        root.on::<Greeted>(move |event, _| {\n            let _ = sender.send(event.0.clone());\n            async { Ok(None) }\n        })?;\n\n        let greeter = root.get::<Greeter>().unwrap();\n        assert_eq!(greeter.hello(\"Ada\")?, \"Salut, Ada!\");\n        assert_eq!(greeted.recv().await.as_deref(), Some(\"Ada\"));\n        assert_eq!(greeter.count(), 1);\n\n        plugin.dispose().await?; // stop: the service and the listener are withdrawn\n        assert!(root.get::<Greeter>().is_none());\n        root.shutdown().await?;\n        Ok(())\n    }\n}\n",
+        "file": "greeter/src/lib.rs",
+        "position": 5
+      },
+      {
+        "where": "rust-plugin.en.md:398",
+        "body": "cargo test\n",
+        "run": true,
+        "position": 6
+      },
+      {
+        "where": "rust-plugin.en.md:412",
+        "body": "use std::sync::Arc;\n\nuse greeter::{Config, Greeter, GreeterPlugin, Translate};\nuse rutis::host::*;\nuse rutis::{Ctx, Plugin, Result};\n\n/// A fake Translate: knows two words, returns the rest as they are.\nstruct FakeTranslate;\n\nimpl Translate for FakeTranslate {\n    fn text(&self, text: &str) -> String {\n        match text {\n            \"Hello\" => \"Bonjour\".into(),\n            \"Hi\" => \"Salut\".into(),\n            other => other.into(),\n        }\n    }\n}\n\n/// The plugin that provides the fake Translate.\nstruct FakeTranslatePlugin;\n\nimpl Plugin for FakeTranslatePlugin {\n    type Deps = ();\n\n    async fn apply(&self, ctx: &Ctx, _: ()) -> Result {\n        ctx.provide_as::<dyn Translate>(Arc::new(FakeTranslate))?;\n        Ok(())\n    }\n}\n\n#[tokio::main]\nasync fn main() -> Result {\n    let root = Ctx::root()?; // on the current tokio runtime\n    root.plugin(FakeTranslatePlugin).await?;\n    root.plugin(GreeterPlugin::new(&Config::default())?).await?;\n\n    let greeter = root.get::<Greeter>().unwrap();\n    println!(\"{}\", greeter.hello(\"Ada\")?);\n    root.shutdown().await?; // waits for every plugin to stop\n    Ok(())\n}\n",
+        "file": "greeter/examples/host.rs",
+        "position": 7
+      },
+      {
+        "where": "rust-plugin.en.md:458",
+        "body": "cargo run --example host\n",
+        "run": true,
+        "position": 8
+      },
+      {
+        "where": "rust-plugin.en.md:498",
+        "body": "name: publish\n\non:\n  push:\n    tags: [\"v*\"]\n\npermissions:\n  contents: read\n\njobs:\n  publish:\n    runs-on: ubuntu-24.04\n    steps:\n      - uses: actions/checkout@v4\n      - run: cargo test\n      - run: cargo publish\n        env:\n          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}\n",
+        "file": "greeter/.github/workflows/publish.yml",
+        "position": 9
+      }
+    ]
+  },
+  {
+    "name": "rust",
+    "guide": "rust-plugin.md",
+    "steps": [
+      {
+        "where": "rust-plugin.md:11",
+        "body": "cargo new --lib greeter\ncd greeter\ncargo add rutis serde --features serde/derive\ncargo add --dev tokio --features macros,rt-multi-thread\ncargo test\n",
+        "run": true,
+        "position": 0
+      },
+      {
+        "where": "rust-plugin.md:30",
+        "body": "use rutis::{Ctx, Plugin, Result};\n\n/// greeter 提供的服务。\npub struct Greeter;\n\nimpl Greeter {\n    pub fn hello(&self, name: &str) -> String {\n        format!(\"Hello, {name}!\")\n    }\n}\n\n/// 插件。\npub struct GreeterPlugin;\n\nimpl Plugin for GreeterPlugin {\n    type Deps = ();\n\n    async fn apply(&self, ctx: &Ctx, _: ()) -> Result {\n        ctx.provide(Greeter)?;\n        Ok(())\n    }\n}\n",
+        "file": "greeter/src/lib.rs",
+        "position": 1
+      },
+      {
+        "where": "rust-plugin.md:65",
+        "body": "use std::sync::Arc;\n\nuse rutis::{Ctx, Plugin, Result};\n\n/// greeter 用的服务，由别的插件提供。\npub trait Translate: Send + Sync {\n    fn text(&self, text: &str) -> String;\n}\n\n/// greeter 提供的服务。\npub struct Greeter {\n    translate: Arc<dyn Translate>,\n}\n\nimpl Greeter {\n    pub fn hello(&self, name: &str) -> String {\n        format!(\"{}, {name}!\", self.translate.text(\"Hello\"))\n    }\n}\n\n/// 插件。\npub struct GreeterPlugin;\n\nimpl Plugin for GreeterPlugin {\n    type Deps = Arc<dyn Translate>;\n\n    async fn apply(&self, ctx: &Ctx, translate: Arc<dyn Translate>) -> Result {\n        ctx.provide(Greeter { translate })?;\n        Ok(())\n    }\n}\n",
+        "file": "greeter/src/lib.rs",
+        "position": 2
+      },
+      {
+        "where": "rust-plugin.md:106",
+        "body": "use std::sync::Arc;\n\nuse rutis::{Ctx, Plugin, Result};\nuse serde::Deserialize;\n\n/// greeter 用的服务，由别的插件提供。\npub trait Translate: Send + Sync {\n    fn text(&self, text: &str) -> String;\n}\n\n/// 配置。不写的字段取 Default 里的值。\n#[derive(Clone, Deserialize)]\n#[serde(default)]\npub struct Config {\n    pub greeting: String,\n}\n\nimpl Default for Config {\n    fn default() -> Self {\n        Config { greeting: \"Hello\".into() }\n    }\n}\n\n/// greeter 提供的服务。\npub struct Greeter {\n    greeting: String,\n    translate: Arc<dyn Translate>,\n}\n\nimpl Greeter {\n    pub fn hello(&self, name: &str) -> String {\n        format!(\"{}, {name}!\", self.translate.text(&self.greeting))\n    }\n}\n\n/// 插件。\npub struct GreeterPlugin {\n    config: Config,\n}\n\nimpl GreeterPlugin {\n    pub fn new(config: &Config) -> Result<Self> {\n        Ok(GreeterPlugin { config: config.clone() })\n    }\n}\n\nimpl Plugin for GreeterPlugin {\n    type Deps = Arc<dyn Translate>;\n\n    async fn apply(&self, ctx: &Ctx, translate: Arc<dyn Translate>) -> Result {\n        ctx.provide(Greeter {\n            greeting: self.config.greeting.clone(),\n            translate,\n        })?;\n        Ok(())\n    }\n}\n",
+        "file": "greeter/src/lib.rs",
+        "position": 3
+      },
+      {
+        "where": "rust-plugin.md:173",
+        "body": "use std::sync::Arc;\nuse std::sync::atomic::{AtomicU64, Ordering};\n\nuse rutis::{Ctx, Event, Plugin, Result};\nuse serde::{Deserialize, Serialize};\n\n/// greeter 用的服务，由别的插件提供。\npub trait Translate: Send + Sync {\n    fn text(&self, text: &str) -> String;\n}\n\n/// 配置。不写的字段取 Default 里的值。\n#[derive(Clone, Deserialize)]\n#[serde(default)]\npub struct Config {\n    pub greeting: String,\n}\n\nimpl Default for Config {\n    fn default() -> Self {\n        Config { greeting: \"Hello\".into() }\n    }\n}\n\n/// 每次问候发出，带着名字。\n#[derive(Serialize, Deserialize)]\npub struct Greeted(pub String);\n\nimpl Event for Greeted {\n    const NAME: &'static str = \"greeter/greeted\";\n    type Value = (); // 只发出，不要结果\n}\n\n/// greeter 提供的服务。\npub struct Greeter {\n    greeting: String,\n    translate: Arc<dyn Translate>,\n    greeted: Arc<AtomicU64>,\n    ctx: Ctx,\n}\n\nimpl Greeter {\n    pub fn hello(&self, name: &str) -> Result<String> {\n        self.ctx.emit(Greeted(name.into()))?; // 立即返回，不等监听器\n        Ok(format!(\"{}, {name}!\", self.translate.text(&self.greeting)))\n    }\n\n    pub fn count(&self) -> u64 {\n        self.greeted.load(Ordering::SeqCst)\n    }\n}\n\n/// 插件。\npub struct GreeterPlugin {\n    config: Config,\n}\n\nimpl GreeterPlugin {\n    pub fn new(config: &Config) -> Result<Self> {\n        Ok(GreeterPlugin { config: config.clone() })\n    }\n}\n\nimpl Plugin for GreeterPlugin {\n    type Deps = Arc<dyn Translate>;\n\n    async fn apply(&self, ctx: &Ctx, translate: Arc<dyn Translate>) -> Result {\n        let greeted = Arc::new(AtomicU64::new(0));\n        let count = greeted.clone();\n        ctx.on::<Greeted>(move |_, _| {\n            count.fetch_add(1, Ordering::SeqCst);\n            async { Ok(None) } // Ok(None)：没有结果\n        })?;\n        ctx.provide(Greeter {\n            greeting: self.config.greeting.clone(),\n            translate,\n            greeted,\n            ctx: ctx.clone(),\n        })?;\n        Ok(())\n    }\n}\n",
+        "file": "greeter/src/lib.rs",
+        "position": 4
+      },
+      {
+        "where": "rust-plugin.md:267",
+        "body": "use std::sync::Arc;\nuse std::sync::atomic::{AtomicU64, Ordering};\n\nuse rutis::{Ctx, Event, Plugin, Result};\nuse serde::{Deserialize, Serialize};\n\n/// greeter 用的服务，由别的插件提供。\npub trait Translate: Send + Sync {\n    fn text(&self, text: &str) -> String;\n}\n\n/// 配置。不写的字段取 Default 里的值。\n#[derive(Clone, Deserialize)]\n#[serde(default)]\npub struct Config {\n    pub greeting: String,\n}\n\nimpl Default for Config {\n    fn default() -> Self {\n        Config { greeting: \"Hello\".into() }\n    }\n}\n\n/// 每次问候发出，带着名字。\n#[derive(Serialize, Deserialize)]\npub struct Greeted(pub String);\n\nimpl Event for Greeted {\n    const NAME: &'static str = \"greeter/greeted\";\n    type Value = (); // 只发出，不要结果\n}\n\n/// greeter 提供的服务。\npub struct Greeter {\n    greeting: String,\n    translate: Arc<dyn Translate>,\n    greeted: Arc<AtomicU64>,\n    ctx: Ctx,\n}\n\nimpl Greeter {\n    pub fn hello(&self, name: &str) -> Result<String> {\n        self.ctx.emit(Greeted(name.into()))?; // 立即返回，不等监听器\n        Ok(format!(\"{}, {name}!\", self.translate.text(&self.greeting)))\n    }\n\n    pub fn count(&self) -> u64 {\n        self.greeted.load(Ordering::SeqCst)\n    }\n}\n\n/// 插件。\npub struct GreeterPlugin {\n    config: Config,\n}\n\nimpl GreeterPlugin {\n    pub fn new(config: &Config) -> Result<Self> {\n        Ok(GreeterPlugin { config: config.clone() })\n    }\n}\n\nimpl Plugin for GreeterPlugin {\n    type Deps = Arc<dyn Translate>;\n\n    async fn apply(&self, ctx: &Ctx, translate: Arc<dyn Translate>) -> Result {\n        let greeted = Arc::new(AtomicU64::new(0));\n        let count = greeted.clone();\n        ctx.on::<Greeted>(move |_, _| {\n            count.fetch_add(1, Ordering::SeqCst);\n            async { Ok(None) } // Ok(None)：没有结果\n        })?;\n        ctx.provide(Greeter {\n            greeting: self.config.greeting.clone(),\n            translate,\n            greeted,\n            ctx: ctx.clone(),\n        })?;\n        Ok(())\n    }\n}\n\n#[cfg(test)]\nmod tests {\n    use super::*;\n    use rutis::host::*;\n    use tokio::sync::mpsc;\n\n    /// 假的 Translate：认得两个词，其余原样返回。\n    struct FakeTranslate;\n\n    impl Translate for FakeTranslate {\n        fn text(&self, text: &str) -> String {\n            match text {\n                \"Hello\" => \"Bonjour\".into(),\n                \"Hi\" => \"Salut\".into(),\n                other => other.into(),\n            }\n        }\n    }\n\n    #[tokio::test]\n    async fn greets_with_the_configured_greeting() -> Result {\n        let root = Ctx::root()?;\n        root.provide_as::<dyn Translate>(Arc::new(FakeTranslate))?;\n        let plugin = root.plugin(GreeterPlugin::new(&Config { greeting: \"Hi\".into() })?);\n        (&plugin).await?; // apply 执行完\n\n        // 像宿主一样在根上监听插件发出的事件\n        let (sender, mut greeted) = mpsc::unbounded_channel();\n        root.on::<Greeted>(move |event, _| {\n            let _ = sender.send(event.0.clone());\n            async { Ok(None) }\n        })?;\n\n        let greeter = root.get::<Greeter>().unwrap();\n        assert_eq!(greeter.hello(\"Ada\")?, \"Salut, Ada!\");\n        assert_eq!(greeted.recv().await.as_deref(), Some(\"Ada\"));\n        assert_eq!(greeter.count(), 1);\n\n        plugin.dispose().await?; // 停下：服务和监听器撤销\n        assert!(root.get::<Greeter>().is_none());\n        root.shutdown().await?;\n        Ok(())\n    }\n}\n",
+        "file": "greeter/src/lib.rs",
+        "position": 5
+      },
+      {
+        "where": "rust-plugin.md:398",
+        "body": "cargo test\n",
+        "run": true,
+        "position": 6
+      },
+      {
+        "where": "rust-plugin.md:412",
+        "body": "use std::sync::Arc;\n\nuse greeter::{Config, Greeter, GreeterPlugin, Translate};\nuse rutis::host::*;\nuse rutis::{Ctx, Plugin, Result};\n\n/// 假的 Translate：认得两个词，其余原样返回。\nstruct FakeTranslate;\n\nimpl Translate for FakeTranslate {\n    fn text(&self, text: &str) -> String {\n        match text {\n            \"Hello\" => \"Bonjour\".into(),\n            \"Hi\" => \"Salut\".into(),\n            other => other.into(),\n        }\n    }\n}\n\n/// 提供假的 Translate 的插件。\nstruct FakeTranslatePlugin;\n\nimpl Plugin for FakeTranslatePlugin {\n    type Deps = ();\n\n    async fn apply(&self, ctx: &Ctx, _: ()) -> Result {\n        ctx.provide_as::<dyn Translate>(Arc::new(FakeTranslate))?;\n        Ok(())\n    }\n}\n\n#[tokio::main]\nasync fn main() -> Result {\n    let root = Ctx::root()?; // 用当前的 tokio 运行时\n    root.plugin(FakeTranslatePlugin).await?;\n    root.plugin(GreeterPlugin::new(&Config::default())?).await?;\n\n    let greeter = root.get::<Greeter>().unwrap();\n    println!(\"{}\", greeter.hello(\"Ada\")?);\n    root.shutdown().await?; // 等所有插件停下\n    Ok(())\n}\n",
+        "file": "greeter/examples/host.rs",
+        "position": 7
+      },
+      {
+        "where": "rust-plugin.md:458",
+        "body": "cargo run --example host\n",
+        "run": true,
+        "position": 8
+      },
+      {
+        "where": "rust-plugin.md:498",
+        "body": "name: publish\n\non:\n  push:\n    tags: [\"v*\"]\n\npermissions:\n  contents: read\n\njobs:\n  publish:\n    runs-on: ubuntu-24.04\n    steps:\n      - uses: actions/checkout@v4\n      - run: cargo test\n      - run: cargo publish\n        env:\n          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}\n",
+        "file": "greeter/.github/workflows/publish.yml",
+        "position": 9
+      }
+    ]
+  },
+  {
+    "name": "rutis-host-en",
+    "guide": "rutis-host.en.md",
+    "steps": [
+      {
+        "where": "rutis-host.en.md:11",
+        "body": "npx @arcships/rutis-host new greeter --lang node\ncd greeter\nnpm install\nnpm pack                                              # makes greeter-0.1.0.tgz\ncd ..\nnpx @arcships/rutis-host new welcome --lang python\n",
+        "run": true,
+        "position": 0
+      },
+      {
+        "where": "rutis-host.en.md:23",
+        "body": "from rutis import define_plugin\n\n\nclass Welcome:\n    def __init__(self, greeter):\n        self.greeter = greeter\n\n    async def everyone(self, names: list[str]) -> list[str]:\n        return [await self.greeter.hello(name) for name in names]\n\n\ndef apply(ctx, config):\n    ctx.provide(\"welcome\", Welcome(ctx.use(\"greeter\")))\n\n\nplugin = define_plugin(apply, inject=[\"greeter\"], provides={\"welcome\": Welcome})\n",
+        "file": "welcome/src/welcome/__init__.py",
+        "position": 1
+      },
+      {
+        "where": "rutis-host.en.md:45",
+        "body": "mkdir app\ncd app\nnpm init -y\nnpm install -D @arcships/rutis-host                   # rutis-host brings the Node runtime\nnpx rutis-host add ../greeter/greeter-0.1.0.tgz       # an npm package: into the Node project here\nnpx rutis-host add ../welcome                         # a Python project: makes .venv if there is none, installs rutis at the same version\n",
+        "run": true,
+        "position": 2
+      },
+      {
+        "where": "rutis-host.en.md:107",
+        "body": "npx rutis-host check --strict                         # every row ok, every service a row uses declared by another row; exits with 0\n",
+        "run": true,
+        "position": 3
+      },
+      {
+        "where": "rutis-host.en.md:112",
+        "body": "npx rutis-host run --watch-config\n",
+        "run": true,
+        "until": "welcome: running",
+        "position": 4
+      }
+    ]
+  },
+  {
+    "name": "rutis-host",
+    "guide": "rutis-host.md",
+    "steps": [
+      {
+        "where": "rutis-host.md:11",
+        "body": "npx @arcships/rutis-host new greeter --lang node\ncd greeter\nnpm install\nnpm pack                                              # 打出 greeter-0.1.0.tgz\ncd ..\nnpx @arcships/rutis-host new welcome --lang python\n",
+        "run": true,
+        "position": 0
+      },
+      {
+        "where": "rutis-host.md:23",
+        "body": "from rutis import define_plugin\n\n\nclass Welcome:\n    def __init__(self, greeter):\n        self.greeter = greeter\n\n    async def everyone(self, names: list[str]) -> list[str]:\n        return [await self.greeter.hello(name) for name in names]\n\n\ndef apply(ctx, config):\n    ctx.provide(\"welcome\", Welcome(ctx.use(\"greeter\")))\n\n\nplugin = define_plugin(apply, inject=[\"greeter\"], provides={\"welcome\": Welcome})\n",
+        "file": "welcome/src/welcome/__init__.py",
+        "position": 1
+      },
+      {
+        "where": "rutis-host.md:45",
+        "body": "mkdir app\ncd app\nnpm init -y\nnpm install -D @arcships/rutis-host                   # rutis-host 带着 Node 运行时\nnpx rutis-host add ../greeter/greeter-0.1.0.tgz       # npm 包：装进这里的 Node 项目\nnpx rutis-host add ../welcome                         # Python 项目：没有 .venv 时先建好，装上同版本的 rutis\n",
+        "run": true,
+        "position": 2
+      },
+      {
+        "where": "rutis-host.md:107",
+        "body": "npx rutis-host check --strict                         # 每一行 ok，每一行用到的服务都有别的行声明；以 0 退出\n",
+        "run": true,
+        "position": 3
+      },
+      {
+        "where": "rutis-host.md:112",
+        "body": "npx rutis-host run --watch-config\n",
+        "run": true,
+        "until": "welcome: running",
+        "position": 4
+      }
+    ]
+  },
+  {
+    "name": "swift-en",
+    "guide": "swift-plugin.en.md",
+    "steps": [
+      {
+        "where": "swift-plugin.en.md:9",
+        "body": "npx @arcships/rutis-host new greeter --lang swift\ncd greeter\nswift test\n",
+        "run": true,
+        "position": 0
+      },
+      {
+        "where": "swift-plugin.en.md:34",
+        "body": "// The greeter rutis plugin. The Swift plugin guide goes on from here:\n// https://github.com/arcships/rutis/blob/main/docs/guide/swift-plugin.en.md\nimport Rutis\n\n/// The plugin's configuration (guide, step 4): `@RutisConfig` derives its\n/// JSON Schema; a `var` with a literal initial value is its default, filled\n/// in when the row leaves it out.\n@RutisConfig\npublic struct Config: Decodable {\n    /// how to greet\n    public var greeting = \"Hello\"\n}\n\n/// The service the plugin provides (guide, step 2): `@RutisService` makes\n/// its methods the service's.\n@RutisService\npublic final class Greeter: @unchecked Sendable {\n    let greeting: String\n\n    init(greeting: String) { self.greeting = greeting }\n\n    public func hello(_ name: String) -> String { \"\\(greeting), \\(name)!\" }\n}\n\npublic let plugin = Rutis.define(Plugin(\n    name: \"greeter\",\n    // The services it uses (guide, step 3): it starts once they are all there.\n    inject: [],\n    // What it provides, so that `rutis-host check` knows before it runs.\n    provides: [\"greeter\": .of(Greeter.self)],\n    config: Config.self,\n    apply: { ctx, config in\n        ctx.provide(\"greeter\", Greeter(greeting: config.greeting))\n    }\n))\n",
+        "file": "greeter/Sources/GreeterPlugin/Plugin.swift",
+        "position": 1
+      },
+      {
+        "where": "swift-plugin.en.md:81",
+        "body": "import Rutis\n\n@RutisConfig\npublic struct Config: Decodable {\n    /// how to greet\n    public var greeting = \"Hello\"\n}\n\n@RutisClient\npublic protocol Translate {\n    func text(_ text: String) async throws -> String\n}\n\n@RutisService\npublic final class Greeter: @unchecked Sendable {\n    let translate: any Translate\n    let greeting: String\n\n    init(translate: any Translate, greeting: String) {\n        self.translate = translate\n        self.greeting = greeting\n    }\n\n    public func hello(_ name: String) async throws -> String {\n        \"\\(try await translate.text(greeting)), \\(name)!\"\n    }\n}\n\npublic let plugin = Rutis.define(Plugin(\n    name: \"greeter\",\n    inject: [\"translate\"],\n    provides: [\"greeter\": .of(Greeter.self)],\n    config: Config.self,\n    apply: { ctx, config in\n        let translate = try ctx.use(\"translate\", TranslateProxy.self)\n        ctx.provide(\"greeter\", Greeter(translate: translate, greeting: config.greeting))\n    }\n))\n",
+        "file": "greeter/Sources/GreeterPlugin/Plugin.swift",
+        "position": 2
+      },
+      {
+        "where": "swift-plugin.en.md:138",
+        "body": "import Rutis\n\n@RutisConfig\npublic struct Config: Decodable {\n    /// how to greet\n    public var greeting = \"Hello\"\n}\n\n@RutisClient\npublic protocol Translate {\n    func text(_ text: String) async throws -> String\n}\n\nactor Greeted {\n    var count = 0\n    func add() { count += 1 }\n}\n\n@RutisService\npublic final class Greeter: @unchecked Sendable {\n    let ctx: Rutis.Ctx\n    let translate: any Translate\n    let greeting: String\n    let greeted: Greeted\n\n    init(ctx: Rutis.Ctx, translate: any Translate, greeting: String, greeted: Greeted) {\n        self.ctx = ctx\n        self.translate = translate\n        self.greeting = greeting\n        self.greeted = greeted\n    }\n\n    public func hello(_ name: String) async throws -> String {\n        let text = \"\\(try await translate.text(greeting)), \\(name)!\"\n        try ctx.emit(\"greeter/greeted\", name)\n        return text\n    }\n\n    public func count() async -> Int { await greeted.count }\n}\n\npublic let plugin = Rutis.define(Plugin(\n    name: \"greeter\",\n    inject: [\"translate\"],\n    provides: [\"greeter\": .of(Greeter.self)],\n    config: Config.self,\n    apply: { ctx, config in\n        let greeted = Greeted()\n        ctx.on(\"greeter/greeted\") { (_: String) in await greeted.add() }\n        let translate = try ctx.use(\"translate\", TranslateProxy.self)\n        ctx.provide(\"greeter\", Greeter(ctx: ctx, translate: translate, greeting: config.greeting, greeted: greeted))\n    }\n))\n",
+        "file": "greeter/Sources/GreeterPlugin/Plugin.swift",
+        "position": 3
+      },
+      {
+        "where": "swift-plugin.en.md:205",
+        "body": "import Rutis\nimport RutisTest\nimport Testing\n\n@testable import GreeterPlugin\n\n@RutisService\nfinal class FakeTranslate: @unchecked Sendable {\n    func text(_ text: String) -> String { [\"Hello\": \"Bonjour\", \"Hi\": \"Salut\"][text] ?? text }\n}\n\n@Test func greeterGreetsInTranslation() async throws {\n    let loaded = try await RutisTest.load(plugin, config: [\"greeting\": \"Hi\"], services: [\"translate\": FakeTranslate()])\n    let (greeted, received) = AsyncStream.makeStream(of: String.self)\n    let off = await loaded.on(\"greeter/greeted\") { (name: String) in _ = received.yield(name) }\n    let greeter = try await loaded.service(\"greeter\")\n    #expect(try await greeter.call(\"hello\", \"Ada\", as: String.self) == \"Salut, Ada!\")\n    var names = greeted.makeAsyncIterator()\n    #expect(await names.next() == \"Ada\")\n    #expect(try await greeter.call(\"count\", as: Int.self) == 1)\n    await off()\n    await loaded.close()\n}\n",
+        "file": "greeter/Tests/GreeterPluginTests/PluginTests.swift",
+        "position": 4
+      },
+      {
+        "where": "swift-plugin.en.md:232",
+        "body": "swift test\n",
+        "run": true,
+        "position": 5
+      },
+      {
+        "where": "swift-plugin.en.md:248",
+        "body": "import { definePlugin } from '@arcships/rutis'\n\nconst words: Record<string, string> = { Hello: 'Bonjour', Hi: 'Salut' }\n\nexport default definePlugin({\n  provides: { translate: { text: 'async' } },\n  apply(ctx) {\n    ctx.provide('translate', { text: async (text: string) => words[text] ?? text })\n  },\n})\n",
+        "file": "greeter/dev/fake-translate.ts",
+        "position": 6
+      },
+      {
+        "where": "swift-plugin.en.md:262",
+        "body": "npm install --prefix dev @arcships/rutis\n",
+        "run": true,
+        "position": 7
+      },
+      {
+        "where": "swift-plugin.en.md:269",
+        "body": "{\n  \"format\": 1,\n  \"runtimes\": { \"node\": { \"project\": \"dev\" } },\n  \"rows\": [\n    { \"id\": \"greeter\", \"config\": { \"greeting\": \"Hello\" } },\n    { \"id\": \"translate\", \"name\": \"./dev/fake-translate.ts\" }\n  ]\n}\n",
+        "file": "greeter/rutis.dev.json",
+        "position": 8
+      },
+      {
+        "where": "swift-plugin.en.md:284",
+        "body": "npx @arcships/rutis-host dev\n",
+        "run": true,
+        "until": "greeter: running",
+        "position": 9
+      }
+    ]
+  },
+  {
+    "name": "swift",
+    "guide": "swift-plugin.md",
+    "steps": [
+      {
+        "where": "swift-plugin.md:9",
+        "body": "npx @arcships/rutis-host new greeter --lang swift\ncd greeter\nswift test\n",
+        "run": true,
+        "position": 0
+      },
+      {
+        "where": "swift-plugin.md:34",
+        "body": "// The greeter rutis plugin. The Swift plugin guide goes on from here:\n// https://github.com/arcships/rutis/blob/main/docs/guide/swift-plugin.en.md\nimport Rutis\n\n/// The plugin's configuration (guide, step 4): `@RutisConfig` derives its\n/// JSON Schema; a `var` with a literal initial value is its default, filled\n/// in when the row leaves it out.\n@RutisConfig\npublic struct Config: Decodable {\n    /// how to greet\n    public var greeting = \"Hello\"\n}\n\n/// The service the plugin provides (guide, step 2): `@RutisService` makes\n/// its methods the service's.\n@RutisService\npublic final class Greeter: @unchecked Sendable {\n    let greeting: String\n\n    init(greeting: String) { self.greeting = greeting }\n\n    public func hello(_ name: String) -> String { \"\\(greeting), \\(name)!\" }\n}\n\npublic let plugin = Rutis.define(Plugin(\n    name: \"greeter\",\n    // The services it uses (guide, step 3): it starts once they are all there.\n    inject: [],\n    // What it provides, so that `rutis-host check` knows before it runs.\n    provides: [\"greeter\": .of(Greeter.self)],\n    config: Config.self,\n    apply: { ctx, config in\n        ctx.provide(\"greeter\", Greeter(greeting: config.greeting))\n    }\n))\n",
+        "file": "greeter/Sources/GreeterPlugin/Plugin.swift",
+        "position": 1
+      },
+      {
+        "where": "swift-plugin.md:81",
+        "body": "import Rutis\n\n@RutisConfig\npublic struct Config: Decodable {\n    /// how to greet\n    public var greeting = \"Hello\"\n}\n\n@RutisClient\npublic protocol Translate {\n    func text(_ text: String) async throws -> String\n}\n\n@RutisService\npublic final class Greeter: @unchecked Sendable {\n    let translate: any Translate\n    let greeting: String\n\n    init(translate: any Translate, greeting: String) {\n        self.translate = translate\n        self.greeting = greeting\n    }\n\n    public func hello(_ name: String) async throws -> String {\n        \"\\(try await translate.text(greeting)), \\(name)!\"\n    }\n}\n\npublic let plugin = Rutis.define(Plugin(\n    name: \"greeter\",\n    inject: [\"translate\"],\n    provides: [\"greeter\": .of(Greeter.self)],\n    config: Config.self,\n    apply: { ctx, config in\n        let translate = try ctx.use(\"translate\", TranslateProxy.self)\n        ctx.provide(\"greeter\", Greeter(translate: translate, greeting: config.greeting))\n    }\n))\n",
+        "file": "greeter/Sources/GreeterPlugin/Plugin.swift",
+        "position": 2
+      },
+      {
+        "where": "swift-plugin.md:138",
+        "body": "import Rutis\n\n@RutisConfig\npublic struct Config: Decodable {\n    /// how to greet\n    public var greeting = \"Hello\"\n}\n\n@RutisClient\npublic protocol Translate {\n    func text(_ text: String) async throws -> String\n}\n\nactor Greeted {\n    var count = 0\n    func add() { count += 1 }\n}\n\n@RutisService\npublic final class Greeter: @unchecked Sendable {\n    let ctx: Rutis.Ctx\n    let translate: any Translate\n    let greeting: String\n    let greeted: Greeted\n\n    init(ctx: Rutis.Ctx, translate: any Translate, greeting: String, greeted: Greeted) {\n        self.ctx = ctx\n        self.translate = translate\n        self.greeting = greeting\n        self.greeted = greeted\n    }\n\n    public func hello(_ name: String) async throws -> String {\n        let text = \"\\(try await translate.text(greeting)), \\(name)!\"\n        try ctx.emit(\"greeter/greeted\", name)\n        return text\n    }\n\n    public func count() async -> Int { await greeted.count }\n}\n\npublic let plugin = Rutis.define(Plugin(\n    name: \"greeter\",\n    inject: [\"translate\"],\n    provides: [\"greeter\": .of(Greeter.self)],\n    config: Config.self,\n    apply: { ctx, config in\n        let greeted = Greeted()\n        ctx.on(\"greeter/greeted\") { (_: String) in await greeted.add() }\n        let translate = try ctx.use(\"translate\", TranslateProxy.self)\n        ctx.provide(\"greeter\", Greeter(ctx: ctx, translate: translate, greeting: config.greeting, greeted: greeted))\n    }\n))\n",
+        "file": "greeter/Sources/GreeterPlugin/Plugin.swift",
+        "position": 3
+      },
+      {
+        "where": "swift-plugin.md:205",
+        "body": "import Rutis\nimport RutisTest\nimport Testing\n\n@testable import GreeterPlugin\n\n@RutisService\nfinal class FakeTranslate: @unchecked Sendable {\n    func text(_ text: String) -> String { [\"Hello\": \"Bonjour\", \"Hi\": \"Salut\"][text] ?? text }\n}\n\n@Test func greeterGreetsInTranslation() async throws {\n    let loaded = try await RutisTest.load(plugin, config: [\"greeting\": \"Hi\"], services: [\"translate\": FakeTranslate()])\n    let (greeted, received) = AsyncStream.makeStream(of: String.self)\n    let off = await loaded.on(\"greeter/greeted\") { (name: String) in _ = received.yield(name) }\n    let greeter = try await loaded.service(\"greeter\")\n    #expect(try await greeter.call(\"hello\", \"Ada\", as: String.self) == \"Salut, Ada!\")\n    var names = greeted.makeAsyncIterator()\n    #expect(await names.next() == \"Ada\")\n    #expect(try await greeter.call(\"count\", as: Int.self) == 1)\n    await off()\n    await loaded.close()\n}\n",
+        "file": "greeter/Tests/GreeterPluginTests/PluginTests.swift",
+        "position": 4
+      },
+      {
+        "where": "swift-plugin.md:232",
+        "body": "swift test\n",
+        "run": true,
+        "position": 5
+      },
+      {
+        "where": "swift-plugin.md:248",
+        "body": "import { definePlugin } from '@arcships/rutis'\n\nconst words: Record<string, string> = { Hello: 'Bonjour', Hi: 'Salut' }\n\nexport default definePlugin({\n  provides: { translate: { text: 'async' } },\n  apply(ctx) {\n    ctx.provide('translate', { text: async (text: string) => words[text] ?? text })\n  },\n})\n",
+        "file": "greeter/dev/fake-translate.ts",
+        "position": 6
+      },
+      {
+        "where": "swift-plugin.md:262",
+        "body": "npm install --prefix dev @arcships/rutis\n",
+        "run": true,
+        "position": 7
+      },
+      {
+        "where": "swift-plugin.md:269",
+        "body": "{\n  \"format\": 1,\n  \"runtimes\": { \"node\": { \"project\": \"dev\" } },\n  \"rows\": [\n    { \"id\": \"greeter\", \"config\": { \"greeting\": \"Hello\" } },\n    { \"id\": \"translate\", \"name\": \"./dev/fake-translate.ts\" }\n  ]\n}\n",
+        "file": "greeter/rutis.dev.json",
+        "position": 8
+      },
+      {
+        "where": "swift-plugin.md:284",
+        "body": "npx @arcships/rutis-host dev\n",
+        "run": true,
+        "until": "greeter: running",
+        "position": 9
+      }
+    ]
+  },
+  {
+    "name": "typescript-en",
+    "guide": "typescript-plugin.en.md",
+    "steps": [
+      {
+        "where": "typescript-plugin.en.md:9",
+        "body": "npx @arcships/rutis-host new greeter --lang node\ncd greeter\nnpm install\nnpm test\n",
+        "run": true,
+        "position": 0
+      },
+      {
+        "where": "typescript-plugin.en.md:31",
+        "body": "import { definePlugin } from '@arcships/rutis'\n\nexport interface Config {\n  // Filled from the schema's default when the row leaves it out.\n  greeting: string\n}\n\nclass Greeter {\n  constructor(private readonly greeting: string) {}\n\n  hello(name: string): string {\n    return `${this.greeting}, ${name}!`\n  }\n}\n\n// The steps of the TypeScript plugin guide:\n// https://github.com/arcships/rutis/blob/main/docs/guide/typescript-plugin.en.md\nexport default definePlugin<Config>({\n  // Services this plugin uses (step 3): `inject: ['translate']`, then\n  // `ctx.use('translate')`. It starts once they are all available.\n  inject: [],\n  // The services it provides and their methods (step 2). Only the methods\n  // listed here can be called: add each new one.\n  provides: { greeter: { hello: 'async' } },\n  // The JSON Schema of its config (step 4): the config apply receives has\n  // the defaults filled in.\n  config: { type: 'object', properties: { greeting: { type: 'string', default: 'Hello' } } },\n  apply(ctx, config) {\n    ctx.provide('greeter', new Greeter(config.greeting))\n  },\n})\n",
+        "file": "greeter/src/index.ts",
+        "position": 1
+      },
+      {
+        "where": "typescript-plugin.en.md:75",
+        "body": "import { definePlugin } from '@arcships/rutis'\n\nexport interface Config {\n  greeting: string\n}\n\ninterface Translate {\n  text(text: string): Promise<string>\n}\n\nclass Greeter {\n  constructor(\n    private readonly translate: Translate,\n    private readonly greeting: string,\n  ) {}\n\n  async hello(name: string): Promise<string> {\n    return `${await this.translate.text(this.greeting)}, ${name}!`\n  }\n}\n\nexport default definePlugin<Config>({\n  inject: ['translate'],\n  provides: { greeter: { hello: 'async' } },\n  config: { type: 'object', properties: { greeting: { type: 'string', default: 'Hello' } } },\n  apply(ctx, config) {\n    ctx.provide('greeter', new Greeter(ctx.use<Translate>('translate'), config.greeting))\n  },\n})\n",
+        "file": "greeter/src/index.ts",
+        "position": 2
+      },
+      {
+        "where": "typescript-plugin.en.md:122",
+        "body": "import { definePlugin, type Context } from '@arcships/rutis'\n\nexport interface Config {\n  greeting: string\n}\n\ninterface Translate {\n  text(text: string): Promise<string>\n}\n\nclass Greeter {\n  greeted = 0\n\n  constructor(\n    private readonly ctx: Context,\n    private readonly translate: Translate,\n    private readonly greeting: string,\n  ) {}\n\n  async hello(name: string): Promise<string> {\n    const text = `${await this.translate.text(this.greeting)}, ${name}!`\n    this.ctx.emit('greeter/greeted', name)\n    return text\n  }\n\n  async count(): Promise<number> {\n    return this.greeted\n  }\n}\n\nexport default definePlugin<Config>({\n  inject: ['translate'],\n  provides: { greeter: { hello: 'async', count: 'async' } },\n  config: { type: 'object', properties: { greeting: { type: 'string', default: 'Hello' } } },\n  apply(ctx, config) {\n    const greeter = new Greeter(ctx, ctx.use<Translate>('translate'), config.greeting)\n    ctx.on('greeter/greeted', () => { greeter.greeted += 1 })\n    ctx.provide('greeter', greeter)\n  },\n})\n",
+        "file": "greeter/src/index.ts",
+        "position": 3
+      },
+      {
+        "where": "typescript-plugin.en.md:176",
+        "body": "import { test } from 'node:test'\nimport assert from 'node:assert/strict'\nimport { load } from '@arcships/rutis/testing'\nimport plugin from '../src/index.ts'\n\nconst french: Record<string, string> = { Hello: 'Bonjour', Hi: 'Salut' }\nconst translate = { text: async (text: string) => french[text] ?? text }\n\ntest('greets with the translated greeting', async () => {\n  const t = await load(plugin, { config: { greeting: 'Hi' }, services: { translate } })\n  const greeted: string[] = []\n  t.on('greeter/greeted', (name: string) => { greeted.push(name) })\n  const greeter = t.service('greeter')\n  assert.equal(await greeter.hello('Ada'), 'Salut, Ada!')\n  assert.deepEqual(greeted, ['Ada'])\n  assert.equal(await greeter.count(), 1)\n  await t.unload()\n})\n\ntest('the greeting is Hello when the config leaves it out', async () => {\n  const t = await load(plugin, { services: { translate } })\n  assert.equal(await t.service('greeter').hello('Ada'), 'Bonjour, Ada!')\n  await t.unload()\n})\n",
+        "file": "greeter/test/index.test.ts",
+        "position": 4
+      },
+      {
+        "where": "typescript-plugin.en.md:204",
+        "body": "npm test\n",
+        "run": true,
+        "position": 5
+      },
+      {
+        "where": "typescript-plugin.en.md:222",
+        "body": "import { definePlugin } from '@arcships/rutis'\n\nconst french: Record<string, string> = { Hello: 'Bonjour', Hi: 'Salut' }\n\nexport default definePlugin({\n  provides: { translate: { text: 'async' } },\n  apply(ctx) {\n    ctx.provide('translate', { text: async (text: string) => french[text] ?? text })\n  },\n})\n",
+        "file": "greeter/dev/fake-translate.ts",
+        "position": 6
+      },
+      {
+        "where": "typescript-plugin.en.md:238",
+        "body": "{\n  \"format\": 1,\n  \"rows\": [\n    { \"id\": \"greeter\", \"config\": { \"greeting\": \"Hello\" } },\n    { \"id\": \"translate\", \"name\": \"./dev/fake-translate.ts\" }\n  ]\n}\n",
+        "file": "greeter/rutis.dev.json",
+        "position": 7
+      },
+      {
+        "where": "typescript-plugin.en.md:252",
+        "body": "npx rutis-host dev\n",
+        "run": true,
+        "until": "rutis-host dev: services: greeter (greeter), loader (host), translate (translate)",
+        "position": 8
+      },
+      {
+        "where": "typescript-plugin.en.md:317",
+        "body": "npx rutis-host dev --debug\n",
+        "run": true,
+        "until": "greeter: running",
+        "position": 9
+      }
+    ]
+  },
+  {
+    "name": "typescript",
+    "guide": "typescript-plugin.md",
+    "steps": [
+      {
+        "where": "typescript-plugin.md:9",
+        "body": "npx @arcships/rutis-host new greeter --lang node\ncd greeter\nnpm install\nnpm test\n",
+        "run": true,
+        "position": 0
+      },
+      {
+        "where": "typescript-plugin.md:31",
+        "body": "import { definePlugin } from '@arcships/rutis'\n\nexport interface Config {\n  // Filled from the schema's default when the row leaves it out.\n  greeting: string\n}\n\nclass Greeter {\n  constructor(private readonly greeting: string) {}\n\n  hello(name: string): string {\n    return `${this.greeting}, ${name}!`\n  }\n}\n\n// The steps of the TypeScript plugin guide:\n// https://github.com/arcships/rutis/blob/main/docs/guide/typescript-plugin.en.md\nexport default definePlugin<Config>({\n  // Services this plugin uses (step 3): `inject: ['translate']`, then\n  // `ctx.use('translate')`. It starts once they are all available.\n  inject: [],\n  // The services it provides and their methods (step 2). Only the methods\n  // listed here can be called: add each new one.\n  provides: { greeter: { hello: 'async' } },\n  // The JSON Schema of its config (step 4): the config apply receives has\n  // the defaults filled in.\n  config: { type: 'object', properties: { greeting: { type: 'string', default: 'Hello' } } },\n  apply(ctx, config) {\n    ctx.provide('greeter', new Greeter(config.greeting))\n  },\n})\n",
+        "file": "greeter/src/index.ts",
+        "position": 1
+      },
+      {
+        "where": "typescript-plugin.md:75",
+        "body": "import { definePlugin } from '@arcships/rutis'\n\nexport interface Config {\n  greeting: string\n}\n\ninterface Translate {\n  text(text: string): Promise<string>\n}\n\nclass Greeter {\n  constructor(\n    private readonly translate: Translate,\n    private readonly greeting: string,\n  ) {}\n\n  async hello(name: string): Promise<string> {\n    return `${await this.translate.text(this.greeting)}, ${name}!`\n  }\n}\n\nexport default definePlugin<Config>({\n  inject: ['translate'],\n  provides: { greeter: { hello: 'async' } },\n  config: { type: 'object', properties: { greeting: { type: 'string', default: 'Hello' } } },\n  apply(ctx, config) {\n    ctx.provide('greeter', new Greeter(ctx.use<Translate>('translate'), config.greeting))\n  },\n})\n",
+        "file": "greeter/src/index.ts",
+        "position": 2
+      },
+      {
+        "where": "typescript-plugin.md:122",
+        "body": "import { definePlugin, type Context } from '@arcships/rutis'\n\nexport interface Config {\n  greeting: string\n}\n\ninterface Translate {\n  text(text: string): Promise<string>\n}\n\nclass Greeter {\n  greeted = 0\n\n  constructor(\n    private readonly ctx: Context,\n    private readonly translate: Translate,\n    private readonly greeting: string,\n  ) {}\n\n  async hello(name: string): Promise<string> {\n    const text = `${await this.translate.text(this.greeting)}, ${name}!`\n    this.ctx.emit('greeter/greeted', name)\n    return text\n  }\n\n  async count(): Promise<number> {\n    return this.greeted\n  }\n}\n\nexport default definePlugin<Config>({\n  inject: ['translate'],\n  provides: { greeter: { hello: 'async', count: 'async' } },\n  config: { type: 'object', properties: { greeting: { type: 'string', default: 'Hello' } } },\n  apply(ctx, config) {\n    const greeter = new Greeter(ctx, ctx.use<Translate>('translate'), config.greeting)\n    ctx.on('greeter/greeted', () => { greeter.greeted += 1 })\n    ctx.provide('greeter', greeter)\n  },\n})\n",
+        "file": "greeter/src/index.ts",
+        "position": 3
+      },
+      {
+        "where": "typescript-plugin.md:176",
+        "body": "import { test } from 'node:test'\nimport assert from 'node:assert/strict'\nimport { load } from '@arcships/rutis/testing'\nimport plugin from '../src/index.ts'\n\nconst french: Record<string, string> = { Hello: 'Bonjour', Hi: 'Salut' }\nconst translate = { text: async (text: string) => french[text] ?? text }\n\ntest('greets with the translated greeting', async () => {\n  const t = await load(plugin, { config: { greeting: 'Hi' }, services: { translate } })\n  const greeted: string[] = []\n  t.on('greeter/greeted', (name: string) => { greeted.push(name) })\n  const greeter = t.service('greeter')\n  assert.equal(await greeter.hello('Ada'), 'Salut, Ada!')\n  assert.deepEqual(greeted, ['Ada'])\n  assert.equal(await greeter.count(), 1)\n  await t.unload()\n})\n\ntest('the greeting is Hello when the config leaves it out', async () => {\n  const t = await load(plugin, { services: { translate } })\n  assert.equal(await t.service('greeter').hello('Ada'), 'Bonjour, Ada!')\n  await t.unload()\n})\n",
+        "file": "greeter/test/index.test.ts",
+        "position": 4
+      },
+      {
+        "where": "typescript-plugin.md:204",
+        "body": "npm test\n",
+        "run": true,
+        "position": 5
+      },
+      {
+        "where": "typescript-plugin.md:222",
+        "body": "import { definePlugin } from '@arcships/rutis'\n\nconst french: Record<string, string> = { Hello: 'Bonjour', Hi: 'Salut' }\n\nexport default definePlugin({\n  provides: { translate: { text: 'async' } },\n  apply(ctx) {\n    ctx.provide('translate', { text: async (text: string) => french[text] ?? text })\n  },\n})\n",
+        "file": "greeter/dev/fake-translate.ts",
+        "position": 6
+      },
+      {
+        "where": "typescript-plugin.md:238",
+        "body": "{\n  \"format\": 1,\n  \"rows\": [\n    { \"id\": \"greeter\", \"config\": { \"greeting\": \"Hello\" } },\n    { \"id\": \"translate\", \"name\": \"./dev/fake-translate.ts\" }\n  ]\n}\n",
+        "file": "greeter/rutis.dev.json",
+        "position": 7
+      },
+      {
+        "where": "typescript-plugin.md:252",
+        "body": "npx rutis-host dev\n",
+        "run": true,
+        "until": "rutis-host dev: services: greeter (greeter), loader (host), translate (translate)",
+        "position": 8
+      },
+      {
+        "where": "typescript-plugin.md:317",
+        "body": "npx rutis-host dev --debug\n",
+        "run": true,
+        "until": "greeter: running",
+        "position": 9
+      }
+    ]
+  }
+]

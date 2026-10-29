@@ -167,5 +167,23 @@ struct ConfigMacroTests {
             expect(code.contains(squeezed(expected)), "\(name): \(out)")
         }
         expect(code.contains(squeezed(".init(\"made\", .of((String).self), required: true, description: nil)")), "\(out)")
+        // Its decoding: a missing key takes the literal; one without it is
+        // required (an app's own plugins, which no host checks).
+        expect(code.contains(squeezed("init(from decoder: Decoder) throws")), "\(out)")
+        expect(code.contains(squeezed("self.units = try Rutis._Generated.config(c, \"units\", as: (String).self, default: \"metric\")")), "\(out)")
+        expect(code.contains(squeezed("self.city = try Rutis._Generated.config(c, \"city\", as: (String).self, default: nil)")), "\(out)")
+        expect(!code.contains(squeezed("self.fixed")), "\(out)")
+    }
+
+    /// A type with its own decoding keeps it.
+    func aTypesOwnDecodingIsKept() {
+        let (out, _) = expand("""
+        @RutisConfig
+        struct Config: Decodable {
+            var city: String
+            enum CodingKeys: String, CodingKey { case city = "town" }
+        }
+        """)
+        expect(!squeezed(out).contains(squeezed("init(from decoder: Decoder)")), "\(out)")
     }
 }

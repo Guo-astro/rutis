@@ -89,7 +89,7 @@ Kotlin 里：`ctx.use<I>(name)` 经 `@RutisClient` 接口 `I` 使用服务（同
 
 表里带 `advanced` 的名字在各语言的 advanced 子模块里（0.19 起，#692）：Go `github.com/arcships/rutis/go/rutis/advanced`，Python `rutis.advanced`，Swift `Rutis.Advanced`，Kotlin `arcships.rutis.advanced`，JavaScript 与 TypeScript `@arcships/rutis/advanced`。
 
-Node 的 `waterfall` 只要有监听器在本进程之外就返回 Promise，所以总是 `await` 它。Go 在插件方法里发出时传收到的 `ctx`（带着调用链），在 `Apply` 里传 `ctx` 本身。Rust 的发出方法在 `Ctx` 上，与其他语言同名。
+Node 的 `waterfall` 返回 Promise，所以总是 `await` 它。Go 在插件方法里发出时传收到的 `ctx`（带着调用链），在 `Apply` 里传 `ctx` 本身。Rust 的发出方法在 `Ctx` 上，与其他语言同名。
 
 同一个 waterfall 监听器在五种语言里：
 
@@ -146,16 +146,13 @@ cd greeter
 npm install
 ```
 
-`greeter` 和 `shout` 两个插件在测试工具的 `host()` 上共享一条总线：`shout` 是 waterfall 的一环，并监听通知。
+`greeter` 和 `shout` 两个插件在测试工具的 `host()` 上共享一条总线：`shout` 是 waterfall 的一环。测试工具在真实宿主上按文件加载插件，所以每个插件是它那个文件的默认导出：
 
-<!-- example: plugin-api-ts file=greeter/test/events.test.ts -->
+<!-- example: plugin-api-ts file=greeter/src/talk.ts -->
 ```ts
-import { test } from 'node:test'
-import assert from 'node:assert/strict'
 import { definePlugin } from '@arcships/rutis'
-import { host } from '@arcships/rutis/testing'
 
-const greeter = definePlugin({
+export default definePlugin({
   apply(ctx) {
     // 返回 undefined / null / false 是"没有结果"，serial 接着问下一个监听器
     ctx.on('greeting/pick', (lang: string) => (lang === 'sv' ? 'Hej' : undefined))
@@ -170,25 +167,39 @@ const greeter = definePlugin({
     })
   },
 })
+```
 
-const said: string[] = []
-const shout = definePlugin({
+<!-- example: plugin-api-ts file=greeter/src/shout.ts -->
+```ts
+import { definePlugin } from '@arcships/rutis'
+
+export default definePlugin({
   apply(ctx) {
     // waterfall 的监听器最后一个参数是 next：执行链上其余部分
     ctx.on('greeting/format', async (text: string, next: () => Promise<string>) => `${await next()}!`)
-    ctx.on('greeting/said', (name: string) => { said.push(name) })
   },
 })
+```
+
+<!-- example: plugin-api-ts file=greeter/test/events.test.ts -->
+```ts
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import { host } from '@arcships/rutis/testing'
+import talk from '../src/talk.ts'
+import shout from '../src/shout.ts'
 
 test('plugins hear each other', async () => {
   const h = host()
-  const t = await h.load(greeter)
+  const t = await h.load(talk)
   await h.load(shout)
+  const said: string[] = []
+  t.on('greeting/said', (name: string) => { said.push(name) })   // 测试像旁边的插件一样监听
   assert.equal(await t.service('greeter').hello('Ada', 'sv'), 'Hej, Ada!')
   assert.equal(await t.service('greeter').hello('Bo', 'en'), 'Hello, Bo!')
-  assert.deepEqual(said, ['Ada', 'Bo'])
   assert.equal(await h.serial('greeting/pick', 'sv'), 'Hej')   // 测试自己也能发出
   await h.unload()
+  assert.deepEqual(said, ['Ada', 'Bo'])
 })
 ```
 
@@ -197,12 +208,12 @@ test('plugins hear each other', async () => {
 npm test
 ```
 
-- `emit` 立即返回；监听器出错不影响发出方和别的监听器，在监听器所在处报告一行（测试里在 `h.reported` / `t.reported`）。要等全部监听器、拿到它们的错误，用 `await ctx.parallel(...)`：失败是 `AggregateError`，按登记顺序。
-- `waterfall` 只要有监听器在别的进程就返回 Promise，所以总是 `await` 它。`bail` 是同步的 `serial`，遇到 `async` 监听器以 `AsyncListener` 失败。
+- `emit` 立即返回；监听器出错不影响发出方和别的监听器，由宿主报告一行（测试里是 `await h.reported()` / `await t.reported()`）。要等全部监听器、拿到它们的错误，用 `await ctx.parallel(...)`：失败是 `AggregateError`，按登记顺序。
+- `waterfall` 返回 Promise，所以总是 `await` 它。`bail` 是同步的 `serial`，遇到 `async` 监听器以 `AsyncListener` 失败。
 - `ctx.filter(d => d.row === 'audit').parallel(...)` 只送达过滤函数留下的监听器；`ctx.on(name, fn, { prepend: true })` 排到最前，`{ global: true }` 不受过滤。
-- 作用域：`h.load(plugin, { scope: 't1/s1' })` 把插件加载到一个实例里，它的监听器把作用域作为描述带上；监听器收到这个 root 总线上的所有同名事件，与发出方在哪个实例无关。
+- 作用域：加载到一个实例里的插件，它的监听器把作用域作为描述带上；监听器收到这个 root 总线上的所有同名事件，与发出方在哪个实例无关。
 - 卸载时插件的 `ctx.signal` 被中止，正在运行的监听器被等待（最多到关闭截止时间），然后才运行清理。
-- `load(plugin)` 返回的 `t` 也有这五个方法和 `filter`，从这个插件的作用域发出。
+- `h`、`load(plugin)` 返回的 `t` 也有这五个方法和 `filter`，从测试自己的插件发出。
 
 #### Bun
 
@@ -299,11 +310,11 @@ class Events(unittest.TestCase):
     def test_plugins_hear_each_other(self):
         async def go():
             bus = Bus()                          # 同一个 bus 上的插件互相听得到
-            async with load(greeter, bus=bus, row="greeter") as t, load(shout, bus=bus, row="shout"):
+            async with load(greeter, bus=bus, id="greeter") as t, load(shout, bus=bus, id="shout"):
                 self.assertEqual(await t.service("greeter").hello("Ada", "sv"), "Hej, Ada!")
                 self.assertEqual(await t.service("greeter").hello("Bo", "en"), "Hello, Bo!")
-                self.assertEqual(said, ["Ada", "Bo"])
                 self.assertEqual(await t.serial("greeting/pick", "sv"), "Hej")  # 测试自己也能发出
+                self.assertEqual(said, ["Ada", "Bo"])    # emit 经宿主，在它之后的 serial 回来时已送到
 
         asyncio.run(go())
 ```
@@ -313,10 +324,9 @@ class Events(unittest.TestCase):
 uv run python -m unittest discover -s tests
 ```
 
-- `emit` 立即返回；监听器出错不影响发出方和别的监听器，在监听器所在处报告一行（测试里在 `t.reported`）。要等全部监听器、拿到它们的错误，用 `await ctx.parallel(...)`：失败是 `rutis.advanced.AggregateError`，`errors` 按登记顺序。
+- `emit` 立即返回；监听器出错不影响发出方和别的监听器，由宿主报告一行（测试里在 `await t.reported()`）。要等全部监听器、拿到它们的错误，用 `await ctx.parallel(...)`：失败是 `rutis.advanced.AggregateError`，`errors` 按登记顺序。
 - `bail` 是同步的 `serial`：遇到 `async def` 监听器（或返回协程的函数）以 `rutis.advanced.AsyncListener` 失败。
 - `ctx.filter(lambda d: d["row"] == "audit")` 返回带这五个方法的对象，只送达过滤函数留下的监听器；`ctx.on(name, fn, prepend=True)` 排到最前，`global_=True` 不受过滤。
-- 作用域：`load(plugin, bus=bus, scope="t1/s1")` 把插件加载到一个实例里（`Bus(scopes={"t1": "tenant"})` 给出组名）；监听器收到这个 root 总线上的所有同名事件。
 - 卸载时正在运行的监听器的任务被取消并被等待（最多 `RUTIS_SHUTDOWN_TIMEOUT`），然后才运行清理。发出方放弃时（它的任务被取消），进行中的监听器同样被取消。
 
 #### Go
@@ -701,8 +711,6 @@ Go 用 `errors.Is(err, advanced.ErrWaterfallNext)` 等判断，任何进程里�
 ```text
 incompatible session: the far end speaks protocol 2, this side 4: upgrade the far end
 ```
-
-0.13 的运行时遇到旧宿主时退出（状态 1）：`rutis: refused: incompatible (this host does not declare events-v2 (the event protocol of rutis 0.13): upgrade rutis-host to 0.13 or later); stopping`。从 0.12 升级见 [迁移到 0.13](../migration-0.13.md)。
 
 ## 生命周期
 
@@ -1177,11 +1185,9 @@ fn mount(at: &Ctx, definition: &Definition) -> Result {
 | 结束进程的插件（`process.exit`、`os._exit`）结束的是测试本身 | 测试工具在测试的进程里运行插件；期望文件里这一条标为 `allowed`，测试工具不做这个调用 |
 | 不重启：配置变化、注入的服务撤销都不会让插件停下再启动 | `load` 只启动一次，生命周期由宿主决定（见上） |
 | 同步调用不阻塞，不会出现 `SyncWaitCycle`；没有取消（`AbortSignal`、协程取消） | 插件与测试在同一个事件循环里 |
-| Python：跨过边界的异常是 `RemoteError`，它的 `__cause__` 是原来的异常 | 方便调试；真实运行时的 `RemoteError` 没有 `__cause__` |
-| 描述里的 `runtime` 是语言名（`node`、`bun`、`python`、`go`；宿主用配置里给的名字）；卸载最多等 `RUTIS_SHUTDOWN_TIMEOUT`，与运行时相同，或用工具自己的选项：TypeScript `host({ deadline })` / `load(…, { deadline, runtime })`（毫秒），Python `load(…, deadline=, runtime=)`（秒），Go `rutistest.RuntimeName` 等选项 | 各工具的选项按各自语言的习惯 |
-| TypeScript：只能加载 `definePlugin` 写的插件，不能加载 Cordis 插件 | 测试工具没有 Cordis 的插件模型、服务与依赖门控 |
+| 描述里的 `runtime` 是语言名（`node`、`bun`、`python`、`go`；宿主用配置里给的名字）；卸载最多等 `RUTIS_SHUTDOWN_TIMEOUT`，与运行时相同，或用工具自己的选项：Go `rutistest.RuntimeName` 等选项 | 各工具的选项按各自语言的习惯 |
 | 不检查 16 MiB 的消息上限 | 测试工具不把值编码成消息；真实运行时在消息超过上限时让这次调用失败（见[值怎样传递](#值怎样传递)） |
-| 事件：全部监听器都在测试的进程里（总是本地分发），没有别的进程、节点，也不发出 `rutis/*` | 测试工具在一个进程里运行插件。五种方式、过滤、作用域（TypeScript `host()` 的 `scope`、Python `Bus` 与 `scope=`、Go `rutistest.InScope`）、卸载等待与取消、`emit` 失败的报告（`reported`）与真实运行时相同，对同一份[事件期望文件](../../crates/rutis-bridge/src/runtime/testing/events.expected.json)比对 |
+| 事件：全部监听器都在测试的进程里（总是本地分发），没有别的进程、节点，也不发出 `rutis/*` | 测试工具在一个进程里运行插件。五种方式、过滤、作用域（Go `rutistest.InScope`）、卸载等待与取消、`emit` 失败的报告（`reported`）与真实运行时相同，对同一份[事件期望文件](../../crates/rutis-bridge/src/runtime/testing/events.expected.json)比对 |
 
 十种值在两边按同样的规则传递，这不是差异。带方法的对象也不是：严格模式下，每种语言的测试工具都按跨进程的样子交出代理（只有方法，每次调用都是异步的），与真实运行时相同。关闭严格模式（`strict: false`）时值不经过上表，以上之外的差异都可能出现。
 
@@ -1191,21 +1197,23 @@ fn mount(at: &Ctx, definition: &Definition) -> Result {
 
 ### 严格模式
 
-TypeScript、Bun 和 Python 的测试工具在测试的进程里运行插件，默认是严格模式：值按跨进程的规则传递，数据被复制（Python 的 dataclass 变成 dict），函数和带方法的对象按引用传递（交出的是代理：只有方法，每次调用都是异步的），声明为 `sync` 的方法不能返回 Promise / 协程。只在同一进程里才成立的写法，在这里就会失败。`strict: false`（Python `strict=False`）关掉它，这时值不经过[值怎样传递](#值怎样传递)的规则。
+Python 的测试工具在测试的进程里运行插件，默认是严格模式：值按跨进程的规则传递，数据被复制（Python 的 dataclass 变成 dict），函数和带方法的对象按引用传递（交出的是代理：只有方法，每次调用都是异步的），声明为 `sync` 的方法不能返回 Promise / 协程。只在同一进程里才成立的写法，在这里就会失败。`strict=False` 关掉它，这时值不经过[值怎样传递](#值怎样传递)的规则。
 
-Go 的 `rutistest` 和 Swift 的 `RutisTest` 让插件在它真正的运行时里运行，值经过真正的会话传递，没有这个开关：只在同一个进程里才成立的写法（把结构体当对象传、共享一个不是 `@RutisService` 的 class 实例、靠共享内存）在测试里就失败，在宿主里也会失败。
+TypeScript、Bun 的测试工具（见下）、Go 的 `rutistest` 和 Swift 的 `RutisTest` 让插件在它真正的运行时里运行，值经过真正的会话传递，没有这个开关：只在同一个进程里才成立的写法（把结构体当对象传、共享一个不是 `@RutisService` 的 class 实例、靠共享内存）在测试里就失败，在宿主里也会失败。
 
 ### TypeScript 与 Bun 的测试工具
 
-`@arcships/rutis/testing`，Bun 里同一个：
+`@arcships/rutis/testing`，Bun 里同一个。插件运行在真实的运行时里（`@arcships/rutis-runtime`，Bun 下 `@arcships/rutis-bun`），由真实的宿主管理（`rutis-host test`，见 [rutis-host](rutis-host.md)）：宿主检查配置并补上默认值、按注入的服务门控、分发事件，插件与测试之间的值按跨进程的规则传递。每个测试进程第一次 `load` 时起一个宿主和运行时，之后的用例共用它们，用例之间只卸载行。测试的服务、`on` 和发出，是同一个运行时里插件旁边的一个测试插件的。需要：
+
+- `@arcships/rutis-runtime`（Bun 下 `@arcships/rutis-bun`）与 `@arcships/rutis-host` 作为开发依赖（`rutis-host new` 生成的项目已经有），或 `RUTIS_HOST` 指向一个 `rutis-host`；
+- 插件是它那个模块的默认导出：测试工具让运行时按文件加载它。在测试文件里直接 `definePlugin` 的插件不能加载，报 `load needs a plugin that its module exports as default`。
 
 | 名字 | 作用 |
 | --- | --- |
-| `load(plugin, { config, services, strict, scope, deadline, runtime })` | 不要宿主装载一个插件，它是自己那个 `host()` 的唯一一行。`scope` 是作用域路径（`t1/s1`，默认根）；`deadline` 是卸载时等正在运行的监听器多少毫秒（默认 `RUTIS_SHUTDOWN_TIMEOUT` 秒，没有时 10 000）；`runtime` 是监听器描述里的 `runtime`（默认 `'node'`，Bun 下 `'bun'`） |
-| `host({ services, strict, scopes, deadline, runtime })` | 共用一条事件总线的几个插件，像一个真实运行时里的行（总是本地分发）。`services` 给每个 `inject` 了它的行；`scopes` 给作用域路径起组名：`{ t1: 'tenant', 't1/s1': 'session' }`（默认取路径的最后一段） |
-| `h.load(plugin, { config, services, scope, row })` | 在 `host()` 上再装载一行；`services` 只给这一行；`row` 是行名（默认 `row1`、`row2`……） |
-| `h.at(scope)` | 从作用域路径 `scope` 以测试的身份发出：带五个方法和 `filter` |
-| `h.emit` 等五个方法、`h.filter`、`h.reported`、`h.unload()` | 在根上发出；没人接收的失败；倒序卸载每一行 |
+| `load(plugin, { config, services })` | 装载一个插件，它是自己那个 `host()` 的唯一一行；卸载它也卸掉这个 `host()` |
+| `host({ services })` | 宿主上的几个插件，共用它的总线。`services` 是测试的服务，给每个 `inject` 了它的行 |
+| `h.load(plugin, { config, services, id, isolate })` | 在 `host()` 上再装载一行；`services` 只给这一行；`id` 是行 id（默认模块的文件名）；`isolate` 与 `rutis.json` 里一行的相同（`{ forecast: true }`，或一个标签） |
+| `h.emit` 等五个方法、`h.filter`、`await h.reported()`、`h.unload()` | 从测试的插件发出；宿主报告的这些行的失败；倒序卸载每一行，再撤下测试的服务 |
 
 `load`、`h.load` 返回的 `t`：
 
@@ -1214,44 +1222,43 @@ Go 的 `rutistest` 和 Swift 的 `RutisTest` 让插件在它真正的运行时�
 | `t.service(name)` | 插件提供的服务，按 rutis 看到的样子：声明的方法，没有声明时是对象的方法，都按 async |
 | `t.methods(name)` | rutis 看到的方法：`{ today: 'async' }` |
 | `t.provided()` | 插件现在提供的服务名 |
-| `t.on(name, listener, options)` | 像宿主一样在根作用域监听，见各语言指南 |
-| `t.emit`、`t.parallel`、`t.serial`、`t.waterfall`、`t.bail` | 从这个插件的行和作用域发出 |
+| `t.on(name, listener, options)` | 像插件旁边的另一个插件一样监听，见各语言指南 |
+| `t.emit`、`t.parallel`、`t.serial`、`t.waterfall`、`t.bail` | 从测试的插件发出 |
 | `t.filter(keep)` | 带这五个方法的对象，只送达 `keep(descriptor)` 留下的监听器 |
-| `t.reported` | 没人接收的失败：`{ line, event, row, plugin, error, filter }`，`line` 是运行时写在 stderr 的那一行 |
-| `await t.update(config)` | 像宿主的 `rows.update` 那样换配置：卸载后用新配置再运行，监听器重新登记，排在已有的之后 |
-| `await t.unload()` | 撤下监听器和服务，中止 `ctx.signal`，等正在运行的监听器，再按倒序运行清理 |
-| `t.row`、`t.host` | 行名；它所在的 `host()` |
+| `await t.reported()` | 宿主报告的这一行的失败（`emit` 里失败的监听器、过滤函数）：`{ line }`，`line` 是宿主打印的那一行 |
+| `await t.update(config)` | 像宿主那样换配置 |
+| `await t.unload()` | 像宿主那样卸载这一行（撤下监听器和服务，中止 `ctx.signal`，等正在运行的监听器，再按倒序运行清理），然后撤下测试给它的服务和监听器 |
+| `t.row`、`t.host` | 行在宿主上的 id（模块的文件名，被占用时加 `-2`、`-3`……）；它所在的 `host()` |
 
-`PluginTestError`：插件做了宿主会拒绝或跨进程会出错的事。运行时也会拒绝的事，带着同样的 `code`（`not-declared`、`unavailable`、`no-method`）和 `data`。
+`PluginTestError`：测试工具拒绝的事：装载失败（文字是这一行的状态，与宿主打印的相同，如 `weather: config: city is required`）、不能装载的插件。
 
 ### Python 的测试工具
 
 `rutis.testing`：
 
+`load` 起一个 `rutis-host test`（`RUTIS_HOST` 指定的文件，没有时用 `PATH` 上的 `rutis-host`；插件项目的开发依赖 `rutis-host` 装的就是它），把测试进程里的 Python 运行时接上去，在测试的事件循环里运行。插件是这个宿主的一行，和在别的宿主上一样运行：配置由宿主的 loader 校验并补上默认值，事件全部经宿主，卸载也由宿主做。测试给的服务（`services`）和测试自己的监听器（`t.on`）属于同一个运行时里测试的插件 `tester`。
+
 | `load(plugin, *, …)` 的参数 | 作用 |
 | --- | --- |
-| `config` | 插件的配置；有 `config` 声明时补默认值并校验 |
+| `config` | 插件的配置；宿主的 loader 按插件的 `config` 声明补默认值并校验，不合格时 `load` 以这一行的状态行失败（`weather: config: city is required`） |
 | `services` | 插件 `inject` 的服务，按名字给 |
-| `strict` | 值按跨进程的规则传递（默认 `True`） |
-| `bus` | 与同一个 `Bus` 上的插件共用事件（默认自己一个） |
-| `scope` | 加载到哪个作用域路径（`t1/s1`，默认根） |
-| `row` | 在总线上的行名（默认插件声明的名字，否则模块名） |
-| `runtime` | 监听器描述里的 `runtime`（默认 `"python"`） |
-| `deadline` | 卸载时等正在运行的监听器多少秒（默认 `RUTIS_SHUTDOWN_TIMEOUT`，10） |
+| `bus` | 与同一个 `Bus` 上的插件共用一个宿主（默认自己一个） |
+| `id` | 行 id；没有时用插件声明的名字，否则模块名，已有同名的行时加 `-2`、`-3`……；给了的 id 已有行时 `load` 以宿主的话失败 |
+| `isolate` | 这一行的 `isolate`，与 `rutis.json` 里的相同（`{"notes": True}`，或给一个服务一个标签） |
 
 | `Loaded`（`async with load(...) as t`）的成员 | 作用 |
 | --- | --- |
 | `t.service(name)` | 插件提供的服务，按 rutis 看到的样子：声明的方法，没有声明时是对象的公开方法，都按 async |
 | `t.methods(name)` | rutis 看到的方法：`{"today": "async"}` |
 | `t.provided()` | 插件现在提供的服务名 |
-| `t.on(name, listener, *, prepend=False, global_=False)` | 像宿主一样在根作用域监听：插件发出的、测试自己发出的都送到；严格模式下参数像从另一个进程收到的；返回撤销函数，不撤销时随插件卸载撤掉 |
-| `t.emit`、`t.parallel`、`t.serial`、`t.waterfall`、`t.bail` | 从插件所在的行和作用域发出事件 |
+| `t.on(name, listener, *, prepend=False, global_=False)` | 以测试的插件监听：插件发出的、测试自己发出的都送到；参数经宿主传来；返回撤销函数，不撤销时随插件卸载撤掉 |
+| `t.emit`、`t.parallel`、`t.serial`、`t.waterfall`、`t.bail` | 从插件所在的行发出事件，经宿主 |
 | `t.filter(predicate)` | 带这五个方法的对象，只送达 `predicate(descriptor)` 留下的监听器 |
-| `t.reported` | 没人接收的失败（`emit` 里出错的监听器、过滤函数） |
-| `await t.update(config)` | 像宿主的 `rows.update` 那样换配置：卸载后用新配置再运行 |
-| `await t.unload()` | 像运行时那样卸载：撤下监听器和服务，取消并等待正在运行的监听器，再按倒序运行清理（退出 `async with` 时自动做） |
+| `await t.reported()` | 宿主为这一行报告的失败（`emit` 里出错的监听器、`emit` 的过滤函数），每个是一个 `Reported`，`line` 是宿主打印的那一行 |
+| `await t.update(config)` | 由宿主换配置：卸载后用新配置再运行；配置不合格时以宿主的话失败，这一行保持原配置 |
+| `await t.unload()` | 由宿主卸载：撤下监听器和服务，取消并等待正在运行的监听器，再按倒序运行清理（退出 `async with` 时自动做） |
 
-`Bus(scopes=...)`：一条测试用的总线，同一个 `bus` 上的插件互相听得到；`scopes` 给作用域路径起组名。它的 `reported`、`listeners(name)`（过滤函数看到的描述）、`emitter(row=..., strict=...)`（以某一行的身份发出）。`Reported`：没人接收的一次失败，字段 `kind`（`"listener"` 或 `"filter"`）、`name`、`row`、`error`。`PluginTestError`：插件做了宿主会拒绝或跨进程会出错的事，是 `AssertionError` 的子类。
+`Bus()`：一个测试用的宿主，同一个 `bus` 上的插件在同一个宿主上，互相听得到；第一个 `load` 时起，最后一个结束时停。它的 `await bus.reported()`（同一个 bus 上各行的，按行）、`emitter()`（以测试的插件发出）。`Reported`：没人接收的一次失败，字段 `line`，宿主打印的那一行（`ticker: listener of tick failed: ValueError: boom`，后面是栈）。`PluginTestError`：宿主拒绝装载或换配置（文字是宿主的话），插件没有提供要的服务，或起不了 `rutis-host`；是 `AssertionError` 的子类。
 
 替身收到的插件定义可以直接交给 `load` 装上。
 
@@ -1305,13 +1312,15 @@ func TestEvents(t *testing.T) {
 
 | 名字 | 作用 |
 | --- | --- |
-| `loaded.emit`、`parallel`、`serial`、`waterfall`、`bail` | 从这一行的作用域发出 |
-| `loaded.on(name, prepend:, global:) { ... }` | 像宿主一样监听 |
-| `loaded.load(config:row:scope:)` | 再装载一行；作用域写 `RutisTest.scope("t1/s1")` |
-| `loaded.update(config:)` | 像 rutis 一样改一行的配置 |
-| `loaded.reported` | 运行时报告的 `emit` 监听器失败 |
-| `loaded.provided`、`loaded.row`、`loaded.scope`、`loaded.unload()`、`loaded.close()` | 插件现在提供的服务名；行名；作用域；卸载这一行；结束测试的宿主 |
-| `RutisTest.load(_:config:services:row:scope:runtimeName:)` | `runtimeName` 是描述里的运行时名 |
+| `loaded.emit`、`parallel`、`serial`、`waterfall`、`bail` | 像同一运行时里的插件一样发出 |
+| `loaded.on(name, prepend:, global:) { ... }` | 像同一运行时里的插件一样监听 |
+| `loaded.load(config:row:isolate:)` | 再装载插件的一行 |
+| `loaded.update(config:)` | 改一行的配置：宿主检查它，插件重新 apply |
+| `await loaded.reported` | 测试开始以来报告的：运行时写的 `emit` 监听器失败的行，再加宿主为测试的行写的行 |
+| `loaded.provided`、`loaded.row`、`loaded.unload()`、`loaded.close()` | 这一行现在提供的服务名；行 id；卸载这一行；卸载测试的所有行 |
+| `RutisTest.load(_:config:services:row:isolate:)` | `row` 是行 id（默认是插件名）；`isolate` 是这一行的 `isolate`（服务名：`true` 或标签），与 rutis.json 相同 |
+
+插件作为真实宿主的一行运行：测试进程跑 Swift 运行时，`rutis-host test`（在 `PATH` 上，或 `RUTIS_HOST` 给的路径）跑一个与它建会话的宿主。宿主检查这一行的配置并填默认值，等它 inject 的服务都在了才启动它，并分发所有事件。测试一方（它的服务、`on` 与五种发出）是同一运行时里的一个插件，所以测试与插件之间的值不跨进程；跨进程的行为由各运行时自己的测试检查。整个测试进程共用一个宿主；`close()` 卸掉这个测试的行。行都装在根上：测试工具不把行放进作用域。设备和 iOS 模拟器上没有 `rutis-host`：在那里用自己装插件的应用（`RutisApp`，[Swift 应用指南](swift-app.md)）测试。
 
 替身收到的插件定义就是这个定义本身，可以直接 `RutisTest.load(definition, config: ...)`，和宿主挂它一样；替身把它交回插件时，插件拿到的也是原来那个。
 
@@ -1327,7 +1336,7 @@ func TestEvents(t *testing.T) {
 
 几个运行时互相同步调用时，可能所有参与方都在等别人：两个 Node 运行时互相同步调用；一个 Node 运行时和两个 Python 运行时嵌套调用，也可能如此。宿主在转发每个同步调用之前检查它会不会形成这样的等待环；会的话不转发，调用方得到 `SyncWaitCycle` 错误，其余调用照常完成。收到它时不要立即重试同一个调用（多半会再次形成同一个环），可以改用 `async` 方法、换个时机，或者把它当作失败处理。
 
-检查只涵盖声明了 `sync-wait` 能力的运行时（本仓库的 Node、Python、Bun、Go 运行时；协议见[多语言设计](../design-multilang-runtimes-2026-10-03.md) §九）。没有声明的运行时（旧版 SDK）发出的同步调用不在检查之内，与以前一样可能卡死；不声明 `reentrant-sync` 的运行时按不可重入看待。跨运行时、可能交叉的调用仍然首选 `async` 方法。
+检查涵盖运行时在调用帧上标明的每个同步调用，本仓库的运行时都这样标明（协议见[多语言设计](../design-multilang-runtimes-2026-10-03.md) §九）；不声明 `reentrant-sync` 的运行时按不可重入看待。跨运行时、可能交叉的调用仍然首选 `async` 方法。
 
 需要等待事件循环推进的结果（例如在同步方法里等一个 Promise）不能放在同步方法里，会得到 `SyncWaitCycle` 错误：改成 `async`。
 

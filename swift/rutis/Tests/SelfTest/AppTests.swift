@@ -38,16 +38,27 @@ struct Count: Codable {
     var count: Int
 }
 
-/// The far end of an app's connection, as rutis: what it was told.
+/// The far end of an app's connection, as rutis: what it was told. It
+/// refuses `events.on` until it offers `events` (`offersEvents`), as rutis
+/// does.
 private final class FakeHost: @unchecked Sendable {
     private let lock = NSLock()
     private var told: [(method: String, frame: Value)] = []
     private var session: Peer?
+    private var events = false
+
+    var offersEvents: Bool {
+        get { lock.withLock { events } }
+        set { lock.withLock { events = newValue } }
+    }
 
     func serve(_ socket: WebSocket) {
         var options = PeerOptions(endpoint: Endpoint(local: "test", expected: "pad"))
         options.dispatch = { [self] _, method, args in
-            lock.withLock { told.append((method, args.first ?? .undefined)) }
+            try lock.withLock {
+                told.append((method, args.first ?? .undefined))
+                if method == "events.on", !events { throw RutisError(name: "BindingError", message: "events.on is not offered here") }
+            }
             return .undefined
         }
         guard let peer = try? Peer(channel: socket, options: options), (try? peer.start()) != nil else { return }
@@ -82,78 +93,14 @@ final class Lines: @unchecked Sendable {
 }
 
 struct AppTests {
-    /// A filtered emit whose filter does not answer (and ignores
-    /// cancellation) holds the later emits of its name only while its row
-    /// is loaded: unloading the row lets the queue move on, and the emit
-    /// starts nothing even once its filter answers.
-    func anUnloadedRowsHeldEmitLetsTheQueueGo() async throws {
-        let lines = Lines()
-        let stuck = SavedCtx(), other = SavedCtx()
-        let listener = Rutis.define(Plugin(name: "hears") { ctx in
-            ctx.on("t/held") { (n: Int) in lines.add("got \(n)") }
-        })
-        let stuckPlugin = Rutis.define(Plugin(name: "stuck") { ctx in stuck.ctx = ctx })
-        let otherPlugin = Rutis.define(Plugin(name: "other") { ctx in other.ctx = ctx })
-        let runtime = Runtime([listener, stuckPlugin, otherPlugin], project: "", settings: Events.Settings(log: { lines.add($0) }))
-        for (key, entry) in [("l", "hears"), ("s", "stuck"), ("o", "other")] {
-            try await runtime.load(key: key, name: nil, entry: entry, config: .undefined, exports: [:], isolate: [:], scope: [])
-        }
-        let started = Date()
-        // About a second, cancelled or not; then it would keep everyone.
-        try XCTUnwrap(stuck.ctx).filter { _ in
-            for _ in 0..<20 { try? await Task.sleep(nanoseconds: 50_000_000) }
-            return true
-        }.emit("t/held", 1)
-        try XCTUnwrap(other.ctx).emit("t/held", 2)
-        try await Task.sleep(nanoseconds: 200_000_000)
-        XCTAssertFalse(lines.all.contains("got 2"), "behind the filtered emit (§5.5): \(lines.all)")
-        try await runtime.unload("s")
-        for _ in 0..<50 where !lines.all.contains("got 2") { try await Task.sleep(nanoseconds: 10_000_000) }
-        XCTAssertTrue(lines.all.contains("got 2"), "the queue moved on: \(lines.all)")
-        XCTAssertTrue(Date().timeIntervalSince(started) < 0.8, "before the filter answered")
-        try await Task.sleep(nanoseconds: 1_200_000_000)
-        XCTAssertFalse(lines.all.contains("got 1"), "the unloaded row's emit started nothing: \(lines.all)")
-        XCTAssertFalse(lines.all.contains { $0.contains("filter of") }, "a let-go filter is no failure: \(lines.all)")
-        try await runtime.unload("o")
-        try await runtime.unload("l")
-    }
-
-    /// A task of a row that was unloaded provides: refused, and the row
-    /// loads again (its service is not taken).
-    func aLetGoFilterThatFailsIsNotReported() async throws {
-        let lines = Lines()
-        let saved = SavedCtx()
-        let listener = Rutis.define(Plugin(name: "hears") { ctx in
-            ctx.on("t/let-go") { (n: Int) in lines.add("got \(n)") }
-        })
-        let emitter = Rutis.define(Plugin(name: "emits") { ctx in saved.ctx = ctx })
-        let runtime = Runtime([listener, emitter], project: "", settings: Events.Settings(log: { lines.add($0) }))
-        for (key, entry) in [("l", "hears"), ("e", "emits")] {
-            try await runtime.load(key: key, name: nil, entry: entry, config: .undefined, exports: [:], isolate: [:], scope: [])
-        }
-        // Ignores cancellation, then fails with an error of its own.
-        try XCTUnwrap(saved.ctx).filter { _ in
-            for _ in 0..<6 { try? await Task.sleep(nanoseconds: 50_000_000) }
-            throw LetGo()
-        }.emit("t/let-go", 1)
-        try await Task.sleep(nanoseconds: 100_000_000)
-        try await runtime.unload("e")
-        try await Task.sleep(nanoseconds: 600_000_000)
-        XCTAssertFalse(lines.all.contains { $0.contains("filter of") }, "let go: nothing reported: \(lines.all)")
-        XCTAssertFalse(lines.all.contains("got 1"), "\(lines.all)")
-        try await runtime.unload("l")
-    }
-
     /// A task (ctx.spawn) that ignores cancellation does not hold an unload
     /// past the shutdown deadline, nor does it get a deadline of its own
     /// after a listener used it up: listeners and tasks share one deadline,
     /// and what still runs past it is reported (#542).
     func aSpawnedTaskDoesNotHoldTheUnloadPastTheDeadline() async throws {
         let lines = Lines()
-        let saved = SavedCtx()
         let listening = Event()
         let plugin = Rutis.define(Plugin(name: "stubborn") { ctx in
-            saved.ctx = ctx
             ctx.on("t/stubborn") { () async in
                 listening.fire()
                 await uncancellableSleep(3)
@@ -170,7 +117,11 @@ struct AppTests {
         XCTAssertTrue(lines.all.contains("rutis: tasks of row a still running after 0.3s; unloading anyway"), "\(lines.all)")
         // A listener past the deadline, then the task: no second deadline.
         try await runtime.load(key: "b", name: nil, entry: "stubborn", config: .undefined, exports: [:], isolate: [:], scope: [])
-        try XCTUnwrap(saved.ctx).emit("t/stubborn")
+        // As the host calls a listener here for an emit.
+        let id = runtime.lock.withLock { runtime.byID.values.first { $0.row.key == "b" }?.id ?? "" }
+        let call = runtime.arrive("events.call", [.record([("listener", .data(.string(id))), ("name", .data(.string("t/stubborn"))),
+                                                           ("mode", .data(.string("emit"))), ("args", .list([]))])])
+        Task { _ = try? await call?() }
         let heard = await listening.wait(seconds: 5)
         XCTAssertTrue(heard, "the listener runs")
         started = Date()
@@ -327,8 +278,9 @@ struct AppTests {
     }
 
     /// A connected app offers `services` and installs its plugins in
-    /// order, each with its configuration (or its schema's defaults) once
-    /// the services it injects are there: its own plugins' or rutis's. It
+    /// order, once rutis offers `events` (not before: until then rutis
+    /// refuses `events.on`), each with its configuration (or its schema's
+    /// defaults) once the services it injects are there: its own plugins' or rutis's. It
     /// announces each service its plugins provide, with the plugin's name,
     /// once rutis offers `services`, again to a new offer, never one rutis
     /// announced; rutis's rows cannot run them. A service rutis withdraws
@@ -343,6 +295,8 @@ struct AppTests {
         defer { listener.stop() }
         let lines = Lines()
         let first = Rutis.define(Plugin(name: "first", config: Units.self) { ctx, config in
+            // A listener registered while it loads: rutis must take it.
+            ctx.on("first/ping") { () async in }
             lines.add("first \(config.units)")
             ctx.provide("units", Greeting(word: config.units))
             ctx.effect { lines.add("first cleans up") }
@@ -382,22 +336,30 @@ struct AppTests {
         func ran(_ prefix: String) -> [String] { lines.all.filter { $0.hasPrefix(prefix) } }
         try await waitFor("the app's offer") { !told("link.offers").isEmpty }
         XCTAssertEqual(told("link.offers").first?.plainJSON?["families"], .array([.string("services")]))
-        try await waitFor("first and second installed") { ran("second").count == 1 }
-        XCTAssertEqual(lines.all.filter { !$0.hasPrefix("rutis:") }, ["first metric", "second hello metric"], "third waits for clock")
-        XCTAssertTrue(lines.all.contains("rutis: plugin strict: BindingError: config: count is required"), "\(lines.all)")
-        try await Task.sleep(nanoseconds: 100_000_000)
-        XCTAssertEqual(told("services.announce").count, 0, "nothing announced before rutis offers services")
 
         let peer = try XCTUnwrap(host.peer)
-        func offer(_ version: Int, _ families: [String]) async throws {
+        // rutis's offers, version `version`: `families`, each since `since`.
+        func offer(_ version: Int, _ families: [String], since: Int? = nil) async throws {
             _ = try await peer.call(target: "", method: "link.offers", args: [.data(.object([
                 ("families", .array(families.map(JSON.string))), ("version", .int(version)),
-                ("since", .object(families.map { ($0, .int(version)) })),
+                ("since", .object(families.map { ($0, .int(since ?? version)) })),
             ]))], sync: false)
         }
+        // `services` alone: nothing installs before rutis offers `events`.
         try await offer(1, ["services"])
+        try await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertEqual(lines.all.filter { !$0.hasPrefix("rutis: connected") }, [], "nothing installed before rutis offers events")
+        XCTAssertEqual(told("events.on").count, 0)
+
+        host.offersEvents = true
+        try await offer(2, ["services", "events"], since: 1)
+        try await waitFor("first and second installed") { ran("second").count == 1 }
+        XCTAssertEqual(lines.all.filter { !$0.hasPrefix("rutis:") }, ["first metric", "second hello metric"], "third waits for clock")
+        XCTAssertEqual(lines.all.filter { $0.hasPrefix("rutis: plugin") }, ["rutis: plugin strict: BindingError: config: count is required"])
+        XCTAssertEqual(told("events.on").map { $0["name"]?.string }, ["first/ping"])
         try await waitFor("two announcements") { told("services.announce").count == 2 }
         let announced = told("services.announce")
+        guard announced.count == 2 else { return XCTFail("\(announced)") }
         XCTAssertEqual(announced.map { $0["name"]?.string }, ["units", "greeting"])
         XCTAssertEqual(announced.map { $0["plugin"]?.string }, ["first", "second"])
         XCTAssertEqual(announced.map { $0["version"]?.plainJSON }, [.number("1"), .number("2")])
@@ -407,7 +369,7 @@ struct AppTests {
         let said = try await say.call([], sync: false)
         XCTAssertEqual(said.plainJSON, .string("hello"))
         // A new offer of services: announced again, at the same versions.
-        try await offer(2, ["services"])
+        try await offer(3, ["services", "events"])
         try await waitFor("announced again") { told("services.announce").count == 4 }
         XCTAssertEqual(told("services.announce").dropFirst(2).map { $0["version"]?.plainJSON }, [.number("1"), .number("2")])
 

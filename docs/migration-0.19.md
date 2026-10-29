@@ -278,6 +278,7 @@ Kotlin 另有两点：
 | `ctx.plugin_from(\|cfg\| …)` | 实现 `rutis::host::PluginFactory`，`ctx.plugin_with(factory, config)` |
 | `rutis_loader::status::RowState`（`status::Row::state` 的类型） | `rutis_loader::report::EntryStatus`：等待是 `Running` 加 `Pending` 阶段，启动中是 `Loading` 阶段；`Display` 打出的文字不变 |
 | `rutis_loader::report::RowState`（`rutis/row` 事件的取值） | 改名 `rutis_loader::report::RowEventState`，取值不变 |
+| `rutis_loader::internal::*` | `rutis_loader::patch::{apply_patches, Composed, ComposedRow, Owner, PatchWarning}`、`rutis_loader::runtime::is_runtime_name`、`rutis_loader::runtime::binary::read_binary_manifest`；插件 API 版本用 `Go::PLUGIN_API`、`Swift::PLUGIN_API`（`BinaryLanguage` 的常量） |
 | `take_cleanup_errors()` | 清理的错误在卸载结果里（`dispose` 返回的错误） |
 | `FiberView::effects()`、`EffectMeta`、`EffectPhase` | 无替代；诊断用 `diagnostics()` |
 | `EventBus::observe_dispatch` | 无替代；要观察就注册一个普通监听器 |
@@ -308,13 +309,49 @@ Kotlin 另有两点：
 - 运行时不再按 Schema 检查行的配置，也不再补默认值：由宿主做，并发来补好的配置；运行时只解码（解不成配置类型时是 `config: <路径> is not a value the plugin accepts`）。
 - 所有发出都经过宿主，监听器全在同一个二进制里时也一样。会话结束后（包括那时运行的清理里）`ctx.Emit` 等发出以 `the host disconnected` 失败，不再送到同一个二进制里的监听器。
 
+### TypeScript 与 Bun 插件
+
+`@arcships/rutis/testing` 在真实的宿主上运行插件（`rutis-host test`，见 [插件 API：TypeScript 与 Bun 的测试工具](guide/plugin-api.md#typescript-与-bun-的测试工具)）：
+
+- 开发依赖加上 `@arcships/rutis-runtime`（Bun 下 `@arcships/rutis-bun`）与 `@arcships/rutis-host`（`rutis-host new` 生成的项目已经有），或用 `RUTIS_HOST` 指向一个 `rutis-host`。
+- 插件要是它那个模块的默认导出：在测试文件里直接 `definePlugin` 的插件挪到自己的文件里，否则 `load` 报 `load needs a plugin that its module exports as default`。
+- 删去的选项：`strict`、`scope`、`scopes`、`deadline`、`runtime`，以及 `h.at(scope)`：测试工具不提供宿主做不到的事，作用域由宿主按行的 `isolate` 决定。`row` 改为 `id`；`h.load` 另收 `isolate`，与 `rutis.json` 里一行的相同。
+- `t.reported`、`h.reported` 改为方法：`await t.reported()`，每项是 `{ line }`，`line` 是宿主打印的那一行。
+- 测试与插件之间的值按跨进程的规则传递；`t.on` 收到的事件经宿主送达，比发出方的返回晚一点到。
+- 配置由宿主检查并补上默认值；装载失败是 `PluginTestError`，文字是这一行的状态，如 `weather: config: city is required`。
+- 运行时不再在本进程里分发事件：每次发出都经过宿主（`emit` 的中位数约 71 微秒，见 [事件基准](performance-events-2026-10-28.md)）。
+
 ### Python
 
 最低版本 3.12（3.10、3.11 不再支持）。
 
+`rutis.testing` 改为在真实宿主上测试（#813 §7.5）：`load` 起一个 `rutis-host test`（`RUTIS_HOST` 指定的文件，没有时用 `PATH` 上的 `rutis-host`；模板的开发依赖 `rutis-host` 装好了它），插件跑在测试进程里的 Python 运行时上。
+
+| 0.18 | 0.19 |
+| --- | --- |
+| `load(..., strict=)`、`scope=`、`runtime=`、`deadline=` | 删：值经真实运行时传递，没有作用域、运行时名、卸载等待的选项（卸载等待按 `RUTIS_SHUTDOWN_TIMEOUT`）；作用域里的行由宿主的配置写出 |
+| `load(..., row=)` | `load(..., id=)`；另有 `isolate=`，与 `rutis.json` 里一行的 `isolate` 相同 |
+| `Bus(scopes=)`、`bus.listeners(name)`、`bus.emitter(row=, strict=)` | `Bus()`、`bus.emitter()`（以测试的插件发出） |
+| `t.reported`、`bus.reported`（列表，`Reported(kind, name, row, error)`） | `await t.reported()`、`await bus.reported()`，`Reported(line)`：宿主报告的那一行 |
+| 配置不合格时 `load` 抛出 `BindingError`（`bad-config`） | `PluginTestError`，文字是宿主写的这一行的状态行（`weather: config: city is required`） |
+| 测试给的服务与插件提供的同名时 `… is already provided by the host` | 运行时的话：`… is already provided by tester` |
+| `rutis.config`（`check`、`configured` 等） | 删：配置只由宿主的 loader 校验并补默认值，插件拿到的就是补好的配置 |
+
+运行时不再在本进程里分发事件：每次发出都经宿主，`emit` 里失败的监听器也由宿主报告（`<行>: listener of <事件> failed: …`）。插件在同一个进程里的 `emit` 之后马上看监听器的结果，要等一次经宿主的往返（如 `await ctx.parallel(...)`）。
+
+### Swift
+
+- `RutisTest` 把插件作为真实宿主 `rutis-host test` 的一行运行，宿主由它启动：把 `rutis-host` 放在 `PATH` 上（`npm install --global @arcships/rutis-host`），或用 `RUTIS_HOST` 给出路径。整个测试进程共用一个宿主；`close()` 卸掉这个测试的行。
+- 测试工具不再有 scope：`RutisTest.scope(_:groups:)`、各处的 `scope:` 参数和 `Loaded.scope` 删除，`runtimeName:` 也删除。`row:` 是行 id（默认是插件名）；`isolate:` 是这一行的 `isolate`，与 rutis.json 相同。
+- `loaded.reported` 要 `await` 读。宿主不接受的配置让 `load` 以宿主为这一行写的行失败：`weather: config: city is required`。
+- 测试的服务、`on` 与发出是插件所在运行时里的一个插件：测试与插件之间的值不再跨进程。
+- 设备与 iOS 模拟器上，`RutisTest` 是一个自己装插件的应用，连到开发机上的宿主（`RUTIS_TEST_CONNECT`、`RUTIS_TEST_TOKEN`；见 [Swift 应用指南](guide/swift-app.md)）；那里不能用 `Loaded.load` 与 `update`。
+- Swift SDK 不再校验配置：宿主检查一行的配置并填好默认值再交给运行时。应用自己装的插件只解码：用 `@RutisConfig` 时，缺的键取类型里写的字面初始值；缺必填的键或类型不对时以 `config: <键> is required` 或 `config: <键> should be <类型>, got <值>` 失败。
+- Swift 插件的事件都由宿主分发；应用自己装的插件的监听与发出算作这条连接的。
+
 ### Kotlin
 
-- 测试工具是单独的构件 `io.github.arcships:rutis-testing`（jvm）：`testImplementation("io.github.arcships:rutis-testing:<版本>")`，并 `kspTest("io.github.arcships:rutis-ksp:<版本>")`。它在测试进程里跑插件真实的运行时，作为 `rutis-host test` 的一行，需要 `rutis-host`（`PATH` 上或 `RUTIS_HOST`）。
+- 测试工具是单独的构件 `io.github.arcships:rutis-testing`（jvm）：`testImplementation("io.github.arcships:rutis-testing")`，并 `kspTest("io.github.arcships:rutis-ksp")`（SDK 从源码引用，不写版本，见 [kotlin-app](guide/kotlin-app.md#1-依赖)）。它在测试进程里跑插件真实的运行时，作为 `rutis-host test` 的一行，需要 `rutis-host`（`PATH` 上或 `RUTIS_HOST`）。
 - 测试工具不再有 scope：`RutisTest.load(scope:)`、`Loaded.load(scope:)`、`RutisTest.scope(...)` 删除；`RutisTest.load(runtime:)` 与 `Loaded.provided` 删除。行 id 不给时由 rutis 按插件名取（不再是 `test`）；装载失败的文字是该行的状态行（`weather: config: city is required`）；`loaded.reported()` 是 rutis 报告的行（`weather: listener of x failed: …`）。
 - 测试给的服务、`loaded.on`、`emit` 等是同一个运行时里的插件，值不跨进程。
 - 设备上的测试不再用 `RutisTest`：用 `RutisApp` 装自己的插件，拨到开发机上的 rutis。

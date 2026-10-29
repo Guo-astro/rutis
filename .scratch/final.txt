@@ -1,0 +1,159 @@
+...........................................................Future exception was never retrieved
+future: <Future finished exception=ConnectionError('the host disconnected') created at /Users/eric8810/miniconda3/lib/python3.12/asyncio/base_events.py:448>
+source_traceback: Object created at (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/Users/eric8810/miniconda3/lib/python3.12/unittest/__main__.py", line 18, in <module>
+    main(module=None)
+  File "/Users/eric8810/miniconda3/lib/python3.12/unittest/main.py", line 105, in __init__
+    self.runTests()
+  File "/Users/eric8810/miniconda3/lib/python3.12/unittest/main.py", line 281, in runTests
+    self.result = testRunner.run(self.test)
+  File "/Users/eric8810/miniconda3/lib/python3.12/unittest/runner.py", line 240, in run
+    test(result)
+  File "/Users/eric8810/miniconda3/lib/python3.12/unittest/suite.py", line 84, in __call__
+    return self.run(*args, **kwds)
+  File "/Users/eric8810/miniconda3/lib/python3.12/unittest/suite.py", line 122, in run
+    test(result)
+  File "/Users/eric8810/miniconda3/lib/python3.12/unittest/suite.py", line 84, in __call__
+    return self.run(*args, **kwds)
+  File "/Users/eric8810/miniconda3/lib/python3.12/unittest/suite.py", line 122, in run
+    test(result)
+  File "/Users/eric8810/miniconda3/lib/python3.12/unittest/suite.py", line 84, in __call__
+    return self.run(*args, **kwds)
+  File "/Users/eric8810/miniconda3/lib/python3.12/unittest/suite.py", line 122, in run
+    test(result)
+  File "/Users/eric8810/miniconda3/lib/python3.12/unittest/case.py", line 690, in __call__
+    return self.run(*args, **kwds)
+  File "/Users/eric8810/Code/rutis/.claude/worktrees/agent-aad5ddc8a34de2a37/python/rutis/tests/background.py", line 60, in run
+    return super().run(result)
+  File "/Users/eric8810/miniconda3/lib/python3.12/unittest/async_case.py", line 131, in run
+    return super().run(result)
+  File "/Users/eric8810/miniconda3/lib/python3.12/unittest/case.py", line 634, in run
+    self._callTestMethod(testMethod)
+  File "/Users/eric8810/miniconda3/lib/python3.12/unittest/async_case.py", line 90, in _callTestMethod
+    if self._callMaybeAsync(method) is not None:
+  File "/Users/eric8810/miniconda3/lib/python3.12/unittest/async_case.py", line 112, in _callMaybeAsync
+    return self._asyncioRunner.run(
+  File "/Users/eric8810/miniconda3/lib/python3.12/asyncio/runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+  File "/Users/eric8810/miniconda3/lib/python3.12/asyncio/base_events.py", line 672, in run_until_complete
+    self.run_forever()
+  File "/Users/eric8810/miniconda3/lib/python3.12/asyncio/base_events.py", line 639, in run_forever
+    self._run_once()
+  File "/Users/eric8810/miniconda3/lib/python3.12/asyncio/base_events.py", line 1977, in _run_once
+    handle._run()
+  File "/Users/eric8810/miniconda3/lib/python3.12/asyncio/events.py", line 88, in _run
+    self._context.run(self._callback, *self._args)
+  File "/Users/eric8810/Code/rutis/.claude/worktrees/agent-aad5ddc8a34de2a37/python/rutis/tests/test_objects.py", line 124, in test_undefined_is_none_inside_a_value
+    asyncio.ensure_future(peer.request("t", "m", [[1, UNDEFINED, 3], UNDEFINED]))
+  File "/Users/eric8810/Code/rutis/.claude/worktrees/agent-aad5ddc8a34de2a37/python/rutis/rutis/peer.py", line 1528, in request
+    future = self.loop.create_future()
+  File "/Users/eric8810/miniconda3/lib/python3.12/asyncio/base_events.py", line 448, in create_future
+    return futures.Future(loop=self)
+ConnectionError: the host disconnected
+......................................../Users/eric8810/miniconda3/lib/python3.12/linecache.py:72: ResourceWarning: unclosed <socket.socket [closed] fd=6, family=1, type=1, proto=0>
+  stat = os.stat(fullname)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/Users/eric8810/miniconda3/lib/python3.12/linecache.py:72: ResourceWarning: unclosed <socket.socket [closed] fd=7, family=1, type=1, proto=0>
+  stat = os.stat(fullname)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/Users/eric8810/miniconda3/lib/python3.12/linecache.py:72: ResourceWarning: unclosed <socket.socket [closed] fd=8, family=1, type=1, proto=0>
+  stat = os.stat(fullname)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+.........................../Users/eric8810/miniconda3/lib/python3.12/collections/__init__.py:449: ResourceWarning: unclosed <socket.socket [closed] fd=6, family=1, type=1, proto=0>
+  result = tuple_new(cls, iterable)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+..........................ticker: listener of tick failed: ValueError: async event
+    File "/Users/eric8810/Code/rutis/.claude/worktrees/agent-aad5ddc8a34de2a37/python/rutis/rutis/_unhandled.py", line 48, in _in_row
+    return await coroutine
+    ^^^^^^^^^^^^^^^
+    File "/Users/eric8810/Code/rutis/.claude/worktrees/agent-aad5ddc8a34de2a37/python/rutis/rutis/runner.py", line 974, in _invocation
+    value = await _settle(entry.listener(*args))
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    File "/Users/eric8810/Code/rutis/.claude/worktrees/agent-aad5ddc8a34de2a37/python/rutis/rutis/runner.py", line 1289, in _settle
+    value = await value
+    ^^^^^^^^^^^
+    File "/Users/eric8810/Code/rutis/.claude/worktrees/agent-aad5ddc8a34de2a37/python/rutis/tests/test_testing.py", line 210, in fail
+    raise ValueError("async event")
+    ValueError: async event
+./Users/eric8810/miniconda3/lib/python3.12/collections/__init__.py:458: ResourceWarning: unclosed <socket.socket [closed] fd=9, family=1, type=1, proto=0>
+  result = self._make(_map(kwds.pop, field_names, self))
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+...../Users/eric8810/miniconda3/lib/python3.12/collections/__init__.py:449: ResourceWarning: unclosed <socket.socket [closed] fd=7, family=1, type=1, proto=0>
+  result = tuple_new(cls, iterable)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/Users/eric8810/miniconda3/lib/python3.12/collections/__init__.py:449: ResourceWarning: unclosed <socket.socket [closed] fd=10, family=1, type=1, proto=0>
+  result = tuple_new(cls, iterable)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/Users/eric8810/miniconda3/lib/python3.12/collections/__init__.py:449: ResourceWarning: unclosed <socket.socket [closed] fd=9, family=1, type=1, proto=0>
+  result = tuple_new(cls, iterable)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/Users/eric8810/miniconda3/lib/python3.12/collections/__init__.py:449: ResourceWarning: unclosed <socket.socket [closed] fd=14, family=1, type=1, proto=0>
+  result = tuple_new(cls, iterable)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+...plugin: listener of rutis/row failed: BindingError: the listener of rutis/row is withdrawn
+    File "/Users/eric8810/Code/rutis/.claude/worktrees/agent-aad5ddc8a34de2a37/python/rutis/rutis/peer.py", line 1745, in _execute
+    value = self._dispatch(frame["target"], frame["method"], job.args)
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    File "/Users/eric8810/Code/rutis/.claude/worktrees/agent-aad5ddc8a34de2a37/python/rutis/rutis/runner.py", line 993, in dispatch
+    return as_row(None, lambda: self._control(method, args if args is not None else []))
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    File "/Users/eric8810/Code/rutis/.claude/worktrees/agent-aad5ddc8a34de2a37/python/rutis/rutis/_unhandled.py", line 40, in as_row
+    value = context.run(run)
+    ^^^^^^^^^^^^^^^^
+    File "/Users/eric8810/Code/rutis/.claude/worktrees/agent-aad5ddc8a34de2a37/python/rutis/rutis/_unhandled.py", line 38, in run
+    return call()
+    ^^^^^^
+    File "/Users/eric8810/Code/rutis/.claude/worktrees/agent-aad5ddc8a34de2a37/python/rutis/rutis/runner.py", line 993, in <lambda>
+    return as_row(None, lambda: self._control(method, args if args is not None else []))
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    File "/Users/eric8810/Code/rutis/.claude/worktrees/agent-aad5ddc8a34de2a37/python/rutis/rutis/runner.py", line 1024, in _control
+    return self._call_listener(args[0] if args else None)
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    File "/Users/eric8810/Code/rutis/.claude/worktrees/agent-aad5ddc8a34de2a37/python/rutis/rutis/runner.py", line 942, in _call_listener
+    raise BindingError(f"the listener of {name} is withdrawn")
+    rutis.peer.BindingError: the listener of rutis/row is withdrawn
+........../Users/eric8810/miniconda3/lib/python3.12/collections/__init__.py:449: ResourceWarning: unclosed <socket.socket [closed] fd=22, family=1, type=1, proto=0>
+  result = tuple_new(cls, iterable)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/Users/eric8810/miniconda3/lib/python3.12/collections/__init__.py:458: ResourceWarning: unclosed <socket.socket [closed] fd=11, family=1, type=1, proto=0>
+  result = self._make(_map(kwds.pop, field_names, self))
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/Users/eric8810/miniconda3/lib/python3.12/collections/__init__.py:458: ResourceWarning: unclosed <socket.socket [closed] fd=15, family=1, type=1, proto=0>
+  result = self._make(_map(kwds.pop, field_names, self))
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/Users/eric8810/miniconda3/lib/python3.12/collections/__init__.py:458: ResourceWarning: unclosed <socket.socket [closed] fd=6, family=1, type=1, proto=0>
+  result = self._make(_map(kwds.pop, field_names, self))
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/Users/eric8810/miniconda3/lib/python3.12/collections/__init__.py:458: ResourceWarning: unclosed <socket.socket [closed] fd=10, family=1, type=1, proto=0>
+  result = self._make(_map(kwds.pop, field_names, self))
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/Users/eric8810/miniconda3/lib/python3.12/collections/__init__.py:458: ResourceWarning: unclosed <socket.socket [closed] fd=14, family=1, type=1, proto=0>
+  result = self._make(_map(kwds.pop, field_names, self))
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/Users/eric8810/miniconda3/lib/python3.12/collections/__init__.py:458: ResourceWarning: unclosed <socket.socket [closed] fd=18, family=1, type=1, proto=0>
+  result = self._make(_map(kwds.pop, field_names, self))
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+....................................Exception in thread rutis-websocket:
+Traceback (most recent call last):
+  File "/Users/eric8810/miniconda3/lib/python3.12/threading.py", line 1073, in _bootstrap_inner
+    self.run()
+  File "/Users/eric8810/miniconda3/lib/python3.12/threading.py", line 1010, in run
+    self._target(*self._args, **self._kwargs)
+  File "/Users/eric8810/Code/rutis/.claude/worktrees/agent-aad5ddc8a34de2a37/python/rutis/rutis/websocket.py", line 237, in _serve
+    self._server.serve_forever()
+  File "/Users/eric8810/Code/rutis/.claude/worktrees/agent-aad5ddc8a34de2a37/python/rutis/tests/test_websocket.py", line 118, in serve_forever
+    raise RuntimeError("the selector failed")
+RuntimeError: the selector failed
+./Users/eric8810/miniconda3/lib/python3.12/threading.py:1014: ResourceWarning: unclosed <socket.socket fd=41, family=2, type=1, proto=0, laddr=('127.0.0.1', 53603)>
+  del self._target, self._args, self._kwargs
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+......../Users/eric8810/miniconda3/lib/python3.12/threading.py:1014: ResourceWarning: unclosed <socket.socket fd=58, family=2, type=1, proto=0, laddr=('127.0.0.1', 53634)>
+  del self._target, self._args, self._kwargs
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+..........
+----------------------------------------------------------------------
+Ran 226 tests in 14.606s
+
+OK

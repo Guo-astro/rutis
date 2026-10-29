@@ -8,7 +8,22 @@ An Android application provides its own capabilities and those of its device (co
 
 ## 1. Dependencies
 
-Android 10 (API 29) or later, JDK 17. The application's `build.gradle.kts`:
+Android 10 (API 29) or later, JDK 17. The Kotlin SDK is not published to Maven; it is used from source: fetch this repository's tag `v0.19.0` next to the application's project, and copy the application's `local.properties` (where the Android SDK is) into it:
+
+```bash
+git clone --depth 1 --branch v0.19.0 https://github.com/arcships/rutis.git ../rutis
+cp local.properties ../rutis/kotlin/rutis/
+```
+
+`kotlin/rutis` builds its Android variant only when it finds the Android SDK itself (`ANDROID_HOME`, `ANDROID_SDK_ROOT` or `sdk.dir` in its `local.properties`); when it does not, the application gets the desktop JVM variant, without the R8 rules.
+
+The application's `settings.gradle.kts` includes it as a Gradle composite build (the path is relative to the application project's root):
+
+```kotlin
+includeBuild("../rutis/kotlin/rutis")
+```
+
+The application's `build.gradle.kts`:
 
 ```kotlin
 plugins {
@@ -19,13 +34,16 @@ plugins {
 }
 
 dependencies {
-    implementation("io.github.arcships:rutis:0.18.0")
-    ksp("io.github.arcships:rutis-ksp:0.18.0")
+    // No version: Gradle builds them from the source includeBuild brings in.
+    implementation("io.github.arcships:rutis")
+    ksp("io.github.arcships:rutis-ksp")
     // The testing tool, for the plugins' unit tests on the JVM (§7).
-    testImplementation("io.github.arcships:rutis-testing:0.18.0")
-    kspTest("io.github.arcships:rutis-ksp:0.18.0")
+    testImplementation("io.github.arcships:rutis-testing")
+    kspTest("io.github.arcships:rutis-ksp")
 }
 ```
+
+To upgrade, check out the new tag in `../rutis` (`git fetch --depth 1 origin tag v<version> && git checkout v<version>`).
 
 The KSP processor generates the method tables and proxies at compile time; nothing is found by method reflection at run time, and the AAR ships its R8 rules: a release build with `isMinifyEnabled` needs no rules for rutis. `AndroidManifest.xml` needs `android.permission.INTERNET`.
 

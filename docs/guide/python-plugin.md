@@ -152,7 +152,7 @@ plugin = define_plugin(
 
 ## 6. 测试
 
-`rutis.testing` 的 `load` 不需要宿主：装上插件、给它配置和假的 `translate`，取它的服务来调用，监听它发出的事件；退出 `async with` 时卸载插件。把 `tests/test_plugin.py` 换成：
+`rutis.testing` 的 `load` 起一个测试用的宿主（`rutis-host test`，项目的开发依赖 `rutis-host` 装好了它），在测试的进程里用真实的 Python 运行时装上插件：给它配置和假的 `translate`，取它的服务来调用，监听它发出的事件；退出 `async with` 时卸载插件。把 `tests/test_plugin.py` 换成：
 
 <!-- example: python file=greeter/tests/test_plugin.py -->
 ```python
@@ -176,8 +176,10 @@ class Plugin(unittest.TestCase):
                 greeted = []
                 t.on("greeter/greeted", greeted.append)
                 self.assertEqual(await t.service("greeter").hello("Ada"), "Salut, Ada!")
-                self.assertEqual(greeted, ["Ada"])
-                self.assertEqual(await t.service("greeter").count(), 1)
+                # 测试也能发出；parallel 等全部监听器做完，之前的 emit 也已送到
+                await t.parallel("greeter/greeted", "Bo")
+                self.assertEqual(greeted, ["Ada", "Bo"])
+                self.assertEqual(await t.service("greeter").count(), 2)
 
         asyncio.run(go())
 
@@ -191,7 +193,7 @@ if __name__ == "__main__":
 uv run python -m unittest discover -s tests
 ```
 
-`load` 检查宿主会检查的事：配置按 Schema 补默认值并校验，不合格时抛出 `BindingError`（`code` 是 `bad-config`）；插件只用 `inject` 里写的服务；提供的服务带着 `provides` 里写的方法；值按跨进程的规则传递。测试工具的其余接口见 [插件 API：Python 的测试工具](plugin-api.md#python-的测试工具)。宿主给了它的服务的 Python 类型时，用法见 [宿主给的类型](#宿主给的类型)。
+检查都是宿主自己做的：配置由宿主的 loader 按 Schema 补默认值并校验，不合格时 `load` 抛出 `PluginTestError`，文字是这一行的状态行（`greeter: config: greeting should be a string, got 3`）；事件经宿主分发。测试工具的其余接口见 [插件 API：Python 的测试工具](plugin-api.md#python-的测试工具)。宿主给了它的服务的 Python 类型时，用法见 [宿主给的类型](#宿主给的类型)。
 
 ## 7. 本地运行并试一下
 
@@ -332,4 +334,4 @@ error: Argument of type "Literal[42]" cannot be assigned to parameter "value" of
 
 ## 进阶：插件 API
 
-插件作为值、其余事件方式、作用域、带方法的对象、值怎样传递、测试工具的其余接口：见 [插件 API](plugin-api.md)。在另一台机器上运行见 [rutis-host.md 的远程一节](rutis-host.md#远程运行时)。
+插件作为值、其余事件方式、作用域、带方法的对象、值怎样传递、测试工具的其余接口：见 [插件 API](plugin-api.md)。在另一台机器上运行见 [rutis-host.md 的远程一节](rutis-host.md#远程运行时与设备)。

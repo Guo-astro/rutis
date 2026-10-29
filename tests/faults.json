@@ -437,19 +437,17 @@
         "tests": [
           ["crates/rutis-host/tests/check.rs", "check_fails_a_config_that_does_not_match_the_schema"],
           ["crates/rutis-host/tests/check.rs", "check_warns_of_extra_config_keys"],
-          ["node/rutis-runtime/test/config.test.mjs", "a leaf plugin gets its config filled, and fails its row on a wrong one"]
+          ["node/rutis/test/plugin.test.mjs", "the host fills the config defaults and refuses a config the schema refuses"]
         ]
       },
       "bun": {
         "tests": [
-          ["bun/rutis-bun/test/config.test.ts", "a row's config is filled, and a wrong one fails the row with bad-config"],
-          ["bun/rutis-bun/test/config.test.ts", "this copy passes every case of the shared list"]
+          ["bun/rutis-bun/test/sdk.test.ts", "the host fills the config defaults and refuses a wrong config"]
         ]
       },
       "py": {
         "tests": [
-          ["python/rutis/tests/test_config.py", "test_a_bad_config_crosses_with_its_code_and_issues"],
-          ["python/rutis/tests/test_config.py", "test_an_extra_key_is_warned_about_once"]
+          ["python/rutis/tests/test_testing.py", "test_the_hosts_loader_checks_the_config_and_fills_its_defaults"]
         ]
       },
       "go": {

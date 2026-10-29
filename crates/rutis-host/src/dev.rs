@@ -620,7 +620,7 @@ fn runtime_of<'a>(name: &str, runtimes: &'a [String]) -> Option<&'a str> {
     let prefixed = name
         .split_once(':')
         .map(|(prefix, _)| prefix)
-        .filter(|prefix| rutis_loader::internal::is_runtime_name(prefix));
+        .filter(|prefix| rutis_loader::runtime::is_runtime_name(prefix));
     let runtime = prefixed.unwrap_or("node");
     runtimes
         .iter()

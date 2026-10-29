@@ -643,7 +643,7 @@ impl Host {
 
         // The rows as they run: those plugins added or removed too.
         let (layers, editable) = (self.loader.layers(), self.loader.editable());
-        let running = rutis_loader::internal::apply_patches(&layers).rows;
+        let running = rutis_loader::patch::apply_patches(&layers).rows;
         let old = std::mem::replace(&mut self.config, new);
         let applied = self
             .loader

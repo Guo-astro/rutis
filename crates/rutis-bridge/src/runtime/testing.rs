@@ -15,8 +15,8 @@ use rutis::internal::CtxInternal;
 pub mod events;
 
 /// What calls on the conformance plugin return: the one list both the real
-/// runtimes ([`runtime`]) and the SDK testing tools (`@arcships/rutis/testing`,
-/// `rutis.testing`) are checked against (issue #206, risk A1, Q6.7.2). Its
+/// runtimes ([`runtime`]) and the SDK testing tools (`@arcships/rutis/testing`)
+/// are checked against (issue #206, risk A1, Q6.7.2). Its
 /// `about` says how to read it.
 pub const WEATHER_EXPECTED: &str = include_str!("testing/weather.expected.json");
 
@@ -39,8 +39,9 @@ pub const WEATHER_EXPECTED: &str = include_str!("testing/weather.expected.json")
 /// conformance_weather.py`), Go and Bun.
 ///
 /// guarantee: sdk/testing-matches-runtime (risk A1, Q6.7.2), the runtime
-/// side; the testing tools' side is `node/rutis/test/conformance.test.mjs`
-/// and `python/rutis/tests/test_conformance.py`.
+/// side; the Node and Bun test tool runs plugins in these real runtimes
+/// (`@arcships/rutis/testing`), and the Python one's side is
+/// `python/rutis/tests/test_conformance.py`.
 ///
 /// `ctx` is the context whose bus the process joined (`Mount::ctx`): the
 /// `events` checks emit there.
@@ -226,7 +227,7 @@ pub async fn runtime(
         .await
         .expect("hosts.provide");
     // The declared service, and the ones the row announces (`undeclared`).
-    let projection = row_projection_of("row w", &provides, host_key, |_| false);
+    let projection = row_projection_of("row w", &provides, host_key);
     projection.attach(ctx, process.clone()).unwrap();
     let load = || {
         process.load_row_exporting(

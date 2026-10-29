@@ -197,7 +197,7 @@ async fn edits_go_to_the_user_file_and_keep_comments() {
     // Comments are kept per patch: the changed patch is rewritten.
     assert!(!text.contains("# keep this comment"), "{text}");
     let reread = profile::load(&context).unwrap();
-    let rows = rutis_loader::internal::apply_patches(&reread.layers).flat;
+    let rows = rutis_loader::patch::apply_patches(&reread.layers).flat;
     let row = |id: &str| {
         rows.iter()
             .find(|r| r.id.as_deref() == Some(id))
@@ -229,7 +229,7 @@ async fn two_writers_keep_both_edits() {
     .await
     .unwrap();
     let reread = profile::load(&context).unwrap();
-    let rows = rutis_loader::internal::apply_patches(&reread.layers).flat;
+    let rows = rutis_loader::patch::apply_patches(&reread.layers).flat;
     assert!(rows.iter().any(|r| r.id.as_deref() == Some("b-row")));
     let from_base = rows
         .iter()

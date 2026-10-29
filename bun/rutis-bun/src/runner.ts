@@ -16,10 +16,10 @@
 // Within the process, `ctx.use(name)` returns the object itself when another
 // row here provides it, so those calls never leave the process.
 // Events (#464, ./events.mjs, the same file as the Node runtime's): every
-// listener a row registers is on the host's logical bus; an emission runs
-// here when every listener of the name is here, else through the host,
-// with the five modes, scopes (each row's chain, from `rows.load`), filters
-// and unload waiting (the row's `ctx.signal`).
+// listener a row registers is on the host's logical bus, and every
+// emission goes through the host, which dispatches it with the five modes,
+// scopes (each row's chain, from `rows.load`) and filters; a row's unload
+// waits for its running listeners (the row's `ctx.signal`).
 //
 // A row's `isolate` gives some names a scope label: rows isolating a name
 // with the same label share it, and the same name under another label
@@ -30,7 +30,6 @@ import { realpathSync } from 'node:fs'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import type { Client } from './client.ts'
 import { Bus, refuseReserved } from './events.mjs'
-import { checkConfig, configError, schemaOf } from './config.mjs'
 import { definition, locate, Modules, versionOf, type Kind } from './plugin.ts'
 import { MANIFEST } from './session.ts'
 import { UNDECLARED, noMethod, notDeclared, serviceName, unavailable } from './errors.ts'
@@ -182,7 +181,7 @@ export class Runtime {
     }
   }
 
-  // The session ended: nothing is elsewhere any more.
+  // The session ended: nothing more is dispatched.
   ended() { this.#bus.ended() }
   /** This runtime's name on the host (`mount`'s `runtime`), or `bun`. */
   get name(): string { return this.#bus.runtime ?? 'bun' }
@@ -342,15 +341,9 @@ export class Runtime {
       },
     }
     try {
-      // Defaults filled and the config validated against the plugin's
-      // schema before `apply` (config schema design §2.2); extra keys are
-      // the host's loader's to warn about.
-      const schema = schemaOf(plugin.config)
-      if (schema !== undefined) {
-        const checked = checkConfig(schema, config)
-        if (checked.errors.length) throw configError(checked.errors)
-        config = checked.config
-      }
+      // The config as the host checked it against the plugin's schema, its
+      // defaults filled (the kernel's `rutis::config::check`, platform
+      // cleanup §7.5): the runtime only passes it on.
       const cleanup = await this.within(key, () => plugin.apply(ctx, config))
       if (cleanup !== undefined && cleanup !== null) {
         if (typeof cleanup !== 'function') throw new TypeError('apply must return a cleanup function or nothing')
@@ -464,9 +457,7 @@ export class Runtime {
       case 'dispose':
         this.closing = true
         return (async () => { await this.dispose(); await this.client?.drain(); return null })()
-      // The logical bus: `events.elsewhere` runs as its frame arrives (the
-      // session's `inline`); `events.call` runs a listener here.
-      case 'events.elsewhere': this.#bus.elsewhere(args[0] ?? {}); return undefined
+      // The logical bus: the host runs a listener here.
       case 'events.call': return this.#bus.call(args[0] ?? {})
       case 'rows.load': {
         const [key, entry, config, isolate, inject, exports, place] = args

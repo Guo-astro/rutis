@@ -34,7 +34,7 @@ func objectHost(t *testing.T, dispatch func(ctx context.Context, target, method 
 		}
 	}()
 	go func() { _ = runtime.Start() }()
-	if err := far.Send([]byte(`{"op":"hello","version":4,"endpoint":"main","capabilities":["objects","sync-wait"]}`)); err != nil {
+	if err := far.Send([]byte(`{"op":"hello","version":4,"endpoint":"main"}`)); err != nil {
 		t.Fatal(err)
 	}
 	next := func() map[string]any {

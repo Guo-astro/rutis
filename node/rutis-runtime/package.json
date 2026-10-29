@@ -22,6 +22,7 @@
   ],
   "type": "module",
   "exports": {
+    "./testing": "./src/testing/start.mjs",
     "./package.json": "./package.json"
   },
   "files": [

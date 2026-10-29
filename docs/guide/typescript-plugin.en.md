@@ -171,7 +171,7 @@ The other ways to emit (waiting for every listener, getting a value back) are in
 
 ## 6. Test
 
-`load` from `@arcships/rutis/testing` needs no host: give the plugin a configuration and a fake `translate`, call the service it provides, listen to the events it emits as a host does, and unload it. Replace `test/index.test.ts` with:
+`load` from `@arcships/rutis/testing` loads the plugin on a real host (`rutis-host test`, already among the project's dev dependencies): give the plugin a configuration and a fake `translate`, call the service it provides, listen to the events it emits, and unload it. Replace `test/index.test.ts` with:
 
 <!-- example: typescript-en file=greeter/test/index.test.ts -->
 ```ts
@@ -189,9 +189,9 @@ test('greets with the translated greeting', async () => {
   t.on('greeter/greeted', (name: string) => { greeted.push(name) })
   const greeter = t.service('greeter')
   assert.equal(await greeter.hello('Ada'), 'Salut, Ada!')
-  assert.deepEqual(greeted, ['Ada'])
   assert.equal(await greeter.count(), 1)
   await t.unload()
+  assert.deepEqual(greeted, ['Ada'])
 })
 
 test('the greeting is Hello when the config leaves it out', async () => {
@@ -208,8 +208,8 @@ npm test
 
 - `services` gives fakes of the services the plugin injects, by name.
 - `t.service('greeter')` is the service the plugin provides; only the methods in `provides` can be called, as in a host.
-- `t.on(name, listener)` listens to an event as a host does: whatever the plugin emits arrives.
-- `load` also checks what a host checks: that the configuration matches the schema, and that the plugin uses only the services in `inject`. Values pass by the rules between processes, so a plugin that passes its tests behaves the same when called from another process.
+- `t.on(name, listener)` listens to an event as another plugin next to it does: whatever the plugin emits arrives. Events arrive through the host, a little after `hello` returns, so the assertion comes after `await t.unload()`.
+- The plugin runs in the real Node runtime, managed by a real host: the host checks the configuration against the schema and fills its defaults, and dispatches the events; values between the plugin and the test cross between processes, so a plugin that passes its tests behaves the same in a host. The plugin must be the default export of its file (`src/index.ts` is).
 
 When the host gives TypeScript declarations of its services (a `.d.ts`), use them in place of your own `Translate` interface, as in `ctx.use<Services['translate']>('translate')`; your editor and `tsc` then check the calls before anything runs, and the fake in the test follows the same interface. The rest of the test tool is in [plugin API: the TypeScript and Bun test tool](plugin-api.en.md#the-typescript-and-bun-test-tool).
 
@@ -294,7 +294,7 @@ rutis-host dev: services: greeter (greeter), loader (host), translate (translate
 
 Call it again: it returns `"Bonjour, Ada! Welcome."`. Only the row whose files changed reloads; a change to `rutis.dev.json` also takes effect while it runs. Ctrl-C ends `dev`. All of `dev`'s rules are in [rutis-host: developing a plugin with `dev`](rutis-host.en.md#developing-a-plugin-with-dev).
 
-To run on another machine, see [the remote section of rutis-host.en.md](rutis-host.en.md#remote-runtimes).
+To run on another machine, see [the remote section of rutis-host.en.md](rutis-host.en.md#remote-runtimes-and-devices).
 
 ## 8. Publish
 

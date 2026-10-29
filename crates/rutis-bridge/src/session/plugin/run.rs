@@ -195,7 +195,6 @@ impl RunRow {
             &format!("row {}", self.name),
             &self.schema.provides,
             host_key,
-            |_| false,
         );
         projection.owned_by(caller);
         if let Err(error) = projection.attach(ctx, process.clone()) {

@@ -1,12 +1,11 @@
-"""Events in one process: the listener table of the rows here and the five
-ways to dispatch over it, shared by the runtime and its testing tool.
+"""Events in one process: the listener table of the rows here, and what
+the runtime shares with the host's dispatch.
 
 The rules are rutis's unified events (#464,
 docs/design-events-protocol-2026-10-18.md §5): an event is a name, its
-arguments and the emitter's scope (a descriptor for filters). A dispatch
-takes every live listener of the name in registration order, applies the
-filter (not to `global` listeners) before any listener runs, and checks
-each listener is still registered just before starting it.
+arguments and the emitter's scope (a descriptor for filters). Every
+emission goes through the host, which dispatches over every listener and
+calls this process's back (`events.call`).
 
 | mode        | the emitter gets                     | listeners                         |
 | ----------- | ------------------------------------ | --------------------------------- |
@@ -16,9 +15,7 @@ each listener is still registered just before starting it.
 | `waterfall` | the outermost return value, as is    | each gets `next` as its last argument |
 | `bail`      | the first result, synchronously      | an asynchronous listener fails it (AsyncListener) |
 
-A result is anything but None and False. The runtime dispatches here when
-every listener of the name is in this process (the fast path), and through
-the host otherwise; both give the same results.
+A result is anything but None and False.
 """
 
 from __future__ import annotations
@@ -33,10 +30,8 @@ from ._output import say
 from .peer import (
     UNDEFINED,
     AggregateError,
-    AsyncListener,
     RemoteError,
     ReservedEvent,
-    WaterfallNext,
 )
 
 MODES = ("emit", "parallel", "serial", "waterfall", "bail")
@@ -158,23 +153,6 @@ class Entry:
         self.prepend = prepend
         self.global_ = global_
         self.alive = True
-        # The runtime its descriptor names, when not the bus's (the testing
-        # tool's `runtime=`).
-        self.runtime: str | None = None
-
-    def descriptor(self, runtime: str | None, row: str | None = None) -> dict:
-        """What a filter sees of it (§4.2); `row` is its row's id (its key
-        when not given)."""
-        return {
-            "name": self.name,
-            "prefix": False,
-            "plugin": self.plugin,
-            "row": self.row if row is None else row,
-            "runtime": runtime if self.runtime is None else self.runtime,
-            "node": None,
-            "scope": [dict(item) for item in self.scope],
-            "global": self.global_,
-        }
 
 
 class Bus:
@@ -191,11 +169,6 @@ class Bus:
         # Guards `entries`, `by_id` and the ids.
         self._lock = threading.Lock()
         self.running: dict[str, set] = {}
-        # Invocations still in their eager start, by row: each a future set
-        # once the start returned. A listener can be inside its first step
-        # when its row unloads (a synchronous call there lets this process
-        # run the unload), so the unload waits for it to come out.
-        self.starting: dict[str, set] = {}
         self._report = report
         self.runtime = runtime
         # `within(row, call)`: calls a listener of `row` as that row's code
@@ -265,22 +238,6 @@ class Bus:
         with self._lock:
             return self.by_id.get(id)
 
-    def snapshot(self, name: str) -> list[Entry]:
-        """The listeners of `name`, in registration order (delivery is by name)."""
-        with self._lock:
-            return [entry for entry in self.entries if entry.name == name]
-
-    def select(self, entries: list[Entry], keep: Callable | None) -> list[Entry]:
-        """`entries` the filter keeps, asked once for each non-`global` one,
-        in order, before any of them runs; its error is the dispatch's."""
-        if keep is None:
-            return entries
-        return [
-            entry
-            for entry in entries
-            if entry.global_ or bool(keep(entry.descriptor(self.runtime, self.row_id(entry.row))))
-        ]
-
     # ── Invocations ──────────────────────────────────────────────
 
     def track(self, row: str, task: asyncio.Future) -> None:
@@ -297,39 +254,10 @@ class Bus:
 
         task.add_done_callback(ended)
 
-    def call(self, entry: Entry, args: list) -> tuple:
-        """Call `entry`'s listener now; (a future of what it returns, None),
-        or (None, the value) when it returned no awaitable."""
-        value = self.within(entry.row, lambda: entry.listener(*args))
-        if not inspect.isawaitable(value):
-            return None, value
-        started = asyncio.get_running_loop().create_future()
-        starting = self.starting.setdefault(entry.row, set())
-        starting.add(started)
-        try:
-            task = start(value)
-            self.track(entry.row, task)
-        finally:
-            starting.discard(started)
-            if not starting and self.starting.get(entry.row) is starting:
-                del self.starting[entry.row]
-            started.set_result(None)
-        return task, None
-
     async def stop(self, row: str, seconds: float, say=None) -> None:
         """Cancel the row's running invocations and wait for them, at most
         `seconds`; then say so and go on (§7.1 step 4)."""
         deadline = asyncio.get_running_loop().time() + seconds
-        starts = set(self.starting.get(row, ()))
-        if starts:
-            # Out of their first step, they are tracked: cancelled below.
-            _done, stuck = await asyncio.wait(starts, timeout=seconds)
-            starting = self.starting.get(row)
-            if stuck and starting is not None:
-                # Given up: a reload of the same key does not wait for them.
-                starting.difference_update(stuck)
-                if not starting:
-                    del self.starting[row]
         current = asyncio.current_task()
         tasks = {task for task in self.running.get(row, ()) if task is not current}
         if not tasks:
@@ -347,146 +275,6 @@ class Bus:
                 running.difference_update(pending)
                 if not running:
                     del self.running[row]
-
-    # ── The five modes, here ─────────────────────────────────────
-
-    def emit(self, name: str, entries: list[Entry], args: list) -> None:
-        for entry in entries:
-            if not entry.alive:
-                continue
-            try:
-                task, _value = self.call(entry, args)
-            except Exception as error:  # noqa: BLE001 - contained and reported
-                self.report("listener", name, entry.row, error)
-                continue
-            if task is not None:
-                task.add_done_callback(lambda done, row=entry.row: self._emitted(name, row, done))
-
-    def _emitted(self, name: str, row: str, done: asyncio.Future) -> None:
-        # A listener cancelled by its row's unload is not a failure.
-        if done.cancelled():
-            return
-        error = done.exception()
-        if error is not None and not isinstance(error, asyncio.CancelledError):
-            self.report("listener", name, row, error)
-
-    async def parallel(self, name: str, entries: list[Entry], args: list) -> None:
-        outcomes: list = []
-        for entry in entries:
-            if not entry.alive:
-                continue
-            try:
-                task, _value = self.call(entry, args)
-            except Exception as error:  # noqa: BLE001 - one of the failures
-                outcomes.append(error)
-                continue
-            outcomes.append(task)
-        tasks = [outcome for outcome in outcomes if asyncio.isfuture(outcome)]
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
-        errors = []
-        for outcome in outcomes:
-            if isinstance(outcome, BaseException):
-                errors.append(outcome)
-            elif outcome is not None:
-                if outcome.cancelled():
-                    errors.append(asyncio.CancelledError())
-                elif outcome.exception() is not None:
-                    errors.append(outcome.exception())
-        if errors:
-            count = "1 listener" if len(errors) == 1 else f"{len(errors)} listeners"
-            raise AggregateError(errors, f"{count} of {name} failed")
-
-    async def serial(self, name: str, entries: list[Entry], args: list) -> Any:
-        for entry in entries:
-            if not entry.alive:
-                continue
-            task, value = self.call(entry, args)
-            if task is not None:
-                value = await task
-            if not no_result(value):
-                return value
-        return None
-
-    async def waterfall(self, name: str, entries: list[Entry], args: list, terminal: Callable | None) -> Any:
-        ended = False
-
-        async def run(i: int) -> Any:
-            while i < len(entries) and not entries[i].alive:
-                i += 1
-            if i == len(entries):
-                return None if terminal is None else plain(await _settle(terminal(*args)))
-            called = False
-
-            def next() -> Any:
-                nonlocal called
-                if ended:
-                    raise WaterfallNext(f"next of {name} was called after its waterfall ended")
-                if called:
-                    raise WaterfallNext(f"next of {name} was already called")
-                called = True
-                # Started now, as in JavaScript and Go: the rest of the
-                # chain runs whether or not it is awaited at once.
-                return start(run(i + 1))
-
-            task, value = self.call(entries[i], [*args, next])
-            return plain(value if task is None else await task)
-
-        try:
-            return await run(0)
-        finally:
-            ended = True
-
-    def bail(self, name: str, entries: list[Entry], args: list) -> Any:
-        for entry in entries:
-            if not entry.alive:
-                continue
-            refused = AsyncListener(
-                f"listener of {name} in row {self.row_id(entry.row)} is asynchronous and cannot run in a synchronous bail"
-            )
-            if entry.kind == "async":
-                raise refused
-            value = self.within(entry.row, lambda entry=entry: entry.listener(*args), awaited=False)
-            if inspect.isawaitable(value):
-                discard(value)
-                raise refused
-            if not no_result(value):
-                return value
-        return None
-
-    def dispatch(self, mode: str, name: str, args: list, keep, terminal, emitter: str) -> Any:
-        """Dispatch here: None for `emit` (a failing filter reported), the
-        value for `bail`, an awaitable for the others (a failing filter
-        raises from it)."""
-        if mode == "emit":
-            try:
-                entries = self.select(self.snapshot(name), keep)
-            except Exception as error:  # noqa: BLE001 - contained and reported
-                self.report("filter", name, emitter, error)
-                return None
-            self.emit(name, entries, args)
-            return None
-        if mode == "bail":
-            return self.bail(name, self.select(self.snapshot(name), keep), args)
-        # The snapshot and the filter are taken now, not once awaited: a
-        # listener registered in between is not in it.
-        try:
-            entries = self.select(self.snapshot(name), keep)
-        except Exception as error:  # noqa: BLE001 - raised when awaited
-            return _raise(error)
-        return self._dispatch(mode, name, entries, args, terminal)
-
-    async def _dispatch(self, mode, name, entries, args, terminal) -> Any:
-        if mode == "parallel":
-            return await self.parallel(name, entries, args)
-        if mode == "serial":
-            return await self.serial(name, entries, args)
-        return await self.waterfall(name, entries, args, terminal)
-
-
-async def _raise(error: BaseException) -> Any:
-    raise error
-
 
 def _say(line: str) -> None:
     say(line)

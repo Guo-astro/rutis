@@ -2,7 +2,7 @@
 
 [English](README.en.md)
 
-[配置 Schema 设计](../../docs/design-config-schema-2026-10-27.md) §8 的用例表：补默认值、校验与错误文字的规则，每种语言的 SDK（Node、Bun、Python、Go、Swift、Kotlin）、rutis-loader 和 `rutis-host check` 都逐条跑 [`cases.json`](cases.json)，逐字比较。这不是 TLA+ 模型，不在 CI 的 `specs` 任务里跑，由各实现自己的测试跑。
+[配置 Schema 设计](../../docs/design-config-schema-2026-10-27.md) §8 的用例表：补默认值、校验与错误文字的规则，每种语言的 SDK（Go、Swift、Kotlin）、rutis-loader 和 `rutis-host check` 都逐条跑 [`cases.json`](cases.json)，逐字比较。这不是 TLA+ 模型，不在 CI 的 `specs` 任务里跑，由各实现自己的测试跑。
 
 ## 格式
 
@@ -11,7 +11,7 @@
 ```
 
 - `config` 不写表示没有配置（和 `null` 一样）。
-- `then.config`：通过，`apply` 拿到的值（补好默认值；通过 `integer` 的 `1.0` 写成整数 `1`）。按 JSON 相等比较；区分整数和小数的语言（Rust、Go、Python）还要比较是不是整数。
+- `then.config`：通过，`apply` 拿到的值（补好默认值；通过 `integer` 的 `1.0` 写成整数 `1`）。按 JSON 相等比较；区分整数和小数的语言（Rust、Go）还要比较是不是整数。
 - `then.errors`：不通过，错误的每一行，也就是标记的配置错误的文字去掉行名（设计 §5.1：按路径排好，最多 20 行，余下的写成 `config: and N more problems`）。
 - `warnings`：多余的键，同样的句子（测试工具和 loader 给出的警告）。
 

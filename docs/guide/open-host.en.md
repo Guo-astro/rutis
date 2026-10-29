@@ -264,7 +264,7 @@ added: BUY MILK
 | `Layer`, `Patch` | Where rows come from: layers, later ones overriding earlier ones; a layer is `Patch`es (`insert` adds rows, or one changes fields by `id`) | The host's own rows and the rows the user adds each in a layer (section 4) |
 | `root.shutdown()` | Unloads every plugin and waits for each cleanup; the runtime processes end with them | No limit: `shutdown_with_timeout` for one ([default output](rust-host.en.md#default-output)) |
 
-To run plugins on another machine, see [the remote section of rutis-host.en.md](rutis-host.en.md#remote-runtimes).
+To run plugins on another machine, see [the remote section of rutis-host.en.md](rutis-host.en.md#remote-runtimes-and-devices).
 
 ### Waiting until ready
 

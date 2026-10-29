@@ -54,4 +54,17 @@ dependencies {
     androidTestImplementation("androidx.test:rules:1.6.1")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
     androidTestImplementation(kotlin("test"))
+    // The testing tool in an application's unit tests (on the JVM, with
+    // the Android variant of rutis), as kotlin-app §1 sets it up.
+    testImplementation(project(":rutis-testing"))
+    kspTest(project(":rutis-ksp"))
+    testImplementation(kotlin("test"))
+}
+
+// rutis-host test for the testing tool: RUTIS_HOST, else the repository's
+// debug build (`cargo build -p rutis-host`), as in rutis/build.gradle.kts.
+tasks.withType<Test>().configureEach {
+    (System.getenv("RUTIS_HOST")?.takeIf { it.isNotEmpty() }
+        ?: rootProject.projectDir.resolve("../../target/debug/rutis-host").takeIf { it.isFile }?.canonicalPath)
+        ?.let { environment("RUTIS_HOST", it) }
 }

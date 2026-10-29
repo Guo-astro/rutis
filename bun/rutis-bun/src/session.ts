@@ -243,7 +243,7 @@ export class Session {
     this.#max = maxMessage
     // `inline`: control methods (empty target) run as their frame arrives,
     // in frame order, before the next frame is read, also while a
-    // synchronous call waits (`events.on`, `events.off`, `events.elsewhere`).
+    // synchronous call waits (`events.on`, `events.off`).
     this.#inline = new Set(inline ?? [])
     if (!ENDPOINT_ID.test(endpoint?.local)) throw new Error(`invalid endpoint id ${endpoint?.local}`)
     this.#endpoint = endpoint; this.#local = `${endpoint.local}:`

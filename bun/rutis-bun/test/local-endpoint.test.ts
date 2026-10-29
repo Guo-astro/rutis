@@ -31,7 +31,7 @@ test('a local channel greets as its --id', async () => {
         // The runtime greeted: the host ends the session.
         connection.end()
       })
-      connection.write(JSON.stringify({ op: 'hello', version: ENDPOINT_PROTOCOL, endpoint: 'main', implementation: { name: 'rutis-host', version: '0.19.0' }, capabilities: ['signals', 'sync-wait', 'events-v2'] }) + '\n')
+      connection.write(JSON.stringify({ op: 'hello', version: ENDPOINT_PROTOCOL, endpoint: 'main', implementation: { name: 'rutis-host', version: '0.19.0' }, capabilities: [] }) + '\n')
     })
     await new Promise<void>(resolve => server.listen(path, resolve))
     const child = Bun.spawn([process.execPath, '--no-install', '--no-env-file', MAIN, path, '--id', 'weather', dir], {

@@ -23,6 +23,7 @@
   ],
   "type": "module",
   "exports": {
+    "./testing": "./src/testing/start.ts",
     "./package.json": "./package.json"
   },
   "files": [

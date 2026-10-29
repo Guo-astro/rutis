@@ -171,7 +171,7 @@ export default definePlugin<Config>({
 
 ## 6. 测试
 
-`@arcships/rutis/testing` 的 `load` 不需要宿主：给插件配置和假的 `translate`，取它提供的服务来调用，像宿主一样监听它发出的事件，最后卸载。`test/index.test.ts` 换成：
+`@arcships/rutis/testing` 的 `load` 在真实的宿主上装载插件（`rutis-host test`，项目的开发依赖里已经有）：给插件配置和假的 `translate`，取它提供的服务来调用，监听它发出的事件，最后卸载。`test/index.test.ts` 换成：
 
 <!-- example: typescript file=greeter/test/index.test.ts -->
 ```ts
@@ -189,9 +189,9 @@ test('greets with the translated greeting', async () => {
   t.on('greeter/greeted', (name: string) => { greeted.push(name) })
   const greeter = t.service('greeter')
   assert.equal(await greeter.hello('Ada'), 'Salut, Ada!')
-  assert.deepEqual(greeted, ['Ada'])
   assert.equal(await greeter.count(), 1)
   await t.unload()
+  assert.deepEqual(greeted, ['Ada'])
 })
 
 test('the greeting is Hello when the config leaves it out', async () => {
@@ -208,8 +208,8 @@ npm test
 
 - `services` 是插件 `inject` 的服务的假实现，按名字给出。
 - `t.service('greeter')` 是插件提供的服务，只有 `provides` 里写的方法能调用，和在宿主里一样。
-- `t.on(名字, 监听器)` 像宿主一样监听事件，插件发出的都送到。
-- `load` 也检查宿主会检查的事：配置合不合 Schema、插件只用 `inject` 里写的服务。值按跨进程的规则传递，所以测试过了，插件在另一个进程里被调用时也一样。
+- `t.on(名字, 监听器)` 像插件旁边的另一个插件一样监听事件，插件发出的都送到。事件经宿主送达，比 `hello` 的返回晚一点到，所以断言放在 `await t.unload()` 之后。
+- 插件运行在真实的 Node 运行时里，由真实的宿主管理：宿主按 Schema 检查配置并补上默认值、分发事件，值在插件与测试之间跨进程传递，所以测试过了，在宿主里也一样。插件要是它那个文件的默认导出（`src/index.ts` 就是）。
 
 宿主给了服务的 TypeScript 声明（`.d.ts`）时，用它代替自己写的 `Translate` 接口，例如 `ctx.use<Services['translate']>('translate')`，编辑器和 `tsc` 在运行前检查调用；测试里的假实现照同一个接口写。测试工具的其余接口见 [插件 API：TypeScript 与 Bun 的测试工具](plugin-api.md#typescript-与-bun-的测试工具)。
 
@@ -294,7 +294,7 @@ rutis-host dev: services: greeter (greeter), loader (host), translate (translate
 
 再调一次，返回 `"Bonjour, Ada! Welcome."`。只有文件变了的那一行重新加载；`rutis.dev.json` 改了也在运行中生效。Ctrl-C 结束 `dev`。`dev` 的全部规则见 [rutis-host：用 dev 开发插件](rutis-host.md#用-dev-开发插件)。
 
-在另一台机器上运行见 [rutis-host.md 的远程一节](rutis-host.md#远程运行时)。
+在另一台机器上运行见 [rutis-host.md 的远程一节](rutis-host.md#远程运行时与设备)。
 
 ## 8. 发布
 

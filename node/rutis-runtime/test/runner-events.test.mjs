@@ -1,7 +1,7 @@
 // guarantee: events/node-runtime — the Node runtime on the logical bus
 // (#464), against a host written in JavaScript (fixtures/fake-host.mjs):
-// listeners registered before rows.load answers, the fast path and
-// dispatch through the host (every mode, filter selector, terminal and
+// listeners registered before rows.load answers, every emission
+// dispatched through the host (every mode, filter selector, terminal and
 // next by reference), events.call with internal/dispatch, withdrawal at
 // unload with the row's signal.
 import { test } from 'node:test'
@@ -21,7 +21,6 @@ async function started() {
   const host = await fakeHost([process.execPath, runner, conformance])
   await within('the handshake', host.ready)
   // The full set first, then mount (§4.5).
-  await host.elsewhere({})
   await host.call('mount', { plugins: [], announce: true, scope: [] })
   await host.call('hosts.provide', ['events-log', { add: 'sync' }])
   const rows = {
@@ -34,7 +33,7 @@ async function started() {
   return { host, rows }
 }
 
-test('listeners register before the row answers; dispatch runs here or through the host', async () => {
+test('listeners register before the row answers; every dispatch goes through the host', async () => {
   const { host, rows } = await started()
   try {
     await rows.listener('a', { label: 'a', name: 't/x', kind: 'any', does: { returns: 'A' } }, [T1])
@@ -42,11 +41,7 @@ test('listeners register before the row answers; dispatch runs here or through t
       { name: 't/x', row: 'a', plugin: 'conformance-events', kind: 'any', prepend: false, global: false },
     ])
     const emit = await rows.emitter('e', [T1])
-    // Every listener here: the fast path.
-    assert.equal(await emit({ mode: 'serial', name: 't/x', args: [] }), 'A')
-    assert.equal(host.dispatches.length, 0)
-    // Listeners elsewhere too: through the host, which calls this one back.
-    await host.elsewhere({ add: ['t/x'] })
+    // Every listener here, still through the host, which calls this one back.
     assert.equal(await emit({ mode: 'serial', name: 't/x', args: [] }), 'A')
     assert.deepEqual(host.dispatches.map(({ row, name, mode, args }) => ({ row, name, mode, args })), [{ row: 'e', name: 't/x', mode: 'serial', args: [] }])
     // A filter is a selector the host calls with the descriptors.
@@ -54,18 +49,14 @@ test('listeners register before the row answers; dispatch runs here or through t
     assert.ok(host.log.includes('filter:a'))
     // waterfall: next by reference, the terminal called by the host.
     await rows.listener('w', { label: 'w', name: 't/wf', does: { next: 'w' } })
-    await host.elsewhere({ addPrefixes: ['t/wf'] })
     assert.equal(await emit({ mode: 'waterfall', name: 't/wf', args: [], terminal: 'end' }), 'wend')
     // bail: a synchronous dispatch through the host.
     await rows.listener('b', { label: 'b', name: 't/bail', kind: 'any', does: { returns: 'B' } })
-    await host.elsewhere({ add: ['t/bail'] })
     assert.equal(await emit({ mode: 'bail', name: 't/bail', args: [] }), 'B')
     await rows.listener('c', { label: 'c', name: 't/async', kind: 'async', does: { returns: 'C' } })
-    await host.elsewhere({ add: ['t/async'] })
     await assert.rejects(emit({ mode: 'bail', name: 't/async', args: [] }), { name: 'AsyncListener' })
     // parallel: the host aggregates in registration order.
     await rows.listener('p', { label: 'p', name: 't/par', does: { throws: { name: 'PErr', message: 'p' } } })
-    await host.elsewhere({ add: ['t/par'] })
     await assert.rejects(emit({ mode: 'parallel', name: 't/par', args: [] }), { name: 'AggregateError' })
     // emit: answered once its calls started; the API returned at once.
     assert.equal(await emit({ mode: 'emit', name: 't/x', args: [] }), null)
@@ -90,10 +81,11 @@ test('a Cordis plugin: internal/dispatch once per dispatch, Context.filter, ctx.
     await rows.listener('x', { label: 'x', name: 't/ask', does: { returns: null } })
     const probe = (method, args = []) => host.session.invokeAsync(host.services.get('cordis-probe'), method, args)
     assert.deepEqual(await probe('rutis'), { name: null, prefix: false, plugin: 'events-cordis', row: 'cordis', runtime: null, node: null, scope: [], global: false })
-    // Here: Cordis's own dispatch fires internal/dispatch once.
+    // Its own dispatch (through the host, called back with own: true)
+    // fires internal/dispatch once.
     assert.equal(await probe('run', ['serial', 't/ask', ['Oslo']]), 'cordis:Oslo')
     assert.deepEqual(await probe('seen'), ['dispatch:serial:t/ask', 'ask:Oslo'])
-    // Context.filter: the listener's Context here, `{ rutis }` elsewhere.
+    // Context.filter: the listener's Context for a listener of this process.
     await probe('run', ['parallel', 't/ask', ['Bergen'], 'x'])
     assert.deepEqual(await probe('seen'), ['dispatch:parallel:t/ask', 'filter:cordis', 'filter:x'])
     assert.ok(host.log.includes('x'))
@@ -133,9 +125,6 @@ test('through the host, the filter judges the very copy the host asks about', as
     await load('e', { probe: 'e' }, [T1], { 'probe-e': { filtered: 'async', emitKept: 'async' } })
     const probe = (method, args) => host.session.invokeAsync(host.services.get('probe-e'), method, args)
     // The filter is asked about both copies; it keeps the t1 copy.
-    assert.deepEqual(await probe('filtered', ['t/copies', '17']), ['18', '17'])
-    // Through the host: the same.
-    await host.elsewhere({ add: ['t/copies'] })
     assert.deepEqual(await probe('filtered', ['t/copies', '17']), ['18', '17'])
     assert.equal(host.dispatches.length, 1)
   } finally {
@@ -177,7 +166,6 @@ test('rows.update unloads (signalled, waited for) and loads the row again', asyn
     await rows.listener('b', { label: 'b', name: 't/update', does: { waits: true } })
     const [before] = host.entries.filter(entry => entry.row === 'b')
     const emit = await rows.emitter('e')
-    await host.elsewhere({ add: ['t/update'] })
     const running = emit({ mode: 'parallel', name: 't/update', args: [] })
     await eventually('b started', () => host.log.includes('b'))
     await within('the update', host.call('rows.update', ['b', { label: 'b', name: 't/update', does: { returns: 'again' } }]))

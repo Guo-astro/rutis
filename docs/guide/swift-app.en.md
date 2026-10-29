@@ -80,7 +80,18 @@ public let device = Rutis.define(Plugin(name: "device", config: DeviceConfig.sel
 })
 ```
 
-Test plugins with `RutisTest` as in the plugin guide (§3); it runs in the iOS simulator too.
+Test plugins with `RutisTest` as in the plugin guide (§3). On macOS it runs the plugin as a row of `rutis-host test`; on a device and in the iOS simulator no `rutis-host` process runs, and `RutisTest` is an app installing its own plugins: each test starts a `RutisApp` with the test's services, the plugin (with its config) and the test's side, connected to a host on the development machine, which dispatches the events. The host is `rutis-host run` on the development machine with a `rutis-host/listen` row:
+
+```json
+{
+  "id": "host",
+  "listen": [{ "name": "test", "address": "127.0.0.1:7613" }],
+  "rows": [{ "id": "device", "name": "rutis-host/listen", "config": { "listener": "test" } }]
+}
+```
+
+Run `RUTIS_TOKEN_DEVICE=<token> rutis-host run rutis.json` and set `RUTIS_TEST_CONNECT=ws://127.0.0.1:7613/rutis` (the simulator shares the Mac's loopback) and `RUTIS_TEST_TOKEN=<token>` in the test's environment; with `xcrun simctl spawn`, as `SIMCTL_CHILD_RUTIS_TEST_CONNECT` and `SIMCTL_CHILD_RUTIS_TEST_TOKEN` (`tools/ios-selftest.sh` runs the SDK's own tests so). The plugin is installed once there: its config is an `Encodable` value the plugin decodes itself (no host checks it), `Loaded.service` calls the services the plugin declares in `provides`, and `Loaded.load` and `update` are macOS only.
+
 
 A plugin definition a plugin hands to a service ([Plugin API: handing over plugin definitions in each language](plugin-api.en.md#handing-over-plugin-definitions-in-each-language)) runs in the app's process; every copy mounted from it ends when the app calls `stop()` or disconnects.
 
@@ -128,7 +139,7 @@ await rutis.stop()        // withdraws the services, every plugin cleans up, lat
 | Parameter | Meaning |
 | --- | --- |
 | `plugins` | The plugins installed once connected, in this order |
-| `configs` | Optional: the plugins' configurations by plugin name, each a value of its configuration type (`Encodable`); a plugin without one gets its configuration Schema's defaults. A name that is not one of `plugins` makes `start()` throw: `configs names nope, which is not one of the plugins: device, health`. Configurations are given in `RutisApp` only: a plugin binary's plugins get theirs from rutis's rows |
+| `configs` | Optional: the plugins' configurations by plugin name, each a value of its configuration type (`Encodable`); the app's configurations are only decoded, no host checks them: a key left out takes the literal initial value its `@RutisConfig` type writes (`var units = "metric"`), and a missing required key or a value of another type fails the plugin naming the key (`config: count is required`, `config: count should be an integer, got "x"`); a plugin without a configuration gets those initial values. A name that is not one of `plugins` makes `start()` throw: `configs names nope, which is not one of the plugins: device, health`. Configurations are given in `RutisApp` only: a plugin binary's plugins get theirs from rutis's rows |
 | `connect` | The rutis access point: `wss://…`; `ws://` only on loopback (the simulator reaching the Mac it runs on) |
 | `id` | This connection's id: its plugins are registered on rutis as `<id>:<plugin>` (`kim-iphone:health`); give every installation its own (for example one stored at first launch) |
 | `token` | The shared token of the access point. Keep it in the Keychain, not in the app's code |
@@ -139,7 +150,7 @@ await rutis.stop()        // withdraws the services, every plugin cleans up, lat
 
 - `start()` returns once dialing has started; what retrying cannot fix (an invalid id or address) it throws. From then on it stays connected by itself: a connection that fails or drops is tried again (from 0.5 s, doubling up to 30 s); a refused token every 30 s. Calling `start()` when started does nothing.
 - Once connected (rutis greeted), the app installs the plugins in the order of `plugins`, by the rule plugins follow on rutis: a plugin is installed once every service it `inject`s is there (provided by another plugin of the app, or by rutis), unloaded when one goes, and installed again when it is back. rutis's shareable services all come over to the app (withdrawn here when rutis withdraws them); every service the app's plugins provide is reported to rutis (with the plugin's name), and other rows on rutis use them by name. The app does not report back the services rutis gave it.
-- A plugin that fails to load (a configuration its Schema refuses, `apply` throwing) affects only itself: `log` gets a line like `rutis: plugin device: BindingError: config: installation is required`, and the plugins after it are still installed. The line is on the device only: on rutis's side the plugin just does not appear (no `<id>:device`).
+- A plugin that fails to load (a configuration it cannot decode, `apply` throwing) affects only itself: `log` gets a line like `rutis: plugin device: BindingError: config: installation is required`, and the plugins after it are still installed. The line is on the device only: on rutis's side the plugin just does not appear (no `<id>:device`).
 - Every connection is a new one: on disconnect the plugins clean up, latest first, and are installed again on reconnect.
 - `stop()` withdraws the services and unloads every plugin, latest first, while rutis still hears it, closes the connection, and does not reconnect; it returns once done, and `start()` may follow.
 - `start()` and `stop()` take effect in the order they are called, each in a `Task` of its own too: a `start()` called during a stop starts once the stop is done (the user came back during the cleanup: the app connects again); a `stop()` called during a start undoes it (nothing keeps dialing in the background).

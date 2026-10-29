@@ -19,7 +19,6 @@ from support import LOCAL, hello
 from rutis import _values as values
 from rutis._values import BigInt, Map
 from rutis.peer import CAPABILITIES, UNDEFINED, Peer, RemoteFunction
-from rutis.testing import PluginTestError, _cross
 
 ALL = [f"value-{tag}" for tag in values.TAGS]
 
@@ -400,38 +399,6 @@ class SessionTests(background.IsolatedAsyncioTestCase):
             {"type": "map", "value": [[{"type": "uuid", "value": str(UUID(int=1))}, {"type": "reference", "value": {"id": 9, "kind": "function", "home": False, "origin": []}}]]}
         )
         self.assertIsInstance(decoded[UUID(int=1)], RemoteFunction)
-
-
-class TestingToolTests(unittest.TestCase):
-    """rutis.testing crosses tagged values as the runtime does."""
-
-    def test_tagged_values_cross_as_between_processes(self):
-        plus_two = timezone(timedelta(hours=2))
-        crossed = _cross(datetime(2026, 10, 15, 5, 0, tzinfo=plus_two), "v")
-        self.assertEqual(crossed, datetime(2026, 10, 15, 3, 0, tzinfo=timezone.utc))
-        self.assertIs(crossed.tzinfo, timezone.utc)
-        self.assertEqual(_cross({1: "a"}, "v"), Map({1: "a"}))
-        self.assertIs(type(_cross({1: "a"}, "v")), Map)
-        self.assertEqual(_cross(frozenset({1}), "v"), {1})
-        self.assertIs(type(_cross(bytearray(b"x"), "v")), bytes)
-        self.assertIs(type(_cross(BigInt(3), "v")), BigInt)
-        # An int beyond ±(2^53−1) crosses as a bigint, an int to the plugin.
-        self.assertEqual(_cross(2**64, "v"), 2**64)
-        self.assertIs(type(_cross(2**64, "v")), BigInt)
-        self.assertEqual(_cross({2**53: [-(2**60)]}, "v"), {2**53: [-(2**60)]})
-        self.assertEqual(_cross({"a": UNDEFINED}, "v"), {"a": None})
-        self.assertEqual(_cross(Decimal("1.10"), "v").as_tuple(), Decimal("1.10").as_tuple())
-
-    def test_what_the_runtime_refuses_the_testing_tool_refuses(self):
-        for value, message in (
-            (time(1, tzinfo=timezone.utc), "without a time zone"),
-            (Decimal("NaN"), "only finite decimals"),
-            ({(1, 2): "a"}, "a map key cannot be a list"),
-            ({None: "a"}, "a map key cannot be None"),
-        ):
-            with self.subTest(value=value):
-                with self.assertRaisesRegex(PluginTestError, message):
-                    _cross(value, "v")
 
 
 if __name__ == "__main__":

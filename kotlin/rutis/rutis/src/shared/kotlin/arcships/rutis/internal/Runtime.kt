@@ -198,6 +198,13 @@ class RuntimeState(plugins: List<Plugin>, private val open: Boolean = false) {
     private var servicesOffer: Long? = null
     private var farOffers = 0L
 
+    /**
+     * Whether rutis offered `events`: it serves this side a runtime session
+     * (`host`, `service`, `events` and `rows` come together), and an
+     * application's own plugins install only from then on.
+     */
+    private var hosting = false
+
     /** The services rutis announced, by name: the newest version it said of each, null methods once withdrawn. */
     internal val far = HashMap<String, FarService>()
 
@@ -353,13 +360,21 @@ class RuntimeState(plugins: List<Plugin>, private val open: Boolean = false) {
         }
     }
 
-    /** rutis's offers (`link.offers`): every service shared is announced to each new offer of `services`, as rutis nodes do. */
+    /**
+     * rutis's offers (`link.offers`): every service shared is announced to
+     * each new offer of `services`, as rutis nodes do; the first offer of
+     * `events` lets an application's own plugins install.
+     */
     internal fun offered(offers: Map<*, *>) = synchronized(lock) {
         val version = (offers["version"] as? Number)?.toLong() ?: 0
         if (version <= farOffers) return@synchronized
         farOffers = version
         val families = (offers["families"] as? List<*>).orEmpty()
         val offer = if ("services" in families) ((offers["since"] as? Map<*, *>)?.get("services") as? Number)?.toLong() ?: 0 else null
+        if ("events" in families && !hosting) {
+            hosting = true
+            reconcile()
+        }
         if (offer == servicesOffer) return@synchronized
         servicesOffer = offer
         if (offer != null) for ((id, service) in shared.entries.sortedBy { it.value.version }) announce(id, service)
@@ -393,8 +408,12 @@ class RuntimeState(plugins: List<Plugin>, private val open: Boolean = false) {
 
     /**
      * Installs an application's own plugins once rutis greeted: offers
-     * `services` (rutis's services come to this side), then each plugin, in
-     * order, with its configuration, once every service it injects is there.
+     * `services` (rutis's services come to this side), then, once rutis
+     * offers `events` (the families its plugins call are there then), each
+     * plugin, in order, with its configuration, once every service it
+     * injects is there. A far end that never offers `events` serves no
+     * runtime session: the plugins have nothing to install into and do not
+     * install.
      */
     fun install(plugins: List<Pair<Plugin, Any?>>) {
         val session = session ?: return
@@ -428,7 +447,7 @@ class RuntimeState(plugins: List<Plugin>, private val open: Boolean = false) {
                 var found: Triple<Plugin, Any?, Boolean>? = null
                 if (!closing) {
                     for ((plugin, config) in own) {
-                        val ready = plugin.inject.all(::available)
+                        val ready = hosting && plugin.inject.all(::available)
                         when (ownStates[plugin.name] ?: OwnState.Waiting) {
                             OwnState.Waiting -> if (ready) found = Triple(plugin, config, true)
                             OwnState.Loaded -> if (!ready) found = Triple(plugin, config, false)

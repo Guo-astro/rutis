@@ -7,9 +7,7 @@
 //! A world is where the participants of a case live: the real one is a rutis
 //! host with its runtimes and a second node
 //! (`crates/rutis-loader/tests/events_conformance.rs`); the SDK testing tools
-//! run the same file in one process (`node/rutis/test/events-conformance.test.mjs`,
-//! `python/rutis/tests/test_events_conformance.py`,
-//! `go/rutis/rutistest/events_conformance_test.go`).
+//! run the same file (`go/rutis/rutistest/events_conformance_test.go`).
 //!
 //! # The plugin `conformance-events`
 //!
@@ -2116,13 +2114,17 @@ pub fn problems(expected: &Expected) -> Vec<String> {
 }
 
 /// The placement the testing tools run: every participant at X, in
-/// `language`. `None` when the case is not for the tools, or `only` /
-/// `except` rule that out.
+/// `language`. `None` when the case is not for the tools, places a row in
+/// a scope (the tools load rows at the root only: platform cleanup design
+/// §7.5), or `only` / `except` rule that out.
 pub fn tool_combo(case: &Case, language: &str) -> Option<Combo> {
     if !case.tool {
         return None;
     }
     let places = case.places().ok()?;
+    if places.values().any(|(_, scope)| scope != "root") {
+        return None;
+    }
     let combo = Combo {
         x: language.to_owned(),
         y: language.to_owned(),

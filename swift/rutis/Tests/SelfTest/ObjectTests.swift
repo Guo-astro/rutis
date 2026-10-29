@@ -1,5 +1,6 @@
-// Objects with methods across processes, Swift's side (#687): a received
-// object is the proxy of a @RutisClient protocol whose methods call the
+// Objects with methods across processes, Swift's side (#687), and within
+// one runtime (a plugin handing one to another, as RutisTest's test plugin
+// does): a received object is the proxy of a @RutisClient protocol whose methods call the
 // original; one proxy per object, the original again back home; a method
 // the object lacks is no-method; a data parameter takes no object; data is
 // copied; a call given up is cancelled where it runs; an object is let go
@@ -127,12 +128,12 @@ struct ObjectTests {
     // objects-case(swift): no-method
     // objects-case(swift): declared-type-refuses
     // objects-case(swift): data-stays-data
-    // objects-case(swift): strict-testing-tool
-    /// Through the testing tool, across its session as between processes:
-    /// the plugin's proxy calls the original, which changes; given twice it
-    /// is the same proxy; sent back it is the original; a method the object
-    /// lacks is its process's no-method; a data parameter refuses an
-    /// object; data is copied.
+    /// Through the testing tool, within one runtime: an object the test
+    /// hands the plugin, taken as a @RutisClient protocol its type does not
+    /// implement, is a proxy calling the original, which changes; given
+    /// twice it is the same proxy; sent back it is the original; a method
+    /// the object lacks is no-method; a data parameter refuses an object;
+    /// data is copied. As across processes (crates/rutis-loader/tests/objects_cross.rs).
     func anObjectIsTakenAsAClientProtocolAndGoesHome() async throws {
         let warmer = Warmer()
         let plugin = Rutis.define(Plugin(name: "warmer") { ctx in ctx.provide("warmer", warmer) })
@@ -165,9 +166,8 @@ struct ObjectTests {
     }
 
     // objects-case(swift): return-array-event
-    /// As the result of a @RutisClient protocol method, an object of
-    /// another process is that protocol's proxy, of the same client each
-    /// time.
+    /// As the result of a @RutisClient protocol method, an object of the
+    /// same runtime is that protocol's proxy, of the same client each time.
     func anObjectAsAResultIsAClientProtocol() async throws {
         let plugin = Rutis.define(Plugin(name: "reader", inject: ["source"]) { ctx in
             ctx.provide("reader", Reader(source: try ctx.use("source", SourceClientProxy.self)))

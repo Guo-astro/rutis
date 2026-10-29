@@ -1,0 +1,16 @@
+..F...
+======================================================================
+FAIL: test_a_failing_async_emit_listener_is_reported_and_the_process_goes_on (test_scopes.ScopedIds.test_a_failing_async_emit_listener_is_reported_and_the_process_goes_on)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/eric8810/Code/rutis/.claude/worktrees/agent-aad5ddc8a34de2a37/python/rutis/tests/test_scopes.py", line 96, in test_a_failing_async_emit_listener_is_reported_and_the_process_goes_on
+    self.assertEqual(result.stderr, "rutis: listener of tick in row fatal failed: ValueError: unhandled leaf event\n")
+AssertionError: "rutis: emit of tick from row fatal faile[70 chars]d'\n" != 'rutis: listener of tick in row fatal fai[35 chars]nt\n'
+- rutis: emit of tick from row fatal failed: AttributeError: 'NoneType' object has no attribute 'request_answered'
++ rutis: listener of tick in row fatal failed: ValueError: unhandled leaf event
+
+
+----------------------------------------------------------------------
+Ran 6 tests in 0.157s
+
+FAILED (failures=1)

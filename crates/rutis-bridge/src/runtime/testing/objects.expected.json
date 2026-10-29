@@ -192,9 +192,9 @@
       "what": "The testing tool's strict mode gives a cross-process proxy",
       "node": "yes",
       "bun": "yes",
-      "python": "yes",
+      "python": "no",
       "go": "no",
-      "swift": "yes",
+      "swift": "no",
       "kotlin": "yes",
       "rust": "no"
     },

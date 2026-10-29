@@ -7,9 +7,8 @@
 //   (and `ctx.once`) of a name that is not `internal/*`: the listener goes
 //   on the bus, owned by the fiber that registered it, and leaves with it.
 // - Dispatch: `ctx.emit` / `parallel` / `serial` / `waterfall` / `bail`,
-//   `[thisArg,] name, ...args`, run by the bus's rules: on this process's
-//   listeners when every listener of the name is here, else through the
-//   host. Cordis's `internal/dispatch` is fired first, as Cordis does.
+//   `[thisArg,] name, ...args`, through the host (./events.mjs).
+//   Cordis's `internal/dispatch` is fired first, as Cordis does.
 // - Filter: `thisArg[Context.filter]` is called with the listener's own
 //   Context for a listener here and `{ rutis: descriptor }` for one
 //   elsewhere; every Context has a read-only `ctx.rutis`, its descriptor,
@@ -19,8 +18,6 @@
 //
 // A leaf plugin's filter (`ctx.filter(predicate)`) is passed as
 // `thisArg[KEEP]`: called with the descriptor alone.
-
-import { FAILED } from './events.mjs'
 
 export const KEEP = Symbol.for('rutis.events.keep')
 
@@ -36,21 +33,15 @@ const errorText = error => `${error?.name ?? 'Error'}: ${error?.message ?? Strin
 
 // The callback of Cordis's `dispatch('emit')` runs a `parallel`: Cordis's
 // `parallel` awaits it, its `emit` (and a plugin calling it so) does not.
-// A failure nobody awaits is reported where it happened, as `emit`
-// reports it (§5.6), instead of ending the process as an unhandled
-// rejection: one line per listener that failed here, or the line of an
+// A failure nobody awaits is reported, as `emit` reports it (§5.6),
+// instead of ending the process as an unhandled rejection: the line of an
 // emit through the host.
 function unawaited(bus, result, name, row) {
   if (!(result instanceof Promise)) return result
   let awaited = false
   result.catch(error => {
     if (awaited) return
-    const where = error?.[FAILED]
-    if (where) {
-      error.errors.forEach((child, index) => bus.report(`rutis: listener of ${name} in ${where[index]} failed: ${errorText(child)}`, { event: name, error: child }))
-    } else {
-      bus.report(`rutis: emit of ${name} from ${row === null || row === undefined ? 'the mount' : `row ${bus.rowId(row)}`} failed: ${errorText(error)}`, { event: name, row, error })
-    }
+    bus.report(`rutis: emit of ${name} from ${row === null || row === undefined ? 'the mount' : `row ${bus.rowId(row)}`} failed: ${errorText(error)}`, { event: name, row, error })
   })
   // Awaiting it, or calling then / catch / finally, takes the failure.
   return new Proxy(result, {
