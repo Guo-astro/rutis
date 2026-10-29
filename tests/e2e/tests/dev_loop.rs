@@ -294,6 +294,10 @@ fn prepare(s: &Scenario, kind: Kind) {
                 &repo().join("node/rutis"),
             );
             s.link(
+                "demo/node_modules/@arcships/rutis-runtime",
+                &repo().join("node/rutis-runtime"),
+            );
+            s.link(
                 "demo/node_modules/tsx",
                 &repo().join("node/rutis-runtime/node_modules/tsx"),
             );
@@ -369,8 +373,15 @@ const GO_ENV: &[(&str, &str)] = &[
 /// The template's own tests.
 fn template_tests(s: &Scenario, kind: Kind) -> Host {
     match kind {
-        Kind::Node => s.program("demo", npm(), ["test"], &[]),
-        Kind::Bun => s.program("demo", "bun", ["test"], &[]),
+        // The test tool runs the plugin on `rutis-host test`.
+        Kind::Node => {
+            let host = rutis_e2e::host_program();
+            s.program("demo", npm(), ["test"], &[("RUTIS_HOST", &host.to_string_lossy())])
+        }
+        Kind::Bun => {
+            let host = rutis_e2e::host_program();
+            s.program("demo", "bun", ["test"], &[("RUTIS_HOST", &host.to_string_lossy())])
+        }
         Kind::Python => {
             let path = std::env::join_paths([PathBuf::from("src"), repo().join("python/rutis")])
                 .expect("PYTHONPATH");

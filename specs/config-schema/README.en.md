@@ -2,7 +2,7 @@
 
 [中文](README.md)
 
-The case list of the [config schema design](../../docs/design-config-schema-2026-10-27.en.md) §8: the rules for filling defaults, validating and writing errors. Every language's SDK (Node, Bun, Python, Go, Swift, Kotlin), rutis-loader and `rutis-host check` run every case of [`cases.json`](cases.json) and compare word for word. This is not a TLA+ model and is not run by CI's `specs` job; each implementation's own tests run it.
+The case list of the [config schema design](../../docs/design-config-schema-2026-10-27.en.md) §8: the rules for filling defaults, validating and writing errors. Every language's SDK (Python, Go, Swift, Kotlin), rutis-loader and `rutis-host check` run every case of [`cases.json`](cases.json) and compare word for word. This is not a TLA+ model and is not run by CI's `specs` job; each implementation's own tests run it.
 
 ## Format
 

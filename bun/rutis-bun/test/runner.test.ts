@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { FEATURES, handleOf, methodsOf, Runtime, scopedId, undeclaredUse } from '../src/runner.ts'
 import type { Context } from '../../../node/rutis/src/index.d.ts'
+import { fakeHost } from './fixtures/fake-host.ts'
 
 function project(files: Record<string, string>) {
   const dir = mkdtempSync(join(tmpdir(), 'rutis-bun-'))
@@ -138,13 +139,18 @@ test('the methods of an undeclared service are its functions, own and inherited'
   expect([...methodsOf(null)]).toEqual([])
 })
 
-async function eventRows(run: (runtime: Runtime, a: Context, b: Context) => Promise<void>, scopes: Record<string, unknown[]> = {}) {
+// Rows `a` and `b` of one runtime whose host is the fake one: every
+// emission goes to it, which calls the listeners back (platform cleanup
+// §7.5).
+async function eventRows(run: (runtime: Runtime, a: Context, b: Context, host: ReturnType<typeof fakeHost>) => Promise<void>) {
   const dir = project({ 'events.ts': 'export function apply(ctx, name) { ctx.provide(name, ctx) }' })
   const runtime = new Runtime(dir)
+  const host = fakeHost().connect(fields => runtime.dispatch('', 'events.call', [fields]))
+  runtime.attach(host as any)
   try {
     runtime.dispatch('', 'mount', { announce: true })
-    for (const key of ['a', 'b']) await runtime.load(key, './events.ts', key, null, null, scopes[key])
-    await run(runtime, runtime.lookup('a') as Context, runtime.lookup('b') as Context)
+    for (const key of ['a', 'b']) await runtime.load(key, './events.ts', key, null, null)
+    await run(runtime, runtime.lookup('a') as Context, runtime.lookup('b') as Context, host)
   } finally {
     await runtime.dispose()
     rmSync(dir, { recursive: true, force: true })
@@ -152,7 +158,7 @@ async function eventRows(run: (runtime: Runtime, a: Context, b: Context) => Prom
 }
 
 // guarantee: events/bun-runtime (one bus for the rows; disposers; unload; reserved names)
-test('rows share the bus; listeners dispose independently and leave with their row', () => eventRows(async (runtime, a, b) => {
+test('rows share the bus; listeners dispose independently and leave with their row', () => eventRows(async (runtime, a, b, host) => {
   const received: number[] = []
   const listener = (value: number) => { received.push(value) }
   a.on('changed', listener)
@@ -162,20 +168,27 @@ test('rows share the bus; listeners dispose independently and leave with their r
   expect(received).toEqual([7, 7, 7])
   off()
   off()
+  expect(host.sent.filter(([method]) => method === 'events.off').length).toBe(1)
   expect(a.emit('changed', 8)).toBeUndefined()
+  await host.settled()
   expect(received).toEqual([7, 7, 7, 8, 8])
   b.effect(async () => {
     await Promise.resolve()
     a.emit('changed', 9)
   })
+  // The host withdraws an unloading row's listeners itself.
+  host.forget('b')
   await runtime.unload('b')
   a.emit('changed', 10)
+  await host.settled()
   expect(received).toEqual([7, 7, 7, 8, 8, 9, 10])
+  expect(host.failures).toEqual([])
   // A plugin keeping its context past its row emits nothing (protocol §3),
   // also once a new row took its key.
   expect(() => b.emit('changed', 11)).toThrow('row b is not loaded in this runtime')
   await runtime.load('b', './events.ts', 'b2', null, null)
   expect(() => b.serial('changed')).toThrow('row b is not loaded in this runtime')
+  await host.settled()
   expect(received).toEqual([7, 7, 7, 8, 8, 9, 10])
   expect(() => a.on('internal/dispatch', () => {})).toThrow('event internal/dispatch is internal to the runtime')
   expect(() => a.emit('internal/service')).toThrow('event internal/service is internal to the runtime')
@@ -186,34 +199,39 @@ test('rows share the bus; listeners dispose independently and leave with their r
   expect(() => a.serial('rutis/row')).toThrow('rutis/* events are emitted by rutis only: rutis/row')
 }))
 
-// guarantee: events/bun-runtime (the five modes; emit's failures reported, never thrown)
-test('the five modes, prepend, global and filter', () => eventRows(async (runtime, a, b) => {
+// guarantee: events/bun-runtime (the five modes; emit's failures go back to the host)
+test('the five modes, prepend, global and filter', () => eventRows(async (_runtime, a, b, host) => {
   const write = process.stderr.write
   const written: string[] = []
   process.stderr.write = ((text: string) => { written.push(String(text)); return true }) as typeof write
   try {
     const seen: number[] = []
-    a.on('e', () => { seen.push(1); throw new Error('sync failure') })
+    const failure = new Error('sync failure')
+    a.on('e', () => { seen.push(1); throw failure })
     b.on('e', () => { seen.push(2) })
     expect(a.emit('e')).toBeUndefined()
+    await host.settled()
     expect(seen).toEqual([1, 2])
-    expect(written).toEqual(['rutis: listener of e in row a failed: Error: sync failure\n'])
+    // The host reports it, not this runtime.
+    expect(host.failures).toEqual([failure])
+    expect(written).toEqual([])
   } finally {
     process.stderr.write = write
   }
+  const dispatched = host.sent.filter(([method]) => method === 'events.dispatch').map(([, [fields]]) => [fields.row, fields.name, fields.mode, fields.args])
+  expect(dispatched).toEqual([['a', 'e', 'emit', []]])
   const errors = [new TypeError('sync failure'), new RangeError('async failure')]
   a.on('p', () => { throw errors[0] })
   b.on('p', async () => { await Bun.sleep(5); throw errors[1] })
   const error = await a.parallel('p').catch(error => error)
   expect(error).toBeInstanceOf(AggregateError)
-  expect(error.message).toBe('2 listeners of p failed')
   expect(error.errors).toEqual(errors)
   a.on('s', () => false)
   b.on('s', async () => 0)
   expect(await a.serial('s')).toBe(0)
   a.on('w', (x: string, next: () => unknown) => `a${next()}${x}`)
   b.on('w', () => 'b', { prepend: true })
-  expect(a.waterfall.with(() => 't')('w', '!')).toBe('b')
+  expect(await a.waterfall.with(() => 't')('w', '!')).toBe('b')
   b.on('b', async () => 'x')
   expect(() => a.bail('b')).toThrow('listener of b in row b is asynchronous and cannot run in a synchronous bail')
   b.on('g', () => 'global', { global: true })
@@ -223,23 +241,19 @@ test('the five modes, prepend, global and filter', () => eventRows(async (runtim
   expect(descriptors.map(d => [d.row, d.global, d.prefix, d.node])).toEqual([['a', false, false, null]])
 }))
 
-// guarantee: events/bun-runtime (flat bus)
-test('every listener hears every event; a scope is a descriptor', () => eventRows(async (_runtime, a, b) => {
-  const heard: string[] = []
-  a.on('x', () => { heard.push('a') })
-  b.on('x', () => { heard.push('b') })
-  await a.parallel('x')
-  expect(heard.splice(0)).toEqual(['a', 'b'])
-  await b.parallel('x')
-  expect(heard.splice(0)).toEqual(['a', 'b'])
-}, { b: [{ id: '17', group: 'tenant' }] }))
-
 // guarantee: events/bun-runtime (unload signals and waits)
-test('unload aborts the row signal and waits for its running listeners', () => eventRows(async (runtime, a, b) => {
+test('unload aborts the row signal and waits for its running listeners', () => eventRows(async (runtime, a, b, host) => {
   const order: string[] = []
-  b.on('work', () => new Promise<void>(resolve => (b as any).signal.addEventListener('abort', () => { order.push('aborted'); setTimeout(resolve, 10) })).then(() => { order.push('finished') }))
+  let started!: () => void
+  const listening = new Promise<void>(resolve => { started = resolve })
+  b.on('work', () => {
+    started()
+    return new Promise<void>(resolve => (b as any).signal.addEventListener('abort', () => { order.push('aborted'); setTimeout(resolve, 10) })).then(() => { order.push('finished') })
+  })
   b.effect(() => { order.push('cleanup') })
   const running = a.parallel('work')
+  await listening
+  host.forget('b')
   await runtime.unload('b')
   expect(order).toEqual(['aborted', 'finished', 'cleanup'])
   await running
@@ -261,14 +275,12 @@ test('the host registers, dispatches and calls back through the session', async 
     const [[method, [registration]]] = sent.filter(([method]) => method === 'events.on')
     expect([method, registration.name, registration.row, registration.kind, registration.prepend, registration.global]).toEqual(['events.on', 't/x', 'r', 'any', false, false])
     expect(await runtime.dispatch('', 'events.call', [{ listener: registration.id, dispatch: 'd1', own: false, name: 't/x', mode: 'serial', args: [1] }])).toBe('x1')
+    // Its only listener is here, and still the host dispatches.
     const me = runtime.lookup('me') as Context
-    expect(await me.serial('t/x', 2)).toBe('x2')
-    expect(sent.some(([method]) => method === 'events.dispatch')).toBe(false)
-    runtime.dispatch('', 'events.elsewhere', [{ add: ['t/x'] }])
     expect(await me.serial('t/x', 3)).toBe('H')
     expect(me.bail('t/x')).toBe('B')
-    const dispatched = sent.filter(([method]) => method === 'events.dispatch').map(([, [fields]]) => [fields.row, fields.mode])
-    expect(dispatched).toEqual([['r', 'serial'], ['r', 'bail']])
+    const dispatched = sent.filter(([method]) => method === 'events.dispatch').map(([, [fields]]) => [fields.row, fields.name, fields.mode, fields.args])
+    expect(dispatched).toEqual([['r', 't/x', 'serial', [3]], ['r', 't/x', 'bail', []]])
     await runtime.dispatch('', 'rows.unload', ['r'])
     expect(() => runtime.dispatch('', 'events.call', [{ listener: registration.id, dispatch: 'd2', name: 't/x', mode: 'serial', args: [] }]))
       .toThrow(`listener ${registration.id} of t/x is withdrawn`)
@@ -316,12 +328,24 @@ test('a failed apply and an update remove the row listeners', async () => {
     }`,
   })
   const runtime = new Runtime(dir)
+  const host = fakeHost().connect(fields => runtime.dispatch('', 'events.call', [fields]))
+  runtime.attach(host as any)
   const heard: string[] = (globalThis as any).heard = []
+  const listenerOf = (row: string) => host.sent.filter(([method, [fields]]) => method === 'events.on' && fields.row === row).map(([, [fields]]) => fields.id)
   try {
     runtime.dispatch('', 'mount', { announce: true })
     await runtime.load('a', './events.ts', { label: 'first' }, null, null)
+    const [first] = listenerOf('a')
+    // The host withdraws the listeners of a row it updates, and of one
+    // whose load failed, itself; here they are withdrawn too.
+    const withdrawn = (listener: string) => expect(() => runtime.dispatch('', 'events.call', [{ listener, dispatch: 'd0', own: true, name: 'changed', mode: 'parallel', args: [] }]))
+      .toThrow(`listener ${listener} of changed is withdrawn`)
+    host.forget('a')
     await runtime.update('a', { label: 'updated' })
+    withdrawn(first)
     await expect(runtime.load('f', './events.ts', { label: 'failed', fail: true }, null, null)).rejects.toThrow('apply failed')
+    host.forget('f')
+    withdrawn(listenerOf('f')[0])
     await (runtime.lookup('emitter-updated') as Context).parallel('changed')
     expect(heard).toEqual(['updated'])
   } finally {

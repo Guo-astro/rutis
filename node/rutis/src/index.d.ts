@@ -1,13 +1,10 @@
 import type * as advanced from './advanced.js'
 
 /**
- * An error a listener in another process threw arrives as an `Error` of the
+ * An error a listener threw arrives, through the host, as an `Error` of the
  * same built-in class (`TypeError`, `RangeError`, …, `AggregateError`) or a
  * plain `Error` with the thrower's `name`, `message` and `code`, never as
- * the thrower's own class: match errors by `name`. In one process (the
- * fast path) the listener's own error may arrive; `@arcships/rutis/testing`
- * gives a plugin's emitters the crossed form, so a test catches a match by
- * class.
+ * the thrower's own class: match errors by `name`.
  */
 export interface Context extends advanced.Emitter {
   /** The service `name`, which the plugin declares in `inject`: the object itself when a plugin in the same process provides it, else a proxy whose methods are sync or async as declared. */

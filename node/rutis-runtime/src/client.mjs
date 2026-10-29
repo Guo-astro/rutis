@@ -63,11 +63,14 @@ export class Process {
   callAsync(target, method, args) { return this.#session.invokeAsync(target, method, args) }
   callAnswered(target, method, args, answered) { this.#session.invokeAnswered(target, method, args, answered) }
   callFunctionAsync(fn, args) { return this.#session.callFunctionAsync(fn, args) }
-  behind(key, run) { return this.#session.behind(key, run) }
   release(value) { this.#session.release(value) }
   references() { return this.#session.references() }
   drain() { return this.#session.drain() }
   closed() { return this.#exited }
   // End this side: the far end sees the channel end.
   end() { this.#port.postMessage({ end: true }) }
+  // Whether the session keeps this process running (by default it does):
+  // a test tool lets the process end while it waits for nothing.
+  ref() { this.#worker.ref(); this.#port.ref() }
+  unref() { this.#worker.unref(); this.#port.unref() }
 }

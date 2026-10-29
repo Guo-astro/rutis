@@ -39,8 +39,9 @@ pub const WEATHER_EXPECTED: &str = include_str!("testing/weather.expected.json")
 /// conformance_weather.py`), Go and Bun.
 ///
 /// guarantee: sdk/testing-matches-runtime (risk A1, Q6.7.2), the runtime
-/// side; the testing tools' side is `node/rutis/test/conformance.test.mjs`
-/// and `python/rutis/tests/test_conformance.py`.
+/// side; the Node and Bun test tool runs plugins in these real runtimes
+/// (`@arcships/rutis/testing`), and the Python one's side is
+/// `python/rutis/tests/test_conformance.py`.
 ///
 /// `ctx` is the context whose bus the process joined (`Mount::ctx`): the
 /// `events` checks emit there.

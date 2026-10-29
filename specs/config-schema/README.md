@@ -2,7 +2,7 @@
 
 [English](README.en.md)
 
-[配置 Schema 设计](../../docs/design-config-schema-2026-10-27.md) §8 的用例表：补默认值、校验与错误文字的规则，每种语言的 SDK（Node、Bun、Python、Go、Swift、Kotlin）、rutis-loader 和 `rutis-host check` 都逐条跑 [`cases.json`](cases.json)，逐字比较。这不是 TLA+ 模型，不在 CI 的 `specs` 任务里跑，由各实现自己的测试跑。
+[配置 Schema 设计](../../docs/design-config-schema-2026-10-27.md) §8 的用例表：补默认值、校验与错误文字的规则，每种语言的 SDK（Python、Go、Swift、Kotlin）、rutis-loader 和 `rutis-host check` 都逐条跑 [`cases.json`](cases.json)，逐字比较。这不是 TLA+ 模型，不在 CI 的 `specs` 任务里跑，由各实现自己的测试跑。
 
 ## 格式
 

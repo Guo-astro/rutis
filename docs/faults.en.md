@@ -36,7 +36,7 @@ The table comes from `tests/faults.json`. When an acceptance test changes (renam
 | 9 | Plugins calling or depending on each other | 2 tests | 1 test | 2 tests | 1 test | 2 tests | [#676](https://github.com/arcships/rutis/issues/676) [#228](https://github.com/arcships/rutis/issues/228) |
 | 10 | A runtime process exits midway | 2 tests | 2 tests | 4 tests | 2 tests | n/a | [#682](https://github.com/arcships/rutis/issues/682) [#688](https://github.com/arcships/rutis/issues/688) |
 | 11 | Breakpoints and logs | 4 tests | 2 tests | 3 tests | 1 test | 1 test | [#679](https://github.com/arcships/rutis/issues/679) [#678](https://github.com/arcships/rutis/issues/678) |
-| 12 | A wrong config | 3 tests | 2 tests | 2 tests | 3 tests | 3 tests | [#669](https://github.com/arcships/rutis/issues/669) |
+| 12 | A wrong config | 3 tests | 1 test | 2 tests | 3 tests | 3 tests | [#669](https://github.com/arcships/rutis/issues/669) |
 | 13 | Two plugins provide a service of the same name | 3 tests | 2 tests | 2 tests | 1 test | 2 tests | [#676](https://github.com/arcships/rutis/issues/676) [#677](https://github.com/arcships/rutis/issues/677) |
 | 14 | Seeing what is running now | 1 test | no test | 1 test | no test | 2 tests | [#678](https://github.com/arcships/rutis/issues/678) |
 
@@ -130,8 +130,8 @@ The table comes from `tests/faults.json`. When an acceptance test changes (renam
 
 ### 12. A wrong config
 
-- TypeScript (Node): `crates/rutis-host/tests/check.rs` `check_fails_a_config_that_does_not_match_the_schema`; `crates/rutis-host/tests/check.rs` `check_warns_of_extra_config_keys`; `node/rutis-runtime/test/config.test.mjs` “a leaf plugin gets its config filled, and fails its row on a wrong one”
-- Bun: `bun/rutis-bun/test/config.test.ts` “a row's config is filled, and a wrong one fails the row with bad-config”; `bun/rutis-bun/test/config.test.ts` “this copy passes every case of the shared list”
+- TypeScript (Node): `crates/rutis-host/tests/check.rs` `check_fails_a_config_that_does_not_match_the_schema`; `crates/rutis-host/tests/check.rs` `check_warns_of_extra_config_keys`; `node/rutis/test/plugin.test.mjs` “the host fills the config defaults and refuses a config the schema refuses”
+- Bun: `bun/rutis-bun/test/sdk.test.ts` “the host fills the config defaults and refuses a wrong config”
 - Python: `python/rutis/tests/test_config.py` `test_a_bad_config_crosses_with_its_code_and_issues`; `python/rutis/tests/test_config.py` `test_an_extra_key_is_warned_about_once`
 - Go: `go/rutis/internal/runtime/config_internal_test.go` `TestATypedConfigIsDecoded`; `go/rutis/internal/runtime/config_internal_test.go` `TestAConfigTheTypeDoesNotTakeIsSaidPlainly`; `go/rutis/rutistest/config_test.go` `TestATypedConfigInTheTestTool`
 - Rust (plugin and embedding): `crates/rutis-loader/tests/config_rows.rs` `a_rust_row_is_filled_and_validated`; `crates/rutis-loader/tests/config_rows.rs` `extra_keys_are_warned_about_once`; `crates/rutis/tests/config_cases.rs` `every_case_of_the_shared_list_passes`

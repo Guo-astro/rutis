@@ -135,9 +135,9 @@ const watchdog = new Worker(new URL('./watchdog.ts', import.meta.url), { workerD
 watchdog.unref()
 let client: Client
 try {
-  // The logical bus (#464): `events.elsewhere` runs as its frame arrives.
-  // A function or object a row hands over runs as that row's (#678).
-  client = await Client.connect(channel, { dispatch: runtime.dispatch, token, endpoint, inline: ['events.elsewhere', 'plugins.read'], ended: channelEnded, owner: runtime.running, within: runtime.within })
+  // `plugins.read` is answered as its frame arrives. A function or object
+  // a row hands over runs as that row's (#678).
+  client = await Client.connect(channel, { dispatch: runtime.dispatch, token, endpoint, inline: ['plugins.read'], ended: channelEnded, owner: runtime.running, within: runtime.within })
 } catch (error: any) {
   // The supervisor ended the session before it greeted, and said why.
   if (dialed) process.exit(1)

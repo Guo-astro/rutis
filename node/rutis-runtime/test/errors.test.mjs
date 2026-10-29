@@ -2,6 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { encodeError, decodeError, hostGone, noMethod, notDeclared, unavailable } from '../src/errors.mjs'
 import { fileURLToPath } from 'node:url'
+import { cordisConfig } from '../src/cordis-config.mjs'
 const roundtrip = value => decodeError(JSON.parse(JSON.stringify(encodeError(value))))
 
 test('thrown primitives, shared objects and cycles survive error transport', () => {
@@ -243,4 +244,29 @@ test('a thrown value at import is shown alone (#677)', async () => {
   const error = cannotLoad('need 5 words', '/work/m/str.mjs', '/work')
   assert.deepEqual([error.name, error.message], ['LoadError', 'cannot load m/str.mjs: "need 5 words"'])
   assert.equal(cannotLoad({ code: 3 }, '/work/m/obj.mjs', '/work').message, 'cannot load m/obj.mjs: {code: 3}')
+})
+
+// A Cordis plugin's `Config` (a Standard Schema) is checked in the runtime;
+// its issues become the `bad-config` error (config schema design §2.3).
+test("a Cordis plugin's Config issues are a bad-config error, written as every runtime writes them", () => {
+  const plugin = {
+    apply() {},
+    Config: {
+      '~standard': {
+        version: 1,
+        vendor: 'schemastery',
+        validate: config => (typeof config?.port === 'number'
+          ? { value: config }
+          : { issues: [{ message: 'expected number but got string', path: [{ key: 'server' }, 'port'] }, { message: 'expected object' }] }),
+      },
+    },
+  }
+  assert.doesNotThrow(() => cordisConfig(plugin, { port: 1 }))
+  assert.throws(() => cordisConfig(plugin, { port: 'x' }), error => {
+    assert.equal(error.code, 'bad-config')
+    assert.equal(error.message, 'config: server.port expected number but got string\nconfig: config expected object')
+    return true
+  })
+  // Not a Standard Schema: Cordis's own rules, nothing here.
+  assert.doesNotThrow(() => cordisConfig({ apply() {}, Config: { type: 'object' } }, 'x'))
 })
