@@ -494,7 +494,11 @@ async fn a_bun_row_calls_a_marked_rust_service() {
         .unwrap();
     std::fs::write(
         dir.path().join("calendar_user.ts"),
-        JS_CALENDAR.replace("'PLUGIN'", &format!("{:?}", sdk.to_string_lossy())),
+        // A file URL: Node imports a Windows path (`C:\\…`) only as one.
+        JS_CALENDAR.replace(
+            "'PLUGIN'",
+            &format!("{:?}", url::Url::from_file_path(&sdk).unwrap().as_str()),
+        ),
     )
     .unwrap();
     let probe = Probe::default();

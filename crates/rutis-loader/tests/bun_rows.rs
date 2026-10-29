@@ -30,7 +30,7 @@ fn sdk_plugin(body: &str) -> String {
         .unwrap();
     format!(
         "import {{ definePlugin }} from {:?}\nexport default definePlugin({body})\n",
-        sdk.to_string_lossy()
+        url::Url::from_file_path(&sdk).unwrap().as_str()
     )
 }
 

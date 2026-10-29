@@ -36,11 +36,14 @@ fn expected(loaded: &str, refused: &str) -> String {
 /// isolates `forecast` has a scope of its own, without it (it waits).
 const OPTIONS: &str = r#"OPTIONS {"named":"oslo","taken":"a row oslo is loaded already","users":["user","user-2"],"saw":["sunny"]}"#;
 
+/// The SDK as a file URL: Node imports a Windows path (`C:\\…`) only as one.
 fn sdk() -> String {
-    repo()
-        .join("node/rutis/src/index.mjs")
-        .to_string_lossy()
-        .into_owned()
+    common::process::file_url(
+        &repo()
+            .join("node/rutis/src/index.mjs")
+            .canonicalize()
+            .unwrap(),
+    )
 }
 
 fn node_plugins(dir: &Path) {
