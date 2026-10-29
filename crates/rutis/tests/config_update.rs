@@ -1,3 +1,4 @@
+//! guarantee: core/D32
 //! D32 配置热更新契约测试(design-config-hot-update-and-dynamic-events-2026-09-21 §1.7)。
 
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -152,6 +153,7 @@ async fn update_active_applies_new_config_and_cleans_once() {
 
 // ── 2. dry-run 三种失败:Err 返回,现状不动 ─────────────────────────
 
+/// guarantee: core/D12
 #[tokio::test]
 async fn update_dry_run_failure_leaves_state_untouched() {
     for (n, what) in [

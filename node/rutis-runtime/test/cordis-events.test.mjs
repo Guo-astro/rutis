@@ -1,8 +1,9 @@
-// guarantee: events/cordis — Cordis plugins on the logical bus (#464):
-// `internal/listener` registers every listener that is not internal/*,
-// Cordis's five methods dispatch by the bus's rules, `Context.filter` sees
-// the real Context here and `{ rutis }` elsewhere, `ctx.rutis` on every
-// Context, `internal/dispatch` fired once, internal/* stays Cordis's.
+// guarantee: events/one-bus — Cordis plugins on the logical bus (#464):
+// `internal/listener` registers every listener that is not internal/* with
+// the host, Cordis's five methods dispatch through the host in their mode,
+// `Context.filter` sees the real Context for a listener of this process
+// and `{ rutis }` for one elsewhere, `ctx.rutis` on every Context,
+// `internal/dispatch` fired once, internal/* stays Cordis's.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { Context } from '@deepseek-ai/cordis'
@@ -10,13 +11,19 @@ import { Bus } from '../src/events.mjs'
 import { install } from '../src/cordis-events.mjs'
 import { definePlugin } from '../../rutis/src/index.mjs'
 import { supported, toCordis } from '../src/leaf.mjs'
+import { fakePeer } from './fixtures/fake-peer.mjs'
 
-// A root Context on a bus without a host; plugins are rows by name.
-function setup(options = {}) {
+// A root Context on the runtime's bus; plugins are rows by name. Its host
+// is `peer`, by default a fake host that dispatches on the listeners
+// registered with it by calling them back (./fixtures/fake-peer.mjs).
+function setup({ peer } = {}) {
   const root = new Context()
   const reported = []
-  const bus = new Bus({ runtime: 'node', report: line => reported.push(line), ...options })
-  const scopes = new Map()
+  const report = line => reported.push(line)
+  const host = peer ?? fakePeer()
+  const bus = new Bus({ runtime: 'node', peer: host, report })
+  if (!peer) host.connect(bus)
+  const scopes = peer ? new Map() : host.scopes
   const signals = new Map()
   install(root, Context, bus, context => {
     for (let fiber = context?.fiber; fiber; fiber = fiber.parent?.fiber) {
@@ -34,14 +41,13 @@ function setup(options = {}) {
     await fiber.await()
     return fiber
   }
-  return { root, bus, reported, load, signals }
+  return { root, bus, host, reported, load, signals }
 }
 
 test('Cordis listeners register on the bus and leave with their fiber', async () => {
   const sent = []
   const host = { callAsync: (target, method, args) => { sent.push([method, args]); return Promise.resolve() }, call() {}, callFunctionAsync() {} }
-  const { root, bus, load } = setup()
-  bus.peer = host
+  const { root, bus, load } = setup({ peer: host })
   const fiber = await load('chat', ctx => {
     ctx.on('session/created', () => {})
     ctx.on('session/created', async () => {}, { prepend: true, global: true })
@@ -61,28 +67,26 @@ test('Cordis listeners register on the bus and leave with their fiber', async ()
   assert.deepEqual(seen, [1])
 })
 
-test('the five Cordis methods dispatch by the bus rules', async () => {
-  const { root, load, reported } = setup()
-  const log = []
+test('the five Cordis methods dispatch through the host, each in its mode', async () => {
+  const { root, host, load } = setup()
   await load('a', ctx => {
-    ctx.on('e', () => { log.push('a'); throw new Error('a failed') })
     ctx.on('s', () => false)
     ctx.on('w', async next => `a${await next()}`)
     ctx.on('b', () => Promise.resolve('x'))
   })
   await load('b', ctx => {
-    ctx.on('e', () => { log.push('b') })
     ctx.on('s', () => 0)
     ctx.on('w', () => 'b')
   })
-  // emit: a failing listener stops nothing and reaches nobody but the report.
-  root.emit('e')
-  assert.deepEqual(log, ['a', 'b'])
-  assert.deepEqual(reported, ['rutis: listener of e in row a failed: Error: a failed'])
+  root.emit('e', 1)
   assert.equal(await root.serial('s'), 0)
+  await root.parallel('p')
   assert.equal(await root.waterfall('w', () => 't'), 'ab')
-  // Cordis took a Promise for a result; the bus refuses it.
+  // Cordis took a Promise for a result; the runtime refuses it.
   assert.throws(() => root.bail('b'), { name: 'AsyncListener' })
+  assert.deepEqual(host.sent.filter(([method]) => method === 'events.dispatch').map(([, [fields]]) => [fields.mode, fields.name]), [
+    ['emit', 'e'], ['serial', 's'], ['parallel', 'p'], ['waterfall', 'w'], ['bail', 'b'],
+  ])
   assert.throws(() => root.emit('rutis/row', {}), { name: 'ReservedEvent' })
 })
 
@@ -117,15 +121,14 @@ test('Context.filter sees the listener Context, which has ctx.rutis', async () =
 })
 
 test('internal/dispatch is fired once for each dispatch, before the listeners', async () => {
-  const { root, bus, load } = setup()
-  const ids = []
-  bus.peer = { callAsync: (target, method, [fields]) => { if (method === 'events.on') ids.push(fields.id); return Promise.resolve() }, call() {}, callFunctionAsync() {} }
+  const { root, bus, host, load } = setup()
   const log = []
   root.on('internal/dispatch', (mode, name) => { log.push(`dispatch:${mode}:${name}`) })
   await load('a', ctx => { ctx.on('x', () => { log.push('x') }) })
   await load('b', ctx => { ctx.on('x', () => { log.push('y') }) })
   await root.serial('x')
   assert.deepEqual(log.splice(0), ['dispatch:serial:x', 'x', 'y'])
+  const ids = host.entries.filter(entry => entry.name === 'x').map(entry => entry.id)
   // From elsewhere: once per dispatch id, however many listeners run here;
   // never for this process's own dispatch, which fired it already.
   for (const listener of ids) bus.call({ listener, dispatch: 'd1', own: false, name: 'x', mode: 'serial', args: [] })
@@ -143,7 +146,7 @@ test('leaf plugins: on with prepend and global, the five methods, filter, signal
       const off = ctx.on('o', () => { log.push('later') })
       ctx.on('o', () => { log.push('first') }, { prepend: true })
       ctx.on('g', () => { log.push('global') }, { global: true })
-      ctx.on('w', (x, next) => next() + x)
+      ctx.on('w', async (x, next) => (await next()) + x)
       ctx.on('rutis/row', () => {})
       assert.equal(typeof off, 'function')
     },
@@ -154,9 +157,9 @@ test('leaf plugins: on with prepend and global, the five methods, filter, signal
   assert.deepEqual(log.splice(0), ['first', 'later'])
   assert.equal(await leaf.parallel('o'), undefined)
   // Every argument is the event's; the terminal comes with `with`.
-  assert.equal(leaf.waterfall.with(() => 'end')('w', '!'), 'end!')
-  assert.equal(leaf.waterfall('w', '!'), 'undefined!')
-  assert.equal(leaf.filter(() => true).waterfall.with(() => 'f')('w', '?'), 'f?')
+  assert.equal(await leaf.waterfall.with(() => 'end')('w', '!'), 'end!')
+  assert.equal(await leaf.waterfall('w', '!'), 'undefined!')
+  assert.equal(await leaf.filter(() => true).waterfall.with(() => 'f')('w', '?'), 'f?')
   assert.throws(() => leaf.waterfall.with('end'), TypeError)
   assert.equal(leaf.bail('nothing'), undefined)
   log.length = 0
@@ -175,14 +178,14 @@ test('leaf plugins: on with prepend and global, the five methods, filter, signal
 // Descriptors name a plugin by its declared name: Cordis's own, a leaf
 // plugin's `name`, else (a leaf plugin without one) its row's id.
 test('a leaf plugin without a name is named by its row\'s id', async () => {
-  const { root, bus, load } = setup()
+  const { root, bus, host, load } = setup()
   bus.nameRow('anon', 'anon-id')
   const named = definePlugin({ name: 'greeter', apply(ctx) { ctx.on('p', () => {}) } })
   const unnamed = definePlugin({ apply(ctx) { ctx.on('p', () => {}) } })
   await load('named', supported(toCordis(named), 'named').apply)
   await load('anon', supported(toCordis(unnamed), 'anon').apply)
   await load('cordis', ctx => { ctx.on('p', () => {}) })
-  assert.deepEqual(bus.entries().filter(entry => entry.name === 'p').map(entry => entry.plugin), ['greeter', 'anon-id', 'cordis'])
+  assert.deepEqual(host.entries.filter(entry => entry.name === 'p').map(entry => entry.plugin), ['greeter', 'anon-id', 'cordis'])
   root.emit('nothing')
 })
 
@@ -198,7 +201,9 @@ test('a failure of events.dispatch(\'emit\') nobody awaits is reported', async (
     await load('a', ctx => { ctx.on('d', () => { throw new Error('a failed') }) })
     for (const callback of root.events.dispatch('emit', ['d'])) callback()
     await new Promise(resolve => setTimeout(resolve, 10))
-    assert.deepEqual(reported, ['rutis: listener of d in row a failed: Error: a failed'])
+    // The parallel the host dispatched failed; this process reports it as
+    // the emit's failure.
+    assert.deepEqual(reported, ['rutis: emit of d from the mount failed: AggregateError: 1 listeners of d failed'])
     reported.length = 0
     const results = await Promise.allSettled(root.events.dispatch('emit', ['d']).map(async callback => callback()))
     assert.equal(results[0].status, 'rejected')
@@ -217,8 +222,7 @@ test('a failure of events.dispatch(\'emit\') nobody awaits is reported', async (
 test('through the host, Context.filter gets the Context the host asks about', async () => {
   const sent = []
   const host = { callAsync: (target, method, args) => { sent.push([method, args]); return Promise.resolve() }, call() {}, callFunctionAsync() {} }
-  const { root, bus, load } = setup()
-  bus.peer = host
+  const { root, bus, load } = setup({ peer: host })
   const contexts = []
   await load('chat', ctx => {
     for (const label of ['one', 'two']) {
@@ -227,7 +231,6 @@ test('through the host, Context.filter gets the Context the host asks about', as
   })
   const ids = sent.filter(([method]) => method === 'events.on').map(([, [fields]]) => fields.id)
   assert.equal(ids.length, 2)
-  bus.elsewhere({ add: ['f'] })
   const self = Object.create(root)
   const seen = []
   self[Context.filter] = context => { seen.push(context); return context === contexts[1] }
@@ -241,24 +244,16 @@ test('through the host, Context.filter gets the Context the host asks about', as
 
 // Some plugins call Cordis's primitive themselves (`ctx.events.dispatch`,
 // then each callback, as dsh-credentials fans its events out): with the
-// listeners on the bus, here or elsewhere, it gives one callback that
-// dispatches on the bus.
-test('events.dispatch dispatches on the bus, here or through the host', async () => {
-  const sent = []
-  const host = { callAsync: (target, method, args) => { sent.push([method, args]); return Promise.resolve() }, call() {}, callFunctionAsync() {} }
-  const { root, bus, load } = setup()
+// listeners on the bus, it gives one callback that dispatches through the
+// host, which calls this process's listener back.
+test('events.dispatch gives one callback that dispatches through the host', async () => {
+  const { root, host, load } = setup()
   const seen = []
   await load('chat', ctx => { ctx.on('credentials/updated', value => { seen.push(value) }) })
-  // Only here: one callback, dispatching on the bus here.
-  for (const callback of root.events.dispatch('emit', ['credentials/updated', 'a'])) await callback('a')
-  assert.deepEqual(seen, ['a'])
-  assert.deepEqual(sent, [])
-  bus.peer = host
-  bus.elsewhere({ add: ['credentials/updated'] })
   const callbacks = root.events.dispatch('emit', ['credentials/updated', 'b'])
   assert.equal(callbacks.length, 1)
   await callbacks[0]('b')
-  const dispatched = sent.filter(([method]) => method === 'events.dispatch').map(([, [fields]]) => [fields.name, fields.mode, fields.args])
+  const dispatched = host.sent.filter(([method]) => method === 'events.dispatch').map(([, [fields]]) => [fields.name, fields.mode, fields.args])
   assert.deepEqual(dispatched, [['credentials/updated', 'parallel', ['b']]])
-  assert.deepEqual(seen, ['a'], 'this process\'s listener is called through the host, not twice')
+  assert.deepEqual(seen, ['b'], 'called back by the host, once')
 })

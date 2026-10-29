@@ -15,8 +15,8 @@ use common::runtimes::{greet_as_main, layer, row_state, spawner, swift_binary, C
 use rutis::host::{CtxHost, FiberState};
 use rutis::Ctx;
 use rutis_bridge::session::{host_key, settle, HostDispatch};
-use rutis_loader::internal::read_binary_manifest;
 use rutis_loader::report::EntryStatus;
+use rutis_loader::runtime::binary::read_binary_manifest;
 use rutis_loader::runtime::binary::{
     Binaries, BinaryResolver, BinaryRuntimeState, BinaryRuntimes, BinaryRuntimesHandle,
 };
@@ -127,6 +127,9 @@ async fn call(root: &Ctx, name: &str, method: &str, args: Value) -> Result<Value
 /// guarantee: loader/swift-runtimes
 #[test]
 fn a_binary_describes_itself() {
+    if !rutis_test_support::runtimes::enabled("swift") {
+        return;
+    }
     let binary = swift_binary("RutisMultilang", "multilang");
     let manifest = read_binary_manifest(&binary).unwrap();
     let text = format!("{manifest:?}");
@@ -152,6 +155,9 @@ fn a_binary_describes_itself() {
 /// guarantee: loader/swift-runtimes
 #[tokio::test(flavor = "multi_thread")]
 async fn rows_find_their_binary_and_call_across_binaries() {
+    if !rutis_test_support::runtimes::enabled("swift") {
+        return;
+    }
     let fixture = fixture(
         Start::OnDemand(None),
         &[("RutisPing", "netkit"), ("RutisMultilang", "multilang")],
@@ -226,6 +232,9 @@ async fn rows_find_their_binary_and_call_across_binaries() {
 /// guarantee: loader/swift-runtimes
 #[tokio::test(flavor = "multi_thread")]
 async fn a_plugin_in_two_binaries_fails_naming_both_files() {
+    if !rutis_test_support::runtimes::enabled("swift") {
+        return;
+    }
     let fixture = fixture(
         Start::OnDemand(None),
         &[("RutisPing", "netkit"), ("RutisPing", "dup")],
@@ -252,6 +261,9 @@ async fn a_plugin_in_two_binaries_fails_naming_both_files() {
 /// guarantee: loader/swift-runtimes, loader/runtime-down-stops-its-rows
 #[tokio::test(flavor = "multi_thread")]
 async fn eager_runtimes_run_side_by_side_and_a_crash_stops_only_its_rows() {
+    if !rutis_test_support::runtimes::enabled("swift") {
+        return;
+    }
     let fixture = fixture(
         Start::Eager,
         &[("RutisPing", "netkit"), ("RutisMultilang", "multilang")],
@@ -322,6 +334,9 @@ async fn eager_runtimes_run_side_by_side_and_a_crash_stops_only_its_rows() {
 /// guarantee: loader/swift-runtimes
 #[tokio::test(flavor = "multi_thread")]
 async fn an_idle_runtime_stops_and_starts_again_when_used() {
+    if !rutis_test_support::runtimes::enabled("swift") {
+        return;
+    }
     let fixture = fixture(
         Start::OnDemand(Some(Duration::from_millis(300))),
         &[("RutisPing", "netkit"), ("RutisMultilang", "multilang")],
@@ -413,6 +428,9 @@ async fn an_idle_runtime_stops_and_starts_again_when_used() {
 /// guarantee: loader/announced-services
 #[tokio::test(flavor = "multi_thread")]
 async fn an_announced_service_another_provider_has_fails_the_later_row() {
+    if !rutis_test_support::runtimes::enabled("swift") {
+        return;
+    }
     let fixture = fixture(Start::OnDemand(None), &[("RutisMultilang", "multilang")]).await;
     // The application provides `llm` itself.
     fixture

@@ -3,8 +3,7 @@
 // crates/rutis-bridge/src/runtime/testing/events.expected.json; what a row
 // does with its config is the contract in that file's `about` and in
 // crates/rutis-bridge/src/runtime/testing/events.rs. The real runtimes
-// (crates/rutis-loader/tests/events_conformance.rs) and the testing tool
-// (node/rutis/test/events-conformance.test.mjs) both run it. It imports the
+// (crates/rutis-loader/tests/events_conformance.rs) run it. It imports the
 // SDK by path, so it is loaded where it is, not copied.
 //
 // Each row is one participant of a case, keyed by its label. A listener row

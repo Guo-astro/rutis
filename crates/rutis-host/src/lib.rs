@@ -16,6 +16,7 @@ pub mod install;
 mod installer;
 pub mod languages;
 pub mod new;
+pub mod output;
 pub mod project;
 pub mod restart;
 pub mod rows_file;
@@ -47,8 +48,8 @@ pub struct OpenHostGuideEn;
 #[macro_export]
 macro_rules! outln {
     ($($arg:tt)*) => {
-        ::rutis_bridge::pipe::write_line(
-            ::rutis_bridge::pipe::OutputStream::Stdout,
+        $crate::output::write_line(
+            $crate::output::OutputStream::Stdout,
             &::std::format!($($arg)*),
         )
     };
@@ -58,8 +59,8 @@ macro_rules! outln {
 #[macro_export]
 macro_rules! errln {
     ($($arg:tt)*) => {
-        ::rutis_bridge::pipe::write_line(
-            ::rutis_bridge::pipe::OutputStream::Stderr,
+        $crate::output::write_line(
+            $crate::output::OutputStream::Stderr,
             &::std::format!($($arg)*),
         )
     };

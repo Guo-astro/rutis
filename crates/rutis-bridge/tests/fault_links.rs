@@ -18,7 +18,6 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect};
-use rutis::internal::CtxInternal;
 use rutis::Ctx;
 use rutis_bridge::channel::testing::{fault, Faults};
 use rutis_bridge::channel::PeerId;
@@ -382,7 +381,7 @@ impl DynPlugin for ProvidesClock {
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, rutis::Error>> {
         Box::pin(async move {
             let clock = self.0.lock().unwrap().take().expect("applied once");
-            ctx.provide_key::<dyn HostDispatch>(host_key("clock"), Arc::new(clock))?;
+            ctx.provide_at(host_key("clock"), Arc::new(clock))?;
             Ok(Effect::Done)
         })
     }

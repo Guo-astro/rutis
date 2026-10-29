@@ -1,3 +1,5 @@
+//! guarantee: sdk/error-positions
+//! guarantee: bridge/marked-services
 //! `#[rutis::service]` types are served by name once provided: their
 //! dispatch decodes arguments, encodes results, throws errors with a code
 //! and data, and goes with the native service (#510).
@@ -253,7 +255,13 @@ async fn a_provided_marked_type_is_served_by_name() {
     assert_eq!(error.to_string(), "CalendarError: no entry on day 9");
     // Its stack names the method and where it is declared (#677).
     let stack = error.stack().expect("a stack");
-    let declared = format!("at Calendar.on_day ({}:56)", file!());
+    // The line of its declaration, looked up in this file's source.
+    let line = include_str!("marked_services.rs")
+        .lines()
+        .position(|line| line.trim_start().starts_with("pub fn on_day("))
+        .expect("on_day is declared in this file")
+        + 1;
+    let declared = format!("at Calendar.on_day ({}:{line})", file!());
     assert!(
         stack.starts_with("CalendarError: no entry on day 9\n"),
         "{stack}"

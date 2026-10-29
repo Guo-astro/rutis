@@ -1,9 +1,10 @@
+//! guarantee: sdk/error-texts
 //! Synchronous calls between runtimes that would wait on each other for
 //! ever: the host refuses the call that closes the cycle with
 //! `SyncWaitCycle`, and everything else completes (#228; multi-language
 //! design §9, policy B; `specs/cross-runtime-sync`). A gate, a host service
 //! the test opens, fixes the order of the calls: no sleeps.
-#![cfg(all(feature = "node", feature = "python"))]
+#![cfg(feature = "runtimes")]
 
 mod common;
 
@@ -419,18 +420,12 @@ fn node(name: &str) -> TestRuntime {
 
 /// A Bun runtime whose rows are the `.ts` files of `dir`; the Bun A is
 /// written there too.
-#[allow(unused_variables)]
 fn bun(name: &str, dir: &Path) -> TestRuntime {
-    #[cfg(feature = "bun")]
-    {
-        let bun = dir.join("bun");
-        std::fs::create_dir_all(&bun).unwrap();
-        std::fs::write(bun.join("package.json"), "{}").unwrap();
-        std::fs::write(bun.join("a.ts"), BUN_A).unwrap();
-        TestRuntime::bun(&bun).named(name)
-    }
-    #[cfg(not(feature = "bun"))]
-    unreachable!("Bun rows need the bun feature")
+    let bun = dir.join("bun");
+    std::fs::create_dir_all(&bun).unwrap();
+    std::fs::write(bun.join("package.json"), "{}").unwrap();
+    std::fs::write(bun.join("a.ts"), BUN_A).unwrap();
+    TestRuntime::bun(&bun).named(name)
 }
 
 fn python(name: &str, dir: &Path) -> TestRuntime {
@@ -448,6 +443,9 @@ fn python(name: &str, dir: &Path) -> TestRuntime {
 /// guarantee: bridge/sync-wait-cycle-refused
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn two_node_runtimes_calling_each_other() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     let work = |me: &str, inject: &str| NODE_WORK.replace("SELF", me).replace("INJECT", inject);
     let go = |me: &str, other: &str| NODE_GO_PEER.replace("SELF", me).replace("OTHER", other);
@@ -538,6 +536,9 @@ async fn two_node_runtimes_calling_each_other() {
 /// guarantee: bridge/sync-wait-cycle-refused
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn one_node_and_two_python_runtimes() {
+    if !rutis_test_support::runtimes::all_enabled(&["node", "python"]) {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     let go = write(dir.path(), "go.mjs", NODE_GO);
     let back = write(dir.path(), "back.mjs", NODE_BACK);
@@ -607,7 +608,7 @@ async fn one_node_and_two_python_runtimes() {
 /// Two Node runtimes waiting on each other through Go: `a` calls Go, which
 /// calls `b_work` in the other runtime, while `b` calls `a_work` back. Go
 /// runs every call on a goroutine of its own and puts none aside, but its
-/// synchronous calls say they wait (`sync-wait`, #385): the host sees the
+/// synchronous calls say they wait (`sync: true`, #385): the host sees the
 /// cycle and refuses the call that closes it, wherever that is, and the
 /// rest completes.
 /// risk: P10, C6
@@ -615,6 +616,9 @@ async fn one_node_and_two_python_runtimes() {
 #[cfg(feature = "go")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn two_node_runtimes_waiting_on_each_other_through_go() {
+    if !rutis_test_support::runtimes::all_enabled(&["node", "go"]) {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     let work = |me: &str| NODE_WORK.replace("SELF", me).replace("INJECT", "");
     let go = |me: &str, other: &str| NODE_GO_PEER.replace("SELF", me).replace("OTHER", other);
@@ -686,7 +690,7 @@ async fn two_node_runtimes_waiting_on_each_other_through_go() {
 /// the service: `a` calls Go, which calls the object in the other runtime,
 /// while `b` calls `a_work` back. Go
 /// runs every call on a goroutine of its own and puts none aside, but its
-/// synchronous calls say they wait (`sync-wait`, #385): the host sees the
+/// synchronous calls say they wait (`sync: true`, #385): the host sees the
 /// cycle and refuses the call that closes it, wherever that is, and the
 /// rest completes.
 /// risk: P10, C6
@@ -696,6 +700,9 @@ async fn two_node_runtimes_waiting_on_each_other_through_go() {
 #[cfg(feature = "go")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn two_node_runtimes_waiting_on_each_other_through_a_go_object() {
+    if !rutis_test_support::runtimes::all_enabled(&["node", "go"]) {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     let work = |me: &str| NODE_WORK.replace("SELF", me).replace("INJECT", "");
     let go = |me: &str, other: &str| NODE_GO_PEER.replace("SELF", me).replace("OTHER", other);
@@ -768,12 +775,15 @@ async fn two_node_runtimes_waiting_on_each_other_through_a_go_object() {
 
 /// Two Node runtimes waiting on each other through Swift: as through Go,
 /// a Swift runtime runs every call in a Task of its own and its synchronous
-/// calls say they wait (`sync-wait`): the host sees the cycle and refuses
+/// calls say they wait (`sync: true`): the host sees the cycle and refuses
 /// the call that closes it, and the rest completes.
 /// guarantee: bridge/sync-wait-cycle-refused
 #[cfg(all(feature = "swift", target_os = "macos"))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn two_node_runtimes_waiting_on_each_other_through_swift() {
+    if !rutis_test_support::runtimes::all_enabled(&["node", "swift"]) {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     let work = |me: &str| NODE_WORK.replace("SELF", me).replace("INJECT", "");
     let go = |me: &str, other: &str| NODE_GO_PEER.replace("SELF", me).replace("OTHER", other);
@@ -905,7 +915,6 @@ export default definePlugin({
 "#;
 
 /// A in Bun (reentrant), the same.
-#[cfg(feature = "bun")]
 const BUN_A: &str = r#"
 export const inject = ['gate', 'c_back']
 export const provides = { a_svc: { x: 'sync' } }
@@ -963,8 +972,11 @@ def apply(ctx, config):
 /// guarantee: bridge/sync-wait-cycle-refused
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn an_emit_listener_run_while_a_call_waits() {
+    if !rutis_test_support::runtimes::all_enabled(&["node", "python"]) {
+        return;
+    }
     let mut kinds = vec!["python", "node"];
-    if cfg!(feature = "bun") {
+    if rutis_test_support::runtimes::enabled("bun") {
         kinds.push("bun");
     }
     for kind in kinds {
@@ -1085,6 +1097,9 @@ export default definePlugin({
 /// guarantee: bridge/sync-wait-cycle-refused
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn function_references_calling_each_other() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     let work = |me: &str| NODE_REF_WORK.replace("SELF", me);
     let go = |me: &str, other: &str| NODE_REF_GO.replace("SELF", me).replace("OTHER", other);
@@ -1166,6 +1181,9 @@ export default definePlugin({
 /// guarantee: bridge/sync-wait-cycle-refused
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn an_emit_listener_called_after_its_filter_answered() {
+    if !rutis_test_support::runtimes::all_enabled(&["node", "python"]) {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     let c = write(dir.path(), "c.mjs", NODE_C);
     let back = write(dir.path(), "c_back.mjs", NODE_C_BACK);

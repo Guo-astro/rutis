@@ -82,6 +82,9 @@ async fn rows_process(dir: &Path) -> Arc<Process> {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn describe_reports_config_inject_and_provides() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     let process = rows_process(dir.path()).await;
     assert!(process.supports("rows.v2") && process.supports("hosts"));
@@ -126,23 +129,25 @@ export function apply(ctx) {
 }
 "#;
 
+/// guarantee: loader/announced-services
 /// #428: the services a row provides without declaring them are announced
 /// with the methods each object has (own and inherited, `async`; not its
-/// fields), and published before its load returns; one the row keeps to
-/// its own scope is not; unloading withdraws them.
+/// fields), and published before its load returns, each in the scope the
+/// projection runs in: one that scope isolates is seen there only;
+/// unloading withdraws them.
 #[tokio::test(flavor = "multi_thread")]
 async fn services_a_row_does_not_declare_are_announced_with_their_methods() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     let process = rows_process(dir.path()).await;
     assert!(process.supports("rows.announce"));
     let entry = write(dir.path(), "store.mjs", STORE);
-    let ctx = Ctx::root().unwrap();
-    let projection = row_projection_of(
-        "row store",
-        &serde_json::Map::new(),
-        |name| host_key(name).erase(),
-        |name| name == "kept",
-    );
+    let root = Ctx::root().unwrap();
+    // The row keeps `kept` to an isolate of its own, as the loader runs it.
+    let ctx = root.isolate(host_key("kept").erase(), "rutis-loader/entry/store");
+    let projection = row_projection_of("row store", &serde_json::Map::new(), host_key);
     projection.attach(&ctx, process.clone()).unwrap();
     process
         .load_row_exporting(
@@ -176,17 +181,21 @@ async fn services_a_row_does_not_declare_are_announced_with_their_methods() {
         "a field is not a method"
     );
     drop(store);
-    assert!(ctx.get_at::<dyn HostDispatch>(&host_key("kept")).is_none());
+    assert!(ctx.get_at::<dyn HostDispatch>(&host_key("kept")).is_some());
+    assert!(root.get_at::<dyn HostDispatch>(&host_key("kept")).is_none());
 
     projection.withdraw().await;
     process.unload_row("store").await.unwrap();
     assert!(ctx.get_at::<dyn HostDispatch>(&host_key("store")).is_none());
     process.dispose().await.unwrap();
-    ctx.shutdown().await.unwrap();
+    root.shutdown().await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn row_services_reach_rutis_and_hosts_are_leased() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     let process = rows_process(dir.path()).await;
     let entry = write(dir.path(), "weather.mjs", WEATHER);
@@ -309,17 +318,13 @@ fn held_projection() -> (Arc<Projection>, mpsc::Receiver<()>, mpsc::Sender<()>) 
     let (release, wait) = mpsc::channel::<()>();
     let mut first = Some((tell, wait));
     let projection = Projection::new();
-    projection.service_keyed::<dyn HostDispatch>(
-        "greeter",
-        host_key("greeter").erase(),
-        move |process, handle| {
-            if let Some((tell, wait)) = first.take() {
-                tell.send(()).unwrap();
-                recv_within("the test releases the publication", &wait);
-            }
-            Arc::new(RowService::new(process, handle, json!({ "greet": "sync" })))
-        },
-    );
+    projection.service_keyed("greeter", host_key("greeter"), move |process, handle| {
+        if let Some((tell, wait)) = first.take() {
+            tell.send(()).unwrap();
+            recv_within("the test releases the publication", &wait);
+        }
+        Arc::new(RowService::new(process, handle, json!({ "greet": "sync" })))
+    });
     (projection, held, release)
 }
 
@@ -380,6 +385,9 @@ async fn load_held(
 /// to drop it, and the service stayed in rutis after its row was gone.
 #[tokio::test(flavor = "multi_thread")]
 async fn closing_keeps_a_withdrawal_reported_during_a_publication() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     let process = rows_process(dir.path()).await;
     let entry = write(dir.path(), "greeter.mjs", GREETER);
@@ -416,6 +424,9 @@ async fn closing_keeps_a_withdrawal_reported_during_a_publication() {
 /// once and leave the service in rutis.
 #[tokio::test(flavor = "multi_thread")]
 async fn withdraw_waits_for_a_publication_under_way() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     let process = rows_process(dir.path()).await;
     let entry = write(dir.path(), "greeter.mjs", GREETER);

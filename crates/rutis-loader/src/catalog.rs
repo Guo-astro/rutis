@@ -8,8 +8,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use rutis::host::TypeKey;
-use rutis::internal::CtxInternal;
+use rutis::host::{CtxHost, InstanceId, Key, TypeKey};
 use rutis::Ctx;
 use serde::Serialize;
 use serde_json::Value;
@@ -17,8 +16,10 @@ use serde_json::Value;
 use crate::resolver::Build;
 use crate::LoaderError;
 
-type Probe = Arc<dyn Fn(&Ctx, &TypeKey) -> bool + Send + Sync>;
-type Read = Arc<dyn Fn(&Ctx, &TypeKey) -> Option<Value> + Send + Sync>;
+/// Tests or reads the service at its key, on the instance a copy resolves
+/// the name to, if any.
+type Probe = Arc<dyn Fn(&Ctx, Option<InstanceId>) -> bool + Send + Sync>;
+type Read = Arc<dyn Fn(&Ctx, Option<InstanceId>) -> Option<Value> + Send + Sync>;
 
 /// Where a name's key comes from.
 #[derive(Clone, PartialEq, Eq)]
@@ -103,13 +104,21 @@ pub struct ServiceCatalog {
     services: HashMap<String, Service>,
 }
 
-fn probe<T: ?Sized + Send + Sync + 'static>() -> Probe {
-    Arc::new(|ctx: &Ctx, key: &TypeKey| ctx.get_key::<T>(key.clone()).is_some())
+/// `key` on `instance`, when the name resolves into one.
+fn on<T: ?Sized + 'static>(key: &Key<T>, instance: Option<InstanceId>) -> Key<T> {
+    match instance {
+        Some(instance) => key.clone().instance(instance),
+        None => key.clone(),
+    }
 }
 
-fn reader<T: Serialize + Send + Sync + 'static>() -> Read {
-    Arc::new(|ctx: &Ctx, key: &TypeKey| {
-        ctx.get_key::<T>(key.clone())
+fn probe<T: ?Sized + Send + Sync + 'static>(key: Key<T>) -> Probe {
+    Arc::new(move |ctx: &Ctx, instance| ctx.get_at(&on(&key, instance)).is_some())
+}
+
+fn reader<T: Serialize + Send + Sync + 'static>(key: Key<T>) -> Read {
+    Arc::new(move |ctx: &Ctx, instance| {
+        ctx.get_at(&on(&key, instance))
             .and_then(|value| serde_json::to_value(&*value).ok())
     })
 }
@@ -125,12 +134,12 @@ impl ServiceCatalog {
             .insert(name.into(), Service { key, exists, read });
     }
 
-    /// Name the service `T` registered under `TypeKey::of::<T>()`.
+    /// Name the service `T` registered under `Key::<T>::of()`.
     pub fn register<T: ?Sized + Send + Sync + 'static>(
         &mut self,
         name: impl Into<String>,
     ) -> &mut Self {
-        self.register_keyed::<T>(name, TypeKey::of::<T>())
+        self.register_keyed(name, Key::<T>::of())
     }
 
     /// Name a service registered under an explicit key (named, dynamic or
@@ -138,9 +147,9 @@ impl ServiceCatalog {
     pub fn register_keyed<T: ?Sized + Send + Sync + 'static>(
         &mut self,
         name: impl Into<String>,
-        key: TypeKey,
+        key: Key<T>,
     ) -> &mut Self {
-        self.insert(name, NameKey::Global(key), probe::<T>(), None);
+        self.insert(name, NameKey::Global(key.erase()), probe(key), None);
         self
     }
 
@@ -153,7 +162,7 @@ impl ServiceCatalog {
         name: impl Into<String>,
         group: impl Into<String>,
     ) -> &mut Self {
-        self.insert_instance::<T>(name, group, TypeKey::of::<T>())
+        self.insert_instance(name, group, Key::<T>::of())
     }
 
     /// Name the service `T` registered under `key`, qualified with the
@@ -162,13 +171,13 @@ impl ServiceCatalog {
         &mut self,
         name: impl Into<String>,
         group: impl Into<String>,
-        key: TypeKey,
+        key: Key<T>,
     ) -> &mut Self {
-        let key = NameKey::Instance {
+        let base = NameKey::Instance {
             group: group.into(),
-            base: key,
+            base: key.erase(),
         };
-        self.insert(name, key, probe::<T>(), None);
+        self.insert(name, base, probe(key), None);
         self
     }
 
@@ -178,19 +187,19 @@ impl ServiceCatalog {
         &mut self,
         name: impl Into<String>,
     ) -> &mut Self {
-        self.readable_keyed::<T>(name, TypeKey::of::<T>())
+        self.readable_keyed(name, Key::<T>::of())
     }
 
     pub fn readable_keyed<T: Serialize + Send + Sync + 'static>(
         &mut self,
         name: impl Into<String>,
-        key: TypeKey,
+        key: Key<T>,
     ) -> &mut Self {
         self.insert(
             name,
-            NameKey::Global(key),
-            probe::<T>(),
-            Some(reader::<T>()),
+            NameKey::Global(key.erase()),
+            probe(key.clone()),
+            Some(reader(key)),
         );
         self
     }
@@ -203,7 +212,7 @@ impl ServiceCatalog {
     pub fn register_shared(&mut self, name: impl Into<String>) -> &mut Self {
         let name = name.into();
         let key = rutis_bridge::session::host_key(&name);
-        self.register_keyed::<dyn rutis_bridge::session::HostDispatch>(name, key.erase())
+        self.register_keyed(name, key)
     }
 
     /// A shared service ([`ServiceCatalog::register_shared`]) inside each
@@ -218,7 +227,7 @@ impl ServiceCatalog {
     ) -> &mut Self {
         let name = name.into();
         let key = rutis_bridge::session::host_key(&name);
-        self.insert_instance::<dyn rutis_bridge::session::HostDispatch>(name, group, key.erase())
+        self.insert_instance(name, group, key)
     }
 
     /// Whether `name` is shared across languages by name, globally or
@@ -227,6 +236,21 @@ impl ServiceCatalog {
     pub fn is_shared(&self, name: &str) -> bool {
         self.name_key(name)
             .is_some_and(|key| key.base() == &rutis_bridge::session::host_key(name).erase())
+    }
+
+    /// The key of the shared name `name` for a copy running in `build`'s
+    /// instances: `host_key(name)`, on the instance it resolves to there.
+    #[cfg(feature = "runtimes")]
+    pub(crate) fn shared_key_in(
+        &self,
+        name: &str,
+        build: &Build,
+    ) -> Result<Key<dyn rutis_bridge::session::HostDispatch>, LoaderError> {
+        let key = self.key_in(name, build)?;
+        Ok(on(
+            &rutis_bridge::session::host_key(name),
+            key.instance_id(),
+        ))
     }
 
     /// [`ServiceCatalog::is_shared`]; nothing is shared without runtimes or
@@ -422,7 +446,9 @@ impl<'a> ExprScope<'a> {
     /// instances, is an error, not `false`.
     pub fn has(&self, name: &str) -> Result<bool, LoaderError> {
         let (service, key) = self.service(name)?;
-        Ok(self.ctx.is_some_and(|ctx| (service.exists)(ctx, &key)))
+        Ok(self
+            .ctx
+            .is_some_and(|ctx| (service.exists)(ctx, key.instance_id())))
     }
 
     /// The value of a readable service, `None` while it is absent. Services
@@ -433,7 +459,7 @@ impl<'a> ExprScope<'a> {
             .read
             .as_ref()
             .ok_or_else(|| LoaderError::NotReadable(name.to_owned()))?;
-        Ok(self.ctx.and_then(|ctx| read(ctx, &key)))
+        Ok(self.ctx.and_then(|ctx| read(ctx, key.instance_id())))
     }
 }
 

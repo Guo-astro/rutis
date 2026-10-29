@@ -201,6 +201,37 @@ fn the_go_template_declares_what_it_provides() {
     passes(dir.path(), r#"{"greeter":{"hello":"async"}}"#);
 }
 
+/// The Go template's own test passes: `go test` runs the plugin under
+/// `rutis-host test`, the binary this build made.
+/// guarantee: host/new
+#[test]
+fn the_go_template_passes_its_own_test() {
+    let dir = tempfile::tempdir().unwrap();
+    rutis_host::new::create(dir.path(), "greeter", "go").unwrap();
+    let project = dir.path().join("greeter");
+    let module = project.join("go.mod");
+    let mut text = std::fs::read_to_string(&module).unwrap();
+    text.push_str(&format!(
+        "\nreplace github.com/arcships/rutis/go/rutis => {}\n",
+        repo().join("go/rutis").canonicalize().unwrap().display()
+    ));
+    std::fs::write(&module, text).unwrap();
+    let output = Command::new("go")
+        .args(["test", "./..."])
+        .current_dir(&project)
+        .env("GOFLAGS", "-mod=mod")
+        .env("GOPROXY", "off")
+        .env("RUTIS_HOST", env!("CARGO_BIN_EXE_rutis-host"))
+        .output()
+        .expect("go is on PATH");
+    assert!(
+        output.status.success(),
+        "go test: {}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 /// The Bun template: its plugin in the Bun runtime, configured as its
 /// `rutis.dev.json` says; `check --strict` passes. Only its own row: the
 /// row using its service would need Node as well, which the other tests

@@ -34,8 +34,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, InstanceId, TypeKey};
-use rutis::internal::CtxInternal;
+use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, InstanceId, Key, TypeKey};
 use rutis::{Ctx, Error};
 use rutis_bridge::runtime::Process;
 use rutis_bridge::{session_key, SessionHandle};
@@ -60,8 +59,8 @@ pub struct SessionRows {
 
 impl SessionRows {
     /// The key for the rows of the session of the connection row `row`.
-    pub fn key(row: &str) -> TypeKey {
-        TypeKey::keyed_dynamic::<SessionRows>(row.to_owned())
+    pub fn key(row: &str) -> Key<SessionRows> {
+        Key::dynamic(row.to_owned())
     }
 
     /// What runs the rows there.
@@ -445,7 +444,7 @@ impl DynPlugin for SessionRowsPlugin {
                     // A row that fails to resolve says so in its status.
                     let _ = loader.refresh(&id).await;
                 }
-                if let Err(error) = owner.provide_key(key, Arc::new(SessionRows { process })) {
+                if let Err(error) = owner.provide_at(key, Arc::new(SessionRows { process })) {
                     if !owner.cancellation_token().is_cancelled() {
                         eprintln!("{row}: cannot release its rows: {error}");
                     }

@@ -1,3 +1,6 @@
+// guarantee: sdk/error-rethrown
+// guarantee: sdk/error-positions
+// guarantee: bridge/error-code-and-data
 // Errors in the Bun session: what a Rust service's `Err(e)` carries (#440).
 import { test } from 'bun:test'
 import assert from 'node:assert/strict'

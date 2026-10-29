@@ -204,6 +204,7 @@ pub fn cannot_reload(id: &str, error: &LoaderError, running: bool) -> String {
 mod tests {
     use super::*;
 
+    /// guarantee: host/dev-reload
     /// The row that failed with another's new code comes first in the line,
     /// and whether the previous version runs on is said.
     #[test]
@@ -242,6 +243,7 @@ mod tests {
         );
     }
 
+    /// guarantee: loader/service
     /// An edit that took effect but was not stored, and one the host keeps
     /// no editable configuration for, say so in the words of §7 of the
     /// design.

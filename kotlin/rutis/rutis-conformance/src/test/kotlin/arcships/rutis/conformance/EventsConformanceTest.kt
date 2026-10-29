@@ -1,3 +1,4 @@
+// guarantee: events/one-bus
 package arcships.rutis.conformance
 
 import arcships.rutis.RutisException
@@ -312,15 +313,11 @@ class EventsConformanceTest {
         val expected = expectations("events.expected.json")
         val toolCases = expected["toolCases"]!!.jsonObject[LANGUAGE]?.jsonPrimitive?.content?.toInt()
         var ran = 0
-        var scoped = 0
         val failures = ArrayList<String>()
         for (raw in expected["cases"]!!.jsonArray) {
             val c = Case(raw.jsonObject)
             if (c.forKotlin() != null) continue
-            if (c.scoped()) {
-                scoped++
-                continue
-            }
+            if (c.scoped()) continue
             ran++
             val log = EventLog()
             val problems = ArrayList<String>()
@@ -339,8 +336,8 @@ class EventsConformanceTest {
             if (problems.isNotEmpty()) failures.add(problems.joinToString("\n"))
         }
         if (failures.isNotEmpty()) fail("${failures.size} cases failed:\n" + failures.joinToString("\n"))
-        // The skip logic agrees with events.rs `tool_combo`; the cases with
-        // scopes are rutis-loader's.
-        assertEquals(toolCases, ran + scoped, "the cases the file gives $LANGUAGE")
+        // The skip logic agrees with events.rs `tool_combo`, which leaves out
+        // the cases with scopes (rutis-loader's): `toolCases` counts the rest.
+        assertEquals(toolCases, ran, "the cases the file gives $LANGUAGE")
     }
 }

@@ -4,7 +4,7 @@
 //! framing, its message limit, backpressure and how it ends.
 // Unix only (Q7.8): Bun on Windows is not a declared platform, and the
 // relay dials Unix sockets.
-#![cfg(all(unix, feature = "bun", feature = "testing"))]
+#![cfg(all(unix, feature = "testing"))]
 
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
@@ -58,5 +58,8 @@ fn pair() -> (Channel, Channel) {
 
 #[test]
 fn bun_channels_meet_the_channel_contract() {
+    if !rutis_test_support::runtimes::enabled("bun") {
+        return;
+    }
     rutis_bridge::channel::testing::contract(pair);
 }

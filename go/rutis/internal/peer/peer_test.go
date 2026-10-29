@@ -478,6 +478,7 @@ func TestAFarEndOfAnotherProtocolVersionIsRefusedSayingWhichEndToUpgrade(t *test
 	}
 }
 
+// guarantee: bridge/error-code-and-data
 // A Rust service's error decodes with its code and data (#440), a big
 // integer in the data as a *big.Int.
 func TestARustServiceErrorHasItsCodeAndData(t *testing.T) {
@@ -656,7 +657,7 @@ func toFloat(value any) float64 {
 
 func toInt(ref any) int { return int(toFloat(ref.(map[string]any)["value"])) }
 
-// guarantee: sdk/error-texts (a call in flight when the host goes fails with
+// guarantee: sdk/error-codes, sdk/error-texts (a call in flight when the host goes fails with
 // `the host disconnected`, code peer-gone: #677)
 func TestACallFailsSayingTheHostDisconnected(t *testing.T) {
 	entered := make(chan struct{})

@@ -1,16 +1,12 @@
 //! Objects with methods across runtimes, the host's side (#687, the Rust
 //! column of `objects.expected.json`): the host forwards them between
-//! sessions that declared `objects`, says where an object came from once its runtime is
-//! gone, refuses one to a far end that takes none, and keeps `undefined`
+//! sessions, says where an object came from once its runtime is gone,
+//! refuses one to a Rust service that takes none, and keeps `undefined`
 //! only as a whole argument or result.
 
 use super::*;
 use crate::session::{host_key, HostDispatch};
 use rutis::host::CtxHost;
-
-/// The far ends of these tests: runtimes taking objects, marking their
-/// synchronous waits.
-const TAKES_OBJECTS: [&str; 3] = ["objects", "sync-wait", "sync-stack"];
 
 /// Host session `a`, whose far end greets as `name`, owns object 3 and
 /// gives it as the result of the first call; the far end and the object's
@@ -18,7 +14,7 @@ const TAKES_OBJECTS: [&str; 3] = ["objects", "sync-wait", "sync-stack"];
 async fn owner(name: &str) -> (Connection, Remote, Value) {
     let (a, far) = connected(Arc::new(NoExports));
     let name = name.to_owned();
-    let mut far = tokio::task::spawn_blocking(move || Remote::start_as(far, &name, &TAKES_OBJECTS))
+    let mut far = tokio::task::spawn_blocking(move || Remote::start_as(far, &name, &ONE_STACK))
         .await
         .unwrap();
     a.ready().await.unwrap();
@@ -50,7 +46,7 @@ async fn an_object_is_released_when_its_holder_goes() {
     let (_a, mut far_a, object) = owner("node").await;
     let (b, far_b) = connected(Arc::new(NoExports));
     let holder = tokio::task::spawn_blocking(move || {
-        let mut far_b = Remote::start_declaring(far_b, &TAKES_OBJECTS);
+        let mut far_b = Remote::start_declaring(far_b, &ONE_STACK);
         let Frame::Invoke { id, args, .. } = far_b.read() else {
             panic!("invoke expected")
         };
@@ -87,7 +83,7 @@ async fn gone(name: &str, how: Option<&str>, reason: &str, said: &str) {
     let (a, far_a, object) = owner(name).await;
     let (b, far_b) = connected(Arc::new(NoExports));
     let holder = tokio::task::spawn_blocking(move || {
-        let mut far_b = Remote::start_declaring(far_b, &TAKES_OBJECTS);
+        let mut far_b = Remote::start_declaring(far_b, &ONE_STACK);
         let Frame::Invoke { id, args, .. } = far_b.read() else {
             panic!("invoke expected")
         };
@@ -283,7 +279,7 @@ async fn undefined_is_null_inside_values() {
     let echo = Arc::new(Echo(Mutex::new(None)));
     let (a, far) = connected(echo.clone());
     let script = tokio::task::spawn_blocking(move || {
-        let mut far = Remote::start_declaring(far, &TAKES_OBJECTS);
+        let mut far = Remote::start_declaring(far, &ONE_STACK);
         // Sent: inside, null; a whole argument, undefined.
         let Frame::Invoke { id, args, .. } = far.read() else {
             panic!("invoke expected")
@@ -400,7 +396,7 @@ async fn a_rust_service_refuses_an_object_argument() {
 async fn hand(object: &Value) -> (Connection, Remote, u64) {
     let (b, far_b) = connected(Arc::new(NoExports));
     let holder = tokio::task::spawn_blocking(move || {
-        let mut far_b = Remote::start_declaring(far_b, &TAKES_OBJECTS);
+        let mut far_b = Remote::start_declaring(far_b, &ONE_STACK);
         let Frame::Invoke { id, args, .. } = far_b.read() else {
             panic!("invoke expected")
         };
@@ -572,7 +568,7 @@ async fn an_object_given_twice_is_one_relay_and_comes_back_as_itself() {
     let (_a, _far_a, object) = owner("node").await;
     let (b, far_b) = connected(Arc::new(NoExports));
     let holder = tokio::task::spawn_blocking(move || {
-        let mut far_b = Remote::start_declaring(far_b, &TAKES_OBJECTS);
+        let mut far_b = Remote::start_declaring(far_b, &ONE_STACK);
         let mut relays = Vec::new();
         for _ in 0..2 {
             let Frame::Invoke { id, args, .. } = far_b.read() else {
@@ -633,10 +629,9 @@ async fn a_host_service_calling_another_sessions_object_rebases_its_chain() {
     let held = Arc::new(std::sync::OnceLock::new());
     held.set(object).unwrap();
     let (b, far_b) = connected(Arc::new(Poke(held)));
-    let mut far_b =
-        tokio::task::spawn_blocking(move || Remote::start_declaring(far_b, &TAKES_OBJECTS))
-            .await
-            .unwrap();
+    let mut far_b = tokio::task::spawn_blocking(move || Remote::start_declaring(far_b, &ONE_STACK))
+        .await
+        .unwrap();
     b.ready().await.unwrap();
     let tag = b.tag().to_owned();
     let path = tokio::task::spawn_blocking(move || {
@@ -696,10 +691,9 @@ impl Dispatch for Keep {
 async fn a_future_sent_to_another_session_has_its_origin_rebased() {
     let held = Arc::new(std::sync::OnceLock::new());
     let (a, far_a) = connected(Arc::new(Keep(held.clone())));
-    let mut far_a =
-        tokio::task::spawn_blocking(move || Remote::start_declaring(far_a, &TAKES_OBJECTS))
-            .await
-            .unwrap();
+    let mut far_a = tokio::task::spawn_blocking(move || Remote::start_declaring(far_a, &ONE_STACK))
+        .await
+        .unwrap();
     a.ready().await.unwrap();
     let tag = a.tag().to_owned();
     let (far_a, home) = tokio::task::spawn_blocking(move || {
@@ -727,7 +721,7 @@ async fn a_future_sent_to_another_session_has_its_origin_rebased() {
     let (b, far_b) = endpoint_pair();
     let given = |b: Connection, far_b: Far, future: Value| async move {
         let taker = tokio::task::spawn_blocking(move || {
-            let mut far_b = Remote::start_declaring(far_b, &["objects"]);
+            let mut far_b = Remote::start(far_b);
             let Frame::Invoke { id, args, .. } = far_b.read() else {
                 panic!("invoke expected")
             };
@@ -766,7 +760,7 @@ async fn a_future_awaited_by_a_session_calls_on_its_behalf() {
         Value::future(async move { object.call_method_async("get", Value::List(vec![])).await });
     let (b, far_b) = connected(Arc::new(NoExports));
     let taker = tokio::task::spawn_blocking(move || {
-        let mut far_b = Remote::start_declaring(far_b, &TAKES_OBJECTS);
+        let mut far_b = Remote::start_declaring(far_b, &ONE_STACK);
         let Frame::Invoke { id, args, .. } = far_b.read() else {
             panic!("invoke expected")
         };

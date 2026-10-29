@@ -1,3 +1,4 @@
+// guarantee: bridge/plugin-values
 // Plugin definitions as values (docs/design-plugin-values-2026-10-25.md §5):
 // a leaf plugin crosses as a `plugin` reference, only to a far end that
 // declared `plugins`, and comes back home as itself. Cordis plugins cross as
@@ -22,7 +23,7 @@ function harness(capabilities, dispatch = () => {}) {
     abort: error => { fault = error },
   })
   peer.start()
-  peer.receive({ op: 'hello', version: ENDPOINT_PROTOCOL, endpoint: 'rust', capabilities: ['objects', ...VALUE_CAPABILITIES, 'events-v2', ...capabilities] })
+  peer.receive({ op: 'hello', version: ENDPOINT_PROTOCOL, endpoint: 'rust', capabilities: [...VALUE_CAPABILITIES, ...capabilities] })
   return { peer, sent, incoming, fault: () => fault }
 }
 

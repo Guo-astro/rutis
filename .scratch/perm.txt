@@ -1,0 +1,22 @@
+test_advanced.py                    0.3s Ran 3 tests in 0.175s OK
+test_channel.py                     0.2s Ran 7 tests in 0.081s OK
+test_dialing.py                     0.1s Ran 14 tests in 0.047s OK
+test_entry_points.py                0.2s Ran 2 tests in 0.057s OK
+test_events_reports.py              0.2s Ran 2 tests in 0.053s OK
+test_events_session.py            120.0s TIMEOUT
+test_local_endpoint.py              0.3s Ran 2 tests in 0.203s OK
+test_objects.py                     0.4s Ran 5 tests in 0.269s FAILED (errors=1)
+test_origin_ids.py                  0.1s Ran 1 test in 0.000s OK
+test_output.py                      2.5s Ran 7 tests in 2.363s OK
+test_peer.py                        0.2s Ran 38 tests in 0.102s OK
+test_plain_texts.py                 0.6s Ran 24 tests in 0.494s FAILED (failures=2)
+test_plugin.py                      0.1s Ran 7 tests in 0.000s OK
+test_plugin_values.py               0.3s Ran 8 tests in 0.241s OK
+test_public_api.py                  0.1s Ran 3 tests in 0.057s FAILED (failures=1)
+test_scopes.py                      0.3s Ran 6 tests in 0.157s FAILED (failures=1)
+test_testing.py                     3.1s Ran 15 tests in 3.003s OK
+test_testing_on.py                  1.0s Ran 7 tests in 0.911s OK
+test_undeclared_use.py              0.1s Ran 1 test in 0.041s OK
+test_values.py                      0.1s Ran 1 test in 0.000s FAILED (errors=1)
+test_websocket.py                   4.5s Ran 28 tests in 4.352s OK
+total 134.4s

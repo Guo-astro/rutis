@@ -262,7 +262,7 @@ mod tests {
         value.serialize(ArgsSerializer).unwrap()
     }
 
-    /// guarantee: events/12.1-args
+    /// guarantee: events/by-name, core/D2
     #[test]
     fn top_level_shape_decides_the_arguments() {
         assert_eq!(args(&Pair("x".into(), 2)), vec![json!("x"), json!(2)]);

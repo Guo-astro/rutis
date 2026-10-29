@@ -620,7 +620,7 @@ fn runtime_of<'a>(name: &str, runtimes: &'a [String]) -> Option<&'a str> {
     let prefixed = name
         .split_once(':')
         .map(|(prefix, _)| prefix)
-        .filter(|prefix| rutis_loader::internal::is_runtime_name(prefix));
+        .filter(|prefix| rutis_loader::runtime::is_runtime_name(prefix));
     let runtime = prefixed.unwrap_or("node");
     runtimes
         .iter()
@@ -852,6 +852,7 @@ fn changed_files(
 mod tests {
     use super::*;
 
+    /// guarantee: host/dev-reload
     /// A file that changed, was added or was removed between two scans.
     #[test]
     fn dev_sees_which_files_changed() {

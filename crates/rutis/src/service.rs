@@ -1,3 +1,4 @@
+//! guarantee: bridge/marked-services
 //! Rust services the plugins of other languages call by name
 //! ([`#[rutis::service]`](crate::service)): the registry each marked `impl`
 //! block adds itself to, the hook [`Ctx::provide`](crate::Ctx::provide)

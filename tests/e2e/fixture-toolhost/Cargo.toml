@@ -14,7 +14,7 @@ publish = false
 [dependencies]
 rutis = { path = "../../../crates/rutis" }
 rutis-host = { path = "../../../crates/rutis-host" }
-rutis-bridge = { path = "../../../crates/rutis-bridge", default-features = false, features = ["node"] }
+rutis-bridge = { path = "../../../crates/rutis-bridge" }
 rutis-loader = { path = "../../../crates/rutis-loader", default-features = false, features = ["node"] }
 serde_json = "1"
 tokio = { workspace = true }

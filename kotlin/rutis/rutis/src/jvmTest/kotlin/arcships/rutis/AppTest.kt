@@ -44,8 +44,9 @@ interface AppClock {
 
 /**
  * An application's own plugins (docs/design-remote-session-2026-10-28.md
- * §2.6, decision 2): once rutis greeted, [RutisApp] offers `services` and
- * installs them in order, each with its configuration or its schema's
+ * §2.6, decision 2): once rutis greeted, [RutisApp] offers `services`;
+ * once rutis offers `events` (not before: until then `events.on` is refused,
+ * as rutis does), it installs them in order, each with its configuration or its schema's
  * defaults, once the services it injects are there (its own plugins' or
  * rutis's). It announces each service they provide with the plugin's name
  * once rutis offers `services`, again to a new offer, never one rutis
@@ -104,8 +105,9 @@ class AppTest {
         return host
     }
 
-    private fun Peer.offer(version: Long) {
-        call("", "link.offers", listOf(mapOf("families" to listOf("services"), "version" to version, "since" to mapOf("services" to version))), false)
+    /** rutis's offers, version `version`: `families`, each since `since` (what a host serving a runtime session offers by default). */
+    private fun Peer.offer(version: Long, families: List<String> = listOf("services", "events"), since: Long = version) {
+        call("", "link.offers", listOf(mapOf("families" to families, "version" to version, "since" to families.associateWith { since })), false)
     }
 
     /** What the host was told by `method`, in the order of the frames' versions (each call is served on a thread of its own). */
@@ -130,6 +132,8 @@ class AppTest {
         val server = server()
         val lines = Collections.synchronizedList(ArrayList<String>())
         val first = Rutis.define<AppUnits>(name = "first") { ctx, config ->
+            // A listener registered while it loads: rutis must take it.
+            ctx.on("first/ping") { _ -> null }
             lines.add("first ${config.units}")
             ctx.provide("units", AppGreeting(config.units))
             ctx.effect { lines.add("first cleans up") }
@@ -158,16 +162,26 @@ class AppTest {
         app.start()
 
         val told = Collections.synchronizedList(ArrayList<Pair<String, Map<*, *>>>())
-        val host = host(server, "pad", told)
+        // rutis refuses `events.on` until it offers `events`, as it does.
+        val events = java.util.concurrent.atomic.AtomicBoolean(false)
+        val host = host(server, "pad", told) { method, _ ->
+            if (method == "events.on" && !events.get()) throw RutisException("BindingError", "events.on is not offered here")
+        }
         until("the app's offer: $told") { told.of("link.offers").isNotEmpty() }
         assertEquals(listOf("services"), (told.of("link.offers")[0]["families"] as List<*>).map { (it as JsonPrimitive).content })
+        // `services` alone: nothing installs before rutis offers `events`.
+        host.offer(1, listOf("services"))
+        Thread.sleep(100)
+        assertEquals(emptyList(), lines.toList(), "nothing installed before rutis offers events")
+        assertEquals(emptyList(), reported.toList())
+        assertEquals(0, told.of("events.on").size)
+
+        events.set(true)
+        host.offer(2, since = 1)
         until("first and second: $lines") { lines.any { it.startsWith("second") } }
         assertEquals(listOf("first metric", "second hello metric"), lines.toList(), "third waits for clock")
-        assertTrue("rutis: plugin failing: IllegalStateException: no contacts" in reported, "$reported")
-        Thread.sleep(100)
-        assertEquals(0, told.of("services.announce").size, "nothing announced before rutis offers services")
-
-        host.offer(1)
+        assertEquals(listOf("first/ping"), told.of("events.on").map { it.text("name") })
+        assertEquals(listOf("rutis: plugin failing: IllegalStateException: no contacts"), reported.toList())
         until("two announcements: $told") { told.of("services.announce").size == 2 }
         val announced = told.of("services.announce")
         assertEquals(listOf("units", "greeting"), announced.map { it.text("name") })
@@ -177,7 +191,7 @@ class AppTest {
         val say = (announced[1]["service"] as Map<*, *>)["say"] as RemoteFunction
         assertEquals(JsonPrimitive("hello"), runBlocking { host.callFunctionSuspend(say, emptyList(), sync = false) })
         // A new offer of services: announced again, at the same versions.
-        host.offer(2)
+        host.offer(3)
         until("announced again: $told") { told.of("services.announce").size == 4 }
         assertEquals(listOf("1", "1", "2", "2"), told.of("services.announce").map { it.text("version") })
 

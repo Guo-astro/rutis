@@ -7,7 +7,7 @@
 //! again, and a Bun older than the package supports is refused.
 // Unix only (Q7.8): Bun on Windows is not a declared platform of the Bun
 // runtime.
-#![cfg(all(unix, feature = "bun"))]
+#![cfg(unix)]
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -23,6 +23,7 @@ use rutis_test_support::{recv_within, scaled, until, within, HANG_GUARD};
 use serde_json::{json, Value};
 
 mod common;
+use common::runtime::launcher;
 
 const WEATHER: &str = r#"
 export const inject = ['clock']
@@ -74,7 +75,7 @@ async fn mount(launcher: Launcher, project: &Path) -> Result<Arc<Process>, Strin
 async fn bun(project: &Path) -> Arc<Process> {
     // A registry nothing listens on: a download attempt fails at once
     // instead of fetching (the runtime runs with --no-install).
-    let launcher = Launcher::bun(None, &package(), project)
+    let launcher = launcher(rutis_test_support::runtimes::bun(&package(), project))
         .env("BUN_CONFIG_REGISTRY", "http://127.0.0.1:9/")
         .env("NPM_CONFIG_REGISTRY", "http://127.0.0.1:9/");
     mount(launcher, project).await.unwrap()
@@ -113,6 +114,9 @@ async fn load(
 
 #[tokio::test(flavor = "multi_thread")]
 async fn bun_rows_follow_the_row_contract() {
+    if !rutis_test_support::runtimes::enabled("bun") {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("weather.ts"), WEATHER).unwrap();
     let process = bun(dir.path()).await;
@@ -187,6 +191,9 @@ async fn bun_rows_follow_the_row_contract() {
 /// installed is not found, and is never fetched.
 #[tokio::test(flavor = "multi_thread")]
 async fn packages_resolve_from_the_project_only() {
+    if !rutis_test_support::runtimes::enabled("bun") {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     let package = dir.path().join("node_modules/@acme/weather");
     std::fs::create_dir_all(&package).unwrap();
@@ -229,6 +236,9 @@ async fn packages_resolve_from_the_project_only() {
 /// The environment is what the host gives: the project's `.env` is not read.
 #[tokio::test(flavor = "multi_thread")]
 async fn the_projects_env_file_is_not_read() {
+    if !rutis_test_support::runtimes::enabled("bun") {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join(".env"), "RUTIS_PROBE=from-dotenv\n").unwrap();
     std::fs::write(
@@ -262,6 +272,9 @@ export function apply(ctx) { ctx.provide('probe', { value: () => process.env.RUT
 /// without that would never happen.
 #[tokio::test(flavor = "multi_thread")]
 async fn incoming_calls_run_while_a_synchronous_call_waits() {
+    if !rutis_test_support::runtimes::enabled("bun") {
+        return;
+    }
     /// Waits until opened; says when a call has entered it.
     struct Gate(
         Mutex<std::sync::mpsc::Receiver<()>>,
@@ -334,9 +347,12 @@ export function apply(ctx) {
 /// An uncaught error in a plugin is reported, and the process goes on:
 /// its services still answer (#688). (Bun cannot tell which row it came
 /// from: it fails none.)
-/// guarantee: loader/unhandled-errors
+/// guarantee: loader/unhandled-errors, boundary/5.8
 #[tokio::test(flavor = "multi_thread")]
 async fn an_uncaught_error_leaves_the_runtime_running() {
+    if !rutis_test_support::runtimes::enabled("bun") {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(
         dir.path().join("fragile.ts"),
@@ -384,6 +400,9 @@ export function apply(ctx) {
 /// A row loaded again after its plugin file changed runs the new code.
 #[tokio::test(flavor = "multi_thread")]
 async fn an_edited_plugin_is_imported_again() {
+    if !rutis_test_support::runtimes::enabled("bun") {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("greeter.ts");
     let greeter = |word: &str| {
@@ -430,6 +449,9 @@ async fn an_edited_plugin_is_imported_again() {
 /// starts, with a message saying what it needs.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_bun_too_old_for_the_package_is_refused() {
+    if !rutis_test_support::runtimes::enabled("bun") {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     let copy = dir.path().join("rutis-bun");
     std::fs::create_dir_all(&copy).unwrap();
@@ -440,12 +462,21 @@ async fn a_bun_too_old_for_the_package_is_refused() {
     std::fs::write(copy.join("package.json"), manifest.to_string()).unwrap();
     // A copy, not a link: the runtime reads the manifest next to its code.
     std::fs::create_dir_all(copy.join("src")).unwrap();
+    // Its files, not the test tool's folder (`src/testing`), which `main.ts`
+    // does not import.
     for file in std::fs::read_dir(package().join("src")).unwrap() {
         let file = file.unwrap().path();
-        std::fs::copy(&file, copy.join("src").join(file.file_name().unwrap())).unwrap();
+        if file.is_file() {
+            std::fs::copy(&file, copy.join("src").join(file.file_name().unwrap())).unwrap();
+        }
     }
     // The runtime has no dependencies, so the copy needs no `node_modules`.
-    let Err(error) = mount(Launcher::bun(None, &copy, dir.path()), dir.path()).await else {
+    let Err(error) = mount(
+        launcher(rutis_test_support::runtimes::bun(&copy, dir.path())),
+        dir.path(),
+    )
+    .await
+    else {
         panic!("an old Bun is refused");
     };
     // It says why on stderr, and exits before greeting.
@@ -466,6 +497,9 @@ fn fixture_launcher(fixture: &str, project: &Path) -> Launcher {
 /// one clear error, instead of every row failing later.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_runtime_without_the_row_contract_fails_to_start() {
+    if !rutis_test_support::runtimes::enabled("bun") {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     let runtime = common::runtime::TestRuntime::new(
         "old",
@@ -491,6 +525,9 @@ async fn a_runtime_without_the_row_contract_fails_to_start() {
 /// made to drop it.
 #[tokio::test(flavor = "multi_thread")]
 async fn unloading_a_row_withdraws_its_services_without_waiting_for_the_runtime() {
+    if !rutis_test_support::runtimes::enabled("bun") {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("weather.ts"), WEATHER).unwrap();
     let process = mount(

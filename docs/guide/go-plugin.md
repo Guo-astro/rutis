@@ -359,7 +359,7 @@ rutis-host dev: running greeter; changes reload it (Ctrl-C ends)
 `dev` 构建 `cmd/greeter`，作为运行时 `go-greeter` 运行它。之后每一行起来时打印 `greeter: running`、`translate: running`（两行谁先谁后不一定）；`rutis-host dev: services:` 是现在的服务、各由哪一行提供（`loader` 是宿主自己的），这一行在所有行都已运行、等待或失败后打印一次，之后服务变化时再打印，和各行状态行的先后不固定：
 
 ```text
-rutis-host dev: services: greeter (greeter), loader (host), translate (translate)
+rutis-host dev: services: greeter (greeter), loader (host), sessions (host), translate (translate)
 ```
 
 另开一个终端，在项目目录里看宿主现在的状态：
@@ -372,6 +372,7 @@ rows:
 services:
   greeter: greeter
   loader: host
+  sessions: host
   translate: translate
 runtimes:
   go-greeter: running (pid 63269)
@@ -395,8 +396,8 @@ $ npx @arcships/rutis-host call greeter.count
 greeter: building
 greeter: built in 0.3s
 go-greeter: rebuilt and restarted
-rutis-host dev: services: loader (host), translate (translate)
-rutis-host dev: services: greeter (greeter), loader (host), translate (translate)
+rutis-host dev: services: loader (host), sessions (host), translate (translate)
+rutis-host dev: services: greeter (greeter), loader (host), sessions (host), translate (translate)
 ```
 
 （重启的那一会儿，服务列表里没有 `greeter`。）
@@ -414,7 +415,7 @@ $ npx @arcships/rutis-host call greeter.hello '"Ada"'
 - 推一个 `v0.1.0` 这样的 tag：模板里的工作流运行测试和 `rutis-host check`，为 Linux（x64 / arm64）、macOS（x64 / arm64）和 Windows x64 构建二进制，连同 `SHA256SUMS` 发布到 GitHub Release。
 - 依赖范围：`go.mod` 的 `require github.com/arcships/rutis/go/rutis` 是最低版本；二进制里编进的是构建时选定的那个版本。
 
-宿主怎样装你的插件见 [rutis-host：宿主怎样装插件](rutis-host.md#宿主怎样装插件)。在另一台机器上运行见 [rutis-host.md 的远程一节](rutis-host.md#远程运行时)。
+宿主怎样装你的插件见 [rutis-host：宿主怎样装插件](rutis-host.md#宿主怎样装插件)。在另一台机器上运行见 [rutis-host.md 的远程一节](rutis-host.md#远程运行时与设备)。
 
 ## 调试
 

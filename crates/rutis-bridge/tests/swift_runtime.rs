@@ -4,17 +4,20 @@
 //! the method's Task; errors by type name with their code and data, thrown
 //! on with their graph; objects by reference; and a host older than rutis
 //! 0.13 refused right after its handshake.
-#![cfg(all(feature = "swift", target_os = "macos"))]
+#![cfg(target_os = "macos")]
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
 use rutis::host::CtxHost;
 use rutis::Ctx;
-use rutis_bridge::runtime::{row_projection, Launcher, Mount, Process};
+use rutis_bridge::runtime::{row_projection, Mount, Process};
 use rutis_bridge::session::{host_key, settle, Error, HostDispatch, Value as RpcValue};
 use rutis_test_support::{until, within, Guard, HANG_GUARD};
 use serde_json::{json, Value};
+
+mod common;
+use common::runtime::launcher;
 
 fn repo() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -41,7 +44,10 @@ fn binary(product: &str) -> PathBuf {
 }
 
 async fn swift(project: &Path, product: &str) -> Arc<Process> {
-    let launcher = Launcher::swift(&binary(product), project);
+    let launcher = launcher(rutis_test_support::runtimes::binary(
+        &binary(product),
+        project,
+    ));
     let repo = repo();
     // A cold start: twice the hang guard.
     let mount = Process::mount(
@@ -93,6 +99,9 @@ fn json_of(service: &Arc<dyn HostDispatch>, method: &str, args: Value) -> Value 
 
 #[tokio::test(flavor = "multi_thread")]
 async fn swift_rows_follow_the_row_contract() {
+    if !rutis_test_support::runtimes::enabled("swift") {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     let process = swift(dir.path(), "RutisMultilang").await;
     for feature in ["rows.v2", "hosts", "leaf", "scopes", "rows.announce"] {
@@ -119,9 +128,12 @@ async fn swift_rows_follow_the_row_contract() {
         .unwrap();
 }
 
-/// guarantee: bridge/cancellation
+/// guarantee: bridge/cancel-reaches-callee
 #[tokio::test(flavor = "multi_thread")]
 async fn a_dropped_async_call_cancels_the_methods_task() {
+    if !rutis_test_support::runtimes::enabled("swift") {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     let process = swift(dir.path(), "RutisMultilang").await;
     let ctx = Ctx::root().unwrap();
@@ -167,6 +179,9 @@ async fn a_dropped_async_call_cancels_the_methods_task() {
 /// guarantee: bridge/error-code-and-data
 #[tokio::test(flavor = "multi_thread")]
 async fn errors_cross_with_their_names_codes_and_data_both_ways() {
+    if !rutis_test_support::runtimes::enabled("swift") {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     let process = swift(dir.path(), "RutisMultilang").await;
     let ctx = Ctx::root().unwrap();
@@ -222,6 +237,9 @@ async fn errors_cross_with_their_names_codes_and_data_both_ways() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn data_is_copied_and_service_objects_cross_by_reference() {
+    if !rutis_test_support::runtimes::enabled("swift") {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     let process = swift(dir.path(), "RutisMultilang").await;
     let ctx = Ctx::root().unwrap();

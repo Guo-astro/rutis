@@ -35,7 +35,7 @@ val weather = Rutis.define<Config>(
 }
 ```
 
-The build applies the serialization plugin and the processor, which generates the method tables of `@RutisService` classes and the proxies of `@RutisClient` interfaces at compile time (no method is found by reflection at run time; the AAR ships the R8 rules that keep them):
+The SDK is not published to Maven; it is used from source: fetch this repository's tag (`git clone --depth 1 --branch v<version> https://github.com/arcships/rutis.git ../rutis`) and add `includeBuild("../rutis/kotlin/rutis")` to `settings.gradle.kts` (an Android application also lets it find the Android SDK, see [kotlin-app](../docs/guide/kotlin-app.en.md#1-dependencies)). The build applies the serialization plugin and the processor, which generates the method tables of `@RutisService` classes and the proxies of `@RutisClient` interfaces at compile time (no method is found by reflection at run time; the AAR ships the R8 rules that keep them):
 
 ```kotlin
 plugins {
@@ -43,10 +43,11 @@ plugins {
     id("com.google.devtools.ksp")
 }
 dependencies {
-    implementation("io.github.arcships:rutis:<version>")
-    ksp("io.github.arcships:rutis-ksp:<version>")
-    testImplementation("io.github.arcships:rutis-testing:<version>")   // the testing tool
-    kspTest("io.github.arcships:rutis-ksp:<version>")
+    // No version: built from the source includeBuild brings in.
+    implementation("io.github.arcships:rutis")
+    ksp("io.github.arcships:rutis-ksp")
+    testImplementation("io.github.arcships:rutis-testing")   // the testing tool
+    kspTest("io.github.arcships:rutis-ksp")
 }
 ```
 
@@ -117,14 +118,14 @@ cd kotlin/rutis
 
 The testing tool's tests run on `rutis-host test`: `RUTIS_HOST`, else the repository's `target/debug/rutis-host` (`cargo build -p rutis-host`).
 
-The android target is built only where an Android SDK is installed (`ANDROID_HOME`, or `sdk.dir` in `local.properties`). The Rust suites with Kotlin take the feature `kotlin` and build `rutis-conformance/build/libs/rutis-conformance-all.jar` (or use the one `RUTIS_KOTLIN_JAR` names):
+The android target is built only where an Android SDK is installed (`ANDROID_HOME`, or `sdk.dir` in `local.properties`). The Rust suites with Kotlin run when `RUTIS_TEST_RUNTIMES` names `kotlin`, and build `rutis-conformance/build/libs/rutis-conformance-all.jar` (or use the one `RUTIS_KOTLIN_JAR` names):
 
 ```sh
-cargo test -p rutis-bridge --features testing,websocket,kotlin --test runtime_conformance --test value_roundtrip --test session_matrix kotlin_
-cargo test -p rutis-bridge --features testing,websocket,kotlin --test dial_conformance kotlin::
-cargo test -p rutis-bridge --features testing,websocket,kotlin --test kotlin_remote
-cargo test -p rutis-bridge --features testing,kotlin --test kotlin_runtime
-cargo test -p rutis-loader --features node,python,kotlin --test events_conformance --test multilang_kotlin
+RUTIS_TEST_RUNTIMES=kotlin cargo test -p rutis-bridge --all-features --test runtime_conformance --test value_roundtrip --test session_matrix kotlin_
+RUTIS_TEST_RUNTIMES=kotlin cargo test -p rutis-host --features kotlin --test dial_conformance kotlin::
+RUTIS_TEST_RUNTIMES=kotlin cargo test -p rutis-bridge --all-features --test kotlin_remote
+RUTIS_TEST_RUNTIMES=kotlin cargo test -p rutis-bridge --all-features --test kotlin_runtime
+RUTIS_TEST_RUNTIMES=kotlin,node,python cargo test -p rutis-loader --all-features --test events_conformance --test multilang_kotlin
 ```
 
 On an Android device or emulator (`adb`; `tools/android-emulator.sh start` boots one): the SDK's device tests, and the sample application dialing a rutis-host (Python 3.10+ for its other row):

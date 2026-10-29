@@ -110,7 +110,7 @@ pub const OUTPUT_GUARD: Duration = Duration::from_secs(2);
 /// has all been passed on: what a program running a [`Host`] does last,
 /// so that their last lines are not lost when it exits (#332).
 pub fn output_written() {
-    rutis_bridge::pipe::output_ended(OUTPUT_GUARD);
+    crate::output::output_ended(OUTPUT_GUARD);
 }
 
 /// How long killed runtime processes may take to be gone.
@@ -523,7 +523,7 @@ impl Host {
         // Disposed however the wait ends, a signal dropping it included:
         // left mounted, it would count among what still runs.
         let mut waiter = Unmount(Some(self.root.plugin(Released {
-            injects: [SessionRows::key(name)],
+            injects: [SessionRows::key(name).erase()],
             released: std::sync::Mutex::new(Some(released)),
         })));
         let down = async {
@@ -643,7 +643,7 @@ impl Host {
 
         // The rows as they run: those plugins added or removed too.
         let (layers, editable) = (self.loader.layers(), self.loader.editable());
-        let running = rutis_loader::internal::apply_patches(&layers).rows;
+        let running = rutis_loader::patch::apply_patches(&layers).rows;
         let old = std::mem::replace(&mut self.config, new);
         let applied = self
             .loader
@@ -1187,7 +1187,6 @@ impl DynPlugin for Released {
 mod tests {
     use super::*;
     use crate::config::{BunRuntime, NodeRuntime, PythonRuntime, Runtimes};
-    use rutis::internal::CtxInternal;
     use rutis_bridge::session::{settle, Value};
     use rutis_test_support::{within, Guard, HANG_GUARD};
     use serde_json::json;
@@ -1346,7 +1345,7 @@ mod tests {
             .await
             .unwrap();
         // What the runtime's rows wait for.
-        let rows = host.root.get_key::<SessionRows>(SessionRows::key("py"));
+        let rows = host.root.get_at(&SessionRows::key("py"));
         assert!(rows.is_some(), "the runtime is ready, its rows not yet");
         within("loading the row", host.load(config.rows()))
             .await

@@ -7,18 +7,17 @@
 
 //!
 //! The root has what assembling a loader takes; the rest is grouped by
-//! topic: [`runtime`] (plugins of other languages), [`peer`] (rows from a
-//! linked node), [`report`] (what the loader's methods return), [`edit`]
-//! (imperative edits and persistence) and [`resolve`] (writing a
-//! resolver). [`internal`] is for rutis-host and tests, with no stability
-//! promise.
+//! topic: [`runtime`] (plugins of other languages), [`report`] (what the
+//! loader's methods return), [`edit`] (imperative edits and persistence),
+//! [`patch`] (composing layers of rows) and [`resolve`] (writing a
+//! resolver).
 
 mod catalog;
 pub mod edit;
 mod error;
 mod framework;
 mod loader;
-mod patch;
+pub mod patch;
 mod persist;
 mod resolver;
 #[cfg(feature = "runtimes")]
@@ -28,6 +27,8 @@ mod volatile;
 pub use catalog::ServiceCatalog;
 pub use error::LoaderError;
 pub use framework::RowEvent;
+#[doc(hidden)]
+pub use loader::followed_rows;
 pub use loader::{status, Loader, LoaderOptions, LoaderPlugin};
 pub use patch::{Layer, Patch};
 pub use resolver::{Builtins, Chain, Resolver};
@@ -48,19 +49,4 @@ pub mod report {
 pub mod resolve {
     pub use crate::catalog::{ExprScope, Expressions};
     pub use crate::resolver::{Build, Declarations, Declared, Resolved, ScopedFactory};
-}
-
-/// What rutis-host and the tests use. No stability promise.
-#[doc(hidden)]
-pub mod internal {
-    pub use crate::loader::followed_rows;
-    pub use crate::patch::{apply_patches, Composed, ComposedRow, Owner, PatchWarning};
-    #[cfg(feature = "binary")]
-    pub use crate::runtime::binary::read_binary_manifest;
-    #[cfg(feature = "go")]
-    pub use crate::runtime::go::PLUGIN_API;
-    #[cfg(feature = "runtimes")]
-    pub use crate::runtime::is_runtime_name;
-    #[cfg(feature = "swift")]
-    pub use crate::runtime::swift::SWIFT_PLUGIN_API;
 }

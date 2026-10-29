@@ -38,5 +38,9 @@
   },
   "scripts": {
     "test": "node --test test/*.test.mjs"
+  },
+  "devDependencies": {
+    "@arcships/rutis-bun": "file:../../bun/rutis-bun",
+    "@arcships/rutis-runtime": "file:../rutis-runtime"
   }
 }

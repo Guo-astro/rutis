@@ -3,7 +3,7 @@
 //! their provider goes, run edited code after a reload, report their
 //! package's version, and a module the project lacks is unresolved without
 //! holding up the others.
-#![cfg(all(unix, feature = "bun"))]
+#![cfg(all(unix, feature = "runtimes"))]
 
 mod common;
 
@@ -12,11 +12,10 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use common::runtimes::{
-    greet_as_main, layer, repo, row_state, rows_stage, Probe, TestRuntime, COLD,
+    greet_as_main, launcher, layer, repo, row_state, rows_stage, Probe, TestRuntime, COLD,
 };
 use rutis::host::{CtxHost, FiberState, FiberView};
 use rutis::Ctx;
-use rutis_bridge::runtime::Launcher;
 use rutis_bridge::session::host_key;
 use rutis_loader::report::EntryStatus;
 use rutis_loader::runtime::SessionResolver;
@@ -135,6 +134,9 @@ fn row(id: &str, module: &str) -> Value {
 /// guarantee: loader/rows-gate-on-services
 #[tokio::test(flavor = "multi_thread")]
 async fn rows_gate_share_and_stop_with_their_provider() {
+    if !rutis_test_support::runtimes::enabled("bun") {
+        return;
+    }
     let fixture = fixture().await;
     let loader = &fixture.loader;
     let all = vec![
@@ -168,6 +170,9 @@ async fn rows_gate_share_and_stop_with_their_provider() {
 /// guarantee: loader/reload-all-or-nothing
 #[tokio::test(flavor = "multi_thread")]
 async fn reloading_a_row_runs_the_edited_module() {
+    if !rutis_test_support::runtimes::enabled("bun") {
+        return;
+    }
     let fixture = fixture().await;
     let module = fixture.dir.path().join("edited.ts");
     let plugin = |version: &str| {
@@ -203,6 +208,9 @@ async fn reloading_a_row_runs_the_edited_module() {
 /// guarantee: loader/unresolved-rows
 #[tokio::test(flavor = "multi_thread")]
 async fn packages_report_versions_and_missing_modules_are_unresolved() {
+    if !rutis_test_support::runtimes::enabled("bun") {
+        return;
+    }
     let fixture = fixture_with(|dir| {
         let package = dir.join("node_modules/@acme/hello");
         std::fs::create_dir_all(&package).unwrap();
@@ -240,6 +248,9 @@ async fn packages_report_versions_and_missing_modules_are_unresolved() {
 /// guarantee: loader/runtime-down-stops-its-rows
 #[tokio::test(flavor = "multi_thread")]
 async fn a_dead_process_stops_the_rows_until_restart() {
+    if !rutis_test_support::runtimes::enabled("bun") {
+        return;
+    }
     let fixture = fixture().await;
     std::fs::write(
         fixture.dir.path().join("exit.ts"),
@@ -281,12 +292,18 @@ async fn a_dead_process_stops_the_rows_until_restart() {
 /// guarantee: loader/runtime-start-failure-isolated
 #[tokio::test(flavor = "multi_thread")]
 async fn a_runtime_that_cannot_start_does_not_block_resolution() {
+    if !rutis_test_support::runtimes::enabled("bun") {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("package.json"), "{}").unwrap();
     std::fs::write(dir.path().join("bystander.ts"), sdk_plugin(BYSTANDER)).unwrap();
     let root = Ctx::root().unwrap();
     greet_as_main(&root);
-    let launcher = Launcher::bun(None, &dir.path().join("no-runtime-here"), dir.path());
+    let launcher = launcher(rutis_test_support::runtimes::bun(
+        &dir.path().join("no-runtime-here"),
+        dir.path(),
+    ));
     let bun = TestRuntime::new("bun", launcher, dir.path());
     let options = LoaderOptions::default();
     let sessions = Arc::new(SessionResolver::new(&options.catalog));
@@ -316,6 +333,9 @@ async fn a_runtime_that_cannot_start_does_not_block_resolution() {
 /// guarantee: loader/reload-all-or-nothing
 #[tokio::test(flavor = "multi_thread")]
 async fn a_broken_edit_keeps_the_previous_module_and_a_fix_reloads() {
+    if !rutis_test_support::runtimes::enabled("bun") {
+        return;
+    }
     let fixture = fixture().await;
     let module = fixture.dir.path().join("edited.ts");
     let plugin = |version: &str| {
@@ -377,6 +397,9 @@ async fn a_broken_edit_keeps_the_previous_module_and_a_fix_reloads() {
 /// files: an edit there is what the reload runs.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_linked_package_reloads_from_its_real_files() {
+    if !rutis_test_support::runtimes::enabled("bun") {
+        return;
+    }
     let source = tempfile::tempdir().unwrap();
     let plugin = |version: &str| {
         sdk_plugin(&format!(

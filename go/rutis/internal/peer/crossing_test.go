@@ -1,3 +1,5 @@
+// guarantee: sdk/error-codes
+// guarantee: bridge/bad-values
 package peer
 
 import (
@@ -98,7 +100,7 @@ func TestAResultOverTheLimitIsAnsweredWithAThrow(t *testing.T) {
 // host's wait-cycle check); handed back, it is the far end's own again; the
 // same object granted twice is one proxy (#687).
 func TestAnObjectFromTheFarEndIsCalledAndGoesHome(t *testing.T) {
-	runtime, far, next := rawHost(t, `["sync-wait"]`)
+	runtime, far, next := rawHost(t, `[]`)
 	object := `{"type":"reference","value":{"id":7,"kind":"object","home":false,"origin":[]}}`
 	// echo hands it back: home.
 	_ = far.Send([]byte(`{"op":"invoke","id":"main:1","path":[],"target":"x","method":"echo","args":{"type":"list","value":[` + object + `]}}`))

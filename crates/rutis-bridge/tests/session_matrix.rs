@@ -1,11 +1,13 @@
+//! guarantee: loader/announced-services
 //! The runtime conformance suite (`rutis_bridge::runtime::testing::runtime`) over
-//! every channel: the Node, the Python, (feature `go`) the Go and (feature
-//! `swift`, macOS) the Swift runtime, each connected on an
-//! inherited socket (`fd:3`), on a socket path it dials back, on a loopback
-//! address it dials presenting a token, and over a loopback WebSocket it
-//! listens on (dialed by Rust and attached); the Bun runtime (feature `bun`,
-//! Unix only) on the first two and the WebSocket. Risk C10: the matrix, with every skipped
-//! cell's reason, is in docs/ci.md.
+//! every channel: the Node, the Python, the Go and (macOS) the Swift
+//! runtime, each connected on an inherited socket (`fd:3`), on a socket
+//! path it dials back, on a loopback address it dials presenting a token,
+//! and over a loopback WebSocket it listens on (dialed by Rust and
+//! attached); the Bun runtime (Unix only) on the first two and the
+//! WebSocket; the Kotlin one on all but the first. The Go, Swift, Bun and
+//! Kotlin cells run when `RUTIS_TEST_RUNTIMES` lists their language. Risk
+//! C10: the matrix, with every skipped cell's reason, is in docs/ci.md.
 #![cfg(all(feature = "testing", feature = "websocket"))]
 
 use std::path::{Path, PathBuf};
@@ -14,7 +16,10 @@ use std::sync::Arc;
 use rutis::host::CtxHost;
 use rutis::Ctx;
 use rutis_bridge::runtime::{Launcher, Mount, Process};
-use serde_json::{json, Value};
+use rutis_test_support::runtimes;
+
+mod common;
+use common::runtime::{attached, greet_as_main, launcher};
 
 fn repo() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -24,21 +29,18 @@ fn repo() -> PathBuf {
 enum Runtime {
     Node,
     Python,
-    #[cfg_attr(not(feature = "go"), allow(dead_code))]
     Go,
-    #[cfg_attr(not(all(feature = "swift", target_os = "macos")), allow(dead_code))]
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     Swift,
     /// Unix only: Bun on Windows is not a declared platform.
-    #[cfg(all(unix, feature = "bun"))]
+    #[cfg(unix)]
     Bun,
     /// The Kotlin SDK's jvm target (`Rutis.serve`), started by the generic
     /// launcher: a socket path it dials back, loopback, and a WebSocket it
     /// listens on (K-P2: the listener an Android application has too).
-    #[cfg(feature = "kotlin")]
     Kotlin,
 }
 
-#[cfg(feature = "kotlin")]
 mod kotlin;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -65,37 +67,17 @@ fn weather_mount<'a>(anchor: &'a Path, launcher: &'a Launcher, ctx: &Ctx) -> Mou
     }
 }
 
-/// The same bus, for a mount built by hand (`Process::attach`).
-fn on_bus<'a>(ctx: &Ctx) -> Mount<'a> {
-    Mount {
-        ctx: Some(ctx.clone()),
-        ..Mount::default()
-    }
-}
-
-/// The Python interpreter: one with `websockets` for WebSocket channels
-/// (`RUTIS_PYTHON`), else `python3` (`python` on Windows, where
-/// setup-python installs no `python3`).
-fn python() -> String {
-    std::env::var("RUTIS_PYTHON")
-        .unwrap_or_else(|_| if cfg!(windows) { "python" } else { "python3" }.into())
-}
-
-/// Start `runtime` on a fresh project, connected as `via` says.
+/// Start `runtime` on a fresh project, connected as `via` says. The
+/// Python interpreter is `RUTIS_PYTHON` (one with `websockets` for
+/// WebSocket channels), else `python3`.
 async fn start(runtime: Runtime, via: Via, dir: &Path, ctx: &Ctx) -> (Arc<Process>, PathBuf) {
-    let (launcher, anchor, entry) = match runtime {
+    let (mut launcher, anchor, entry) = match runtime {
         Runtime::Node => {
-            let package = repo().join("node/rutis-runtime");
             let anchor = dir.join("package.json");
             std::fs::write(&anchor, "{}").unwrap();
             // Loaded where it is: it imports the SDK by path.
             let entry = repo().join("node/rutis-runtime/test/fixtures/conformance-weather.mjs");
-            let launcher = Launcher::new("node")
-                .arg("--import")
-                .arg("tsx")
-                .arg(package.join("src/runner.mjs"))
-                .cwd(&package);
-            (launcher, anchor, entry)
+            (launcher(runtimes::node_runtime()), anchor, entry)
         }
         Runtime::Python => {
             std::fs::copy(
@@ -103,27 +85,26 @@ async fn start(runtime: Runtime, via: Via, dir: &Path, ctx: &Ctx) -> (Arc<Proces
                 dir.join("weather_plugin.py"),
             )
             .unwrap();
-            let path = std::env::join_paths([repo().join("python/rutis"), dir.to_owned()]).unwrap();
-            let launcher = Launcher::new(python())
-                .arg("-m")
-                .arg("rutis")
-                .env("PYTHONPATH", path);
-            (launcher, dir.to_owned(), PathBuf::from("weather_plugin"))
+            (
+                launcher(runtimes::python_runtime(dir)),
+                dir.to_owned(),
+                PathBuf::from("weather_plugin"),
+            )
         }
         Runtime::Go => {
             let binary = go_binary("./internal/fixtures/weather");
             (
-                Launcher::new(binary),
+                launcher(runtimes::binary(&binary, dir)),
                 dir.to_owned(),
                 PathBuf::from("weather"),
             )
         }
         Runtime::Swift => (
-            Launcher::new(swift_binary("RutisConformance")),
+            launcher(runtimes::binary(&swift_binary("RutisConformance"), dir)),
             dir.to_owned(),
             PathBuf::from("weather"),
         ),
-        #[cfg(all(unix, feature = "bun"))]
+        #[cfg(unix)]
         Runtime::Bun => {
             let entry = dir.join("weather.ts");
             std::fs::copy(
@@ -131,18 +112,16 @@ async fn start(runtime: Runtime, via: Via, dir: &Path, ctx: &Ctx) -> (Arc<Proces
                 &entry,
             )
             .unwrap();
-            let mut launcher = Launcher::bun(None, &repo().join("bun/rutis-bun"), dir);
-            // Inheriting fd:3 is the Bun launcher's default; `via` decides.
-            launcher.inherit_fd = false;
-            (launcher, dir.to_owned(), entry)
+            (launcher(runtimes::bun_runtime(dir)), dir.to_owned(), entry)
         }
-        #[cfg(feature = "kotlin")]
         Runtime::Kotlin => (
             kotlin::launcher().cwd(dir),
             dir.to_owned(),
             PathBuf::from("weather"),
         ),
     };
+    // Inheriting fd:3 is the commands' default; `via` decides.
+    launcher.inherit_fd = false;
     match via {
         Via::WebSocket => return (listening(launcher, &anchor, ctx).await, entry),
         Via::Loopback => return (handed_over(launcher, &anchor, ctx).await, entry),
@@ -162,7 +141,7 @@ async fn start(runtime: Runtime, via: Via, dir: &Path, ctx: &Ctx) -> (Arc<Proces
 }
 
 /// Start the runtime with `Handover::Loopback` through `pipe::spawn`, on
-/// every platform, and attach.
+/// every platform, and mount a session on its channel.
 async fn handed_over(launcher: Launcher, anchor: &Path, ctx: &Ctx) -> Arc<Process> {
     use rutis_bridge::pipe::{self, Handover, Processes, Spawn};
 
@@ -173,17 +152,12 @@ async fn handed_over(launcher: Launcher, anchor: &Path, ctx: &Ctx) -> Arc<Proces
     spawn.handover = Handover::Loopback;
     spawn.trailing = vec!["--id".into(), "runtime".into(), anchor.into()];
     let channel = pipe::spawn(&spawn, &Processes::default()).await.unwrap();
-    let main = rutis_bridge::channel::PeerId::new("main").unwrap();
-    let runtime = rutis_bridge::channel::PeerId::new("runtime").unwrap();
-    let endpoint = rutis_bridge::session::Endpoint::rust(main).expect(runtime);
-    Process::attach(channel, on_bus(ctx), endpoint)
-        .await
-        .unwrap()
+    attached(ctx, "runtime", channel).await.unwrap()
 }
 
-/// Start the runtime listening on a loopback WebSocket, dial it, attach.
+/// Start the runtime listening on a loopback WebSocket, dial it, and mount
+/// a session on the channel.
 async fn listening(launcher: Launcher, anchor: &Path, ctx: &Ctx) -> Arc<Process> {
-    use rutis_bridge::channel::PeerId;
     use rutis_bridge::websocket::Credential;
     use rutis_bridge::websocket::{Limits, Trust};
     use tokio::io::AsyncBufReadExt;
@@ -227,9 +201,7 @@ async fn listening(launcher: Launcher, anchor: &Path, ctx: &Ctx) -> Arc<Process>
     )
     .await
     .unwrap();
-    let format = rutis_bridge::session::Endpoint::rust(PeerId::new("main").unwrap())
-        .expect(PeerId::new("runtime").unwrap());
-    let process = Process::attach(channel, on_bus(ctx), format).await.unwrap();
+    let process = attached(ctx, "runtime", channel).await.unwrap();
     assert!(
         process.connection().supports("runtime"),
         "a runner declares its contract"
@@ -240,6 +212,7 @@ async fn listening(launcher: Launcher, anchor: &Path, ctx: &Ctx) -> Arc<Process>
 async fn semantics(runtime: Runtime, via: Via) {
     let dir = tempfile::tempdir().unwrap();
     let ctx = Ctx::root().unwrap();
+    greet_as_main(&ctx);
     let (process, entry) = start(runtime, via, dir.path(), &ctx).await;
     // Only the `Process` facade starts the process itself and reports its
     // exit; the other columns attach to a channel.
@@ -253,6 +226,9 @@ async fn semantics(runtime: Runtime, via: Via) {
     ignore = "fd:3 column: Windows hands no descriptor over (loopback handover only)"
 )]
 async fn node_on_an_inherited_socket() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     semantics(Runtime::Node, Via::Inherit).await;
 }
 
@@ -262,16 +238,25 @@ async fn node_on_an_inherited_socket() {
     ignore = "socket path column: Windows has no Unix sockets (loopback handover only)"
 )]
 async fn node_dialing_a_socket_path() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     semantics(Runtime::Node, Via::DialBack).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn node_listening_on_a_websocket() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     semantics(Runtime::Node, Via::WebSocket).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn node_dialing_a_loopback_address() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     semantics(Runtime::Node, Via::Loopback).await;
 }
 
@@ -281,6 +266,9 @@ async fn node_dialing_a_loopback_address() {
     ignore = "fd:3 column: Windows hands no descriptor over (loopback handover only)"
 )]
 async fn python_on_an_inherited_socket() {
+    if !rutis_test_support::runtimes::enabled("python") {
+        return;
+    }
     semantics(Runtime::Python, Via::Inherit).await;
 }
 
@@ -290,16 +278,25 @@ async fn python_on_an_inherited_socket() {
     ignore = "socket path column: Windows has no Unix sockets (loopback handover only)"
 )]
 async fn python_dialing_a_socket_path() {
+    if !rutis_test_support::runtimes::enabled("python") {
+        return;
+    }
     semantics(Runtime::Python, Via::DialBack).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn python_listening_on_a_websocket() {
+    if !rutis_test_support::runtimes::enabled("python") {
+        return;
+    }
     semantics(Runtime::Python, Via::WebSocket).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn python_dialing_a_loopback_address() {
+    if !rutis_test_support::runtimes::enabled("python") {
+        return;
+    }
     semantics(Runtime::Python, Via::Loopback).await;
 }
 
@@ -336,165 +333,134 @@ fn swift_binary(product: &str) -> PathBuf {
     PathBuf::from(String::from_utf8(output.stdout).unwrap().trim()).join(product)
 }
 
-// Swift (feature `swift`, macOS): every channel.
-#[cfg(all(feature = "swift", target_os = "macos"))]
+// Swift (macOS): every channel.
+#[cfg(target_os = "macos")]
 #[tokio::test(flavor = "multi_thread")]
 async fn swift_on_an_inherited_socket() {
+    if !rutis_test_support::runtimes::enabled("swift") {
+        return;
+    }
     semantics(Runtime::Swift, Via::Inherit).await;
 }
 
-#[cfg(all(feature = "swift", target_os = "macos"))]
+#[cfg(target_os = "macos")]
 #[tokio::test(flavor = "multi_thread")]
 async fn swift_dialing_a_socket_path() {
+    if !rutis_test_support::runtimes::enabled("swift") {
+        return;
+    }
     semantics(Runtime::Swift, Via::DialBack).await;
 }
 
-#[cfg(all(feature = "swift", target_os = "macos"))]
+#[cfg(target_os = "macos")]
 #[tokio::test(flavor = "multi_thread")]
 async fn swift_dialing_a_loopback_address() {
+    if !rutis_test_support::runtimes::enabled("swift") {
+        return;
+    }
     semantics(Runtime::Swift, Via::Loopback).await;
 }
 
-#[cfg(all(feature = "swift", target_os = "macos"))]
+#[cfg(target_os = "macos")]
 #[tokio::test(flavor = "multi_thread")]
 async fn swift_listening_on_a_websocket() {
+    if !rutis_test_support::runtimes::enabled("swift") {
+        return;
+    }
     semantics(Runtime::Swift, Via::WebSocket).await;
 }
 
-#[cfg(feature = "go")]
 #[tokio::test(flavor = "multi_thread")]
 #[cfg_attr(
     windows,
     ignore = "fd:3 column: Windows hands no descriptor over (loopback handover only)"
 )]
 async fn go_on_an_inherited_socket() {
+    if !rutis_test_support::runtimes::enabled("go") {
+        return;
+    }
     semantics(Runtime::Go, Via::Inherit).await;
 }
 
-#[cfg(feature = "go")]
 #[tokio::test(flavor = "multi_thread")]
 #[cfg_attr(
     windows,
     ignore = "socket path column: Windows has no Unix sockets (loopback handover only)"
 )]
 async fn go_dialing_a_socket_path() {
+    if !rutis_test_support::runtimes::enabled("go") {
+        return;
+    }
     semantics(Runtime::Go, Via::DialBack).await;
 }
 
-#[cfg(feature = "go")]
 #[tokio::test(flavor = "multi_thread")]
 async fn go_listening_on_a_websocket() {
+    if !rutis_test_support::runtimes::enabled("go") {
+        return;
+    }
     semantics(Runtime::Go, Via::WebSocket).await;
 }
 
-#[cfg(feature = "go")]
 #[tokio::test(flavor = "multi_thread")]
 async fn go_dialing_a_loopback_address() {
+    if !rutis_test_support::runtimes::enabled("go") {
+        return;
+    }
     semantics(Runtime::Go, Via::Loopback).await;
 }
 
-/// A runtime package that does not list `fd` in `rutisChannels` is started
-/// the old way, dialing a socket path.
-#[tokio::test(flavor = "multi_thread")]
-#[cfg_attr(
-    windows,
-    ignore = "fd:3 and socket path handovers: Windows has the loopback handover only"
-)]
-async fn a_runtime_without_fd_support_dials_back() {
-    let dir = tempfile::tempdir().unwrap();
-    let package = dir.path().join("runtime");
-    std::fs::create_dir_all(package.join("src")).unwrap();
-    let real = repo().join("node/rutis-runtime");
-    for file in std::fs::read_dir(real.join("src")).unwrap() {
-        let file = file.unwrap();
-        if file.file_type().unwrap().is_dir() {
-            continue;
-        }
-        std::fs::copy(file.path(), package.join("src").join(file.file_name())).unwrap();
-    }
-    copy_dir(&real.join("src/channel"), &package.join("src/channel"));
-    let mut manifest: Value =
-        serde_json::from_slice(&std::fs::read(real.join("package.json")).unwrap()).unwrap();
-    manifest.as_object_mut().unwrap().remove("rutisChannels");
-    std::fs::write(package.join("package.json"), manifest.to_string()).unwrap();
-    #[cfg(unix)]
-    std::os::unix::fs::symlink(real.join("node_modules"), package.join("node_modules")).unwrap();
-    #[cfg(windows)]
-    std::os::windows::fs::symlink_dir(real.join("node_modules"), package.join("node_modules"))
-        .unwrap();
-    // The runner sees its channel argument: record it.
-    let anchor = dir.path().join("package.json");
-    std::fs::write(&anchor, "{}").unwrap();
-    let probe = dir.path().join("argv.mjs");
-    std::fs::write(
-        &probe,
-        "export function apply(ctx) { ctx.provide('argv', { channel() { return process.argv[2] } }) }",
-    )
-    .unwrap();
-    let process = Process::launch(&package, &probe, json!({}), json!({ "argv": ["channel"] }))
-        .await
-        .unwrap();
-    let channel = process.call("argv", "channel", json!([])).unwrap();
-    let channel = channel.as_str().unwrap();
-    assert!(!channel.starts_with("fd:"), "{channel}");
-    assert!(channel.ends_with("peer.sock"), "{channel}");
-    process.dispose().await.unwrap();
-
-    // The real package takes fd 3.
-    let process = Process::launch(&real, &probe, json!({}), json!({ "argv": ["channel"] }))
-        .await
-        .unwrap();
-    assert_eq!(
-        process.call("argv", "channel", json!([])).unwrap(),
-        json!("fd:3")
-    );
-    process.dispose().await.unwrap();
-}
-
-fn copy_dir(from: &Path, to: &Path) {
-    std::fs::create_dir_all(to).unwrap();
-    for file in std::fs::read_dir(from).unwrap() {
-        let file = file.unwrap();
-        std::fs::copy(file.path(), to.join(file.file_name())).unwrap();
-    }
-}
-
-#[cfg(all(unix, feature = "bun"))]
+#[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
 async fn bun_on_an_inherited_socket() {
+    if !rutis_test_support::runtimes::enabled("bun") {
+        return;
+    }
     semantics(Runtime::Bun, Via::Inherit).await;
 }
 
-#[cfg(all(unix, feature = "bun"))]
+#[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
 async fn bun_dialing_a_socket_path() {
+    if !rutis_test_support::runtimes::enabled("bun") {
+        return;
+    }
     semantics(Runtime::Bun, Via::DialBack).await;
 }
 
-#[cfg(all(unix, feature = "bun"))]
+#[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
 async fn bun_listening_on_a_websocket() {
+    if !rutis_test_support::runtimes::enabled("bun") {
+        return;
+    }
     semantics(Runtime::Bun, Via::WebSocket).await;
 }
 
-#[cfg(feature = "kotlin")]
 #[tokio::test(flavor = "multi_thread")]
 #[cfg_attr(
     windows,
     ignore = "socket path column: Windows has no Unix sockets (loopback handover only)"
 )]
 async fn kotlin_dialing_a_socket_path() {
+    if !rutis_test_support::runtimes::enabled("kotlin") {
+        return;
+    }
     semantics(Runtime::Kotlin, Via::DialBack).await;
 }
 
-#[cfg(feature = "kotlin")]
 #[tokio::test(flavor = "multi_thread")]
 async fn kotlin_dialing_a_loopback_address() {
+    if !rutis_test_support::runtimes::enabled("kotlin") {
+        return;
+    }
     semantics(Runtime::Kotlin, Via::Loopback).await;
 }
 
-#[cfg(feature = "kotlin")]
 #[tokio::test(flavor = "multi_thread")]
 async fn kotlin_listening_on_a_websocket() {
+    if !rutis_test_support::runtimes::enabled("kotlin") {
+        return;
+    }
     semantics(Runtime::Kotlin, Via::WebSocket).await;
 }

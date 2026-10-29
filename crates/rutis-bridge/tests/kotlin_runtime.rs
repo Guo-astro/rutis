@@ -1,4 +1,3 @@
-#![cfg(feature = "kotlin")]
 //! The Kotlin runtime (the SDK's jvm target, `Rutis.serve` in the
 //! conformance jar, started through the generic launcher) beyond the shared
 //! suites (design docs/design-android-runtime-2026-10-12.md §九 专项): a host
@@ -74,6 +73,9 @@ async fn service(
 /// guarantee: bridge/error-code-and-data
 #[tokio::test(flavor = "multi_thread")]
 async fn errors_carry_their_code_and_data_both_ways() {
+    if !rutis_test_support::runtimes::enabled("kotlin") {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     let process = kotlin(dir.path()).await;
     let ctx = Ctx::root().unwrap();
@@ -149,6 +151,9 @@ impl HostDispatch for Ledger {
 /// guarantee: bridge/caller-row
 #[tokio::test(flavor = "multi_thread")]
 async fn each_row_calls_by_its_own_service_id() {
+    if !rutis_test_support::runtimes::enabled("kotlin") {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     let process = kotlin(dir.path()).await;
     assert!(process.supports("scopes"));
@@ -217,6 +222,9 @@ async fn each_row_calls_by_its_own_service_id() {
 /// cancels the call's scope and interrupts its thread); the session goes on.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_dropped_async_call_cancels_the_coroutine() {
+    if !rutis_test_support::runtimes::enabled("kotlin") {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     let process = kotlin(dir.path()).await;
     let ctx = Ctx::root().unwrap();

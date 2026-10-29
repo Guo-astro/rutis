@@ -7,7 +7,7 @@
 ## 在哪里运行
 
 - 表里的测试都在 `ci.yml` 的任务里运行：Rust、rutis-host、rutis-loader、rutis-bridge 的测试在 `rust`，端到端场景在 `e2e`，Node 与 Python 的包在 `js-py`，Bun 在 `runtimes-bun`，Go 在 `runtimes-go`。发布门（release.yml）和每晚运行（nightly.yml）都以 `all=true` 调用 `ci.yml`，所以发布时其中任何一个失败，发布门就不通过，什么都不发布；每晚运行失败时开问题单（[CI](ci.md) §7）。
-- 不会悄悄跳过：Go 的 Delve 测试在 `rust` 任务里设了 `RUTIS_TEST_DELVE=required`，没装 `dlv` 就失败；事件一致性测试设了 `RUTIS_EVENTS_REQUIRE=node,python,go,bun`，少了哪种语言就失败；只在 Unix 上运行的测试在 Linux 上运行。
+- 不会悄悄跳过：Go 的 Delve 测试在 `rust` 任务里设了 `RUTIS_TEST_DELVE=required`，没装 `dlv` 就失败；事件一致性测试设了 `RUTIS_TEST_RUNTIMES=node,python,go,bun`，少了哪种语言就失败；只在 Unix 上运行的测试在 Linux 上运行。
 - `links` 任务运行 `node tools/check-faults.mjs`：表里列的测试改了名或删掉了、或者本页与 `tests/faults.json` 不一致，就失败；它还把下表写进这次运行的摘要。
 
 ## 怎样更新
@@ -36,7 +36,7 @@
 | 9 | 互相调用、互相依赖 | 2 个测试 | 1 个测试 | 2 个测试 | 1 个测试 | 2 个测试 | [#676](https://github.com/arcships/rutis/issues/676) [#228](https://github.com/arcships/rutis/issues/228) |
 | 10 | 运行时进程中途退出 | 2 个测试 | 2 个测试 | 4 个测试 | 2 个测试 | 不适用 | [#682](https://github.com/arcships/rutis/issues/682) [#688](https://github.com/arcships/rutis/issues/688) |
 | 11 | 下断点、看日志 | 4 个测试 | 2 个测试 | 3 个测试 | 1 个测试 | 1 个测试 | [#679](https://github.com/arcships/rutis/issues/679) [#678](https://github.com/arcships/rutis/issues/678) |
-| 12 | 配置写错 | 3 个测试 | 2 个测试 | 2 个测试 | 3 个测试 | 3 个测试 | [#669](https://github.com/arcships/rutis/issues/669) |
+| 12 | 配置写错 | 3 个测试 | 1 个测试 | 1 个测试 | 3 个测试 | 3 个测试 | [#669](https://github.com/arcships/rutis/issues/669) |
 | 13 | 两个插件提供同名服务 | 3 个测试 | 2 个测试 | 2 个测试 | 1 个测试 | 2 个测试 | [#676](https://github.com/arcships/rutis/issues/676) [#677](https://github.com/arcships/rutis/issues/677) |
 | 14 | 查看现在的运行状态 | 1 个测试 | 无测试 | 1 个测试 | 无测试 | 2 个测试 | [#678](https://github.com/arcships/rutis/issues/678) |
 
@@ -130,9 +130,9 @@
 
 ### 12. 配置写错
 
-- TypeScript（Node）：`crates/rutis-host/tests/check.rs` `check_fails_a_config_that_does_not_match_the_schema`，`crates/rutis-host/tests/check.rs` `check_warns_of_extra_config_keys`，`node/rutis-runtime/test/config.test.mjs` “a leaf plugin gets its config filled, and fails its row on a wrong one”
-- Bun：`bun/rutis-bun/test/config.test.ts` “a row's config is filled, and a wrong one fails the row with bad-config”，`bun/rutis-bun/test/config.test.ts` “this copy passes every case of the shared list”
-- Python：`python/rutis/tests/test_config.py` `test_a_bad_config_crosses_with_its_code_and_issues`，`python/rutis/tests/test_config.py` `test_an_extra_key_is_warned_about_once`
+- TypeScript（Node）：`crates/rutis-host/tests/check.rs` `check_fails_a_config_that_does_not_match_the_schema`，`crates/rutis-host/tests/check.rs` `check_warns_of_extra_config_keys`，`node/rutis/test/plugin.test.mjs` “the host fills the config defaults and refuses a config the schema refuses”
+- Bun：`bun/rutis-bun/test/sdk.test.ts` “the host fills the config defaults and refuses a wrong config”
+- Python：`python/rutis/tests/test_testing.py` `test_the_hosts_loader_checks_the_config_and_fills_its_defaults`
 - Go：`go/rutis/internal/runtime/config_internal_test.go` `TestATypedConfigIsDecoded`，`go/rutis/internal/runtime/config_internal_test.go` `TestAConfigTheTypeDoesNotTakeIsSaidPlainly`，`go/rutis/rutistest/config_test.go` `TestATypedConfigInTheTestTool`
 - Rust（插件与嵌入）：`crates/rutis-loader/tests/config_rows.rs` `a_rust_row_is_filled_and_validated`，`crates/rutis-loader/tests/config_rows.rs` `extra_keys_are_warned_about_once`，`crates/rutis/tests/config_cases.rs` `every_case_of_the_shared_list_passes`
 

@@ -1,3 +1,4 @@
+// guarantee: bridge/bad-values
 import Foundation
 @testable import Rutis
 
@@ -89,6 +90,7 @@ struct BadValueTests {
         XCTAssertNil(runtime.error)
     }
 
+    // guarantee: bridge/object-refs
     // objects-case(swift): receiver-releases
     // objects-case(swift): undefined-nested-null
     func testAReceivedObjectIsAProxyOfItsMethods() async throws {

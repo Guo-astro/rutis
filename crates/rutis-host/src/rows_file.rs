@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 
 use rutis::host::BoxFuture;
 use rutis_loader::edit::{apply_edit, Edit, Editable, Persist, PersistError, Version};
-use rutis_loader::internal::apply_patches;
+use rutis_loader::patch::apply_patches;
 use rutis_loader::{Layer, LoaderError, Patch};
 use serde_json::Value;
 
@@ -128,6 +128,7 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// guarantee: host/rows-written-back
     /// Rows as written come back the same, groups and all, and an edit
     /// changes only its row.
     #[test]

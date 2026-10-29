@@ -63,30 +63,31 @@ impl TestRuntime {
 
     /// The Node runtime `node` of the repository's `node/rutis-runtime`,
     /// its plugins resolved from that package.
-    #[cfg(feature = "node")]
     pub fn node() -> Self {
         let package = repo().join("node/rutis-runtime");
         Self::new(
             "node",
-            Launcher::node(&package),
+            launcher(rutis_test_support::runtimes::node_runtime()),
             &package.join("package.json"),
         )
     }
 
     /// The Python runtime `py` of `project`, the repository's rutis package
     /// on its path.
-    #[cfg(feature = "python")]
     pub fn python(project: &Path) -> Self {
-        Self::new("py", Launcher::python(project), project).python_path(repo().join("python/rutis"))
+        Self::new(
+            "py",
+            launcher(rutis_test_support::runtimes::python_runtime(project)),
+            project,
+        )
     }
 
     /// The Bun runtime `bun` of the repository's `bun/rutis-bun`, importing
     /// plugin modules from `project`.
-    #[cfg(feature = "bun")]
     pub fn bun(project: &Path) -> Self {
         Self::new(
             "bun",
-            Launcher::bun(None, &repo().join("bun/rutis-bun"), project),
+            launcher(rutis_test_support::runtimes::bun_runtime(project)),
             project,
         )
     }
@@ -207,6 +208,93 @@ impl DynPlugin for TestRuntime {
                 }
                 Ok(())
             })?;
+            Ok(Effect::Done)
+        })
+    }
+}
+
+/// `command` (`rutis_test_support::runtimes`) as a launcher.
+pub fn launcher(command: rutis_test_support::runtimes::Command) -> Launcher {
+    let mut launcher = Launcher::new(command.program);
+    launcher.args = command.args;
+    launcher.env = command.env;
+    launcher.cwd = command.cwd;
+    launcher.inherit_fd = command.inherit_fd;
+    launcher
+}
+
+/// The process of a runtime on `channel`, one this side did not start
+/// (listening on a WebSocket, a memory channel's far end): a [`Session`]
+/// on it under a fiber marked as the row `row`, below `ctx` (whose root
+/// has [`greet_as_main`]). The session greets as `main` and names the
+/// runtime by the id it greets with.
+pub async fn attached(
+    ctx: &Ctx,
+    row: &str,
+    channel: rutis_bridge::Channel,
+) -> Result<std::sync::Arc<rutis_bridge::runtime::Process>, String> {
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    ctx.plugin(Attached {
+        row: row.to_owned(),
+        channel: std::sync::Mutex::new(Some(channel)),
+        sender: std::sync::Mutex::new(Some(sender)),
+    });
+    receiver
+        .await
+        .map_err(|_| format!("the row {row} ended before its session was mounted"))?
+}
+
+type Mounted = Result<std::sync::Arc<rutis_bridge::runtime::Process>, String>;
+
+struct Attached {
+    row: String,
+    channel: std::sync::Mutex<Option<rutis_bridge::Channel>>,
+    sender: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<Mounted>>>,
+}
+
+impl Attached {
+    async fn mount(&self, ctx: &Ctx) -> Mounted {
+        ctx.mark_row(&self.row).map_err(|error| error.to_string())?;
+        let channel = self.channel.lock().unwrap().take().expect("one run");
+        let session = ctx.plugin(Session::new(channel));
+        let mut watch = session.watch();
+        let snapshot = watch
+            .wait_for(|s| {
+                matches!(
+                    s.state,
+                    FiberState::Active | FiberState::Failed | FiberState::Disposed
+                )
+            })
+            .await
+            .map_err(|_| "the session ended as it started".to_owned())?
+            .clone();
+        if snapshot.state != FiberState::Active {
+            return Err(snapshot
+                .error
+                .map(|error| error.to_string())
+                .unwrap_or_else(|| "the session ended as it started".into()));
+        }
+        ctx.get_at(&session_key(&self.row))
+            .and_then(|handle| handle.process())
+            .ok_or_else(|| format!("{} runs no plugins", self.row))
+    }
+}
+
+impl DynPlugin for Attached {
+    fn platform(&self) -> bool {
+        true
+    }
+
+    fn name(&self) -> &str {
+        &self.row
+    }
+
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
+        Box::pin(async move {
+            let mounted = self.mount(ctx).await;
+            if let Some(sender) = self.sender.lock().unwrap().take() {
+                let _ = sender.send(mounted);
+            }
             Ok(Effect::Done)
         })
     }

@@ -8,9 +8,9 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, Weak};
 
-use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, TypeKey};
+use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
 use rutis::{Ctx, Error as RutisError};
-use rutis_bridge::runtime::{Process, Projection};
+use rutis_bridge::runtime::{Mount as RuntimeMount, Process, Projection};
 use rutis_bridge::session::{decode, decode_value, Error};
 use rutis_test_support::{until, within};
 use serde_json::{json, Value};
@@ -76,23 +76,21 @@ impl DynPlugin for Mount {
         Box::pin(async move {
             let projection = Projection::new();
             let on_drop = self.on_drop.clone();
-            projection.service_keyed(
-                "counter",
-                TypeKey::of::<Counter>(),
-                move |process, handle| {
-                    Arc::new(Counter {
-                        process,
-                        handle,
-                        on_drop: on_drop.clone(),
-                    })
-                },
-            );
-            let process = Process::launch_observed(
+            projection.service_keyed("counter", Key::<Counter>::of(), move |process, handle| {
+                Arc::new(Counter {
+                    process,
+                    handle,
+                    on_drop: on_drop.clone(),
+                })
+            });
+            let process = Process::mount(
                 &package(),
-                &self.plugin,
-                json!({}),
-                json!({ "counter": ["current", "swap", "swapThenFail"], "control": ["cycle"] }),
-                Some(projection.clone()),
+                RuntimeMount {
+                    plugins: vec![(&self.plugin, json!({}))],
+                    services: json!({ "counter": ["current", "swap", "swapThenFail"], "control": ["cycle"] }),
+                    observer: Some(projection.clone()),
+                    ..RuntimeMount::default()
+                },
             )
             .await?;
             let owner = process.clone();
@@ -132,6 +130,9 @@ async fn mounted_with(
 // failed publication is retried instead of being recorded as applied.
 #[tokio::test(flavor = "current_thread")]
 async fn withdrawal_and_immediate_reregistration_keep_the_service() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     let (_file, ctx, view, shared) = mounted().await;
     let process = shared.lock().unwrap().clone().unwrap();
     process.call("control", "cycle", json!([9])).unwrap();
@@ -154,6 +155,9 @@ async fn withdrawal_and_immediate_reregistration_keep_the_service() {
 // new proxy and replaces the service again before the publication returns.
 #[tokio::test(flavor = "current_thread")]
 async fn a_proxy_held_during_reentrant_replacement_stays_callable() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     let on_drop = OnDrop::default();
     let (_file, ctx, view, shared) = mounted_with(on_drop.clone()).await;
     let held: Arc<Mutex<Option<Arc<Counter>>>> = Arc::default();
@@ -190,6 +194,9 @@ async fn a_proxy_held_during_reentrant_replacement_stays_callable() {
 // Process cycle, so a disposed mount frees its process.
 #[tokio::test(flavor = "current_thread")]
 async fn a_disposed_mount_frees_its_process() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     let (_file, ctx, view, shared) = mounted().await;
     ctx.get::<Counter>().unwrap().current().unwrap();
     let weak: Weak<Process> = Arc::downgrade(shared.lock().unwrap().as_ref().unwrap());
@@ -199,10 +206,14 @@ async fn a_disposed_mount_frees_its_process() {
     until(|| weak.upgrade().is_none(), "the process freed").await;
 }
 
+/// guarantee: boundary/5.1
 // Review #7: a method that replaces the service and then throws still
 // refreshes the slot.
 #[tokio::test(flavor = "current_thread")]
 async fn a_throwing_method_still_refreshes_the_slot() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     let (_file, ctx, view, _shared) = mounted().await;
     let error = ctx
         .get::<Counter>()
@@ -231,11 +242,16 @@ fn ticker() -> PathBuf {
 // not look like a replacement.
 #[tokio::test(flavor = "current_thread")]
 async fn service_method_effects_end_with_the_mount_and_handles_stay_stable() {
-    let process = Process::launch(
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
+    let process = Process::mount(
         &package(),
-        &ticker(),
-        json!({}),
-        json!({ "ticker": ["start", "count"] }),
+        RuntimeMount {
+            plugins: vec![(&ticker(), json!({}))],
+            services: json!({ "ticker": ["start", "count"] }),
+            ..RuntimeMount::default()
+        },
     )
     .await
     .unwrap();
@@ -260,11 +276,16 @@ async fn service_method_effects_end_with_the_mount_and_handles_stay_stable() {
 // Review #4: Service.check gates export like native injection.
 #[tokio::test(flavor = "current_thread")]
 async fn a_service_failing_its_check_is_not_exported() {
-    let process = Process::launch(
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
+    let process = Process::mount(
         &package(),
-        &ticker(),
-        json!({ "ready": false }),
-        json!({ "ticker": ["start", "count"] }),
+        RuntimeMount {
+            plugins: vec![(&ticker(), json!({ "ready": false }))],
+            services: json!({ "ticker": ["start", "count"] }),
+            ..RuntimeMount::default()
+        },
     )
     .await
     .unwrap();
@@ -316,12 +337,14 @@ impl DynPlugin for PairMount {
                 on_drop: OnDrop::default(),
             });
             projection.service::<Other>("other", |process, handle| Other { process, handle });
-            let process = Process::launch_observed(
+            let process = Process::mount(
                 &package(),
-                &self.plugin,
-                json!({}),
-                json!({ "counter": ["current"], "other": ["current"], "control": ["swap", "bump", "remote"] }),
-                Some(projection.clone()),
+                RuntimeMount {
+                    plugins: vec![(&self.plugin, json!({}))],
+                    services: json!({ "counter": ["current"], "other": ["current"], "control": ["swap", "bump", "remote"] }),
+                    observer: Some(projection.clone()),
+                    ..RuntimeMount::default()
+                },
             )
             .await?;
             let owner = process.clone();
@@ -358,6 +381,9 @@ async fn pair() -> (
 
 #[tokio::test(flavor = "current_thread")]
 async fn a_call_on_an_exported_object_refreshes_the_slots() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     let (_file, ctx, view, process) = pair().await;
     let remote: rutis_bridge::session::ObjectRef =
         decode_value(process.invoke("control", "remote", vec![]).unwrap()).unwrap();
@@ -408,8 +434,12 @@ impl DynPlugin for Consumer {
     }
 }
 
+/// guarantee: boundary/5.8
 #[tokio::test(flavor = "current_thread")]
 async fn a_crashed_process_withdraws_its_services() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     let mut file = tempfile::Builder::new().suffix(".mjs").tempfile().unwrap();
     file.write_all(
         br#"

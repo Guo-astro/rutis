@@ -355,7 +355,7 @@ rutis-host 不再用 `rutis::internal` 与 `rutis_loader::internal`。核实到�
 | Swift | `EventsCore.swift:224–391`；`RuntimeEvents.swift:212–310,417–436` |
 | Kotlin | `Bus.kt:120–217`；`EventsRuntime.kt:221–266,377–406` |
 
-基准（先于删除，单独一个 PR）：新写 `tools/bench/events`，在 Node 与 Python 运行时里各测一种情形——发出方与监听器在同一个运行时，分别用 `emit`、`serial`、同步 `bail`，每种 10 000 次，报中位数与 p99；分别在删前（本地分发）与删后（经宿主）跑。可接受：经宿主的 `emit` 中位数不超过 100 微秒（跨进程一次往返实测 30–70 微秒，`docs/experiments-native-plugin-mount.md:62–89`），并且 dsh 的基线（`node/baseline/`）启动与跑完一遍的时间不超过现在的 1.1 倍。不可接受时停下，把数字报给用户，不保留快速路径。
+基准（先于删除，单独一个 PR）：新写 `tools/bench/events`，在 Node 与 Python 运行时里各测一种情形——发出方与监听器在同一个运行时，分别用 `emit`、`serial`、同步 `bail`，每种 10 000 次，报中位数与 p99；分别在删前（本地分发）与删后（经宿主）跑。可接受：经宿主的 `emit` 中位数按实测值接受——Node 71 微秒、Python 139 微秒（`docs/performance-events-2026-10-28.md`；原定 100 微秒，Python 超出，用户看过数字后决定照删），经宿主的路径以后可优化；并且 dsh 的基线（`node/baseline/`）启动与跑完一遍的时间不超过现在的 1.1 倍。dsh 基线超出时停下，把数字报给用户，不保留快速路径。
 
 删除带来的行为变化（写进《迁移到 0.19》）：Kotlin 在 Android 主线程上的同步 `bail` 一律被拒（`EventsRuntime.kt:321–327`，现在本地有监听器时可以）；Go 会话结束后的 `emit` 不再走本地（`events.go:446–449`），清理阶段的 `emit` 报会话已结束。
 

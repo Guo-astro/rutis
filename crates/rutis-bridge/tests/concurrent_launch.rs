@@ -299,10 +299,12 @@ fn spawned_processes_started_at_once_hold_only_their_own_channel() {
 /// guarantee: bridge/spawned-processes-own-channel (issue #184, risk C11,
 /// Q6.5.2): Node runtimes launched at once through the `Process` facade
 /// each start and hold their own channel only.
-#[cfg(feature = "node")]
 #[test]
 fn node_runtimes_launched_at_once_hold_only_their_own_channel() {
-    use rutis_bridge::runtime::Process;
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
+    use rutis_bridge::runtime::{Mount, Process};
     use serde_json::json;
     use std::io::Write;
 
@@ -325,11 +327,13 @@ fn node_runtimes_launched_at_once_hold_only_their_own_channel() {
         let runtime = runtime();
         let mut failures = Failures(Vec::new());
         failures.check("line up", barrier.wait());
-        let process = runtime.block_on(Process::launch(
+        let process = runtime.block_on(Process::mount(
             &package,
-            plugin.path(),
-            json!({}),
-            json!({ "probe": ["pid", "exit"] }),
+            Mount {
+                plugins: vec![(plugin.path(), json!({}))],
+                services: json!({ "probe": ["pid", "exit"] }),
+                ..Mount::default()
+            },
         ));
         let process = match process {
             Ok(process) => Some(process),

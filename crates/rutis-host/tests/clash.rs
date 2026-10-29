@@ -1,3 +1,5 @@
+//! guarantee: host/row-failure-output
+//! guarantee: sdk/error-texts
 //! A row that provides, after it has loaded, a service another row
 //! provides already: it fails as the later provider, as it would have had
 //! it provided the service while loading, and `run` prints why (#446).

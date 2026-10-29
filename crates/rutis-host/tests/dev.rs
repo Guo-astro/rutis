@@ -1,3 +1,4 @@
+//! guarantee: host/row-failure-output
 //! `rutis-host dev` following a project as it changes (#665): a changed file
 //! reloads only the rows whose file it is, the rows that use them restart
 //! by themselves and say why; `rutis.dev.json` is read again (also on

@@ -5,7 +5,7 @@
 //! Go and a Rust service. No message holds the words of the platform's
 //! inside: `rutis`, `Cordis`, `binding`, `session`, internal ids (`row:`,
 //! a NUL), `WireValue`, `runtime-rows`, `<root>`, `<leaf>`.
-#![cfg(all(feature = "node", feature = "python", feature = "go"))]
+#![cfg(feature = "go")]
 
 mod common;
 
@@ -288,13 +288,16 @@ fn forbidden(text: &str) -> Vec<&'static str> {
         .collect()
 }
 
-/// guarantee: sdk/error-texts
+/// guarantee: sdk/error-texts, sdk/error-codes
 ///
 /// Each fault of the list, through Node, Python, Go and a Rust service:
 /// the messages name the service, the method and the argument, and hold
 /// none of the forbidden words.
 #[tokio::test(flavor = "multi_thread")]
 async fn fault_messages_hold_none_of_the_platforms_words() {
+    if !rutis_test_support::runtimes::all_enabled(&["node", "python", "go"]) {
+        return;
+    }
     let fixture = fixture().await;
     let rows = vec![
         named("ps", "py:py_svc"),

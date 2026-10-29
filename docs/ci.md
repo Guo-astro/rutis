@@ -93,19 +93,19 @@
 
 | 任务 | 机器 | PR 上 | 完整运行多做的 | 内容 |
 | --- | --- | --- | --- | --- |
-| `links` | Linux | `code` 或 `docs`（每个 PR 都跑） | — | 检查 Markdown 里的相对链接；改文件名、删文件也要发现。另外核对[故障验收汇总](faults.md)：表里列的测试都还在，页面与 `tests/faults.json` 一致（`tools/check-faults.mjs`，#690） |
-| `rust` | Linux | `code` | Linux 上 loopback 方式启动运行时的重跑；事件一致性矩阵（`events_conformance`）的抽样放置（`RUTIS_EVENTS_PLACEMENTS=sampled`，每种语言约 900 种，约多 6 分钟；全部约 22 000 种由每晚 `stress.yml` 的 `events-all` 跑） | 全部 Rust 测试，每项只跑一次：工作区（除 bridge、loader、`rutis-e2e`）、loader 全部行类型（`events_conformance` 在 PR 上只跑写定的放置，每种运行时语言都必须在：`RUTIS_EVENTS_REQUIRE`）、bridge 全部 feature；`rutis-host dev --debug` 在 Delve 下运行 Go 项目的测试（任务装上 `dlv`，`RUTIS_TEST_DELVE=required` 让缺 `dlv` 时失败而不是跳过）；内核的 shuttle 模型，1000 次迭代（用 `--cfg rutis_shuttle` 在 `target/shuttle` 里构建，远不到一分钟；`stress.yml` 大规模运行）；模糊测试入口（`crates/rutis-bridge/src/fuzzing.rs`）和 `fuzz/` 里的三个模糊测试目标都用 `--cfg fuzzing` 在 `target/fuzzcheck` 里 `cargo check` 一遍（只编译不运行，`stress.yml` 的 `fuzz` 才跑）。用最低支持版本（§9） |
+| `links` | Linux | `code` 或 `docs`（每个 PR 都跑） | — | 检查 Markdown 里的相对链接；改文件名、删文件也要发现。另外核对 [guarantees](guarantees.md) 的验证列与测试里的 `guarantee:` 标记一致（`tools/check-guarantees.mjs`），核对[故障验收汇总](faults.md)：表里列的测试都还在，页面与 `tests/faults.json` 一致（`tools/check-faults.mjs`，#690） |
+| `rust` | Linux | `code` | Linux 上 loopback 方式启动运行时的重跑；事件一致性矩阵（`events_conformance`）的抽样放置（`RUTIS_EVENTS_PLACEMENTS=sampled`，每种语言约 900 种，约多 6 分钟；全部约 22 000 种由每晚 `stress.yml` 的 `events-all` 跑） | 全部 Rust 测试，每项只跑一次：工作区（除 bridge、loader、`rutis-e2e`）、loader 全部行类型（`events_conformance` 在 PR 上只跑写定的放置，每种运行时语言都必须在：`RUTIS_TEST_RUNTIMES`）、bridge 全部 feature；`rutis-host dev --debug` 在 Delve 下运行 Go 项目的测试（任务装上 `dlv`，`RUTIS_TEST_DELVE=required` 让缺 `dlv` 时失败而不是跳过）；内核的 shuttle 模型，1000 次迭代（用 `--cfg rutis_shuttle` 在 `target/shuttle` 里构建，远不到一分钟；`stress.yml` 大规模运行）；模糊测试入口（`crates/rutis-bridge/src/fuzzing.rs`）和 `fuzz/` 里的三个模糊测试目标都用 `--cfg fuzzing` 在 `target/fuzzcheck` 里 `cargo check` 一遍（只编译不运行，`stress.yml` 的 `fuzz` 才跑）。用最低支持版本（§9） |
 | `e2e` | Linux | `code` | 跨版本相遇：`cargo test -p rutis-e2e --test cross_version -- --ignored`（#209），上一个发布版本的运行时包、Go SDK、`rutis-host` 与这次提交相遇；从 npm、PyPI、Go 模块代理下载，装在 `runner.temp`（不进 Rust 缓存），约 1–2 分钟。结果随新版本发布而变（§6 第 5 条），不在 PR 上跑；它只随本项目自己的发布而变，又要在发布门里跑，所以放完整运行（每晚、发布门），不放每周。放进已有的 `e2e`（Node、Python、Bun、Go 都已装好），不新开任务（§6「加一个任务」第 4 条）；完整运行中 `e2e` 不在关键路径上 | 端到端场景 `cargo test -p rutis-e2e`（`tests/e2e`：真实的 rutis-host 进程、项目目录、各语言的探针插件），与 `rust` 并行，用最低支持版本（§9）。失败时上传 `RUTIS_E2E_DIR`（失败场景的目录和日志）为 artifact `e2e-linux`。安装场景不在这里跑，由 `install.yml` 跑。S7（`embedding.rs`）反复创建关闭租户的次数由 `RUTIS_E2E_TENANT_CYCLES` 决定：PR 上 20 次，完整运行（每晚）3000 次，多约一分钟；其他任务用默认的 20 次。同样的场景在 macOS 上由 `network-macos` 跑，在 Windows 上由 `runtimes-windows` 跑（只跑不限于 Unix 的场景） |
-| `js-py` | macOS（自托管，§10） | `code` | — | `scripts/train.mjs`；Node 包（`node/rutis`、`rutis-runtime`、`rutis-host`）和 rutis-dsh 的 dsh 测试；Python 单元测试。两种 SDK 的公开面（#692）：`node/rutis/test/public-api.test.mjs` 核对 `exports` 只有 `.`、`./advanced`、`./testing`，各入口运行时的导出与手写的 `.d.ts` 一致（改 `.d.ts`）；`python/rutis/tests/test_public_api.py` 与 `python/rutis/public-api.txt` 比对 `rutis`、`rutis.advanced`、`rutis.testing`（有意的改动用 `RUTIS_PUBLIC_API_WRITE=1` 跑这个测试更新） |
+| `js-py` | macOS（自托管，§10） | `code` | — | `scripts/train.mjs`；Node 包（`node/rutis`、`rutis-runtime`、`rutis-host`）和 rutis-dsh 的 dsh 测试，SDK 的测试工具在这里构建的 `rutis-host`（`RUTIS_HOST`）上运行插件；Python 单元测试（先 `cargo build -p rutis-host`：`rutis.testing` 在它上面跑插件）。两种 SDK 的公开面（#692）：`node/rutis/test/public-api.test.mjs` 核对 `exports` 只有 `.`、`./advanced`、`./testing`，各入口运行时的导出与手写的 `.d.ts` 一致（改 `.d.ts`）；`python/rutis/tests/test_public_api.py` 与 `python/rutis/public-api.txt` 比对 `rutis`、`rutis.advanced`、`rutis.testing`（有意的改动用 `RUTIS_PUBLIC_API_WRITE=1` 跑这个测试更新） |
 | `lint` | Linux | `code` | — | `cargo fmt --check`；指南、README 和示例里没有 `rutis::internal`（它只给 rutis 自己的 crate 用，#617）；顶部测试列表里的每个名字都有对应的测试文件（§4）；`cargo clippy --workspace --all-targets --all-features -- -D warnings`。与测试并行。没有基线：警告在引入它的 PR 里改掉，升级工具链带来的新 lint 在升级的 PR 里改掉 |
 | `public-api` | Linux | `code` | — | 内核的公开面（根、`rutis::events`、`rutis::host`；隐藏的 `rutis::internal` 不算）和 `crates/rutis/public-api.txt` 里的快照比对（`tools/public-api.sh`，用 `cargo-public-api` 的库（`tools/public-api`，不用要 OpenSSL 才编得出来的命令行工具）和固定日期的 nightly 读 rustdoc JSON，约 1 分钟）。加一个名字就要改快照，评审时看得见；有意的改动用 `tools/public-api.sh --write` 更新快照（#617） |
 | `msrv` | macOS（自托管，§10） | 只在 `all` 时（改了 `Cargo.lock`、`Cargo.toml` 等） | 整个任务 | 用声明的 MSRV（`Cargo.toml` 的 `rust-version`）和仓库的 `Cargo.lock` 编译库和二进制（`cargo +<版本> check --workspace`，不含示例项目 `rutis-agent`、`rutis-cli`） |
-| `checks` | macOS（自托管，§10） | 只在 `all` 时 | 整个任务 | bridge、loader 各个 feature 组合的编译检查和 `--no-run`（整个工作区的编译由 `lint` 的 clippy 覆盖）。这些检查发现的是少见的 feature 组合编译错误，不跑测试 |
+| `checks` | macOS（自托管，§10） | 只在 `all` 时 | 整个任务 | bridge 各个 feature（不开、`websocket`、`cordis`、`testing`）和 loader 各个 feature（`runtimes`、`node`、`go`、`swift`）的编译检查，以及两个 crate 的测试能编译（`--no-run`；bridge 没有语言 feature，测试用哪些运行时由 `RUTIS_TEST_RUNTIMES` 决定，§4）。整个工作区的编译由 `lint` 的 clippy 覆盖。这些检查发现的是少见的 feature 组合编译错误，不跑测试 |
 | `network-macos` | macOS | `code`：只跑平台专项测试（§4；`events_conformance` 只跑写定的放置） | bridge、loader 全部测试；`node/rutis` 测试；`events_conformance` 的抽样放置 | 最新版本（§9）下的进程启动、本地通道、运行时进程、WebSocket、rutis-host 测试；端到端场景（失败时上传 artifact `e2e-macos`）；Node 运行时和 Python 包的测试；整个工作区的编译检查 |
 | `runtimes-windows` | Windows | `code`：只跑平台专项测试（§4） | bridge、loader 全部测试 | 同上，在 Windows 上（进程用 loopback 方式启动）；Go SDK 测试；E2E harness 和不限于 Unix 的 E2E 场景（`rutis-e2e`：Job Object、Ctrl-Break、残余检查）；整个工作区的编译检查 |
 | `runtimes-bun` | Linux | `bun`：Bun 1.4.0 | Linux 最新版；macOS 1.4.0 | Bun 运行时的全部测试，包括 loopback 方式启动的重跑 |
 | `runtimes-go` | Linux | `go`：Go oldstable；`gofmt`、`go vet`、`go test -race`、Go SDK 和 rutis-host 的 Go 测试 | Linux stable；macOS oldstable；Linux 上 loopback 方式启动的重跑；`rust` 已经跑过的那几套 cargo 测试（Go 运行时、契约套件、Go 行） | Go SDK 与 Go 运行时的全部测试，其中 `go/rutis/public_api_test.go` 把 `rutis`、`rutis/advanced`、`rutis/rutistest` 的导出声明和 `go/rutis/public-api.txt` 比对（#692；有意的改动用 `go test -run TestPublicAPI -update` 更新） |
-| `runtimes-kotlin` | Linux | `kotlin`：JDK 17 | — | Kotlin SDK（`kotlin/rutis`）的 Gradle 构建与测试（先 `cargo build -p rutis-host`，测试工具跑在 `rutis-host test` 上，`RUTIS_HOST`）：jvm target 的单元测试、测试工具对两份期望文件，以及 `check` 带的 `apiCheck`（Binary Compatibility Validator，公开面在 `kotlin/rutis/rutis/api/`：jvm 的在 `api/jvm/`，有 Android SDK 时 android 的在 `api/android/`；有意的改动用 `./gradlew apiDump` 更新，#692）；runner 有 Android SDK 时还编译 android target、出 AAR。然后跑带 Kotlin 的 Rust 套件（feature `kotlin`：会话与值、运行时契约、事件一致性中 Kotlin 作 X 与 Y、`kotlin_runtime`、多语言 `multilang_kotlin`、对象跨进程 `objects_cross` 的 Kotlin 用例；远程：拨出契约的 Kotlin 列、`kotlin_remote`、rutis-host 的 `--features kotlin --test kotlin`），Gradle 在 cargo 之前。`rust`、`network-macos`、`runtimes-windows` 的 bridge 全部 feature 也包含 `kotlin`：它们装 JDK 17，先用 Gradle 构建一致性 jar（`RUTIS_KOTLIN_JAR`） |
+| `runtimes-kotlin` | Linux | `kotlin`：JDK 17 | — | Kotlin SDK（`kotlin/rutis`）的 Gradle 构建与测试（先 `cargo build -p rutis-host`，测试工具跑在 `rutis-host test` 上，`RUTIS_HOST`）：jvm target 的单元测试、测试工具对两份期望文件，以及 `check` 带的 `apiCheck`（Binary Compatibility Validator，公开面在 `kotlin/rutis/rutis/api/`：jvm 的在 `api/jvm/`，有 Android SDK 时 android 的在 `api/android/`；有意的改动用 `./gradlew apiDump` 更新，#692）；runner 有 Android SDK 时还编译 android target、出 AAR。然后跑带 Kotlin 的 Rust 套件（`RUTIS_TEST_RUNTIMES` 里有 `kotlin`：会话与值、运行时契约、事件一致性中 Kotlin 作 X 与 Y、`kotlin_runtime`、多语言 `multilang_kotlin`、对象跨进程 `objects_cross` 的 Kotlin 用例；远程：拨出契约的 Kotlin 列、`kotlin_remote`、rutis-host 的 `--features kotlin --test kotlin`），Gradle 在 cargo 之前。`rust`、`network-macos`、`runtimes-windows` 的 bridge 全部 feature 也包含 `kotlin`：它们装 JDK 17，先用 Gradle 构建一致性 jar（`RUTIS_KOTLIN_JAR`） |
 | `runtimes-swift` | macOS（自托管，§10） | `swift`：runner 上 Xcode 的工具链 | — | Swift SDK 自己的测试（`swift run RutisSelfTest`，`RutisTest` 用本仓库构建的 `rutis-host test`）、`Rutis` 与 `RutisTest` 的公开面和 `swift/rutis/public-api.txt` 比对（`tools/public-api-swift.sh`，读 `swift package dump-symbol-graph`；有意的改动用 `--write` 更新，#692）、runner 有 iOS SDK 时为 iOS 构建库、带 Swift 会话与运行时的 Rust 契约套件、Swift 行与 Node / Python 行一起（`swift_rows`、`multilang_swift`、调用方的行、等待环、对象跨进程 `objects_cross` 的 Swift 用例）、远程的 Swift 运行时（`dial_conformance`、`swift_remote`）、rutis-host 的 `runtimes.swift` 与 Swift 插件开发循环（`rutis-host --test swift`、`rutis-e2e --test dev_loop`）、应用用 `RutisApp` 托管插件（`rutis-host --test swift_app`，以一个可执行程序代替应用），以及 X 为 Swift 插件的 `events_conformance`（PR 跑写定的组合，完整运行抽样） |
 | `semver-rutis` | macOS（自托管，§10） | `packaging` | 整个任务 | 公开 API 和上次发布相比有没有不兼容的改动（只提示） |
 | `dylib-linux-launcher`、`dylib-linux-sdk-bundle` | Linux | `dylib` | — | dylib 测试，分两个任务同时跑 |
@@ -121,11 +121,15 @@
 PR 上 macOS、Windows 跑两个 crate 的单元测试（`--lib`）和平台专项的测试文件，跳过 `ci.yml` 顶部三组列表里的名字：
 
 - `PURE_TESTS_*`：只依赖 Rust 代码本身，不启动进程、不开 socket、除了读 fixture 不碰文件、不依赖操作系统的行为；
-- `MACOS_SKIP_TESTS_*`、`WINDOWS_SKIP_TESTS_*`：运行时和事件行为，和平台无关，Linux 的 `rust` 任务已经用全部 feature 跑过。平台专项的部分保留：进程启动、继承的 socket 与 loopback 交接、signal、网络栈，以及 Swift、Kotlin 自己的行。两个平台不完全相同：Windows 保留经 loopback 启动的运行时行，跳过它不运行的运行时的行。
+- `MACOS_SKIP_TESTS_*`、`WINDOWS_SKIP_TESTS_*`：运行时和事件行为，和平台无关，Linux 的 `rust` 任务已经用全部运行时跑过。平台专项的部分保留：进程启动、继承的 socket 与 loopback 交接、signal、网络栈，以及 Swift、Kotlin 自己的行。两个平台不完全相同：Windows 保留经 loopback 启动的运行时行，跳过它不运行的运行时的行。
 
 `rutis-host` 的测试在 PR 上全跑。完整运行三个平台都跑全部测试文件。新加的测试文件默认在三个平台上都跑，不需要记得登记；只有确认 Linux 已覆盖与操作系统无关的部分，才把它加进 skip 列表。列表里的名字找不到对应文件时，脚本报错，`lint` 任务失败，重命名或删除测试文件不会让列表悄悄失效。
 
 传给 `cargo test` 的 `--lib --test <名字> ...` 由 `tools/platform-tests.sh` 在任务运行时生成：`crates/<crate>/tests/` 下的每个测试文件，去掉传入的列表里的名字。每晚 `stress.yml` 的 `multiprocess` 任务也用它，但只排除 `PURE_TESTS_*`，所以 skip 列表里会启动进程的测试仍会在夜里重复（§2）。
+
+### 测试用哪些运行时
+
+bridge、loader 和示例里要启动语言运行时的测试，按环境变量 `RUTIS_TEST_RUNTIMES`（逗号分隔，`node`、`python`、`bun`、`go`、`swift`、`kotlin`）决定跑不跑，由 `rutis-test-support` 的 `runtimes` 判断：列出的语言找不到工具链时测试失败，写明缺什么；没列出的语言的测试打印一行 `skipped: <语言> not in RUTIS_TEST_RUNTIMES` 后返回。CI 的每个步骤按它装了的运行时设置这个变量，cargo 用 `--all-features`，不再用语言 feature 挑测试。这是测试约定，不是产品开关。本地跑时也要设，例如 `RUTIS_TEST_RUNTIMES=node,python cargo test -p rutis-loader --all-features`。
 
 ### 一致性矩阵
 
@@ -154,7 +158,7 @@ bridge 的一致性套件在哪些实现、哪些通道、哪些平台上运行�
 | --- | --- | --- | --- | --- |
 | Node、Python、Go | 继承的 socket（`fd:3`） | 运行 | 运行 | 跳过：Windows 不交接描述符，只有 loopback |
 | Node、Python、Go | 回拨 socket 路径 | 运行 | 运行 | 跳过：同上 |
-| Node、Python、Go | loopback TCP（本地传输的 `Handover::Loopback`，与 `Launcher::start` 启动运行时的方式相同，再 `Process::attach`） | 运行 | 运行 | 运行 |
+| Node、Python、Go | loopback TCP（本地传输的 `Handover::Loopback`，与 `Launcher::start` 启动运行时的方式相同，再在通道上开一个会话） | 运行 | 运行 | 运行 |
 | Node、Python、Go | WebSocket（运行时监听，Rust 拨入） | 运行 | 运行 | 运行 |
 | Bun | `fd:3`、回拨 socket 路径 | 运行；`runtimes-bun` 用 `RUTIS_LOCAL_HANDOVER=loopback` 重跑 | 运行 | 不编译：同上 |
 | Bun | loopback TCP | 不跑单独的列：由上一行的重跑覆盖 | 同 Linux | 不编译：同上 |
@@ -228,7 +232,7 @@ CI 慢下来，通常是一项一项加检查加出来的。新增检查（新�
 ### 加一种语言运行时
 
 1. `changes` 加一个这种语言的开关，包括它的运行时目录，以及 `crates/rutis-bridge`、`crates/rutis-loader`、`crates/rutis-host`。
-2. 在 `rust`、`e2e`（最低支持版本）和 `network-macos`（最新版本）里安装这种语言（§9），在已有的 bridge、loader、host 测试步骤里加上它的 feature；它的测试文件默认在 macOS、Windows 上跑（§4），不需要登记。
+2. 在 `rust`、`e2e`（最低支持版本）和 `network-macos`（最新版本）里安装这种语言（§9），在已有的 bridge、loader、host 测试步骤的 `RUTIS_TEST_RUNTIMES` 里加上它（`rutis-test-support` 的 `runtimes` 也加上这种语言和它的起进程命令）；它的测试文件默认在 macOS、Windows 上跑（§4），不需要登记。
 3. 如果要测多个版本，加一个 `runtimes-<语言>` 任务：按第 1 步的开关运行，加进 `ci-ok`，PR 上只在 Linux 跑最低支持版本；其他版本和 macOS 只在完整运行中跑（做法见 `runtimes-bun` 和 `changes` 的 `bun-matrix`）。
 4. 发布相关：`release-dry-run`、`scripts/train.mjs`、`release.yml` 都加上它的包。
 5. 更新 §3、§4。

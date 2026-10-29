@@ -80,7 +80,7 @@ fn rust_eval(
         let mut disposers = Vec::new();
         for (name, value) in services().as_object().unwrap() {
             let key = Key::<Value>::dynamic(name.clone());
-            catalog.readable_keyed::<Value>(name.clone(), key.erase());
+            catalog.readable_keyed(name.clone(), key.clone());
             if name == "profileContext" && !with_profile {
                 continue;
             }

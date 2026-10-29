@@ -25,6 +25,7 @@ use super::{Language, Mount, LANGUAGES};
 use crate::config::{BinaryRuntime, BinaryStart, HostConfig, Restart};
 use crate::connect::SpawnPlugin;
 use crate::host::Error;
+use crate::output::OutputStream;
 use crate::restart::Starts;
 
 /// A compiled language's binaries and runtimes in a running host.
@@ -164,10 +165,11 @@ pub(super) fn start<L: BinaryLanguage>(
     let starts = Starts::default();
     mount.later.push(Box::new(move |root: Ctx| {
         Box::pin(async move {
-            let mut plugin =
-                BinaryRuntimes::<L>::new(resolver.clone(), &project, spawn(starts.clone()))
-                    .output(Stdio::Lines, Stdio::Lines)
-                    .prefix_output(prefix_output);
+            let mut plugin = BinaryRuntimes::<L>::new(
+                resolver.clone(),
+                &project,
+                spawn(starts.clone(), prefix_output),
+            );
             plugin = match start {
                 BinaryStart::Eager => plugin.eager(),
                 BinaryStart::OnDemand => plugin.idle(Some(Duration::from_secs(idle.unwrap_or(60)))),
@@ -189,9 +191,17 @@ pub(super) fn start<L: BinaryLanguage>(
 
 /// What starts a compiled language's runtime: a `rutis-host/spawn` row,
 /// named after it, each start told to `starts`.
-fn spawn(starts: Starts) -> Spawn {
+/// Its output is passed on a line at a time, each line after `[<runtime>] `
+/// with `prefix_output`: one plugin runs in each process, so the runtime's
+/// name says which wrote it.
+fn spawn(starts: Starts, prefix_output: bool) -> Spawn {
     Arc::new(move |name: &str, launcher, anchor: &Path| {
-        let plugin = SpawnPlugin::new(name, launcher, anchor);
+        let prefix = prefix_output.then(|| format!("[{name}] "));
+        let (stdout, stderr) = (
+            crate::output::lines(OutputStream::Stdout, prefix.as_deref()),
+            crate::output::lines(OutputStream::Stderr, prefix.as_deref()),
+        );
+        let plugin = SpawnPlugin::new(name, launcher, anchor).stdio(Stdio::Null, stdout, stderr);
         starts.started(name, plugin.handle());
         Spawned {
             handle: plugin.handle(),

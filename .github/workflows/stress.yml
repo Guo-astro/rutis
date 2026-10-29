@@ -211,7 +211,7 @@ jobs:
           # events_conformance runs in events-all instead: one round of
           # it takes longer than a test binary may here.
           # shellcheck disable=SC2046 # the list splits into test names
-          build rutis-loader "--features node,python,go,bun" "$(bash tools/platform-tests.sh crates/rutis-loader $(yq -r '.env.PURE_TESTS_LOADER' .github/workflows/ci.yml) | sed 's/ --test events_conformance / /')"
+          build rutis-loader "--features node,go" "$(bash tools/platform-tests.sh crates/rutis-loader $(yq -r '.env.PURE_TESTS_LOADER' .github/workflows/ci.yml) | sed 's/ --test events_conformance / /')"
           cut -f1,3 "$list"
           # No binaries would make every round pass without running anything.
           [ -s "$list" ] || { echo "::error::no test binaries"; exit 1; }
@@ -312,7 +312,7 @@ jobs:
   # so each job takes about 15 to 25 minutes. With the input `events_case`
   # every job runs the placements of those cases instead (a small run to
   # check this job). The runtimes of the `rust` job of ci.yml; every
-  # language must be there (RUTIS_EVENTS_REQUIRE). Each job writes its
+  # language must be there (RUTIS_TEST_RUNTIMES). Each job writes its
   # table of cases and its time to the summary.
   events-all:
     name: events-all (${{ matrix.x }}, ${{ matrix.cases }})
@@ -322,7 +322,7 @@ jobs:
       fail-fast: false
       matrix:
         x: [node, node-leaf, bun, python, go]
-        cases: ${{ fromJSON(inputs.events_case != '' && format('["{0}"]', inputs.events_case) || '["serial/", "order/", "waterfall,bail/", "parallel/,scope/,filter/", "emit/,unload/,values/,kinds/,rutis/,disconnect/,node/,cancel/,cordis/,reserved/,registration/,rust/,modes/,fast-path/"]') }}
+        cases: ${{ fromJSON(inputs.events_case != '' && format('["{0}"]', inputs.events_case) || '["serial/", "order/", "waterfall,bail/", "parallel/,scope/,filter/", "emit/,unload/,values/,kinds/,rutis/,disconnect/,node/,cancel/,cordis/,reserved/,registration/,rust/,modes/"]') }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.98.1
@@ -344,14 +344,14 @@ jobs:
         with:
           go-version: oldstable
           cache-dependency-path: go/rutis/go.mod
-      - run: cargo test -p rutis-loader --features node,python,go,bun --test events_conformance --no-run
+      - run: cargo test -p rutis-loader --all-features --test events_conformance --no-run
       - name: Every placement
         # bash -eo pipefail: a failing run fails the step through tee.
         shell: bash
         env:
+          RUTIS_TEST_RUNTIMES: bun,go,node,python
           RUTIS_EVENTS_PLACEMENTS: ${{ inputs.events || 'all' }}
           RUTIS_EVENTS_CASE: ${{ matrix.cases }}
-          RUTIS_EVENTS_REQUIRE: node,python,go,bun
           RUTIS_EVENTS_SETTLE_SCALE: '2'
           X: ${{ matrix.x }}
         run: |
@@ -359,7 +359,7 @@ jobs:
           case "$X" in node) test=events_with_x_a_cordis_plugin;; esac
           started=$(date +%s)
           status=0
-          cargo test -p rutis-loader --features node,python,go,bun --test events_conformance -- \
+          cargo test -p rutis-loader --all-features --test events_conformance -- \
             --exact "$test" --nocapture 2>&1 | tee "$RUNNER_TEMP/events.txt" || status=$?
           {
             echo "### events conformance, X=$X, $RUTIS_EVENTS_PLACEMENTS placements of $RUTIS_EVENTS_CASE"

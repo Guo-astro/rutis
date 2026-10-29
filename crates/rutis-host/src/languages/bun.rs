@@ -175,7 +175,7 @@ fn runtime(bun: &BunRuntime, debug: bool) -> Result<SpawnPlugin, Error> {
             program.display()
         ));
     }
-    let mut launcher = Launcher::bun(Some(program.as_os_str()), &package, &bun.project);
+    let mut launcher = launcher(&program, &package, &bun.project);
     if debug {
         launcher
             .args
@@ -212,3 +212,18 @@ const TEMPLATE: &[(&str, &str)] = &[
         include_str!("../../templates/bun/.github/workflows/publish.yml"),
     ),
 ];
+
+/// The Bun runtime of the npm package `package` (`bun/rutis-bun`, or an
+/// installed `@arcships/rutis-bun`), run by the Bun executable `program`,
+/// in `project`, on an inherited socket (on Windows, a loopback address).
+/// Auto-install and `.env` files are always off: plugins resolve only what
+/// the project has installed, and the environment is only what this
+/// process gives.
+pub fn launcher(program: &Path, package: &Path, project: &Path) -> Launcher {
+    Launcher::new(program)
+        .arg("--no-install")
+        .arg("--no-env-file")
+        .arg(package.join("src/main.ts"))
+        .cwd(project)
+        .inherit_fd()
+}

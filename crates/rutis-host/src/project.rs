@@ -145,7 +145,7 @@ pub fn row_file(name: &str, runtimes: &crate::config::Runtimes) -> Option<PathBu
         if let (Some(bun), "bun") = (&runtimes.bun, prefix) {
             return file(rest, &bun.project);
         }
-        if rutis_loader::internal::is_runtime_name(prefix) {
+        if rutis_loader::runtime::is_runtime_name(prefix) {
             // Another runtime's: Go, Swift, a connection row's.
             return None;
         }
@@ -258,6 +258,7 @@ mod tests {
         assert!(config.runtimes.node.is_some());
     }
 
+    /// guarantee: host/dev-reload
     /// The dev file's rows in the project's own runtime run in the runtime
     /// `dev` sets up: no word of an undeclared runtime (#666). A row of
     /// another language's runtime the file does not declare still has
@@ -324,8 +325,9 @@ mod tests {
         );
     }
 
-    /// A project `rutis-host new --lang go` makes builds, passes its own
-    /// test, and becomes one row per plugin of its binary.
+    /// A project `rutis-host new --lang go` makes builds and becomes one row
+    /// per plugin of its binary (its own test needs `rutis-host test`: it
+    /// runs in `tests/templates.rs`, with the binary just built).
     #[test]
     fn a_go_project_is_built_into_rows() {
         let dir = tempfile::tempdir().unwrap();
@@ -342,7 +344,8 @@ mod tests {
             ),
         )
         .unwrap();
-        for check in [&["vet", "./..."][..], &["test", "./..."][..]] {
+        {
+            let check = ["vet", "./..."];
             let output = std::process::Command::new("go")
                 .args(check)
                 .current_dir(&project)

@@ -38,16 +38,27 @@ struct Count: Codable {
     var count: Int
 }
 
-/// The far end of an app's connection, as rutis: what it was told.
+/// The far end of an app's connection, as rutis: what it was told. It
+/// refuses `events.on` until it offers `events` (`offersEvents`), as rutis
+/// does.
 private final class FakeHost: @unchecked Sendable {
     private let lock = NSLock()
     private var told: [(method: String, frame: Value)] = []
     private var session: Peer?
+    private var events = false
+
+    var offersEvents: Bool {
+        get { lock.withLock { events } }
+        set { lock.withLock { events = newValue } }
+    }
 
     func serve(_ socket: WebSocket) {
         var options = PeerOptions(endpoint: Endpoint(local: "test", expected: "pad"))
         options.dispatch = { [self] _, method, args in
-            lock.withLock { told.append((method, args.first ?? .undefined)) }
+            try lock.withLock {
+                told.append((method, args.first ?? .undefined))
+                if method == "events.on", !events { throw RutisError(name: "BindingError", message: "events.on is not offered here") }
+            }
             return .undefined
         }
         guard let peer = try? Peer(channel: socket, options: options), (try? peer.start()) != nil else { return }
@@ -267,8 +278,9 @@ struct AppTests {
     }
 
     /// A connected app offers `services` and installs its plugins in
-    /// order, each with its configuration (or its schema's defaults) once
-    /// the services it injects are there: its own plugins' or rutis's. It
+    /// order, once rutis offers `events` (not before: until then rutis
+    /// refuses `events.on`), each with its configuration (or its schema's
+    /// defaults) once the services it injects are there: its own plugins' or rutis's. It
     /// announces each service its plugins provide, with the plugin's name,
     /// once rutis offers `services`, again to a new offer, never one rutis
     /// announced; rutis's rows cannot run them. A service rutis withdraws
@@ -283,6 +295,8 @@ struct AppTests {
         defer { listener.stop() }
         let lines = Lines()
         let first = Rutis.define(Plugin(name: "first", config: Units.self) { ctx, config in
+            // A listener registered while it loads: rutis must take it.
+            ctx.on("first/ping") { () async in }
             lines.add("first \(config.units)")
             ctx.provide("units", Greeting(word: config.units))
             ctx.effect { lines.add("first cleans up") }
@@ -322,20 +336,27 @@ struct AppTests {
         func ran(_ prefix: String) -> [String] { lines.all.filter { $0.hasPrefix(prefix) } }
         try await waitFor("the app's offer") { !told("link.offers").isEmpty }
         XCTAssertEqual(told("link.offers").first?.plainJSON?["families"], .array([.string("services")]))
-        try await waitFor("first and second installed") { ran("second").count == 1 }
-        XCTAssertEqual(lines.all.filter { !$0.hasPrefix("rutis:") }, ["first metric", "second hello metric"], "third waits for clock")
-        XCTAssertTrue(lines.all.contains("rutis: plugin strict: BindingError: config: count is required"), "\(lines.all)")
-        try await Task.sleep(nanoseconds: 100_000_000)
-        XCTAssertEqual(told("services.announce").count, 0, "nothing announced before rutis offers services")
 
         let peer = try XCTUnwrap(host.peer)
-        func offer(_ version: Int, _ families: [String]) async throws {
+        // rutis's offers, version `version`: `families`, each since `since`.
+        func offer(_ version: Int, _ families: [String], since: Int? = nil) async throws {
             _ = try await peer.call(target: "", method: "link.offers", args: [.data(.object([
                 ("families", .array(families.map(JSON.string))), ("version", .int(version)),
-                ("since", .object(families.map { ($0, .int(version)) })),
+                ("since", .object(families.map { ($0, .int(since ?? version)) })),
             ]))], sync: false)
         }
+        // `services` alone: nothing installs before rutis offers `events`.
         try await offer(1, ["services"])
+        try await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertEqual(lines.all.filter { !$0.hasPrefix("rutis: connected") }, [], "nothing installed before rutis offers events")
+        XCTAssertEqual(told("events.on").count, 0)
+
+        host.offersEvents = true
+        try await offer(2, ["services", "events"], since: 1)
+        try await waitFor("first and second installed") { ran("second").count == 1 }
+        XCTAssertEqual(lines.all.filter { !$0.hasPrefix("rutis:") }, ["first metric", "second hello metric"], "third waits for clock")
+        XCTAssertEqual(lines.all.filter { $0.hasPrefix("rutis: plugin") }, ["rutis: plugin strict: BindingError: config: count is required"])
+        XCTAssertEqual(told("events.on").map { $0["name"]?.string }, ["first/ping"])
         try await waitFor("two announcements") { told("services.announce").count == 2 }
         let announced = told("services.announce")
         guard announced.count == 2 else { return XCTFail("\(announced)") }
@@ -348,7 +369,7 @@ struct AppTests {
         let said = try await say.call([], sync: false)
         XCTAssertEqual(said.plainJSON, .string("hello"))
         // A new offer of services: announced again, at the same versions.
-        try await offer(2, ["services"])
+        try await offer(3, ["services", "events"])
         try await waitFor("announced again") { told("services.announce").count == 4 }
         XCTAssertEqual(told("services.announce").dropFirst(2).map { $0["version"]?.plainJSON }, [.number("1"), .number("2")])
 

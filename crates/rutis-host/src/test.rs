@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex};
 
 use rutis::host::{BoxFuture, DynPlugin, Effect, ErrorKind, FiberState, PluginFactory};
 use rutis::{Ctx, Error};
-use rutis_bridge::pipe::{Processes, Spawn, Stdio};
+use rutis_bridge::pipe::{Processes, Spawn};
 use rutis_loader::edit::{Editable, NewEntry, Version};
 use rutis_loader::report::{EntryInfo, EntryStatus, Isolate};
 use rutis_loader::{Builtins, Layer, Loader, LoaderError, Patch};
@@ -78,8 +78,8 @@ impl Test {
         let mut spawn = Spawn::new(&command[0]);
         spawn.args = command[1..].iter().map(Into::into).collect();
         spawn.trailing = vec!["--id".into(), ROW.into(), project.into()];
-        spawn.stdout = Stdio::Lines;
-        spawn.stderr = Stdio::Lines;
+        spawn.stdout = crate::output::lines(crate::output::OutputStream::Stdout, None);
+        spawn.stderr = crate::output::lines(crate::output::OutputStream::Stderr, None);
         Self::starting(Start::Spawn(spawn))
     }
 
@@ -455,6 +455,7 @@ fn refused(info: &EntryInfo) -> Option<String> {
 mod tests {
     use super::base_id;
 
+    /// guarantee: host/test-command
     #[test]
     fn a_rows_id_is_its_files_name() {
         assert_eq!(base_id("/plugins/weather.mjs"), "weather");

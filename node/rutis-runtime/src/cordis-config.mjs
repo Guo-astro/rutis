@@ -1,5 +1,3 @@
-import { configError, pathText } from './config.mjs'
-
 // A Cordis plugin's config checked with its own `Config` (a Standard
 // Schema, such as schemastery), as Cordis will: its problems as a
 // `bad-config` error written as every runtime writes them (config schema
@@ -20,4 +18,32 @@ export function cordisConfig(plugin, config) {
     return { path, message: `${pathText(path)} ${issue.message}` }
   })
   throw configError(issues)
+}
+
+// At most this many problems are written; the rest as one last line.
+const SHOWN = 20
+
+// The error a row fails with when its config does not match: a
+// BindingError with code `bad-config`, its message the lines
+// `config: <problem>` (at most 20, then `config: and N more problems`), its
+// data `{ issues }`, as the kernel writes a JSON Schema's (config schema
+// design §5.2).
+export function configError(issues) {
+  const lines = issues.slice(0, SHOWN).map(problem => `config: ${problem.message}`)
+  if (issues.length > SHOWN) lines.push(`config: and ${issues.length - SHOWN} more problems`)
+  const error = new Error(lines.join('\n'))
+  Object.defineProperty(error, 'name', { value: 'BindingError', configurable: true, writable: true, enumerable: false })
+  return Object.assign(error, { code: 'bad-config', data: { issues: issues.map(({ path, message }) => ({ path, message })) } })
+}
+
+// How a path is written: `home.lat`, `cities[2]`, `headers["x-api"]`;
+// `config` for the root, and before a first index or non-identifier key.
+export function pathText(path) {
+  let out = ''
+  path.forEach((segment, index) => {
+    if (typeof segment === 'number') out += `${index === 0 ? 'config' : ''}[${segment}]`
+    else if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(segment)) out += `${index === 0 ? '' : '.'}${segment}`
+    else out += `${index === 0 ? 'config' : ''}[${JSON.stringify(segment)}]`
+  })
+  return out || 'config'
 }

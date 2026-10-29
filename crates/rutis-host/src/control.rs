@@ -382,7 +382,7 @@ mod tests {
     /// root, and anything else with an error; a second host for the same configuration does
     /// not take the socket over; once the first stops answering, its
     /// socket is gone and `status` says no host runs it.
-    /// guarantee: host/status
+    /// guarantee: host/status, host/call
     #[cfg(unix)]
     #[tokio::test]
     async fn the_socket_answers_status_and_call_once_per_configuration() {

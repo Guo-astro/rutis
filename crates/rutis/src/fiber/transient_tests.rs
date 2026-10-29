@@ -5,6 +5,7 @@
 use super::*;
 use crate::host::CtxHost;
 use crate::internal::CtxInternal;
+use crate::key::Key;
 use crate::{BoxFuture, Effect, Error, Event};
 use std::time::Duration;
 
@@ -51,8 +52,8 @@ async fn churn_root_provides_release_accounting() {
     let ctx = Ctx::root().expect("runtime in scope");
     let root = ctx.weak_fiber().upgrade().expect("root alive");
     for i in 0..25 {
-        let key = TypeKey::keyed_dynamic::<u32>(format!("svc/{i}"));
-        let disposer = ctx.provide_key::<u32>(key, Arc::new(i)).unwrap();
+        let key = Key::<u32>::dynamic(format!("svc/{i}"));
+        let disposer = ctx.provide_at(key, Arc::new(i)).unwrap();
         disposer.dispose().await.unwrap();
     }
     assert!(
@@ -200,7 +201,7 @@ impl crate::DynPlugin for ChurnPlugin {
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         Box::pin(async move {
-            ctx.provide_key(TypeKey::instance::<u64>(ctx.instance()), Arc::new(1u64))?;
+            ctx.provide_at(Key::<u64>::of().instance(ctx.instance()), Arc::new(1u64))?;
             ctx.listen::<ProbeEvent>()
                 .name(own_name(ctx))
                 .on(idle_listener)?;
@@ -245,7 +246,7 @@ impl crate::DynPlugin for EmittingChurnPlugin {
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         Box::pin(async move {
-            ctx.provide_key(TypeKey::instance::<u64>(ctx.instance()), Arc::new(1u64))?;
+            ctx.provide_at(Key::<u64>::of().instance(ctx.instance()), Arc::new(1u64))?;
             let name = own_name(ctx);
             ctx.listen::<ProbeEvent>()
                 .name(name.clone())

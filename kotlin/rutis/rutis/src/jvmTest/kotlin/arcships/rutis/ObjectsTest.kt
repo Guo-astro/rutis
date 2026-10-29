@@ -1,3 +1,4 @@
+// guarantee: bridge/object-refs
 package arcships.rutis
 
 import arcships.rutis.internal.Native
@@ -294,7 +295,6 @@ class ObjectsTest {
         assertEquals(0, runtime.references().first, "the object is let go of")
     }
 
-    // objects-case(kotlin): strict-testing-tool
     // The testing tool hands the plugin an object of the test (a plugin of
     // the same runtime): the plugin's interface proxy calls the original,
     // and back home it is the original.

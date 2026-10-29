@@ -48,8 +48,7 @@ fn send(channel: &mut Channel, frame: Json) {
 
 /// The far end's greeting, as `endpoint` speaking `version`.
 fn hello(version: u32, endpoint: &str) -> Json {
-    json!({ "op": "hello", "version": version, "endpoint": endpoint,
-            "capabilities": ["events-v2", "objects"] })
+    json!({ "op": "hello", "version": version, "endpoint": endpoint })
 }
 
 /// Until `view` is disposed.
@@ -249,7 +248,7 @@ async fn a_handshake_alone_registers_nothing() {
     );
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert!(
-        b.get_key::<dyn HostDispatch>(host_key("clock")).is_none(),
+        b.get_at(&host_key("clock")).is_none(),
         "a greeted session shares nothing"
     );
     drop(greeted);
@@ -307,10 +306,7 @@ impl DynPlugin for Provides {
             if let Some(row) = self.row {
                 ctx.mark_row(row)?;
             }
-            ctx.provide_key::<dyn HostDispatch>(
-                host_key(self.service),
-                Arc::new(Answer(self.answer)),
-            )?;
+            ctx.provide_at(host_key(self.service), Arc::new(Answer(self.answer)))?;
             Ok(Effect::Done)
         })
     }
@@ -328,10 +324,7 @@ fn provides(name: &'static str, service: &'static str, answer: &'static str) -> 
 /// What `service`'s `get` answers at `ctx`, once it is there.
 async fn get(ctx: &Ctx, service: &str) -> String {
     eventually(
-        || {
-            ctx.get_key::<dyn HostDispatch>(host_key(service))
-                .map(|_| ())
-        },
+        || ctx.get_at(&host_key(service)).map(|_| ()),
         &format!("{service} here"),
     )
     .await;
@@ -436,6 +429,7 @@ async fn a_service_never_returns_through_its_session() {
     );
 }
 
+/// guarantee: events/flat, events/node-links
 /// Listeners of each kernel hear what the other emits.
 #[tokio::test(flavor = "multi_thread")]
 async fn events_reach_both_ways() {
@@ -500,7 +494,7 @@ async fn the_far_end_leaving_unloads_its_plugins() {
     disposed(&at_a).await;
     assert!(within("the call", slow).await.unwrap().is_err());
     assert!(plugin(&a, "b:clock").is_none_or(|p| p.0 == FiberState::Disposed));
-    assert!(a.get_key::<dyn HostDispatch>(host_key("clock")).is_none());
+    assert!(a.get_at(&host_key("clock")).is_none());
 }
 
 // ── the handshake's ends ────────────────────────────────────────
@@ -599,6 +593,7 @@ impl DynPlugin for Connection {
     }
 }
 
+/// guarantee: loader/peer-rows
 /// A kernel runs a plugin of another from its catalog: it is the plugin
 /// `<id>:<plugin>` there, its services used there; dropping the handle
 /// stops it on both sides. Without a catalog the far end contains nothing.
@@ -643,11 +638,7 @@ async fn run_on_a_rutis_kernel() {
     )
     .await;
     eventually(
-        || {
-            main.get_key::<dyn HostDispatch>(host_key("contacts"))
-                .is_none()
-                .then_some(())
-        },
+        || main.get_at(&host_key("contacts")).is_none().then_some(()),
         "contacts gone at main",
     )
     .await;
@@ -772,10 +763,7 @@ async fn run_on_a_language_runtime() {
         Some(FiberState::Active)
     );
     eventually(
-        || {
-            main.get_key::<dyn HostDispatch>(host_key("contacts"))
-                .map(|_| ())
-        },
+        || main.get_at(&host_key("contacts")).map(|_| ()),
         "contacts here",
     )
     .await;
@@ -794,4 +782,82 @@ async fn run_on_a_language_runtime() {
         error.contains("runtime rt: this connection does not contain plugin missing"),
         "{error}"
     );
+}
+
+// ── events offered are events ready ─────────────────────────────
+
+/// A runtime that, the moment this end offers `events`, adds a listener
+/// (as an app's plugin calling `ctx.on` in apply does), and says how
+/// that went.
+struct Eager {
+    tokio: tokio::runtime::Handle,
+    answered: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<Result<(), String>>>>,
+}
+
+impl Dispatch for Eager {
+    fn invoke(
+        &self,
+        peer: &rutis_bridge::session::Connection,
+        target: &str,
+        method: &str,
+        args: Value,
+    ) -> Reply {
+        let args = args.json().unwrap_or(Json::Null);
+        match (target, method) {
+            ("", "mount") => Ok(
+                json!({ "services": {}, "features": ["rows.v2", "hosts", "leaf"], "plugins": {} })
+                    .into(),
+            ),
+            ("", "link.offers") => {
+                let events = args[0]["families"]
+                    .as_array()
+                    .is_some_and(|families| families.iter().any(|f| f == "events"));
+                let answered = events
+                    .then(|| self.answered.lock().unwrap().take())
+                    .flatten();
+                if let Some(answered) = answered {
+                    let peer = peer.clone();
+                    self.tokio.spawn(async move {
+                        let on = json!({ "id": "l1", "name": "tick", "row": null, "plugin": "app",
+                                         "kind": "async", "prepend": false, "global": false });
+                        let reply = peer
+                            .invoke_async("", "events.on", Value::List(vec![Value::Data(on)]))
+                            .await
+                            .map(drop)
+                            .map_err(|error| error.to_string());
+                        let _ = answered.send(reply);
+                    });
+                }
+                Ok(Value::Undefined)
+            }
+            ("", _) => Ok(Value::Undefined),
+            (target, method) => Err(SessionError::Value(format!("no {target}.{method}"))),
+        }
+    }
+}
+
+/// Once this end offers `events` to a runtime, its `events.on` is taken
+/// at once: the session's events are set up before they are offered.
+/// Many rounds, as the far end answers the offer on another thread.
+#[tokio::test(flavor = "multi_thread")]
+async fn events_offered_to_a_runtime_take_its_listeners_at_once() {
+    for round in 0..50 {
+        let main = kernel("main");
+        let (ours, theirs) = rutis_bridge::memory::pair();
+        let (answered, answer) = tokio::sync::oneshot::channel();
+        let mut endpoint = Endpoint::rust(id("app"));
+        endpoint.capabilities.push("runtime".into());
+        let _app = rutis_bridge::session::Connection::open(
+            theirs,
+            Arc::new(Eager {
+                tokio: tokio::runtime::Handle::current(),
+                answered: std::sync::Mutex::new(Some(answered)),
+            }),
+            endpoint,
+        )
+        .unwrap();
+        let _session = main.plugin(Session::new(ours));
+        let reply = within("events.on", answer).await.unwrap();
+        assert_eq!(reply, Ok(()), "round {round}");
+    }
 }

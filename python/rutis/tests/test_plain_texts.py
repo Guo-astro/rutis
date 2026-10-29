@@ -1,3 +1,4 @@
+# guarantee: sdk/error-codes
 """What a plugin author reads uses only what they wrote: service and method
 names, arguments, rows; never this SDK's internals (`HostProxy`,
 `UNDEFINED`, `RemoteFuture`), "Rust", or JSON library text. Each text is
@@ -9,7 +10,6 @@ import json
 import os
 import socket
 import tempfile
-import textwrap
 import traceback
 import types
 import sys
@@ -24,7 +24,7 @@ from rutis.peer import UNDEFINED, BindingError, LoadError, Peer, RemoteFunction,
 from rutis.runner import HostProxy, Runtime
 from rutis._unhandled import report_text, unhandled_error
 from rutis.peer import AggregateError
-from rutis.testing import PluginTestError, load
+from rutis.testing import load
 
 
 class FakePeer:
@@ -256,16 +256,6 @@ class TestingToolTexts(background.TestCase):
             self.assertEqual(missing.exception.message, "weather.today: argument 1 is missing")
 
         self.run_with(check)
-
-    def test_a_value_that_cannot_cross(self):
-        def check(weather):
-            with self.assertRaises(PluginTestError) as refused:
-                weather.today(float("nan"))
-            self.assertEqual(str(refused.exception), "weather.today: argument 1 cannot be sent: NaN cannot cross processes")
-            self.assertEqual((refused.exception.code, refused.exception.data), ("bad-value", {"part": "argument", "argument": 1}))
-
-        self.run_with(check)
-
 
 class LoadFailures(background.TestCase):
     """A plugin module whose import raises fails with a LoadError naming

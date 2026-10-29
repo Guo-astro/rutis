@@ -29,9 +29,9 @@ android = []
 
 [dependencies]
 rutis = { path = "../rutis", version = "0.19.0" }
-rutis-bridge = { path = "../rutis-bridge", version = "0.19.0", features = ["node", "python", "bun", "go", "swift", "websocket"] }
+rutis-bridge = { path = "../rutis-bridge", version = "0.19.0", features = ["websocket"] }
 rutis-types = { path = "../rutis-types", version = "0.19.0" }
-rutis-loader = { path = "../rutis-loader", version = "0.19.0", features = ["node", "python", "bun", "go", "swift"] }
+rutis-loader = { path = "../rutis-loader", version = "0.19.0", features = ["node", "go", "swift"] }
 # To say which file is not PEM (the transport only sees the contents).
 rustls-pki-types = { version = "1", features = ["std"] }
 serde = { version = "1", features = ["derive"] }

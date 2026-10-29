@@ -903,11 +903,6 @@ const VALUE_CAPABILITIES: [&str; 10] = [
     "value-decimal",
     "value-uuid",
 ];
-/// The event protocol of rutis 0.13 (#464), declared by every endpoint
-/// (`docs/design-events-protocol-2026-10-18.md` §2). This side no longer
-/// checks the far end's declaration: an older far end is refused by its
-/// protocol version.
-pub const EVENTS_CAPABILITY: &str = "events-v2";
 /// Plugin definitions as values (`plugin` references,
 /// `docs/design-plugin-values-2026-10-25.md` §5): a side declaring it takes
 /// them. Rust declares it; the runtimes send one only to a
@@ -1134,20 +1129,6 @@ impl Drop for Flight {
 
 pub trait Dispatch: Send + Sync + 'static {
     fn invoke(&self, peer: &Connection, target: &str, method: &str, args: Value) -> Reply;
-
-    /// The event operation `method` (an `events.*` control call) was read
-    /// and admitted: called on the reader, before the next frame is taken,
-    /// whereas [`Dispatch::invoke`] runs it later, in the session's order
-    /// of event operations. It must not block. The host's bus counts the
-    /// `events.dispatch` requests here for its test hooks (feature
-    /// `testing`); nothing else needs it.
-    fn arrived(&self, _peer: &Connection, _method: &str) {}
-
-    /// The reply to the event operation `method` was written: what the far
-    /// end reads after it was sent after the reply. It must not block. The
-    /// host's bus counts the answered `events.dispatch` requests here for
-    /// its test hooks (feature `testing`).
-    fn replied(&self, _peer: &Connection, _method: &str) {}
 }
 /// This side of a session: each side names itself in the handshake and
 /// calls as `<endpoint id>:<n>`.
@@ -1158,10 +1139,10 @@ pub struct Endpoint {
     /// names another.
     pub expected: Option<PeerId>,
     pub implementation: Implementation,
-    /// What this side supports: `objects`, `signals`, `reentrant-sync`,
-    /// `forwarding`, `sync-wait` (and, for a runtime with one thread and one
-    /// stack, `sync-stack`), and `value-<tag>` for each tagged value it
-    /// takes. Capabilities grant no permission.
+    /// What this side supports: `reentrant-sync` (and, for a runtime with
+    /// one thread and one stack, `sync-stack`), `plugins`, and
+    /// `value-<tag>` for each tagged value it takes. Capabilities grant no
+    /// permission.
     pub capabilities: Vec<String>,
 }
 
@@ -1176,19 +1157,11 @@ impl Endpoint {
                 name: "rutis-bridge".into(),
                 version: env!("CARGO_PKG_VERSION").into(),
             },
-            capabilities: [
-                "objects",
-                "signals",
-                "reentrant-sync",
-                "forwarding",
-                "sync-wait",
-                EVENTS_CAPABILITY,
-                PLUGINS_CAPABILITY,
-            ]
-            .into_iter()
-            .chain(VALUE_CAPABILITIES)
-            .map(String::from)
-            .collect(),
+            capabilities: ["reentrant-sync", PLUGINS_CAPABILITY]
+                .into_iter()
+                .chain(VALUE_CAPABILITIES)
+                .map(String::from)
+                .collect(),
         }
     }
 
@@ -1235,11 +1208,11 @@ fn is_ordered_op(method: &str) -> bool {
 
 /// Whether the ordered control operation `method` runs in its turn, before
 /// the next one starts (events protocol §4.1, §5.5, §7.1): the table
-/// changes (`events.on`, `events.off`, `events.elsewhere`, `rows.ended`),
+/// changes (`events.on`, `events.off`, `rows.ended`),
 /// and the `emit` dispatches and invocations, which start in arrival order.
 fn inline_event_op(method: &str, args: &Value) -> bool {
     match method {
-        "events.on" | "events.off" | "events.elsewhere" | "rows.ended" => true,
+        "events.on" | "events.off" | "rows.ended" => true,
         "events.dispatch" | "events.call" => {
             let first = match args {
                 Value::List(items) => items.first(),
@@ -1566,12 +1539,22 @@ impl Connection {
             .await
         }
     }
+    /// Invoke `method` of `target` on the far end. Called while another
+    /// session's call is handled ([`caller`]), it is forwarded from that
+    /// session, its chain rebased, as calls on references are: untagged,
+    /// that session's ids would name this session's own calls, even the one
+    /// being sent (#813).
     pub fn invoke(&self, target: &str, method: &str, args: Value) -> Reply {
-        self.request_sync(Operation::Invoke(target.into(), method.into(), args))
+        forwarded(self, || {
+            self.request_sync(Operation::Invoke(target.into(), method.into(), args))
+        })
     }
     pub async fn invoke_async(&self, target: &str, method: &str, args: Value) -> Reply {
-        self.request_async(Operation::Invoke(target.into(), method.into(), args))
-            .await
+        forwarded_async(
+            self,
+            self.request_async(Operation::Invoke(target.into(), method.into(), args)),
+        )
+        .await
     }
     /// [`Connection::invoke_async`], its frame written before this returns:
     /// calls started one after another reach the far end in that order,
@@ -1584,10 +1567,12 @@ impl Connection {
         args: Value,
     ) -> Result<impl Future<Output = Reply> + Send + 'static, Error> {
         let (sender, receiver) = oneshot::channel();
-        let id = self.send(
-            Operation::Invoke(target.into(), method.into(), args),
-            Waiting::Async(sender),
-        )?;
+        let id = forwarded(self, || {
+            self.send(
+                Operation::Invoke(target.into(), method.into(), args),
+                Waiting::Async(sender),
+            )
+        })?;
         let guard = CancelOnDrop {
             peer: Arc::downgrade(&self.0),
             id,
@@ -1611,10 +1596,12 @@ impl Connection {
         args: Value,
     ) -> Result<impl Future<Output = Reply> + Send + 'static, Error> {
         let (sender, receiver) = oneshot::channel();
-        let id = self.send(
-            Operation::Invoke(target.into(), method.into(), args),
-            Waiting::Async(sender),
-        )?;
+        let id = forwarded(self, || {
+            self.send(
+                Operation::Invoke(target.into(), method.into(), args),
+                Waiting::Async(sender),
+            )
+        })?;
         let guard = CancelOnDrop {
             peer: Arc::downgrade(&self.0),
             id,
@@ -2633,11 +2620,6 @@ impl Connection {
                 Err(id)
             }
         };
-        if let Some(method) = &event_op {
-            // Arrived now, in frame order: before any later frame of the
-            // session (a reply among them) is read.
-            self.0.dispatch.arrived(self, method);
-        }
         if let (Err(id), true) = (&delivery, event_op.is_some()) {
             self.run_ordered(id.clone(), inline);
         } else if let Err(id) = delivery {
@@ -2820,16 +2802,12 @@ impl Connection {
                         self.0.executor.spawn(async move {
                             let settled = settle(future).await;
                             peer.respond_to(id, settled, Some(&call));
-                            peer.0.dispatch.replied(&peer, &method);
                             drop(_flight);
                         });
                         return;
                     }
                 }
                 self.respond_to(id, result, Some(&call));
-                if event_op {
-                    self.0.dispatch.replied(self, &method);
-                }
                 drop(_flight);
             }
         }

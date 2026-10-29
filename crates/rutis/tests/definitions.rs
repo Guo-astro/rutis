@@ -1,3 +1,4 @@
+//! guarantee: core/definitions
 //! Plugin definitions made in Rust (design-plugin-values R3–R7): copies
 //! mount with their own config, end before their origin's cleanups, and
 //! mount only where the origin's instance allows.

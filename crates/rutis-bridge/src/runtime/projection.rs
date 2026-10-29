@@ -10,7 +10,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, Weak};
 
-use rutis::host::{BoxFuture, ErrorKind, TypeKey};
+use rutis::host::{BoxFuture, ErrorKind, Key};
 use rutis::internal::{CtxInternal, ServiceWriter};
 use rutis::{Ctx, Disposer, Error as RutisError};
 
@@ -175,7 +175,7 @@ impl Projection {
         name: &str,
         make: fn(Arc<Process>, String) -> T,
     ) {
-        self.service_keyed(name, TypeKey::of::<T>(), move |process, handle| {
+        self.service_keyed(name, Key::of(), move |process, handle| {
             Arc::new(make(process, handle))
         });
     }
@@ -185,7 +185,7 @@ impl Projection {
     pub fn service_keyed<T: ?Sized + Send + Sync + 'static>(
         &self,
         name: &str,
-        key: TypeKey,
+        key: Key<T>,
         make: impl FnMut(Arc<Process>, String) -> Arc<T> + Send + 'static,
     ) {
         self.declare(name, key, make, None);
@@ -199,7 +199,7 @@ impl Projection {
     pub fn service_keyed_occupied<T: ?Sized + Send + Sync + 'static>(
         &self,
         name: &str,
-        key: TypeKey,
+        key: Key<T>,
         make: impl FnMut(Arc<Process>, String) -> Arc<T> + Send + 'static,
         this: String,
         occupied: impl Fn(&Ctx) -> Option<String> + Send + Sync + 'static,
@@ -210,7 +210,7 @@ impl Projection {
     fn declare<T: ?Sized + Send + Sync + 'static>(
         &self,
         name: &str,
-        key: TypeKey,
+        key: Key<T>,
         mut make: impl FnMut(Arc<Process>, String) -> Arc<T> + Send + 'static,
         occupied: Option<(String, Occupied)>,
     ) {

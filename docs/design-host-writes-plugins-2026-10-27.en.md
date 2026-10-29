@@ -188,7 +188,7 @@ A scripted Python plugin `maker` stands in for the agent: `inject: ["loader"]`, 
 | 3 | (test) `rutis-host call weather.today '"Oslo"'` | `"sunny (v1)"` |
 | 4 | Writes a syntax error, `loader.reload("weather")` | The thrown text starts with `weather: cannot reload: cannot load weather.py: SyntaxError`, contains `weather.py` and ends with `; the previous version keeps running`; `weather.today` is still `"sunny (v1)"` |
 | 5 | Changes it to return `"rainy (v2)"`, `loader.reload("weather")` | Returns; `weather.today` is `"rainy (v2)"` |
-| 6 | `loader.remove("weather")`, `status()` | No `weather` row or service; `rutis.json` byte for byte as at step 1; terminal `weather: removed`; `rutis-host call weather.today '"Oslo"'` prints `rutis-host: no row provides weather (services: loader, maker)` |
+| 6 | `loader.remove("weather")`, `status()` | No `weather` row or service; `rutis.json` byte for byte as at step 1; terminal `weather: removed`; `rutis-host call weather.today '"Oslo"'` prints `rutis-host: no row provides weather (services: loader, maker, sessions)` |
 
 Also: during step 4 the test calls `weather.today` every 100 ms and none fails; after step 5 all are v2; the leftover check passes after the host stops. In `tests/e2e/tests/host_writes_plugin.rs` (E2E framework #175 is done); Linux and macOS, in nightly.
 

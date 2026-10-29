@@ -10,7 +10,6 @@
 import { KEEP, LEAF_NAME } from './cordis-events.mjs'
 import { refuseReserved } from './events.mjs'
 import { UNDECLARED, notDeclared, unavailable } from './errors.mjs'
-import { checkConfig, configError, schemaOf } from './config.mjs'
 
 // The plugin API this runtime runs: a plugin written against a newer one
 // is refused, naming both. 3: the unified events of rutis 0.13 (#464).
@@ -109,15 +108,9 @@ export function toCordis(spec, rowInject = [], providerOf) {
         // Aborted when the row unloads, while its listeners are waited for.
         get signal() { return signalOf(context) },
       }
-      // Defaults filled and the config validated against the plugin's
-      // schema before `apply` (config schema design §2.2); extra keys are
-      // the host's loader's to warn about.
-      const schema = schemaOf(spec.config)
-      if (schema !== undefined) {
-        const checked = checkConfig(schema, config)
-        if (checked.errors.length) throw configError(checked.errors)
-        config = checked.config
-      }
+      // The config as the host checked it against the plugin's schema, its
+      // defaults filled (the kernel's `rutis::config::check`, platform
+      // cleanup §7.5): the runtime only passes it on.
       const cleanup = await spec.apply(ctx, config)
       if (cleanup !== undefined && cleanup !== null) {
         if (typeof cleanup !== 'function') throw new TypeError('apply must return a cleanup function or nothing')

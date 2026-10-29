@@ -25,12 +25,10 @@ pub fn framed(
 ) -> Channel {
     lines::channel(read, write, closer)
 }
-mod output;
 pub(crate) mod spawn;
 #[cfg(unix)]
 pub(crate) mod unix;
 
-pub use output::{output_ended, write_line, OutputStream, MAX_LINE};
 /// Start `spawn` on a channel that owns the process: closing the channel,
 /// or dropping all of it, ends the process, and its end says how the
 /// process ended. The process is recorded in `processes`.
@@ -47,7 +45,7 @@ pub async fn given(channel: &str) -> Result<Channel, ConnectError> {
 
 pub use spawn::{
     isolate_manifest_command, kill_processes, processes_ended, running_processes, Handover,
-    ManifestChild, Processes, Spawn, Stdio, CHANNEL_FD, CHANNEL_TOKEN, HANDOVER_VARIABLE,
+    ManifestChild, Pipe, Processes, Spawn, Stdio, CHANNEL_FD, CHANNEL_TOKEN, HANDOVER_VARIABLE,
 };
 
 /// Wait until the process on `channel` sends its first message (its

@@ -14,7 +14,6 @@ test('a gated row reports its plugin apply failure like an ungated one', async (
   const host = await fakeHost([process.execPath, runner, failing])
   try {
     await within('the handshake', host.ready)
-    await host.elsewhere({})
     await host.call('mount', { plugins: [], announce: true, scope: [] })
     await host.call('hosts.provide', ['events-log', { add: 'sync' }])
     const load = (key, inject) => within(`row ${key} answers`, host.call('rows.load', [key, failing, { label: key }, [], inject, {}, { scope: [] }]))

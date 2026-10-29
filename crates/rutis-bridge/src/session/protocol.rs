@@ -171,7 +171,7 @@ pub(crate) enum Frame {
         target: String,
         method: String,
         args: WireValue,
-        /// The caller waits for the reply synchronously (`sync-wait`).
+        /// The caller waits for the reply synchronously (`sync: true`).
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         sync: bool,
     },
@@ -255,6 +255,7 @@ mod tests {
         }
     }
 
+    /// guarantee: sdk/error-codes
     /// rutis's own errors cross as `BindingError`s carrying the code a
     /// program decides by, and its details as `data` (#677).
     #[test]

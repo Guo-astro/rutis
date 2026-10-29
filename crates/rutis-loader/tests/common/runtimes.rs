@@ -215,7 +215,6 @@ pub fn active(entry: &EntryInfo) -> bool {
 /// Gradle task `fatJar`: the test plugins served by `Rutis.serve` on the
 /// jvm target), built once with the Gradle wrapper, or the one
 /// `RUTIS_KOTLIN_JAR` names.
-#[cfg(feature = "kotlin")]
 pub fn kotlin_jar() -> &'static Path {
     static JAR: OnceLock<PathBuf> = OnceLock::new();
     JAR.get_or_init(|| {
@@ -240,7 +239,6 @@ pub fn kotlin_jar() -> &'static Path {
 
 /// The Kotlin runtime serving the test plugins, as the generic launcher
 /// starts it (design K-P1: no Kotlin runtime in rutis-host), in `project`.
-#[cfg(feature = "kotlin")]
 pub fn kotlin_launcher(project: &Path) -> rutis_bridge::runtime::Launcher {
     rutis_bridge::runtime::Launcher::new("java")
         .arg("-XX:TieredStopAtLevel=1")
@@ -263,12 +261,12 @@ pub async fn rows_stage(
     sessions: &rutis_loader::runtime::SessionResolver,
     name: &str,
 ) {
-    use rutis::internal::CtxInternal;
+    use rutis::host::CtxHost;
     use rutis_loader::runtime::SessionRows;
     sessions.follow_row(name);
     let key = SessionRows::key(name);
     COLD.until(
-        || root.get_key::<SessionRows>(key.clone()).is_some(),
+        || root.get_at(&key).is_some(),
         "the runtime's rows released",
     )
     .await;
@@ -323,34 +321,30 @@ impl TestRuntime {
 
     /// The Python runtime `py` of `project`, the repository's rutis
     /// package on its path.
-    #[cfg(feature = "python")]
     pub fn python(project: &Path) -> Self {
         Self::new(
             "py",
-            rutis_bridge::runtime::Launcher::python(project),
+            launcher(rutis_test_support::runtimes::python_runtime(project)),
             project,
         )
-        .python_path(repo().join("python/rutis"))
     }
 
     /// The Node runtime `node` of the repository's `node/rutis-runtime`,
     /// its plugins resolved from `anchor` (a `package.json`).
-    #[cfg(feature = "node")]
     pub fn node(anchor: &Path) -> Self {
         Self::new(
             "node",
-            rutis_bridge::runtime::Launcher::node(&repo().join("node/rutis-runtime")),
+            launcher(rutis_test_support::runtimes::node_runtime()),
             anchor,
         )
     }
 
     /// The Bun runtime `bun` of the repository's `bun/rutis-bun`, the `bun`
     /// on PATH, in `project`.
-    #[cfg(feature = "bun")]
     pub fn bun(project: &Path) -> Self {
         Self::new(
             "bun",
-            rutis_bridge::runtime::Launcher::bun(None, &repo().join("bun/rutis-bun"), project),
+            launcher(rutis_test_support::runtimes::bun_runtime(project)),
             project,
         )
     }
@@ -503,4 +497,15 @@ impl rutis::host::DynPlugin for TestRuntime {
             Ok(Effect::Done)
         })
     }
+}
+
+#[cfg(feature = "runtimes")]
+/// `command` (`rutis_test_support::runtimes`) as a launcher.
+pub fn launcher(command: rutis_test_support::runtimes::Command) -> rutis_bridge::runtime::Launcher {
+    let mut launcher = rutis_bridge::runtime::Launcher::new(command.program);
+    launcher.args = command.args;
+    launcher.env = command.env;
+    launcher.cwd = command.cwd;
+    launcher.inherit_fd = command.inherit_fd;
+    launcher
 }

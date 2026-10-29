@@ -107,7 +107,7 @@ No separate "command line" identity: rutis-host itself calls no service, so in r
 - Once started (every row `settled`), it prints one line:
 
   ```text
-  rutis-host dev: services: forecast (weather), llm (llm), loader (host)
+  rutis-host dev: services: forecast (weather), llm (llm), loader (host), sessions (host)
   ```
 
   Sorted by service name; in parentheses the row providing it (0.18's `provider`; `host` for the host). When no row provides one: `rutis-host dev: services: none`, whatever the host provides.
@@ -166,7 +166,7 @@ weather: built in 1.4s
 weather: running
 llm: running
 rutis-host dev: running weather; changes reload it (Ctrl-C ends)
-rutis-host dev: services: forecast (weather), llm (llm), loader (host)
+rutis-host dev: services: forecast (weather), llm (llm), loader (host), sessions (host)
 ```
 
 In another terminal:
@@ -177,7 +177,7 @@ In another terminal:
 | `rutis-host call forecast.week '{"days": 3}'` | JSON with a two-space indent, 0 |
 | `rutis-host call forecast.today Oslo` | `rutis-host: argument 1 is not JSON: write a string in quotes, as '"Oslo"'`, 1 |
 | `rutis-host call forecast` | `rutis-host: name a method, as forecast.<method>`, 1 |
-| `rutis-host call forcast.today '"Oslo"'` | `rutis-host: no row provides forcast; did you mean forecast? (services: forecast, llm, loader)`, 1 |
+| `rutis-host call forcast.today '"Oslo"'` | `rutis-host: no row provides forcast; did you mean forecast? (services: forecast, llm, loader, sessions)`, 1 |
 | `rutis-host call forecast.tomorow '"Oslo"'` | `rutis-host: forecast has no method tomorow (methods: today, week)`, 1 (0.18 `no-method`) |
 | `rutis-host call forecast.today 3` | `rutis-host: forecast.today: argument 1 should be a string, got 3`, 1 (0.18 `bad-argument`) |
 | The method throws | `rutis-host: call to forecast.today failed: KeyError: 'region'`, then `weather at plugin.go:31 in Today`, 1 |

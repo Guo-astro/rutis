@@ -25,15 +25,39 @@
 // marks methods `sync` and tells `rutis-host check` what the plugin
 // provides before it runs.
 
-import { schemaOf } from './config.mjs'
 import { PLUGIN, PLUGIN_API } from './advanced.mjs'
+
+// `config` is a JSON Schema object: the host fills its defaults and checks
+// the config with it before `apply`. A Standard Schema object (schemastery,
+// zod, …) was never applied: refused (config schema design §2.3).
+function checkSchema(config) {
+  const standard = config?.['~standard']
+  if (standard !== undefined) {
+    throw new TypeError(`config of definePlugin should be a JSON Schema object, got ${standard?.vendor === 'schemastery' ? 'a schemastery Schema' : 'a Standard Schema'}`)
+  }
+}
+
+// The module that defined a plugin, as a file URL: the test tool
+// (`@arcships/rutis/testing`) has a real runtime load the plugin from it.
+const FILE = Symbol.for('rutis.plugin-file')
+function definedIn() {
+  const prepare = Error.prepareStackTrace
+  try {
+    Error.prepareStackTrace = (_, sites) => sites
+    const holder = {}
+    Error.captureStackTrace(holder, definePlugin)
+    const file = holder.stack?.[0]?.getFileName?.()
+    return typeof file === 'string' ? file : undefined
+  } catch {
+    return undefined
+  } finally {
+    Error.prepareStackTrace = prepare
+  }
+}
 
 export function definePlugin(spec) {
   if (typeof spec?.apply !== 'function') throw new TypeError('a plugin needs apply(ctx, config)')
-  // `config` is a JSON Schema: rutis fills its defaults and validates the
-  // config with it before `apply`. A Standard Schema object (schemastery,
-  // zod, …) was never applied: refused (config schema design §2.3).
-  schemaOf(spec.config)
+  checkSchema(spec.config)
   const inject = spec.inject ?? []
   if (!Array.isArray(inject) || inject.some(name => typeof name !== 'string')) throw new TypeError('inject must be a list of service names')
   for (const [name, methods] of Object.entries(spec.provides ?? {})) {
@@ -43,5 +67,5 @@ export function definePlugin(spec) {
   }
   // `announces`: what it provides beyond `provides` (all of it, without
   // one) reaches rutis by itself, and is known once it runs.
-  return Object.freeze({ ...spec, inject, provides: spec.provides ?? {}, announces: true, api: PLUGIN_API, [PLUGIN]: true })
+  return Object.freeze({ ...spec, inject, provides: spec.provides ?? {}, announces: true, api: PLUGIN_API, [PLUGIN]: true, [FILE]: definedIn() })
 }

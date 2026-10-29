@@ -407,7 +407,6 @@ type expectation struct {
 		Filter bool   `json:"filter"`
 	} `json:"reported"`
 	FilterSees []string `json:"filterSees"`
-	ViaHost    *bool    `json:"viaHost"`
 	Settles    bool     `json:"settles"`
 }
 
@@ -685,6 +684,7 @@ func (r *eventRun) step(i int, raw json.RawMessage) {
 // and counted so that the tool still runs as many as the file says.
 var knownFailing = map[string]string{}
 
+// guarantee: events/one-bus, sdk/leaf-events
 func TestRutistestMeetsTheEventExpectations(t *testing.T) {
 	data, err := os.ReadFile(filepath.FromSlash(eventExpectations))
 	if err != nil {
@@ -732,8 +732,9 @@ func TestRutistestMeetsTheEventExpectations(t *testing.T) {
 			}
 		})
 	}
-	// The skip logic agrees with events.rs `tool_combo`.
-	if ran+known+inScopes != expected.ToolCases[eventLanguage] {
-		t.Fatalf("ran %d cases, %d known failing and %d in scopes, the file gives %s %d", ran, known, inScopes, eventLanguage, expected.ToolCases[eventLanguage])
+	// The skip logic agrees with events.rs `tool_combo`, which leaves out
+	// the cases with scopes (rutis-loader's): `toolCases` counts the rest.
+	if ran+known != expected.ToolCases[eventLanguage] {
+		t.Fatalf("ran %d cases and %d known failing (%d in scopes not counted), the file's toolCases gives %s %d", ran, known, inScopes, eventLanguage, expected.ToolCases[eventLanguage])
 	}
 }

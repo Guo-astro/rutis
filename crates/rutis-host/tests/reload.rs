@@ -751,7 +751,7 @@ mod sigusr1 {
     /// file edited (no reload asked for), then the row's config changed and
     /// the configuration read again, runs the edit, as in 0.17.1. Only
     /// `dev` keeps a row on the version it last described (#665).
-    /// guarantee: host/reload-config
+    /// guarantee: host/reload-config, host/dev-failed-reload-keeps-old
     #[test]
     fn a_node_row_restarted_by_a_reload_runs_its_edited_file() {
         let dir = tempfile::tempdir().unwrap();

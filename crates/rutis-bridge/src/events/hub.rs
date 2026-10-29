@@ -1,7 +1,6 @@
 //! The host as the hub of the logical bus (events protocol §4, §5, §7):
 //! each runtime session's listeners are remote entries of the kernel's one
-//! table, its dispatches run over that table, and it hears which names have
-//! listeners elsewhere.
+//! table, and its dispatches run over that table.
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::future::Future;
@@ -15,7 +14,7 @@ use rutis::host::BoxFuture;
 use rutis::host::{CtxHost, ErrorKind, ListenerKind};
 use rutis::internal::events::{
     BatchFilter, Candidate, Dispatch, FilterAnswer, PayloadRef, RawTerminal, RemoteCall,
-    RemoteEntry, RemoteListener, RemoteNext, RemoteSyncCall, TableChange, TableEntry,
+    RemoteEntry, RemoteListener, RemoteNext, RemoteSyncCall,
 };
 use rutis::internal::{CtxInternal, EventOptions};
 use rutis::{Ctx, Disposer, Error as RutisError};
@@ -26,35 +25,16 @@ use super::errors::{binding, to_cordis, to_session};
 use crate::session::rpc::with_caller;
 use crate::session::{settle, Connection, Error, Reply, Value, WeakConnection};
 
-/// A table entry's key for presence: its name (or prefix) and whether it is
-/// a prefix.
-type Key = (String, bool);
-
 /// The logical bus of one kernel bus, as the sessions on it see it.
 pub(crate) struct Hub {
     /// The bus's root: holds the bus (and its address) while the hub lives.
     #[allow(dead_code)]
     ctx: Ctx,
-    state: Mutex<HubState>,
-    watching: Mutex<Option<Disposer>>,
     /// The listener turning `ServiceChanged` into `rutis/service`.
     services: Mutex<Option<Disposer>>,
     /// The test hooks of the bus, when tapped.
     #[cfg(feature = "testing")]
     tap: Mutex<Option<Arc<super::testing::TapState>>>,
-}
-
-#[derive(Default)]
-struct HubState {
-    /// The table snapshot is applied: changes are applied as they come.
-    ready: bool,
-    /// Changes seen before the snapshot was applied, in order.
-    queued: Vec<TableChange>,
-    /// How many entries of each key each origin has (`None`: this host's
-    /// Rust listeners).
-    presence: HashMap<Key, HashMap<Option<u64>, usize>>,
-    /// The runtime sessions told what is elsewhere, by origin.
-    sessions: HashMap<u64, Weak<SessionEvents>>,
 }
 
 /// The hubs, by the address of their kernel bus. A hub lives while a
@@ -73,7 +53,8 @@ pub(crate) fn next_origin() -> u64 {
 impl Hub {
     /// The hub of `ctx`'s bus, made when none lives.
     pub(crate) fn of(ctx: &Ctx) -> Result<Arc<Hub>, Error> {
-        // The bus's root: the watcher lasts as long as the bus.
+        // The bus's root: the `rutis/service` listener lasts as long as the
+        // bus.
         let ctx = &ctx.root_ctx();
         let address = ctx.events() as *const _ as usize;
         let mut hubs = HUBS.lock().unwrap();
@@ -87,89 +68,17 @@ impl Hub {
         }
         let hub = Arc::new(Hub {
             ctx: ctx.clone(),
-            state: Mutex::default(),
-            watching: Mutex::new(None),
             services: Mutex::new(None),
             #[cfg(feature = "testing")]
             tap: Mutex::new(None),
         });
         ctx.events().set_transcoder(Arc::new(SessionTranscoder));
-        let weak = Arc::downgrade(&hub);
-        let (snapshot, watching) = ctx
-            .events()
-            .watch_table(ctx, move |change: &TableChange| {
-                if let Some(hub) = weak.upgrade() {
-                    hub.changed(change);
-                }
-            })
-            .map_err(|error| to_session(&error))?;
-        *hub.watching.lock().unwrap() = Some(watching);
         let services = ctx
             .on::<rutis::host::diagnostics::ServiceChanged>(super::framework::service_events)
             .map_err(|error| to_session(&error))?;
         *hub.services.lock().unwrap() = Some(services);
-        {
-            let mut state = hub.state.lock().unwrap();
-            for entry in &snapshot {
-                count(&mut state.presence, entry, true);
-            }
-            let queued = std::mem::take(&mut state.queued);
-            state.ready = true;
-            drop(state);
-            for change in &queued {
-                hub.changed(change);
-            }
-        }
         hubs.push((address, Arc::downgrade(&hub)));
         Ok(hub)
-    }
-
-    /// A change of the table: the sessions for which a name or prefix
-    /// starts or stops being elsewhere are told, in order, before the
-    /// change's registration returns (events protocol §4.4).
-    fn changed(&self, change: &TableChange) {
-        let mut state = self.state.lock().unwrap();
-        if !state.ready {
-            state.queued.push(change.clone());
-            return;
-        }
-        let (entry, added) = match change {
-            TableChange::Added(entry) => (entry, true),
-            TableChange::Removed(entry) => (entry, false),
-        };
-        let key = (entry.name.clone(), entry.prefix);
-        let before = state.presence.get(&key).cloned().unwrap_or_default();
-        count(&mut state.presence, entry, added);
-        let after = state.presence.get(&key).cloned().unwrap_or_default();
-        let sessions: Vec<Arc<SessionEvents>> =
-            state.sessions.values().filter_map(Weak::upgrade).collect();
-        for session in sessions {
-            let was = elsewhere(&before, session.origin);
-            let is = elsewhere(&after, session.origin);
-            if was != is {
-                session.push_elsewhere(Presence::change(&key, is));
-            }
-        }
-    }
-
-    /// `session` hears what is elsewhere from now on, starting with the
-    /// whole of it.
-    fn join(&self, session: &Arc<SessionEvents>) {
-        let mut state = self.state.lock().unwrap();
-        let mut presence = Presence::default();
-        for (key, counts) in &state.presence {
-            if elsewhere(counts, session.origin) {
-                presence.add(key);
-            }
-        }
-        session.push_elsewhere(presence);
-        state
-            .sessions
-            .insert(session.origin, Arc::downgrade(session));
-    }
-
-    fn leave(&self, origin: u64) {
-        self.state.lock().unwrap().sessions.remove(&origin);
     }
 
     #[cfg(feature = "testing")]
@@ -180,84 +89,9 @@ impl Hub {
 
 /// The kernel's process-local diagnostic events (`rutis::ServiceChanged`,
 /// `rutis::FiberStatusChanged`): they name Rust types and cannot be decoded
-/// elsewhere, so their listeners are never announced to runtimes or nodes.
+/// elsewhere, so their listeners are never announced to nodes.
 pub(crate) fn process_local(name: &str) -> bool {
     name.starts_with("rutis::")
-}
-
-fn count(
-    presence: &mut HashMap<Key, HashMap<Option<u64>, usize>>,
-    entry: &TableEntry,
-    added: bool,
-) {
-    if process_local(&entry.name) {
-        return;
-    }
-    let key = (entry.name.clone(), entry.prefix);
-    let counts = presence.entry(key.clone()).or_default();
-    let n = counts.entry(entry.origin).or_default();
-    if added {
-        *n += 1;
-    } else {
-        *n = n.saturating_sub(1);
-        if *n == 0 {
-            counts.remove(&entry.origin);
-        }
-        if counts.is_empty() {
-            presence.remove(&key);
-        }
-    }
-}
-
-/// Whether some entry of these counts is not `origin`'s.
-fn elsewhere(counts: &HashMap<Option<u64>, usize>, origin: u64) -> bool {
-    counts.iter().any(|(at, n)| *n > 0 && *at != Some(origin))
-}
-
-/// One `events.elsewhere` message.
-#[derive(Default)]
-struct Presence {
-    add: Vec<String>,
-    remove: Vec<String>,
-    add_prefixes: Vec<String>,
-    remove_prefixes: Vec<String>,
-}
-
-impl Presence {
-    fn change(key: &Key, present: bool) -> Self {
-        let mut presence = Self::default();
-        match present {
-            true => presence.add(key),
-            false => match key.1 {
-                true => presence.remove_prefixes.push(key.0.clone()),
-                false => presence.remove.push(key.0.clone()),
-            },
-        }
-        presence
-    }
-
-    fn add(&mut self, key: &Key) {
-        match key.1 {
-            true => self.add_prefixes.push(key.0.clone()),
-            false => self.add.push(key.0.clone()),
-        }
-    }
-
-    /// The message's argument; empty fields left out.
-    fn argument(&self) -> Json {
-        let mut fields = serde_json::Map::new();
-        for (field, names) in [
-            ("add", &self.add),
-            ("remove", &self.remove),
-            ("addPrefixes", &self.add_prefixes),
-            ("removePrefixes", &self.remove_prefixes),
-        ] {
-            if !names.is_empty() {
-                fields.insert(field.into(), json!(names));
-            }
-        }
-        Json::Object(fields)
-    }
 }
 
 /// Withdraw an entry now: the kernel takes it out of the table when its
@@ -277,8 +111,10 @@ pub(crate) fn dispose_now(disposer: Disposer) {
 /// One runtime session's side of the logical bus: its entries, its rows'
 /// scopes, its dispatches (events protocol §3–§7).
 pub(crate) struct SessionEvents {
-    /// The hub; `None` when the runtime has no bus to join (a process
-    /// mounted without a context), whose events then stay in its process.
+    /// The hub, held so it lives while the session does (read by the test
+    /// hooks only); `None` when the runtime has no bus to join (a process
+    /// mounted without a context).
+    #[cfg_attr(not(feature = "testing"), allow(dead_code))]
     hub: Option<Arc<Hub>>,
     /// The context its entries are registered and its dispatches emitted
     /// through (the runtime plugin's): they go with it.
@@ -430,9 +266,8 @@ struct Registration {
 
 impl SessionEvents {
     /// The runtime on `connection`, named `runtime`, whose mount's plugins
-    /// are at `scope`, joins `ctx`'s bus: it is told right away what has
-    /// listeners elsewhere (events protocol §4.5). It leaves the bus when
-    /// the session ends or this is dropped.
+    /// are at `scope`, joins `ctx`'s bus. It leaves the bus when the
+    /// session ends or this is dropped.
     pub(crate) fn join(
         ctx: Option<&Ctx>,
         connection: Connection,
@@ -452,10 +287,6 @@ impl SessionEvents {
             entries: Mutex::default(),
             emits: Mutex::default(),
         });
-        match &session.hub {
-            Some(hub) => hub.join(&session),
-            None => session.push_elsewhere(Presence::default()),
-        }
         let weak = Arc::downgrade(&session);
         session.executor.spawn(async move {
             connection.closed().await;
@@ -466,33 +297,8 @@ impl SessionEvents {
         Ok(session)
     }
 
-    /// Tell the runtime what changed elsewhere. Written now, in order; the
-    /// answer is only awaited.
-    fn push_elsewhere(&self, presence: Presence) {
-        let Some(connection) = self.connection.upgrade() else {
-            return;
-        };
-        // A notification: whatever call changed the table, it is not part
-        // of it (another session's chain must not reach this one).
-        let sent = crate::session::rpc::unchained(|| {
-            connection.invoke_started(
-                "",
-                "events.elsewhere",
-                Value::List(vec![Value::Data(presence.argument())]),
-            )
-        });
-        if let Ok(answer) = sent {
-            self.executor.spawn(async move {
-                let _ = answer.await;
-            });
-        }
-    }
-
     /// Withdraw everything of the session (its end, events protocol §7.2).
     fn leave(&self) {
-        if let Some(hub) = &self.hub {
-            hub.leave(self.origin);
-        }
         self.rows.lock().unwrap().clear();
         // The running emit is let go too. Dropped after the lock: a future
         // may write a frame on drop.
@@ -561,41 +367,6 @@ impl SessionEvents {
         for entry in gone {
             dispose_now(entry.disposer);
         }
-    }
-
-    /// The `events.*` operation `method` was read, on the session's reader
-    /// (before its next frame; [`SessionEvents::invoke`] runs it later, in
-    /// its turn): the tap counts the dispatches here.
-    pub(crate) fn arrived(&self, method: &str) {
-        #[cfg(feature = "testing")]
-        if method == "events.dispatch" {
-            if let Some(tap) = self
-                .hub
-                .as_ref()
-                .and_then(|hub| hub.tap.lock().unwrap().clone())
-            {
-                tap.received();
-            }
-        }
-        #[cfg(not(feature = "testing"))]
-        let _ = method;
-    }
-
-    /// The reply to the `events.*` operation `method` was written: the tap
-    /// counts the answered dispatches here.
-    pub(crate) fn replied(&self, method: &str) {
-        #[cfg(feature = "testing")]
-        if method == "events.dispatch" {
-            if let Some(tap) = self
-                .hub
-                .as_ref()
-                .and_then(|hub| hub.tap.lock().unwrap().clone())
-            {
-                tap.replied();
-            }
-        }
-        #[cfg(not(feature = "testing"))]
-        let _ = method;
     }
 
     /// The `events.*` operations a runtime sends.
@@ -764,7 +535,7 @@ impl SessionEvents {
         let filter = reference(&mut fields, "filter")?;
         let terminal = reference(&mut fields, "terminal")?;
         let Some(ctx) = self.ctx.clone() else {
-            // No bus: nothing is elsewhere, and a runtime never sends this.
+            // No bus: `events.on` registered nothing, so no listener hears it.
             return Ok(Value::Undefined);
         };
         let mut dispatch = Dispatch::new(name.clone(), mode, from_wire(args));
@@ -898,16 +669,10 @@ pub fn join_bus(ctx: &Ctx) -> Result<BusHandle, Error> {
 }
 
 impl Drop for Hub {
-    /// Its listeners leave the bus with it: a later hub of the same bus
+    /// Its listener leaves the bus with it: a later hub of the same bus
     /// registers its own.
     fn drop(&mut self) {
-        for disposer in [
-            self.watching.get_mut().unwrap().take(),
-            self.services.get_mut().unwrap().take(),
-        ]
-        .into_iter()
-        .flatten()
-        {
+        if let Some(disposer) = self.services.get_mut().unwrap().take() {
             dispose_now(disposer);
         }
     }
@@ -1341,6 +1106,7 @@ mod tests {
         assert!(!emits.busy && emits.queue.is_empty());
     }
 
+    /// guarantee: events/hub-lifecycle
     /// A row that unloads while one of its listeners registers (on the
     /// session's thread, the unload on another) takes that listener with
     /// it: none stays on the bus after its row (events protocol §7.1).

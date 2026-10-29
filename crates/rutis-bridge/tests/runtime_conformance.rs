@@ -1,9 +1,10 @@
 //! The session conformance suite against every implementation of the
-//! session: Rust, Node, Python, Go, Bun and (feature `swift`) Swift, each serving `conformance` as
+//! session: Rust, Node, Python, Go, Bun, (macOS) Swift and Kotlin, each serving `conformance` as
 //! endpoint of an endpoint-format session, on each channel it can take: a
 //! Unix socket path, a loopback TCP address it presents a token on (how
 //! runtimes are started on Windows), and a loopback WebSocket it listens on. Risk C10: the matrix, with
-//! every skipped cell's reason, is in docs/ci.md.
+//! every skipped cell's reason, is in docs/ci.md. The Go, Swift, Bun and Kotlin cells run when
+//! `RUTIS_TEST_RUNTIMES` lists their language.
 #![cfg(feature = "testing")]
 
 use std::path::{Path, PathBuf};
@@ -231,7 +232,6 @@ fn python() -> tokio::process::Command {
 
 /// The Go session fixture (`go/rutis/internal/fixtures/session`), built
 /// once per test binary with the `go` on PATH.
-#[cfg(feature = "go")]
 fn go() -> tokio::process::Command {
     static BINARY: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
     let binary = BINARY.get_or_init(|| {
@@ -252,7 +252,7 @@ fn go() -> tokio::process::Command {
 
 /// A product of the Swift package (the repository's root `Package.swift`),
 /// built with the `swift` on PATH.
-#[cfg(all(feature = "swift", target_os = "macos"))]
+#[cfg(target_os = "macos")]
 fn swift_product(product: &str) -> PathBuf {
     let status = std::process::Command::new("swift")
         .args(["build", "--product", product])
@@ -270,7 +270,7 @@ fn swift_product(product: &str) -> PathBuf {
 
 /// The Swift session fixture (`swift/rutis/Sources/RutisSessionFixture`),
 /// built once per test binary.
-#[cfg(all(feature = "swift", target_os = "macos"))]
+#[cfg(target_os = "macos")]
 fn swift() -> tokio::process::Command {
     static BINARY: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
     tokio::process::Command::new(BINARY.get_or_init(|| swift_product("RutisSessionFixture")))
@@ -278,7 +278,7 @@ fn swift() -> tokio::process::Command {
 
 /// Bun: Unix only, as the whole Bun runtime is (Bun on Windows is not a
 /// declared platform; docs/ci.md).
-#[cfg(all(unix, feature = "bun"))]
+#[cfg(unix)]
 fn bun() -> tokio::process::Command {
     let mut command = tokio::process::Command::new("bun");
     command
@@ -288,12 +288,10 @@ fn bun() -> tokio::process::Command {
     command
 }
 
-#[cfg(feature = "kotlin")]
 mod kotlin;
 
 /// The Kotlin session fixture (`kotlin/rutis/rutis-conformance`, the jvm
 /// target), endpoint `kotlin`.
-#[cfg(feature = "kotlin")]
 fn kotlin() -> tokio::process::Command {
     kotlin::session()
 }
@@ -310,11 +308,17 @@ async fn contract(command: tokio::process::Command, via: Via, far: &str) {
     ignore = "Unix socket column: Windows runtimes connect on loopback TCP"
 )]
 async fn node_meets_the_session_contract_on_a_unix_socket() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     contract(node(), Via::UnixSocket, "node").await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn node_meets_the_session_contract_on_loopback() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     contract(node(), Via::Loopback, "node").await;
 }
 
@@ -324,23 +328,35 @@ async fn node_meets_the_session_contract_on_loopback() {
     ignore = "Unix socket column: Windows runtimes connect on loopback TCP"
 )]
 async fn python_meets_the_session_contract_on_a_unix_socket() {
+    if !rutis_test_support::runtimes::enabled("python") {
+        return;
+    }
     contract(python(), Via::UnixSocket, "python").await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn python_meets_the_session_contract_on_loopback() {
+    if !rutis_test_support::runtimes::enabled("python") {
+        return;
+    }
     contract(python(), Via::Loopback, "python").await;
 }
 
 #[cfg(feature = "websocket")]
 #[tokio::test(flavor = "multi_thread")]
 async fn node_meets_the_session_contract_on_a_websocket() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     contract(node(), Via::WebSocket, "node").await;
 }
 
 #[cfg(feature = "websocket")]
 #[tokio::test(flavor = "multi_thread")]
 async fn python_meets_the_session_contract_on_a_websocket() {
+    if !rutis_test_support::runtimes::enabled("python") {
+        return;
+    }
     contract(python(), Via::WebSocket, "python").await;
 }
 
@@ -352,43 +368,59 @@ async fn python_meets_the_session_contract_on_a_websocket() {
 // listener is in its supervising process (`src/remote.ts`), and its
 // WebSocket column is in session_matrix.rs too.
 
-#[cfg(feature = "go")]
 #[tokio::test(flavor = "multi_thread")]
 #[cfg_attr(
     windows,
     ignore = "Unix socket column: Windows runtimes connect on loopback TCP"
 )]
 async fn go_meets_the_session_contract_on_a_unix_socket() {
+    if !rutis_test_support::runtimes::enabled("go") {
+        return;
+    }
     contract(go(), Via::UnixSocket, "go").await;
 }
 
-#[cfg(feature = "go")]
 #[tokio::test(flavor = "multi_thread")]
 async fn go_meets_the_session_contract_on_loopback() {
+    if !rutis_test_support::runtimes::enabled("go") {
+        return;
+    }
     contract(go(), Via::Loopback, "go").await;
 }
 
-#[cfg(all(feature = "swift", target_os = "macos"))]
+#[cfg(target_os = "macos")]
 #[tokio::test(flavor = "multi_thread")]
 async fn swift_meets_the_session_contract_on_a_unix_socket() {
+    if !rutis_test_support::runtimes::enabled("swift") {
+        return;
+    }
     contract(swift(), Via::UnixSocket, "swift").await;
 }
 
-#[cfg(all(feature = "swift", target_os = "macos"))]
+#[cfg(target_os = "macos")]
 #[tokio::test(flavor = "multi_thread")]
 async fn swift_meets_the_session_contract_on_loopback() {
+    if !rutis_test_support::runtimes::enabled("swift") {
+        return;
+    }
     contract(swift(), Via::Loopback, "swift").await;
 }
 
-#[cfg(all(unix, feature = "bun"))]
+#[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
 async fn bun_meets_the_session_contract_on_a_unix_socket() {
+    if !rutis_test_support::runtimes::enabled("bun") {
+        return;
+    }
     contract(bun(), Via::UnixSocket, "bun").await;
 }
 
-#[cfg(all(unix, feature = "bun"))]
+#[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
 async fn bun_meets_the_session_contract_on_loopback() {
+    if !rutis_test_support::runtimes::enabled("bun") {
+        return;
+    }
     contract(bun(), Via::Loopback, "bun").await;
 }
 
@@ -455,11 +487,17 @@ async fn ends_on_malformed(command: fn() -> tokio::process::Command, via: Via) {
     ignore = "Unix socket column: Windows runtimes connect on loopback TCP"
 )]
 async fn node_ends_the_session_on_malformed_frames_on_a_unix_socket() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     ends_on_malformed(node, Via::UnixSocket).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn node_ends_the_session_on_malformed_frames_on_loopback() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     ends_on_malformed(node, Via::Loopback).await;
 }
 
@@ -469,23 +507,35 @@ async fn node_ends_the_session_on_malformed_frames_on_loopback() {
     ignore = "Unix socket column: Windows runtimes connect on loopback TCP"
 )]
 async fn python_ends_the_session_on_malformed_frames_on_a_unix_socket() {
+    if !rutis_test_support::runtimes::enabled("python") {
+        return;
+    }
     ends_on_malformed(python, Via::UnixSocket).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn python_ends_the_session_on_malformed_frames_on_loopback() {
+    if !rutis_test_support::runtimes::enabled("python") {
+        return;
+    }
     ends_on_malformed(python, Via::Loopback).await;
 }
 
 #[cfg(feature = "websocket")]
 #[tokio::test(flavor = "multi_thread")]
 async fn node_ends_the_session_on_malformed_frames_on_a_websocket() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     ends_on_malformed(node, Via::WebSocket).await;
 }
 
 #[cfg(feature = "websocket")]
 #[tokio::test(flavor = "multi_thread")]
 async fn python_ends_the_session_on_malformed_frames_on_a_websocket() {
+    if !rutis_test_support::runtimes::enabled("python") {
+        return;
+    }
     ends_on_malformed(python, Via::WebSocket).await;
 }
 
@@ -493,73 +543,94 @@ async fn python_ends_the_session_on_malformed_frames_on_a_websocket() {
 /// dangling frames as every other implementation (#294); Go's
 /// `encoding/json` replaces invalid UTF-8 instead of failing, so its
 /// channel checks each frame.
-#[cfg(feature = "go")]
 #[tokio::test(flavor = "multi_thread")]
 #[cfg_attr(
     windows,
     ignore = "Unix socket column: Windows runtimes connect on loopback TCP"
 )]
 async fn go_ends_the_session_on_malformed_frames_on_a_unix_socket() {
+    if !rutis_test_support::runtimes::enabled("go") {
+        return;
+    }
     ends_on_malformed(go, Via::UnixSocket).await;
 }
 
-#[cfg(feature = "go")]
 #[tokio::test(flavor = "multi_thread")]
 async fn go_ends_the_session_on_malformed_frames_on_loopback() {
+    if !rutis_test_support::runtimes::enabled("go") {
+        return;
+    }
     ends_on_malformed(go, Via::Loopback).await;
 }
 
 /// Swift ends the session on the same malformed and dangling frames.
-#[cfg(all(feature = "swift", target_os = "macos"))]
+#[cfg(target_os = "macos")]
 #[tokio::test(flavor = "multi_thread")]
 async fn swift_ends_the_session_on_malformed_frames_on_a_unix_socket() {
+    if !rutis_test_support::runtimes::enabled("swift") {
+        return;
+    }
     ends_on_malformed(swift, Via::UnixSocket).await;
 }
 
-#[cfg(all(feature = "swift", target_os = "macos"))]
+#[cfg(target_os = "macos")]
 #[tokio::test(flavor = "multi_thread")]
 async fn swift_ends_the_session_on_malformed_frames_on_loopback() {
+    if !rutis_test_support::runtimes::enabled("swift") {
+        return;
+    }
     ends_on_malformed(swift, Via::Loopback).await;
 }
 
-#[cfg(all(unix, feature = "bun"))]
+#[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
 async fn bun_ends_the_session_on_malformed_frames() {
+    if !rutis_test_support::runtimes::enabled("bun") {
+        return;
+    }
     ends_on_malformed(bun, Via::UnixSocket).await;
 }
 
-// Kotlin (feature `kotlin`): the session of the Kotlin SDK's jvm target, on a
+// Kotlin: the session of the Kotlin SDK's jvm target, on a
 // socket path it dials back and on loopback. No WebSocket cell: listening
 // is K-P2 (docs/design-android-runtime-2026-10-12.md §九).
 
-#[cfg(feature = "kotlin")]
 #[tokio::test(flavor = "multi_thread")]
 #[cfg_attr(
     windows,
     ignore = "Unix socket column: Windows runtimes connect on loopback TCP"
 )]
 async fn kotlin_meets_the_session_contract_on_a_unix_socket() {
+    if !rutis_test_support::runtimes::enabled("kotlin") {
+        return;
+    }
     contract(kotlin(), Via::UnixSocket, "kotlin").await;
 }
 
-#[cfg(feature = "kotlin")]
 #[tokio::test(flavor = "multi_thread")]
 async fn kotlin_meets_the_session_contract_on_loopback() {
+    if !rutis_test_support::runtimes::enabled("kotlin") {
+        return;
+    }
     contract(kotlin(), Via::Loopback, "kotlin").await;
 }
 
-#[cfg(feature = "kotlin")]
 #[tokio::test(flavor = "multi_thread")]
 #[cfg_attr(
     windows,
     ignore = "Unix socket column: Windows runtimes connect on loopback TCP"
 )]
 async fn kotlin_ends_the_session_on_malformed_frames_on_a_unix_socket() {
+    if !rutis_test_support::runtimes::enabled("kotlin") {
+        return;
+    }
     ends_on_malformed(kotlin, Via::UnixSocket).await;
 }
 
-#[cfg(feature = "kotlin")]
 #[tokio::test(flavor = "multi_thread")]
 async fn kotlin_ends_the_session_on_malformed_frames_on_loopback() {
+    if !rutis_test_support::runtimes::enabled("kotlin") {
+        return;
+    }
     ends_on_malformed(kotlin, Via::Loopback).await;
 }

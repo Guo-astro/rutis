@@ -1,23 +1,16 @@
-"""rutis.testing: plugins tested without a host."""
+# guarantee: sdk/undeclared-use
+# guarantee: sdk/testing-matches-runtime
+"""rutis.testing: plugins tested on a real host (`rutis-host test`), run by
+this process's runtime."""
 
 import asyncio
-import contextlib
-import functools
-import io
 import unittest
-from dataclasses import dataclass
 
 import background
 
 from rutis import BindingError, RemoteError, define_plugin
 from rutis.advanced import PLUGIN_API, AggregateError, ReservedEvent
 from rutis.testing import Bus, PluginTestError, load
-
-
-@dataclass
-class Reading:
-    city: str
-    degrees: int
 
 
 class Weather:
@@ -27,8 +20,8 @@ class Weather:
     async def today(self):
         return f"{await self.llm.ask(self.city)} in {self.city}"
 
-    def reading(self):
-        return Reading(self.city, 21)
+    def unit(self):
+        return "C"
 
 
 class Llm:
@@ -44,7 +37,8 @@ def weather_plugin():
         ctx.effect(lambda: order.append("effect"))
         return lambda: order.append("returned")
 
-    return define_plugin(apply, inject=["llm"], provides={"weather": Weather}), order
+    schema = {"type": "object", "properties": {"city": {"type": "string", "default": "Oslo"}}}
+    return define_plugin(apply, inject=["llm"], provides={"weather": Weather}, config=schema, name="weather"), order
 
 
 def run(coroutine):
@@ -56,91 +50,47 @@ class Testing(background.TestCase):
         plugin, order = weather_plugin()
 
         async def go():
-            async with load(plugin, config={"city": "Oslo"}, services={"llm": Llm()}) as t:
-                self.assertEqual(await t.service("weather").today(), "sunny in Oslo")
-                # A dataclass crosses as data.
-                self.assertEqual(t.service("weather").reading(), {"city": "Oslo", "degrees": 21})
+            async with load(plugin, config={"city": "Bergen"}, services={"llm": Llm()}) as t:
+                self.assertEqual(t.row, "weather")
+                self.assertEqual(await t.service("weather").today(), "sunny in Bergen")
+                # Declared sync: called synchronously, as the host calls it.
+                self.assertEqual(t.service("weather").unit(), "C")
+                self.assertEqual(t.methods("weather"), {"today": "async", "unit": "sync"})
                 self.assertEqual(t.provided(), ["weather"])
             self.assertEqual(order, ["returned", "effect"])
 
         run(go())
 
-    def test_undeclared_and_missing_services_are_errors(self):
+    # guarantee: sdk/config-schema
+    def test_the_hosts_loader_checks_the_config_and_fills_its_defaults(self):
+        plugin, _ = weather_plugin()
+
+        async def go():
+            async with load(plugin, services={"llm": Llm()}) as t:
+                self.assertEqual(await t.service("weather").today(), "sunny in Oslo")
+                await t.update({"city": "Tromsø"})
+                self.assertEqual(await t.service("weather").today(), "sunny in Tromsø")
+                with self.assertRaises(PluginTestError) as refused:
+                    await t.update({"city": 3})
+                self.assertEqual(str(refused.exception), "weather: config: city should be a string, got 3")
+                self.assertEqual(await t.service("weather").today(), "sunny in Tromsø", "the row keeps its config")
+            with self.assertRaises(PluginTestError) as refused:
+                async with load(plugin, config={"city": 5}, services={"llm": Llm()}):
+                    pass
+            self.assertEqual(str(refused.exception), "weather: config: city should be a string, got 5")
+
+        run(go())
+
+    def test_a_missing_service_is_an_error(self):
         plugin, _ = weather_plugin()
 
         async def missing():
-            async with load(plugin, config={"city": "x"}):
-                pass
-
-        with self.assertRaisesRegex(PluginTestError, "injects llm"):
-            run(missing())
-
-        sneaky = define_plugin(lambda ctx, config: ctx.use("llm"))
-
-        async def undeclared():
-            async with load(sneaky, services={"llm": Llm()}):
+            async with load(plugin):
                 pass
 
         with self.assertRaises(PluginTestError) as refused:
-            run(undeclared())
-        # As the runtime says it, with its code (#677).
-        self.assertEqual(
-            str(refused.exception),
-            "service llm is not available to this plugin, which does not declare it in inject: add 'llm' to its inject",
-        )
-        self.assertEqual((refused.exception.code, refused.exception.data), ("not-declared", {"service": "llm"}))
-
-    def test_strict_mode_crosses_values_as_between_processes(self):
-        class Store:
-            def __init__(self):
-                self.kept = []
-
-            def put(self, item):
-                self.kept.append(item)
-
-            def first(self):
-                return self.kept[0]
-
-            def last(self):
-                return self.kept[-1]
-
-            def big(self):
-                return {"n": [2**53]}
-
-            def wrong(self):
-                return asyncio.sleep(0)
-
-        plugin = define_plugin(
-            lambda ctx, config: ctx.provide("store", Store()),
-            provides={"store": {"put": "sync", "first": "sync", "last": "sync", "big": "sync", "wrong": "sync"}},
-        )
-
-        async def go():
-            async with load(plugin) as t:
-                item = {"n": 1}
-                t.service("store").put(item)
-                item["n"] = 2
-                self.assertEqual(t.service("store").first(), {"n": 1})
-                with self.assertRaisesRegex(PluginTestError, "cannot cross"):
-                    t.service("store").put(object)
-                # Nesting: 64 levels cross, 65 do not (#279).
-                nest = lambda depth: functools.reduce(lambda inner, _: [inner], range(depth), "bottom")
-                t.service("store").put(nest(64))
-                with self.assertRaisesRegex(PluginTestError, "^store.put: argument 1 cannot be sent: value nested deeper than 64 levels, the most a value crossing processes may nest$"):
-                    t.service("store").put(nest(65))
-                # Integers of any size cross: beyond ±(2^53−1) as bigints
-                # (design V6), which stay ints to the plugin.
-                for big in (2**53, -(2**53), [1, {"n": 2**64 + 1}]):
-                    t.service("store").put(big)
-                    self.assertEqual(t.service("store").last(), big)
-                safe = [2**53 - 1, -(2**53 - 1), True]
-                t.service("store").put(safe)
-                self.assertEqual(t.service("store").last(), safe)
-                self.assertEqual(t.service("store").big(), {"n": [2**53]})
-                with self.assertRaisesRegex(PluginTestError, "declared sync but returned an awaitable"):
-                    t.service("store").wrong()
-
-        run(go())
+            run(missing())
+        self.assertEqual(str(refused.exception), "weather did not start: it injects llm, which nothing provides: give the test services=")
 
     def test_a_plugin_that_needs_a_newer_plugin_api_is_refused(self):
         plugin, _ = weather_plugin()
@@ -153,34 +103,47 @@ class Testing(background.TestCase):
         with self.assertRaisesRegex(PluginTestError, "needs plugin API"):
             run(go())
 
-    def test_the_five_modes_from_the_test_cross_values_and_errors(self):
-        # #464 §12.2: the tool has the five ways to emit; with strict, what
-        # the test sends and gets back crosses as between processes.
+    def test_a_plugin_provides_a_name_the_test_gives(self):
+        # #684 H4: the runtime's words.
+        class Notes:
+            async def get(self, key):
+                return None
+
+        wordcount = define_plugin(lambda ctx, config: ctx.provide("notes", Notes()), name="wordcount")
+
+        async def go():
+            with self.assertRaises(PluginTestError) as raised:
+                async with load(wordcount, services={"notes": Notes()}):
+                    pass
+            self.assertIn("notes is already provided by tester", str(raised.exception))
+            async with load(wordcount) as t:
+                self.assertIsNone(await t.service("notes").get("k"))
+
+        run(go())
+
+    def test_the_five_modes(self):
+        # #464 §12.2, through the host.
         async def go():
             gate, started = asyncio.Event(), asyncio.Event()
-            called = []
 
             def apply(ctx, config):
-                def fail(value):
-                    value["n"] += 1
+                def fail():
                     raise ValueError("sync")
 
-                async def wait(value):
+                async def wait():
                     started.set()
                     await gate.wait()
                     raise TypeError("async")
 
                 ctx.on("tick", wait)
                 ctx.on("tick", fail)
-                ctx.on("tick", lambda value: called.append(value["n"]))
-                ctx.on("reading", lambda: Reading("Oslo", 3))
+                ctx.on("reading", lambda: {"city": "Oslo", "degrees": 3})
                 ctx.on("wrap", lambda city, next: next())
 
             async with load(define_plugin(apply)) as t:
-                value = {"n": 1}
-                done = asyncio.ensure_future(t.parallel("tick", value))
+                done = asyncio.ensure_future(t.parallel("tick"))
                 await started.wait()
-                self.assertEqual((called, value, done.done()), ([2], {"n": 1}, False))
+                self.assertFalse(done.done())
                 gate.set()
                 with self.assertRaises(AggregateError) as failure:
                     await done
@@ -189,7 +152,7 @@ class Testing(background.TestCase):
                 # Registration order, not the order they failed in.
                 self.assertEqual([(e.name, e.message) for e in error.errors], [("TypeError", "async"), ("ValueError", "sync")])
                 self.assertTrue(all(isinstance(e, RemoteError) for e in error.errors))
-                self.assertEqual(await t.serial("reading"), {"city": "Oslo", "degrees": 3}, "a dataclass crosses as a dict")
+                self.assertEqual(await t.serial("reading"), {"city": "Oslo", "degrees": 3})
                 self.assertEqual(t.bail("reading"), {"city": "Oslo", "degrees": 3})
                 self.assertEqual(await t.waterfall("wrap", "Bergen", terminal=lambda city: city.upper()), "BERGEN")
                 self.assertEqual(await t.filter(lambda d: False).serial("reading"), None)
@@ -214,71 +177,61 @@ class Testing(background.TestCase):
 
         run(go())
 
-    def test_event_disposers_and_failed_cleanup_remove_every_listener(self):
+    def test_an_unloaded_row_emits_nothing(self):
         async def go():
             seen, saved, refused = [], [], []
 
             def apply(ctx, config):
-                callback = lambda value: seen.append(value)
-                ctx.on("early", callback)
+                ctx.on("early", seen.append)
+
                 def cleanup():
                     try:
                         ctx.emit("early", 99)
                     except BindingError as error:
                         refused.append(str(error))
-                    raise asyncio.CancelledError()
+
                 ctx.effect(cleanup)
-                off = ctx.on("tick", callback)
-                ctx.on("tick", callback)
+                off = ctx.on("tick", seen.append)
+                ctx.on("tick", seen.append)
                 saved.extend([ctx, off])
 
-            with self.assertRaises(asyncio.CancelledError):
-                async with load(define_plugin(apply)) as t:
-                    await t.parallel("tick", 1)
-                    saved[1]()
-                    saved[1]()
-                    self.assertIsNone(saved[0].emit("tick", 2))
-                    self.assertEqual(seen, [1, 1, 2])
+            async with load(define_plugin(apply), id="ticks") as t:
+                await t.parallel("tick", 1)
+                saved[1]()
+                saved[1]()
+                await saved[0].parallel("tick", 2)
+                self.assertEqual(seen, [1, 1, 2])
             # An unloaded row emits nothing: refused at once (#464 §3).
-            self.assertEqual(refused, ["row test_testing is not loaded in this runtime"])
-            for mode in ("emit", "parallel", "serial", "waterfall", "bail"):
-                with self.assertRaisesRegex(BindingError, "^row test_testing is not loaded in this runtime$"):
-                    getattr(saved[0], mode)("early", 3)
+            self.assertEqual(refused, ["row ticks is not loaded in this runtime"])
             self.assertEqual(seen, [1, 1, 2], "cleanup emissions cannot reach the unloading plugin")
-            with self.assertRaisesRegex(PluginTestError, "unloaded"):
-                saved[0].on("tick", lambda: None)
 
         run(go())
 
     def test_a_failing_emit_listener_is_reported_never_raised(self):
-        # #464 §5.6, as on the runtime: in `reported` and on stderr.
-        order = []
-
+        # #464 §5.6: the host reports it, the emitter never sees it.
         async def fail():
-            order.append("listener")
             raise ValueError("async event")
 
         async def go():
             def apply(ctx, config):
                 ctx.on("tick", fail)
-                ctx.on("tick", lambda: order.append("other"))
-                ctx.emit("tick")
-                order.append("emitter")
 
-            stderr = io.StringIO()
-            with contextlib.redirect_stderr(stderr):
-                async with load(define_plugin(apply), row="ticker") as t:
-                    await asyncio.sleep(0)
-                    reported = list(t.reported)
-            self.assertEqual(order, ["listener", "other", "emitter"], "ctx.emit starts async listeners eagerly")
-            self.assertEqual([(r.kind, r.name, r.row, str(r.error)) for r in reported], [("listener", "tick", "ticker", "async event")])
-            self.assertEqual(stderr.getvalue(), "rutis: listener of tick in row ticker failed: ValueError: async event\n")
+            bus = Bus()
+            async with load(define_plugin(apply), id="ticker", bus=bus) as t:
+                self.assertIsNone(t.emit("tick"))
+                for _ in range(100):
+                    if await t.reported():
+                        break
+                    await asyncio.sleep(0.01)
+                reported = await t.reported()
+                self.assertEqual([r.line.split("\n")[0] for r in reported], ["ticker: listener of tick failed: ValueError: async event"])
+                self.assertEqual(await bus.reported(), reported)
 
         run(go())
 
+    # guarantee: sdk/leaf-events
     def test_plugins_on_one_bus_hear_each_other_and_filter(self):
-        # #464 §3, §4.3, §6 in the tool: a shared bus, scopes, prepend,
-        # global, the filter seeing descriptors.
+        # #464 §4.3, §6: prepend, global, the filter seeing descriptors.
         async def go():
             log = []
 
@@ -287,33 +240,62 @@ class Testing(background.TestCase):
                     ctx.on("t/x", lambda: log.append(label), **options)
                 return define_plugin(apply)
 
-            bus = Bus(scopes={"t1": "tenant", "t1/s1": "session"})
-            async with load(listener("r"), bus=bus, row="r") as root, \
-                    load(listener("u"), bus=bus, row="u", scope="t1") as tenant, \
-                    load(listener("s", prepend=True), bus=bus, row="s", scope="t1/s1") as session, \
-                    load(listener("v", global_=True), bus=bus, row="v", scope="t2"):
-                await session.parallel("t/x")
-                self.assertEqual(log, ["s", "r", "u", "v"])
-                log.clear()
-                await tenant.parallel("t/x")
+            bus = Bus()
+            async with load(listener("r"), bus=bus, id="r") as root, \
+                    load(listener("u"), bus=bus, id="u"), \
+                    load(listener("s", prepend=True), bus=bus, id="s"), \
+                    load(listener("v", global_=True), bus=bus, id="v"):
+                await root.parallel("t/x")
                 self.assertEqual(log, ["s", "r", "u", "v"])
                 log.clear()
                 seen = []
                 await bus.emitter().filter(lambda d: seen.append(d) or d["row"] == "u").parallel("t/x")
                 self.assertEqual(log, ["u", "v"], "v is global and skips the filter")
-                self.assertEqual([d["row"] for d in seen], ["s", "r", "u"], "global v skips the filter")
-                self.assertEqual(seen[0]["scope"], [{"id": "t1", "group": "tenant"}, {"id": "t1/s1", "group": "session"}])
+                self.assertEqual([(d["row"], d["runtime"]) for d in seen], [("s", "test"), ("r", "test"), ("u", "test")])
                 log.clear()
                 await bus.emitter().filter(lambda d: False).parallel("t/x")
                 self.assertEqual(log, ["v"], "global skips the filter")
-                with self.assertRaisesRegex(PluginTestError, "already loaded"):
-                    async with load(listener("x"), bus=bus, row="r"):
+                with self.assertRaises(PluginTestError) as taken:
+                    async with load(listener("x"), bus=bus, id="r"):
                         pass
-                self.assertEqual(root.row, "r")
+                self.assertIn("a row r is loaded already", str(taken.exception))
 
         run(go())
 
-    def test_unload_cancels_unfinished_local_listeners(self):
+    def test_without_an_id_a_taken_name_gets_a_suffix(self):
+        async def go():
+            bus = Bus()
+            plugin = define_plugin(lambda ctx, config: None, name="chat")
+            async with load(plugin, bus=bus) as first, load(plugin, bus=bus) as second:
+                self.assertEqual((first.row, second.row), ("chat", "chat-2"))
+
+        run(go())
+
+    def test_isolate_gives_each_row_its_own_service(self):
+        # `isolate` as in rutis.json: rows isolating a name each provide
+        # their own.
+        class Notes:
+            def __init__(self, owner):
+                self.owner = owner
+
+            async def who(self):
+                return self.owner
+
+        def notes(owner):
+            return define_plugin(lambda ctx, config: ctx.provide("notes", Notes(owner)))
+
+        async def go():
+            bus = Bus()
+            async with load(notes("a"), bus=bus, id="a", isolate={"notes": True}) as a, \
+                    load(notes("b"), bus=bus, id="b", isolate={"notes": True}) as b:
+                self.assertEqual((await a.service("notes").who(), await b.service("notes").who()), ("a", "b"))
+            with self.assertRaises(PluginTestError):
+                async with load(notes("a"), bus=bus, id="a"), load(notes("b"), bus=bus, id="b"):
+                    pass
+
+        run(go())
+
+    def test_unload_cancels_unfinished_listeners(self):
         async def go():
             cancelled = asyncio.Event()
 
@@ -325,38 +307,23 @@ class Testing(background.TestCase):
 
             def apply(ctx, config):
                 ctx.on("tick", stay)
-                ctx.emit("tick")
 
             async def scope():
-                async with load(define_plugin(apply)):
-                    pass
+                async with load(define_plugin(apply)) as t:
+                    t.emit("tick")
+                    await asyncio.sleep(0.05)
 
-            await asyncio.wait_for(scope(), 1)
+            await asyncio.wait_for(scope(), 5)
             self.assertTrue(cancelled.is_set())
 
         run(go())
 
-    def test_local_failures_do_not_replace_body_or_cleanup_errors(self):
-        async def fail():
-            raise ValueError("async event")
-
+    def test_a_failure_in_the_test_body_is_the_one_raised(self):
         async def go():
-            for cleanup in (None, ValueError("cleanup"), asyncio.CancelledError(), AggregateError([ValueError("cleanup")])):
-                primary = cleanup if cleanup is not None else AssertionError("test body")
-
-                def apply(ctx, config):
-                    ctx.on("tick", fail)
-                    ctx.emit("tick")
-                    if cleanup is not None:
-                        def stop():
-                            raise cleanup
-                        ctx.effect(stop)
-
-                with self.assertRaises(type(primary)) as failure, contextlib.redirect_stderr(io.StringIO()):
-                    async with load(define_plugin(apply)):
-                        if cleanup is None:
-                            raise primary
-                self.assertIs(failure.exception, primary)
+            with self.assertRaises(AssertionError) as failure:
+                async with load(define_plugin(lambda ctx, config: None)):
+                    raise AssertionError("test body")
+            self.assertEqual(str(failure.exception), "test body")
 
         run(go())
 
@@ -392,7 +359,7 @@ class Testing(background.TestCase):
 
             saved = []
             bus = Bus()
-            async with load(define_plugin(listener), bus=bus, row="l"), load(define_plugin(emitter), bus=bus, row="e"):
+            async with load(define_plugin(listener), bus=bus, id="l"), load(define_plugin(emitter), bus=bus, id="e"):
                 await saved[0]()
             aggregate = outcomes["parallel"]
             self.assertIsInstance(aggregate, AggregateError)
@@ -406,46 +373,42 @@ class Testing(background.TestCase):
 
         run(go())
 
-    def test_descriptors_name_the_declared_plugin_and_python(self):
-        # #464 §4.2: `plugin` is the declared name, else the row; `runtime`
-        # "python" unless load(runtime=) says otherwise.
+    def test_descriptors_name_the_declared_plugin(self):
+        # #464 §4.2: `plugin` is the declared name, else the row.
         async def go():
             on = lambda ctx, config: ctx.on("t/d", lambda: None)
             bus = Bus()
-            async with load(define_plugin(on, name="chat-ui"), bus=bus), \
-                    load(define_plugin(on), bus=bus, row="audit"), \
-                    load(define_plugin(on), bus=bus, row="other", runtime="go"):
-                seen = [(d["plugin"], d["row"], d["runtime"]) for d in bus.listeners("t/d")]
-            self.assertEqual(seen, [("chat-ui", "chat-ui", "python"), ("audit", "audit", "python"), ("other", "other", "go")])
+            seen = []
+            async with load(define_plugin(on, name="chat-ui"), bus=bus) as chat, load(define_plugin(on), bus=bus, id="audit"):
+                await chat.filter(lambda d: seen.append(d) and False).parallel("t/d")
+            self.assertEqual([(d["plugin"], d["row"]) for d in seen], [("chat-ui", "chat-ui"), ("audit", "audit")])
 
         run(go())
 
-    def test_unload_waits_at_most_its_deadline(self):
+    def test_without_rutis_host_it_says_what_to_install(self):
+        import os
+
+        saved = os.environ.get("RUTIS_HOST"), os.environ.get("PATH")
+        os.environ["RUTIS_HOST"], os.environ["PATH"] = "", ""
+
         async def go():
-            release = asyncio.Event()
+            async with load(define_plugin(lambda ctx, config: None)):
+                pass
 
-            async def stubborn():
-                while not release.is_set():
-                    try:
-                        await release.wait()
-                    except asyncio.CancelledError:
-                        pass
-
-            def apply(ctx, config):
-                ctx.on("tick", stubborn)
-                ctx.emit("tick")
-
-            stderr = io.StringIO()
-            with contextlib.redirect_stderr(stderr):
-                async with load(define_plugin(apply), row="slow", deadline=0.05):
-                    pass
-            release.set()
-            self.assertEqual(stderr.getvalue(), "rutis: listeners of row slow still running after 0.05s; unloading anyway\n")
-            with self.assertRaisesRegex(PluginTestError, "deadline"):
-                async with load(define_plugin(apply), deadline=-1):
-                    pass
-
-        run(go())
+        try:
+            with self.assertRaises(PluginTestError) as refused:
+                run(go())
+        finally:
+            for name, value in zip(("RUTIS_HOST", "PATH"), saved):
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
+        self.assertEqual(
+            str(refused.exception),
+            "rutis.testing runs plugins on rutis-host: install the rutis-host package "
+            "(a dev dependency of the plugin) or set RUTIS_HOST to its file",
+        )
 
 
 if __name__ == "__main__":

@@ -2,7 +2,7 @@
 //! JavaScript (`definePlugin`, in the Node runtime) and in Python (in the
 //! Python runtime) behave the same under rutis-loader, and use each other's
 //! services across the two processes.
-#![cfg(all(feature = "node", feature = "python"))]
+#![cfg(feature = "runtimes")]
 
 mod common;
 
@@ -213,7 +213,15 @@ async fn fixture() -> Fixture {
     root.provide_at(host_key("probe"), Arc::new(probe.clone()))
         .unwrap();
     let mut catalog = ServiceCatalog::new();
-    for name in ["probe", "llm", "py_weather", "js_weather", "js_relay"] {
+    for name in [
+        "probe",
+        "llm",
+        "py_weather",
+        "js_weather",
+        "js_relay",
+        "py_forecast",
+        "js_forecast",
+    ] {
         catalog.register_shared(name);
     }
     greet_as_main(&root);
@@ -273,6 +281,9 @@ fn all_rows(fixture: &Fixture) -> Vec<Value> {
 /// guarantee: loader/services-by-name, loader/runtimes-do-not-wait-for-each-other
 #[tokio::test(flavor = "multi_thread")]
 async fn both_runtimes_start_cold_and_use_each_other() {
+    if !rutis_test_support::runtimes::all_enabled(&["node", "python"]) {
+        return;
+    }
     let fixture = fixture().await;
     let report = fixture
         .loader
@@ -298,6 +309,9 @@ async fn both_runtimes_start_cold_and_use_each_other() {
 /// risk: C4, C6
 #[tokio::test(flavor = "multi_thread")]
 async fn python_awaits_node_that_awaits_python() {
+    if !rutis_test_support::runtimes::all_enabled(&["node", "python"]) {
+        return;
+    }
     let fixture = fixture().await;
     let report = fixture
         .loader
@@ -325,6 +339,9 @@ async fn python_awaits_node_that_awaits_python() {
 /// guarantee: loader/rows-gate-on-services
 #[tokio::test(flavor = "multi_thread")]
 async fn a_provider_that_goes_stops_only_its_users() {
+    if !rutis_test_support::runtimes::all_enabled(&["node", "python"]) {
+        return;
+    }
     for (provider, users, others) in [
         ("pp", ["jc", "pl"], ["pc", "jl"]),
         ("jp", ["pc", "jl"], ["jc", "pl"]),
@@ -394,6 +411,9 @@ async fn a_provider_that_goes_stops_only_its_users() {
 /// guarantee: loader/rows-gate-on-services
 #[tokio::test(flavor = "multi_thread")]
 async fn injected_services_gate_the_plugin() {
+    if !rutis_test_support::runtimes::all_enabled(&["node", "python"]) {
+        return;
+    }
     let fixture = fixture().await;
     let loader = &fixture.loader;
     let transitions = common::Transitions::on(&fixture.root);
@@ -474,6 +494,9 @@ async fn injected_services_gate_the_plugin() {
 /// guarantee: loader/runtime-down-stops-its-rows
 #[tokio::test(flavor = "multi_thread")]
 async fn a_dead_python_process_stops_only_its_rows() {
+    if !rutis_test_support::runtimes::all_enabled(&["node", "python"]) {
+        return;
+    }
     let fixture = fixture().await;
     let loader = &fixture.loader;
     std::fs::write(
@@ -502,54 +525,165 @@ async fn a_dead_python_process_stops_only_its_rows() {
     fixture.root.shutdown().await.unwrap();
 }
 
-/// A second row of a provider in the same runtime, its service isolated,
-/// keeps that service to its own scope: it runs next to the first, which
-/// alone provides the name to rutis (a declared service an isolated row
-/// provides used to be published anyway, and one of the two failed with
-/// `… is already provided by another plugin`). Node and Python alike.
+const PY_FORECAST: &str = r#"
+class Forecast:
+    def __init__(self, city):
+        self.city = city
+
+    def today(self):
+        return self.city
+
+
+provides = {"py_forecast": Forecast}
+
+
+def apply(ctx, config):
+    ctx.provide("py_forecast", Forecast(config["city"]))
+"#;
+
+const PY_READER: &str = r#"
+inject = ["py_forecast", "probe"]
+
+
+def apply(ctx, config):
+    ctx.use("probe").record(f"{config['tag']}: {ctx.use('py_forecast').today()}")
+"#;
+
+const JS_FORECAST: &str = r#"
+import { definePlugin } from 'PLUGIN'
+export default definePlugin({
+  provides: { js_forecast: { today: 'sync' } },
+  apply(ctx, config) {
+    ctx.provide('js_forecast', { today: () => config.city })
+  },
+})
+"#;
+
+const JS_READER: &str = r#"
+import { definePlugin } from 'PLUGIN'
+export default definePlugin({
+  inject: ['js_forecast', 'probe'],
+  async apply(ctx, config) {
+    ctx.use('probe').record(`${config.tag}: ${await ctx.use('js_forecast').today()}`)
+  },
+})
+"#;
+
+/// A service a row provides under a name it isolates is that isolate's: a
+/// row of the same isolate injects it, a row of another isolate does not
+/// see it (it waits), the rows outside get the provider outside, and two
+/// providers of the name, one isolated, run side by side. Node and Python
+/// alike (it used to be published outside its isolate, and one of the two
+/// providers failed with `… is already provided by another plugin`).
 /// guarantee: loader/isolate-and-inject
 #[tokio::test(flavor = "multi_thread")]
 async fn an_isolated_second_provider_runs_beside_the_first() {
+    if !rutis_test_support::runtimes::all_enabled(&["node", "python"]) {
+        return;
+    }
     let fixture = fixture().await;
-    let isolated = |mut row: Value, isolate: Value| {
-        row["isolate"] = isolate;
+    let plugin = repo().join("node/rutis/src/index.mjs");
+    let plugin = plugin.to_string_lossy();
+    for (name, text) in [("py_forecast", PY_FORECAST), ("py_reader", PY_READER)] {
+        std::fs::write(fixture.py.join(format!("{name}.py")), text).unwrap();
+    }
+    for (name, text) in [("js_forecast", JS_FORECAST), ("js_reader", JS_READER)] {
+        std::fs::write(
+            fixture.js.join(format!("{name}.mjs")),
+            text.replace("PLUGIN", &plugin),
+        )
+        .unwrap();
+    }
+    let with = |mut row: Value, config: Value, isolate: Option<Value>| {
+        row["config"] = config;
+        if let Some(isolate) = isolate {
+            row["isolate"] = isolate;
+        }
         row
     };
-    let rows = vec![
-        py_row("pp", "py_provider"),
-        isolated(
-            py_row("pp2", "py_provider"),
-            json!({ "py_weather": "bergen" }),
-        ),
-        js_row(&fixture, "jp", "js_provider"),
-        isolated(
-            js_row(&fixture, "jp2", "js_provider"),
-            json!({ "js_weather": true }),
-        ),
-        py_row("pc", "py_consumer"),
-        js_row(&fixture, "jc", "js_consumer"),
-    ];
+    let mut rows = Vec::new();
+    for lang in ["py", "js"] {
+        let service = format!("{lang}_forecast");
+        let at = |label: &str| Some(json!({ service.clone(): label }));
+        let row = |id: &str, module: &str| match lang {
+            "py" => py_row(id, module),
+            _ => js_row(&fixture, id, module),
+        };
+        let provider = format!("{lang}_forecast");
+        let reader = format!("{lang}_reader");
+        rows.extend([
+            with(
+                row(&format!("{lang}-oslo"), &provider),
+                json!({ "city": "oslo" }),
+                None,
+            ),
+            with(
+                row(&format!("{lang}-bergen"), &provider),
+                json!({ "city": "bergen" }),
+                at("bergen"),
+            ),
+            with(
+                row(&format!("{lang}-in"), &reader),
+                json!({ "tag": format!("{lang} in bergen") }),
+                at("bergen"),
+            ),
+            with(
+                row(&format!("{lang}-out"), &reader),
+                json!({ "tag": format!("{lang} outside") }),
+                None,
+            ),
+            with(
+                row(&format!("{lang}-other"), &reader),
+                json!({ "tag": format!("{lang} in tromso") }),
+                at("tromso"),
+            ),
+        ]);
+    }
     let report = fixture.loader.reconcile(layer(rows), None).await.unwrap();
     assert!(report.failures.is_empty(), "{report:?}");
     let probe = &fixture.probe;
-    probe.wait_for("py consumer: js sunny / js later").await;
-    probe.wait_for("js consumer: py sunny / py later").await;
-    for id in ["pp", "pp2", "jp", "jp2"] {
-        COLD.until(
-            || row_state(&fixture.loader, id) == Some(FiberState::Active),
-            &format!("{id} running"),
-        )
-        .await;
+    for lang in ["py", "js"] {
+        probe.wait_for(&format!("{lang} in bergen: bergen")).await;
+        probe.wait_for(&format!("{lang} outside: oslo")).await;
+        for id in ["oslo", "bergen", "in", "out"] {
+            let id = format!("{lang}-{id}");
+            COLD.until(
+                || row_state(&fixture.loader, &id) == Some(FiberState::Active),
+                &format!("{id} running"),
+            )
+            .await;
+        }
     }
+    // Another isolate does not see bergen's: its reader waits.
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    for lang in ["py", "js"] {
+        assert!(
+            !probe.lines().iter().any(|line| line.contains("in tromso")),
+            "{:?}",
+            probe.lines()
+        );
+        assert_eq!(
+            row_state(&fixture.loader, &format!("{lang}-other")),
+            Some(FiberState::Pending),
+            "{lang}"
+        );
+    }
+    // Each provider once: the one outside, and bergen's in its isolate.
     let status = fixture.loader.status();
-    for service in ["py_weather", "js_weather"] {
-        let providers: Vec<_> = status
+    for lang in ["py", "js"] {
+        let service = format!("{lang}_forecast");
+        let mut providers: Vec<_> = status
             .services
             .iter()
             .filter(|s| s.name == service)
-            .map(|s| s.provider.clone())
+            .filter_map(|s| s.provider.clone())
             .collect();
-        assert_eq!(providers.len(), 1, "{service}: {status}");
+        providers.sort();
+        assert_eq!(
+            providers,
+            [format!("{lang}-bergen"), format!("{lang}-oslo")],
+            "{status}"
+        );
     }
     fixture.root.shutdown().await.unwrap();
 }

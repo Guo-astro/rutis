@@ -3,7 +3,7 @@
 //! `sessions.open({ send, close })` over the Rust service `wire`, one end
 //! of a memory channel whose other end is a session in the kernel
 //! `office`; the row `relay:contacts` then runs `contacts` there.
-#![cfg(all(feature = "node", feature = "python"))]
+#![cfg(feature = "runtimes")]
 
 mod common;
 
@@ -11,7 +11,6 @@ use std::sync::{Arc, Mutex};
 
 use common::runtimes::{repo, rows_stage, TestRuntime, COLD};
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, FiberState, PluginFactory};
-use rutis::internal::CtxInternal;
 use rutis::Ctx;
 use rutis_bridge::channel::{Channel, Receiver, Sender};
 use rutis_bridge::session::{
@@ -57,7 +56,7 @@ impl DynPlugin for Contacts {
 
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, rutis::Error>> {
         Box::pin(async move {
-            ctx.provide_key::<dyn HostDispatch>(host_key("contacts"), Arc::new(Answer))?;
+            ctx.provide_at(host_key("contacts"), Arc::new(Answer))?;
             Ok(Effect::Done)
         })
     }
@@ -287,10 +286,7 @@ async fn contacts_run_there(root: &Ctx, loader: &Loader) {
     .await;
     // Its services come as the far end announces them.
     COLD.until(
-        || {
-            root.get_key::<dyn HostDispatch>(host_key("contacts").erase())
-                .is_some()
-        },
+        || root.get_at(&host_key("contacts")).is_some(),
         "contacts here",
     )
     .await;
@@ -304,6 +300,9 @@ async fn contacts_run_there(root: &Ctx, loader: &Loader) {
 /// its far end.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_node_relay_opens_a_session() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     let sdk = repo()
         .join("node/rutis/src/index.mjs")
@@ -325,6 +324,9 @@ async fn a_node_relay_opens_a_session() {
 /// its far end.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_python_relay_opens_a_session() {
+    if !rutis_test_support::runtimes::enabled("python") {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("relay.py"), PY_RELAY).unwrap();
     let catalog = catalog();

@@ -15,7 +15,7 @@
 
 use std::path::{Path, PathBuf};
 
-use rutis_e2e::{build_guard, repo, Host, Lang, Probe, Scenario};
+use rutis_e2e::{build_guard, host_program, repo, Host, Lang, Probe, Scenario};
 use serde_json::{json, Value};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -294,6 +294,10 @@ fn prepare(s: &Scenario, kind: Kind) {
                 &repo().join("node/rutis"),
             );
             s.link(
+                "demo/node_modules/@arcships/rutis-runtime",
+                &repo().join("node/rutis-runtime"),
+            );
+            s.link(
                 "demo/node_modules/tsx",
                 &repo().join("node/rutis-runtime/node_modules/tsx"),
             );
@@ -369,22 +373,49 @@ const GO_ENV: &[(&str, &str)] = &[
 /// The template's own tests.
 fn template_tests(s: &Scenario, kind: Kind) -> Host {
     match kind {
-        Kind::Node => s.program("demo", npm(), ["test"], &[]),
-        Kind::Bun => s.program("demo", "bun", ["test"], &[]),
+        // The test tool runs the plugin on `rutis-host test`.
+        Kind::Node => {
+            let host = rutis_e2e::host_program();
+            s.program(
+                "demo",
+                npm(),
+                ["test"],
+                &[("RUTIS_HOST", &host.to_string_lossy())],
+            )
+        }
+        Kind::Bun => {
+            let host = rutis_e2e::host_program();
+            s.program(
+                "demo",
+                "bun",
+                ["test"],
+                &[("RUTIS_HOST", &host.to_string_lossy())],
+            )
+        }
         Kind::Python => {
             let path = std::env::join_paths([PathBuf::from("src"), repo().join("python/rutis")])
                 .expect("PYTHONPATH");
             let path = path.to_string_lossy();
+            // The testing tool runs the plugin on this checkout's rutis-host.
+            let host = host_program();
+            let host = host.to_string_lossy();
             // By absolute path: a relative program is not looked up in the
             // child's directory on Windows.
             s.program(
                 "demo",
                 venv_python(&s.path("demo/.venv")),
                 ["-m", "unittest", "discover", "-s", "tests"],
-                &[("PYTHONPATH", &path)],
+                &[("PYTHONPATH", &path), ("RUTIS_HOST", &host)],
             )
         }
-        Kind::Go => s.program("demo", "go", ["test", "./..."], GO_ENV),
+        // rutistest runs the plugin as a row of `rutis-host test`.
+        Kind::Go => {
+            let host = rutis_e2e::host_program();
+            let host = host.to_string_lossy();
+            let mut env = GO_ENV.to_vec();
+            env.push(("RUTIS_HOST", &host));
+            s.program("demo", "go", ["test", "./..."], &env)
+        }
         // The Command Line Tools (the self-hosted runners' toolchain) have
         // neither XCTest nor Swift Testing's macro plugin: there the test
         // target cannot build, and only the plugin and its binary are built.
@@ -394,7 +425,12 @@ fn template_tests(s: &Scenario, kind: Kind) -> Host {
         // RutisTest runs the plugin as a row of `rutis-host test`.
         Kind::Swift => {
             let host = rutis_e2e::host_program();
-            s.program("demo", "swift", ["test"], &[("RUTIS_HOST", &host.to_string_lossy())])
+            s.program(
+                "demo",
+                "swift",
+                ["test"],
+                &[("RUTIS_HOST", &host.to_string_lossy())],
+            )
         }
     }
 }
@@ -666,6 +702,7 @@ fn the_go_plugin_development_loop() {
     not(target_os = "macos"),
     ignore = "Swift plugin binaries are macOS only (Swift SDK design §13)"
 )]
+/// guarantee: loader/swift-runtimes
 fn the_swift_plugin_development_loop() {
     dev_loop(Kind::Swift);
 }

@@ -7,7 +7,7 @@ use std::sync::atomic::Ordering;
 use common::*;
 use rutis::host::{CtxHost, FiberState};
 use rutis_loader::edit::{Edit, Editable, NewEntry, Version};
-use rutis_loader::internal::apply_patches;
+use rutis_loader::patch::apply_patches;
 use rutis_loader::report::{EntryStatus, PendingEditDropped};
 use rutis_loader::{Layer, LoaderError};
 use rutis_test_support::{until, within};

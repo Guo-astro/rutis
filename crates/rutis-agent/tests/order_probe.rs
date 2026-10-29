@@ -65,6 +65,7 @@ async fn emit_rounds(root: &Ctx, log: &Arc<Mutex<Vec<usize>>>, gap_ms: u64) -> u
     misplaced
 }
 
+/// guarantee: core/D31
 /// 背靠背 emit(模拟 driver 流消费循环,stream.next() 即时就绪):
 /// 多线程 runtime 下尾链必须保证零错位。
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]

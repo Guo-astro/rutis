@@ -1,3 +1,4 @@
+//! guarantee: bridge/value-tags
 //! The tagged values beyond JSON data (#308, #355, #360): points in time,
 //! local dates and times, binary data, maps, sets, big integers, decimals
 //! and UUIDs. Each crosses a session under its own tag, as text in the

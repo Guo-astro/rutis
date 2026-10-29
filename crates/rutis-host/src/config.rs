@@ -741,6 +741,7 @@ mod tests {
         }
     }
 
+    /// guarantee: host/credentials-from-env
     /// Two entries on one listener accepting one token: an error naming
     /// both and the variables to change; never the token itself (#702).
     #[test]
@@ -779,6 +780,7 @@ mod tests {
         assert!(shared_tokens(&entries, &set).is_ok());
     }
 
+    /// guarantee: host/connection-plugins
     /// Two `rutis-host/listen` rows on one listener with one token cannot
     /// be told apart (#702); on two listeners they can.
     #[test]

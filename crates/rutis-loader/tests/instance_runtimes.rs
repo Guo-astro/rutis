@@ -1,7 +1,7 @@
 //! Shared service names inside instances, across languages: each instance's
 //! TS and Python rows use and provide that instance's services, though
 //! every instance's rows share one process per language.
-#![cfg(all(feature = "node", feature = "python"))]
+#![cfg(feature = "runtimes")]
 
 mod common;
 
@@ -284,9 +284,12 @@ impl Fixture {
 /// Two instances, the same names: each instance's TS and Python rows see
 /// that instance's Rust `tools`, and its Rust reader reads that instance's
 /// rows' timelines, through one process per language.
-/// guarantee: loader/instance-services
+/// guarantee: loader/instance-services, bridge/caller-row
 #[tokio::test(flavor = "multi_thread")]
 async fn each_instance_sees_its_own_services_across_languages() {
+    if !rutis_test_support::runtimes::all_enabled(&["node", "python"]) {
+        return;
+    }
     let fixture = fixture().await;
     let a = fixture.create("A").await;
     let b = fixture.create("B").await;
@@ -339,6 +342,9 @@ async fn each_instance_sees_its_own_services_across_languages() {
 /// guarantee: loader/instance-close-leaves-nothing
 #[tokio::test(flavor = "multi_thread")]
 async fn a_removed_instance_leaves_nothing_behind() {
+    if !rutis_test_support::runtimes::all_enabled(&["node", "python"]) {
+        return;
+    }
     let fixture = fixture().await;
     let a = fixture.create("A").await;
     fixture.create("B").await;
@@ -372,6 +378,9 @@ async fn a_removed_instance_leaves_nothing_behind() {
 /// guarantee: loader/instance-close-leaves-nothing
 #[tokio::test(flavor = "multi_thread")]
 async fn removed_instances_leave_no_tasks_behind() {
+    if !rutis_test_support::runtimes::all_enabled(&["node", "python"]) {
+        return;
+    }
     let fixture = fixture().await;
     let metrics = tokio::runtime::Handle::current().metrics();
     // What the first instance starts for good (a runtime's lazily started
@@ -402,6 +411,9 @@ async fn removed_instances_leave_no_tasks_behind() {
 /// guarantee: loader/instance-services
 #[tokio::test(flavor = "multi_thread")]
 async fn a_language_row_outside_its_instances_is_unresolved() {
+    if !rutis_test_support::runtimes::all_enabled(&["node", "python"]) {
+        return;
+    }
     let fixture = fixture().await;
     let mut rows = fixture.rows.clone();
     rows[0]["insert"].as_array_mut().unwrap().push(json!({

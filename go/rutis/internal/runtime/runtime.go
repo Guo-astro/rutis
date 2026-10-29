@@ -677,7 +677,7 @@ func (rt *runtimeState) control(ctx context.Context, method string, args []any) 
 			"implementation": map[string]string{"name": Implementation, "version": Version},
 			"engine":         map[string]string{"name": "go", "version": goruntime.Version()},
 		}, nil
-	case "events.elsewhere", "events.call":
+	case "events.call":
 		// Served by arrive on the reading goroutine; here only when called
 		// directly.
 		return rt.arrive(ctx, method, args)()

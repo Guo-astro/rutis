@@ -8,7 +8,7 @@
 //! gates it; a service it does not declare is announced; and a cycle of
 //! synchronous calls through Kotlin is refused with `SyncWaitCycle`, the
 //! rest completing.
-#![cfg(all(feature = "node", feature = "python", feature = "kotlin"))]
+#![cfg(feature = "runtimes")]
 
 mod common;
 
@@ -287,6 +287,9 @@ fn all_rows(fixture: &Fixture) -> Vec<Value> {
 /// guarantee: loader/runtimes-do-not-wait-for-each-other
 #[tokio::test(flavor = "multi_thread")]
 async fn three_runtimes_with_kotlin_start_cold_and_use_each_other() {
+    if !rutis_test_support::runtimes::all_enabled(&["node", "python", "kotlin"]) {
+        return;
+    }
     let fixture = three().await;
     let report = fixture
         .loader
@@ -315,6 +318,9 @@ async fn three_runtimes_with_kotlin_start_cold_and_use_each_other() {
 /// guarantee: bridge/error-code-and-data
 #[tokio::test(flavor = "multi_thread")]
 async fn an_undeclared_service_and_an_error_with_code_and_data_cross_from_kotlin() {
+    if !rutis_test_support::runtimes::all_enabled(&["node", "python", "kotlin"]) {
+        return;
+    }
     let fixture = three().await;
     let rows = vec![
         named("kp", "kt:kt_provider"),
@@ -336,6 +342,9 @@ async fn an_undeclared_service_and_an_error_with_code_and_data_cross_from_kotlin
 /// guarantee: loader/rows-gate-on-services
 #[tokio::test(flavor = "multi_thread")]
 async fn a_kotlin_provider_that_goes_stops_its_users_first() {
+    if !rutis_test_support::runtimes::all_enabled(&["node", "python", "kotlin"]) {
+        return;
+    }
     let fixture = three().await;
     let loader = &fixture.loader;
     let all = all_rows(&fixture);
@@ -388,6 +397,9 @@ async fn a_kotlin_provider_that_goes_stops_its_users_first() {
 /// guarantee: loader/rows-gate-on-services
 #[tokio::test(flavor = "multi_thread")]
 async fn injected_services_gate_a_kotlin_plugin() {
+    if !rutis_test_support::runtimes::all_enabled(&["node", "python", "kotlin"]) {
+        return;
+    }
     let fixture = three().await;
     let loader = &fixture.loader;
     loader
@@ -499,11 +511,14 @@ fn call(root: &Ctx, name: &str, method: &str) -> std::sync::mpsc::Receiver<Strin
 /// Two Node runtimes waiting on each other through Kotlin: `a` calls the
 /// Kotlin relay, which calls `b_work` in the other runtime, while `b` calls
 /// `a_work` back. Kotlin runs every call on a thread of its own, and its
-/// synchronous calls say they wait (`sync-wait`): the host sees the cycle
+/// synchronous calls say they wait (`sync: true`): the host sees the cycle
 /// and refuses the call that closes it, and the rest completes.
 /// guarantee: bridge/sync-wait-cycle-refused
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn two_node_runtimes_waiting_on_each_other_through_kotlin() {
+    if !rutis_test_support::runtimes::all_enabled(&["node", "kotlin"]) {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     let work = |me: &str| NODE_WORK.replace("SELF", me);
     let go = |me: &str, other: &str| NODE_GO_PEER.replace("SELF", me).replace("OTHER", other);

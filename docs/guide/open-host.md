@@ -19,8 +19,8 @@ edition = "2021"
 
 [dependencies]
 rutis = "0.19"
-rutis-loader = { version = "0.19", features = ["node", "python"] }
-rutis-bridge = { version = "0.19", features = ["python"] }
+rutis-loader = { version = "0.19", features = ["node"] }
+rutis-bridge = "0.19"
 rutis-host = "0.19"
 serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
@@ -37,9 +37,9 @@ use std::sync::{Arc, Mutex};
 
 use rutis::host::*;
 use rutis::Ctx;
-use rutis_bridge::runtime::Launcher;
 use rutis_bridge::{session, LocalId, PeerId};
 use rutis_host::connect::SpawnPlugin;
+use rutis_host::languages;
 use rutis_loader::runtime::SessionResolver;
 use rutis_loader::{Chain, Layer, LoaderOptions, LoaderPlugin, Patch, ServiceCatalog};
 use serde_json::{json, Value};
@@ -126,8 +126,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     root.provide(commands.clone())?;
 
     let catalog = ServiceCatalog::new();
-    let node = SpawnPlugin::new("node", Launcher::node(&dir.join("node_modules/@arcships/rutis-runtime")), dir.join("package.json"));
-    let python = SpawnPlugin::new("py", Launcher::python(&dir.join("commands")), dir.join("commands"))
+    let node = SpawnPlugin::new("node", languages::node::launcher(&dir.join("node_modules/@arcships/rutis-runtime")), dir.join("package.json"));
+    let python = SpawnPlugin::new("py", languages::python::launcher(&dir.join("commands")), dir.join("commands"))
         .interpreter(dir.join(".venv/bin/python"));
     let sessions = Arc::new(SessionResolver::npm(&catalog, "node")); // py:<模块> 在 py 上；文件、npm 名在 node 上
     sessions.runtime(node.handle());
@@ -229,7 +229,7 @@ async def apply(ctx, config):
 plugin = define_plugin(apply, inject=["notes", "commands"])
 ```
 
-装上两个运行时（Node 22 或更高，Python 3.10 或更高），运行：
+装上两个运行时（Node 22 或更高，Python 3.12 或更高），运行：
 
 <!-- example: jot run -->
 ```bash
@@ -254,7 +254,7 @@ added: BUY MILK
 | `Ctx::root()` | 插件树的根，用当前的 tokio 运行时 | 宿主自己的服务（`notes`、`commands`）提供在根上，所有行都看得到 |
 | `root.provide(…)` | 提供服务；类型标了 `#[rutis::service]` 时同时按名字对外（第 2 节） | 不用另写登记表 |
 | `LocalId` | jot 与运行时问候时用的 id | 没有它会话失败：`the host provides no id for its sessions` |
-| `SpawnPlugin::new(名字, launcher, anchor)` | 本机的语言运行时，一个运行时一个进程（即 rutis-host 的 `rutis-host/spawn`）：`Launcher::node` / `::python` 说明进程怎样启动，`anchor` 是插件从哪里解析；`root.plugin(runtime)` 启动进程、在它的通道上开一个会话，卸载时结束它 | 它是插件，随根关闭；它的行等它 |
+| `SpawnPlugin::new(名字, launcher, anchor)` | 本机的语言运行时，一个运行时一个进程（即 rutis-host 的 `rutis-host/spawn`）：`rutis_host::languages` 的 `node::launcher` / `python::launcher` 说明进程怎样启动，`anchor` 是插件从哪里解析；`root.plugin(runtime)` 启动进程、在它的通道上开一个会话，卸载时结束它 | 它是插件，随根关闭；它的行等它 |
 | `SessionResolver` | 把行名解析成会话对面的插件，本机运行时与远程的都一样：`<运行时名>:<插件>`（这里是 `py:shout`）；用 `npm(&catalog, "node")` 创建时还认 npm 名和文件，放在运行时 `node` 上；`runtime(handle)` 让 `Loader::status()` 列出这个运行时 | 所有运行时共用一个解析器，放在 `Chain` 最后 |
 | `ServiceCatalog` | 服务名到键的表，loader 与各解析器共用一份 | 行按名字等的服务和宿主按类型提供的服务对得上 |
 | `Chain` | 按顺序问它的解析器，第一个认得行名的解析它 | 几种语言的行写在同一份配置里 |
@@ -264,7 +264,7 @@ added: BUY MILK
 | `Layer`、`Patch` | 行的来源：几层，后面的层覆盖前面的；一层是若干 `Patch`（`insert` 加行，或按 `id` 改字段） | 宿主自带的行、用户加的行各放一层（第 4 节） |
 | `root.shutdown()` | 卸载全部插件，等每个清理结束，运行时进程随之结束 | 不限时：要限时用 `shutdown_with_timeout`（[默认输出](rust-host.md#默认输出)） |
 
-在另一台机器上运行插件见 [rutis-host.md 的远程一节](rutis-host.md#远程运行时)。
+在另一台机器上运行插件见 [rutis-host.md 的远程一节](rutis-host.md#远程运行时与设备)。
 
 ### 等就绪
 
@@ -314,7 +314,7 @@ calls:
 ### 路径与环境
 
 - 每个运行时的进程在它自己的目录里启动（Python：项目目录，这里是 `commands/`；Node：运行时的包目录），收到的路径照原样使用：写绝对路径，相对路径会从那个目录算起。
-- `Launcher::python(目录)` 从这个目录导入插件模块，用 `SpawnPlugin::interpreter(…)` 选解释器（环境里要装着 `rutis`）；没装的模块或 rutis 的源码目录用 `.python_path(目录)` 放到 `PYTHONPATH` 前面。
+- `languages::python::launcher(目录)` 从这个目录导入插件模块，用 `SpawnPlugin::interpreter(…)` 选解释器（环境里要装着 `rutis`）；没装的模块或 rutis 的源码目录用 `.python_path(目录)` 放到 `PYTHONPATH` 前面。
 - `SpawnPlugin::env(名字, 值)` 给运行时进程加环境变量；要用别的方式启动进程，自己写一个 `rutis_bridge::runtime::Launcher`（`new`、`arg`、`env`、`cwd`），交给 `SpawnPlugin::new(名字, launcher, anchor)`。进程最后的参数是 `--id <名字>` 和 `anchor`。
 - 行名不是文件、npm 名或 `<运行时名>:<模块>` 时（比如 jot 想让用户写 `wordcount`），实现 `rutis_loader::Resolver`：认得的名字返回解析结果，不认得的返回 `LoaderError::NotFound`，`Chain` 接着问下一个；用到的类型在 `rutis_loader::resolve` 里。编进宿主的 Rust 插件用 `Builtins`（[装 Rust 插件](rust-host.md#装-rust-插件)）。
 
@@ -421,8 +421,8 @@ export interface Commands {
 # let app = std::env::current_dir()?.join("app");
 # struct Command { id: String, dir: std::path::PathBuf }
 # let commands: Vec<Command> = Vec::new();
-use rutis_bridge::runtime::Launcher;
 use rutis_host::connect::SpawnPlugin;
+use rutis_host::languages;
 use rutis_loader::runtime::SessionResolver;
 use rutis_loader::{Chain, LoaderOptions, LoaderPlugin, ServiceCatalog};
 
@@ -433,7 +433,7 @@ let mut fibers = Vec::new();
 for command in &commands {                                // 每个第三方命令一个进程
     let runtime = SpawnPlugin::new(
         &command.id,                                      // 运行时名：两个以上的 a-z、0-9、-
-        Launcher::node(&runtime_package),
+        languages::node::launcher(&runtime_package),
         command.dir.join("package.json"),
     );
     sessions.runtime(runtime.handle());
@@ -460,10 +460,10 @@ for command in &commands {
 
 ```rust,no_run
 # use std::time::Duration;
-# use rutis_bridge::runtime::Launcher;
 # use rutis_host::connect::SpawnPlugin;
+# use rutis_host::languages;
 # let app = std::path::PathBuf::from("/srv/app");
-let runtime = SpawnPlugin::new("wordcount", Launcher::node(&app.join("node_modules/@arcships/rutis-runtime")), app.join("package.json"))
+let runtime = SpawnPlugin::new("wordcount", languages::node::launcher(&app.join("node_modules/@arcships/rutis-runtime")), app.join("package.json"))
     .env("NODE_OPTIONS", "--inspect-brk")
     .greeting(Duration::MAX);
 ```

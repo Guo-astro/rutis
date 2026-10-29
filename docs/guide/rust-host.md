@@ -9,9 +9,9 @@
 ```toml
 [dependencies]
 rutis = "0.19"
-rutis-loader = { version = "0.19", features = ["node", "python"] }
-rutis-bridge = { version = "0.19", features = ["python", "websocket"] }   # node 默认开
-rutis-host = "0.19"                # connect::SpawnPlugin starts the local language runtimes
+rutis-loader = { version = "0.19", features = ["node"] }
+rutis-bridge = { version = "0.19", features = ["websocket"] }
+rutis-host = "0.19"                # connect::SpawnPlugin 和 languages 启动本机的语言运行时
 schemars = "1"                     # Builtins::register 解码的配置类型派生 schemars::JsonSchema
 serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
@@ -20,12 +20,12 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 | crate / feature | 内容 |
 | --- | --- |
 | `rutis` | 内核：插件、依赖、服务 |
-| `rutis-loader` | 按数据（行）加载插件。`node` / `python` / `go`：这几种语言的行（以及 `<连接行>:<插件>` 行） |
-| `rutis-host` | 它的 `connect::SpawnPlugin` 启动本机的语言运行时、在它的通道上开一个会话，与 rutis-host 的 `runtimes` 相同 |
-| `rutis-bridge` | 连接其他进程、语言、机器。`node`（默认）、`python`、`go`：本机运行时；`websocket`：WebSocket 承载；`cordis`：挂载 Cordis 插件并生成 Rust 绑定（见 [Cordis](cordis.md)）；`testing`：一致性测试 |
+| `rutis-loader` | 按数据（行）加载插件。`runtimes`：其他语言的行（`<运行时行>:<插件>`、`<连接行>:<插件>`）；`node`：Node 的行（npm 名和文件）；`go` / `swift`：Go、Swift 的行 |
+| `rutis-host` | 它的 `connect::SpawnPlugin` 启动本机的语言运行时、在它的通道上开一个会话，与 rutis-host 的 `runtimes` 相同；`languages::<语言>::launcher` 是各语言运行时的启动命令 |
+| `rutis-bridge` | 连接其他进程、语言、机器，不带任何语言。`websocket`：WebSocket 承载；`cordis`：挂载 Cordis 插件并生成 Rust 绑定（见 [Cordis](cordis.md)）；`testing`：一致性测试 |
 | `rutis-types` | 放在 `[build-dependencies]`：在 `build.rs` 里为[带标注的 Rust 服务](#在类型上标注-rutisservice)写 TypeScript 声明与 Python 类型 |
 
-只用其中一种语言时只开那一个 feature，应用只编译、只启动它用到的部分。
+rutis-loader 只开用到的语言的 feature，应用只编译、只启动它用到的部分。
 
 ## 装 Rust 插件
 
@@ -439,9 +439,9 @@ for def in parts.of("session") {
 # let mut builtins = Builtins::new();
 # builtins.register("weather", Weather::new);
 use std::sync::Arc;
-use rutis_bridge::runtime::Launcher;
 use rutis_bridge::{LocalId, PeerId};
 use rutis_host::connect::SpawnPlugin;
+use rutis_host::languages;
 use rutis_loader::runtime::SessionResolver;
 use rutis_loader::{Chain, Layer, LoaderOptions, LoaderPlugin, Patch, ServiceCatalog};
 
@@ -455,9 +455,9 @@ root.provide(LocalId(PeerId::new("main")?))?;
 
 // 本机的 Node 运行时（行 `node`）：运行的 @arcships/rutis-runtime 包，和插件解析所用的 package.json。
 // 事件不用配置：运行时里的监听器自动登记到宿主的事件总线上（见下面的“事件”）。
-let node = SpawnPlugin::new("node", Launcher::node(&app.join("node_modules/@arcships/rutis-runtime")), app.join("package.json"));
+let node = SpawnPlugin::new("node", languages::node::launcher(&app.join("node_modules/@arcships/rutis-runtime")), app.join("package.json"));
 // 本机的 Python 运行时：插件模块所在的目录，装着 rutis 的解释器。
-let python = SpawnPlugin::new("py", Launcher::python(&app.join("plugins")), app.join("plugins"))
+let python = SpawnPlugin::new("py", languages::python::launcher(&app.join("plugins")), app.join("plugins"))
     .interpreter(app.join(".venv/bin/python"));
 // 运行时上的行：`py:<模块>` 在 py 上；npm 名和文件在 node 上。
 let sessions = Arc::new(SessionResolver::npm(&catalog, "node"));
@@ -521,16 +521,16 @@ for failure in &report.failures {
 - 运行时进程默认没有标准输入，标准输出和标准错误用应用自己的。读终端的插件（终端界面、Python 的 `input()`）需要终端本身：它会检查输入是不是终端，并自己设置终端模式。用 `stdio(Stdio::Inherit, Stdio::Inherit, Stdio::Inherit)` 把本进程的标准流交给它的运行时。这一设置作用于整个运行时进程，进程里的每个插件都能读到输入，所以把这类插件放进单独的运行时（另起一个名字的 `SpawnPlugin`），并且终端最多交给一个运行时：多个进程读同一个终端，会争抢每一次按键。其他运行时的标准输出和标准错误设成 `Stdio::Null`，就不往终端上写。`Launcher` 上有同样的设置（`stdin`、`stdout`、`stderr`）。
 
 ```rust,no_run
-# use rutis_bridge::runtime::Launcher;
 # use rutis_host::connect::SpawnPlugin;
+# use rutis_host::languages;
 # let app = std::path::PathBuf::from("/srv/app");
 use rutis_bridge::runtime::Stdio;
 
 // 终端界面放在单独的运行时里，读键盘；插件所在的运行时不往终端写标准输出。
 let runtime_package = app.join("node_modules/@arcships/rutis-runtime");
-let tui = SpawnPlugin::new("tui", Launcher::node(&runtime_package), app.join("package.json"))
+let tui = SpawnPlugin::new("tui", languages::node::launcher(&runtime_package), app.join("package.json"))
     .stdio(Stdio::Inherit, Stdio::Inherit, Stdio::Inherit);
-let node = SpawnPlugin::new("node", Launcher::node(&runtime_package), app.join("package.json"))
+let node = SpawnPlugin::new("node", languages::node::launcher(&runtime_package), app.join("package.json"))
     .stdio(Stdio::Null, Stdio::Null, Stdio::Inherit);
 ```
 
@@ -540,7 +540,7 @@ let node = SpawnPlugin::new("node", Launcher::node(&runtime_package), app.join("
 
 | `SpawnPlugin` 的方法 | 作用 |
 | --- | --- |
-| `new(名字, launcher, anchor)` | 运行时 `名字`：它的 fiber 就是这一行，进程问候时也用这个 id。`launcher` 启动进程（`Launcher::node`、`::python`、`::bun`、`::go`、`::swift`，或 `Launcher::new`）；`anchor` 是插件从哪里解析 |
+| `new(名字, launcher, anchor)` | 运行时 `名字`：它的 fiber 就是这一行，进程问候时也用这个 id。`launcher` 启动进程（`rutis_host::languages` 的 `node::launcher`、`python::launcher`、`bun::launcher`、`go::launcher`、`swift::launcher`，或 `rutis_bridge::runtime::Launcher::new`）；`anchor` 是插件从哪里解析 |
 | `.interpreter(程序)` | 用 `程序` 代替 launcher 的程序运行进程（Python 解释器、Node 可执行文件） |
 | `.python_path(目录)` | 把 `目录` 放到进程的 `PYTHONPATH` 前面 |
 | `.env(名字, 值)` | 设置进程的环境变量 |
@@ -595,7 +595,7 @@ root.plugin(go_runtimes).await?;
 - 加载器不重启崩溃的运行时：它显示为已停止（`control.runtimes()`），它的行等待。`control.restart("go-netkit")` 再启动它。rutis-host 的 `restart` 设置自动做这件事（见 [rutis-host：运行时结束时](rutis-host.md#运行时结束时)）。握手被拒（旧 SDK）的二进制重启也起不来，`rutis_loader::runtime::binary::refused(why)` 判断这种情况，它在文件改变前不再启动。
 - Go 之外的编译型语言（之后的 Swift）用同一套实现：`rutis_loader::runtime::binary` 的 `BinaryResolver<L>`、`BinaryRuntimes<L>`，`L` 实现 `BinaryLanguage`（行名前缀、SDK 标记串、启动方式：`launch` 返回一个 `Launcher`）；Go 就是 `L` = `Go`。
 
-- 只运行一个固定的二进制时，也可以像 Python 一样：`SpawnPlugin::new(名字, Launcher::go(&binary, &project), &project)` 加 `SessionResolver`（行名 `<运行时名>:<插件>`）。
+- 只运行一个固定的二进制时，也可以像 Python 一样：`SpawnPlugin::new(名字, languages::go::launcher(&binary, &project), &project)` 加 `SessionResolver`（行名 `<运行时名>:<插件>`）。
 
 ## 调试
 
@@ -776,7 +776,7 @@ rutis-host types . -o types/deskmate.d.ts --python types/deskmate.py
 
 `build.rs` 里同样是 `Exports::new().typescript(…).python(…)`。
 
-**Python 类型**（Python 3.10 起）：服务是 `typing.Protocol`，结构体是 `TypedDict`（可省略的字段放进 `total=False` 的父类；字段名不是标识符时用函数式写法），只有名字的枚举是 `Literal`，带数据的枚举是 `TypedDict` 的联合，`Option<T>` 是 `T | None`，`Vec<T>`、`HashMap<String, T>`、元组是 `list`、`dict[str, T]`、`tuple`，整数、浮点是 `int`、`float`，`serde_json::Value` 是 `Any`，回调是 `Callable[[A], R | Awaitable[R]]`，`rutis::Definition` 是 `rutis.Plugin`，错误类型 `<Name>Thrown` 是 `rutis.RemoteError` 的别名、`<Name>ThrownCode` 是它的错误码 `Literal`。泛型结构体在 Python 里不带类型参数（3.10 的 `TypedDict` 不能是泛型），参数是 `Any`。插件作者写 `notes: Notes = ctx.use("notes")`，由编辑器或 pyright 检查调用，不写也照样运行（见 [Python 插件：宿主给的类型](python-plugin.md#宿主给的类型)）。它能通过 pyright 的严格模式（`examples/marked-services` 会检查），同样要提交。`.declared` 的类型没有 Python 版本时写 `Any` 并警告：
+**Python 类型**（Python 3.12 起）：服务是 `typing.Protocol`，结构体是 `TypedDict`（可省略的字段放进 `total=False` 的父类；字段名不是标识符时用函数式写法），只有名字的枚举是 `Literal`，带数据的枚举是 `TypedDict` 的联合，`Option<T>` 是 `T | None`，`Vec<T>`、`HashMap<String, T>`、元组是 `list`、`dict[str, T]`、`tuple`，整数、浮点是 `int`、`float`，`serde_json::Value` 是 `Any`，回调是 `Callable[[A], R | Awaitable[R]]`，`rutis::Definition` 是 `rutis.Plugin`，错误类型 `<Name>Thrown` 是 `rutis.RemoteError` 的别名、`<Name>ThrownCode` 是它的错误码 `Literal`。泛型结构体在 Python 里不带类型参数（3.10 的 `TypedDict` 不能是泛型），参数是 `Any`。插件作者写 `notes: Notes = ctx.use("notes")`，由编辑器或 pyright 检查调用，不写也照样运行（见 [Python 插件：宿主给的类型](python-plugin.md#宿主给的类型)）。它能通过 pyright 的严格模式（`examples/marked-services` 会检查），同样要提交。`.declared` 的类型没有 Python 版本时写 `Any` 并警告：
 
 ```text
 $ rutis-host types . --python types/deskmate.py

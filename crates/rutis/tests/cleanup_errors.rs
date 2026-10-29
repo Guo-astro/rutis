@@ -4,6 +4,7 @@ use rutis::host::{CtxHost, ErrorKind};
 use rutis::{Ctx, Error};
 use tokio::sync::{oneshot, Semaphore};
 
+/// guarantee: core/D18
 #[tokio::test]
 async fn unconsumed_early_cleanup_error_reaches_unload_with_same_identity() {
     let ctx = Ctx::root().unwrap();

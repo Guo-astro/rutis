@@ -554,16 +554,6 @@ impl PluginFactory<Json> for Factory {
 pub struct Hooks(Tap);
 
 impl Hooks {
-    pub fn dispatches(&self) -> u64 {
-        self.0.dispatches()
-    }
-    pub async fn answered(&self) -> Result<(), String> {
-        self.0
-            .answered(rutis_bridge::runtime::testing::events::scaled(
-                rutis_bridge::runtime::testing::events::SETTLE,
-            ))
-            .await
-    }
     pub fn hold(&self, n: usize) -> Result<(), String> {
         self.0.hold(n);
         Ok(())

@@ -35,7 +35,7 @@ val weather = Rutis.define<Config>(
 }
 ```
 
-构建里加序列化插件和处理器。处理器在编译期为 `@RutisService` 类生成方法表、为 `@RutisClient` 接口生成代理（运行时不用方法反射；AAR 带保留它们的 R8 规则）：
+SDK 不发布到 Maven，从源码引用：取本仓库的 tag（`git clone --depth 1 --branch v<版本> https://github.com/arcships/rutis.git ../rutis`），在 `settings.gradle.kts` 里 `includeBuild("../rutis/kotlin/rutis")`（Android 应用还要让它找到 Android SDK，见 [kotlin-app](../docs/guide/kotlin-app.md#1-依赖)）。构建里加序列化插件和处理器。处理器在编译期为 `@RutisService` 类生成方法表、为 `@RutisClient` 接口生成代理（运行时不用方法反射；AAR 带保留它们的 R8 规则）：
 
 ```kotlin
 plugins {
@@ -43,10 +43,11 @@ plugins {
     id("com.google.devtools.ksp")
 }
 dependencies {
-    implementation("io.github.arcships:rutis:<版本>")
-    ksp("io.github.arcships:rutis-ksp:<版本>")
-    testImplementation("io.github.arcships:rutis-testing:<版本>")   // 测试工具
-    kspTest("io.github.arcships:rutis-ksp:<版本>")
+    // 不写版本：由 includeBuild 引入的源码构建。
+    implementation("io.github.arcships:rutis")
+    ksp("io.github.arcships:rutis-ksp")
+    testImplementation("io.github.arcships:rutis-testing")   // 测试工具
+    kspTest("io.github.arcships:rutis-ksp")
 }
 ```
 
@@ -117,14 +118,14 @@ cd kotlin/rutis
 
 测试工具的测试跑在 `rutis-host test` 上：`RUTIS_HOST`，否则用仓库里的 `target/debug/rutis-host`（`cargo build -p rutis-host`）。
 
-android target 只在装有 Android SDK 时构建（`ANDROID_HOME`，或 `local.properties` 的 `sdk.dir`）。带 Kotlin 的 Rust 套件用 feature `kotlin`，构建 `rutis-conformance/build/libs/rutis-conformance-all.jar`（或用 `RUTIS_KOTLIN_JAR` 指定的）：
+android target 只在装有 Android SDK 时构建（`ANDROID_HOME`，或 `local.properties` 的 `sdk.dir`）。带 Kotlin 的 Rust 套件在 `RUTIS_TEST_RUNTIMES` 里有 `kotlin` 时运行，构建 `rutis-conformance/build/libs/rutis-conformance-all.jar`（或用 `RUTIS_KOTLIN_JAR` 指定的）：
 
 ```sh
-cargo test -p rutis-bridge --features testing,websocket,kotlin --test runtime_conformance --test value_roundtrip --test session_matrix kotlin_
-cargo test -p rutis-bridge --features testing,websocket,kotlin --test dial_conformance kotlin::
-cargo test -p rutis-bridge --features testing,websocket,kotlin --test kotlin_remote
-cargo test -p rutis-bridge --features testing,kotlin --test kotlin_runtime
-cargo test -p rutis-loader --features node,python,kotlin --test events_conformance --test multilang_kotlin
+RUTIS_TEST_RUNTIMES=kotlin cargo test -p rutis-bridge --all-features --test runtime_conformance --test value_roundtrip --test session_matrix kotlin_
+RUTIS_TEST_RUNTIMES=kotlin cargo test -p rutis-host --features kotlin --test dial_conformance kotlin::
+RUTIS_TEST_RUNTIMES=kotlin cargo test -p rutis-bridge --all-features --test kotlin_remote
+RUTIS_TEST_RUNTIMES=kotlin cargo test -p rutis-bridge --all-features --test kotlin_runtime
+RUTIS_TEST_RUNTIMES=kotlin,node,python cargo test -p rutis-loader --all-features --test events_conformance --test multilang_kotlin
 ```
 
 在 Android 设备或模拟器上（`adb`；`tools/android-emulator.sh start` 起一个）：SDK 的设备测试，以及示例应用拨出到 rutis-host（它的另一行要 Python 3.10+）：

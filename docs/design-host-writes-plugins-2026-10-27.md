@@ -188,7 +188,7 @@ row, err := loader.Create(ctx, map[string]any{"name": "py:weather"})   // 在服
 | 3 | （测试）`rutis-host call weather.today '"Oslo"'` | `"sunny (v1)"` |
 | 4 | 写进语法错误，`loader.reload("weather")` | 抛出的文字以 `weather: cannot reload: cannot load weather.py: SyntaxError` 开头、含 `weather.py`、以 `; the previous version keeps running` 结尾；`weather.today` 仍是 `"sunny (v1)"` |
 | 5 | 改成返回 `"rainy (v2)"`，`loader.reload("weather")` | 返回；`weather.today` 是 `"rainy (v2)"` |
-| 6 | `loader.remove("weather")`，`status()` | 没有 `weather` 行与服务；`rutis.json` 回到第 1 步时的样子（逐字节）；终端 `weather: removed`；`rutis-host call weather.today '"Oslo"'` 报 `rutis-host: no row provides weather (services: loader, maker)` |
+| 6 | `loader.remove("weather")`，`status()` | 没有 `weather` 行与服务；`rutis.json` 回到第 1 步时的样子（逐字节）；终端 `weather: removed`；`rutis-host call weather.today '"Oslo"'` 报 `rutis-host: no row provides weather (services: loader, maker, sessions)` |
 
 另外：第 4 步期间测试每 100 ms 调一次 `weather.today`，没有一次失败；第 5 步之后全部是 v2；宿主停下后残余检查通过。落点 `tests/e2e/tests/host_writes_plugin.rs`（E2E 框架 #175 已完成）；Linux、macOS，进 nightly。
 

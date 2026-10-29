@@ -318,7 +318,7 @@ pub struct Loader {
 }
 
 /// The rows the loader follows right now: its follower map's size, for the
-/// tests of the listener's life (`internal::followed_rows`).
+/// tests of the listener's life (`rutis_loader::followed_rows`).
 #[doc(hidden)]
 pub fn followed_rows(loader: &Loader) -> usize {
     loader.inner.followers.followed()

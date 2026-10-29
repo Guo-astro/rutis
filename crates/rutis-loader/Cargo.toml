@@ -20,22 +20,15 @@ rutis-bridge = { path = "../rutis-bridge", version = "0.19.0", optional = true, 
 
 [features]
 # Plugins of other languages as rows, each language in its own runtime
-# process. Enable the languages the application uses:
-# JavaScript/TypeScript (Cordis and leaf plugins) in Node.
-node = ["runtimes", "rutis-bridge/node"]
-# Python leaf plugins (`py:<name>` rows).
-python = ["runtimes", "rutis-bridge/python"]
-# Go leaf plugins (`go:<plugin>` rows), one runtime per Go binary.
-go = ["binary", "rutis-bridge/go"]
-# Swift leaf plugins (`swift:<plugin>` rows), one runtime per Swift binary.
-swift = ["binary", "rutis-bridge/swift"]
-# JavaScript/TypeScript leaf plugins in Bun (`bun:<module>` rows).
-bun = ["runtimes", "rutis-bridge/bun"]
-# Tests only: Kotlin plugins (kotlin/rutis, the jvm target) as rows of a
-# runtime started through the generic `Launcher`.
-kotlin = ["runtimes", "rutis-bridge/kotlin"]
-# What every language shares; enabled by the language features.
+# process, the far end of a session (`<row>:<plugin>` rows; how each
+# runtime starts is the application's): what every language shares.
 runtimes = ["dep:rutis-bridge"]
+# The Node runtime's rows, npm names and files, as rows of the row `node`.
+node = ["runtimes"]
+# Go leaf plugins (`go:<plugin>` rows), one runtime per Go binary.
+go = ["binary"]
+# Swift leaf plugins (`swift:<plugin>` rows), one runtime per Swift binary.
+swift = ["binary"]
 # What compiled languages (one runtime per program: Go, Swift)
 # share; enabled by their features.
 binary = ["runtimes"]
@@ -51,7 +44,7 @@ rutis-test-support = { path = "../rutis-test-support" }
 tokio = { workspace = true, features = ["full", "test-util"] }
 tempfile = "3"
 url = "2"
-rutis-bridge = { path = "../rutis-bridge", features = ["node", "python", "websocket", "testing"] }
+rutis-bridge = { path = "../rutis-bridge", features = ["websocket", "testing"] }
 # The kernel's test hooks (events_conformance.rs waits on a dispatch's
 # selection, #659).
 rutis = { path = "../rutis", features = ["testing"] }

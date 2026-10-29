@@ -77,7 +77,7 @@ Each language has the five modes, written the language's own way:
 | Unload signal | a listener is called with the `ctx` that registered it: `ctx.cancelled()` | `ctx.signal` | `ctx.signal` | the listener's task is cancelled | the listener's `ctx` is cancelled |
 | `parallel` failures | `ErrorKind::ListenersFailed` | `AggregateError` | `AggregateError` | `rutis.advanced.AggregateError` (`errors`) | `*advanced.AggregateError` (`Errors`) |
 
-In Node, `waterfall` returns a Promise whenever a listener is outside the process, so always `await` it. In Go, pass the `ctx` you received when emitting from a plugin method (it carries the call chain), and `ctx` itself in `Apply`. Rust's emitting methods are on `Ctx`, named as in the other languages.
+In Node, `waterfall` returns a Promise, so always `await` it. In Go, pass the `ctx` you received when emitting from a plugin method (it carries the call chain), and `ctx` itself in `Apply`. Rust's emitting methods are on `Ctx`, named as in the other languages.
 
 The same waterfall listener in the five languages:
 
@@ -203,7 +203,7 @@ A failure nobody waits for is written in one line where it happens (a runtime on
 
 In Go, check with `errors.Is(err, advanced.ErrWaterfallNext)` and the like; an error of that name from any process matches. An error a listener throws crosses with its name, message and error graph, as any call's error.
 
-**Match a listener's error by its name, not its class.** Where it arrives depends on where the listener runs: from another process it arrives as the language's remote error (TypeScript: an `Error` of the same built-in class or a plain `Error` with that `name`; Python: `rutis.RemoteError`, rutis's own names as their classes; Go: `*rutis.RemoteError`, `errors.As` then `Name`), with its `name`, `message` and `code`; when every listener is in the emitter's process (the fast path), the listener's own error object may arrive. The test tools give a plugin's own emitters the crossed form (in strict mode), so a test catches a match by class; that the fast path keeps the original is not a guarantee.
+**Match a listener's error by its name, not its class.** The host dispatches every event, also when the listener and the emitter are in the same runtime, so what arrives is always the language's remote error (TypeScript: an `Error` of the same built-in class or a plain `Error` with that `name`; Python: `rutis.RemoteError`, rutis's own names as their classes; Go: `*rutis.RemoteError`, `errors.As` then `Name`), with its `name`, `message` and `code`, not the object the listener threw. A match by the plugin's own error class fails, in a test as in a host.
 
 ### Mixing with 0.12 and earlier
 
@@ -212,8 +212,6 @@ The event protocol is rutis 0.13's, with no old path. A runtime or node of 0.12 
 ```text
 incompatible session: the far end speaks protocol 2, this side 4: upgrade the far end
 ```
-
-A 0.13 runtime meeting an older host exits (status 1): `rutis: refused: incompatible (this host does not declare events-v2 (the event protocol of rutis 0.13): upgrade rutis-host to 0.13 or later); stopping`. Upgrading from 0.12: [migrating to 0.13](https://github.com/arcships/rutis/blob/main/docs/migration-0.13.en.md).
 
 ## Lifecycle
 
@@ -257,7 +255,7 @@ Nesting depth: a value nests at most **64 levels**. Each array / list / tuple, o
 - as a result: the caller receives the error the callee throws;
 - the session goes on, and other calls on it (those running at the same time included) are not affected.
 
-All five runtimes (Rust, Node, Bun, Python, Go) and the test tool's strict mode check this limit when sending. The limit binds the sender: the receiving Rust side leaves a margin for a far end that does not keep to it (an older version, say) and reads frames up to 208 levels deep on the wire, so a value **received** from such a far end may nest deeper than 64 levels (up to about 100 levels of arrays holding references, about 206 of data); that margin is not guaranteed and plugins must not rely on it. When such a far end sends a frame nested too deep for the Rust side to read: if the frame shows which call it belongs to, only that call fails (the far end's call receives an error; a reply to this side's call fails that call), and the references in it are released only when the session ends; if it does not, the session ends, saying why. See [#279](https://github.com/arcships/rutis/issues/279).
+All five runtimes (Rust, Node, Bun, Python, Go) check this limit when sending; under the test tools the plugin runs in these runtimes and is checked the same. The limit binds the sender: the receiving Rust side leaves a margin for a far end that does not keep to it (an older version, say) and reads frames up to 208 levels deep on the wire, so a value **received** from such a far end may nest deeper than 64 levels (up to about 100 levels of arrays holding references, about 206 of data); that margin is not guaranteed and plugins must not rely on it. When such a far end sends a frame nested too deep for the Rust side to read: if the frame shows which call it belongs to, only that call fails (the far end's call receives an error; a reply to this side's call fails that call), and the references in it are released only when the session ends; if it does not, the session ends, saying why. See [#279](https://github.com/arcships/rutis/issues/279).
 
 Numbers have the limits below. They describe current behaviour and are **not guaranteed** to stay this way (explicitly not guaranteed); a plugin that depends on them must handle them itself:
 
@@ -265,7 +263,7 @@ Numbers have the limits below. They describe current behaviour and are **not gua
 - Python keeps `-0.0`.
 - NaN and ±Infinity cannot cross.
 
-Values are not copied within one process. Code that mutates an object after passing it may work in a unit test but fail across processes. The test tool's strict mode (enabled by default) applies the rules above to expose this early.
+Values are not copied within one process. Code that mutates an object after passing it may work there but fail across processes. Under the test tools, the services a test gives are in the same runtime as the plugin and are not copied either, so a test does not catch this.
 
 ### The ten values
 
@@ -292,19 +290,13 @@ Values are not copied within one process. Code that mutates an object after pass
 
 ### Where the test tool differs from a real runtime
 
-The test tools (`@arcships/rutis/testing`, `rutis.testing`, Go's `rutistest`) and the real runtimes are checked against the same expectations file: the same calls on the same plugin (sync, async, callbacks, errors, the values in the table above) must give the same results ([`weather.expected.json`](https://github.com/arcships/rutis/blob/main/docs/../crates/rutis-bridge/src/runtime/testing/weather.expected.json)). In strict mode, these are the only known differences:
+Each language's test tool (`@arcships/rutis/testing`, `rutis.testing`, Go's `rutistest`, Swift's and Kotlin's `RutisTest`) runs the plugin as a row of a real host: `rutis-host test` (on `PATH`, or at `RUTIS_HOST`) starts a host, and the plugin runs in its language's real runtime. The host checks the config and fills its defaults, starts the plugin once the services it injects are there, dispatches every event, and unloads by its rules; no switch turns this off. These are the only known differences:
 
 | Difference | Why |
 | --- | --- |
-| A plugin that ends its process (`process.exit`, `os._exit`) ends the test | The test tool runs the plugin in the test's process; the expectations file marks this entry `allowed`, and the test tool does not make that call |
-| No restarts: a config change or a withdrawn injected service does not stop and start the plugin | `load` starts it once; the host decides the lifecycle (see above) |
-| Sync calls do not block, so there is no `SyncWaitCycle`; no cancellation (`AbortSignal`, coroutine cancellation) | The plugin and the test share one event loop |
-| Python: an exception that crosses is a `RemoteError` whose `__cause__` is the original exception | For debugging; a real runtime's `RemoteError` has no `__cause__` |
-| Descriptors call the runtime by the language (`node`, `bun`, `python`, `go`; a host uses the names its configuration gives); unloading waits at most `RUTIS_SHUTDOWN_TIMEOUT`, as a runtime, or the tool's own option: TypeScript `host({ deadline })` / `load(…, { deadline, runtime })` in ms, Python `load(…, deadline=, runtime=)` in seconds, Go `rutistest.RuntimeName` and other options | Each tool follows its language's conventions for options |
-| TypeScript: only plugins written with `definePlugin` load, not Cordis plugins | The tool has no Cordis plugin model, services or dependency gating |
-| Events: every listener is in the test's process (always dispatched locally), with no other process or node, and no `rutis/*` events | The test tool runs the plugins in one process. The five modes, filters, scopes (TypeScript `host()` with `scope`, Python `Bus` and `scope=`, Go `rutistest.InScope`), unload waiting and cancelling, and reporting `emit` failures (`reported`) are as on a real runtime, checked against the same [events expectations file](https://github.com/arcships/rutis/blob/main/docs/../crates/rutis-bridge/src/runtime/testing/events.expected.json) |
-
-The ten values cross by the same rules on both sides, so they are not a difference. With strict mode off (`strict: false`), values skip the table above and other differences can appear.
+| The test's services, `on` and emitting belong to a test plugin in the same runtime: when the plugin calls a service the test gave, it gets the object itself, and values are not copied | That is how the test tool drives the plugin; behaviour across processes is checked by every runtime against the same expectations files ([`weather.expected.json`](https://github.com/arcships/rutis/blob/main/docs/../crates/rutis-bridge/src/runtime/testing/weather.expected.json), [events expectations file](https://github.com/arcships/rutis/blob/main/docs/../crates/rutis-bridge/src/runtime/testing/events.expected.json)) |
+| The Python, Go, Swift and Kotlin runtimes are in the test's process: a plugin that ends its process (`os._exit` and the like) ends the test | These languages call the plugin under test from the test's process (`rutis-host test --channel`) |
+| Local runtimes only, no remote nodes or devices; tests on a device use the plugins an application installs itself | The test tools start local runtimes only |
 
 ## Synchronous calls and reentrancy
 
@@ -318,7 +310,7 @@ A method declared `sync` returns synchronously. Across processes, the caller blo
 
 When runtimes call each other synchronously, every participant may end up waiting for another: two Node runtimes calling each other, or one Node and two Python runtimes in a nested pattern. Before forwarding each synchronous call, the host checks whether it would close such a wait cycle; if it would, the call is not forwarded, its caller gets a `SyncWaitCycle` error, and every other call completes. Do not retry the same call at once (it will most likely close the same cycle again): use an `async` method, try at another moment, or treat it as a failure.
 
-The check covers runtimes that declare the `sync-wait` capability (the Node, Python, Bun and Go runtimes of this repository; the protocol is in §9 of the [multi-language design](https://github.com/arcships/rutis/blob/main/docs/design-multilang-runtimes-2026-10-03.en.md)). Synchronous calls from a runtime that does not declare it (an older SDK) are outside the check and may deadlock as before; a runtime that does not declare `reentrant-sync` is taken as non-reentrant. For calls across runtimes that may cross in both directions, `async` methods are still the first choice.
+The check covers every synchronous call a runtime marks as one on its frame, as every runtime of this repository does (the protocol is in §9 of the [multi-language design](https://github.com/arcships/rutis/blob/main/docs/design-multilang-runtimes-2026-10-03.en.md)); a runtime that does not declare `reentrant-sync` is taken as non-reentrant. For calls across runtimes that may cross in both directions, `async` methods are still the first choice.
 
 Do not wait inside a synchronous method for a result that requires the event loop to advance, such as a Promise. This produces `SyncWaitCycle`; make the method `async` instead.
 

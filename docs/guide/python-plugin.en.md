@@ -152,7 +152,7 @@ plugin = define_plugin(
 
 ## 6. Test
 
-`load` from `rutis.testing` needs no host: it loads the plugin with a config and a fake `translate`, gives you its service to call and its events to listen to, and unloads the plugin when the `async with` ends. Replace `tests/test_plugin.py` with:
+`load` from `rutis.testing` starts a host for the test (`rutis-host test`, installed by the project's dev dependency `rutis-host`) and loads the plugin on the real Python runtime, in the test's process: with a config and a fake `translate`, it gives you its service to call and its events to listen to, and unloads the plugin when the `async with` ends. Replace `tests/test_plugin.py` with:
 
 <!-- example: python-en file=greeter/tests/test_plugin.py -->
 ```python
@@ -176,8 +176,10 @@ class Plugin(unittest.TestCase):
                 greeted = []
                 t.on("greeter/greeted", greeted.append)
                 self.assertEqual(await t.service("greeter").hello("Ada"), "Salut, Ada!")
-                self.assertEqual(greeted, ["Ada"])
-                self.assertEqual(await t.service("greeter").count(), 1)
+                # The test can emit too; parallel waits for every listener, by then the emit before it has arrived
+                await t.parallel("greeter/greeted", "Bo")
+                self.assertEqual(greeted, ["Ada", "Bo"])
+                self.assertEqual(await t.service("greeter").count(), 2)
 
         asyncio.run(go())
 
@@ -191,7 +193,7 @@ if __name__ == "__main__":
 uv run python -m unittest discover -s tests
 ```
 
-`load` checks what a host checks: the config gets the schema's defaults and is validated, and a config that does not match raises `BindingError` (its `code` is `bad-config`); the plugin uses only the services in `inject`; the services it provides have the methods in `provides`; values pass by the rules across processes. The rest of the test tool: [Plugin API: the Python test tool](plugin-api.en.md#the-python-test-tool). When a host gives Python types for its services, see [Types from the host](#types-from-the-host).
+The checks are the host's own: its loader fills in the schema's defaults and validates the config, and a config that does not match makes `load` raise `PluginTestError` with the row's state line (`greeter: config: greeting should be a string, got 3`); events are dispatched by the host. The rest of the test tool: [Plugin API: the Python test tool](plugin-api.en.md#the-python-test-tool). When a host gives Python types for its services, see [Types from the host](#types-from-the-host).
 
 ## 7. Run it locally and try it
 
@@ -237,7 +239,7 @@ uv run rutis-host dev
 rutis-host dev: running greeter; changes reload it (Ctrl-C ends)
 greeter: starting
 translate: running
-rutis-host dev: services: greeter (greeter), loader (host), translate (translate)
+rutis-host dev: services: greeter (greeter), loader (host), sessions (host), translate (translate)
 greeter: running
 ```
 
@@ -253,6 +255,7 @@ rows:
 services:
   greeter: greeter
   loader: host
+  sessions: host
   translate: translate
 runtimes:
   py: running (pid 55011)
@@ -270,7 +273,7 @@ A change to the code reloads it: change the `!` that `hello` returns to `!!` and
 
 ```text
 greeter: reloaded (src/greeter/__init__.py changed)
-rutis-host dev: services: greeter (greeter), loader (host), translate (translate)
+rutis-host dev: services: greeter (greeter), loader (host), sessions (host), translate (translate)
 ```
 
 `call greeter.hello '"Ada"'` now gives `"Bonjour, Ada!!"`. Only the row whose file changed reloads; a change to `rutis.dev.json` takes effect while it runs too. Only the plugin's module is imported again; when a module it imports changes, restart `dev`. See [Developing a plugin with `dev`](rutis-host.en.md#developing-a-plugin-with-dev).
@@ -332,4 +335,4 @@ error: Argument of type "Literal[42]" cannot be assigned to parameter "value" of
 
 ## Advanced: plugin API
 
-Plugins as values, the other ways to emit events, scopes, objects with methods, how values pass, the rest of the test tool: see [Plugin API](plugin-api.en.md). To run on another machine, see [the remote section of rutis-host.en.md](rutis-host.en.md#remote-runtimes).
+Plugins as values, the other ways to emit events, scopes, objects with methods, how values pass, the rest of the test tool: see [Plugin API](plugin-api.en.md). To run on another machine, see [the remote section of rutis-host.en.md](rutis-host.en.md#remote-runtimes-and-devices).

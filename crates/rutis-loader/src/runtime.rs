@@ -55,12 +55,12 @@
 //! the name under its instance's label, so rows of other instances, which
 //! share the process, do not see it.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind, PluginFactory, TypeKey};
+use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind, Key, PluginFactory, TypeKey};
 use rutis::{Ctx, Error};
 use rutis_bridge::runtime::{
     row_projection_of, ForeignPlugin, HostLease, PluginMounter, Process, Projection,
@@ -87,13 +87,10 @@ mod sessions;
 pub mod swift;
 pub use sessions::{LoaderCatalog, SessionResolver, SessionRows};
 
-use rutis::internal::CtxInternal;
-
 /// Whether `name` may name a runtime, and so prefix its rows
 /// (`py:weather`, `bun:@acme/weather`): two or more of
 /// `a-z`, `0-9` and `-`, and not `file`, so that neither a `file:` URL nor a
 /// one-letter Windows drive reads as a runtime's row.
-#[doc(hidden)]
 pub fn is_runtime_name(name: &str) -> bool {
     name.len() >= 2
         && name != "file"
@@ -215,10 +212,10 @@ impl JsModule {
         // A shared name resolves through the catalog (inside instances, to
         // the instance's key); any other name a leaf runtime gates on is
         // shared by name.
-        let key = |name: &str| -> Result<TypeKey, Error> {
+        let key = |name: &str| -> Result<Key<dyn HostDispatch>, Error> {
             match self.catalog.is_shared(name) {
-                true => self.catalog.key_in(name, build).map_err(failed),
-                false => Ok(host_key(name).erase()),
+                true => self.catalog.shared_key_in(name, build).map_err(failed),
+                false => Ok(host_key(name)),
             }
         };
         let keyed = |names: &mut dyn Iterator<Item = &String>| {
@@ -237,9 +234,9 @@ impl JsModule {
         let (catalog, build) = (self.catalog.clone(), build.clone());
         let announced: KeyOf = Arc::new(move |name| match catalog.is_shared(name) {
             true => catalog
-                .key_in(name, &build)
-                .unwrap_or_else(|_| host_key(name).erase()),
-            false => host_key(name).erase(),
+                .shared_key_in(name, &build)
+                .unwrap_or_else(|_| host_key(name)),
+            false => host_key(name),
         });
         Ok(JsFactory::with_keys(
             &self.name,
@@ -274,7 +271,7 @@ pub(crate) enum RowEntry {
 }
 
 /// The key a service a row announces is published under, by name.
-pub(crate) type KeyOf = Arc<dyn Fn(&str) -> TypeKey + Send + Sync>;
+pub(crate) type KeyOf = Arc<dyn Fn(&str) -> Key<dyn HostDispatch> + Send + Sync>;
 
 struct JsFactory {
     name: String,
@@ -284,10 +281,10 @@ struct JsFactory {
     /// of a definition, named after the row that handed it over).
     id: Option<String>,
     /// The injected services that gate the row in rutis, with their keys.
-    gated: Vec<(String, TypeKey)>,
+    gated: Vec<(String, Key<dyn HostDispatch>)>,
     provides: Map<String, Value>,
     /// The key each provided service is published under.
-    provided: Vec<(String, TypeKey)>,
+    provided: Vec<(String, Key<dyn HostDispatch>)>,
     /// Shared names inside the copy's instances, with their instance's
     /// label: isolated in the runtime so other instances do not see them.
     scopes: Vec<(String, String)>,
@@ -358,13 +355,13 @@ impl JsFactory {
         let gated = gated
             .into_iter()
             .map(|name| {
-                let key = host_key(&name).erase();
+                let key = host_key(&name);
                 (name, key)
             })
             .collect();
         let provided = provides
             .keys()
-            .map(|name| (name.clone(), host_key(name).erase()))
+            .map(|name| (name.clone(), host_key(name)))
             .collect();
         Self::with_keys(name, runtime, entry, gated, provides, provided, Vec::new())
     }
@@ -373,18 +370,18 @@ impl JsFactory {
         name: &str,
         runtime: RowRuntime,
         entry: RowEntry,
-        gated: Vec<(String, TypeKey)>,
+        gated: Vec<(String, Key<dyn HostDispatch>)>,
         provides: Map<String, Value>,
-        provided: Vec<(String, TypeKey)>,
+        provided: Vec<(String, Key<dyn HostDispatch>)>,
         scopes: Vec<(String, String)>,
     ) -> Self {
         let rows = match &runtime {
             RowRuntime::Connection(_) => None,
-            RowRuntime::Session(row) => Some(SessionRows::key(row)),
+            RowRuntime::Session(row) => Some(SessionRows::key(row).erase()),
         };
         let injects = rows
             .into_iter()
-            .chain(gated.iter().map(|(_, key)| key.clone()))
+            .chain(gated.iter().map(|(_, key)| key.erase()))
             .collect();
         Self {
             name: name.to_owned(),
@@ -396,7 +393,7 @@ impl JsFactory {
             provided,
             scopes,
             injects,
-            announced: Arc::new(|name: &str| host_key(name).erase()),
+            announced: Arc::new(host_key),
             refused: Refused::default(),
         }
     }
@@ -448,9 +445,9 @@ struct JsRow {
     entry: RowEntry,
     id: Option<String>,
     config: Value,
-    gated: Vec<(String, TypeKey)>,
+    gated: Vec<(String, Key<dyn HostDispatch>)>,
     provides: Map<String, Value>,
-    provided: Vec<(String, TypeKey)>,
+    provided: Vec<(String, Key<dyn HostDispatch>)>,
     scopes: Vec<(String, String)>,
     injects: Vec<TypeKey>,
     announced: KeyOf,
@@ -504,10 +501,9 @@ impl DynPlugin for JsRow {
             }
             let process = match &self.runtime {
                 RowRuntime::Connection(process) => process.clone(),
-                RowRuntime::Session(row) => ctx
-                    .require_key::<SessionRows>(SessionRows::key(row))?
-                    .process()
-                    .clone(),
+                RowRuntime::Session(row) => {
+                    ctx.require_at(&SessionRows::key(row))?.process().clone()
+                }
             };
             // Every lease taken is released: by the cleanup once the row
             // runs, here when it does not get that far. The kernel waits for
@@ -597,9 +593,6 @@ impl JsRow {
                 Vec::new(),
             ),
         };
-        // What its config isolates stays in the row's scope: a service it
-        // provides there is not rutis's to publish.
-        let private: HashSet<String> = isolate.iter().map(|(name, _)| name.clone()).collect();
         // Shared names inside the row's instances are isolated under the
         // instance's label, unless its config isolates them already.
         for (name, label) in &self.scopes {
@@ -630,7 +623,7 @@ impl JsRow {
         // One served by a row of this same process is already there
         // natively.
         for (name, key) in &self.gated {
-            let dispatch = ctx.require_key::<dyn HostDispatch>(key.clone())?;
+            let dispatch = ctx.require_at(key)?;
             if dispatch
                 .origin()
                 .is_some_and(|origin| origin == process.connection().tag())
@@ -649,21 +642,18 @@ impl JsRow {
             leases.push(lease);
         }
         // The row's services are published from this fiber, so they go when
-        // it does: the declared ones, and those it announces.
+        // it does: the declared ones, and those it announces. A name the row
+        // isolates is published in its isolate (the loader runs the fiber
+        // there), where rows of the same isolate see it.
         let provided = self.provided.clone();
         let announced = self.announced.clone();
-        let projection = row_projection_of(
-            &format!("row {id}"),
-            &self.provides,
-            move |name| {
-                provided
-                    .iter()
-                    .find(|(provided, _)| provided == name)
-                    .map(|(_, key)| key.clone())
-                    .unwrap_or_else(|| announced(name))
-            },
-            move |name| private.contains(name),
-        );
+        let projection = row_projection_of(&format!("row {id}"), &self.provides, move |name| {
+            provided
+                .iter()
+                .find(|(provided, _)| provided == name)
+                .map(|(_, key)| key.clone())
+                .unwrap_or_else(|| announced(name))
+        });
         // A definition one of its services returns belongs to this row.
         projection.owned_by(caller.clone());
         projection.attach(ctx, process.clone())?;
@@ -814,10 +804,10 @@ impl PluginMounter for DefinitionMounter {
         // As for a row of that runtime: a leaf runtime gates everything a
         // plugin injects in rutis; in Cordis only the shared names.
         let leaf = process.supports("leaf");
-        let key = |name: &str| -> Result<TypeKey, Error> {
+        let key = |name: &str| -> Result<Key<dyn HostDispatch>, Error> {
             match catalog.is_shared(name) {
-                true => catalog.key_in(name, &build).map_err(failed),
-                false => Ok(host_key(name).erase()),
+                true => catalog.shared_key_in(name, &build).map_err(failed),
+                false => Ok(host_key(name)),
             }
         };
         let gated = schema
@@ -839,9 +829,9 @@ impl PluginMounter for DefinitionMounter {
             .collect();
         let announced: KeyOf = Arc::new(move |name| match catalog.is_shared(name) {
             true => catalog
-                .key_in(name, &build)
-                .unwrap_or_else(|_| host_key(name).erase()),
-            false => host_key(name).erase(),
+                .shared_key_in(name, &build)
+                .unwrap_or_else(|_| host_key(name)),
+            false => host_key(name),
         });
         let id = plugin.row().map(str::to_owned);
         JsFactory::with_keys(

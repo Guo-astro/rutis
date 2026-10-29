@@ -51,7 +51,7 @@ Using the criteria in `references/principles.md`:
 | Artifact model | **Load by name**: one runtime process loads several installed packages (Node, Bun, Python); rows are `<prefix>:<module>`. **Compiled program**: plugins are built into an executable that describes itself with `--rutis-manifest` and is started on demand (Go; Swift on macOS reuses this machinery). **App hosting**: plugins are built into an app that connects to rutis (Swift / Kotlin apps) |
 | Row prefix | Must not collide with existing ones: `py`, `bun`, `go`, `swift`, `kt`, … |
 | Execution model | One execution unit per incoming call (thread, goroutine, Task, virtual thread) makes the runtime reentrant; the reader thread only parses frames and never runs plugin code |
-| Capabilities | Declare `sync-wait`, `reentrant-sync`, `sync-stack`, `objects` honestly, per `references/runtime-contract.md` §2. A new runtime should declare `sync-wait`; otherwise it is outside wait-cycle detection |
+| Capabilities | Declare `reentrant-sync` and `sync-stack` honestly, per `references/runtime-contract.md` §2, and mark synchronous calls with `sync: true`; otherwise they are outside wait-cycle detection |
 | Channels | Local: `fd:3`, dialing back to a socket path, `tcp:127.0.0.1:<port>` (used on Windows); dial back when the language cannot take an inherited fd. Remote: `listen:wss://` and `dial:wss://` |
 | Method enumeration and schema | Derive them where the language has reflection (Go, Python); otherwise use an explicit method table and a hand-written schema (Swift, Kotlin) |
 | Distribution | The language's standard package channel (npm, PyPI, Go modules, SwiftPM, Maven Central); versions follow the rutis release train |
@@ -73,19 +73,18 @@ Compiled from the files Bun (arcships/rutis#200) and Go (arcships/rutis#227) act
 - [ ] A conformance entry point for the Rust tests to start
 
 **rutis-bridge**
-- [ ] `src/runtime/process.rs`: `Launcher::<language>` (command, working directory, how the channel is handed over). `Launcher::start` passes `--id <runtime name>` and the anchor as the last arguments; the process is the far end of a session
-- [ ] A feature in `Cargo.toml`
+- [ ] Nothing in its code: the bridge knows no language and has no language feature
 - [ ] Tests: `tests/runtime_conformance.rs`, `tests/session_matrix.rs`, `tests/<language>_runtime.rs`; for remote use `tests/websocket_conformance.rs` (and `dial_conformance.rs` for dialing out)
 
 **rutis-loader**
 - [ ] Load by name: nothing to add; `runtime::SessionResolver` resolves `<runtime name>:<plugin>` on the runtime's session. Compiled program: `src/runtime/<language>.rs`, a `BinaryLanguage` whose `launch` returns the `Launcher`, reusing Go's manifest machinery
-- [ ] `src/lib.rs`; a feature in `Cargo.toml`
+- [ ] Compiled program only: its `mod` line in `src/runtime.rs` and a feature in `Cargo.toml` (`<language> = ["binary"]`, like `go` and `swift`); load by name needs no feature (`runtimes` covers it)
 - [ ] Tests: `tests/<language>_rows.rs`, `tests/multilang_<language>.rs`, `tests/instance_<language>.rs`, `tests/leases.rs`
 
 **rutis-host**
 Every local language is one entry in a registry (arcships/rutis#230): `config.rs`, `host.rs`, `new.rs`, `project.rs` and `main.rs` loop over it and need no edit. Read https://github.com/arcships/rutis/tree/main/crates/rutis-host/src/languages first: `node.rs` (load by name) or `go.rs` (compiled program).
 - [ ] `src/config.rs`: a `runtimes.<language>` field in `Runtimes` and its settings type (this is the `rutis.json` format; the persisted-fixture tests guard it)
-- [ ] `src/languages/<language>.rs`: one type implementing the `Language` trait: its `runtimes` key; `rebase`/`merge` of its settings; how its rows are named (`rows`); `runtime`, which finds the package or interpreter, runs the preflight check of its version and returns the `connect::SpawnPlugin` (`rutis-host/spawn`: `SpawnPlugin::new(<runtime name>, Launcher::<language>(…), anchor)`; its rows resolve through `SessionResolver`) (a compiled-program language with one runtime per binary overrides `start` instead, as Go does); `new --lang` names, template and next steps; `dev`: how a project is recognized (`is_project`, `project_file`) and the rows that run it (the host never compiles; it only runs the project's own build)
+- [ ] `src/languages/<language>.rs`: one type implementing the `Language` trait: its `runtimes` key; `rebase`/`merge` of its settings; how its rows are named (`rows`); `runtime`, which finds the package or interpreter, runs the preflight check of its version and returns the `connect::SpawnPlugin` (`rutis-host/spawn`: `SpawnPlugin::new(<runtime name>, launcher(…), anchor)`, with `launcher` in the same file returning the `rutis_bridge::runtime::Launcher`: command, working directory, how the channel is handed over; `Launcher::start` passes `--id <runtime name>` and the anchor as the last arguments, and the process is the far end of a session; its rows resolve through `SessionResolver`) (a compiled-program language with one runtime per binary overrides `start` instead, as Go does); `new --lang` names, template and next steps; `dev`: how a project is recognized (`is_project`, `project_file`) and the rows that run it (the host never compiles; it only runs the project's own build)
 - [ ] `src/languages/mod.rs`: its `mod` line and its line in `LANGUAGES` (the order messages list languages in; the host starts them in reverse, so Node, whose resolver takes bare npm names, stays first)
 - [ ] `src/main.rs`: only the `USAGE` help text names the languages. A compiled-program language that rebuilds in `dev` or lists its binaries in `check` follows Go there (`host.go`, `project::GoDev`)
 - [ ] `templates/<language>/`: plugin, tests, `rutis.dev.json`, publish workflow
@@ -113,7 +112,7 @@ Every local language is one entry in a registry (arcships/rutis#230): `config.rs
 | --- | --- |
 | Implementing dependency waits, retries or start order in the SDK | Leave gating to rutis; the SDK only carries out `rows.load` / `unload` |
 | Embedding Rust through FFI to avoid implementing the protocol | Implement it in the platform language; conformance tests keep it consistent with the others |
-| Omitting or guessing capabilities | Declare `reentrant-sync`, `sync-stack`, `sync-wait` according to the execution model |
+| Omitting or guessing capabilities | Declare `reentrant-sync`, `sync-stack` according to the execution model |
 | Running plugin code, or bridging sync calls, on the reader thread | One execution unit per incoming call |
 | Having the host compile plugin code | `dev` runs only the project's own build; `run` runs only ready-made artifacts |
 | Forwarding leaf events across processes yourself | Up to 0.12, events stay in the runtime process (host → runtime only through `emits`). From 0.13 every listener registers with the host automatically and emissions go through it when needed (contract §6); a runtime never forwards events on its own |
