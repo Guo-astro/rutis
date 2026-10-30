@@ -121,7 +121,7 @@ test('a leaf plugin reads its optional services with get', async () => {
       seen.present = ctx.get('present')?.hello()
       seen.absent = ctx.get('absent')
       seen.extra = ctx.get('extra')
-      for (const [key, run] of [['use absent', () => ctx.use('absent')], ['get undeclared', () => ctx.get('nope')]]) {
+      for (const [key, run] of [['use present', () => ctx.use('present')], ['use absent', () => ctx.use('absent')], ['get undeclared', () => ctx.get('nope')]]) {
         try { run() } catch (caught) { seen[key] = [caught.message, caught.code, caught.data] }
       }
     },
@@ -131,7 +131,83 @@ test('a leaf plugin reads its optional services with get', async () => {
   assert.equal(seen.present, 'hi')
   assert.equal(seen.absent, undefined)
   assert.equal(seen.extra, undefined, "the row's inject counts as declared")
+  assert.deepEqual(seen['use present'], ["service present is not available to this plugin, which does not declare it in inject: add 'present' to its inject", 'not-declared', { service: 'present' }])
   assert.deepEqual(seen['use absent'], ["service absent is not available to this plugin, which does not declare it in inject: add 'absent' to its inject", 'not-declared', { service: 'absent' }])
   assert.deepEqual(seen['get undeclared'], ["service nope is not available to this plugin, which does not declare it: add 'nope' to its optional (or to its inject, if it cannot run without it)", 'not-declared', { service: 'nope' }])
+  await plugin.dispose()
+})
+
+// A row's own `inject` counts as declared; a name declared nowhere is
+// refused even when another plugin here provides it (#676): the answer
+// does not depend on who else is in the process.
+// guarantee: sdk/optional-deps
+test('a leaf plugin uses what it or its row declares, not what a neighbour provides', async () => {
+  const root = new Context()
+  root.provide('row')
+  root.row = { hello: () => 'hi' }
+  root.provide('neighbour')
+  root.neighbour = { hello: () => 'hi' }
+  const seen = {}
+  const spec = definePlugin({
+    apply(ctx) {
+      // The row's `inject`: declared for this plugin.
+      seen.use = ctx.use('row').hello()
+      seen.get = ctx.get('row').hello()
+      for (const [key, call] of [['neighbour use', () => ctx.use('neighbour')], ['neighbour get', () => ctx.get('neighbour')]]) {
+        try { seen[key] = call().hello() } catch (caught) { seen[key] = [caught.message, caught.code, caught.data] }
+      }
+    },
+  })
+  const plugin = root.plugin(toCordis(supported(spec, 'declared'), ['row']))
+  await plugin.await()
+  assert.equal(seen.use, 'hi')
+  assert.equal(seen.get, 'hi')
+  // Declared nowhere, though this process provides it: say what to declare.
+  assert.deepEqual(seen['neighbour use'], ["service neighbour is not available to this plugin, which does not declare it in inject: add 'neighbour' to its inject", 'not-declared', { service: 'neighbour' }])
+  assert.deepEqual(seen['neighbour get'], ["service neighbour is not available to this plugin, which does not declare it: add 'neighbour' to its optional (or to its inject, if it cannot run without it)", 'not-declared', { service: 'neighbour' }])
+  await plugin.dispose()
+})
+
+// A plugin reads what it provides itself: declared by providing it, for
+// `use` and `get` alike (as in every other runtime). Withdrawn, it is
+// declared no more, as a name the plugin never declared.
+// guarantee: sdk/optional-deps
+test('a leaf plugin may use and get a service it provides itself', async () => {
+  const root = new Context()
+  const seen = {}
+  const spec = definePlugin({
+    async apply(ctx) {
+      const withdraw = ctx.provide('own', { hello: () => 'hi' })
+      seen.use = ctx.use('own').hello()
+      seen.get = ctx.get('own').hello()
+      // Names Cordis answers itself as a Context property: still the object.
+      for (const name of ['_u', 'fiber']) {
+        const object = { name }
+        ctx.provide(name, object)
+        seen[name] = ctx.use(name) === object && ctx.get(name) === object
+      }
+      // Withdrawn, it is undeclared at once, before Cordis finishes.
+      const withdrawn = withdraw()
+      for (const [key, call] of [['use withdrawn', () => ctx.use('own')], ['get withdrawn', () => ctx.get('own')]]) {
+        try { seen[key] = call() } catch (caught) { seen[key] = [caught.message, caught.code] }
+      }
+      await withdrawn
+      // Withdrawn and provided again in one turn: the first withdrawal,
+      // finishing later, leaves the second provide in place.
+      ctx.provide('again', { v: 1 })()
+      ctx.provide('again', { v: 2 })
+      await new Promise(resolve => setTimeout(resolve, 20))
+      seen.again = ctx.use('again').v
+    },
+  })
+  const plugin = root.plugin(toCordis(supported(spec, 'own')))
+  await plugin.await()
+  assert.equal(seen.use, 'hi')
+  assert.equal(seen.get, 'hi')
+  assert.equal(seen._u, true)
+  assert.equal(seen.fiber, true)
+  assert.deepEqual(seen['use withdrawn'], ["service own is not available to this plugin, which does not declare it in inject: add 'own' to its inject", 'not-declared'])
+  assert.deepEqual(seen['get withdrawn'], ["service own is not available to this plugin, which does not declare it: add 'own' to its optional (or to its inject, if it cannot run without it)", 'not-declared'])
+  assert.equal(seen.again, 2)
   await plugin.dispose()
 })

@@ -59,15 +59,20 @@ class OptionalDepsTest {
     @Test
     fun getReadsAnOptionalServiceAndUseDoesNot() = runBlocking<Unit> {
         val seen = LinkedHashMap<String, Any?>()
-        val plugin = Rutis.define<Rutis.NoConfig>(name = "summary", optional = listOf("llm", "local")) { ctx, _ ->
+        val plugin = Rutis.define<Rutis.NoConfig>(name = "summary", optional = listOf("llm")) { ctx, _ ->
             seen["absent"] = ctx.get<Llm>("llm")
             seen["use optional"] = assertFailsWith<IllegalArgumentException> { ctx.use<Llm>("llm") }
             seen["get undeclared"] = assertFailsWith<IllegalArgumentException> { ctx.get<Llm>("other") }
             seen["use undeclared"] = assertFailsWith<IllegalArgumentException> { ctx.use<Llm>("other") }
-            // One this row provides: the object itself, as `use` gives it.
+            // One this row provides, declared by providing it: the object
+            // itself, as `use` gives it; withdrawn, it is like a name never
+            // declared.
             val local = Hello("hi")
-            ctx.provide("local", local)
+            val withdraw = ctx.provide("local", local)
             seen["local"] = ctx.get<Greeter>("local") === local
+            withdraw()
+            seen["use withdrawn"] = assertFailsWith<NotDeclaredException> { ctx.use<Greeter>("local") }.message
+            seen["get withdrawn"] = assertFailsWith<NotDeclaredException> { ctx.get<Greeter>("local") }.message
         }
         val rt = RuntimeState(listOf(plugin))
         rt.load("row:1.0", "summary", plugin.name, null, emptyMap(), emptyMap(), emptyList())
@@ -92,6 +97,14 @@ class OptionalDepsTest {
             assertIs<NotDeclaredException>(seen["use undeclared"]).message,
         )
         assertEquals(true, seen["local"])
+        assertEquals(
+            "service local is not available to this plugin, which does not declare it in inject: add 'local' to its inject",
+            seen["use withdrawn"],
+        )
+        assertEquals(
+            "service local is not available to this plugin, which does not declare it: add 'local' to its optional (or to its inject, if it cannot run without it)",
+            seen["get withdrawn"],
+        )
     }
 
     // guarantee: sdk/optional-deps (a given optional service is found by `get`,
@@ -190,5 +203,57 @@ class OptionalDepsTest {
         assertEquals("hi Kim", rt.dispatch(now, "greet", listOf(JsonPrimitive("Kim"))))
         val gone = assertFailsWith<RutisException> { rt.dispatch(old, "greet", listOf(JsonPrimitive("Kim"))) }
         assertEquals("service hello is not available", gone.message)
+    }
+
+    // guarantee: sdk/optional-deps (a row's own inject counts as declared:
+    // the plugin uses it without listing it, and it is unavailable rather
+    // than not-declared when nothing provides it)
+    @Test
+    fun aRowsInjectCountsAsDeclared() = runBlocking<Unit> {
+        val seen = LinkedHashMap<String, Any?>()
+        val plugin = Rutis.define<Rutis.NoConfig>(name = "reader") { ctx, _ ->
+            seen["use"] = ctx.use<Greeter>("row").greet("Kim")
+            seen["use absent"] = assertFailsWith<UnavailableException> { ctx.use<Greeter>("search") }
+            seen["use undeclared"] = assertFailsWith<NotDeclaredException> { ctx.use<Greeter>("other") }
+        }
+        val provider = Rutis.define<Rutis.NoConfig>(name = "provider") { ctx, _ -> ctx.provide("row", Hello("hi")) }
+        val rt = RuntimeState(listOf(plugin, provider))
+        rt.load("row:1.0", "provider", provider.name, null, mapOf("row" to mapOf("greet" to "sync")), emptyMap(), emptyList())
+        rt.load("row:2.0", "reader", plugin.name, null, emptyMap(), emptyMap(), emptyList(), listOf("row", "search"))
+        assertEquals("hi Kim", seen["use"])
+        assertEquals("service search is not available", assertIs<UnavailableException>(seen["use absent"]).message)
+        // Nothing declares `other`: said whether or not this process has one.
+        assertEquals(
+            "service other is not available to this plugin, which does not declare it in inject: add 'other' to its inject",
+            assertIs<NotDeclaredException>(seen["use undeclared"]).message,
+        )
+    }
+
+    // guarantee: sdk/optional-deps (the row's `inject` is rows.load's fifth
+    // argument, as rutis sends it, and a restarted row keeps it)
+    @Test
+    fun aRowsInjectArrivesWithRowsLoad() = runBlocking<Unit> {
+        val seen = ArrayList<List<String?>>()
+        val plugin = Rutis.define<Rutis.NoConfig>(name = "reader") { ctx, _ ->
+            seen += listOf(
+                ctx.use<Greeter>("row").greet("Kim"),
+                assertFailsWith<UnavailableException> { ctx.use<Greeter>("search") }.message,
+                assertFailsWith<NotDeclaredException> { ctx.use<Greeter>("other") }.message,
+                ctx.get<Greeter>("row")?.greet("Kim"),
+            )
+        }
+        val provider = Rutis.define<Rutis.NoConfig>(name = "provider") { ctx, _ -> ctx.provide("row", Hello("hi")) }
+        val rt = RuntimeState(listOf(plugin, provider))
+        rt.load("row:1.0", "provider", provider.name, null, mapOf("row" to mapOf("greet" to "sync")), emptyMap(), emptyList())
+        val placed = mapOf("scope" to emptyList<Any?>(), "id" to "reader")
+        rt.dispatch("", "rows.load", listOf("row:2.0", plugin.name, null, emptyList<Any?>(), listOf("row", "search"), emptyMap<String, Any?>(), placed))
+        rt.dispatch("", "rows.update", listOf("row:2.0", null))
+        val expected = listOf(
+            "hi Kim",
+            "service search is not available",
+            "service other is not available to this plugin, which does not declare it in inject: add 'other' to its inject",
+            "hi Kim",
+        )
+        assertEquals<List<List<String?>>>(listOf(expected, expected), seen)
     }
 }

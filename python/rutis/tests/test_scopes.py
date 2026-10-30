@@ -12,10 +12,11 @@ import background
 from rutis.runner import Runtime, handle_of, scoped_id
 
 
-def module(name: str, apply) -> str:
-    """Register a plugin module `name` whose `apply` is `apply`."""
+def module(name: str, apply, inject=()) -> str:
+    """Register a plugin module `name` whose `apply` is `apply`, declaring `inject`."""
     plugin = types.ModuleType(name)
     plugin.apply = apply
+    plugin.inject = list(inject)
     sys.modules[name] = plugin
     return name
 
@@ -47,7 +48,10 @@ class ScopedIds(background.TestCase):
 
         runtime = Runtime()
         provider = module("scope_provider", provide)
-        reader = module("scope_reader", read)
+        # The reader declares both names it reads: a plugin uses what it
+        # declares, so the outside read fails in the lookup (the scoped
+        # service is out of reach), not in the declaration check.
+        reader = module("scope_reader", read, inject=["x", "x@L"])
 
         async def run():
             await runtime.load("p", provider, {}, None, {"x": "L"})

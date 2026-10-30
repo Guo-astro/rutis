@@ -98,11 +98,13 @@ type row struct {
 	name string
 	// A plugin's name in this binary, or a plugin definition this runtime
 	// handed over (a *Definition back home).
-	entry    any
-	def      *Definition
-	config   any
-	exports  map[string]map[string]string
-	isolate  map[string]string
+	entry   any
+	def     *Definition
+	config  any
+	exports map[string]map[string]string
+	isolate map[string]string
+	// The row's own `inject` (rows.load): names its plugin may use too.
+	inject   []string
 	ctx      context.Context
 	cancel   context.CancelFunc
 	cleanups []func(context.Context) error
@@ -454,13 +456,13 @@ func printable(id string) string { return strings.ReplaceAll(id, "\x00", "@") }
 // ── Rows ─────────────────────────────────────────────────────────
 
 func (rt *runtimeState) load(ctx context.Context, key, entry string, config any, exports map[string]map[string]string, isolate map[string]string, scope []Scope) error {
-	return rt.loadNamed(ctx, key, key, entry, config, exports, isolate, scope)
+	return rt.loadNamed(ctx, key, key, entry, config, exports, isolate, nil, scope)
 }
 
 // loadNamed loads row key, whose id in the configuration is name.
 // entry is a plugin's name in this binary, or a plugin definition this
 // runtime handed over.
-func (rt *runtimeState) loadNamed(ctx context.Context, key, name string, entry any, config any, exports map[string]map[string]string, isolate map[string]string, scope []Scope) error {
+func (rt *runtimeState) loadNamed(ctx context.Context, key, name string, entry any, config any, exports map[string]map[string]string, isolate map[string]string, inject []string, scope []Scope) error {
 	def, err := rt.entryDefinition(entry)
 	if err != nil {
 		return err
@@ -468,7 +470,7 @@ func (rt *runtimeState) loadNamed(ctx context.Context, key, name string, entry a
 	if name == "" {
 		name = key
 	}
-	r := &row{key: key, name: name, entry: entry, def: def, config: config, exports: exports, isolate: isolate, scope: scope, loading: true}
+	r := &row{key: key, name: name, entry: entry, def: def, config: config, exports: exports, isolate: isolate, inject: inject, scope: scope, loading: true}
 	rt.mu.Lock()
 	if _, loaded := rt.rows[key]; loaded {
 		rt.mu.Unlock()
@@ -593,7 +595,7 @@ func (rt *runtimeState) update(ctx context.Context, key string, config any) erro
 	if err := rt.unload(ctx, key); err != nil {
 		return err
 	}
-	return rt.loadNamed(ctx, key, r.name, r.entry, config, r.exports, r.isolate, r.scope)
+	return rt.loadNamed(ctx, key, r.name, r.entry, config, r.exports, r.isolate, r.inject, r.scope)
 }
 
 // waitListeners waits for the row's running listeners, cancelled, at most
@@ -746,9 +748,6 @@ func (rt *runtimeState) control(ctx context.Context, method string, args []any) 
 		if len(args) > 2 {
 			config = args[2]
 		}
-		// args[4], the row's own `inject`, names services a Cordis row waits
-		// for in Cordis; a leaf runtime's rows wait in rutis, which gates
-		// every name its plugin injects (as in the Python runtime).
 		pairs, err := argument[[][2]string](args, 3)
 		if err != nil {
 			return nil, fmt.Errorf("isolate: %w", err)
@@ -761,6 +760,15 @@ func (rt *runtimeState) control(ctx context.Context, method string, args []any) 
 		if err != nil {
 			return nil, fmt.Errorf("exports: %w", err)
 		}
+		// args[4], the row's own `inject`: services its plugin may use too,
+		// as in the Python runtime. A Cordis row waits for them in Cordis;
+		// rutis gates a leaf row on its plugin's own list.
+		var inject []string
+		if len(args) > 4 && args[4] != nil {
+			if inject, err = argument[[]string](args, 4); err != nil {
+				return nil, fmt.Errorf("inject: %w", err)
+			}
+		}
 		// The seventh, from rutis 0.13: the row's scope chain and its id.
 		placed, err := argument[struct {
 			Scope []Scope
@@ -769,7 +777,7 @@ func (rt *runtimeState) control(ctx context.Context, method string, args []any) 
 		if err != nil {
 			return nil, fmt.Errorf("scope: %w", err)
 		}
-		return nil, rt.loadNamed(ctx, key, placed.ID, entry, config, exports, isolate, placed.Scope)
+		return nil, rt.loadNamed(ctx, key, placed.ID, entry, config, exports, isolate, inject, placed.Scope)
 	case "rows.update":
 		key, err := argument[string](args, 0)
 		if err != nil {
@@ -909,7 +917,8 @@ type Ctx struct {
 	row *row
 }
 
-// Use binds the service `name`, which Inject must list, to `target`: a
+// Use binds the service `name`, which the plugin or its row injects (in
+// Inject, in its row's `inject`, or by providing it now), to `target`: a
 // pointer to a struct of function fields, or to a *Service. A required
 // service that went is an error; an Optional one is read with Get (as
 // Rust's `require` reads only the injects).
@@ -930,8 +939,8 @@ func (c *Ctx) Use(name string, target any) error {
 	return service.bind(target)
 }
 
-// Get binds the optional service `name`, which Optional (or Inject) must
-// list, to `target` as Use does, and reports whether it is there: false,
+// Get binds the optional service `name`, in Optional or declared as for
+// Use, to `target` as Use does, and reports whether it is there: false,
 // with `target` untouched, when it is not. A host service is leased in if
 // rutis had it when the plugin started: one that comes later is sure to be
 // seen only once the plugin restarts (until then, one this process already
@@ -950,14 +959,25 @@ func (c *Ctx) Get(name string, target any) (bool, error) {
 	return true, service.bind(target)
 }
 
-// uses says whether the plugin may Use `name`: it is in Inject.
+// uses says whether the plugin may Use `name`: it or its row injects it
+// (Inject, its row's `inject`), or it provides it now (a plugin reads what
+// it provides). Not Optional, as Rust's `require`.
 func (c *Ctx) uses(name string) bool {
-	return contains(c.row.def.inject, name)
+	if contains(c.row.def.inject, name) || contains(c.row.inject, name) {
+		return true
+	}
+	// What the row provides changes as it provides, withdraws and unloads,
+	// under the runtime's lock.
+	id := c.row.id(name)
+	c.rt.mu.Lock()
+	defer c.rt.mu.Unlock()
+	return contains(c.row.provided, id)
 }
 
-// declares says whether the plugin may Get `name`: in Inject or Optional.
+// declares says whether the plugin may Get `name`: what it may Use, and
+// Optional.
 func (c *Ctx) declares(name string) bool {
-	return c.uses(name) || contains(c.row.def.optional, name)
+	return contains(c.row.def.optional, name) || c.uses(name)
 }
 
 // service is the service `name` as the row sees it now: one a row in this

@@ -164,6 +164,59 @@ test('a handle its row replaced answers with its own object\'s methods', async (
   expect(() => runtime.dispatch('coin', 'spin', [])).toThrow('coin has no method spin (methods: swap, toss)')
 })
 
+// A name declared nowhere is refused even when another row here provides
+// it (#676): the answer does not depend on who else is in the process.
+// guarantee: sdk/optional-deps
+test('a plugin uses what it or its row declares, not what a neighbour provides', async () => {
+  const dir = project({
+    'provider.ts': "export function apply(ctx) { ctx.provide('row', { hello: () => 'hi' }); ctx.provide('neighbour', { hello: () => 'hi' }) }\n",
+    'reader.ts': [
+      'export function apply(ctx) {',
+      '  const seen = globalThis.neighbourUse = {}',
+      "  // Its row's inject: declared for this plugin.",
+      "  seen.use = ctx.use('row').hello()",
+      "  seen.get = ctx.get('row').hello()",
+      "  for (const [key, run] of [['neighbour use', () => ctx.use('neighbour')], ['neighbour get', () => ctx.get('neighbour')]]) {",
+      "    try { run(); seen[key] = 'no error' } catch (error) { seen[key] = [error.message, error.code, error.data] }",
+      '  }',
+      '}',
+    ].join('\n'),
+  })
+  const runtime = new Runtime(dir)
+  await runtime.dispatch('', 'rows.load', ['p', './provider.ts', {}, [], [], null])
+  await runtime.dispatch('', 'rows.load', ['r', './reader.ts', {}, [], ['row'], null])
+  const seen = (globalThis as any).neighbourUse
+  expect(seen.use).toBe('hi')
+  expect(seen.get).toBe('hi')
+  expect(seen['neighbour use']).toEqual(["service neighbour is not available to this plugin, which does not declare it in inject: add 'neighbour' to its inject", 'not-declared', { service: 'neighbour' }])
+  expect(seen['neighbour get']).toEqual(["service neighbour is not available to this plugin, which does not declare it: add 'neighbour' to its optional (or to its inject, if it cannot run without it)", 'not-declared', { service: 'neighbour' }])
+})
+
+// Providing a name declares it: a plugin reads what it provides, with use and get alike.
+// guarantee: sdk/optional-deps
+test('a plugin may use and get a service it provides itself', async () => {
+  const dir = project({
+    'own.ts': [
+      'export function apply(ctx) {',
+      "  const withdraw = ctx.provide('own', { hello: () => 'hi' })",
+      '  const seen = globalThis.ownSeen = { use: ctx.use(\'own\').hello(), get: ctx.get(\'own\').hello() }',
+      '  withdraw()',
+      "  for (const [key, call] of [['use withdrawn', () => ctx.use('own')], ['get withdrawn', () => ctx.get('own')]]) {",
+      '    try { seen[key] = call() } catch (error) { seen[key] = [error.message, error.code] }',
+      '  }',
+      '}',
+    ].join('\n'),
+  })
+  const runtime = new Runtime(dir)
+  await runtime.dispatch('', 'rows.load', ['o', './own.ts', {}, [], [], null])
+  expect((globalThis as any).ownSeen).toEqual({
+    use: 'hi',
+    get: 'hi',
+    'use withdrawn': ["service own is not available to this plugin, which does not declare it in inject: add 'own' to its inject", 'not-declared'],
+    'get withdrawn': ["service own is not available to this plugin, which does not declare it: add 'own' to its optional (or to its inject, if it cannot run without it)", 'not-declared'],
+  })
+})
+
 // An optional service: `get` gives it when there (the object itself for a
 // row here, a proxy for the host's) and undefined when not; `use` reads
 // only what `inject` lists, as Rust's `require` (an optional one: add it to
@@ -181,7 +234,7 @@ export function apply(ctx) {
   seen.notes = ctx.get('notes')
   seen.absent = ctx.get('absent')
   seen.extra = ctx.get('extra')
-  for (const [key, run] of [['use absent', () => ctx.use('absent')], ['get undeclared', () => ctx.get('nope')]]) {
+  for (const [key, run] of [['use present', () => ctx.use('llm')], ['use absent', () => ctx.use('absent')], ['get undeclared', () => ctx.get('nope')]]) {
     try { run(); seen[key] = 'no error' } catch (error) { seen[key] = [error.name, error.message, error.code, error.data] }
   }
 }
@@ -196,6 +249,7 @@ export function apply(ctx) {
   expect(seen.notes).toBe((globalThis as any).notes)
   expect(seen.absent).toBeUndefined()
   expect(seen.extra).toBeUndefined()
+  expect(seen['use present']).toEqual(['BindingError', "service llm is not available to this plugin, which does not declare it in inject: add 'llm' to its inject", 'not-declared', { service: 'llm' }])
   expect(seen['use absent']).toEqual(['BindingError', "service absent is not available to this plugin, which does not declare it in inject: add 'absent' to its inject", 'not-declared', { service: 'absent' }])
   expect(seen['get undeclared']).toEqual(['BindingError', "service nope is not available to this plugin, which does not declare it: add 'nope' to its optional (or to its inject, if it cannot run without it)", 'not-declared', { service: 'nope' }])
 })

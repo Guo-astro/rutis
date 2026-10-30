@@ -116,6 +116,8 @@ final class Row: @unchecked Sendable {
     let config: Value
     let exports: [String: [String: String]]
     let isolate: [String: String]
+    /// The row's own `inject` (rows.load): names its plugin may use too.
+    let inject: [String]
     let scope: [Rutis.Advanced.Scope]
     /// An app's own plugin, installed by the app (`install`), not by a row
     /// of rutis's: its services are announced with `services.announce`.
@@ -146,8 +148,8 @@ final class Row: @unchecked Sendable {
     private var cancelled = false
 
     init(key: String, name: String, entry: String, definition: Rutis.Definition, config: Value,
-         exports: [String: [String: String]], isolate: [String: String], scope: [Rutis.Advanced.Scope],
-         own: Bool = false, settings: Events.Settings = Events.Settings())
+         exports: [String: [String: String]], isolate: [String: String], inject: [String] = [],
+         scope: [Rutis.Advanced.Scope], own: Bool = false, settings: Events.Settings = Events.Settings())
     {
         self.own = own
         self.settings = settings
@@ -158,6 +160,7 @@ final class Row: @unchecked Sendable {
         self.config = config
         self.exports = exports
         self.isolate = isolate
+        self.inject = inject
         self.scope = scope
     }
 
@@ -724,22 +727,22 @@ final class Runtime: @unchecked Sendable {
 
     /// Loads the row `key` running the plugin `entry` names in this binary.
     func load(key: String, name: String?, entry: String, config: Value, exports: [String: [String: String]],
-              isolate: [String: String], scope: [Rutis.Advanced.Scope]) async throws
+              isolate: [String: String], inject: [String] = [], scope: [Rutis.Advanced.Scope]) async throws
     {
         try await load(key: key, name: name, entry: entry, definition: try definition(entry), config: config,
-                       exports: exports, isolate: isolate, scope: scope)
+                       exports: exports, isolate: isolate, inject: inject, scope: scope)
     }
 
     /// Loads the row `key` running `definition`: the plugin `entry` names in
     /// this binary, or a plugin definition this runtime handed over (a
     /// copy, `entry` its name).
     func load(key: String, name: String?, entry: String, definition: Rutis.Definition, config: Value,
-              exports: [String: [String: String]], isolate: [String: String], scope: [Rutis.Advanced.Scope],
-              own: Bool = false) async throws
+              exports: [String: [String: String]], isolate: [String: String], inject: [String] = [],
+              scope: [Rutis.Advanced.Scope], own: Bool = false) async throws
     {
         let name = (name?.isEmpty ?? true) ? key : name!
         let row = Row(key: key, name: name, entry: entry, definition: definition, config: config, exports: exports,
-                      isolate: isolate, scope: scope, own: own, settings: settings)
+                      isolate: isolate, inject: inject, scope: scope, own: own, settings: settings)
         try lock.withLock {
             if closing { throw RutisError(name: "Error", message: "runtime is closing") }
             if rows[key] != nil { throw RutisError(name: "Error", message: "row \(key) is already loaded") }
@@ -838,7 +841,7 @@ final class Runtime: @unchecked Sendable {
         // Leaf plugins have no volatile fields: a new config restarts the row.
         try await unload(key)
         try await load(key: key, name: row.name, entry: row.entry, definition: row.definition, config: config, exports: row.exports,
-                       isolate: row.isolate, scope: row.scope)
+                       isolate: row.isolate, inject: row.inject, scope: row.scope)
     }
 
     /// Unloads every row, latest first. Whether every cleanup finished
@@ -936,8 +939,10 @@ final class Runtime: @unchecked Sendable {
                 plugin = try definition(entry)
             }
             let config = args.count > 2 ? args[2] : .undefined
-            // args[4], the row's `inject`, names services a Cordis row waits
-            // for in Cordis; a leaf runtime's rows wait in rutis.
+            // args[4], the row's own `inject`: services its plugin may use
+            // too. A Cordis row waits for them in Cordis; rutis gates a leaf
+            // row on its plugin's own list.
+            let inject: [String] = (try? argument(args, 4, [String]?.self)) ?? []
             let pairs: [[String]] = (try? argument(args, 3, [[String]]?.self)) ?? []
             var isolate: [String: String] = [:]
             for pair in pairs where pair.count == 2 { isolate[pair[0]] = pair[1] }
@@ -949,7 +954,7 @@ final class Runtime: @unchecked Sendable {
             }
             let placed = (try argument(args, 6, Placed?.self)) ?? Placed()
             try await load(key: key, name: placed.id, entry: entry, definition: plugin, config: config, exports: exports, isolate: isolate,
-                           scope: placed.scope ?? [])
+                           inject: inject, scope: placed.scope ?? [])
             return .undefined
         case "rows.update":
             let key: String = try argument(args, 0)
@@ -1008,16 +1013,23 @@ final class Runtime: @unchecked Sendable {
 
     // ── Using services ───────────────────────────────────────────────
 
-    /// Whether `row`'s plugin may `use` `name`: it is in `inject` (an
-    /// optional one is read with `get`, as Rust's `require` reads only the
-    /// injects).
+    /// Whether `row`'s plugin may `use` `name`: it or its row injects it
+    /// (`inject`, its row's `inject`), or it provides it now (a plugin reads
+    /// what it provides). Not `optional`, as Rust's `require`.
     func uses(_ row: Row, _ name: String) -> Bool {
-        row.definition.inject.contains(name)
+        if row.definition.inject.contains(name) || row.inject.contains(name) {
+            return true
+        }
+        // What the row provides changes as it provides, withdraws and
+        // unloads, under the lock.
+        let id = row.id(name)
+        return lock.withLock { row.provided.contains(id) }
     }
 
-    /// Whether `row`'s plugin may `get` `name`: in `inject` or `optional`.
+    /// Whether `row`'s plugin may `get` `name`: what it may `use`, and
+    /// `optional`.
     func declares(_ row: Row, _ name: String) -> Bool {
-        uses(row, name) || row.definition.optional.contains(name)
+        row.definition.optional.contains(name) || uses(row, name)
     }
 
     /// The service `name` as `row` uses it (`ctx.use`): by its own id.

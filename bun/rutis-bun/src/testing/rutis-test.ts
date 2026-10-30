@@ -11,7 +11,7 @@
 import { Client } from '../client.ts'
 import { rmSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { PLUGIN_API } from '../plugin.ts'
+import { PLUGIN_API, USES_ANY } from '../plugin.ts'
 import { CONTROL } from './service.ts'
 
 // The plugin a service of the test is a row of (./service.ts).
@@ -37,6 +37,8 @@ function inferred(object) {
 
 export default Object.freeze({
   [LEAF]: true,
+  // The test's calls name any service (`t.service`): declared or not.
+  [USES_ANY]: true,
   name: 'rutis-test',
   inject: ['rutis-host/test'],
   provides: {},

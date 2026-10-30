@@ -91,6 +91,77 @@ struct OptionalDepsTests {
                        #"not-declared: service other is not available to this plugin, which does not declare it in inject: add 'other' to its inject {"service":"other"}"#)
     }
 
+    // guarantee: sdk/optional-deps (a row's own `inject` counts as declared:
+    // the plugin uses it without listing it, and it is unavailable rather
+    // than not-declared when nothing provides it)
+    func aRowsInjectCountsAsDeclared() throws {
+        let definition = Rutis.define(Plugin(name: "reader") { _ in })
+        let runtime = Runtime([], project: "")
+        runtime.lock.withLock {
+            runtime.hosts["row"] = ["greet": "sync"]
+            runtime.hosts["neighbour"] = ["greet": "sync"]
+        }
+        let row = Row(key: "row:1.0", name: "reader", entry: "reader", definition: definition, config: .undefined,
+                      exports: [:], isolate: [:], inject: ["row", "search"], scope: [])
+        let ctx = Rutis.Ctx(runtime: runtime, row: row)
+        XCTAssertNotNil(try ctx.use("row"), "use finds a service in the row's inject")
+        XCTAssertNotNil(try ctx.get("row"), "get finds a service in the row's inject")
+        XCTAssertEqual(Self.failure { try ctx.use("search") }, #"unavailable: service search is not available {"service":"search"}"#)
+        // Declared nowhere, though this process has it: say what to declare.
+        XCTAssertEqual(Self.failure { try ctx.use("neighbour") },
+                       #"not-declared: service neighbour is not available to this plugin, which does not declare it in inject: add 'neighbour' to its inject {"service":"neighbour"}"#)
+        XCTAssertEqual(Self.failure { try ctx.get("neighbour") },
+                       #"not-declared: service neighbour is not available to this plugin, which does not declare it: add 'neighbour' to its optional (or to its inject, if it cannot run without it) {"service":"neighbour"}"#)
+    }
+
+    // guarantee: sdk/optional-deps (the row's `inject` is rows.load's fifth
+    // argument, as rutis sends it, and a restarted row keeps it)
+    func aRowsInjectArrivesWithRowsLoad() async throws {
+        let lines = Lines()
+        let reader = Rutis.define(Plugin(name: "reader") { ctx in
+            for name in ["row", "search", "other"] { lines.add(Self.failure { try ctx.use(name) }) }
+            lines.add((try? ctx.get("row")) != nil ? "get row" : "no row")
+        })
+        let runtime = Runtime([reader], project: "")
+        runtime.lock.withLock { runtime.hosts["row"] = ["greet": "sync"] }
+        _ = try await runtime.control("rows.load", [
+            .data(.string("row:1.0")), .data(.string("reader")), .undefined, .data(.array([])),
+            .data(.array([.string("row"), .string("search")])), .data(.object([])),
+            .data(.object([("scope", .array([])), ("id", .string("reader"))])),
+        ])
+        _ = try await runtime.control("rows.update", [.data(.string("row:1.0")), .undefined])
+        let once = [
+            "no error",
+            #"unavailable: service search is not available {"service":"search"}"#,
+            #"not-declared: service other is not available to this plugin, which does not declare it in inject: add 'other' to its inject {"service":"other"}"#,
+            "get row",
+        ]
+        XCTAssertEqual(lines.all, once + once)
+    }
+
+    // guarantee: sdk/optional-deps (a name the plugin provides itself counts
+    // as declared while it provides it; withdrawn, it is like an undeclared
+    // one, as for a Rust plugin's strict read)
+    func aPluginReadsWhatItProvidesWhileItProvidesIt() async throws {
+        let lines = Lines()
+        let local = Rutis.define(Plugin(name: "local") { ctx in
+            let withdraw = ctx.provide("local", Oracle())
+            lines.add(Self.failure { try ctx.use("local") })
+            lines.add((try? ctx.get("local")) != nil ? "get local" : "no local")
+            withdraw()
+            lines.add(Self.failure { try ctx.use("local") })
+            lines.add(Self.failure { try ctx.get("local") })
+        })
+        let runtime = Runtime([local], project: "")
+        try await runtime.load(key: "a", name: nil, entry: "local", config: .undefined, exports: [:], isolate: [:], scope: [])
+        XCTAssertEqual(lines.all, [
+            "no error",
+            "get local",
+            #"not-declared: service local is not available to this plugin, which does not declare it in inject: add 'local' to its inject {"service":"local"}"#,
+            #"not-declared: service local is not available to this plugin, which does not declare it: add 'local' to its optional (or to its inject, if it cannot run without it) {"service":"local"}"#,
+        ])
+    }
+
     // guarantee: sdk/optional-deps (the manifest and rows.schema report
     // `optional`, [] when left out)
     func theManifestReportsOptional() throws {

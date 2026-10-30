@@ -10,7 +10,7 @@
 import { Process } from '../client.mjs'
 import { rmSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { PLUGIN_API } from '../leaf.mjs'
+import { PLUGIN_API, USES_ANY } from '../leaf.mjs'
 import { CONTROL } from './service.mjs'
 
 // The plugin a service of the test is a row of (./service.mjs).
@@ -38,6 +38,8 @@ function inferred(object) {
 
 export default Object.freeze({
   [LEAF]: true,
+  // The test's calls name any service (`t.service`): declared or not.
+  [USES_ANY]: true,
   name: 'rutis-test',
   inject: ['rutis-host/test'],
   provides: {},

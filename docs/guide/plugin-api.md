@@ -26,8 +26,8 @@ TypeScript / JavaScript 插件（`@arcships/rutis`）、Python 插件（`rutis`�
 
 | 方法 | 作用 |
 | --- | --- |
-| `ctx.use(name)` | `inject` 里声明的服务。同一个运行时进程里的插件提供的，是对象本身；其他进程、其他语言、其他机器提供的，是代理。插件和它的行都没在 `inject` 里声明的服务拿不到时，报 `service <name> is not available to this plugin, which does not declare it in inject: add '<name>' to its inject`（Go：`… in Inject: add "<name>" to its Inject`；只有声明了的服务才一定给它）；调用需要调用方的行的宿主服务方法（例如带 `&Ctx` 参数的 Rust 方法）时，也提示把服务写进 `inject` |
-| `ctx.get(name)` | `optional` 里声明的服务：`ctx.use` 会给的那个；插件启动时它不在，则是空值（`undefined`、`None`；Go 的 `ctx.Get(name, &target)` 返回 `false, nil`；Swift `nil`，Kotlin `null`）。哪里都没声明的名字报 `service <name> is not available to this plugin, which does not declare it: add '<name>' to its optional (or to its inject, if it cannot run without it)`（Go：`add "<name>" to its Optional (or to its Inject, …)`） |
+| `ctx.use(name)` | `inject` 里声明的服务、行 `inject` 里声明的，或插件自己正提供着的；只写在 `optional` 里的不算（与 Rust 的 `ctx.require` 相同），用 `ctx.get` 读。只写在行 `inject` 里的名字，目前只在进程里已经有它时拿得到（同一进程的行提供的，或别的行为自己租借进来的；rutis 还不为运行时的行租借它）。同一个运行时进程里的插件提供的，是对象本身；其他进程、其他语言、其他机器提供的，是代理。哪里都没声明的名字，不管有没有人提供，都报 `service <name> is not available to this plugin, which does not declare it in inject: add '<name>' to its inject`（Go：`… in Inject: add "<name>" to its Inject`；只有声明了的服务才一定给它）；调用需要调用方的行的宿主服务方法（例如带 `&Ctx` 参数的 Rust 方法）时，也提示把服务写进 `inject` |
+| `ctx.get(name)` | 读 `optional` 里声明的服务，`ctx.use` 认的名字也认：`ctx.use` 会给的那个；插件启动时它不在，则是空值（`undefined`、`None`；Go 的 `ctx.Get(name, &target)` 返回 `false, nil`；Swift `nil`，Kotlin `null`）。哪里都没声明的名字，不管有没有人提供，都报 `service <name> is not available to this plugin, which does not declare it: add '<name>' to its optional (or to its inject, if it cannot run without it)`（Go：`add "<name>" to its Optional (or to its Inject, …)`） |
 | `ctx.provide(name, value)` | 提供服务，直到插件卸载，或调用返回的函数。服务自动对外，别的语言、别的进程按名字使用；`provides` 没有声明它时，方法取 `value` 上的公开方法（JavaScript：自身和原型链上的函数，不含 `constructor`；Python：不以 `_` 开头的可调用属性；Go：导出方法），都按 `async` 调用，字段不算方法。推断按各语言自己的规则，同一个服务用两种语言写时方法可能不同：继承 `EventEmitter` 的 JavaScript 类也会带上 `on`、`emit` 等方法；只想对外其中几个时在 `provides` 里列出它们 |
 | `ctx.effect(cleanup)` | 插件卸载时运行 `cleanup`（可以是 async） |
 | `ctx.on(name, listener, options?)` | 监听事件：不论在哪里发出（另一个插件、另一个运行时、宿主、相连的节点），只要是这个 root 总线上的同名事件，就送到 `listener`。随插件卸载注销；返回的函数立即注销。见下面的[事件](#事件) |
@@ -36,7 +36,7 @@ TypeScript / JavaScript 插件（`@arcships/rutis`）、Python 插件（`rutis`�
 
 一个跨过会话的错误被再次抛出时，Node、Bun、Python 和 Go 都带着它完整的错误图（cause、`AggregateError` 的子错误）再跨一次，不限于聚合的情形：Node 解码出的是真正的 `Error` 对象，重新编码时自然带上整个图，Python 和 Go 的 `encode_error` / `encodeError` 把 `RemoteError` 的图拼进去（节点追加、引用偏移）以保持一致。
 
-清理按注册的相反顺序运行：`apply` 返回的清理函数最先，然后是 `ctx.effect` 注册的。
+清理按注册的相反顺序运行：`apply` 返回的清理函数最先，然后是 `ctx.effect` 注册的。Node 运行时上，Cordis 按这个顺序同时开始它们，异步的清理不等前一个完成。
 
 Go 里：`ctx.Use(name, &target)` 把服务绑定到函数字段的结构体（或 `*advanced.Service`）；`ctx.Provide(name, value)`；`ctx.Effect(func(context.Context) error)`；`ctx.Go(task)` 起一个卸载时停下的 goroutine。`*rutis.Ctx` 是插件卸载时取消的 `context.Context`。
 

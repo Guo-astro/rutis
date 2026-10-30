@@ -93,9 +93,9 @@ export function methodsOf(object: unknown): Set<string> {
 // contain NUL and a label may not be empty, so no two pairs share an id.
 
 // What a plugin using `name`, which neither its `inject` nor its row's
-// `inject` declares (one only in its `optional` is read with `get`), is
-// told when the service is not there for it: what to declare, not that it
-// is missing (#676). The same in every runtime and testing tool.
+// `inject` declares and which it does not provide itself (one only in its
+// `optional` is read with `get`), is told whether or not the service is
+// there: what to declare, not that it is missing (#676). The same in every runtime and testing tool.
 export const undeclaredUse = UNDECLARED
 
 export function scopedId(name: string, label?: string | null): string {
@@ -336,28 +336,23 @@ export class Runtime {
     for (const [name, methods] of Object.entries(row.exports)) {
       this.#slots.set(idIn(row, name), { row: key, methods: new Set(Object.keys(methods ?? {})), object: undefined, handle: null, generation: 0 })
     }
-    // What it may `use`: its plugin's `inject` and its row's `inject`.
-    // What it may `get`: those and its plugin's `optional` (as Rust's
-    // `require` reads only the injects).
+    // What it may `use`: what it or its row injects (as Rust's `require`
+    // reads only the injects), and what it provides; the test driver,
+    // anything. What it may `get`: that and its plugin's `optional`.
     const uses = new Set([...plugin.inject, ...(inject ?? [])])
-    const declares = new Set([...uses, ...plugin.optional])
+    const mayUse = (name: string) => plugin.usesAny || uses.has(name) || row.provided.includes(idIn(row, name))
+    const mayGet = (name: string) => mayUse(name) || plugin.optional.includes(name)
     const ctx = {
       use: (name: string) => {
-        // One only in its plugin's `optional` is read with `get`, never
-        // with `use`, whether or not it is there (as Rust's `require`).
-        if (!uses.has(name) && plugin.optional.includes(name)) throw notDeclared(name)
-        try {
-          return this.lookup(idIn(row, name))
-        } catch (error) {
-          // Not given to it, though it may run: say so (#676). An
-          // optional one is read with `get`.
-          if (!uses.has(name)) throw notDeclared(name)
-          throw error
-        }
+        // Not injected by it or its row (an optional one is read with
+        // `get`): say what to declare, not that it is missing (#676),
+        // whether or not another row here provides it.
+        if (!mayUse(name)) throw notDeclared(name)
+        return this.lookup(idIn(row, name))
       },
       // An optional service: the service when there, else undefined.
       get: (name: string) => {
-        if (!declares.has(name)) throw notDeclaredOptional(name)
+        if (!mayGet(name)) throw notDeclaredOptional(name)
         return this.#find(idIn(row, name))
       },
       provide: (name: string, value: unknown) => this.provide(row, name, value),

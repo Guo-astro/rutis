@@ -23,12 +23,13 @@
 //! | 2 | B's, over a connection to B (the Python row and runtime removed) | `node B` |
 //! | 3 | the Rust row `fixture/calendar` (the dial row removed) | `rust` |
 //!
-//! A probe that declares no service (it keeps running while `planner`
-//! restarts) calls `planner.plan` without pause across each switch.
+//! A probe with `planner` as its `optional` (it keeps running while
+//! `planner` restarts) calls `planner.plan` without pause across each
+//! switch.
 
 use std::time::Instant;
 
-use rutis_e2e::{hang_guard, Host, Lang, Probe, Scenario};
+use rutis_e2e::{hang_guard, Host, Probe, Scenario};
 use serde_json::{json, Value};
 
 /// The service that does not move: its row is the same at every stage.
@@ -352,7 +353,7 @@ fn end_a(host: A, a: &mut Host, watch: &Probe, on: &str, pid: u32) {
 #[test]
 fn an_implementation_moves_from_python_to_a_node_to_rust_while_the_host_runs() {
     let s = Scenario::new("migration");
-    let watch = s.probe("watch", Lang::Node, &[]);
+    let watch = s.watch("watch", &["planner"]);
     let token = s.secret();
 
     // 1. A: `planner` with the Python `calendar`.
@@ -408,7 +409,7 @@ fn an_implementation_moves_from_python_to_a_node_to_rust_while_the_host_runs() {
 #[test]
 fn an_implementation_moves_from_python_to_rust_while_the_host_runs() {
     let s = Scenario::new("migration-rust");
-    let watch = s.probe("watch", Lang::Node, &[]);
+    let watch = s.watch("watch", &["planner"]);
     let token = s.secret();
     let (mut a, before) = stage_1(&s, A::Fixture, &watch, &token);
     let pid = a.pid();
@@ -434,7 +435,7 @@ fn an_implementation_moves_from_python_to_rust_while_the_host_runs() {
 #[test]
 fn an_implementation_moves_from_python_to_a_node_while_rutis_host_runs() {
     let s = Scenario::new("migration-run");
-    let watch = s.probe("watch", Lang::Node, &[]);
+    let watch = s.watch("watch", &["planner"]);
     let token = s.secret();
     let (mut a, before) = stage_1(&s, A::Run, &watch, &token);
     let pid = a.pid();
