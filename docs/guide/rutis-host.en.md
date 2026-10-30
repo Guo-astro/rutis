@@ -287,7 +287,7 @@ Installing by hand works as before, with the same row names: each language's plu
 | --- | --- |
 | `rutis-host run [rutis.json]` | Runs the configuration (reading it again while it runs on SIGUSR1 on Unix, or with `--watch-config`; see [Changing the configuration while it runs](#changing-the-configuration-while-it-runs)) and prints each row's status changes, the connections of connection rows and local runtimes that end (see [What `run` prints](#what-run-prints)). Press Ctrl-C to stop (see [Stopping and exit status](#stopping-and-exit-status)). |
 | `rutis-host dev [directory]` | Runs a plugin project with its `rutis.dev.json` file and follows its changes: a changed file reloads the rows whose file it is, a changed `rutis.dev.json` is read again; a Go or Swift project is rebuilt (`go build`, `swift build`) when its sources change, restarting only its runtime (see [Developing a plugin with `dev`](#developing-a-plugin-with-dev)). |
-| `rutis-host check [rutis.json] [--strict]` | Without running any plugin, checks that each row can run (see [Checking a configuration](#checking-a-configuration)) and prints its version, dependencies, provided services, and configuration schema, and lists every Go and Swift binary (runtime name, platform, SDK, plugin API, plugins; a binary of an SDK older than rutis 0.13 cannot run). Exits with a nonzero status if a row or binary cannot run. A dependency no row declares, which another row may provide at runtime, is a warning; with `--strict`, an error. Without `rutis.json`, checks the plugin project in the current directory. |
+| `rutis-host check [rutis.json] [--strict]` | Without running any plugin, checks that each row can run (see [Checking a configuration](#checking-a-configuration)) and prints its version, dependencies, provided services, and configuration schema, and lists every Go and Swift binary (runtime name, platform, SDK, plugin API, plugins; a binary of an SDK older than rutis 0.13 cannot run). Exits with a nonzero status if a row or binary cannot run. A dependency no row declares, which another row may provide at runtime, a misspelt row field and a row id used twice are warnings; with `--strict`, errors. Without `rutis.json`, checks the plugin project in the current directory. |
 | `rutis-host status [rutis.json \| directory]` | Asks the `rutis-host` running that configuration (or that `dev` project) what it does now: each row's state and why, each service's provider, the runtimes, the calls not returned yet (see [Seeing the current state](#seeing-the-current-state)); not on Windows. |
 | `rutis-host call [--config <rutis.json \| directory>] <service>.<method> [arguments…]` | Calls a service in the `rutis-host` running that configuration (or that `dev` project), as the host, and prints the result as JSON; `run` and `dev` both accept it (see [Calling a service](#calling-a-service)); not on Windows. |
 | `rutis-host new <name> --lang node\|bun\|python\|go\|swift` | Creates a plugin project. |
@@ -410,6 +410,20 @@ rutis-host: warning: <row>: <service> is declared only by row <disabled row>, wh
 When a missing name is a character or two from a declared one, the warnings above and the line saying what to do about a missing service end with `; did you mean <name>?`.
 
 `check --strict` makes these warnings errors: stderr says `rutis-host: error: …`, the row says `cannot run with --strict: nothing declares <service>` (`only disabled rows declare <service>` for one only disabled rows declare), and the exit status is 1. Use it to make sure before deploying (in CI, say) that every dependency has a declared provider.
+
+Two mistakes in the file itself are warnings too, which `--strict` makes errors (0.19.1 passed them with 0): a row field the loader does not know (a misspelt one, with the field meant when it is close to one), and a row id used twice (the later row is skipped). Each counts as a row that cannot run:
+
+```console
+$ rutis-host check --strict
+rutis-host: error: rutis.json: rows[0] (id "greeter"): unknown field `confg` is ignored (did you mean `config`?); a row has `id`, `name`, `config`, `inject`, `isolate`, `disabled`, `group`, `instanced`
+rutis-host: error: duplicate id "greeter": the later row is skipped
+greeter (file:///srv/app/greeter.mjs): ok
+  inject: []
+  provides: {}
+rutis-host: 2 row(s) or binaries cannot run
+```
+
+Without `--strict` the same two lines say `rutis-host: warning:`, and `check` exits with 0 if nothing else fails.
 
 In two more cases every row says `ok` but some rows will not start, and `check` reports an error on stderr and exits with 1 (only a warning in 0.17.2):
 
@@ -621,7 +635,13 @@ connections:
 - `connections`: a line per connection row (`rutis-host/dial`, `rutis-host/listen`); the part is left out when there are none. A dial row says `connected` or `disconnected`; a listen row, the ids connected now (`phone: kim, lee`), `none connected` when none is. 0.19 does not list the remote plugins each connection registered.
 - rutis sets no time limit on calls: how long to wait is the caller's decision (how each language limits a call: [plugin API](plugin-api.en.md)). This only shows which call has waited how long.
 
-`run` and `dev` open a local socket only the user can use (mode 0600, inside the user's own 0700 directory) that answers `status`, which changes nothing, and `rutis-host call` (see [Calling a service](#calling-a-service)). It lives under `rutis-host-<uid>/` in the system's runtime directory (`$XDG_RUNTIME_DIR`, else the temporary directory; `/tmp` when that path would be too long), named by a hash of the configuration's path, so nothing is written into the project; the host removes it when it ends (and the directory, when no other host's socket is in it); a host killed outright (`kill -9`) cannot, and the next host for the same configuration replaces it. `status` finds the directory by its own environment: run as another user, with `sudo`, or from a terminal with other variables, it looks elsewhere and says no host runs. When another host already answers for the same configuration, the later one runs as usual with a warning. Not on Windows in 0.18.
+`run` and `dev` open a local socket only the user can use (mode 0600, inside the user's own 0700 directory) that answers `status`, which changes nothing, and `rutis-host call` (see [Calling a service](#calling-a-service)). It lives under `rutis-host-<uid>/` in the system's runtime directory (`$XDG_RUNTIME_DIR`, else the temporary directory; `/tmp` when that path would be too long), named by a hash of the configuration's path, so nothing is written into the project; the host removes it when it ends (and the directory, when no other host's socket is in it); a host killed outright (`kill -9`) cannot, and the next host for the same configuration replaces it. `status` finds the directory by its own environment: run as another user, with `sudo`, or from a terminal with other variables (a host run as a service has its own `XDG_RUNTIME_DIR`, or none), it looks elsewhere. Then it says where it looked, and exits with 1:
+
+```
+rutis-host: no rutis-host answers for /srv/app/rutis.json at /run/user/1000/rutis-host-1000/5d1c0f3a9e2b7c44.sock (XDG_RUNTIME_DIR=/run/user/1000): a host started in another environment (a service, another user) has its socket where that environment says, so run `rutis-host status` as its user with its XDG_RUNTIME_DIR; if none runs, start it with `rutis-host run` or `rutis-host dev`, or name the configuration it runs (rutis-host status path/to/rutis.json)
+```
+
+Without the variable, the parenthesis says `XDG_RUNTIME_DIR is not set` (one that is not an absolute path: `XDG_RUNTIME_DIR=<value> is not absolute, so not used`). For a host run as a service, see [Deployment](#deployment). When another host already answers for the same configuration, the later one runs as usual with a warning. Not on Windows in 0.18.
 
 When stopping does not finish by the deadline (see [Stopping and exit status](#stopping-and-exit-status)), the calls not returned are listed too, after the plugins still stopping: `call not returned: caller → slow.wait  12s`.
 
@@ -656,7 +676,7 @@ $ rutis-host call forecast.week '{"days": 3}'
 | An argument of the wrong type | `rutis-host: forecast.today: argument 1 should be a string, got 3` |
 | The method throws | `rutis-host: call to forecast.today failed: KeyError: 'region'`, then the row it failed in (`in weather:`) and its stack |
 | The method takes the calling row's `&Ctx` | `rutis-host: tools.register needs a calling row; call it from a plugin, not from rutis-host call` |
-| No host running | `rutis-host: no rutis-host run or dev is running for /work/weather (start one, or name its configuration with --config)` |
+| No host answering (none runs, or it runs in another environment, see [Seeing the current state](#seeing-the-current-state)) | `rutis-host: no rutis-host answers for /work/weather at /run/user/1000/rutis-host-1000/9b0e4d2a7c13f865.sock (XDG_RUNTIME_DIR=/run/user/1000): a host started in another environment (a service, another user) has its socket where that environment says, so run `rutis-host call` as its user with its XDG_RUNTIME_DIR; if none runs, start one with `rutis-host run` or `rutis-host dev`, or name its configuration with --config` |
 
 `run` and `dev` both accept `call`. Who can connect is as for `status`: only the user can use the socket. Not on Windows (`rutis-host call is not available on Windows`).
 
@@ -762,7 +782,7 @@ In the Node, Bun and Python runtimes, when a service method holds the runtime fo
 
 Relative paths in the file are resolved from the directory containing the file.
 
-An unknown field is an error: the host does not start, and says the file, the line and column, and the fields allowed there. An unknown field in `rows` is a warning: the row runs (without it), and before starting the host says the file, which row, and the fields a row has. A misspelt field is never silently ignored.
+An unknown field is an error: the host does not start, and says the file, the line and column, and the fields allowed there. An unknown field in `rows` is a warning: the row runs (without it), and before starting the host says the file, which row, the field meant when it is close to one, and the fields a row has (`check --strict` fails on it, see [Checking a configuration](#checking-a-configuration)). A misspelt field is never silently ignored.
 
 ### `format`
 
@@ -788,7 +808,17 @@ The endpoint ID of this node. Connected nodes see this name. Defaults to `host`.
 | `go` | `dir`, `binaries`, `start` (`on-demand` by default / `eager`), `idle` (seconds, default 60), `project` (default `.`), `restart` | Go plugins: one runtime process per binary. Every executable in `dir` that contains the Go SDK's marker counts (the directory is trusted as a whole and should be dedicated); `binaries` lists single files. A runtime is named after its file (`netkit` → `go-netkit`). An on-demand runtime starts when a row first uses it and stops after `idle` seconds without one (objects it handed out and that are held elsewhere do not count as use: once it stopped, calls on them fail with `peer-gone`); `eager` starts all and keeps them running (not together with `idle`). A replaced binary takes effect when the host restarts. |
 | `swift` | as `go` | Swift plugins (macOS): as `go`, for binaries built with the Swift SDK (`plugin-binary` → `swift-plugin-binary`); see [Swift plugins](swift-plugin.en.md). |
 
-If a runtime package is missing, startup fails and prints an installation command. When the Python environment does not exist (the `.venv/bin/python` that `python` names has not been created) or its interpreter lacks the `rutis` package, the error gives the commands that create the environment and install the `rutis` of this host's version (`uv venv <environment>` and `uv pip install --python <interpreter> rutis==<version>`, or `python3 -m venv` and pip); with no environment at all and only a `python3` without `rutis`, it gives the commands that create `<project>/.venv`, which the host then uses by itself.
+If a runtime package is missing, startup fails and prints an installation command. A path the file names that is not there is an error naming it, in `run`, `dev`, `check` and `add` alike, never passed over for another (0.19.1 used the project's own package without a word):
+
+```
+rutis-host: runtimes.node.runtime names /srv/app/no-runtime, which does not exist
+rutis-host: runtimes.node.runtime names /srv/app/empty, which is no npm package (it has no package.json)
+rutis-host: runtimes.py.project names /srv/app/plugins, which does not exist
+```
+
+`runtimes.bun.runtime` says the same. A `python` or `program` that is not there was already an error naming it.
+
+When the Python environment does not exist (the `.venv/bin/python` that `python` names has not been created) or its interpreter lacks the `rutis` package, the error gives the commands that create the environment and install the `rutis` of this host's version (`uv venv <environment>` and `uv pip install --python <interpreter> rutis==<version>`, or `python3 -m venv` and pip); with no environment at all and only a `python3` without `rutis`, it gives the commands that create `<project>/.venv`, which the host then uses by itself.
 
 Rows using a language that `runtimes` does not declare (a `py:llmbox` row without `runtimes.py`, say) enable that runtime with its defaults, as if the file said `"py": {}`, with a warning on stderr:
 
@@ -893,10 +923,98 @@ The environment cannot be changed from outside the process, so these tokens cann
 
 ## Deployment
 
-Place `rutis.json`, the Node project (with plugins and `@arcships/rutis-runtime` installed), the Python environment (with `rutis` and plugins installed), and the Go and Swift plugin directories (binaries for the platform) together. Run `rutis-host run /srv/app/rutis.json` under a process manager such as systemd. When `rutis-host` exits, the runtime processes it started exit as well.
+Place `rutis.json`, the Node project (with plugins and `@arcships/rutis-runtime` installed), the Python environment (with `rutis` and plugins installed), and the Go and Swift plugin directories (binaries for the platform) together. Run `rutis-host run /srv/app/rutis.json` under a process manager such as systemd or launchd. When `rutis-host` exits, the runtime processes it started exit as well.
 
-To apply a changed `rutis.json`, use `systemctl reload` (`ExecReload=/bin/kill -USR1 $MAINPID`), or run with `--watch-config`; see [Changing the configuration while it runs](#changing-the-configuration-while-it-runs).
+### systemd
+
+A complete unit, `/etc/systemd/system/rutis.service`, for a host run as the user `app`:
+
+```ini
+[Unit]
+Description=rutis-host
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=app
+WorkingDirectory=/srv/app
+ExecStart=/usr/local/bin/rutis-host run /srv/app/rutis.json
+ExecReload=/bin/kill -USR1 $MAINPID
+KillMode=mixed
+TimeoutStopSec=20
+Restart=on-failure
+# Where `rutis-host status` and `call` find it (below).
+RuntimeDirectory=rutis
+RuntimeDirectoryMode=0700
+Environment=XDG_RUNTIME_DIR=/run/rutis
+
+[Install]
+WantedBy=multi-user.target
+```
+
+- `ExecReload` makes `systemctl reload rutis` read `rutis.json` again (see [Changing the configuration while it runs](#changing-the-configuration-while-it-runs)). `systemctl reload` only sends the signal: it returns 0 when the reload is refused too. The refusal is only in the host's log: check it with `journalctl -u rutis -n 20`, which has `rutis-host: reloaded <file> (…)` or `rutis-host: reload rejected: <reason>; nothing changed`.
+- `KillMode=mixed`: when stopping, systemd sends SIGTERM to `rutis-host` alone, which unloads the rows. By default (`KillMode=control-group`) systemd also sends SIGTERM to the runtime processes, which then exit before their cleanups run.
+- `TimeoutStopSec` longer than the cleanup deadline (10 seconds by default, `--shutdown-timeout`), so systemd does not kill the host while cleanups run.
+- `Restart=on-failure` starts the host again when it exits with a status other than 0: 1 (it could not start or run), 2 (stopping did not finish), 3 (a runtime with `"restart": "exit"` ended; see [When a runtime ends](#when-a-runtime-ends)).
+- The Node runtime (and the npm install's launcher) runs `node` from `PATH`; `bun` and `python3` are found there too when the file does not name them. When they are not in systemd's `PATH` (`/usr/local/bin:/usr/bin:/bin`, …), add `Environment=PATH=<Node's directory>:/usr/bin:/bin`.
+- A service has its own environment: no `XDG_RUNTIME_DIR` unless the unit gives one (the unit above gives `/run/rutis`, which systemd creates for `app`), so its socket is not where `rutis-host status` from a login terminal looks. Run `status` and `call` in the service's environment, as its user with its `XDG_RUNTIME_DIR`:
+
+  ```console
+  $ sudo -u app env XDG_RUNTIME_DIR=/run/rutis /usr/local/bin/rutis-host status /srv/app/rutis.json
+  ```
+
+  Otherwise they say where they looked (see [Seeing the current state](#seeing-the-current-state)), not that the host is not running: do not start a second host because of it.
 
 Installed with npm (`ExecStart=/srv/app/node_modules/.bin/rutis-host run /srv/app/rutis.json`), `MAINPID` is the launcher `bin/rutis-host.mjs`, a Node process that runs the `rutis-host` binary. It passes SIGTERM and SIGUSR1 on to the binary, so `systemctl stop` and `systemctl reload` work as with the binary, and it exits as the binary does. It does not pass on SIGINT and SIGHUP (a terminal sends them to the binary itself): a SIGINT sent to the launcher alone does nothing, so stop it with SIGTERM. The binary from GitHub Releases or crates.io, and the one a PyPI install puts in the environment (`.venv/bin/rutis-host`), have no launcher.
 
-When stopping, have the process manager send SIGTERM to `rutis-host` alone and let it unload the rows. By default (`KillMode=control-group`), systemd also sends SIGTERM to the runtime processes, which then exit before their cleanups run; set `KillMode=mixed`, and set `TimeoutStopSec` longer than the cleanup deadline. If `rutis-host` is killed (SIGKILL, or ending the process on Windows), it cannot unload the rows: on Windows, the runtime processes are ended with it; on Unix, they notice that their channel closed, unload their rows themselves, and exit; one a plugin keeps busy ends a second after the cleanup deadline.
+### launchd (macOS)
+
+A complete agent, `~/Library/LaunchAgents/com.example.rutis.plist`, loaded with `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.example.rutis.plist`:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.example.rutis</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/srv/app/node_modules/.bin/rutis-host</string>
+    <string>run</string>
+    <string>/srv/app/rutis.json</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/srv/app</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/bin:/bin</string>
+    <key>XDG_RUNTIME_DIR</key>
+    <string>/tmp</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+  <key>ExitTimeOut</key>
+  <integer>20</integer>
+  <key>StandardOutPath</key>
+  <string>/srv/app/rutis.log</string>
+  <key>StandardErrorPath</key>
+  <string>/srv/app/rutis.log</string>
+</dict>
+</plist>
+```
+
+- launchd does not give the user's `PATH`: a job gets `/usr/bin:/bin:/usr/sbin:/sbin`. The npm install's `.bin/rutis-host` runs with `node` from `PATH`, and so does the Node runtime, however rutis-host was installed; `bun` (unless `runtimes.bun.program` names it) and `python3` (when no Python environment is named or found) are found there too. So `EnvironmentVariables` names Node's directory: `dirname $(which node)` in your terminal (`/opt/homebrew/bin` with Homebrew, the version's `bin` with nvm).
+- `XDG_RUNTIME_DIR` is set to `/tmp`, so the socket is at a place a terminal can name: a job's temporary directory is not always the terminal's. Run `status` and `call` with the same value: `XDG_RUNTIME_DIR=/tmp rutis-host status /srv/app/rutis.json`.
+- `KeepAlive` with `SuccessfulExit` false starts it again when it exits with a status other than 0, as `Restart=on-failure`; `ExitTimeOut` is the seconds launchd waits after SIGTERM before SIGKILL, longer than the cleanup deadline.
+- To reload, send SIGUSR1: `launchctl kill SIGUSR1 gui/$(id -u)/com.example.rutis`. As with systemd, it returns 0 when the reload is refused too; the refusal is only in the log (`StandardErrorPath`).
+
+### Killed outright
+
+If `rutis-host` is killed (SIGKILL, or ending the process on Windows), it cannot unload the rows: on Windows, the runtime processes are ended with it; on Unix, they notice that their channel closed, unload their rows themselves, and exit; one a plugin keeps busy ends a second after the cleanup deadline.

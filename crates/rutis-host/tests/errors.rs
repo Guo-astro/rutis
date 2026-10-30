@@ -110,6 +110,47 @@ async fn a_runtime_package_that_is_not_installed() {
     }
 }
 
+/// A runtime package or project the file names that is not there is an
+/// error naming it, even with the project's own package installed (0.19.1
+/// used the project's without a word, #935).
+/// risk: B6
+/// guarantee: host/error-messages
+#[tokio::test(flavor = "multi_thread")]
+async fn a_runtime_path_that_is_not_there() {
+    let _environment = environment();
+    let dir = tempfile::tempdir().unwrap();
+    write(
+        dir.path(),
+        &[
+            ("package.json", "{}"),
+            ("node_modules/@arcships/rutis-runtime/package.json", "{}"),
+            ("node_modules/@arcships/rutis-bun/package.json", "{}"),
+            ("empty/.keep", ""),
+        ],
+    );
+    let cases = [
+        (
+            r#"{ "runtimes": { "node": { "runtime": "./no-runtime" } } }"#,
+            "runtimes.node.runtime names <dir>/no-runtime, which does not exist",
+        ),
+        (
+            r#"{ "runtimes": { "node": { "runtime": "empty" } } }"#,
+            "runtimes.node.runtime names <dir>/empty, which is no npm package (it has no package.json)",
+        ),
+        (
+            r#"{ "runtimes": { "bun": { "runtime": "./no-runtime" } } }"#,
+            "runtimes.bun.runtime names <dir>/no-runtime, which does not exist",
+        ),
+        (
+            r#"{ "runtimes": { "py": { "project": "./no-plugins" } } }"#,
+            "runtimes.py.project names <dir>/no-plugins, which does not exist",
+        ),
+    ];
+    for (text, expected) in cases {
+        assert_eq!(first_error(dir.path(), text).await, expected, "{text}");
+    }
+}
+
 /// An interpreter or program that is not there, and an interpreter
 /// without the rutis package.
 /// risk: B6

@@ -20,9 +20,14 @@ struct Checked {
 /// `rutis-host check <args>` in `dir`, with only the given variables of
 /// the host's own set.
 async fn check(dir: &Path, args: &[&str], env: &[(&str, &Path)]) -> Checked {
+    rutis_host("check", dir, args, env).await
+}
+
+/// `rutis-host <subcommand> <args>` in `dir`, as [`check`].
+async fn rutis_host(subcommand: &str, dir: &Path, args: &[&str], env: &[(&str, &Path)]) -> Checked {
     let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_rutis-host"));
     command
-        .arg("check")
+        .arg(subcommand)
         .args(args)
         .current_dir(dir)
         .kill_on_drop(true);
@@ -38,7 +43,7 @@ async fn check(dir: &Path, args: &[&str], env: &[(&str, &Path)]) -> Checked {
     // Only against a hang: a check takes seconds, but starts the runtimes
     // (Node, Python) cold; six times HANG_GUARD, as before.
     let output = Guard(HANG_GUARD * 6)
-        .within("check ends", command.output())
+        .within(&format!("{subcommand} ends"), command.output())
         .await
         .expect("rutis-host runs");
     Checked {
@@ -217,7 +222,7 @@ async fn check_refuses_a_configuration_that_is_not_valid() {
     );
     assert_eq!(
         checked.stderr,
-        "rutis-host: warning: rutis.json: rows[0] (id \"w\"): unknown field `confg` is ignored; a row has `id`, `name`, `config`, `inject`, `isolate`, `disabled`, `group`, `instanced`\n\
+        "rutis-host: warning: rutis.json: rows[0] (id \"w\"): unknown field `confg` is ignored (did you mean `config`?); a row has `id`, `name`, `config`, `inject`, `isolate`, `disabled`, `group`, `instanced`\n\
          rutis-host: 1 row(s) or binaries cannot run\n"
     );
     assert_eq!(checked.status, 1);
@@ -228,6 +233,97 @@ async fn check_refuses_a_configuration_that_is_not_valid() {
         "rutis-host: elsewhere.json: <not found>: name the configuration, as `rutis-host run path/to/rutis.json`\n"
     );
     assert_eq!(checked.status, 1);
+}
+
+/// A misspelt row field and a row id used twice: warnings, and the check
+/// passes; with `--strict`, errors, each a row that cannot run, and it
+/// fails (0.19.1 passed them, #935). The field meant is suggested.
+/// risk: A6
+/// guarantee: host/check, host/unknown-fields
+#[tokio::test(flavor = "multi_thread")]
+async fn check_strict_fails_on_misspelt_row_fields_and_ids_used_twice() {
+    let dir = tempfile::tempdir().unwrap();
+    write(
+        dir.path(),
+        &[
+            ("package.json", r#"{ "name": "app", "type": "module" }"#),
+            ("greeter.mjs", &node_plugin("{}", "")),
+            (
+                "rutis.json",
+                &serde_json::json!({
+                    "runtimes": { "node": { "runtime": repo().join("node/rutis-runtime") } },
+                    "rows": [
+                        { "id": "greeter", "name": "./greeter.mjs", "confg": { "greeting": "Hi" } },
+                        { "id": "greeter", "name": "./greeter.mjs" }
+                    ]
+                })
+                .to_string(),
+            ),
+        ],
+    );
+    let stdout = "greeter (file://<dir>/greeter.mjs): ok\n  \
+                  inject: []\n  \
+                  provides: {}\n";
+    let unknown = "rows[0] (id \"greeter\"): unknown field `confg` is ignored (did you mean `config`?); \
+                   a row has `id`, `name`, `config`, `inject`, `isolate`, `disabled`, `group`, `instanced`";
+    let checked = check(dir.path(), &["rutis.json"], &[]).await;
+    assert_eq!(checked.stdout, stdout);
+    assert_eq!(
+        checked.stderr,
+        format!(
+            "rutis-host: warning: rutis.json: {unknown}\n\
+             rutis-host: warning: duplicate id \"greeter\": the later row is skipped\n"
+        )
+    );
+    assert_eq!(checked.status, 0);
+
+    let checked = check(dir.path(), &["rutis.json", "--strict"], &[]).await;
+    assert_eq!(checked.stdout, stdout);
+    assert_eq!(
+        checked.stderr,
+        format!(
+            "rutis-host: error: rutis.json: {unknown}\n\
+             rutis-host: error: duplicate id \"greeter\": the later row is skipped\n\
+             rutis-host: 2 row(s) or binaries cannot run\n"
+        )
+    );
+    assert_eq!(checked.status, 1);
+}
+
+/// A runtime package the file names that is not there: `check` and `run`
+/// both refuse to start, naming it, though the project has its own (0.19.1
+/// used the project's without a word, #935).
+/// risk: B6
+/// guarantee: host/check, host/error-messages
+#[tokio::test(flavor = "multi_thread")]
+async fn check_and_run_refuse_a_runtime_that_is_not_there() {
+    let dir = tempfile::tempdir().unwrap();
+    write(
+        dir.path(),
+        &[
+            ("package.json", r#"{ "name": "app", "type": "module" }"#),
+            ("node_modules/@arcships/rutis-runtime/package.json", "{}"),
+            ("greeter.mjs", &node_plugin("{}", "")),
+            (
+                "rutis.json",
+                &serde_json::json!({
+                    "runtimes": { "node": { "runtime": "./no-runtime" } },
+                    "rows": [{ "id": "greeter", "name": "./greeter.mjs" }]
+                })
+                .to_string(),
+            ),
+        ],
+    );
+    for subcommand in ["check", "run"] {
+        let done = rutis_host(subcommand, dir.path(), &["rutis.json"], &[]).await;
+        assert_eq!(done.stdout, "", "{subcommand}");
+        assert_eq!(
+            done.stderr,
+            "rutis-host: runtimes.node.runtime names <dir>/no-runtime, which does not exist\n",
+            "{subcommand}"
+        );
+        assert_eq!(done.status, 1, "{subcommand}");
+    }
 }
 
 /// In a plugin project without a rutis.json, check checks the project.

@@ -306,6 +306,25 @@ pub(crate) fn rebase_program(path: &mut Option<PathBuf>, at: &dyn Fn(&mut PathBu
     }
 }
 
+/// The npm package `path` the setting `field` names (a runtime's
+/// `runtime`) is there: an error naming the path when it does not exist,
+/// or is no package (no package.json in it).
+pub(crate) fn configured_package(field: &str, path: &Path) -> Result<(), String> {
+    if !path.exists() {
+        return Err(format!(
+            "{field} names {}, which does not exist",
+            path.display()
+        ));
+    }
+    if !path.join("package.json").is_file() {
+        return Err(format!(
+            "{field} names {}, which is no npm package (it has no package.json)",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
 /// The package's name and the source file of its plugin while developing:
 /// src/index.ts or .js, else what the package exports (Node and Bun).
 pub(crate) fn package_entry(dir: &Path) -> Result<(String, PathBuf), String> {

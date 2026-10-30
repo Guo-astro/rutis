@@ -63,6 +63,11 @@ pub struct HostConfig {
     /// shows these before it starts.
     #[serde(skip)]
     pub warnings: Vec<String>,
+    /// The rows with a field the loader does not know, as (the row's id,
+    /// else its place, and its line of [`HostConfig::warnings`]): `check
+    /// --strict` fails on them (#935).
+    #[serde(skip)]
+    pub unknown_row_fields: Vec<(String, String)>,
 }
 
 fn default_id() -> String {
@@ -348,13 +353,19 @@ impl HostConfig {
         config
             .name_installed()
             .map_err(|error| format!("{}: {error}", path.display()))?;
-        let mut ignored = Vec::new();
-        check_rows(&config.rows, "rows", &mut ignored)
+        let mut unknown = Vec::new();
+        check_rows(&config.rows, "rows", &mut unknown)
             .map_err(|error| format!("{}: {error}", path.display()))?;
-        ignored.extend(config.enable_used_runtimes_beside(provided));
-        config.warnings = ignored
-            .into_iter()
-            .map(|warning| format!("{}: {warning}", path.display()))
+        let in_file = |warning: &str| format!("{}: {warning}", path.display());
+        config.unknown_row_fields = unknown
+            .iter()
+            .map(|(row, warning)| (row.clone(), in_file(warning)))
+            .collect();
+        config.warnings = unknown
+            .iter()
+            .map(|(_, warning)| warning.clone())
+            .chain(config.enable_used_runtimes_beside(provided))
+            .map(|warning| in_file(&warning))
             .collect();
         let base = match path.parent() {
             Some(dir) if !dir.as_os_str().is_empty() => dir,
@@ -501,6 +512,7 @@ impl HostConfig {
         self.listen.extend(other.listen);
         self.rows.extend(other.rows);
         self.warnings.extend(other.warnings);
+        self.unknown_row_fields.extend(other.unknown_row_fields);
     }
 
     /// No two `rutis-host/listen` rows on one listener accept the same
@@ -567,10 +579,12 @@ const ROW_FIELDS: &[&str] = &[
     "instanced",
 ];
 
-/// Each row field the loader does not know, in `rows` and in groups, as a
-/// warning in `ignored` (the loader ignores it); a row that is not an
-/// object is an error.
-fn check_rows(rows: &[Value], at: &str, ignored: &mut Vec<String>) -> Result<(), String> {
+/// Each row field the loader does not know, in `rows` and in groups, as
+/// the row (its id, else its place) and a warning, in `ignored` (the
+/// loader ignores it), with the field meant when it is close to one; a
+/// row that is not an object is an error.
+fn check_rows(rows: &[Value], at: &str, ignored: &mut Vec<(String, String)>) -> Result<(), String> {
+    let known: Vec<String> = ROW_FIELDS.iter().map(|field| field.to_string()).collect();
     for (index, row) in rows.iter().enumerate() {
         let Some(fields) = row.as_object() else {
             return Err(format!("{at}[{index}]: a row is an object"));
@@ -579,17 +593,27 @@ fn check_rows(rows: &[Value], at: &str, ignored: &mut Vec<String>) -> Result<(),
             Some(id) => format!("{at}[{index}] (id {id:?})"),
             None => format!("{at}[{index}]"),
         };
+        let key = match row["id"].as_str() {
+            Some(id) => id.to_owned(),
+            None => format!("{at}[{index}]"),
+        };
         for unknown in fields
             .keys()
             .filter(|key| !ROW_FIELDS.contains(&key.as_str()))
         {
-            ignored.push(format!(
-                "{place}: unknown field `{unknown}` is ignored; a row has {}",
-                ROW_FIELDS
-                    .iter()
-                    .map(|field| format!("`{field}`"))
-                    .collect::<Vec<_>>()
-                    .join(", ")
+            let like = rutis::config::closest(unknown, &known)
+                .map(|like| format!(" (did you mean `{like}`?)"))
+                .unwrap_or_default();
+            ignored.push((
+                key.clone(),
+                format!(
+                    "{place}: unknown field `{unknown}` is ignored{like}; a row has {}",
+                    ROW_FIELDS
+                        .iter()
+                        .map(|field| format!("`{field}`"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
             ));
         }
         if let Some(error) = row["name"].as_str().and_then(binary_qualified) {

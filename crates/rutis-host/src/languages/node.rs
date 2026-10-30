@@ -133,15 +133,22 @@ pub const INSPECT: &str = "127.0.0.1:9229";
 /// The Node runtime package (`@arcships/rutis-runtime`) for the project
 /// `project`: `configured` (`runtimes.node.runtime`), else the project's
 /// own, else the one `RUTIS_NODE_RUNTIME` names; the first that is there.
-pub(crate) fn runtime_package(configured: Option<&Path>, project: &Path) -> Option<PathBuf> {
-    [
-        configured.map(Path::to_path_buf),
+/// A `configured` package that is not there is an error, not passed over.
+pub(crate) fn runtime_package(
+    configured: Option<&Path>,
+    project: &Path,
+) -> Result<Option<PathBuf>, String> {
+    if let Some(configured) = configured {
+        super::configured_package("runtimes.node.runtime", configured)?;
+        return Ok(Some(configured.to_owned()));
+    }
+    Ok([
         Some(project.join("node_modules/@arcships/rutis-runtime")),
         std::env::var_os("RUTIS_NODE_RUNTIME").map(PathBuf::from),
     ]
     .into_iter()
     .flatten()
-    .find(|package| package.join("package.json").exists())
+    .find(|package| package.join("package.json").exists()))
 }
 
 /// The Node runtime of `node.project`, with the `@arcships/rutis-runtime`
@@ -155,7 +162,7 @@ fn runtime(node: &NodeRuntime, debug: bool) -> Result<SpawnPlugin, Error> {
             node.project.display()
         ));
     }
-    let package = runtime_package(node.runtime.as_deref(), &node.project).ok_or_else(|| {
+    let package = runtime_package(node.runtime.as_deref(), &node.project)?.ok_or_else(|| {
             format!(
                 "the Node runtime is not installed in {}: run `npm install @arcships/rutis-runtime` there",
                 node.project.display()
