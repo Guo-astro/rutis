@@ -118,3 +118,93 @@ fn a_disabled_provider_is_not_taken_for_none() {
         "output: {output:#?}; stderr: {stderr}"
     );
 }
+
+/// At start, a row whose config does not match its plugin's schema fails
+/// as `check` and a reload say, in Node and Python alike: its schema is
+/// known only once its runtime is up, and the row does not start on the
+/// config it was given (#935). The row waiting for it says why.
+/// guarantee: sdk/config-schema
+#[test]
+fn a_config_that_does_not_match_the_schema_fails_its_row_at_start() {
+    let dir = tempfile::tempdir().unwrap();
+    let schema = json!({
+        "type": "object",
+        "properties": { "units": { "enum": ["metric", "imperial"], "default": "metric" } }
+    });
+    let sdk = repo()
+        .join("node/rutis/src/index.mjs")
+        .canonicalize()
+        .unwrap();
+    let files = [
+        (
+            "package.json",
+            r#"{ "name": "waiting", "type": "module" }"#.to_owned(),
+        ),
+        (
+            "weather.mjs",
+            format!(
+                "import {{ definePlugin }} from '{}'\n\
+                 export default definePlugin({{ config: {schema}, \
+                 provides: {{ forecast: {{ today: 'sync' }} }}, \
+                 apply(ctx) {{ ctx.provide('forecast', {{ today: () => 'sunny' }}) }} }})\n",
+                file_url(&sdk)
+            ),
+        ),
+        (
+            "weather.py",
+            format!(
+                "import json\nConfig = json.loads({:?})\ndef apply(ctx, config):\n    pass\n",
+                schema.to_string()
+            ),
+        ),
+        ("chat.mjs", plugin("['forecast']", "{}", false)),
+    ];
+    for (name, text) in files {
+        std::fs::write(dir.path().join(name), text).unwrap();
+    }
+    let mut py = json!({ "project": "." });
+    if let Some(python) = std::env::var_os("RUTIS_PYTHON") {
+        py["python"] = json!(python.to_str().unwrap());
+    }
+    let config = json!({
+        "runtimes": { "node": { "runtime": repo().join("node/rutis-runtime") }, "py": py },
+        "rows": [
+            { "id": "weather", "name": "./weather.mjs", "config": { "units": "kelvin" } },
+            { "id": "weather-py", "name": "py:weather", "config": { "units": 3 } },
+            { "id": "chat", "name": "./chat.mjs" },
+        ]
+    });
+    let file = dir.path().join("rutis.json");
+    std::fs::write(&file, config.to_string()).unwrap();
+    let python = repo().join("python/rutis");
+    let mut host = Host::start_in_env(
+        &["run", file.to_str().unwrap()],
+        dir.path(),
+        &[("RUTIS_PYTHON_PATH", python.to_str().unwrap())],
+    );
+    // In any order.
+    let mut want = vec![
+        "weather: config: units should be \"metric\" or \"imperial\", got \"kelvin\"",
+        "weather-py: config: units should be \"metric\" or \"imperial\", got 3",
+        "chat: waiting for forecast (row weather failed: config: units should be \
+         \"metric\" or \"imperial\", got \"kelvin\")",
+    ];
+    while !want.is_empty() {
+        let line = host.wait_line(|line| Some(line.to_owned()));
+        want.retain(|wanted| *wanted != line);
+    }
+    signal(&host, libc::SIGTERM, false);
+    let (status, stderr, output) = host.exit();
+    assert_eq!(
+        status.code(),
+        Some(0),
+        "output: {output:#?}; stderr: {stderr}"
+    );
+    // Neither started on the config it was given.
+    assert!(
+        !output
+            .iter()
+            .any(|line| line.starts_with("weather") && line.ends_with(": running")),
+        "output: {output:#?}"
+    );
+}

@@ -49,6 +49,11 @@ pub struct Places {
     /// The Python environment, created (with the `rutis` package) when
     /// missing; or an interpreter, used as it is.
     pub python: PathBuf,
+    /// The Python runtime's project (`runtimes.py.project`): a uv project
+    /// when it has a `pyproject.toml` and a `uv.lock` and the environment
+    /// is its `.venv`, whose packages `uv sync` keeps only when they are
+    /// recorded in it.
+    pub python_project: PathBuf,
     /// The directory of Go binaries, created when missing; or why there is
     /// none (`runtimes.go` declared without a `dir`).
     pub go: Result<PathBuf, String>,
@@ -608,7 +613,23 @@ impl Core {
         };
         let local = matches!(reference.source, Source::Local(_));
         let mut options: Vec<String> = Vec::new();
-        if upgrade {
+        let mut spec = spec;
+        if upgrade && python.project.is_some() {
+            // `uv add` keeps a requirement given again without a version
+            // as the project has it (`bo-llm==0.3.0` stays): from the
+            // version there to the newest.
+            if let Source::Pypi { version: None, .. } = &reference.source {
+                let found = self.python_query(&python, "distribution", &distribution)?;
+                if let Some(version) = found.and_then(|found| found.version) {
+                    spec = format!("{distribution}>={version}");
+                }
+            }
+            let option = match local {
+                true => "--reinstall-package",
+                false => "--upgrade-package",
+            };
+            options.extend([option.into(), distribution.clone()]);
+        } else if upgrade {
             match (python.uv, local) {
                 (true, true) => {
                     options.extend(["--reinstall-package".into(), distribution.clone()])
@@ -831,10 +852,22 @@ impl Core {
             None => (venv_python(place), Some(place.to_owned())),
         };
         let uv = self.tools.succeeds(&Run::new("uv").arg("--version"));
+        let project = &self.places.python_project;
+        let same = |a: &Path, b: &Path| {
+            a == b || matches!((a.canonicalize(), b.canonicalize()), (Ok(a), Ok(b)) if a == b)
+        };
+        let project = (uv
+            && project.join("pyproject.toml").is_file()
+            && project.join("uv.lock").is_file()
+            && environment
+                .as_deref()
+                .is_some_and(|env| same(env, &project.join(".venv"))))
+        .then(|| project.clone());
         Python {
             interpreter,
             environment,
             uv,
+            project,
         }
     }
 
@@ -886,11 +919,21 @@ struct Python {
     environment: Option<PathBuf>,
     /// Whether uv runs (else pip).
     uv: bool,
+    /// The uv project whose `.venv` the environment is: packages are added
+    /// to it (`uv add --dev`), so that `uv sync` keeps them.
+    project: Option<PathBuf>,
 }
 
 impl Python {
     /// The command installing `spec`, with `options`.
     fn install(&self, options: &[String], spec: &str) -> Run {
+        if let Some(project) = &self.project {
+            return Run::new("uv")
+                .args(["add", "--dev", "--project"])
+                .arg(project)
+                .args(options)
+                .arg(spec);
+        }
         match self.uv {
             true => Run::new("uv")
                 .args(["pip", "install", "--python"])
@@ -905,6 +948,12 @@ impl Python {
     }
 
     fn uninstall(&self, distribution: &str) -> Run {
+        if let Some(project) = &self.project {
+            return Run::new("uv")
+                .args(["remove", "--dev", "--project"])
+                .arg(project)
+                .arg(distribution);
+        }
         match self.uv {
             true => Run::new("uv")
                 .args(["pip", "uninstall", "--python"])

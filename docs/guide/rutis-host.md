@@ -213,10 +213,12 @@ npm 分发自带 Node 运行时（`@arcships/rutis-runtime`），PyPI 分发自�
 
 1. 装到这门语言的运行时现在就用的位置：Node、Bun 装进 `runtimes.node.project`、`runtimes.bun.project`（默认 `rutis.json` 所在目录）；Python 装进宿主会用的解释器（`runtimes.py.python`，否则 `$VIRTUAL_ENV`，否则 `<runtimes.py.project>/.venv`）；Go、Swift 装进 `runtimes.go.dir`、`runtimes.swift.dir`（没写 `runtimes.go` 时 `plugins/go`）。
 2. 运行时缺了就准备好：没有 `package.json` 时 `npm init -y`；缺 `@arcships/rutis-runtime` 时与插件一起装（版本同 `rutis-host`）；Bun 缺 `@arcships/rutis-bun` 时 `bun add -d`；Python 没有环境时 `uv venv`（没有 uv 时 `python3 -m venv`），缺 `rutis` 时装上同版本的；Go、Swift 建目录。Node、Bun、Python、Go 本身不装。
-3. 运行包管理器：`npm install`、`bun add`、`uv pip install --python <解释器>`（没有 uv 时 `<解释器> -m pip install`）、`GOBIN=<目录> go install <模块>@<版本>`（本地 Go 项目在它里面 `go install ./...`；本地二进制复制进目录）。它的输出原样显示。
+3. 运行包管理器：`npm install`、`bun add`、`uv pip install --python <解释器>`（没有 uv 时 `<解释器> -m pip install`；uv 项目里是 `uv add`，见下面）、`GOBIN=<目录> go install <模块>@<版本>`（本地 Go 项目在它里面 `go install ./...`；本地二进制复制进目录）。它的输出原样显示。
 4. 找出包里的插件并描述它们：Node、Bun 的插件是包本身；Python 是这个发行包在 `rutis.plugins` 组里的入口点（一个包可以有几个）；Go、Swift 是二进制清单里的插件。
 5. 写 `rutis.json`：`installed` 里每个插件一条记录（键是它的行名），`rows` 末尾每个插件一行 `{ "id": …, "name": <行名> }`，行名用已有写法：Node 是包名，Bun 是 `bun:<包>`，Python 是 `py:<入口点>`，Go 是 `go:<插件>`，Swift 是 `swift:<插件>`（id 是插件名，已被占用时加 `-2`、`-3`；同名的行已经有了时不再加），`runtimes` 没写这门语言时写上（`"node": {}`、`"py": {}`、`"go": { "dir": "plugins/go" }`）。按文件原有键的顺序写回，先写临时文件再改名。
 6. 用 `check` 的同一段检查看新加的行，打印结论：缺它要用的服务、配置缺必填项时这里就看得到。`add` 仍以 0 退出：行已经写好，接下来补上依赖或配置就行。
+
+Python 环境是一个 uv 项目的 `.venv` 时（`runtimes.py.project`，默认 `rutis.json` 所在目录，里面有 `pyproject.toml` 和 `uv.lock`，宿主用的环境就是那里的 `.venv`，比如 `uv add --dev rutis-host` 后 `uv run rutis-host add …`；并且有 uv），`add` 用 `uv add --dev --project <项目> <包>` 把插件记进 `pyproject.toml` 的 dev 依赖组（本地路径记在 `[tool.uv.sources]`），之后的 `uv sync` 不会删掉它；缺 `rutis` 时也这样装。`upgrade` 用 `uv add --dev --project <项目> --upgrade-package <包> <包>>=<现在的版本>`（给了版本时 `<包>==<版本>`；本地路径用 `--reinstall-package`），`remove` 用 `uv remove --dev --project <项目> <包>`，不是插件时出错文字里卸掉它的命令也是这一条。其他情况照旧用 `uv pip install`，不改 `pyproject.toml`。
 
 写哪个文件：第二个参数；没有时当前目录的 `rutis.json`；没有 `rutis.json`、有 `rutis.dev.json`（插件项目）时写它；都没有时新建 `rutis.json`。
 
@@ -233,7 +235,7 @@ bo-llm: 0.3.0 is the latest
 a running host keeps the old versions until it restarts
 ```
 
-- `remove <行名、插件名或引用>` 卸掉插件所在的包（`npm uninstall`、`bun remove`、`uv pip uninstall`、删掉清单里有它的二进制），删掉这个包的全部记录和用这些行名的行（包括分组里的），逐个打印删掉的行；一个包有几个插件时删整个包，并说明。`runtimes` 不动。
+- `remove <行名、插件名或引用>` 卸掉插件所在的包（`npm uninstall`、`bun remove`、`uv pip uninstall`（uv 项目里 `uv remove`）、删掉清单里有它的二进制），删掉这个包的全部记录和用这些行名的行（包括分组里的），逐个打印删掉的行；一个包有几个插件时删整个包，并说明。`runtimes` 不动。
 - `upgrade [<行名、插件名或引用>[@版本]]` 不写名字时升级全部记录，按记录的来源装最新版（或给出的版本），行不改。新版本多出的插件写进记录，并打印怎样加它的行；少了的插件删掉记录，用它的行打印 `<行 id>: the new version has no plugin <插件>`。
 - 正在运行的宿主继续运行旧代码，重启后才用新版本（重新加载一行只重新导入它自己的入口模块，升级换掉的是整个包）。`add` 新加的行，`run --watch-config` 和 `dev` 照 [运行中改配置](#运行中改配置) 的规则接上；新行要的运行时还没在运行时，写进的 `runtimes.<语言>` 被拒绝并提示重启。
 
@@ -439,7 +441,7 @@ rutis-host: warning: weather: config: cty is not a config key (did you mean city
 - Cordis 行（导出 `Config` 的 Cordis 插件）加载时由 Cordis 用它自己的 `Config` 校验；`check` 打印它的 Schema，不检查它的配置。
 - Schema 要运行时才知道的行（在没连上的连接对面运行的行）写 `config not checked: its schema is known only when it runs`，这不是警告。
 
-`run`、`dev` 用同样的规则：配置不合格的行失败（`weather: config: …`，每个问题一行），等它的行写明原因（`chat: waiting for weather (row weather failed: config: …)`）；多余的键每行每个配置值警告一次。
+`run`、`dev` 用同样的规则：配置不合格的行失败（`weather: config: …`，每个问题一行），等它的行写明原因（`chat: waiting for weather (row weather failed: config: …)`）；多余的键每行每个配置值警告一次。在运行时里运行的行（Node、Python 等本机运行时的行，连接对面的行）的 Schema 要等运行时起来（连接连上）后才知道，也在这一行启动之前检查：不合格的行不启动，不会带着这份配置运行（0.19.0 里它照样启动）。
 
 ## 停止与退出码
 

@@ -120,6 +120,7 @@ impl Target {
             bun: project(runtimes.bun.as_ref().map(|bun| bun.project.as_path())),
             bun_runtime: runtimes.bun.as_ref().and_then(|bun| bun.runtime.clone()),
             python,
+            python_project: project(runtimes.py.as_ref().map(|py| py.project.as_path())),
             go: binaries("go", runtimes.go.as_ref()),
             swift: binaries("swift", runtimes.swift.as_ref()),
         }

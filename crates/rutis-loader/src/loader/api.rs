@@ -433,7 +433,35 @@ impl Loader {
                 return Ok(inner.reconcile_inner().await);
             }
         }
-        inner.dry_run(&layers, id, Some(resolved.clone())).await?;
+        if let Err(error) = inner.dry_run(&layers, id, Some(resolved.clone())).await {
+            // A placeholder is replaced all the same, and the copies
+            // waiting on it are dropped (an update would be refused and
+            // leave them on it): the row then starts again and fails with
+            // what its dry run found (a config its schema, known only now,
+            // rejects) instead of starting on the placeholder.
+            if provisional {
+                let disposals: Vec<_> = {
+                    let mut state = inner.state.lock().unwrap();
+                    state.resolved.insert(name, Ok(resolved));
+                    let copies: Vec<_> = state
+                        .running
+                        .iter()
+                        .filter(|(slot, running)| slot.row == id && !running.group)
+                        .map(|(slot, _)| slot.clone())
+                        .collect();
+                    copies
+                        .into_iter()
+                        .filter_map(|slot| state.running.remove(&slot))
+                        .map(|running| running.view.dispose())
+                        .collect()
+                };
+                for disposal in disposals {
+                    let _ = disposal.await;
+                }
+                inner.reconcile_inner().await;
+            }
+            return Err(error);
+        }
         inner
             .state
             .lock()
