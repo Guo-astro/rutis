@@ -51,7 +51,7 @@ await ctx.parallel('chat/sent', out)       // 等每个监听器，不论在哪�
   "dependencies": {
     "@deepseek-ai/cordis": "4.0.4",
     "@deepseek-ai/dsh-credentials-local": "0.2.0-rc.1",
-    "@arcships/rutis-runtime": "0.19.0"
+    "@arcships/rutis-runtime": "0.19.1"
   }
 }
 ```

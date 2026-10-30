@@ -5,7 +5,7 @@
 用 Swift 写 rutis 插件，编成 macOS 插件二进制运行，或在 iOS、iPadOS、macOS 应用里托管（`RutisApp`）。包是仓库根的 `Package.swift`（目标在 `swift/rutis` 下），版本跟发布线的 `v` tag。设计：[Swift SDK](../docs/design-swift-sdk-2026-10-12.md)。指南：[写一个 Swift 插件](../docs/guide/swift-plugin.md)（`rutis-host new <名字> --lang swift` 创建项目）。
 
 ```swift
-// Package.swift: .package(url: "https://github.com/arcships/rutis", from: "0.19.0")
+// Package.swift: .package(url: "https://github.com/arcships/rutis", from: "0.19.1")
 //                .product(name: "Rutis", package: "rutis")
 import Rutis
 
