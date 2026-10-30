@@ -71,6 +71,7 @@ fn dev_config_with(
         installed: Default::default(),
         rows,
         warnings: Vec::new(),
+        unknown_row_fields: Vec::new(),
     };
     let extra = dir.join("rutis.dev.json");
     // Its rows also run in the project's own runtime, which this sets up:

@@ -289,7 +289,7 @@ a running host keeps the old versions until it restarts
 | --- | --- |
 | `rutis-host run [rutis.json]` | 按配置运行（Unix 上 SIGUSR1 或加 `--watch-config` 时运行中重新读配置，见 [运行中改配置](#运行中改配置)），打印每一行状态的变化、连接行的连接变化和本机运行时的结束（见 [run 打印什么](#run-打印什么)）；Ctrl-C 结束（见 [停止与退出码](#停止与退出码)） |
 | `rutis-host dev [目录]` | 在插件项目里运行这个插件（加上 `rutis.dev.json`），并跟着项目的变化：哪个文件变了，就重新加载以它为模块的行；`rutis.dev.json` 变了就重新读。Go、Swift 项目的源码变了时重新构建（`go build`、`swift build`），只重启它的运行时（见 [用 dev 开发插件](#用-dev-开发插件)） |
-| `rutis-host check [rutis.json] [--strict]` | 不运行任何插件，检查每一行能不能运行（见 [检查配置](#检查配置)），打印版本、依赖、提供的服务、配置 Schema，并列出每个 Go 与 Swift 二进制（运行时名、平台、SDK、插件 API、插件；rutis 0.13 以前的 SDK 构建的二进制不能运行）；有不能运行的行或二进制时以非零状态退出。没有行声明、只可能在运行时由别的行提供的依赖是告警，加 `--strict` 时算错误。在没有 rutis.json 的插件项目里检查这个项目 |
+| `rutis-host check [rutis.json] [--strict]` | 不运行任何插件，检查每一行能不能运行（见 [检查配置](#检查配置)），打印版本、依赖、提供的服务、配置 Schema，并列出每个 Go 与 Swift 二进制（运行时名、平台、SDK、插件 API、插件；rutis 0.13 以前的 SDK 构建的二进制不能运行）；有不能运行的行或二进制时以非零状态退出。没有行声明、只可能在运行时由别的行提供的依赖，拼错的行字段，重复的行 id，都是告警，加 `--strict` 时算错误。在没有 rutis.json 的插件项目里检查这个项目 |
 | `rutis-host status [rutis.json \| 目录]` | 问正在运行这份配置（或这个 `dev` 项目）的 `rutis-host` 现在在做什么：每一行的状态与原因、每个服务由谁提供、各运行时、还没返回的调用（见 [查看当前状态](#查看当前状态)）；Windows 上不提供 |
 | `rutis-host call [--config <rutis.json \| 目录>] <服务>.<方法> [参数…]` | 以宿主的身份调用正在运行这份配置（或这个 `dev` 项目）的 `rutis-host` 里的一个服务，结果打印成 JSON；`run` 和 `dev` 都接受（见 [调用一个服务](#调用一个服务)）；Windows 上不提供 |
 | `rutis-host new <名字> --lang node\|bun\|python\|go\|swift` | 创建插件项目 |
@@ -423,6 +423,20 @@ rutis-host: warning: <行>: <服务> is declared only by row <被禁用的行>, 
 缺的服务名和某个已声明的名字只差一两个字符时，上面的告警和缺服务的说明后面加 `; did you mean <名字>?`。
 
 `check --strict` 把这些告警当作错误：stderr 写 `rutis-host: error: …`，这一行写 `cannot run with --strict: nothing declares <服务>`（只有被禁用的行声明的写 `only disabled rows declare <服务>`），以 1 退出。想在部署前确认每个依赖都有声明的提供者时用它（CI 里，比如）。
+
+文件本身的两种写错也是告警，`--strict` 下是错误（0.19.1 照样以 0 退出）：加载器不认识的行字段（拼错的字段，和某个已知字段接近时给出它），和重复的行 id（后一行被跳过）。每一处算一行不能运行：
+
+```console
+$ rutis-host check --strict
+rutis-host: error: rutis.json: rows[0] (id "greeter"): unknown field `confg` is ignored (did you mean `config`?); a row has `id`, `name`, `config`, `inject`, `isolate`, `disabled`, `group`, `instanced`
+rutis-host: error: duplicate id "greeter": the later row is skipped
+greeter (file:///srv/app/greeter.mjs): ok
+  inject: []
+  provides: {}
+rutis-host: 2 row(s) or binaries cannot run
+```
+
+不加 `--strict` 时同样两行写 `rutis-host: warning:`，没有别的问题时 `check` 以 0 退出。
 
 下面两种情况每个行都说 `ok`，但运行起来有行起不来，`check` 在 stderr 报错，以 1 退出（0.17.2 里只是告警）：
 
@@ -634,7 +648,13 @@ connections:
 - `connections`：每个连接行（`rutis-host/dial`、`rutis-host/listen`）一行，没有连接行时不出现这一节。dial 行写 `connected` 或 `disconnected`；listen 行写现在连着的 id（`phone: kim, lee`），没有连着的时写 `none connected`。0.19 不列出每条连接注册的远程插件。
 - rutis 不给调用设时限：等多久由调用方决定（各语言怎样限时见 [插件 API](plugin-api.md)）。这里只让人看到哪个调用等了多久。
 
-`run` 和 `dev` 启动时打开一个只有本用户能用的本地 socket（权限 0600，放在本用户自己的 0700 目录里），回答 `status`（什么都不改）和 `rutis-host call`（见 [调用一个服务](#调用一个服务)）。它放在系统的运行时目录（`$XDG_RUNTIME_DIR`，没有时用临时目录；路径太长时用 `/tmp`）的 `rutis-host-<uid>/` 下，文件名是配置路径的散列，不往项目里写文件；宿主结束时删掉（目录里没有别的宿主的 socket 时，目录也删掉）；被强行结束（`kill -9`）的宿主删不了，同一份配置的下一个宿主启动时替换它。`status` 按自己的环境变量找这个目录：换了用户、用 `sudo` 或环境变量不同的终端运行时找不到，会说没有宿主在运行。同一份配置已经有宿主在回答时，后起的宿主照常运行，只写一条告警。Windows 上 0.18 不提供。
+`run` 和 `dev` 启动时打开一个只有本用户能用的本地 socket（权限 0600，放在本用户自己的 0700 目录里），回答 `status`（什么都不改）和 `rutis-host call`（见 [调用一个服务](#调用一个服务)）。它放在系统的运行时目录（`$XDG_RUNTIME_DIR`，没有时用临时目录；路径太长时用 `/tmp`）的 `rutis-host-<uid>/` 下，文件名是配置路径的散列，不往项目里写文件；宿主结束时删掉（目录里没有别的宿主的 socket 时，目录也删掉）；被强行结束（`kill -9`）的宿主删不了，同一份配置的下一个宿主启动时替换它。`status` 按自己的环境变量找这个目录：换了用户、用 `sudo` 或环境变量不同的终端运行时（作为服务运行的宿主有它自己的 `XDG_RUNTIME_DIR`，或者没有），找的是别处。这时它说在哪里找过，以 1 退出：
+
+```
+rutis-host: no rutis-host answers for /srv/app/rutis.json at /run/user/1000/rutis-host-1000/5d1c0f3a9e2b7c44.sock (XDG_RUNTIME_DIR=/run/user/1000): a host started in another environment (a service, another user) has its socket where that environment says, so run `rutis-host status` as its user with its XDG_RUNTIME_DIR; if none runs, start it with `rutis-host run` or `rutis-host dev`, or name the configuration it runs (rutis-host status path/to/rutis.json)
+```
+
+没有这个变量时括号里写 `XDG_RUNTIME_DIR is not set`（不是绝对路径时写 `XDG_RUNTIME_DIR=<值> is not absolute, so not used`）。作为服务运行的宿主见 [部署](#部署)。同一份配置已经有宿主在回答时，后起的宿主照常运行，只写一条告警。Windows 上 0.18 不提供。
 
 停止没有在截止时间内完成时（见 [停止与退出码](#停止与退出码)），除了还在停止的插件，还列出还没返回的调用：`call not returned: caller → slow.wait  12s`。
 
@@ -669,7 +689,7 @@ $ rutis-host call forecast.week '{"days": 3}'
 | 参数类型不对（提供方是 Rust 的 `#[rutis::service]`、Go、Swift、Kotlin；TypeScript、JavaScript、Bun、Python 写的方法不检查参数类型，收到的就是传来的值，类型注解只给编辑器看） | `rutis-host: forecast.today: argument 1 should be a string, got 3` |
 | 方法抛错 | `rutis-host: call to forecast.today failed: KeyError: 'region'`，下面是出错的行（`in weather:`）与它的堆栈 |
 | 方法要调用方那一行的 `&Ctx` | `rutis-host: tools.register needs a calling row; call it from a plugin, not from rutis-host call` |
-| 没有在运行的宿主 | `rutis-host: no rutis-host run or dev is running for /work/weather (start one, or name its configuration with --config)` |
+| 没有宿主回答（没有在运行的，或它在别的环境下运行，见 [查看当前状态](#查看当前状态)） | `rutis-host: no rutis-host answers for /work/weather at /run/user/1000/rutis-host-1000/9b0e4d2a7c13f865.sock (XDG_RUNTIME_DIR=/run/user/1000): a host started in another environment (a service, another user) has its socket where that environment says, so run `rutis-host call` as its user with its XDG_RUNTIME_DIR; if none runs, start one with `rutis-host run` or `rutis-host dev`, or name its configuration with --config` |
 
 `run` 和 `dev` 都接受 `call`。谁能连与 `status` 相同：socket 只有本用户能用。Windows 上不提供（`rutis-host call is not available on Windows`）。
 
@@ -775,7 +795,7 @@ Node、Bun、Python 运行时里，一个服务方法一口气占住运行时 5 
 
 文件里的相对路径都相对于文件所在的目录。
 
-不认识的字段是错误：启动失败，指出文件、行列号和这里可用的字段。`rows` 里不认识的字段是警告：这一行照常运行（不带这个字段），启动前打印警告，指出文件、第几行和行可用的字段。拼错的字段因此不会被悄悄忽略。
+不认识的字段是错误：启动失败，指出文件、行列号和这里可用的字段。`rows` 里不认识的字段是警告：这一行照常运行（不带这个字段），启动前打印警告，指出文件、第几行、和它接近的已知字段（有的话）和行可用的字段（`check --strict` 下是错误，见 [检查配置](#检查配置)）。拼错的字段因此不会被悄悄忽略。
 
 ### format
 
@@ -800,7 +820,17 @@ rutis.json: this file is format 2, this rutis-host reads up to 1: upgrade rutis-
 | `py` | `project`（默认 `.`）、`python`、`restart` | 启动 Python 运行时。解释器默认依次为 `$VIRTUAL_ENV/bin/python`、`<project>/.venv/bin/python`、`python3`（Windows 上为 `Scripts\python.exe` 和 `python`），它的环境里要装 `rutis` 和插件 |
 | `go` | `dir`、`binaries`、`start`（`on-demand` 默认 / `eager`）、`idle`（秒，默认 60）、`project`（默认 `.`）、`restart` | Go 插件：一个二进制一个运行时进程。`dir` 里含 Go SDK 标记的可执行文件都算（整个目录被视为受信任，应是专用目录），`binaries` 列出单个文件。运行时名由文件名得出（`netkit` → `go-netkit`）。按需启动的运行时在第一次有行用到时启动、空闲 `idle` 秒后停下（别处持有它交出的对象不算在用：停下后对这些对象的调用以 `peer-gone` 失败）；`eager` 全部启动并一直运行（不能同时写 `idle`）。换了二进制，重启宿主后生效 |
 | `swift` | 同 `go` | Swift 插件（macOS）：与 `go` 相同，针对用 Swift SDK 构建的二进制（`plugin-binary` → `swift-plugin-binary`）；见 [Swift 插件](swift-plugin.md) |
-缺少运行时包时，启动失败并给出安装命令。Python 的环境不存在（`python` 指向的 `.venv/bin/python` 还没有建）、或解释器里没有 `rutis` 包时，报错写明创建环境、安装与本宿主同版本 `rutis` 的命令（`uv venv <环境>` 和 `uv pip install --python <解释器> rutis==<版本>`，或用 `python3 -m venv` 和 pip）；没有任何环境、只找到没有 `rutis` 的 `python3` 时，给出在 `<project>/.venv` 创建环境的命令，建好后宿主自动用它。
+缺少运行时包时，启动失败并给出安装命令。文件里写的路径不存在时报错，说出这个路径；`run`、`dev`、`check` 和 `add` 都一样，不会换用别的（0.19.1 不声不响地用项目里那份）：
+
+```
+rutis-host: runtimes.node.runtime names /srv/app/no-runtime, which does not exist
+rutis-host: runtimes.node.runtime names /srv/app/empty, which is no npm package (it has no package.json)
+rutis-host: runtimes.py.project names /srv/app/plugins, which does not exist
+```
+
+`runtimes.bun.runtime` 一样。`python`、`program` 不存在时本来就报错并说出路径。
+
+Python 的环境不存在（`python` 指向的 `.venv/bin/python` 还没有建）、或解释器里没有 `rutis` 包时，报错写明创建环境、安装与本宿主同版本 `rutis` 的命令（`uv venv <环境>` 和 `uv pip install --python <解释器> rutis==<版本>`，或用 `python3 -m venv` 和 pip）；没有任何环境、只找到没有 `rutis` 的 `python3` 时，给出在 `<project>/.venv` 创建环境的命令，建好后宿主自动用它。
 
 行用到某种语言、`runtimes` 里却没有声明它时（例如有 `py:llmbox` 行、没有 `runtimes.py`），宿主按默认设置启用这个运行时，等于写了 `"py": {}`，并在 stderr 写一条告警：
 
@@ -907,10 +937,98 @@ rutis-host: listener public: row main accepts RUTIS_TOKEN_MAIN and row phone acc
 
 ## 部署
 
-把 `rutis.json`、Node 项目（装好插件和 `@arcships/rutis-runtime`）、Python 环境（装好 `rutis` 和插件）、Go 与 Swift 插件目录（对应平台的二进制）放在一起，用进程管理器（systemd 等）运行 `rutis-host run /srv/app/rutis.json`。`rutis-host` 结束时，它启动的运行时进程随之结束。
+把 `rutis.json`、Node 项目（装好插件和 `@arcships/rutis-runtime`）、Python 环境（装好 `rutis` 和插件）、Go 与 Swift 插件目录（对应平台的二进制）放在一起，用进程管理器（systemd、launchd 等）运行 `rutis-host run /srv/app/rutis.json`。`rutis-host` 结束时，它启动的运行时进程随之结束。
 
-改了 `rutis.json` 要生效时用 `systemctl reload`（`ExecReload=/bin/kill -USR1 $MAINPID`），或者用 `--watch-config` 运行，见 [运行中改配置](#运行中改配置)。
+### systemd
+
+完整的 unit，`/etc/systemd/system/rutis.service`，以用户 `app` 运行宿主：
+
+```ini
+[Unit]
+Description=rutis-host
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=app
+WorkingDirectory=/srv/app
+ExecStart=/usr/local/bin/rutis-host run /srv/app/rutis.json
+ExecReload=/bin/kill -USR1 $MAINPID
+KillMode=mixed
+TimeoutStopSec=20
+Restart=on-failure
+# Where `rutis-host status` and `call` find it (below).
+RuntimeDirectory=rutis
+RuntimeDirectoryMode=0700
+Environment=XDG_RUNTIME_DIR=/run/rutis
+
+[Install]
+WantedBy=multi-user.target
+```
+
+- `ExecReload` 让 `systemctl reload rutis` 重读 `rutis.json`（见 [运行中改配置](#运行中改配置)）。`systemctl reload` 只是发信号：重读被拒绝时它也以 0 返回，拒绝只写在宿主的日志里。用 `journalctl -u rutis -n 20` 看，里面是 `rutis-host: reloaded <file> (…)` 或 `rutis-host: reload rejected: <reason>; nothing changed`。
+- `KillMode=mixed`：停止时 systemd 只给 `rutis-host` 发 SIGTERM，由它卸载各行。systemd 默认（`KillMode=control-group`）会同时给运行时进程发 SIGTERM，它们来不及执行清理。
+- `TimeoutStopSec` 大于清理截止时间（默认 10 秒，`--shutdown-timeout`），免得清理还在进行时 systemd 强行结束宿主。
+- `Restart=on-failure`：宿主以非 0 状态退出时再启动它：1（不能启动或运行）、2（停止没有完成）、3（`"restart": "exit"` 的运行时结束了，见 [运行时结束时](#运行时结束时)）。
+- Node 运行时（以及 npm 装法的启动器）运行 `PATH` 上的 `node`；文件里没写时，`bun`、`python3` 也在 `PATH` 上找。它们不在 systemd 的 `PATH`（`/usr/local/bin:/usr/bin:/bin` 等）里时，加 `Environment=PATH=<Node 所在目录>:/usr/bin:/bin`。
+- 服务有自己的环境：unit 不给就没有 `XDG_RUNTIME_DIR`（上面的 unit 给的是 `/run/rutis`，systemd 为 `app` 创建它），所以它的 socket 不在登录终端里的 `rutis-host status` 找的地方。`status` 和 `call` 要在和服务相同的环境下运行，用它的用户和它的 `XDG_RUNTIME_DIR`：
+
+  ```console
+  $ sudo -u app env XDG_RUNTIME_DIR=/run/rutis /usr/local/bin/rutis-host status /srv/app/rutis.json
+  ```
+
+  不这样时它们说在哪里找过（见 [查看当前状态](#查看当前状态)），不是说宿主没在运行：别因此再起一个宿主。
 
 用 npm 安装时（`ExecStart=/srv/app/node_modules/.bin/rutis-host run /srv/app/rutis.json`），`MAINPID` 是启动器 `bin/rutis-host.mjs`，一个运行 `rutis-host` 二进制的 Node 进程。它把 SIGTERM 和 SIGUSR1 转发给二进制，所以 `systemctl stop`、`systemctl reload` 和直接运行二进制时一样，二进制怎样退出它就怎样退出。SIGINT 和 SIGHUP 它不转发（终端会直接发给二进制）：单独发给启动器的 SIGINT 不起作用，停止时发 SIGTERM。GitHub Releases、crates.io 的二进制，以及用 PyPI 安装时放进环境里的那个（`.venv/bin/rutis-host`），都没有启动器。
 
-停止时让进程管理器只给 `rutis-host` 发 SIGTERM，由它卸载各行：systemd 默认（`KillMode=control-group`）会同时给运行时进程发 SIGTERM，它们来不及执行清理，应设 `KillMode=mixed`，并让 `TimeoutStopSec` 大于清理截止时间。`rutis-host` 被强制结束（SIGKILL、Windows 上结束进程）时没有机会卸载各行：Windows 上运行时进程随之被结束；Unix 上运行时进程发现通道断开，自己卸载各行后退出；被插件占着一直在忙的运行时，在清理截止时间过后一秒结束。
+### launchd（macOS）
+
+完整的 agent，`~/Library/LaunchAgents/com.example.rutis.plist`，用 `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.example.rutis.plist` 加载：
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.example.rutis</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/srv/app/node_modules/.bin/rutis-host</string>
+    <string>run</string>
+    <string>/srv/app/rutis.json</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/srv/app</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/bin:/bin</string>
+    <key>XDG_RUNTIME_DIR</key>
+    <string>/tmp</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+  <key>ExitTimeOut</key>
+  <integer>20</integer>
+  <key>StandardOutPath</key>
+  <string>/srv/app/rutis.log</string>
+  <key>StandardErrorPath</key>
+  <string>/srv/app/rutis.log</string>
+</dict>
+</plist>
+```
+
+- launchd 不给用户的 `PATH`：任务拿到的是 `/usr/bin:/bin:/usr/sbin:/sbin`。npm 装法的 `.bin/rutis-host` 用 `PATH` 上的 `node` 运行，Node 运行时也是（不管 rutis-host 怎么装的）；`bun`（`runtimes.bun.program` 没写时）和 `python3`（没有指定也没找到 Python 环境时）也在那里找。所以 `EnvironmentVariables` 要写 Node 所在的目录：在终端里 `dirname $(which node)` 看（Homebrew 是 `/opt/homebrew/bin`，nvm 是那个版本的 `bin`）。
+- `XDG_RUNTIME_DIR` 设成 `/tmp`，socket 就在终端能写出来的地方：任务的临时目录不一定是终端的。`status` 和 `call` 用同样的值运行：`XDG_RUNTIME_DIR=/tmp rutis-host status /srv/app/rutis.json`。
+- `KeepAlive` 里 `SuccessfulExit` 为 false：以非 0 状态退出时再启动，和 `Restart=on-failure` 一样；`ExitTimeOut` 是 launchd 发 SIGTERM 后等多少秒再发 SIGKILL，要大于清理截止时间。
+- 重读配置发 SIGUSR1：`launchctl kill SIGUSR1 gui/$(id -u)/com.example.rutis`。和 systemd 一样，重读被拒绝时它也以 0 返回，拒绝只在日志里（`StandardErrorPath`）。
+
+### 被强制结束时
+
+`rutis-host` 被强制结束（SIGKILL、Windows 上结束进程）时没有机会卸载各行：Windows 上运行时进程随之被结束；Unix 上运行时进程发现通道断开，自己卸载各行后退出；被插件占着一直在忙的运行时，在清理截止时间过后一秒结束。

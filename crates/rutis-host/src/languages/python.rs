@@ -137,6 +137,14 @@ impl Language for Python {
 /// The Python runtime of `py.project`, with an interpreter that has the
 /// `rutis` package.
 fn runtime(py: &PythonRuntime) -> Result<SpawnPlugin, Error> {
+    // The runtime runs in it: without it, starting the interpreter fails,
+    // and the error would name the interpreter (#935).
+    if !py.project.is_dir() {
+        return Err(format!(
+            "runtimes.py.project names {}, which does not exist",
+            py.project.display()
+        ));
+    }
     let named = py
         .python
         .clone()

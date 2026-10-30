@@ -242,6 +242,32 @@ fn a_configured_runtime_is_not_installed_again() {
     );
 }
 
+/// A runtime the configuration names that is not there: `add` installs
+/// nothing and says so, as `run` would (#935).
+#[test]
+fn a_configured_runtime_that_is_not_there_is_an_error() {
+    let bench = Bench::new();
+    let runtime = bench.dir.path().join("no-runtime");
+    std::fs::write(bench.app().join("package.json"), "{}").unwrap();
+    let installer = Installer::new(Places {
+        node_runtime: Some(runtime.clone()),
+        ..bench.installer().core.places.clone()
+    })
+    .with_path(format!("{}:/usr/bin:/bin", bench.bin().display()));
+    bench.program("npm", r#"case "$1" in view) echo '{}';; esac"#);
+    let Err(error) = bench.install(&installer, "npm:wordcount") else {
+        panic!("installed");
+    };
+    assert_eq!(
+        error.to_string(),
+        format!(
+            "runtimes.node.runtime names {}, which does not exist",
+            runtime.display()
+        )
+    );
+    assert_eq!(bench.asked(), ["npm [rutis-host] view wordcount --json"]);
+}
+
 #[test]
 fn an_npm_package_depending_on_rutis_bun_is_bun() {
     let bench = Bench::new();

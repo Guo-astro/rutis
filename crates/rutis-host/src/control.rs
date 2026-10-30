@@ -48,6 +48,36 @@ fn base() -> PathBuf {
         .unwrap_or_else(std::env::temp_dir)
 }
 
+/// Where [`base`] came from, as a message says it: the value of
+/// `XDG_RUNTIME_DIR`, or why it is not used.
+#[cfg(unix)]
+fn base_said() -> String {
+    match std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from) {
+        None => "XDG_RUNTIME_DIR is not set".to_owned(),
+        Some(dir) if !dir.is_absolute() => format!(
+            "XDG_RUNTIME_DIR={} is not absolute, so not used",
+            dir.display()
+        ),
+        Some(dir) => format!("XDG_RUNTIME_DIR={}", dir.display()),
+    }
+}
+
+/// No host answers `command` (`status`, `call`) for `target` under the
+/// runtime directory `base`: where it looked, that a host run elsewhere
+/// (a service) is found only from its environment, and `otherwise`, what
+/// to do when none runs.
+#[cfg(unix)]
+fn not_found(command: &str, base: &Path, target: &Path, otherwise: &str) -> String {
+    format!(
+        "no rutis-host answers for {} at {} ({}): a host started in another environment \
+         (a service, another user) has its socket where that environment says, so run \
+         `rutis-host {command}` as its user with its XDG_RUNTIME_DIR; {otherwise}",
+        key(target).display(),
+        socket_in(base, target).display(),
+        base_said()
+    )
+}
+
 /// The user's own directory for the hosts' sockets: in the runtime
 /// directory `base`, unless a socket's path there would be longer than a
 /// socket may have (about 100 bytes), then in `/tmp`.
@@ -250,10 +280,12 @@ async fn status_in(base: &Path, target: &Path) -> Result<String, String> {
     let asked = async {
         ask(base, target, "status\n").await.map_err(|error| {
             error.unwrap_or_else(|| {
-                format!(
-                    "no rutis-host runs {}: start it with `rutis-host run` or `rutis-host dev`, \
+                not_found(
+                    "status",
+                    base,
+                    target,
+                    "if none runs, start it with `rutis-host run` or `rutis-host dev`, \
                      or name the configuration it runs (rutis-host status path/to/rutis.json)",
-                    key(target).display()
                 )
             })
         })
@@ -317,10 +349,12 @@ async fn call_in(
         .await
         .map_err(|error| match error {
             Some(error) => Refused::Error(error),
-            None => Refused::NoHost(format!(
-                "no rutis-host run or dev is running for {} (start one, or name its \
-                 configuration with --config)",
-                key(target).display()
+            None => Refused::NoHost(not_found(
+                "call",
+                base,
+                target,
+                "if none runs, start one with `rutis-host run` or `rutis-host dev`, \
+                 or name its configuration with --config",
             )),
         })?;
     match reply.split_once('\n') {
@@ -448,6 +482,13 @@ mod tests {
         assert!(!path.exists());
         assert!(!path.parent().unwrap().exists(), "the directory is left");
         let refused = status_in(base.path(), project.path()).await.unwrap_err();
-        assert!(refused.starts_with("no rutis-host runs "), "{refused}");
+        assert!(
+            refused.starts_with(&format!(
+                "no rutis-host answers for {} at {} (",
+                key(project.path()).display(),
+                path.display()
+            )),
+            "{refused}"
+        );
     }
 }

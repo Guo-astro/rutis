@@ -182,9 +182,19 @@ fn status_says_what_a_running_host_does() {
     assert!(!socket.exists());
     let asked = status(&file, dir.path(), runtime.path());
     assert_eq!(asked.status.code(), Some(1));
-    let said = String::from_utf8_lossy(&asked.stderr);
-    assert!(
-        said.starts_with("rutis-host: no rutis-host runs "),
-        "{said}"
+    // Where it looked, and that a host run elsewhere (a service) is found
+    // from its environment (#935).
+    assert_eq!(
+        String::from_utf8_lossy(&asked.stderr),
+        format!(
+            "rutis-host: no rutis-host answers for {} at {} (XDG_RUNTIME_DIR={}): a host started \
+             in another environment (a service, another user) has its socket where that \
+             environment says, so run `rutis-host status` as its user with its XDG_RUNTIME_DIR; \
+             if none runs, start it with `rutis-host run` or `rutis-host dev`, or name the \
+             configuration it runs (rutis-host status path/to/rutis.json)\n",
+            file.canonicalize().unwrap().display(),
+            socket.display(),
+            runtime.path().display()
+        )
     );
 }

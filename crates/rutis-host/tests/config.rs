@@ -392,7 +392,7 @@ fn unknown_fields_are_refused() {
     assert_eq!(
         warnings,
         [
-            format!("<dir>/rutis.json: rows[0] (id \"w\"): unknown field `confg` is ignored; a row has {fields}"),
+            format!("<dir>/rutis.json: rows[0] (id \"w\"): unknown field `confg` is ignored (did you mean `config`?); a row has {fields}"),
             format!("<dir>/rutis.json: rows[0] (id \"w\"): unknown field `note` is ignored; a row has {fields}"),
             format!("<dir>/rutis.json: rows[1] (id \"g\").config[1]: unknown field `enabled` is ignored; a row has {fields}"),
         ]

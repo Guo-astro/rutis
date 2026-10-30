@@ -1258,6 +1258,7 @@ mod tests {
             installed: Default::default(),
             rows: vec![json!({ "id": "greeter", "name": crate::config::file_url(&entry) })],
             warnings: Vec::new(),
+            unknown_row_fields: Vec::new(),
         };
         let host = Host::start(&config).await.unwrap();
         host.runtimes_ready().await.unwrap();
@@ -1298,6 +1299,7 @@ mod tests {
             installed: Default::default(),
             rows: vec![json!({ "id": "greeter", "name": "py:greeter" })],
             warnings: Vec::new(),
+            unknown_row_fields: Vec::new(),
         };
         let host = Host::start(&config).await.unwrap();
         host.runtimes_ready().await.unwrap();
@@ -1338,6 +1340,7 @@ mod tests {
             installed: Default::default(),
             rows: vec![json!({ "id": "plain", "name": "py:plain" })],
             warnings: Vec::new(),
+            unknown_row_fields: Vec::new(),
         };
         let host = Host::start(&config).await.unwrap();
         RUNTIME_START
@@ -1389,6 +1392,7 @@ mod tests {
             installed: Default::default(),
             rows: vec![json!({ "id": "greeter", "name": "bun:./greeter.ts" })],
             warnings: Vec::new(),
+            unknown_row_fields: Vec::new(),
         };
         let host = Host::start(&config).await.unwrap();
         host.runtimes_ready().await.unwrap();
