@@ -2,7 +2,6 @@
 //! the chain runs inline on the emitting thread, each `on_sync` listener's
 //! `next` synchronous, under the rules of `bail`.
 
-use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use rutis::events::{ListenerInfo, Mode, SyncCall};
@@ -68,8 +67,8 @@ async fn sync_waterfall_chains_listeners_into_the_terminal() {
     root.on_sync::<Draft>(middleware("b")).unwrap();
 
     let offered = draft("t");
-    // The terminal borrows a local value that is not `Send`.
-    let local = Rc::new(String::from("!"));
+    // The terminal borrows a local value.
+    let local = String::from("!");
     let out = root
         .waterfall(offered.clone())
         .sync(|draft| {
@@ -261,9 +260,9 @@ fn remote(root: &Ctx, name: &str, kind: ListenerKind) -> Arc<Mutex<Vec<String>>>
 }
 
 /// A listener in another process cannot take part: the protocol has no
-/// synchronous `next` to hand it. A synchronous one fails the dispatch with
-/// `Validation`, an asynchronous one with `AsyncListener`, before it is
-/// called; listeners before it ran.
+/// synchronous `next` to hand it, so it can only be called asynchronously.
+/// It fails the dispatch with `AsyncListener`, synchronous or not, before
+/// it is called; listeners before it ran.
 #[tokio::test]
 async fn listeners_elsewhere_fail_a_sync_waterfall() {
     let root = Ctx::root().unwrap();
@@ -274,11 +273,11 @@ async fn listeners_elsewhere_fail_a_sync_waterfall() {
         .waterfall(offered.clone())
         .sync(|_| panic!("the terminal is not reached"))
         .unwrap_err();
-    assert!(matches!(&*error, ErrorKind::Validation { .. }), "{error:?}");
+    assert_eq!(error.wire_name(), Some("AsyncListener"));
     assert_eq!(
         error.to_string(),
-        "config validation failed: [\"listener of t/draft in row row is in another process \
-         and cannot run in a synchronous waterfall; register it in this process with on_sync\"]"
+        "listener of t/draft in row row, in another process, is asynchronous and cannot run \
+         in a synchronous waterfall"
     );
     assert_eq!(steps(&offered), ["a:in"]);
     assert!(called.lock().unwrap().is_empty());

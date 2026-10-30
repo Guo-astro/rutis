@@ -2,7 +2,6 @@
 //! The plugin-facing event API: listeners are closures, and the five modes
 //! are methods on [`Ctx`] named as in every other language.
 
-use std::cell::RefCell;
 use std::future::{Future, IntoFuture};
 use std::marker::PhantomData;
 use std::sync::{Arc, Mutex};
@@ -406,11 +405,11 @@ impl<'c> Target<'c> {
     fn waterfall_sync<E, F>(&self, event: Arc<E>, terminal: F) -> Result<Option<E::Value>, Error>
     where
         E: Event,
-        F: FnOnce(Arc<E>) -> Result<Option<E::Value>, Error>,
+        F: FnOnce(Arc<E>) -> Result<Option<E::Value>, Error> + Send,
     {
         let name = name_of(&*event, self.named.as_ref())?;
         let payload = Payload::new(event);
-        let terminal = FnSyncTerminal::<E, F>(RefCell::new(Some(terminal)), PhantomData);
+        let terminal = FnSyncTerminal::<E, F>(Mutex::new(Some(terminal)), PhantomData);
         let out = self.ctx.events().waterfall_sync_erased(
             self.ctx,
             name,
@@ -520,10 +519,10 @@ impl<'c, E: Event> Waterfall<'c, E> {
     /// Run the waterfall now, synchronously, on this thread: `terminal` is
     /// what the last listener's `next` returns (with no listener, the
     /// result). As `bail`: a listener registered with `on_sync` calls
-    /// `next` synchronously; an asynchronous one (`on`) fails the dispatch
-    /// with `AsyncListener`; one in another process fails it with
-    /// `Validation`. After `.terminal(…)`, `Validation`: give the terminal
-    /// to `.sync` instead.
+    /// `next` synchronously; an asynchronous one (`on`), and one in another
+    /// process (which only an asynchronous call reaches), fail the dispatch
+    /// with `AsyncListener`. After `.terminal(…)`, `Validation`: give the
+    /// terminal to `.sync` instead.
     ///
     /// ```no_run
     /// # use rutis::serde::{Deserialize, Serialize};
@@ -537,7 +536,7 @@ impl<'c, E: Event> Waterfall<'c, E> {
     /// ```
     pub fn sync<F>(self, terminal: F) -> Result<Option<E::Value>, Error>
     where
-        F: FnOnce(Arc<E>) -> Result<Option<E::Value>, Error>,
+        F: FnOnce(Arc<E>) -> Result<Option<E::Value>, Error> + Send,
     {
         if self.terminal.is_some() {
             return Err(ErrorKind::Validation {
@@ -604,15 +603,16 @@ where
 }
 
 /// The terminal of a synchronous waterfall, called at most once.
-struct FnSyncTerminal<E, F>(RefCell<Option<F>>, PhantomData<fn(E) -> E>);
+struct FnSyncTerminal<E, F>(Mutex<Option<F>>, PhantomData<fn(E) -> E>);
 
 impl<E, F> ErasedSyncTerminal for FnSyncTerminal<E, F>
 where
     E: Event,
-    F: FnOnce(Arc<E>) -> Result<Option<E::Value>, Error>,
+    F: FnOnce(Arc<E>) -> Result<Option<E::Value>, Error> + Send,
 {
     fn call(&self, inv: &Inv<'_>) -> Result<Option<Value>, Error> {
-        let Some(terminal) = self.0.borrow_mut().take() else {
+        let terminal = self.0.lock().unwrap_or_else(|e| e.into_inner()).take();
+        let Some(terminal) = terminal else {
             return Ok(None);
         };
         let event = typed_arc::<E>(inv)?;

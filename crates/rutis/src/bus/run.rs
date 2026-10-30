@@ -461,8 +461,9 @@ fn async_listener(entry: &Entry, inv: &Inv<'_>) -> Error {
 }
 
 /// The end of a synchronous waterfall: what the last listener's `next`
-/// returns.
-pub(crate) trait ErasedSyncTerminal {
+/// returns. `Sync`, so that a listener's `SyncCall`, which borrows it, is
+/// `Send` and `Sync`.
+pub(crate) trait ErasedSyncTerminal: Sync {
     fn call(&self, inv: &Inv<'_>) -> Result<Option<Value>, Error>;
 }
 
@@ -510,14 +511,12 @@ pub(crate) fn call_sync(
             }
             if next.is_some() {
                 // The protocol has no synchronous `next` to hand a listener
-                // in another process (events protocol §5.4).
-                return Err(ErrorKind::Validation {
-                    issues: vec![format!(
-                        "listener of {} in {} is in another process and cannot run in a \
-                         synchronous waterfall; register it in this process with on_sync",
-                        inv.name,
-                        entry.info.describe()
-                    )],
+                // in another process (events protocol §5.4): for a
+                // synchronous waterfall it can only be called asynchronously.
+                return Err(ErrorKind::AsyncListener {
+                    name: inv.name.to_string(),
+                    listener: format!("{}, in another process,", entry.info.describe()),
+                    mode: inv.mode,
                 }
                 .into());
             }
