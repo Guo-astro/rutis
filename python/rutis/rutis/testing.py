@@ -50,6 +50,11 @@ ENDPOINT = {"local": "test", "declare": ["runtime"]}
 # session ended, in seconds.
 STARTING = 30.0
 STOPPING = 10.0
+# How long the test waits for a call of a service the plugin provides
+# (`t.service(name).method(...)`), in seconds: unittest has no time limit,
+# so a call that never returns would hang the test without a word. Past
+# it, the call is cancelled and the test fails, naming it.
+CALLING = 30.0
 
 
 class PluginTestError(AssertionError):
@@ -375,10 +380,18 @@ class Loaded:
                     return runtime.dispatch(handle, _method, list(args))
             else:
                 async def call(*args: Any, _method: str = method) -> Any:
-                    value = runtime.dispatch(handle, _method, list(args))
-                    while inspect.isawaitable(value):
-                        value = await value
-                    return value
+                    limit = asyncio.timeout(CALLING)
+                    try:
+                        async with limit:
+                            value = runtime.dispatch(handle, _method, list(args))
+                            while inspect.isawaitable(value):
+                                value = await value
+                            return value
+                    except TimeoutError:
+                        # The plugin's own TimeoutError stays the plugin's.
+                        if not limit.expired():
+                            raise
+                        raise PluginTestError(f"{name}.{_method}() did not return within {CALLING:g} s") from None
 
             call.__name__ = method
             call.__qualname__ = f"{name}.{method}"

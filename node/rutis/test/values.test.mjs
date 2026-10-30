@@ -36,11 +36,10 @@ test('the constructors check their text and mark their value', () => {
   }
 })
 
-// A service that echoes what it is given, in the real runtime.
-let loaded
+// A service that echoes what it is given, in the real runtime: loaded by
+// the test that asks for it, unloaded when that test ends.
 async function echo() {
-  loaded ??= load(echoPlugin)
-  return (await loaded).service('echo')
+  return (await load(echoPlugin)).service('echo')
 }
 
 test('tagged values cross as the runtimes send and receive them', async () => {

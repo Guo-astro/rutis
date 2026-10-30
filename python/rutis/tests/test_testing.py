@@ -318,6 +318,50 @@ class Testing(background.TestCase):
 
         run(go())
 
+    def test_a_call_that_never_returns_fails_at_the_limit(self):
+        # unittest has no time limit: without the test tool's, the test
+        # would wait for the call without end, saying nothing (#933).
+        import rutis.testing
+
+        async def go():
+            cancelled = asyncio.Event()
+
+            class Stuck:
+                async def wait(self, value):
+                    try:
+                        await asyncio.Event().wait()
+                    finally:
+                        cancelled.set()
+
+            def apply(ctx, config):
+                ctx.provide("stuck", Stuck())
+
+            async def scope():
+                async with load(define_plugin(apply, name="stuck")) as t:
+                    await t.service("stuck").wait(1)
+
+            with self.assertRaises(PluginTestError) as failed:
+                # Only so that this test, run before the fix, does not hang.
+                await asyncio.wait_for(scope(), 10)
+            self.assertEqual(str(failed.exception), "stuck.wait() did not return within 0.2 s")
+            self.assertTrue(cancelled.is_set())
+
+            # A TimeoutError of the plugin's own is the plugin's.
+            class Late:
+                async def wait(self):
+                    raise TimeoutError("the plugin's own")
+
+            async with load(define_plugin(lambda ctx, config: ctx.provide("late", Late()), name="late")) as t:
+                with self.assertRaises(TimeoutError) as own:
+                    await t.service("late").wait()
+                self.assertEqual(str(own.exception), "the plugin's own")
+
+        saved, rutis.testing.CALLING = rutis.testing.CALLING, 0.2
+        try:
+            run(go())
+        finally:
+            rutis.testing.CALLING = saved
+
     def test_a_failure_in_the_test_body_is_the_one_raised(self):
         async def go():
             with self.assertRaises(AssertionError) as failure:

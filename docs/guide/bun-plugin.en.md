@@ -195,7 +195,7 @@ bun test
 bun run check
 ```
 
-- `services` are the services the plugin `inject`s; `t.service(name)` is a service the plugin provides; `t.on` listens to events as another plugin next to it does (they arrive through the host, a little after the service returns, so the assertion comes after `await t.unload()`); `t.unload()` unloads the plugin, running its cleanups.
+- `services` are the services the plugin `inject`s; `t.service(name)` is a service the plugin provides; `t.on` listens to events as another plugin next to it does (they arrive through the host, a little after the service returns, so the assertion comes after `await t.unload()`); `t.unload()` unloads the plugin, running its cleanups; a test that fails before it leaves nothing behind: when it ends, the plugin it loaded is unloaded and the services it gave are withdrawn.
 - The host does what it does for real: it checks the config against the schema, fills its defaults and dispatches the events. Values between the plugin and the test cross between processes. The plugin must be the default export of its file.
 - When the host gives you its services' types (a `.d.ts` written by `rutis-host types`), write `ctx.use<Services['translate']>('translate')` and `bun run check` checks the calls before anything runs; see [Building a host open to plugins: types for plugin authors](open-host.en.md#types-for-plugin-authors).
 - The rest of the test tool: [plugin API: the TypeScript and Bun test tool](plugin-api.en.md#the-typescript-and-bun-test-tool).

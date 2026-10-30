@@ -193,7 +193,7 @@ if __name__ == "__main__":
 uv run python -m unittest discover -s tests
 ```
 
-The checks are the host's own: its loader fills in the schema's defaults and validates the config, and a config that does not match makes `load` raise `PluginTestError` with the row's state line (`greeter: config: greeting should be a string, got 3`); events are dispatched by the host. The rest of the test tool: [Plugin API: the Python test tool](plugin-api.en.md#the-python-test-tool). When a host gives Python types for its services, see [Types from the host](#types-from-the-host).
+The checks are the host's own: its loader fills in the schema's defaults and validates the config, and a config that does not match makes `load` raise `PluginTestError` with the row's state line (`greeter: config: greeting should be a string, got 3`); events are dispatched by the host. unittest has no time limit, so the test tool gives the calls of the plugin's service one: a call that does not return within 30 seconds is cancelled and fails the test with `PluginTestError: greeter.hello() did not return within 30 s`. The rest of the test tool: [Plugin API: the Python test tool](plugin-api.en.md#the-python-test-tool). When a host gives Python types for its services, see [Types from the host](#types-from-the-host).
 
 ## 7. Run it locally and try it
 
