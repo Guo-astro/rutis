@@ -756,7 +756,7 @@ test('counts the notes and their words', async () => {
   const commands = new Map<string, (args: string[]) => Promise<string>>()
   const t = await load(plugin, {
     services: {
-      notes: { list: async () => ['buy milk', 'call Ada back'] },
+      notes: { list: () => ['buy milk', 'call Ada back'] },
       commands: { register: async (name: string, run: (args: string[]) => Promise<string>) => { commands.set(name, run) } },
     },
   })
@@ -783,6 +783,13 @@ $ npx rutis-host call commands.run '"count"'
 ```
 
 - The fakes of a test go in `load`'s `services`; the fakes of `dev` are rows of `rutis.dev.json`.
+- The test calls the command it received as a function, and such a call waits for its result on the test's thread; while it waits, that thread cannot settle a Promise. So a fake the command calls while it runs answers at once (`list: () => [...]`, not `async`). Written `async`, the call fails:
+
+  ```text
+  SyncWaitCycle: await requires the Node thread occupied by its parent synchronous call; path: test:5 -> rutis-test:3 -> rutis-test:4
+  ```
+
+  The fakes of `dev` (`dev/fake-jot.ts`) stay `async`: there jot's side calls the command, as jot does.
 - Authors writing commands in Python use the `jot_types.py` that `--python` writes; the fake jot can stay in TypeScript: rows of different languages sit together in `rutis.dev.json`.
 - The test tools, `dev` and `rutis-host call` are in each language's plugin guide ([TypeScript](typescript-plugin.en.md#6-test), [Python](python-plugin.en.md#6-test)) and in [rutis-host: developing a plugin with `dev`](rutis-host.en.md#developing-a-plugin-with-dev).
 
