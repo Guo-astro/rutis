@@ -983,6 +983,55 @@ impl Ctx {
         view
     }
 
+    /// Make this context's fiber an instance of `group`: a scope whose id is
+    /// this fiber's [`InstanceId`](crate::host::InstanceId). The loader marks
+    /// each group instance it creates; a host that builds its own instances
+    /// with [`Ctx::plugin`] marks each one in that plugin's `apply`. Plugins
+    /// mounted inside it, and the copies of plugin definitions mounted there
+    /// with `Definition::at`, then see it in their scope chain
+    /// ([`CtxHost::scope`](crate::host::CtxHost::scope)): the names shared
+    /// per instance of `group` resolve to this instance.
+    ///
+    /// Marking it again with the same group is a no-op. It fails on the root
+    /// (`config validation failed: ["the root is not a scope of a group"]`)
+    /// and on a fiber already marked for another group (`config validation
+    /// failed: ["this fiber is already a scope of group tenant, not
+    /// session"]`).
+    pub fn mark_scope(&self, group: &str) -> Result<(), Error> {
+        let fiber = self.0.fiber.upgrade().ok_or(ErrorKind::InactiveEffect)?;
+        if fiber.is_root {
+            return Err(ErrorKind::Validation {
+                issues: vec!["the root is not a scope of a group".into()],
+            }
+            .into());
+        }
+        let marked = fiber.scope_group.get_or_init(|| Arc::from(group));
+        if &**marked != group {
+            return Err(ErrorKind::Validation {
+                issues: vec![format!(
+                    "this fiber is already a scope of group {marked}, not {group}"
+                )],
+            }
+            .into());
+        }
+        Ok(())
+    }
+
+    /// The marked fibers around this context, outermost first: each one's
+    /// instance and group.
+    fn scope_links(&self) -> Vec<(InstanceId, String)> {
+        let mut chain = Vec::new();
+        let mut current = self.0.fiber.upgrade();
+        while let Some(fiber) = current {
+            if let Some(group) = fiber.scope_group.get() {
+                chain.push((fiber.instance, group.to_string()));
+            }
+            current = fiber.parent_fiber.as_ref().and_then(Weak::upgrade);
+        }
+        chain.reverse();
+        chain
+    }
+
     /// Record a plugin definition this context's generation made: false when
     /// the generation is already stopping (the definition ends at once).
     pub(crate) fn register_definition(&self, definition: Weak<crate::definition::Inner>) -> bool {
@@ -1300,19 +1349,13 @@ impl crate::host::CtxHost for Ctx {
     }
 
     fn scope(&self) -> Vec<crate::Scope> {
-        let mut chain = Vec::new();
-        let mut current = self.0.fiber.upgrade();
-        while let Some(fiber) = current {
-            if let Some(group) = fiber.scope_group.get() {
-                chain.push(crate::Scope {
-                    id: fiber.instance.to_string(),
-                    group: group.to_string(),
-                });
-            }
-            current = fiber.parent_fiber.as_ref().and_then(Weak::upgrade);
-        }
-        chain.reverse();
-        chain
+        self.scope_links()
+            .into_iter()
+            .map(|(instance, group)| crate::Scope {
+                id: instance.to_string(),
+                group,
+            })
+            .collect()
     }
 
     fn row(&self) -> Option<String> {
@@ -1435,24 +1478,8 @@ impl crate::internal::CtxInternal for Ctx {
         &self.0.shared.bus
     }
 
-    fn mark_scope(&self, group: &str) -> Result<(), Error> {
-        let fiber = self.0.fiber.upgrade().ok_or(ErrorKind::InactiveEffect)?;
-        if fiber.is_root {
-            return Err(ErrorKind::Validation {
-                issues: vec!["the root is not a scope of a group".into()],
-            }
-            .into());
-        }
-        let marked = fiber.scope_group.get_or_init(|| Arc::from(group));
-        if &**marked != group {
-            return Err(ErrorKind::Validation {
-                issues: vec![format!(
-                    "this fiber is already a scope of group {marked}, not {group}"
-                )],
-            }
-            .into());
-        }
-        Ok(())
+    fn scope_instances(&self) -> Vec<(InstanceId, String)> {
+        self.scope_links()
     }
 
     fn mark_row(&self, key: &str) -> Result<(), Error> {

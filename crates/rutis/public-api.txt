@@ -1109,6 +1109,7 @@ impl rutis::Ctx
 pub fn rutis::Ctx::cancelled(&self) -> impl core::future::future::Future<Output = ()> + core::marker::Send + 'static
 pub fn rutis::Ctx::effect<Fut>(&self, impl core::ops::function::FnOnce() -> Fut) -> core::result::Result<rutis::Disposer, rutis::Error> where Fut: core::future::future::Future<Output = core::result::Result<(), rutis::Error>> + core::marker::Send + 'static
 pub fn rutis::Ctx::get<T: ?core::marker::Sized + core::marker::Send + core::marker::Sync + 'static>(&self) -> core::option::Option<alloc::rcs::arc::Arc<T>>
+pub fn rutis::Ctx::mark_scope(&self, &str) -> core::result::Result<(), rutis::Error>
 pub fn rutis::Ctx::plugin(&self, impl rutis::host::DynPlugin) -> rutis::host::FiberView
 pub fn rutis::Ctx::provide<T: core::marker::Send + core::marker::Sync + 'static>(&self, T) -> core::result::Result<rutis::Disposer, rutis::Error>
 pub fn rutis::Ctx::provide_as<T: ?core::marker::Sized + core::marker::Send + core::marker::Sync + 'static>(&self, alloc::rcs::arc::Arc<T>) -> core::result::Result<rutis::Disposer, rutis::Error>

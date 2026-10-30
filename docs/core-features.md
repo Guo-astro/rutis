@@ -46,7 +46,7 @@ let hi = ctx.serial(RoomEvent { room: "a".into() }).await?;
 - `serial` / `bail` 取第一个"有结果"的返回值（`None` 与 `Some(false)` 是没有结果）；错误停止。`bail` 遇到异步监听器报 `AsyncListener`。
 - `waterfall` 由外向内，监听器经 `call.next()` 调用其余；不调即否决；终态可选（`ctx.waterfall(e).terminal(…)`，不写就没有终态）；返回最外层的值。`ctx.waterfall(e).sync(terminal)` 同步跑完整条链，规则同 `bail`（`on_sync` 的监听器同步调 `next`）。
 - 同步监听器用 `on_sync` 登记，所有方式都能调用它。`ctx.listen::<E>().prefix("room/")` 登记前缀监听器，它从 `call.name()` 读到实际的名字；`listen()` 还有 `.once()`、`.prepend()`、`.global()`。
-- **作用域**：加载器把每个组实例标为作用域（`rutis::internal` 的 `mark_scope`），`ctx.scope()` 是从根起的作用域链。事件在一个 root 的总线上按名字送达，所有监听器都收到；作用域只是 `ListenerInfo` 里的描述，供过滤使用。
+- **作用域**：加载器把每个组实例标为作用域（`Ctx::mark_scope`；宿主自己建的实例也用它标），`ctx.scope()` 是从根起的作用域链。事件在一个 root 的总线上按名字送达，所有监听器都收到；作用域只是 `ListenerInfo` 里的描述，供过滤使用。
 - **过滤**：`ctx.filter(|info: &ListenerInfo| ..)` 给出同样的五个发出方法；过滤在任何调用之前、在发出方进程里看每个非 `global` 监听器的描述（插件、行、运行时、节点、作用域）。
 - **生命周期**：监听器以登记它的 `Ctx` 被调用；它的 fiber 卸载时不再开始新的调用，并等正在运行的调用结束（它们的 `ctx.cancelled()` 已触发），最多到宿主的关闭截止时间。
 - `rutis/*` 是框架事件的保留名字：插件可以监听，发出则报 `ReservedEvent`。

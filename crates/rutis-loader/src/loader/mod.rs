@@ -326,24 +326,30 @@ pub fn followed_rows(loader: &Loader) -> usize {
 
 impl Loader {
     /// The instances enclosing a plugin mounted at `at`, innermost first:
-    /// what its keys are computed for, as a row's copy there would be.
+    /// what its keys are computed for, as a row's copy there would be. They
+    /// are the fibers marked with [`Ctx::mark_scope`] around `at`, this
+    /// loader's instances or a host's own; an instance of this loader also
+    /// brings the values it was created with.
     #[cfg(feature = "runtimes")]
     pub(crate) fn build_at(&self, at: &Ctx) -> crate::resolver::Build {
-        let scope = rutis::host::CtxHost::scope(at);
+        use rutis::internal::CtxInternal;
+        let scope = at.scope_instances();
         let state = self.inner.state.lock().unwrap();
         let chain = scope
-            .iter()
+            .into_iter()
             .rev()
-            .filter_map(|link| {
-                state
+            .map(|(instance, group)| {
+                let values = state
                     .instances
                     .values()
-                    .find(|instance| instance.kernel.to_string() == link.id)
-                    .map(|instance| crate::resolver::BuildLink {
-                        group: instance.group.clone(),
-                        instance: instance.kernel,
-                        values: instance.values.clone(),
-                    })
+                    .find(|record| record.kernel == instance)
+                    .map(|record| record.values.clone())
+                    .unwrap_or_default();
+                crate::resolver::BuildLink {
+                    group,
+                    instance,
+                    values,
+                }
             })
             .collect();
         crate::resolver::Build { chain, row: None }
