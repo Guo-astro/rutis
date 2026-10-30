@@ -50,10 +50,14 @@ impl SpawnPlugin {
     pub fn new(name: &str, launcher: Launcher, anchor: impl Into<PathBuf>) -> Self {
         let anchor = anchor.into();
         let processes = Processes::default();
+        let states = RuntimeStates::new(name, anchor.clone()).processes(processes.clone());
+        // Made to start: starting from now, so that `ready()` asked before
+        // its `apply` runs waits for it rather than finding it stopped.
+        states.starting();
         Self {
             row: name.to_owned(),
             label: format!("runtime {name}"),
-            states: RuntimeStates::new(name, anchor.clone()).processes(processes.clone()),
+            states,
             launcher,
             anchor,
             processes,
@@ -234,6 +238,36 @@ mod tests {
     fn mute(dir: &Path) -> SpawnPlugin {
         let launcher = Launcher::new("sh").arg("-c").arg("sleep 60").inherit_fd();
         SpawnPlugin::new("mute", launcher, dir)
+    }
+
+    /// A runtime is starting from when it is made: `ready()` asked before its
+    /// `apply` runs (open-host.md §1 mounts the runtimes, then awaits them)
+    /// waits for it. It was `Idle` then, and `ready()` answered `None` at
+    /// once: on a busy machine the host took it for a runtime that failed
+    /// (row_ready.rs on CI). Its first `apply` is the same start.
+    #[tokio::test]
+    async fn a_runtime_is_starting_from_when_it_is_made() {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = mute(dir.path()).greeting(Duration::from_secs(1));
+        let handle = runtime.handle();
+        assert!(matches!(handle.state(), RuntimeState::Starting));
+        assert_eq!(handle.starts(), 1);
+        let waiting = tokio::spawn({
+            let handle = handle.clone();
+            async move { handle.ready().await.is_none() }
+        });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(!waiting.is_finished(), "ready() waits before apply runs");
+        let root = Ctx::root().unwrap();
+        let view = root.plugin(runtime);
+        // The process never greets: down after the 1 s greeting.
+        assert!(tokio::time::timeout(Duration::from_secs(10), waiting)
+            .await
+            .expect("the start it waited for ends")
+            .unwrap());
+        assert_eq!(handle.starts(), 1, "apply is the same start");
+        let _ = tokio::time::timeout(Duration::from_secs(10), &view).await;
+        let _ = tokio::time::timeout(Duration::from_secs(5), root.shutdown()).await;
     }
 
     /// A process that never greets: with `greeting(1s)` the runtime is down
