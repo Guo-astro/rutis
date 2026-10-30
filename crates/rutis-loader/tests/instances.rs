@@ -7,7 +7,8 @@ use std::sync::{Arc, Mutex};
 
 use common::{json, patches, schema_of, MemStore, Scoped};
 use rutis::host::{
-    BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind, FiberState, Key, PluginFactory, TypeKey,
+    BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind, FiberState, Key, PluginFactory, PluginId,
+    TypeKey,
 };
 use rutis::{Ctx, Error};
 use rutis_loader::edit::{Editable, Instance, InstanceResult, NewEntry};
@@ -301,6 +302,16 @@ impl Setup {
             .unwrap()
     }
 
+    /// What `instance_rows` lists for `instance`: each row id with its
+    /// fiber's plugin.
+    fn rows(&self, instance: &Instance) -> Vec<(String, PluginId)> {
+        self.loader
+            .instance_rows(instance.view.instance())
+            .into_iter()
+            .map(|(id, view)| (id, view.id))
+            .collect()
+    }
+
     /// The copies of `id` in instances, by the instance's plugin.
     fn copies(&self, id: &str) -> Vec<EntryInfo> {
         self.loader
@@ -395,6 +406,19 @@ async fn each_instance_runs_its_own_copies() {
 
     let a = s.create("A").await;
     let b = s.create("B").await;
+    // Each instance lists only its own live rows, not its group fiber.
+    let a_rows = s.rows(&a);
+    let b_rows = s.rows(&b);
+    let ids =
+        |rows: &[(String, PluginId)]| rows.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>();
+    assert_eq!(ids(&a_rows), ["doc-scope", "reader"]);
+    assert_eq!(ids(&b_rows), ["doc-scope", "reader"]);
+    assert!(a_rows.iter().all(|(_, plugin)| *plugin != a.plugin));
+    assert!(a_rows
+        .iter()
+        .all(|(_, plugin)| b_rows.iter().all(|(_, other)| plugin != other)));
+    // The loader's own context is no instance.
+    assert!(s.loader.instance_rows(s.root.instance()).is_empty());
     assert!(
         a.report
             .iter()
@@ -440,6 +464,8 @@ async fn each_instance_runs_its_own_copies() {
     s.loader.remove_instance(a.plugin).await.unwrap();
     assert_eq!(s.take_log(), ["cleanup  A", "cleanup r A"]);
     assert_eq!(s.copies("reader").len(), 1);
+    assert!(s.rows(&a).is_empty());
+    assert_eq!(s.rows(&b), b_rows);
 
     // Closing the fiber directly removes the instance too.
     b.view.shutdown().await.unwrap();
@@ -457,6 +483,7 @@ async fn each_instance_runs_its_own_copies() {
         "both instances removed",
     )
     .await;
+    assert!(s.rows(&b).is_empty());
     assert!(matches!(
         s.loader.remove_instance(b.plugin).await,
         Err(LoaderError::UnknownEntry(_))
@@ -479,7 +506,30 @@ const NESTED: &str = r#"[{ "insert": [
 async fn nested_instances_are_created_from_inside_and_read_outer_services() {
     let s = setup(NESTED).await;
     let a = s.create("A").await;
-    let _b = s.create("B").await;
+    let b = s.create("B").await;
+    // The rows of the page inside A are A's too, after A's own rows.
+    let rows = s.rows(&a);
+    assert_eq!(
+        rows.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(),
+        ["doc-scope", "creator", "page", "page-scope", "page-reader"]
+    );
+    // The same fibers `entries` lists in A's instances, without A's group.
+    let scoped: Vec<_> = s
+        .loader
+        .entries()
+        .into_iter()
+        .filter(|row| {
+            row.instance.as_ref().is_some_and(|instance| {
+                instance
+                    .chain
+                    .iter()
+                    .any(|(_, id)| *id == a.view.instance())
+            }) && row.view.as_ref().is_some_and(|view| view.id != a.plugin)
+        })
+        .map(|row| (row.id, row.view.unwrap().id))
+        .collect();
+    assert_eq!(rows, scoped);
+    assert!(s.rows(&b).iter().all(|row| !rows.contains(row)));
     // `creator` created a page from its own context, during its apply.
     let log = s.take_log();
     for line in [
@@ -510,15 +560,23 @@ async fn nested_instances_are_created_from_inside_and_read_outer_services() {
     s.loader.remove_instance(a.plugin).await.unwrap();
     assert_eq!(s.copies("page-reader").len(), 1);
     assert_eq!(s.copies("creator").len(), 1);
+    assert!(s.rows(&a).is_empty());
+    assert_eq!(s.rows(&b).len(), 5);
 }
 
 /// guarantee: loader/instance-edits-all-or-none
 #[tokio::test]
 async fn edits_reach_every_instance_or_none() {
     let s = setup(DOC).await;
-    s.create("A").await;
-    s.create("B").await;
+    let a = s.create("A").await;
+    let b = s.create("B").await;
     s.take_log();
+    let ids = |instance: &Instance| {
+        s.rows(instance)
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect::<Vec<_>>()
+    };
 
     // A config change updates every copy.
     s.loader
@@ -556,6 +614,9 @@ async fn edits_reach_every_instance_or_none() {
         .unwrap();
     assert_eq!(s.take_log(), ["apply x", "apply x"]);
     assert_eq!(s.copies("extra").len(), 2);
+    // The next read lists the new row, in configuration order.
+    assert_eq!(ids(&a), ["doc-scope", "reader", "extra"]);
+    assert_eq!(ids(&b), ["doc-scope", "reader", "extra"]);
 
     // Disabling and removing reach every copy.
     s.loader.set_disabled("extra", true).await.unwrap();
@@ -564,8 +625,12 @@ async fn edits_reach_every_instance_or_none() {
         .copies("extra")
         .iter()
         .all(|e| matches!(e.status, EntryStatus::Disabled)));
+    // A disabled copy is not live.
+    assert_eq!(ids(&a), ["doc-scope", "reader"]);
     s.loader.remove("extra").await.unwrap();
     assert!(s.copies("extra").is_empty());
+    assert_eq!(ids(&a), ["doc-scope", "reader"]);
+    assert_eq!(ids(&b), ["doc-scope", "reader"]);
 
     // Restarting the row restarts every copy.
     s.loader.restart("reader").await.unwrap();

@@ -162,6 +162,62 @@ impl Loader {
         })
     }
 
+    /// The live rows inside the instance whose group fiber has `instance`
+    /// (`view.instance()` of the [`Instance`](super::Instance) that
+    /// `create_instance` returned): each row id
+    /// with its fiber, including the rows of instances nested in it, in
+    /// configuration order, then instance creation order. The instance's
+    /// own group fiber is not listed. An unknown or removed instance has
+    /// none. Each call reads the current state, so rows and nested
+    /// instances created or removed since the last call are reflected; it
+    /// builds no row configuration or schemas.
+    pub fn instance_rows(&self, instance: rutis::host::InstanceId) -> Vec<(String, FiberView)> {
+        let state = self.inner.state.lock().unwrap();
+        let Some(root) = state
+            .instances
+            .iter()
+            .find_map(|(number, record)| (record.kernel == instance).then_some(*number))
+        else {
+            return Vec::new();
+        };
+        let inside = |number: u64| {
+            let mut scope = Some(number);
+            while let Some(number) = scope {
+                if number == root {
+                    return true;
+                }
+                scope = state
+                    .instances
+                    .get(&number)
+                    .and_then(|record| record.parent.as_ref())
+                    .and_then(|parent| parent.scope);
+            }
+            false
+        };
+        let mut scopes: Vec<u64> = state
+            .instances
+            .keys()
+            .copied()
+            .filter(|number| inside(*number))
+            .collect();
+        scopes.sort_unstable();
+        let mut rows = Vec::new();
+        for row in &state.desired.rows {
+            for scope in &scopes {
+                let slot = Slot {
+                    row: row.id.clone(),
+                    scope: Some(*scope),
+                };
+                if let Some(running) = state.running.get(&slot) {
+                    if running.view.instance() != instance {
+                        rows.push((row.id.clone(), running.view.clone()));
+                    }
+                }
+            }
+        }
+        rows
+    }
+
     /// Resolve a module name with this loader's resolvers, as a row naming
     /// it would be (a host serving its peer looks plugins up this way).
     pub async fn resolve(

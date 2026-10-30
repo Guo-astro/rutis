@@ -97,6 +97,21 @@ loader.remove_instance(b1.plugin).await?;
 - An instance goes with the group context it was created in: when a parent instance closes, or that context is rebuilt or unloaded (for example its group's `isolate` changes), every instance in it is disposed with the subtree and removed (`InstanceRemoved`). The plugins or business code that created them create them again in the new context.
 - Instances are not written to configuration. After a process restart, business logic creates them again, for example calling `create_instance` for each conversation restored from a database.
 
+### 3.3 What host developers see: an instance's rows
+
+`loader.instance_rows(instance)` takes the `ctx.instance()` of an instance's group fiber (`s1.view.instance()`) and returns the rows running in that instance now, as `(row id, FiberView)`:
+
+```rust
+for (id, view) in loader.instance_rows(s1.view.instance()) {
+    println!("{id} {:?}", view.state());
+}
+```
+
+- Rows of instances nested in it are included (with the nested group's own fiber); the instance's own group fiber is not.
+- The order is configuration order, then instance creation order. With the session above and one branch created in it, the ids are `["session-scope", "tool-registry", "timeline-tree", "branch", "branch-scope", "loop", "tool-executor"]` (the configuration in §2, every row running).
+- Only live rows are listed: a disabled, stopped or not yet spawned copy is not. An unknown or removed instance returns an empty list; it is not an error.
+- Every call reads the current state: nested instances created while plugins load, and rows added or removed by edits, are in the next call. Nothing is cached; it builds no row configuration, schemas or metadata, unlike `entries()`, and changes neither readiness nor lifecycle.
+
 ## 4. Factories
 
 Plugins inside an instance often need to know which instance they are in, to build instance keys.
