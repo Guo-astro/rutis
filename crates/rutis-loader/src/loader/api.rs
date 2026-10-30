@@ -588,7 +588,7 @@ impl Loader {
 
     /// Wait until no row is in transition.
     pub async fn settled(&self) {
-        self.inner.settle(None).await
+        self.inner.wait_settled(None, false).await
     }
 }
 
