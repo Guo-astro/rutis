@@ -107,6 +107,8 @@ export default definePlugin<Config>({
 
 The plugin starts once every service in `inject` is available; when one goes, the plugin stops, and it starts again when the service is back. Which plugin, in which language, provides `translate` is not the plugin's concern. Calls to another plugin's methods are asynchronous, hence the `await`.
 
+A service the plugin can do without goes in `optional: ['llm']` instead of `inject`: rutis does not wait for it, and `ctx.get<Llm>('llm')` gives it, or `undefined` when it was not there as the plugin started (one that comes later is not leased for the row, and is sure to be seen only after the row restarts). See [plugin API: optional services](plugin-api.en.md#optional-services); it needs rutis-host 0.20 or later, and the testing tool does not require the test to give it.
+
 The template's own test no longer passes now (it gives no `translate`); step 6 replaces it.
 
 ## 4. Configuration

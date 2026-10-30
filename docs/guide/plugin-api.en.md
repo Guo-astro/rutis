@@ -7,6 +7,7 @@ TypeScript / JavaScript plugins (`@arcships/rutis`), Python plugins (`rutis`) an
 | Declaration | TypeScript (`definePlugin({...})`) | Python (`define_plugin(apply, ...)` or module variable) | Go (`rutis.Define(rutis.Plugin[C]{...})`) | Swift (`Rutis.define(Plugin(...))`) | Kotlin（`Rutis.define<C>(...) { ctx, config -> }`） | Meaning |
 | --- | --- | --- | --- | --- | --- | --- |
 | Services used | `inject: ['llm']` | `inject=["llm"]` | `Inject: []string{"llm"}` | `inject: ["llm"]` | `inject = listOf("llm")` | The plugin starts when all are ready. If any is revoked, the plugin stops and waits for it to return. |
+| Services used when there | `optional: ['llm']` | `optional=["llm"]` | `Optional: []string{"llm"}` | `optional: ["llm"]` | `optional = listOf("llm")` | Never waited for: those there when the plugin starts are leased in for it and read with `ctx.get` (see [Optional services](#optional-services)). A name is in `inject` or `optional`, not both. Needs rutis-host 0.20 or later. |
 | Services provided (optional) | `provides: { weather: { today: 'sync' } }` | `provides={"weather": Weather}` or `{"weather": {"today": "sync"}}` | `Provides: rutis.Provides{"weather": rutis.MethodsOf[*Weather](rutis.Sync("Unit"))}` (exported methods, `async` unless `Sync` names them) | `provides: ["weather": .of(Weather.self, sync: ["unit"])]` (the methods of a `@RutisService` type, `async` unless `sync` names them) | `provides = mapOf("weather" to service<Weather>(sync = setOf("unit")))` (the public member functions of a `@RutisService` class, `async` unless `sync` names them) | Not needed: what `ctx.provide` provides reaches rutis by itself (see below). When present it applies: it marks methods `sync` and lets `rutis-host check` know before running who provides what; a declared service offers only its declared methods. |
 | Configuration | `config: { type: 'object', ... }` | `config={...}` (module variable: `Config`) | the type `C` (schema derived from it), or `Schema` | the `Decodable` type of `config:` (schema from `@RutisConfig`, or `static let rutisSchema`) | the `@Serializable` type `C` (schema derived from its `SerialDescriptor`), or `schema` | JSON Schema: before `apply` the config is filled with its defaults and validated against it (see [Configuration](#configuration)); `rutis-host check` does the same. |
 | Startup | `apply(ctx, config)` | `apply(ctx, config)` | `Apply: func(ctx *rutis.Ctx, config C) error` | `apply: { ctx, config in ... }` (`async throws`) | `{ ctx, config -> }`, may suspend; an exception fails the load | May be async; returns a cleanup function or nothing (Go: an error fails the load). |
@@ -25,7 +26,8 @@ Before `apply`, each language's SDK fills a row's config with its schema's defau
 
 | Method | Purpose |
 | --- | --- |
-| `ctx.use(name)` | Gets a service declared in `inject`. A service provided by a plugin in the same runtime process is the object itself; services from other processes, languages, or machines are proxies. A service neither the plugin nor its row declares in `inject`, when the plugin does not get it, says `service <name> is not available to this plugin, which does not declare it in inject: add '<name>' to its inject` (only a declared service is sure to be given); calling a host service method that needs the calling row (a Rust method taking `&Ctx`, say) also says to declare the service in `inject` |
+| `ctx.use(name)` | Gets a service declared in `inject`. A service provided by a plugin in the same runtime process is the object itself; services from other processes, languages, or machines are proxies. A service neither the plugin nor its row declares in `inject`, when the plugin does not get it, says `service <name> is not available to this plugin, which does not declare it in inject: add '<name>' to its inject` (Go: `… in Inject: add "<name>" to its Inject`; only a declared service is sure to be given); calling a host service method that needs the calling row (a Rust method taking `&Ctx`, say) also says to declare the service in `inject` |
+| `ctx.get(name)` | Gets a service declared in `optional`: what `ctx.use` would give, or an empty value (`undefined`, `None`; Go `ctx.Get(name, &target)` returns `false, nil`; Swift `nil`, Kotlin `null`) when it was not there as the plugin started. A name declared nowhere says `service <name> is not available to this plugin, which does not declare it: add '<name>' to its optional (or to its inject, if it cannot run without it)` (Go: `add "<name>" to its Optional (or to its Inject, …)`) |
 | `ctx.provide(name, value)` | Provides a service until the plugin is unloaded or the returned function is called. It reaches rutis by itself, used by name from other languages and processes; when `provides` does not declare it, its methods are the public methods of `value` (JavaScript: its own and its prototype chain's functions, not `constructor`; Python: callable attributes not starting with `_`; Go: exported methods), all called as `async`; fields are not methods. The inferred methods follow each language's rules, so the same service written in two languages can differ: a JavaScript class extending `EventEmitter` also exposes `on`, `emit` and the rest; list the methods in `provides` to expose only those. |
 | `ctx.effect(cleanup)` | Runs `cleanup` when the plugin is unloaded. It may be async. |
 | `ctx.on(name, listener, options?)` | Listens to an event: wherever it is emitted (another plugin, another runtime, the host, a linked node), a same-named event on this root's bus reaches `listener`. Unregistered when the plugin unloads; the returned function unregisters it at once. See [Events](#events) below. |
@@ -39,6 +41,32 @@ Cleanups run in reverse registration order: the function returned by `apply` run
 In Go: `ctx.Use(name, &target)` binds the service to a struct of function fields (or a `*advanced.Service`); `ctx.Provide(name, value)`; `ctx.Effect(func(context.Context) error)`; `ctx.Go(task)` runs a goroutine stopped at unload. `*rutis.Ctx` is a `context.Context` cancelled when the plugin unloads.
 
 In Kotlin: `ctx.use<I>(name)` uses the service through the `@RutisClient` interface `I` (the provider's own object when one in this process implements `I`); `ctx.provide(name, obj)` takes an instance of a `@RutisService` class, whose method table the KSP processor generates at compile time; `ctx.effect { }`; `ctx` is a coroutine scope cancelled when the plugin unloads, and coroutines started with `ctx.launch { }` are cancelled and waited for then. A received error is a `RutisException`, matched by `name`.
+
+### Optional services
+
+A plugin that can do without a service declares it in `optional` and reads it with `ctx.get`:
+
+```ts
+export default definePlugin({
+  inject: ['notes'],      // required: starts once there, stops when it goes
+  optional: ['llm'],      // used when there: never waited for
+  apply(ctx) {
+    ctx.provide('summary', {
+      async of(text: string) {
+        const llm = ctx.get<Llm>('llm')
+        return llm ? await llm.ask(`summarize: ${text}`) : text.slice(0, 200)
+      },
+    })
+  },
+})
+```
+
+As Rust's `Option<Arc<T>>`, a host service is the one leased when the plugin starts, kept until it stops; a service another row of this process provides is seen as it changes (as Cordis's `ctx.get`):
+
+- There when the plugin starts: leased in for it, until it stops.
+- Not there then: the plugin runs without it (`rutis-host status` does not list it as waiting). One that comes later is not leased for the row, and is sure to be seen only once the row restarts (a config change, `rutis-host` reloading it); until then `get` also reads one the process already has (provided by a row of the same process, or leased in by another row for itself), as Rust's `ctx.get` reads the service table as it is now.
+- Its provider goes while the plugin runs: the plugin keeps running, and `ctx.get` still gives the service it got; calling it says `service <name> is not available` (code `unavailable`), or that the provider's process ended (`peer-gone`). A hand-written Rust `HostDispatch` keeps answering until the row restarts.
+- `ctx.use` does not take `optional` (as Rust's `ctx.require`: an `Option<Arc<T>>` is not an inject): to `ctx.use`, a name only in `optional` is an undeclared one (see the `ctx.use` row above), and it says `service <name> is not available to this plugin, which does not declare it in inject: add '<name>' to its inject` (Go: `… which does not declare it in Inject: add "<name>" to its Inject`). Optional services are read with `ctx.get`.
 
 Rust plugins in the host (built in, or dylib plugins): add `#[rutis::service]` to the service type's `impl` block, and once `ctx.provide(value)` provides it, it reaches other languages by name (by default the type's name, first word lowercased); rows of every language call it with `ctx.use(name)`. Unmarked Rust types are not served. See [Rust host](rust-host.en.md#mark-the-type-rutisservice). How to write the plugin itself: [write a Rust plugin](rust-plugin.en.md).
 

@@ -219,6 +219,9 @@ export function noMethod(service, method, methods) {
 // row's declares: what to declare, not that it is missing (#676).
 export const UNDECLARED = name => `service ${name} is not available to this plugin, which does not declare it in inject: add '${name}' to its inject`
 export const notDeclared = service => bindingError('not-declared', UNDECLARED(service), { service })
+// The same for `ctx.get`, which reads an optional service: declare it there.
+export const UNDECLARED_OPTIONAL = name => `service ${name} is not available to this plugin, which does not declare it: add '${name}' to its optional (or to its inject, if it cannot run without it)`
+export const notDeclaredOptional = service => bindingError('not-declared', UNDECLARED_OPTIONAL(service), { service })
 // A declared service nothing provides (now).
 export const unavailable = (service, reason) =>
   bindingError('unavailable', `service ${service} is not available${reason ? ` (${reason})` : ''}`, reason ? { service, reason } : { service })

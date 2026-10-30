@@ -95,6 +95,8 @@ final class HandleEntry {
     let methods: Set<String>?
     var current = true
     var released = false
+    /// Its row unloaded (see `gone`).
+    var gone = false
     init(id: String, name: String, object: RutisExportable, methods: Set<String>?) {
         self.id = id
         self.name = name
@@ -312,6 +314,10 @@ final class Runtime: @unchecked Sendable {
     var hosts: [String: [String: String]] = [:]
     var slots: [String: Slot] = [:]
     var handles: [String: HandleEntry] = [:]
+    /// The last generation each id's handles reached, kept as its slots go
+    /// and come again (a row restarting): a handle is never given to two
+    /// objects, so one held for a retired object stays retired.
+    var generations: [String: Int] = [:]
     var version = 0
     var loaded = 0
     var closing = false
@@ -432,7 +438,8 @@ final class Runtime: @unchecked Sendable {
         slot.present = present
         slot.handle = nil
         if present, let current {
-            slot.generation += 1
+            slot.generation = (generations[id] ?? 0) + 1
+            generations[id] = slot.generation
             let handle = handleOf(id, slot.generation)
             slot.handle = handle
             if slot.announced { slot.methods = Set(current.rutisMethods().keys) }
@@ -475,6 +482,20 @@ final class Runtime: @unchecked Sendable {
         guard let entry = handles[handle] else { return }
         entry.current = false
         if entry.released { handles[handle] = nil }
+    }
+
+    /// The row of slot `id` unloaded: every handle on its objects, the
+    /// current one and those it replaced, says the service is gone (to a
+    /// row holding it, an optional service leased at start); the released
+    /// ones are forgotten. A handle its row replaced while running keeps its
+    /// object until then, as a snapshot of a service does in Rust. `lock`
+    /// is held.
+    func gone(_ id: String) {
+        for (handle, entry) in handles where entry.id == id {
+            entry.current = false
+            entry.gone = true
+            if entry.released { handles[handle] = nil }
+        }
     }
 
     /// Provides `value` as the service `name` of `row` until the returned
@@ -782,7 +803,7 @@ final class Runtime: @unchecked Sendable {
             for id in row.announced + row.exports.keys.map(row.id) {
                 if let slot = slots[id], slot.row == key {
                     slots[id] = nil
-                    if let handle = slot.handle { retire(handle) }
+                    gone(id)
                 }
             }
             row.announced = []
@@ -848,9 +869,12 @@ final class Runtime: @unchecked Sendable {
     func dispatch(_ target: String, _ method: String, _ args: [Value]) async throws -> Value {
         if lock.withLock({ closing }) { throw RutisError(name: "Error", message: "runtime is closing") }
         if target.isEmpty { return try await control(method, args) }
-        guard let entry = lock.withLock({ handles[target] }) else {
+        guard case let (entry, gone)? = lock.withLock({ handles[target].map { ($0, $0.gone) } }) else {
             throw RutisError(name: "Error", message: "unknown or released service object \(printable(target))")
         }
+        // Its row unloaded: a caller still holding it (an optional service,
+        // leased at start) is told it is gone.
+        if gone { throw RutisError.unavailable(entry.name) }
         let callee = Refusal.Callee(service: entry.name, method: method)
         let table = entry.object.rutisMethods()
         guard let body = table[method], entry.methods?.contains(method) ?? true else {
@@ -972,9 +996,10 @@ final class Runtime: @unchecked Sendable {
         case "get":
             let handle: String = try argument(args, 0)
             let property: String = try argument(args, 1)
-            guard let entry = lock.withLock({ handles[handle] }) else {
+            guard case let (entry, gone)? = lock.withLock({ handles[handle].map { ($0, $0.gone) } }) else {
                 throw RutisError(name: "Error", message: "unknown or released service object \(printable(handle))")
             }
+            if gone { throw RutisError.unavailable(entry.name) }
             return try readProperty(of: entry.object, property)
         default:
             throw RutisError(name: "Error", message: "unknown control method \(method)")
@@ -983,13 +1008,43 @@ final class Runtime: @unchecked Sendable {
 
     // ── Using services ───────────────────────────────────────────────
 
-    /// The service `name` as `row` uses it: by its own id.
+    /// Whether `row`'s plugin may `use` `name`: it is in `inject` (an
+    /// optional one is read with `get`, as Rust's `require` reads only the
+    /// injects).
+    func uses(_ row: Row, _ name: String) -> Bool {
+        row.definition.inject.contains(name)
+    }
+
+    /// Whether `row`'s plugin may `get` `name`: in `inject` or `optional`.
+    func declares(_ row: Row, _ name: String) -> Bool {
+        uses(row, name) || row.definition.optional.contains(name)
+    }
+
+    /// The service `name` as `row` uses it (`ctx.use`): by its own id.
     func client(_ row: Row, _ name: String) throws -> (Rutis.Advanced.Client, RutisExportable?) {
-        guard row.definition.inject.contains(name) else {
+        guard uses(row, name) else {
             throw RutisError(name: RutisError.Name.bindingError,
                              message: "service \(name) is not available to this plugin, which does not declare it in inject: add '\(name)' to its inject",
                              code: "not-declared", data: ["service": name])
         }
+        guard let found = lookup(row, name) else { throw RutisError.unavailable(name) }
+        return found
+    }
+
+    /// The optional service `name` as `row` reads it (`ctx.get`): nil when
+    /// this process has none.
+    func optionalClient(_ row: Row, _ name: String) throws -> (Rutis.Advanced.Client, RutisExportable?)? {
+        guard declares(row, name) else {
+            throw RutisError(name: RutisError.Name.bindingError,
+                             message: "service \(name) is not available to this plugin, which does not declare it: add '\(name)' to its optional (or to its inject, if it cannot run without it)",
+                             code: "not-declared", data: ["service": name])
+        }
+        return lookup(row, name)
+    }
+
+    /// The service `name` in this process, by `row`'s id for it: a provider
+    /// here gives its object too; nil when there is none.
+    func lookup(_ row: Row, _ name: String) -> (Rutis.Advanced.Client, RutisExportable?)? {
         let id = row.id(name)
         let (local, host, remote) = lock.withLock { (services[id], hosts[id], far[id]) }
         if let local {
@@ -1025,8 +1080,7 @@ final class Runtime: @unchecked Sendable {
             }
             return (client, nil)
         }
-        throw RutisError(name: RutisError.Name.bindingError, message: "service \(name) is not available",
-                         code: "unavailable", data: ["service": name])
+        return nil
     }
 }
 

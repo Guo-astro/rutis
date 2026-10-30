@@ -7,6 +7,7 @@ import { definePlugin } from '@arcships/rutis'
 
 export default definePlugin({
   inject: ['llm'],                              // services it uses
+  optional: ['search'],                         // used when there: ctx.get('search')
   config: { type: 'object', properties: { city: { type: 'string' } } },
   apply(ctx, config) {
     ctx.provide('weather', new Weather(ctx.use('llm'), config.city))
@@ -14,6 +15,8 @@ export default definePlugin({
   },
 })
 ```
+
+`optional` names services it can do without: rutis does not wait for them, and `ctx.get` gives each, or `undefined` when it was not there as the plugin started (rutis-host 0.20 or later).
 
 What `ctx.provide` provides reaches rutis by itself, its methods the object's functions, called as `async`. `provides` is optional: `provides: { weather: { unit: 'sync' } }` marks methods `sync` and tells `rutis-host check` what the plugin provides before it runs.
 

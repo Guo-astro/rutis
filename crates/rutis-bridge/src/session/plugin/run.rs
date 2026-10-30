@@ -99,12 +99,26 @@ async fn start(
             ))
         }
     };
+    if let Some(both) = schema
+        .inject
+        .iter()
+        .find(|name| schema.optional.contains(name))
+    {
+        return Err(format!(
+            "{both} is in both inject and optional; keep it in one"
+        ));
+    }
     // A leaf runtime resolves nothing itself: what its plugin injects
-    // waits here. A rutis kernel's plugin waits there.
-    let injects = match !running.node && running.process.supports("leaf") {
-        true => schema.inject.iter().map(|name| host_key(name)).collect(),
+    // waits here, and what it uses when there is lent if here as it
+    // starts. A rutis kernel's plugin resolves both there; so does the
+    // Node runtime's (feature `leaf.js`, not `leaf`): nothing is lent to it
+    // from here, required or optional, as before optional services.
+    let leaf = !running.node && running.process.supports("leaf");
+    let keys = |names: &[String]| match leaf {
+        true => names.iter().map(|name| host_key(name)).collect(),
         false => Vec::new(),
     };
+    let (injects, optional) = (keys(&schema.inject), keys(&schema.optional));
     let target = Target::new();
     let view = running.ctx.plugin(RunRow {
         name: format!("{far}:{plugin}"),
@@ -112,6 +126,7 @@ async fn start(
         config,
         schema,
         injects,
+        optional,
         process: running.process,
         target: target.clone(),
     });
@@ -130,6 +145,9 @@ struct RunRow {
     config: Json,
     schema: RowSchema,
     injects: Vec<Key<dyn HostDispatch>>,
+    /// What it uses when there, lent if here as it starts (never waited
+    /// for).
+    optional: Vec<Key<dyn HostDispatch>>,
     process: Arc<Process>,
     target: Target,
 }
@@ -163,8 +181,8 @@ impl DynPlugin for RunRow {
 
 impl RunRow {
     /// Load it there: what it injects is lent to it (on a leaf runtime),
-    /// what it provides is projected from this fiber, as for a row of a
-    /// runtime. A rutis kernel announces what it provides, under the key.
+    /// and what it uses when there if here now; what it provides is
+    /// projected from this fiber, as for a row of a runtime. A rutis kernel announces what it provides, under the key.
     async fn load(
         &self,
         ctx: &Ctx,
@@ -173,7 +191,14 @@ impl RunRow {
     ) -> Result<Effect, RutisError> {
         let caller = CallerRow::new(self.name.clone(), key.clone(), ctx.clone());
         let mut leases: Vec<HostLease> = Vec::new();
-        for (name, inject) in self.schema.inject.iter().zip(&self.injects) {
+        // The row reads each name from its own lease (isolated under the
+        // lease's label), as a loader row does: the registration rows share
+        // follows whichever row leased the name last, so an optional service
+        // kept past its provider's replacement would reach the new one.
+        let mut isolate: Vec<(String, String)> = Vec::new();
+        let wanted = self.schema.inject.iter().zip(&self.injects);
+        let optional = self.schema.optional.iter().zip(&self.optional);
+        for (name, inject) in wanted.chain(optional) {
             let Some(dispatch) = ctx.get_at(inject) else {
                 continue;
             };
@@ -184,7 +209,12 @@ impl RunRow {
                 .lease_host_for(name, None, &caller, dispatch, None)
                 .await
             {
-                Ok(lease) => leases.push(lease),
+                Ok(lease) => {
+                    if let Some(own) = lease.label() {
+                        isolate.push((name.clone(), own.to_owned()));
+                    }
+                    leases.push(lease);
+                }
                 Err(error) => {
                     release(leases).await;
                     return Err(failed(error));
@@ -206,7 +236,7 @@ impl RunRow {
                 &key,
                 Path::new(&self.plugin),
                 self.config.clone(),
-                &[],
+                &isolate,
                 &[],
                 &self.schema.provides,
                 projection.clone(),

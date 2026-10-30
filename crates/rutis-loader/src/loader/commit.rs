@@ -297,6 +297,7 @@ impl Inner {
                     None => resolved.factory.clone(),
                 };
                 factory.validate_config(&config)?;
+                super::reconcile::optional_conflict(factory.as_ref(), &row.raw_scope.inject)?;
                 factory.build(&config)?.validate()
             }));
             let result = match checked {

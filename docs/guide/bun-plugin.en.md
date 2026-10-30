@@ -106,6 +106,8 @@ export default definePlugin<Config>({
 
 The plugin starts once every service in `inject` is available, and stops when one goes. Which language or row provides `translate` is not the plugin's concern. The template's own test gives no `translate`; step 6 changes it.
 
+A service the plugin can do without goes in `optional` (`definePlugin({ optional: ['llm'] })`, or `export const optional = ['llm']`) instead of `inject`; `ctx.get('llm')` gives it, or `undefined` when it was not there as the plugin started (one that comes later is not leased for the row, and is sure to be seen only once the row restarts). See [plugin API: optional services](plugin-api.en.md#optional-services); needs rutis-host 0.20 or later.
+
 ## 4. Configuration
 
 The plugin's config is the second argument of `apply`. `config` is its JSON Schema: `greeting` has the `default` `'Hello'`, so when the row leaves `greeting` out, `apply` gets `{ greeting: 'Hello' }`. A config that does not fit the schema makes the row fail with `config: …`, and `apply` is not called.

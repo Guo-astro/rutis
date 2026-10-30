@@ -23,6 +23,8 @@ plugin = define_plugin(apply, inject=["llm"])
 
 What `ctx.provide` provides reaches rutis by itself, its methods the object's public callables, called as `async`. `provides` is optional: `provides={"weather": Weather}` (or `{"weather": {"unit": "sync"}}`) marks methods `sync` and tells `rutis-host check` what the plugin provides before it runs.
 
+A service the plugin can do without goes in `optional=["llm"]` (or a module `optional = ["llm"]`) instead of `inject`: rutis does not wait for it, and `ctx.get("llm")` gives it, or `None` when it was not there as the plugin started. It needs rutis-host 0.20 or later.
+
 Events are one bus across every plugin, runtime and linked node (rutis 0.13): wherever a listener is, the result is the same.
 
 ```python

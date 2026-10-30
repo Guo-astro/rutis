@@ -3,6 +3,7 @@ public final class arcships/rutis/Ctx : arcships/rutis/advanced/Emitter, kotlinx
 	public final fun effect (Lkotlin/jvm/functions/Function1;)V
 	public fun emit (Ljava/lang/String;[Ljava/lang/Object;)V
 	public final fun filter (Lkotlin/jvm/functions/Function2;)Larcships/rutis/advanced/Emitter;
+	public final fun get (Ljava/lang/String;Ljava/lang/Class;)Ljava/lang/Object;
 	public fun getCoroutineContext ()Lkotlin/coroutines/CoroutineContext;
 	public final fun getScope ()Ljava/util/List;
 	public final fun on (Ljava/lang/String;ZZLkotlin/jvm/functions/Function2;)Lkotlin/jvm/functions/Function0;
@@ -52,6 +53,7 @@ public final class arcships/rutis/HostGoneException : java/io/IOException {
 }
 
 public final class arcships/rutis/NotDeclaredException : java/lang/IllegalArgumentException {
+	public synthetic fun <init> (Ljava/lang/String;Ljava/lang/String;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public final fun getCode ()Ljava/lang/String;
 	public final fun getData ()Ljava/util/Map;
 }
@@ -59,13 +61,14 @@ public final class arcships/rutis/NotDeclaredException : java/lang/IllegalArgume
 public final class arcships/rutis/Plugin {
 	public final fun getInject ()Ljava/util/List;
 	public final fun getName ()Ljava/lang/String;
+	public final fun getOptional ()Ljava/util/List;
 	public final fun getProvides ()Ljava/util/Map;
 }
 
 public final class arcships/rutis/Rutis {
 	public static final field INSTANCE Larcships/rutis/Rutis;
-	public final fun define (Ljava/lang/String;Lkotlinx/serialization/KSerializer;Ljava/util/List;Ljava/util/Map;Lkotlinx/serialization/json/JsonElement;Lkotlin/jvm/functions/Function3;)Larcships/rutis/Plugin;
-	public static synthetic fun define$default (Larcships/rutis/Rutis;Ljava/lang/String;Lkotlinx/serialization/KSerializer;Ljava/util/List;Ljava/util/Map;Lkotlinx/serialization/json/JsonElement;Lkotlin/jvm/functions/Function3;ILjava/lang/Object;)Larcships/rutis/Plugin;
+	public final fun define (Ljava/lang/String;Lkotlinx/serialization/KSerializer;Ljava/util/List;Ljava/util/List;Ljava/util/Map;Lkotlinx/serialization/json/JsonElement;Lkotlin/jvm/functions/Function3;)Larcships/rutis/Plugin;
+	public static synthetic fun define$default (Larcships/rutis/Rutis;Ljava/lang/String;Lkotlinx/serialization/KSerializer;Ljava/util/List;Ljava/util/List;Ljava/util/Map;Lkotlinx/serialization/json/JsonElement;Lkotlin/jvm/functions/Function3;ILjava/lang/Object;)Larcships/rutis/Plugin;
 }
 
 public final class arcships/rutis/Rutis$NoConfig {

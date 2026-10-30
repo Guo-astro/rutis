@@ -106,6 +106,8 @@ export default definePlugin<Config>({
 
 `inject` 里的服务都就绪了，插件才启动；其中一个撤销，插件就停下。`translate` 由哪种语言、哪一行提供，插件不用管。模板自带的测试没有给 `translate`，第 6 步跟着改。
 
+没有也能运行的服务写进 `optional`（`definePlugin({ optional: ['llm'] })`，或 `export const optional = ['llm']`），不写进 `inject`；`ctx.get('llm')` 给出它，插件启动时它不在则是 `undefined`（之后才出现的，rutis 不为这一行租借，这一行重启后才一定看得到）。见[插件 API：可选服务](plugin-api.md#可选服务)；要 rutis-host 0.20 或以后。
+
 ## 4. 配置
 
 插件的配置是 `apply` 的第二个参数。`config` 是它的 JSON Schema：`greeting` 的 `default` 是 `'Hello'`，行里没写 `greeting` 时，`apply` 收到的就是 `{ greeting: 'Hello' }`。不合 Schema 的配置让这一行以 `config: …` 失败，不调用 `apply`。

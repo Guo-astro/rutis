@@ -1,10 +1,11 @@
 ## Rutis
 Plugin  swift.struct
 Plugin.apply  swift.property
-Plugin.init(name:inject:provides:version:apply:)  swift.init
-Plugin.init(name:inject:provides:version:config:apply:)  swift.init
+Plugin.init(name:inject:optional:provides:version:apply:)  swift.init
+Plugin.init(name:inject:optional:provides:version:config:apply:)  swift.init
 Plugin.inject  swift.property
 Plugin.name  swift.property
+Plugin.optional  swift.property
 Plugin.provides  swift.property
 Plugin.version  swift.property
 Rutis  swift.enum
@@ -120,6 +121,8 @@ Rutis.Ctx.effect(_:)  swift.method
 Rutis.Ctx.emit(_:_:)  swift.method
 Rutis.Ctx.emit(_:arguments:)  swift.method
 Rutis.Ctx.filter(_:)  swift.method
+Rutis.Ctx.get(_:)  swift.method
+Rutis.Ctx.get(_:_:)  swift.method
 Rutis.Ctx.on(_:prepend:global:_:)  swift.method
 Rutis.Ctx.parallel(_:_:)  swift.method
 Rutis.Ctx.parallel(_:arguments:)  swift.method

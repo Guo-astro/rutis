@@ -25,7 +25,9 @@
 //
 // A binary serves one or more plugins: `func main() { rutis.Serve(weather.Plugin) }`.
 // rutis decides when a plugin runs: Apply runs once every injected service
-// is there, and the plugin is unloaded when one goes away.
+// is there, and the plugin is unloaded when one goes away. A service the
+// plugin can do without goes in Optional instead, and is read with
+// Ctx.Get: rutis does not wait for it.
 //
 // What a plugin author rarely writes is in package advanced.
 package rutis

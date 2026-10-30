@@ -26,17 +26,42 @@ extension Rutis {
         /// itself. Each method of the proxy must be one the service has.
         public func use<P: RutisProxy>(_ name: String, _: P.Type) throws -> P.Service {
             let (client, local) = try runtime.client(row, name)
-            if let local, let object = local as? P.Service { return object }
-            for method in P.rutisMethodNames where client.methods[method] == nil {
-                throw RutisError(name: "Error", message: "use \(name): \(P.self) calls \(method), which the service does not have")
-            }
-            return P.rutisMake(client)
+            return try Ctx.proxy("use", name, P.self, client, local)
         }
 
         /// The service `name`, which `inject` must list, called by method
         /// name.
         public func use(_ name: String) throws -> Rutis.Advanced.Client {
             try runtime.client(row, name).0
+        }
+
+        /// The optional service `name`, which `optional` (or `inject`) must
+        /// list, as `use` gives it; nil when it is not there. Never waited
+        /// for: a host service is leased in if rutis had it when the plugin
+        /// started; one that comes later is sure to be seen only once the
+        /// plugin restarts (until then, one this process already has is read
+        /// too). Each method of the proxy must be one the service has.
+        public func get<P: RutisProxy>(_ name: String, _: P.Type) throws -> P.Service? {
+            guard case let (client, local)? = try runtime.optionalClient(row, name) else { return nil }
+            return try Ctx.proxy("get", name, P.self, client, local)
+        }
+
+        /// The optional service `name`, called by method name; nil when it
+        /// is not there (as for the typed `get`).
+        public func get(_ name: String) throws -> Rutis.Advanced.Client? {
+            try runtime.optionalClient(row, name)?.0
+        }
+
+        /// The service as `P` proxies it: the object itself when its
+        /// provider is in this process and implements `P`.
+        static func proxy<P: RutisProxy>(_ verb: String, _ name: String, _: P.Type, _ client: Rutis.Advanced.Client,
+                                         _ local: RutisExportable?) throws -> P.Service
+        {
+            if let local, let object = local as? P.Service { return object }
+            for method in P.rutisMethodNames where client.methods[method] == nil {
+                throw RutisError(name: "Error", message: "\(verb) \(name): \(P.self) calls \(method), which the service does not have")
+            }
+            return P.rutisMake(client)
         }
 
         /// Provides `service` (an instance of a @RutisService type) as

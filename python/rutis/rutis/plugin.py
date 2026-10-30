@@ -4,6 +4,10 @@ A plugin is a module with an `apply(ctx, config)` function. It may declare:
 
 - `inject`: the names of the services it uses. rutis starts the plugin only
   once all of them are available, and stops it when one goes away.
+- `optional`: the names of services it uses when they are there. rutis
+  does not wait for them; those there when the plugin starts it reads with
+  `ctx.get`, which gives None for the others. A name is in `inject` or
+  here, not both.
 - `provides` (optional): the services it provides to rutis, as
   `{ name: { method: "sync" | "async" } }`, or `{ name: SomeClass }` to
   take the methods from the class (public methods; `async def` ones are
@@ -41,6 +45,14 @@ class Context:
     def use(self, name: str) -> Any:
         """The service `name`: the object itself when a plugin in this
         process provides it, otherwise a proxy whose methods call it."""
+        raise NotImplementedError
+
+    def get(self, name: str) -> Any | None:
+        """The optional service `name`, which the plugin declares in
+        `optional`: as `use` gives it, else None. Never waited for: a host
+        service is leased in if rutis had it when the plugin started; one
+        that comes later is sure to be seen only once the plugin restarts
+        (until then, one this process already has is read too)."""
         raise NotImplementedError
 
     def provide(self, name: str, value: Any) -> Callable[[], None]:
@@ -125,6 +137,8 @@ class Plugin:
     # Its declared name: what descriptors and registrations call it
     # (`plugin`); None: its row's id.
     name: str | None = None
+    # Services it uses when they are there at start (`ctx.get`).
+    optional: list = field(default_factory=list)
 
 
 def define_plugin(
@@ -134,14 +148,17 @@ def define_plugin(
     provides: dict | None = None,
     config: dict | None = None,
     name: str | None = None,
+    optional: list | tuple = (),
 ) -> Plugin:
-    """The plugin `apply(ctx, config)`. `inject`, `provides`, `config`: as
-    the module attributes above. `name`: what the event descriptors filters
+    """The plugin `apply(ctx, config)`. `inject`, `optional`, `provides`,
+    `config`: as the module attributes above. `name`: what the event descriptors filters
     see, and the host, call the plugin (`plugin`); without it, the id of
     the row it runs in (the row's name in the configuration)."""
     if name is not None and (not isinstance(name, str) or not name):
         raise TypeError("a plugin name is a non-empty string")
-    return Plugin(apply, list(inject), shapes(provides or {}), config, name=name)
+    if isinstance(optional, str) or not all(isinstance(item, str) for item in optional):
+        raise TypeError("optional must be a list of service names")
+    return Plugin(apply, list(inject), shapes(provides or {}), config, name=name, optional=list(optional))
 
 
 def shapes(provides: dict) -> dict:
@@ -193,9 +210,13 @@ def load(module: ModuleType) -> Plugin:
     inject = getattr(module, "inject", [])
     if isinstance(inject, str) or not all(isinstance(name, str) for name in inject):
         raise TypeError(f"{module.__name__}.inject must be a list of service names")
+    optional = getattr(module, "optional", [])
+    if isinstance(optional, str) or not all(isinstance(name, str) for name in optional):
+        raise TypeError(f"{module.__name__}.optional must be a list of service names")
     return Plugin(
         apply,
         list(inject),
         shapes(getattr(module, "provides", {})),
         getattr(module, "Config", None),
+        optional=list(optional),
     )

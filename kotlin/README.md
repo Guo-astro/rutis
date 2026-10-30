@@ -55,8 +55,9 @@ dependencies {
 
 | | |
 | --- | --- |
-| `Rutis.define<C>(name, inject, provides?, schema?) { ctx, config -> }` | `C` is `@Serializable` (`Rutis.NoConfig` for none). `provides` is optional: a service `ctx.provide` provides without it reaches rutis by itself, every method `async`; `service<T>(sync = setOf(...))` marks methods `sync`. Plugin API 3 |
+| `Rutis.define<C>(name, inject, optional?, provides?, schema?) { ctx, config -> }` | `C` is `@Serializable` (`Rutis.NoConfig` for none). `optional` (after `inject`; 0.20 put it there, so pass the later ones by name) lists services the plugin reads with `ctx.get`. `provides` is optional: a service `ctx.provide` provides without it reaches rutis by itself, every method `async`; `service<T>(sync = setOf(...))` marks methods `sync`. Plugin API 3 |
 | `ctx.use<I>(name)` | `I` is a `@RutisClient` interface, `name` is in `inject`. A provider in this process whose object implements `I` gives the object itself; any other gives a proxy. A `suspend` function suspends, a plain one blocks its thread |
+| `ctx.get<I>(name)` | `name` is in `optional` (`Rutis.define(name, inject, optional = listOf("llm"), …)`): never waited for; the service as `use` gives it, or `null` when it was not there as the plugin started. Needs rutis-host 0.20 or later |
 | `ctx.provide(name, obj)` | `obj` is an instance of a `@RutisService` class: its public member functions (its superclasses' included) are its methods, by name; until the plugin unloads or the returned function is called |
 | `ctx.effect { }` | a cleanup, run latest first when the plugin unloads |
 | `ctx.on(name, prepend, global) { args -> }` | a listener: `args` are the event's arguments as native values, with `args.next` last in a waterfall; its result counts in `serial`, `bail` and `waterfall` |

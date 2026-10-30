@@ -34,6 +34,26 @@ fn combined_injects(factory: &dyn PluginFactory<Value>, scope: &BoundScope) -> V
     keys
 }
 
+/// A name in the row's `inject` (as written) that the plugin declares
+/// optional: the row cannot both wait for it and not. Checked before the
+/// row's `inject` gates it, which it might never get past.
+pub(super) fn optional_conflict(
+    factory: &dyn PluginFactory<Value>,
+    inject: &[String],
+) -> Result<(), Error> {
+    let optional = factory.optional_injects();
+    match inject
+        .iter()
+        .find(|name| optional.iter().any(|key| key.name() == Some(name.as_str())))
+    {
+        Some(name) => Err(rutis::Error::from(ErrorKind::PluginFailed(
+            format!("{name} is in the row's inject and the plugin's optional; keep it in one")
+                .into(),
+        ))),
+        None => Ok(()),
+    }
+}
+
 /// The catalog scope a copy in `build`'s instances runs with: none for a
 /// resolver that handles scope itself, else the row's scope with the
 /// copy's keys (`None` when it failed).
@@ -402,7 +422,9 @@ impl Inner {
                     "validate_config panicked".into(),
                 )))
             });
-        if let Err(error) = checked {
+        if let Err(error) =
+            checked.and_then(|()| optional_conflict(factory.as_ref(), &row.raw_scope.inject))
+        {
             state.rejected.insert(slot, rejected(error));
             return None;
         }

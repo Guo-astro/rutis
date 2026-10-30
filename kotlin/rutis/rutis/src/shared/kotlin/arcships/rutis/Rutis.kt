@@ -39,25 +39,29 @@ object Rutis {
      * ([NoConfig] for none): its JSON Schema is derived from `C`'s
      * descriptor unless [schema] gives one.
      *
-     * [inject] lists the services it uses; [provides] optionally declares the
-     * services it provides and which of their methods are `sync` (undeclared
-     * services reach rutis by themselves, every method `async`). `apply`
-     * starts it; a failure fails the load, and the cleanups registered so far
-     * run.
+     * [inject] lists the services it uses; [optional] those it uses when
+     * they are there (never waited for: leased in if there when it starts,
+     * read with [Ctx.get]), a name in one list, not both; [provides]
+     * optionally declares the services it provides and which of their
+     * methods are `sync` (undeclared services reach rutis by themselves,
+     * every method `async`). `apply` starts it; a failure fails the load, and
+     * the cleanups registered so far run.
      */
     inline fun <reified C> define(
         name: String,
         inject: List<String> = emptyList(),
+        optional: List<String> = emptyList(),
         provides: Map<String, ServiceShape> = emptyMap(),
         schema: JsonElement? = null,
         noinline apply: suspend (Ctx, C) -> Unit,
-    ): Plugin = define(name, RutisFormat.serializer<C>(), inject, provides, schema, apply)
+    ): Plugin = define(name, RutisFormat.serializer<C>(), inject, optional, provides, schema, apply)
 
     /** [define] with the configuration's serializer given. */
     fun <C> define(
         name: String,
         config: KSerializer<C>,
         inject: List<String> = emptyList(),
+        optional: List<String> = emptyList(),
         provides: Map<String, ServiceShape> = emptyMap(),
         schema: JsonElement? = null,
         apply: suspend (Ctx, C) -> Unit,
@@ -73,7 +77,7 @@ object Rutis {
             else -> Schema.of(config.descriptor)
         }
         @Suppress("UNCHECKED_CAST")
-        return Plugin(name, inject.toList(), provides, derived, arcships.rutis.advanced.PLUGIN_API, config as KSerializer<Any?>, apply as suspend (Ctx, Any?) -> Unit)
+        return Plugin(name, inject.toList(), optional.toList(), provides, derived, arcships.rutis.advanced.PLUGIN_API, config as KSerializer<Any?>, apply as suspend (Ctx, Any?) -> Unit)
     }
 }
 
@@ -100,6 +104,8 @@ fun service(kinds: Map<String, Kind>): ServiceShape = ServiceShape(null, kinds.m
 class Plugin internal constructor(
     val name: String,
     val inject: List<String>,
+    /** The services it uses when they are there ([Ctx.get]). */
+    val optional: List<String>,
     val provides: Map<String, ServiceShape>,
     internal val schema: JsonElement?,
     internal val api: Int,

@@ -44,8 +44,8 @@ use rutis_bridge::runtime::RuntimeHandle;
 
 use super::discover::{self, Described};
 use super::{
-    is_runtime_name, leaf_resolved_on, unavailable_resolved, unknown, JsFactory, JsModule,
-    RowRuntime,
+    is_runtime_name, leaf_resolved_on, split_dependencies, unavailable_resolved, unknown,
+    JsFactory, JsModule, RowRuntime,
 };
 use crate::loader::WeakLoader;
 use crate::resolver::Resolved;
@@ -261,6 +261,8 @@ impl SessionResolver {
             runtime: runtime.clone(),
             entry: PathBuf::from(plugin),
             gated: Vec::new(),
+            optional: Vec::new(),
+            declared_optional: Vec::new(),
             provides: Map::new(),
             catalog: self.inner.catalog.clone(),
         };
@@ -269,6 +271,7 @@ impl SessionResolver {
                 name,
                 runtime,
                 PathBuf::from(plugin),
+                Vec::new(),
                 Vec::new(),
                 Map::new(),
             )),
@@ -376,12 +379,17 @@ impl Resolver for SessionResolver {
             // A leaf far end gates every service its plugins inject in
             // rutis; Cordis only the shared names.
             let leaf = process.supports("leaf");
-            let gated: Vec<String> = described
-                .inject
-                .iter()
-                .filter(|name| leaf || self.inner.catalog.is_shared(name))
-                .cloned()
-                .collect();
+            let (gated, optional) = match split_dependencies(&described, leaf, &self.inner.catalog)
+            {
+                Ok(split) => split,
+                Err(message) => {
+                    undo();
+                    return Err(LoaderError::Resolve {
+                        name: name.to_owned(),
+                        message,
+                    });
+                }
+            };
             // Released, the row starts in the reconcile resolving it.
             self.until_released(row, &process).await;
             Ok(Arc::new(leaf_resolved_on(
@@ -389,6 +397,7 @@ impl Resolver for SessionResolver {
                 RowRuntime::Session(row.to_owned()),
                 entry,
                 gated,
+                optional,
                 &described,
                 &self.inner.catalog,
                 json!({
@@ -397,6 +406,7 @@ impl Resolver for SessionResolver {
                     "entry": plugin,
                     "version": described.version,
                     "inject": described.inject,
+                    "optional": described.optional,
                     "provides": described.provides,
                     "cordis": described.cordis,
                 }),
