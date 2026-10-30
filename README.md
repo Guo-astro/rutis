@@ -253,7 +253,7 @@ All of these form a release train: released together at one version. Use the sam
 
 ## Platforms and status
 
-rutis is at 0.x and its API is still evolving. Breaking changes are listed in the release notes and come with a migration guide.
+rutis is at 0.x and its API is still evolving. Breaking changes are listed in the release notes and come with a migration guide; what changed in each version is in the [changelog](CHANGELOG.md).
 
 - **The core** is pure Rust with tokio, tokio-util, thiserror, serde and serde_json as its only dependencies; it needs Rust 1.88 or later.
 - **Language runtimes and rutis-host** (Node, Bun, Python and Go rows, remote runtimes, shared services, peers, Cordis mounts) run on Linux, macOS and Windows x64 (MSVC); they need Node 22+, Bun 1.4+ or Python 3.12+; Go plugins are compiled binaries, built with Go 1.24+. Swift plugins are compiled binaries for macOS 14+, built with a Swift 6.2 toolchain. The Bun runtime is not tested on Windows yet.
