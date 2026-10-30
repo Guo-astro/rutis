@@ -439,7 +439,7 @@ rutis-host: warning: weather: config: cty is not a config key (did you mean city
 - Cordis 行（导出 `Config` 的 Cordis 插件）加载时由 Cordis 用它自己的 `Config` 校验；`check` 打印它的 Schema，不检查它的配置。
 - Schema 要运行时才知道的行（在没连上的连接对面运行的行）写 `config not checked: its schema is known only when it runs`，这不是警告。
 
-`run`、`dev` 用同样的规则：配置不合格的行失败（`weather: config: …`，每个问题一行），等它的行写明原因（`chat: waiting for weather (row weather failed: config: …)`）；多余的键每行每个配置值警告一次。
+`run`、`dev` 用同样的规则：配置不合格的行失败（`weather: config: …`，每个问题一行），等它的行写明原因（`chat: waiting for weather (row weather failed: config: …)`）；多余的键每行每个配置值警告一次。在运行时里运行的行（Node、Python 等本机运行时的行，连接对面的行）的 Schema 要等运行时起来（连接连上）后才知道，也在这一行启动之前检查：不合格的行不启动，不会带着这份配置运行（0.19.0 里它照样启动）。
 
 ## 停止与退出码
 
