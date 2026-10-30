@@ -309,7 +309,7 @@ npm publish --access public   # 先运行 prepack：tsc 生成 dist/
 
 或者推一个 `v0.1.0` 这样的 tag：模板里的 `.github/workflows/publish.yml` 测试并发布（仓库里需要 `NPM_TOKEN` secret）。
 
-依赖写 `"@arcships/rutis": "^0.19.1"` 这样的范围（`rutis-host new` 写的是它自己的版本）；宿主里装着别的版本时，npm 给插件装它自己的一份，几份可以并存。
+依赖写 `"@arcships/rutis": "^0.19.2"` 这样的范围（`rutis-host new` 写的是它自己的版本）；宿主里装着别的版本时，npm 给插件装它自己的一份，几份可以并存。
 
 宿主怎样装你的插件见 [rutis-host：宿主怎样装插件](rutis-host.md#宿主怎样装插件)。
 

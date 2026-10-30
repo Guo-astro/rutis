@@ -6,6 +6,7 @@ rutis 的所有包用同一个版本号。每个版本的完整说明在 [docs/r
 
 | 版本 | 日期 | 变化 | 说明 |
 | --- | --- | --- | --- |
+| 0.19.2 | 2026-10-30 | 修复 bug：大量实例关闭时的内存峰值（#977）；提前取消的装载回到 Pending（#968）；放弃的 `reconcile` 不再挡住后来的操作；`dev` 与测试工具的 bug；写错的运行时路径报错 | [中文](docs/releases/0.19.2.md) · [English](docs/releases/0.19.2.en.md) |
 | 0.19.1 | 2026-10-30 | 修复文档写明却做不到的几处（`ready()` 加 `reconcile` 后行已装载、`run` 启动时校验配置、uv 项目里的 `rutis-host add`、TypeScript 测试超时后退出）；同步 waterfall 补回为 `waterfall(event).sync(terminal)`；`Loader::instance_rows`；别的语言的插件定义在宿主自己的实例里挂副本 | [中文](docs/releases/0.19.1.md) · [English](docs/releases/0.19.1.en.md) |
 | 0.19.0 | 2026-10-29 | 面向宿主持有者：`rutis-host call`、`rutis-host add` / `remove` / `upgrade`、插件经服务 `loader` 管理行；远程运行时、设备与节点改为连接行，背后是一个会话插件（协议 4）；测试工具走真实宿主；平台清理。**不兼容** | [中文](docs/releases/0.19.0.md) · [English](docs/releases/0.19.0.en.md) |
 | 0.18.0 | 2026-10-28 | 出错时看得懂：写明哪一行、在做什么、哪个文件哪一行；当前状态与时限；配置按 Schema 校验。**不兼容** | [中文](docs/releases/0.18.0.md) · [English](docs/releases/0.18.0.en.md) |

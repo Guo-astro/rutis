@@ -309,7 +309,7 @@ npm publish --access public   # runs prepack first: tsc writes dist/
 
 Or push a tag such as `v0.1.0`: the template's `.github/workflows/publish.yml` tests and publishes it (the repository needs an `NPM_TOKEN` secret).
 
-The dependency is a range such as `"@arcships/rutis": "^0.19.1"` (`rutis-host new` writes its own version); when a host has another version installed, npm gives the plugin its own copy, and several copies can coexist.
+The dependency is a range such as `"@arcships/rutis": "^0.19.2"` (`rutis-host new` writes its own version); when a host has another version installed, npm gives the plugin its own copy, and several copies can coexist.
 
 How a host installs your plugin: [rutis-host: how a host installs plugins](rutis-host.en.md#how-a-host-installs-plugins).
 
