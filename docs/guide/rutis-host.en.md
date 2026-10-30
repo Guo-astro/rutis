@@ -147,6 +147,8 @@ $ npx rutis-host call welcome.everyone '["Ana", "Bo"]'
 
 Each argument of `call` is a JSON value, a string in quotes (`'"Ana"'`); the result prints as JSON. See [Seeing the current state](#seeing-the-current-state) and [Calling a service](#calling-a-service).
 
+`loader` and `sessions` under `services` come from no row: they are `rutis-host`'s own services (written `host`). A plugin adds and removes rows while the host runs with `loader` ([Managing plugins with loader](#managing-plugins-with-loader)), and hands the host a connection it made with `sessions` (end of [Remote runtimes and devices](#remote-runtimes-and-devices)). Assembling a host does not need them, and they are not written in `rutis.json`.
+
 5. Change the configuration while it runs: add `"config": { "greeting": "Hej" }` to the `greeter` row in `rutis.json` and save. With `--watch-config` the host reads the file again and restarts only the row that changed:
 
 ```text
@@ -175,7 +177,7 @@ Written by hand, a `rutis.json` that runs needs only the runtimes and the rows:
 ```
 
 - `rows`: a row for each plugin to run; `id` names the row, `name` is the plugin (an npm package name, `py:<entry point>`, …; see [`rows`](#rows)), with a `config` when it needs one.
-- `runtimes`: one for each runtime the rows use; an empty object takes the defaults. An npm package name does not tell the host to use Node: without `runtimes.node` the row fails with `no plugin named "greeter"`. A `py:` row without `runtimes.py` enables it with its defaults and a warning (see [`runtimes`](#runtimes)).
+- `runtimes`: one for each runtime the rows use; an empty object takes the defaults. An npm package name does not tell the host to use Node: without `runtimes.node` the row fails with `greeter: unresolved: no plugin named "greeter"` (and `check` goes on `install it where its runtime finds it (a runtime under runtimes), or correct the row's name`), which does not say that `runtimes.node` is missing: when an npm package's row fails so, look for `node` under `runtimes` first. A `py:` row without `runtimes.py` enables it with its defaults and a warning (see [`runtimes`](#runtimes)).
 - `format` (`1` by default) and `installed` (what `add` records) may be left out; the other fields: [`rutis.json`](#rutisjson).
 
 ## Installation
@@ -319,7 +321,8 @@ A waiting row says what it waits for and why (from 0.17.2, #676). Waiting for it
 | --- | --- |
 | `waiting for runtime <name> (starting)` | The row's runtime is still starting (restarting too) |
 | `waiting for runtime <name> (down: <reason>)` | The row's runtime ended, the reason as in `runtime <name>: down` |
-| `waiting for runtime <name> (stopped)` / `waiting for runtime <name>` | The host stopped the runtime; or it runs and is resolving its rows again (a remote runtime is written so too) |
+| `waiting for runtime <name> (stopped)` / `waiting for runtime <name>` | The host stopped the runtime; or it runs and is resolving its rows again |
+| `waiting for <connection row>` | A row `<connection row>:<plugin>` waits for its connection: the connection row has not connected yet, or the row is being resolved again (the host does not know a remote runtime's state and names only the connection row, as in `translate: waiting for fakes`) |
 | `waiting for lmm (no row provides it; did you mean llm?)` | No row declares it; a service with a close name is suggested (most likely a misspelling) |
 | `waiting for llm (no enabled row provides it; rutis-host check says whether a disabled row does)` | No enabled row provides it, but rows that are disabled (themselves or by their group) were never resolved while the host runs, so what they provide is not known; `rutis-host check` resolves them and says whether a disabled row provides it. A close name adds `, did you mean llm?` after `it` here too |
 | `waiting for llm (row model failed: <first line of the error>)` | The row that provides it failed |
@@ -369,7 +372,17 @@ phone: disconnected phone-1 (replaced by a new connection)
 - A connection whose handshake fails on a listen row (a wrong token, refused with 401 / 403 on the upgrade; protocols that do not match) prints nothing: it touched no connection there is; the dialing end says why.
 - When the host stops, or the row is removed or stopped, its connections close with it, and no `disconnected` is printed.
 
-A listener that fails in an `emit` (the emitter does not wait, so nobody else hears of it) prints one line on stderr, where it ran: `rutis: listener of <name> in row <row> failed: <ErrorName>: <message>` for the host's own, the same line from the runtime for a runtime's; a call the host could not deliver names where it went (`in runtime <name>`, `in node <peer>`). A failing filter of an `emit` prints `rutis: filter of <name> from row <row> failed: …` (`from the mount` for a plugin a mount loaded).
+A listener that fails in an `emit` (the emitter does not wait, so nobody else hears of it) prints a line on stderr starting with the row that listens, whatever the plugin's language, and below it, indented, where it failed (the stack the plugin's language gives):
+
+```text
+boom: listener of demo/ping failed: TypeError: ts boom
+    at file:///home/me/app/boom.mjs:6:13
+pyboom: listener of demo/ping failed: ValueError: py boom
+    File "/home/me/app/pyboom.py", line 15, in fail
+    raise ValueError("py boom")
+```
+
+A listener of no row is written `listener of <name> in plugin <plugin> failed: …`. A call the host could not deliver names where it went (`in runtime <name>`, `in node <peer>`). A failing filter of an `emit` prints `filter of <name> from row <row> failed: <ErrorName>: <message>` (`from plugin <plugin>` for an emitter of no row).
 
 ### Events
 
@@ -653,7 +666,7 @@ $ rutis-host call forecast.week '{"days": 3}'
 | No such service | `rutis-host: no row provides forcast; did you mean forecast? (services: forecast, llm, loader, sessions)` |
 | The row providing it is not running | `rutis-host: forecast is not available (row weather waits for its runtime go-weather)` |
 | No such method | `rutis-host: forecast has no method tomorow (methods: today, week)` |
-| An argument of the wrong type | `rutis-host: forecast.today: argument 1 should be a string, got 3` |
+| An argument of the wrong type (when the provider is a Rust `#[rutis::service]`, Go, Swift or Kotlin; methods written in TypeScript, JavaScript, Bun or Python do not check their arguments' types: they get the value sent, and type annotations are for the editor only) | `rutis-host: forecast.today: argument 1 should be a string, got 3` |
 | The method throws | `rutis-host: call to forecast.today failed: KeyError: 'region'`, then the row it failed in (`in weather:`) and its stack |
 | The method takes the calling row's `&Ctx` | `rutis-host: tools.register needs a calling row; call it from a plugin, not from rutis-host call` |
 | No host running | `rutis-host: no rutis-host run or dev is running for /work/weather (start one, or name its configuration with --config)` |
@@ -834,6 +847,8 @@ Each row runs a plugin:
 | `inject` | Additional service names to wait for. |
 | `isolate` | `{ "service": true }` gives this row its own instance of the service; `{ "service": "label" }` shares one instance among rows with that label. |
 | `disabled` | When `true`, the row does not run. |
+| `group` | When `true`, the row is a group: no `name`, and `config` is its child rows (an array in the same format); disabling or removing the group unloads its children with it. |
+| `instanced` | Written with `group: true`: the group runs only as instances, a copy of its child rows each. `rutis-host` creates no instances itself, so such a group and its children do not run (`run` prints `<group>: inactive`, and `status` has the children as `stopped (a group around it is not running)`); a Rust host embedding rutis-loader creates instances with `Loader::create_instance`. |
 
 Services are shared by name across all plugins. Any plugin that declares `inject: ["weather"]` can use a `weather` service provided in any language or on any node.
 

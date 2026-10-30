@@ -210,7 +210,7 @@ The checks are the host's own: its loader fills in the schema's defaults and val
 }
 ```
 
-- The row whose `id` is the plugin's (`greeter`) is the plugin itself, and `config` is its config.
+- The row whose `id` is the project's plugin name (`greeter`) is the plugin itself, and `config` is its config. The project's plugin name is the entry point's name under `[project.entry-points."rutis.plugins"]` in `pyproject.toml` (the template writes `greeter = "greeter"`: the left-hand one), or `[project]`'s `name` when there is no entry point; not the module's name, nor a distribution name you changed. It is the name in the `running greeter` that `dev` prints on start. With another id (say the entry point became `tool = "my_tool"` and the row still says `my-tool`), the row is not the plugin itself but another plugin's row without a `name`: `my-tool: unresolved: invalid entry: "my-tool" has no name`.
 - The other row is a fake `translate`: `py:fake_translate` is the module `fake_translate` in the project's `src/`, below. It runs only locally and is not in the published package (`pyproject.toml` packages only `src/greeter`).
 
 <!-- example: python-en file=greeter/src/fake_translate.py -->

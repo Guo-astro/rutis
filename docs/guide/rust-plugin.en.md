@@ -569,6 +569,41 @@ plugin = define_plugin(apply, inject=["calendar"])
 
 Unmarked types are not served. What can cross, how errors are thrown, methods taking `&Ctx`: [mark the type `#[rutis::service]`](rust-host.en.md#mark-the-type-rutisservice). A service's parameters take data and functions, not objects with methods: when another language passes an object to such a parameter, the call fails with `bad-argument` ([plugin API: objects with methods](plugin-api.en.md#objects-with-methods)).
 
+### Use a service another language provides, by name
+
+A service a plugin in another language provides (Python's `ctx.provide("translate", …)`, Go's `ctx.Provide("translate", …)`) has no type in Rust and cannot go in `type Deps`: wait for it by name and call it by name. The plugin implements the object-safe form `rutis::host::DynPlugin`, writes `host_key("translate")` in `injects()`, and calls with `rutis_bridge::session::call_service` (`cargo add rutis-bridge`, the version the host uses):
+
+```rust,ignore
+use rutis::host::*;
+use rutis::Ctx;
+use rutis_bridge::session::{call_service, host_key};
+
+struct Greeter;
+
+impl DynPlugin for Greeter {
+    fn name(&self) -> &str {
+        "greeter"
+    }
+
+    // Starts once a service named translate is there, stops when it goes: as with Deps.
+    fn injects(&self) -> Vec<TypeKey> {
+        vec![host_key("translate").erase()]
+    }
+
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
+        Box::pin(async move {
+            let word: String = call_service(ctx, "translate", "text", ("Hello",)).await?;
+            println!("{word}, Ada!");                  // Bonjour, Ada!
+            Ok(Effect::Done)
+        })
+    }
+}
+```
+
+- The arguments are a tuple (`("Hello",)` for one, `()` for none), and the result is decoded as the type you write; a failure is an `Err`, which `?` turns into a `rutis::Error`. The other rules: [call a service by name from Rust](rust-host.en.md#call-a-service-by-name-from-rust).
+- It is the same whatever language provides it, in whichever runtime or node.
+- A host mounts it directly with `root.plugin(Greeter)`; to have rutis-loader mount it from a row, use `Builtins::register_raw`, see [mounted by rutis-loader from configuration](#mounted-by-rutis-loader-from-configuration).
+
 ### What `type Deps` can be
 
 | `type Deps =` | Waits for | Passed |
@@ -678,6 +713,38 @@ builtins.register("greeter", GreeterPlugin::new); // row: { "id": "greeter", "na
 ```
 
 Before `new`, the loader fills the row's configuration with the defaults in the Schema and validates it: a row whose configuration does not validate fails with `config: …`, and the constructor is not called ([plugin API: configuration](plugin-api.en.md#configuration)). The loader, runtimes and rows in other languages: [embed rutis in a Rust application](rust-host.en.md#runtime-and-loader).
+
+A plugin without configuration: make the configuration type an empty struct, and a row without `config` and one with `"config": {}` both mount:
+
+```rust,ignore
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct NoConfig {}
+
+builtins.register("clock", |_: &NoConfig| Ok(Clock)); // row: { "id": "clock", "name": "clock" }
+```
+
+With `|_: &()|`, a row without `config` mounts, but one with `"config": {}` fails: `clock: config: config should be null, got an object`.
+
+A `DynPlugin` (such as `Greeter` in [use a service by name](#use-a-service-another-language-provides-by-name) above) registers with `register_raw`, given a `PluginFactory<serde_json::Value>`; the services it waits for come from its `injects()`:
+
+```rust,ignore
+struct GreeterFactory;
+
+impl PluginFactory<serde_json::Value> for GreeterFactory {
+    fn name(&self) -> &str {
+        "greeter"
+    }
+    fn injects(&self) -> Vec<TypeKey> {
+        Greeter.injects()
+    }
+    fn build(&self, _config: &serde_json::Value) -> rutis::Result<Box<dyn DynPlugin>> {
+        Ok(Box::new(Greeter))
+    }
+}
+
+builtins.register_raw("greeter", GreeterFactory, None); // None: no configuration Schema
+```
+
 
 ### dylib plugins
 

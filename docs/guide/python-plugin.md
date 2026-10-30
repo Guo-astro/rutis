@@ -210,7 +210,7 @@ uv run python -m unittest discover -s tests
 }
 ```
 
-- `id` 和插件同名的那一行（`greeter`）就是插件自己，`config` 是给它的配置。
+- `id` 是项目插件名的那一行（`greeter`）就是插件自己，`config` 是给它的配置。项目插件名是 `pyproject.toml` 里 `[project.entry-points."rutis.plugins"]` 的入口点名（模板写的是 `greeter = "greeter"`，左边那个），没有入口点时是 `[project]` 的 `name`；不是模块名，也不是改过的发行包名。`dev` 启动时打印的 `running greeter` 就是它。写成别的 id（比如入口点改成 `tool = "my_tool"` 后仍写 `my-tool`），这一行就不是插件自己，而是一行没写 `name` 的别的插件：`my-tool: unresolved: invalid entry: "my-tool" has no name`。
 - 另一行是假的 `translate`：`py:fake_translate` 是项目 `src/` 里的模块 `fake_translate`，内容如下。它只在本地运行时用，不在发布的包里（`pyproject.toml` 只打包 `src/greeter`）。
 
 <!-- example: python file=greeter/src/fake_translate.py -->

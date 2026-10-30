@@ -328,7 +328,7 @@ root.provide_at(host_key("clock"), Arc::new(Clock))?; // host_key returns a Key<
 
 To give an error a code and data, as a marked service's `Err(e)` has, return `rutis_bridge::exports::failure(name, code, message, data)`: the caller's language throws an error named `name` with `message`, and `code` and `data` (a `serde_json::Value`, or `None`) beside them.
 
-Services provided by plugins also appear in rutis under `host_key(name)`, so Rust plugins can use them by name.
+Services provided by plugins also appear in rutis under `host_key(name)`, so Rust plugins can use them by name (an example: [write a Rust plugin: use a service another language provides, by name](rust-plugin.en.md#use-a-service-another-language-provides-by-name)).
 
 ### Call a service by name from Rust
 
@@ -472,7 +472,8 @@ let app = std::env::current_dir()?.join("app");
 
 // Every service name is shared across languages by name, as in rutis-host.
 let catalog = ServiceCatalog::new();
-// The id this end greets each runtime with: a runtime's process is the far end of a session.
+// The id this end greets each runtime with: a runtime's process is the far end of a session. Without it
+// every runtime's session fails: `the host provides no id for its sessions`.
 root.provide(LocalId(PeerId::new("main")?))?;
 
 // Local Node runtime (row `node`): the @arcships/rutis-runtime package that runs, and the package.json plugins resolve from.
@@ -495,9 +496,9 @@ let loader = LoaderPlugin::new(
     LoaderOptions { catalog, ..LoaderOptions::default() },
 );
 let handle = loader.handle();
-sessions.attach(&handle);
+sessions.attach(&handle);                      // tell the resolver which loader it resolves rows for: without it, no runtime row resolves
 root.plugin(loader).await?;
-// Release a runtime's rows as soon as it runs.
+// Release a runtime's rows as soon as it runs (callable once the loader is mounted).
 sessions.follow_row("node");
 sessions.follow_row("py");
 
@@ -513,9 +514,8 @@ for runtime in &runtimes {
 }
 // Returns once every row has been loaded: see below.
 let report = handle.reconcile(vec![Layer::new("app", rows)], None).await?;
-for failure in &report.failures {
-    eprintln!("{failure}");                                                  // "<row id>: <error>"
-}
+// The default error sink has printed the failed rows ("<row id>: failed: <error>"): report.failures is for the program to decide on, not to print again.
+let all_started = report.failures.is_empty();
 # root.shutdown().await?;
 # Ok(())
 # }
@@ -531,6 +531,9 @@ for failure in &report.failures {
 # }
 ```
 
+- The parts in the example: `LocalId` is the id the host greets each runtime with; `SessionResolver` resolves `<runtime name>:<plugin>` (and, created with `npm(&catalog, "node")`, npm names and files) to the plugin in that runtime, and `runtime(handle)` has `Loader::status()` list the runtime; `attach(&handle)`, before the loader is mounted, tells it which loader it resolves for; `follow_row(name)`, after it is mounted, releases the runtime's rows as soon as it runs (after a restart too), resolving them again so they use the plugin's current declarations. Why they fit together this way: [Build a host open to plugins: what each part does](open-host.en.md#what-each-part-does).
+- With Python only (no Node): `rutis-loader` with only the feature `runtimes` (not `node`), the resolver `SessionResolver::new(&catalog)`, a `SpawnPlugin` for `py` only, `follow_row("py")`; rows are written `py:<module>`.
+- A failed row is printed once by the error sink (the default sink writes it on stderr, see [default output](#default-output)); `report.failures` has the same failures, for the program to decide on. Print both and each failure is two lines. To print them yourself only, replace the sink (`Ctx::root_with_sink`), or filter out `ErrorKind::StartFailed` in it (the example at the end of [default output](#default-output)).
 - `reconcile` returns once every row has been through its load, as `view.await` does for each: a row whose services are there has run its plugin's `apply` (in its runtime, for a row of another language), or failed, and is in the report's `failures`; a row waiting for a service no row provides yet waits on, and `Loader::waits(&entry)` says what for. A runtime still starting (one waiting for its debugger, say) is not waited for: its rows wait for it, the others start, and the report has nothing yet of how its rows load; for the full report, wait for `RuntimeHandle::ready()` first, as above. `Chain` asks its resolvers in order, so a row name both `builtins` and a runtime know goes to `builtins`.
 - Configs: for every row with a schema (`Builtins` rows, dylib rows with a `schema:`, rows your own resolver gives a schema with `Resolved::with_schema`, rows of other language runtimes; not Cordis rows), the loader fills the config with defaults and validates it before `build`, and the plugin gets the filled config; a row that does not match fails with `config: …` and is listed in `failures` ([plugin API: configuration](plugin-api.en.md#configuration)). Extra keys are written on stderr by default (`<row>: config: …`), once per row and config value; `Loader::on_config_warning(Arc::new(|row, issue| …))` hands them to you instead.
 - Paths: each runtime's process starts in a directory of its own (Python and Go: their project; Node: the runtime's package), and is given the paths as written. Relative paths would then be read from that directory, not the application's: give absolute ones, as above.
@@ -569,10 +572,10 @@ For keeping third-party plugins in check; how to use them is in [Build a host op
 | `.env(name, value)` | Set an environment variable of the process |
 | `.stdio(stdin, stdout, stderr)` | Where the process's standard streams go |
 | `.handle()` | The runtime's state, `RuntimeHandle`: `state()`, `ready()`, `pid()`; give it to `SessionResolver::runtime` |
-| `.processes()` | The processes it started: `kill()` ends them |
+| `.processes()` | The processes it started, a `rutis_bridge::pipe::Processes`: `kill()` ends them; `pid()`, `running()`, `status()` (how the last one ended), `ended().await` (all have ended) |
 | `.greeting(limit)` | How long the process may take to greet once started, 30 s by default; `Duration::MAX` for no limit (a debugger stopped at the first line) |
 
-A process per plugin: a `SpawnPlugin` per plugin under its own name, its rows named `<runtime name>:<npm name or file>`, resolved by `SessionResolver` (Node and Python alike).
+A process per plugin: a `SpawnPlugin` per plugin under its own name, its rows named `<runtime name>:<npm name or file>`, resolved by `SessionResolver` (Node and Python alike). A row failing in `apply` does not stop its runtime's process: the runtime is another plugin and does not stop with its rows, not even a runtime only that row uses. To stop it, call `dispose()` on the fiber `root.plugin(runtime)` returned.
 
 ### Go runtimes
 

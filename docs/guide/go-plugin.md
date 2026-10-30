@@ -15,7 +15,7 @@ go mod tidy
 go test ./...
 ```
 
-Go 插件编译成二进制，一个二进制就是宿主里的一个运行时进程。
+Go 插件编译成一个二进制（`cmd/greeter`），宿主运行这个二进制。
 
 得到的项目：
 
@@ -77,7 +77,7 @@ var Plugin = rutis.Define(rutis.Plugin[Config]{
 
 - `rutis.Define` 定义插件；插件启动时调用 `Apply`。
 - `ctx.Provide("greeter", …)` 提供服务 `greeter`：值的导出方法就是服务的方法，别的语言里写成首字母小写（`Hello` 是 `hello`）。
-- `Provides` 写出插件提供哪些服务、有哪些方法，宿主不运行插件就知道。
+- `Provides` 是模板写好的：服务名和提供它的类型，加了服务就照着加一项（作用见 [Go 的规则](#go-的规则)）。
 
 ## 3. 使用服务
 
@@ -136,7 +136,7 @@ var Plugin = rutis.Define(rutis.Plugin[Config]{
 
 - `Inject` 写出用到的服务。这些服务都就绪了插件才启动，其中一个撤销时插件停下。
 - `ctx.Use("translate", &translate)` 把服务填进函数字段的结构体：字段名是方法名，首字母小写后就是线上的名字。
-- 方法收到的 `ctx` 带着调用链，调用别的服务时把它传下去，不要换成 `context.Background()`。
+- 方法收到的 `ctx`，调用别的服务时传下去，不要换成 `context.Background()`（原因见 [Go 的规则](#go-的规则) 的「调用链」）。
 
 模板的测试这时不再通过（它没有给 `translate`），第 6 步换掉它。
 
@@ -341,7 +341,7 @@ uv venv dev/.venv
 uv pip install --python dev/.venv/bin/python rutis
 ```
 
-用 TypeScript 写也可以：`"runtimes": { "node": { "project": "dev" } }`，在 `dev/` 里 `npm install @arcships/rutis`，行的 `name` 写 `./dev/fake-translate.ts`。
+用 TypeScript 写也可以：`"runtimes": { "node": { "project": "dev" } }`，在 `dev/` 里 `npm install @arcships/rutis`，行的 `name` 写 `./dev/fake-translate.ts`。用 Go 写见本节末尾的[用 Go 写假服务](#用-go-写假服务)。
 
 运行：
 
@@ -356,7 +356,7 @@ greeter: built in 0.3s
 rutis-host dev: running greeter; changes reload it (Ctrl-C ends)
 ```
 
-`dev` 构建 `cmd/greeter`，作为运行时 `go-greeter` 运行它。之后每一行起来时打印 `greeter: running`、`translate: running`（两行谁先谁后不一定）；`rutis-host dev: services:` 是现在的服务、各由哪一行提供（`loader` 是宿主自己的），这一行在所有行都已运行、等待或失败后打印一次，之后服务变化时再打印，和各行状态行的先后不固定：
+`dev` 构建 `cmd/greeter`，作为运行时 `go-greeter` 运行它：一个二进制在宿主里是一个运行时进程，Python 的假服务在另一个运行时 `py` 里。之后每一行起来时打印 `greeter: running`、`translate: running`（两行谁先谁后不一定）；`rutis-host dev: services:` 是现在的服务、各由哪一行提供（`loader`、`sessions` 是宿主自己的服务，写 `host`：插件用 `loader` 在运行中加、删行，用 `sessions` 把自己建的连接交给宿主，写这个插件用不到它们，见 [rutis-host：用 loader 管理插件](rutis-host.md#用-loader-管理插件)），这一行在所有行都已运行、等待或失败后打印一次，之后服务变化时再打印，和各行状态行的先后不固定：
 
 ```text
 rutis-host dev: services: greeter (greeter), loader (host), sessions (host), translate (translate)
@@ -409,6 +409,79 @@ $ npx @arcships/rutis-host call greeter.hello '"Ada"'
 
 改 `dev/fake_translate.py` 只重新加载 `translate` 这一行，不重新构建；改 `rutis.dev.json` 也在运行中生效。`fmt.Println`、`log` 的内容出现在 `dev` 的输出里。其余规则见 [rutis-host：用 dev 开发插件](rutis-host.md#用-dev-开发插件)。
 
+### 用 Go 写假服务
+
+假服务也可以用 Go 写，但不要放进 `cmd/greeter`：那个二进制就是发布出去的插件，宿主 `add` 它时假服务也成了一行。把假服务写成单独的一个二进制，放在 `dev/` 里，在另一个终端自己运行它，`dev` 用一个[连接行](rutis-host.md#远程运行时与设备)连过去：
+
+```go
+// dev/fake-translate/main.go：只在 dev 里用的假 translate，单独一个二进制。
+package main
+
+import "github.com/arcships/rutis/go/rutis"
+
+type FakeTranslate struct{}
+
+func (FakeTranslate) Text(text string) string {
+	words := map[string]string{"Hello": "Bonjour", "Hi": "Salut"}
+	if word, ok := words[text]; ok {
+		return word
+	}
+	return text
+}
+
+var plugin = rutis.Define(rutis.Plugin[struct{}]{
+	Name:     "fake-translate",
+	Provides: rutis.Provides{"translate": rutis.MethodsOf[FakeTranslate]()},
+	Apply: func(ctx *rutis.Ctx, _ struct{}) error {
+		ctx.Provide("translate", FakeTranslate{})
+		return nil
+	},
+})
+
+func main() { rutis.Serve(plugin) }
+```
+
+`rutis.dev.json` 换成：
+
+```json
+{
+  "format": 1,
+  "rows": [
+    { "id": "greeter", "config": { "greeting": "Hello" } },
+    { "id": "fakes", "name": "rutis-host/dial", "config": { "address": "ws://127.0.0.1:7601" } },
+    { "id": "translate", "name": "fakes:fake-translate" }
+  ]
+}
+```
+
+先在一个终端运行假服务，它在 `127.0.0.1:7601` 上等宿主连进来，只接受出示 `RUTIS_TOKEN` 的连接：
+
+```console
+$ RUTIS_TOKEN=dev-only go run ./dev/fake-translate listen:ws://127.0.0.1:7601 --id fakes .
+rutis: listening on ws://127.0.0.1:7601/
+```
+
+再在另一个终端运行 `dev`，用同一个 token（`RUTIS_TOKEN_<连接行 id>`）：
+
+```bash
+RUTIS_TOKEN_FAKES=dev-only npx @arcships/rutis-host dev
+```
+
+除了上面那些行，还打印 `fakes` 这一行连上了：
+
+```text
+fakes: running
+fakes: connected
+translate: running
+rutis-host dev: services: greeter (greeter), loader (host), sessions (host), translate (translate)
+```
+
+- `fakes` 行连上假服务的二进制；`fakes:fake-translate` 让它运行插件 `fake-translate`，这一行提供 `translate`。
+- 假服务没在运行时，`translate` 这一行等它（`translate: waiting for fakes`），`fakes` 按退避重连（`fakes: disconnected (127.0.0.1:7601: Connection refused (os error 61)); retrying in 0.5s`），假服务起来后自动连上。
+- 回环地址上也要 token：两边都没设时 `fakes: disconnected (auth-rejected: 127.0.0.1: upgrade refused with 401 Unauthorized: credentials required); retrying in 30s`。
+- `dev` 看项目里所有的 `.go` 文件：改了 `dev/fake-translate` 也重新构建 `greeter`，但不会重启假服务。改了假服务，在它的终端里 Ctrl-C，再运行一次。
+- `go build ./...`、`go test ./...` 也编译 `dev/fake-translate`；模板里发布的工作流只构建 `./cmd/greeter`，发布的二进制里没有假服务。
+
 ## 8. 发布
 
 - 包名：`go.mod` 的模块路径，改成你的仓库，例如 `github.com/you/greeter`；`cmd/greeter/main.go` 的导入随之改。
@@ -419,10 +492,10 @@ $ npx @arcships/rutis-host call greeter.hello '"Ada"'
 
 ## 调试
 
-`--debug` 不优化地构建（`-gcflags=all=-N -l`），在 [Delve](https://github.com/go-delve/delve) 下启动运行时：Delve 监听 `127.0.0.1:2345`，程序照常运行，连上后再下断点。先装 Delve：
+`--debug` 不优化地构建（`-gcflags=all=-N -l`），在 [Delve](https://github.com/go-delve/delve) 下启动运行时：Delve 监听 `127.0.0.1:2345`，程序照常运行，连上后再下断点。先装 Delve（v1.26.3 是 Go 1.24 能装的最后一个版本；v1.27 起要 Go 1.25，在 Go 1.24 上 `@latest` 会先去下载新的 Go 工具链。`dev --debug` 在找不到 `dlv` 时提示的是 `@latest`，Go 1.24 上照这里写版本）：
 
 ```bash
-go install github.com/go-delve/delve/cmd/dlv@latest
+go install github.com/go-delve/delve/cmd/dlv@v1.26.3
 ```
 
 ```bash
@@ -455,6 +528,7 @@ dlv connect 127.0.0.1:2345
 
 | 事项 | 规则 |
 | --- | --- |
+| `Provides` | 写出插件提供哪些服务、各由哪个类型提供（`rutis.MethodsOf[*T]()` 列出它的导出方法），宿主不运行插件就知道 |
 | 方法名 | 导出方法的线上名字是首字母小写的形式（`Hello` → `hello`，`URLFor` → `urlFor`，`HTTPServer` → `httpServer`）；`advanced.Rename` 可以改（包 `github.com/arcships/rutis/go/rutis/advanced`） |
 | 方法签名 | `func (T) M([ctx context.Context,] 参数...) ([结果,] [error])` |
 | 同步还是异步 | 默认 `async`；`rutis.MethodsOf[*T](rutis.Sync("M"))` 标出同步方法。同步方法会让 Node 调用方阻塞事件循环，做 I/O 的方法保持 `async` |
