@@ -420,6 +420,28 @@ for def in parts.of("session") {
 ```
 
 - 每一份在定义它的运行时里运行，就像那个运行时里的一行：`def.at(&ctx, …)` 按 `ctx` 所在的实例算出键，共享名字按实例隔离，按它声明的 `inject` 门控。挂载需要树上有 rutis-loader。
+- `ctx` 所在的实例是 `ctx` 往上被 `ctx.mark_scope(group)` 标过的插件：rutis-loader 建的实例组的实例已经标过；宿主自己建实例时（例如每个 Session 用 `ctx.plugin` 挂一个普通插件），在那个插件的 `apply` 里标上分组，名字属于哪个分组照旧用 `ServiceCatalog::register_shared_instance(name, group)` 声明。这个插件里用 `host_key_in(name, ctx.instance())` 提供的服务就是这个实例的，挂在里面的副本 `inject` 这个名字时用的是它，两个实例互不相通：
+
+  ```rust,ignore
+  // 声明：tools 是每个 session 实例一份
+  catalog.register_shared_instance("tools", "session");
+
+  // 每个 Session 一个普通插件
+  impl DynPlugin for Session {
+      fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
+          Box::pin(async move {
+              ctx.mark_scope("session")?;
+              ctx.provide_at(host_key_in("tools", ctx.instance()), self.tools.clone())?;
+              for def in self.parts.of("session") {
+                  ctx.plugin(def.at(ctx, self.config.clone())?);
+              }
+              Ok(Effect::Done)
+          })
+      }
+  }
+  ```
+
+  同一个分组再标一次没有影响。在根上标失败：`config validation failed: ["the root is not a scope of a group"]`；已经标成别的分组时失败：`config validation failed: ["this fiber is already a scope of group tenant, not session"]`。副本 `inject` 了按实例声明的名字，却挂在没有那个分组实例的位置时，`at` 失败：`"tools" is a service inside "session" instances: put the row in the "session" group`。
 - 插件定义属于交出它的那一行的这一代（作为参数交出的，是调用方的行）：这一行卸载、重载或结束，或者运行时进程退出时，从它挂出的每一份先结束；之后 `at` 失败，`ended()` 完成。只能挂在那一行所在的实例里，或者更里面。
 - 同一个值交出几次都是同一个定义：两个 `Definition` 相等。
 - 其他语言的服务返回插件定义时，用 `rutis_bridge::runtime::returned(&*service, value).await` 读出它；它属于提供这个服务的行。

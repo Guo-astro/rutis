@@ -190,7 +190,7 @@ for def in parts.of("session") {
    - 来源在解码时确定：参数取 `caller_row()`，返回值取提供这个服务的行。
    - 编码 `Definition` 时检查要发往的会话：其他语言的定义发回定义它的运行时，就发原来的引用；其他情况都让这次调用失败（§五 第 2 条，R3）。
 3. **挂载其他语言的定义（rutis-loader）：** `at(&ctx, config)` 经 rutis-bridge 定义、rutis-loader 提供的一个接口，找到树上的 loader。
-   - loader 沿父 fiber 找到 `ctx` 所在的行和实例（和 `Loader::locate` 的找法一样），算出实例链和键，造出这一份插件（一个 `DynPlugin`，依赖在这时定下）。
+   - loader 按 `ctx` 在插件树上的位置算出实例链：`ctx` 往上每个用 `Ctx::mark_scope` 标过分组的插件是一个实例（分组与实例号），不要求它是 loader 自己建的实例（0.19.1，#948）；链节是 loader 实例时带上它建实例时给的值（`Build::value`）。再算出键，造出这一份插件（一个 `DynPlugin`，依赖在这时定下）。
    - 这一份启动时，走和行在实例里的副本同一段代码（`JsRow::start`）：租用宿主服务、发布服务、`rows.load`、处理 `rows.ended`。区别只有两点：运行时是来源的进程（`RowRuntime::Connection`），`entry` 是插件定义。
 4. **结束其他语言的定义：** 其他语言的定义的来源就是来源行的 fiber（调用方 `caller_row()` 的 `ctx`），所以和 Rust 造的定义一样由内核结束（第 1 条）：来源行停下时，先结束副本并等它们清理完，再运行 `JsRow` 的清理（撤下这一行发布的服务、发 `rows.unload`）。loader 不另记副本。
    - 不属于任何行的定义，由 rutis-bridge 在进程的会话结束时结束。

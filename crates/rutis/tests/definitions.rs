@@ -7,7 +7,6 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, FiberState, FiberView, Key};
-use rutis::internal::CtxInternal;
 use rutis::{Ctx, Definition, Error, Plugin};
 
 type Log = Arc<Mutex<Vec<String>>>;

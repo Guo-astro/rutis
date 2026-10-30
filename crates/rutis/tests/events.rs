@@ -734,8 +734,15 @@ async fn events_reach_every_listener_on_the_bus() {
     assert_eq!(round(t2.clone()).await, ["r", "s", "u", "v"]);
     assert_eq!(round(root.clone()).await, ["r", "s", "u", "v"]);
     assert!(t1.mark_scope("tenant").is_ok(), "same group again is fine");
-    assert!(t1.mark_scope("session").is_err());
-    assert!(root.mark_scope("tenant").is_err(), "the root is no scope");
+    assert_eq!(
+        t1.mark_scope("session").unwrap_err().to_string(),
+        r#"config validation failed: ["this fiber is already a scope of group tenant, not session"]"#
+    );
+    assert_eq!(
+        root.mark_scope("tenant").unwrap_err().to_string(),
+        r#"config validation failed: ["the root is not a scope of a group"]"#,
+        "the root is no scope"
+    );
     root.shutdown().await.unwrap();
 }
 

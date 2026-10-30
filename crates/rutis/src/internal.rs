@@ -51,7 +51,7 @@ pub use rutis_macros::sdk_service as __sdk_service;
 
 use crate::effect::{Disposer, Effect};
 use crate::error::{Error, ServiceReadError};
-use crate::key::TypeKey;
+use crate::key::{InstanceId, TypeKey};
 
 /// The event bus internals: remote entries, the wire values, raw dispatch.
 pub mod events {
@@ -76,10 +76,10 @@ pub trait CtxInternal: sealed::Sealed {
     /// The event bus: one per root. Dispatch does not filter by isolate scope.
     fn events(&self) -> &EventBus;
 
-    /// Make this context's fiber a scope of `group`: the loader calls it
-    /// for each group instance before its rows start. Its id is the fiber's
-    /// [`InstanceId`](crate::host::InstanceId). Marking it again with the same group is a no-op.
-    fn mark_scope(&self, group: &str) -> Result<(), Error>;
+    /// [`CtxHost::scope`](crate::host::CtxHost::scope) with each link's
+    /// [`InstanceId`](crate::host::InstanceId) (the fiber
+    /// [`Ctx::mark_scope`](crate::Ctx::mark_scope) marked), outermost first.
+    fn scope_instances(&self) -> Vec<(InstanceId, String)>;
 
     /// Make this context's fiber the row `key`: the descriptors
     /// ([`ListenerInfo::row`](crate::events::ListenerInfo::row)) of listeners registered

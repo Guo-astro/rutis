@@ -420,6 +420,28 @@ for def in parts.of("session") {
 ```
 
 - Each copy runs in the runtime that defined it, like a row of that runtime: `def.at(&ctx, …)` computes the keys for the instance `ctx` is in, isolates shared names per instance, and gates the copy on its declared `inject`. Mounting needs rutis-loader in the tree.
+- The instance `ctx` is in is the plugin above `ctx` marked with `ctx.mark_scope(group)`: the instances of rutis-loader's instanced groups are marked already. When the host builds its own instances (say, a plain plugin mounted with `ctx.plugin` for each session), mark the group in that plugin's `apply`; which group a name belongs to is declared as before, with `ServiceCatalog::register_shared_instance(name, group)`. A service that plugin provides with `host_key_in(name, ctx.instance())` is that instance's own: a copy mounted inside it that `inject`s the name uses it, and two instances do not mix:
+
+  ```rust,ignore
+  // tools: one per session instance
+  catalog.register_shared_instance("tools", "session");
+
+  // A plain plugin for each session
+  impl DynPlugin for Session {
+      fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
+          Box::pin(async move {
+              ctx.mark_scope("session")?;
+              ctx.provide_at(host_key_in("tools", ctx.instance()), self.tools.clone())?;
+              for def in self.parts.of("session") {
+                  ctx.plugin(def.at(ctx, self.config.clone())?);
+              }
+              Ok(Effect::Done)
+          })
+      }
+  }
+  ```
+
+  Marking it again with the same group changes nothing. Marking the root fails with `config validation failed: ["the root is not a scope of a group"]`; marking a plugin already marked for another group fails with `config validation failed: ["this fiber is already a scope of group tenant, not session"]`. A copy that `inject`s a name declared per instance, mounted where no instance of that group encloses it, fails in `at`: `"tools" is a service inside "session" instances: put the row in the "session" group`.
 - A plugin definition belongs to the current generation of the row that handed it over (as an argument, the calling row): when that row unloads, reloads or ends, or the runtime's process exits, every copy mounted from it ends first; then `at` fails and `ended()` completes. It can only be mounted inside that row's instance, or deeper.
 - One value handed over several times is one definition: the two `Definition`s are equal.
 - When a service of another language returns a plugin definition, read it with `rutis_bridge::runtime::returned(&*service, value).await`; it belongs to the row that provides the service.

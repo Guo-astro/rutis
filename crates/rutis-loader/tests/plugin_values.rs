@@ -633,6 +633,69 @@ async fn each_instance_mounts_its_own_copy(lang: Lang) {
     fixture.root.shutdown().await.unwrap();
 }
 
+/// An instance of `session` the host builds itself, not the loader: a
+/// plugin mounted with `ctx.plugin` that marks its fiber with
+/// `ctx.mark_scope("session")`, provides its `tools` there and mounts a copy
+/// of every session part in it (#948).
+struct HostSession {
+    title: String,
+    mounted: Arc<Mutex<Vec<FiberView>>>,
+}
+
+impl DynPlugin for HostSession {
+    fn name(&self) -> &str {
+        "host-session"
+    }
+
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
+        Box::pin(async move {
+            ctx.mark_scope("session")?;
+            ctx.provide_at(
+                host_key_in("tools", ctx.instance()),
+                Arc::new(Tools(self.title.clone())),
+            )?;
+            let parts = ctx.get::<Parts>().expect("the registry");
+            for def in parts.of("session") {
+                let view = ctx.plugin(def.at(ctx, json!({ "n": self.title }))?);
+                self.mounted.lock().unwrap().push(view);
+            }
+            Ok(Effect::Done)
+        })
+    }
+}
+
+/// guarantee: loader/plugin-value-copies (an instance of the host's own)
+///
+/// A copy mounted in an instance the host made with `ctx.plugin` and
+/// `mark_scope` resolves the names shared per instance of that group to
+/// that instance, as in a loader instance; two of them do not mix.
+async fn a_host_instance_mounts_its_own_copy(lang: Lang) {
+    let Some(fixture) = fixture(lang).await else {
+        return;
+    };
+    for title in ["A", "B"] {
+        fixture
+            .root
+            .plugin(HostSession {
+                title: title.into(),
+                mounted: fixture.mounted.clone(),
+            })
+            .await
+            .unwrap();
+    }
+    fixture
+        .probe
+        .wait_for("part A sees A with prepared in apply")
+        .await;
+    fixture
+        .probe
+        .wait_for("part B sees B with prepared in apply")
+        .await;
+    assert!(!fixture.probe.has("part A sees B with prepared in apply"));
+    assert!(!fixture.probe.has("part B sees A with prepared in apply"));
+    fixture.root.shutdown().await.unwrap();
+}
+
 async fn the_origin_s_unload_ends_its_copies_first(lang: Lang) {
     let Some(fixture) = fixture(lang).await else {
         return;
@@ -838,6 +901,11 @@ export default definePlugin({
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn a_host_instance_mounts_its_own_copy() {
+        super::a_host_instance_mounts_its_own_copy(Lang::Node).await
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn the_origin_s_unload_ends_its_copies_first() {
         super::the_origin_s_unload_ends_its_copies_first(Lang::Node).await
     }
@@ -859,6 +927,11 @@ mod bun {
     #[tokio::test(flavor = "multi_thread")]
     async fn each_instance_mounts_its_own_copy() {
         super::each_instance_mounts_its_own_copy(Lang::Bun).await
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_host_instance_mounts_its_own_copy() {
+        super::a_host_instance_mounts_its_own_copy(Lang::Bun).await
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -886,6 +959,11 @@ mod python {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn a_host_instance_mounts_its_own_copy() {
+        super::a_host_instance_mounts_its_own_copy(Lang::Python).await
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn the_origin_s_unload_ends_its_copies_first() {
         super::the_origin_s_unload_ends_its_copies_first(Lang::Python).await
     }
@@ -908,6 +986,11 @@ mod go {
     #[tokio::test(flavor = "multi_thread")]
     async fn each_instance_mounts_its_own_copy() {
         super::each_instance_mounts_its_own_copy(Lang::Go).await
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_host_instance_mounts_its_own_copy() {
+        super::a_host_instance_mounts_its_own_copy(Lang::Go).await
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -965,6 +1048,11 @@ mod swift {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn a_host_instance_mounts_its_own_copy() {
+        super::a_host_instance_mounts_its_own_copy(Lang::Swift).await
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn the_origin_s_unload_ends_its_copies_first() {
         super::the_origin_s_unload_ends_its_copies_first(Lang::Swift).await
     }
@@ -1005,6 +1093,11 @@ mod kotlin {
     #[tokio::test(flavor = "multi_thread")]
     async fn each_instance_mounts_its_own_copy() {
         super::each_instance_mounts_its_own_copy(Lang::Kotlin).await
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_host_instance_mounts_its_own_copy() {
+        super::a_host_instance_mounts_its_own_copy(Lang::Kotlin).await
     }
 
     #[tokio::test(flavor = "multi_thread")]
