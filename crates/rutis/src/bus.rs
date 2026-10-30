@@ -504,7 +504,6 @@ impl EventBus {
     // ── dispatch ─────────────────────────────────────────────────
 
     /// §5.1 step 1, after the reserved-name check.
-    #[cfg_attr(not(feature = "testing"), allow(unused_variables))]
     fn snapshot(
         &self,
         ctx: &Ctx,
@@ -512,6 +511,19 @@ impl EventBus {
         event: &(dyn std::any::Any + Send + Sync),
         opts: &mut Opts,
     ) -> Result<Vec<Arc<Entry>>, Error> {
+        self.snapshot_with(ctx, name, event, opts, |table| table.select(name))
+    }
+
+    /// [`snapshot`](Self::snapshot), selecting with `select`.
+    #[cfg_attr(not(feature = "testing"), allow(unused_variables))]
+    fn snapshot_with<T>(
+        &self,
+        ctx: &Ctx,
+        name: &str,
+        event: &(dyn std::any::Any + Send + Sync),
+        opts: &mut Opts,
+        select: impl FnOnce(&mut Table) -> T,
+    ) -> Result<T, Error> {
         self.ensure_bus(ctx)?;
         if !opts.framework && name.starts_with(RESERVED_PREFIX) {
             return Err(ErrorKind::ReservedEvent {
@@ -519,8 +531,8 @@ impl EventBus {
             }
             .into());
         }
-        let state = self.core.state.lock().unwrap();
-        let entries = state.table.select(name);
+        let mut state = self.core.state.lock().unwrap();
+        let entries = select(&mut state.table);
         #[cfg(feature = "testing")]
         let hooks = state.selected.clone();
         drop(state);
@@ -587,24 +599,41 @@ impl EventBus {
         mut opts: Opts,
     ) -> Result<tokio::sync::oneshot::Receiver<()>, Error> {
         let (started, receiver) = tokio::sync::oneshot::channel();
-        let mut entries = self.snapshot(ctx, &name, &**payload.arc(), &mut opts)?;
         let mut batch = None;
-        match opts.filter.take() {
-            Some(FilterSpec::Each(keep)) => match filter_each(entries, &*keep) {
-                Ok(kept) => entries = kept,
-                Err(error) => {
-                    report_filter(ctx, &name, error);
+        let entries: Arc<[Arc<Entry>]> = if opts.filter.is_none() {
+            // The emits of a name share one list while no listener is added
+            // for it (#977). A copy per emit made a mass shutdown hold one
+            // copy per queued status change, each as long as the listeners.
+            let shared = self.snapshot_with(ctx, &name, &**payload.arc(), &mut opts, |table| {
+                table.shared(&name)
+            })?;
+            match shared {
+                Some(entries) => entries,
+                None => {
                     let _ = started.send(());
                     return Ok(receiver);
                 }
-            },
-            Some(batch_filter) => batch = Some(batch_filter),
-            None => {}
-        }
-        if entries.is_empty() {
-            let _ = started.send(());
-            return Ok(receiver);
-        }
+            }
+        } else {
+            let mut entries = self.snapshot(ctx, &name, &**payload.arc(), &mut opts)?;
+            match opts.filter.take() {
+                Some(FilterSpec::Each(keep)) => match filter_each(entries, &*keep) {
+                    Ok(kept) => entries = kept,
+                    Err(error) => {
+                        report_filter(ctx, &name, error);
+                        let _ = started.send(());
+                        return Ok(receiver);
+                    }
+                },
+                Some(batch_filter) => batch = Some(batch_filter),
+                None => {}
+            }
+            if entries.is_empty() {
+                let _ = started.send(());
+                return Ok(receiver);
+            }
+            entries.into()
+        };
         let owned = Arc::new(OwnedInv {
             bus: self.clone(),
             emitter: ctx.clone(),
@@ -644,9 +673,9 @@ impl EventBus {
             if let Some(prev) = prev {
                 let _ = prev.await;
             }
-            let entries = if batch.is_some() {
-                match filter_any(&owned.name, entries, batch).await {
-                    Ok(entries) => entries,
+            let entries: Arc<[Arc<Entry>]> = if batch.is_some() {
+                match filter_any(&owned.name, entries.to_vec(), batch).await {
+                    Ok(entries) => entries.into(),
                     Err(error) => {
                         report_filter(&owned.emitter, &owned.name, error);
                         let _ = started.send(());
@@ -656,11 +685,12 @@ impl EventBus {
             } else {
                 entries
             };
-            for entry in entries {
-                let Some(flight) = owned.bus.start(&entry) else {
+            for entry in entries.iter() {
+                let Some(flight) = owned.bus.start(entry) else {
                     continue;
                 };
-                let call = run::emit_call(owned.clone(), entry, flight, Some(ticket.clone()));
+                let call =
+                    run::emit_call(owned.clone(), entry.clone(), flight, Some(ticket.clone()));
                 if let Started::Pending(rest) = first_poll(call).await {
                     spawn_handle.spawn(rest);
                 }

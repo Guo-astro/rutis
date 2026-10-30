@@ -74,7 +74,7 @@ env:
     memory_session multihop
   PURE_TESTS_LOADER: >-
     check instance_services instances lifecycle loader migration_example
-    patch_parity regressions reload scope
+    patch_parity regressions reload scope close_memory
   # What the pull-request jobs on macOS and Windows skip besides PURE_TESTS_*:
   # tests of runtime and event behavior that is the same on Linux, where the
   # `rust` job runs them with every runtime's features. What is platform
