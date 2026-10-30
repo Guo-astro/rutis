@@ -72,9 +72,12 @@ impl RuntimeStates {
         self
     }
 
-    /// Its process is starting: a new generation.
+    /// Its process is starting: a new generation, counted when it comes
+    /// into `Starting` (already starting, it is the same start).
     pub fn starting(&self) {
-        self.starts.fetch_add(1, Ordering::SeqCst);
+        if !matches!(*self.state.borrow(), RuntimeState::Starting) {
+            self.starts.fetch_add(1, Ordering::SeqCst);
+        }
         self.set(RuntimeState::Starting);
     }
 
