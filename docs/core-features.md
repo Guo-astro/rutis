@@ -44,7 +44,7 @@ let hi = ctx.serial(RoomEvent { room: "a".into() }).await?;
 - `emit` 立即返回，按登记顺序开始每个监听器，不等任何一个；同一名字的多次 emit 按发出顺序开始；监听器失败进 ErrorSink（`ListenerFailed`），不影响其他监听器。
 - `parallel` 按登记顺序开始、等全部完成；有失败时总是 `ListenersFailed`（AggregateError），按登记顺序。
 - `serial` / `bail` 取第一个"有结果"的返回值（`None` 与 `Some(false)` 是没有结果）；错误停止。`bail` 遇到异步监听器报 `AsyncListener`。
-- `waterfall` 由外向内，监听器经 `call.next()` 调用其余；不调即否决；终态可选（`ctx.waterfall(e).terminal(…)`，不写就没有终态）；返回最外层的值。
+- `waterfall` 由外向内，监听器经 `call.next()` 调用其余；不调即否决；终态可选（`ctx.waterfall(e).terminal(…)`，不写就没有终态）；返回最外层的值。`ctx.waterfall(e).sync(terminal)` 同步跑完整条链，规则同 `bail`（`on_sync` 的监听器同步调 `next`）。
 - 同步监听器用 `on_sync` 登记，所有方式都能调用它。`ctx.listen::<E>().prefix("room/")` 登记前缀监听器，它从 `call.name()` 读到实际的名字；`listen()` 还有 `.once()`、`.prepend()`、`.global()`。
 - **作用域**：加载器把每个组实例标为作用域（`rutis::internal` 的 `mark_scope`），`ctx.scope()` 是从根起的作用域链。事件在一个 root 的总线上按名字送达，所有监听器都收到；作用域只是 `ListenerInfo` 里的描述，供过滤使用。
 - **过滤**：`ctx.filter(|info: &ListenerInfo| ..)` 给出同样的五个发出方法；过滤在任何调用之前、在发出方进程里看每个非 `global` 监听器的描述（插件、行、运行时、节点、作用域）。

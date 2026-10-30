@@ -15,7 +15,8 @@ use std::time::Instant;
 
 use run::{
     filter_any, filter_each, filter_sync, first_poll, report_listener, run_bail, run_parallel,
-    run_serial, AsyncNext, ErasedTerminal, FilterSpec, Inv, NoTerminal, OwnedInv, RawTerm, Started,
+    run_serial, AsyncNext, ErasedSyncTerminal, ErasedTerminal, FilterSpec, Inv, NoTerminal,
+    OwnedInv, RawTerm, Started, SyncNext,
 };
 use table::{Body, Entry, Table};
 
@@ -795,6 +796,36 @@ impl EventBus {
         run_bail(&inv, &entries)
     }
 
+    /// `waterfall`, synchronously (`waterfall(event).sync(terminal)`): the
+    /// whole chain inline, each listener's `next` synchronous.
+    pub(crate) fn waterfall_sync_erased(
+        &self,
+        ctx: &Ctx,
+        name: Arc<str>,
+        event: PayloadRef<'_>,
+        terminal: &dyn ErasedSyncTerminal,
+        mut opts: Opts,
+    ) -> Result<Option<Value>, Error> {
+        ctx.registration_preflight()?;
+        let entries = self.snapshot(ctx, &name, event.as_any(), &mut opts)?;
+        let entries = filter_sync(&name, entries, opts.filter.take())?;
+        let inv = Inv {
+            bus: self,
+            emitter: ctx,
+            name: &name,
+            mode: Mode::Waterfall,
+            event,
+            dispatch: self.dispatch_id(),
+            origin: opts.origin,
+        };
+        SyncNext {
+            inv: &inv,
+            chain: &entries,
+            terminal,
+        }
+        .invoke()
+    }
+
     // ── typed dispatch ───────────────────────────────────────────
 
     /// `emit` of a framework event: only rutis emits `rutis/*`.
@@ -986,7 +1017,7 @@ impl EventBus {
             origin: call.origin,
         };
         let out = match call.mode {
-            Mode::Bail => run::call_sync(&entry, &inv),
+            Mode::Bail => run::call_sync(&entry, &inv, None),
             mode => Err(Error::from(ErrorKind::Validation {
                 issues: vec![format!("{mode} is asynchronous: use invoke_entry")],
             })),

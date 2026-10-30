@@ -243,6 +243,7 @@ impl<'a, E> !core::panic::unwind_safe::RefUnwindSafe for rutis::events::SyncCall
 impl<'a, E> !core::panic::unwind_safe::UnwindSafe for rutis::events::SyncCall<'a, E>
 pub struct rutis::events::Waterfall<'c, E: rutis::events::Event>
 impl<'c, E: rutis::events::Event> rutis::events::Waterfall<'c, E>
+pub fn rutis::events::Waterfall<'c, E>::sync<F>(self, F) -> core::result::Result<core::option::Option<<E as rutis::events::Event>::Value>, rutis::Error> where F: core::ops::function::FnOnce(alloc::rcs::arc::Arc<E>) -> core::result::Result<core::option::Option<<E as rutis::events::Event>::Value>, rutis::Error> + core::marker::Send
 pub fn rutis::events::Waterfall<'c, E>::terminal<F, Fut>(self, F) -> Self where F: core::ops::function::FnOnce(alloc::rcs::arc::Arc<E>) -> Fut + core::marker::Send + 'static, Fut: core::future::future::Future<Output = core::result::Result<core::option::Option<<E as rutis::events::Event>::Value>, rutis::Error>> + core::marker::Send + 'static
 impl<'c, E: rutis::events::Event> core::future::into_future::IntoFuture for rutis::events::Waterfall<'c, E>
 pub type rutis::events::Waterfall<'c, E>::IntoFuture = core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = <rutis::events::Waterfall<'c, E> as core::future::into_future::IntoFuture>::Output> + core::marker::Send + 'c)>>

@@ -7,8 +7,12 @@ use std::marker::PhantomData;
 use std::sync::{Arc, Mutex};
 
 use super::wire::{Payload, Value};
-use super::{typed_arc, ErasedAsync, ErasedSync, Event, EventOptions, ListenerInfo, Mode};
-use crate::bus::run::{AsyncNext, ErasedTerminal, FilterSpec, Inv, Keep, NoTerminal};
+use super::{
+    into_typed, typed_arc, ErasedAsync, ErasedSync, Event, EventOptions, ListenerInfo, Mode,
+};
+use crate::bus::run::{
+    AsyncNext, ErasedSyncTerminal, ErasedTerminal, FilterSpec, Inv, Keep, NoTerminal, SyncNext,
+};
 use crate::bus::table::Body;
 use crate::bus::Opts;
 use crate::ctx::Ctx;
@@ -118,6 +122,8 @@ impl<E: Event> Call<E> {
 pub struct SyncCall<'a, E: Event> {
     inv: &'a Inv<'a>,
     ctx: &'a Ctx,
+    /// The rest of a synchronous waterfall.
+    next: Option<SyncNext<'a>>,
     _event: PhantomData<fn() -> E>,
 }
 
@@ -137,10 +143,15 @@ impl<E: Event> SyncCall<'_, E> {
         self.ctx
     }
 
-    /// A synchronous listener has no rest of the chain to run: in a
-    /// `waterfall` and in every other mode, `Err(WaterfallNext)`.
+    /// The rest of the chain, run now on this thread: in a synchronous
+    /// waterfall (`ctx.waterfall(event).sync(terminal)`) only. In an
+    /// asynchronous `waterfall` and in every other mode,
+    /// `Err(WaterfallNext)`.
     pub fn next(self) -> Result<Option<E::Value>, Error> {
         let inv = self.inv;
+        if let Some(next) = self.next {
+            return into_typed(inv, next.invoke()?);
+        }
         let misuse = match inv.mode {
             Mode::Waterfall => NextMisuse::SyncInAsync,
             mode => NextMisuse::NotWaterfall(mode),
@@ -188,11 +199,17 @@ where
     E: Event,
     F: Fn(Arc<E>, SyncCall<'_, E>) -> Result<Option<E::Value>, Error> + Send + Sync + 'static,
 {
-    fn call(&self, ctx: &Ctx, inv: &Inv<'_>) -> Result<Option<Value>, Error> {
+    fn call(
+        &self,
+        ctx: &Ctx,
+        inv: &Inv<'_>,
+        next: Option<SyncNext<'_>>,
+    ) -> Result<Option<Value>, Error> {
         let event = typed_arc::<E>(inv)?;
         let call = SyncCall {
             inv,
             ctx,
+            next,
             _event: PhantomData,
         };
         Ok((self.0)(event, call)?.map(Value::new))
@@ -384,6 +401,24 @@ impl<'c> Target<'c> {
             .bail_erased(self.ctx, name, payload.as_ref(), self.opts())?;
         typed_value(self.ctx, out)
     }
+
+    fn waterfall_sync<E, F>(&self, event: Arc<E>, terminal: F) -> Result<Option<E::Value>, Error>
+    where
+        E: Event,
+        F: FnOnce(Arc<E>) -> Result<Option<E::Value>, Error> + Send,
+    {
+        let name = name_of(&*event, self.named.as_ref())?;
+        let payload = Payload::new(event);
+        let terminal = FnSyncTerminal::<E, F>(Mutex::new(Some(terminal)), PhantomData);
+        let out = self.ctx.events().waterfall_sync_erased(
+            self.ctx,
+            name,
+            payload.as_ref(),
+            &terminal,
+            self.opts(),
+        )?;
+        typed_value(self.ctx, out)
+    }
 }
 
 /// The five ways to send, with a filter: `ctx.filter(keep)`. `keep` sees
@@ -451,7 +486,8 @@ impl<'c> Filtered<'c> {
     }
 }
 
-/// A `waterfall` to run: `.terminal(…)` optionally, then `.await`.
+/// A `waterfall` to run: `.terminal(…)` optionally, then `.await`; or
+/// synchronously, `.sync(terminal)`.
 pub struct Waterfall<'c, E: Event> {
     target: Target<'c>,
     event: Arc<E>,
@@ -478,6 +514,41 @@ impl<'c, E: Event> Waterfall<'c, E> {
             PhantomData,
         )));
         self
+    }
+
+    /// Run the waterfall now, synchronously, on this thread: `terminal` is
+    /// what the last listener's `next` returns (with no listener, the
+    /// result). As `bail`: a listener registered with `on_sync` calls
+    /// `next` synchronously; an asynchronous one (`on`), and one in another
+    /// process (which only an asynchronous call reaches), fail the dispatch
+    /// with `AsyncListener`. After `.terminal(…)`, `Validation`: give the
+    /// terminal to `.sync` instead.
+    ///
+    /// ```no_run
+    /// # use rutis::serde::{Deserialize, Serialize};
+    /// # #[derive(Serialize, Deserialize)] struct Draft(String);
+    /// # impl rutis::Event for Draft { const NAME: &'static str = "draft"; type Value = String; }
+    /// # fn demo(ctx: &rutis::Ctx) -> rutis::Result {
+    /// let text = ctx
+    ///     .waterfall(Draft("hi".into()))
+    ///     .sync(|draft| Ok(Some(draft.0.clone())))?;
+    /// # Ok(()) }
+    /// ```
+    pub fn sync<F>(self, terminal: F) -> Result<Option<E::Value>, Error>
+    where
+        F: FnOnce(Arc<E>) -> Result<Option<E::Value>, Error> + Send,
+    {
+        if self.terminal.is_some() {
+            return Err(ErrorKind::Validation {
+                issues: vec![
+                    "a waterfall with an asynchronous terminal cannot run synchronously: \
+                     pass the terminal to .sync(…) instead of .terminal(…)"
+                        .to_owned(),
+                ],
+            }
+            .into());
+        }
+        self.target.waterfall_sync(self.event, terminal)
     }
 }
 
@@ -528,6 +599,24 @@ where
                 .unwrap_or_else(|panic| Err(panic_error(panic)))?;
             Ok(out.map(Value::new))
         })
+    }
+}
+
+/// The terminal of a synchronous waterfall, called at most once.
+struct FnSyncTerminal<E, F>(Mutex<Option<F>>, PhantomData<fn(E) -> E>);
+
+impl<E, F> ErasedSyncTerminal for FnSyncTerminal<E, F>
+where
+    E: Event,
+    F: FnOnce(Arc<E>) -> Result<Option<E::Value>, Error> + Send,
+{
+    fn call(&self, inv: &Inv<'_>) -> Result<Option<Value>, Error> {
+        let terminal = self.0.lock().unwrap_or_else(|e| e.into_inner()).take();
+        let Some(terminal) = terminal else {
+            return Ok(None);
+        };
+        let event = typed_arc::<E>(inv)?;
+        Ok(terminal(event)?.map(Value::new))
     }
 }
 
@@ -585,7 +674,8 @@ impl Ctx {
     }
 
     /// `waterfall`: each listener gets `next`; `.terminal(…)` ends the
-    /// chain, then `.await`.
+    /// chain, then `.await`. Or synchronously: `.sync(terminal)`
+    /// ([`Waterfall::sync`]).
     pub fn waterfall<E: Event>(&self, event: impl crate::events::IntoEvent<E>) -> Waterfall<'_, E> {
         Waterfall::new(self.target(), event.into_event())
     }

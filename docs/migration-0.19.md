@@ -310,7 +310,7 @@ Kotlin 另有两点：
 | `internal::CtxInternal` 的 `try_filter`、`try_filter_named` | `EventBus::dispatch` / `dispatch_sync` 带 `Dispatch { filter: Some(BatchFilter), … }`（`rutis::internal`） |
 | feature `anyhow`、`Error::from_anyhow`、`From<Error> for anyhow::Error` | `.map_err(\|e\| Error::msg(format!("{e:#}")))` |
 | `rutis_bridge::cordis::build::rutis_plugin`、`cordis::server` | 删（Cordis 宿主挂 Rust 插件的方向不再支持） |
-| `waterfall_sync`；事件协议的方式 `waterfall-sync`（自己实现运行时的） | Rust 一侧的 `waterfall_sync` 删除，改用 `waterfall`（异步）或同步 `bail`；Cordis 的同步 `waterfall` 照常可用（`events.dispatch` 带 `sync: true`，协议 §5.4） |
+| `waterfall_sync`；事件协议的方式 `waterfall-sync`（自己实现运行时的） | `ctx.waterfall_sync(event, terminal)` → `ctx.waterfall(event).sync(terminal)`（0.19.1 起；规则同前：`on_sync` 的监听器同步调 `next`，`on` 的以 `AsyncListener` 失败，别处的监听器也以 `AsyncListener` 失败，见[插件 API](guide/plugin-api.md#事件)）；协议方式 `waterfall-sync` 删除，Cordis 的同步 `waterfall` 照常可用（`events.dispatch` 带 `sync: true`，协议 §5.4） |
 | `internal::intercept_require_as`、`intercept_set_as`、`ServiceIntercept`，`ServiceReadFailure` / `ServiceWriteFailure` 的 `Intercept*` 变体 | 无替代；`internal::CtxInternal::require_provided_as` 不再收 `actor` 参数 |
 | `rutis_bridge::build::Exports`，build-dependency `rutis-bridge = { features = ["exports"] }` | `rutis_types::Exports`，build-dependency `rutis-types`；写法不变 |
 | `internal::config::{closest, decode, …}` | `rutis::config::closest`；校验 `rutis::config::check` |
