@@ -123,7 +123,7 @@ fn a_disabled_provider_is_not_taken_for_none() {
 /// as `check` and a reload say, in Node and Python alike: its schema is
 /// known only once its runtime is up, and the row does not start on the
 /// config it was given (#935). The row waiting for it says why.
-/// guarantee: host/check, sdk/config-schema
+/// guarantee: sdk/config-schema
 #[test]
 fn a_config_that_does_not_match_the_schema_fails_its_row_at_start() {
     let dir = tempfile::tempdir().unwrap();

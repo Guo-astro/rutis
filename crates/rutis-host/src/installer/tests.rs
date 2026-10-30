@@ -123,6 +123,7 @@ impl Bench {
             bun: self.app(),
             bun_runtime: None,
             python: self.app().join(".venv"),
+            python_project: self.app(),
             go: Ok(self.app().join("plugins/go")),
             swift: Ok(self.app().join("plugins/swift")),
         })
@@ -343,6 +344,100 @@ fn a_python_package_without_entry_points_is_not_a_plugin() {
              uv pip uninstall --python {}/app/.venv/bin/python bo-utils",
             bench.dir.path().display()
         )
+    );
+}
+
+/// In a uv project whose `.venv` is the environment, packages are added
+/// to the project (`uv add --dev`), so that `uv sync` keeps them; `upgrade`
+/// and `remove` go through the project too (#935).
+#[tokio::test]
+async fn in_a_uv_project_packages_are_added_to_it() {
+    let bench = Bench::new();
+    bench.program("uv", UV);
+    std::fs::write(
+        bench.app().join("pyproject.toml"),
+        "[project]\nname = \"app\"\n",
+    )
+    .unwrap();
+    std::fs::write(bench.app().join("uv.lock"), "").unwrap();
+    let installer = bench.installer();
+    let added = installer.add("pypi:bo-llm").await.unwrap();
+    assert_eq!(added.plugins[0].row_name(), "py:llm");
+    assert_eq!(
+        added.uninstall,
+        bench.here("uv remove --dev --project $B/app bo-llm")
+    );
+    let llm = added.plugins[0].clone();
+    installer.upgrade(&llm, None).await.unwrap();
+    installer.upgrade(&llm, Some("0.4.0")).await.unwrap();
+    assert_eq!(
+        installer.remove(&[llm]).await.unwrap().as_deref(),
+        Some("bo-llm")
+    );
+    let uv = |args: &str| format!("uv [rutis-host] {args}");
+    let ready = [
+        uv("--version"),
+        "python import rutis".into(),
+        uv(&format!("add --dev --project $B/app rutis=={VERSION}")),
+    ];
+    let mut asked = vec![uv("--version"), uv("venv $B/app/.venv")];
+    asked.extend(ready[1..].iter().cloned());
+    asked.extend([
+        uv("add --dev --project $B/app bo-llm"),
+        "python query distribution bo-llm".into(),
+    ]);
+    // The version before.
+    let before = [uv("--version"), "python query plugin llm".into()];
+    // The newest: from the version there, which a pin (`bo-llm==0.3.0`
+    // from `add pypi:bo-llm@0.3.0`) would keep otherwise.
+    asked.extend(before.iter().cloned());
+    asked.extend(ready.iter().cloned());
+    asked.extend([
+        "python query distribution bo-llm".into(),
+        uv("add --dev --project $B/app --upgrade-package bo-llm bo-llm>=0.3.0"),
+        "python query distribution bo-llm".into(),
+    ]);
+    asked.extend(before.iter().cloned());
+    asked.extend(ready.iter().cloned());
+    asked.extend([
+        uv("add --dev --project $B/app --upgrade-package bo-llm bo-llm==0.4.0"),
+        "python query distribution bo-llm".into(),
+    ]);
+    asked.extend([
+        uv("--version"),
+        "python query plugin llm".into(),
+        uv("remove --dev --project $B/app bo-llm"),
+    ]);
+    assert_eq!(bench.asked(), asked);
+}
+
+/// Without a `uv.lock` (a project uv does not manage), or with an
+/// environment other than the project's `.venv`, packages go into the
+/// environment as before.
+#[tokio::test]
+async fn outside_a_uv_project_packages_go_into_the_environment() {
+    let bench = Bench::new();
+    bench.program("uv", UV);
+    std::fs::write(
+        bench.app().join("pyproject.toml"),
+        "[project]\nname = \"app\"\n",
+    )
+    .unwrap();
+    let added = bench.installer().add("pypi:bo-llm").await.unwrap();
+    assert_eq!(
+        added.uninstall,
+        bench.here("uv pip uninstall --python $B/app/.venv/bin/python bo-llm")
+    );
+    std::fs::write(bench.app().join("uv.lock"), "").unwrap();
+    let installer = Installer::new(Places {
+        python: bench.dir.path().join("env"),
+        ..bench.installer().core.places.clone()
+    })
+    .with_path(format!("{}:/usr/bin:/bin", bench.bin().display()));
+    let added = installer.add("pypi:bo-llm").await.unwrap();
+    assert_eq!(
+        added.uninstall,
+        bench.here("uv pip uninstall --python $B/env/bin/python bo-llm")
     );
 }
 
