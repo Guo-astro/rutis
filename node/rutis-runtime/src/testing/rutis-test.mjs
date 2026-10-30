@@ -11,6 +11,8 @@ import { rmSync } from 'node:fs'
 import { PLUGIN_API } from '../leaf.mjs'
 
 const LEAF = Symbol.for('rutis.leaf-plugin')
+// The driver's methods the test calls synchronously (`@arcships/rutis/testing`).
+const SYNCHRONOUS = ['provided', 'methods', 'on', 'off', 'emit', 'bail', 'filter.emit', 'filter.bail']
 
 // The methods rutis sees on a service no declaration describes: its own
 // and inherited functions, up to Object's, not the constructor; all async.
@@ -94,7 +96,13 @@ export default Object.freeze({
       if (target !== '') return ctx.use(target)[method](...(args ?? []))
       if (!Object.hasOwn(methods, method)) throw new Error(`the test driver has no method ${method}`)
       return methods[method](...(args ?? []))
-    }, undefined, { local: 'rutis-test' })
+    }, undefined, { local: 'rutis-test' }, {
+      // The test's synchronous calls run as they arrive, also while this
+      // side waits for the test (a listener of the test's, called for an
+      // emit of a service call that returned): the test, waiting for them,
+      // answers nothing meanwhile (#984).
+      inline: SYNCHRONOUS,
+    })
     // The test process went (done, failed or killed): the test is over.
     // Its temporary directory goes, and this runtime ends, after which
     // `rutis-host test` stops and exits (as a driver ends a test).
