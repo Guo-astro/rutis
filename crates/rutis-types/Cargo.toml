@@ -2,7 +2,7 @@
 name = "rutis-types"
 description = "Generate the TypeScript declarations and Python types of Rust services marked #[rutis::service], from their Rust source, for build scripts"
 # The release train.
-version = "0.19.1"
+version = "0.19.2"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true

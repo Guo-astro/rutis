@@ -72,6 +72,12 @@ Expected behavior: the dialer prints `clock: <n>` every second. After a network 
 
 The nightly stress workflow also runs two soak tests (repeated link disconnect/reconnect and repeated process start/exit) and checks that file descriptor and thread counts do not grow and all processes are reaped.
 
+## 0.19.2
+
+0.19.2 is a patch release: it fixes bugs that gave wrong results, hung or made memory blow up (the memory peak of #977, the loads cancelled early of #968, the third item of #934, the third and fourth items of #935, #938, #933, #932, #965, #922), and fills in what the 0.19.0 evaluation had to guess from the documentation (#939). All packages are at 0.19.2; see [the release notes](releases/0.19.2.en.md). There is no migration guide: no API is removed or renamed.
+
+A patch release must stay compatible with 0.19.1: `cargo-semver-checks` compares with 0.19.1 and accepts no breaking Rust API change (this release adds and removes no public API). `format` of `rutis.json` stays 1 and no configuration changes: the persisted sample is copied from 0.19.1 and its expectations are unchanged; dsh's user layer has not changed, so `cordis.patch.yml` is copied as is. The protocol is unchanged and there is no new capability; the release gate's cross-version tests (`RUTIS_E2E_ONLY_OLDER=1`) meet 0.19.1. The Kotlin SDK, as in 0.19.0, is not published to Maven Central (the `maven` job skips as usual).
+
 ## 0.19.1
 
 0.19.1 is a patch release: it fixes the places where the 0.19.0 developer-experience evaluation (#663) found that what the documentation says does not work (the first two items of #934, the first two items of #935, one item of #933, the documentation example of #932, the Swift guide), and adds the Rust API Dim needs to upgrade (#946, #941, #948). All packages are at 0.19.1; see [the release notes](releases/0.19.1.en.md). There is no migration guide: no API is removed or renamed.

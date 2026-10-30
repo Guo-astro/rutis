@@ -8,10 +8,10 @@ An Android application provides its own capabilities and those of its device (co
 
 ## 1. Dependencies
 
-Android 10 (API 29) or later, JDK 17. The Kotlin SDK is not published to Maven; it is used from source: fetch this repository's tag `v0.19.1` next to the application's project, and copy the application's `local.properties` (where the Android SDK is) into it:
+Android 10 (API 29) or later, JDK 17. The Kotlin SDK is not published to Maven; it is used from source: fetch this repository's tag `v0.19.2` next to the application's project, and copy the application's `local.properties` (where the Android SDK is) into it:
 
 ```bash
-git clone --depth 1 --branch v0.19.1 https://github.com/arcships/rutis.git ../rutis
+git clone --depth 1 --branch v0.19.2 https://github.com/arcships/rutis.git ../rutis
 cp local.properties ../rutis/kotlin/rutis/
 ```
 
