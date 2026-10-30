@@ -316,6 +316,11 @@ pub struct Error {
     kind: Box<ErrorKind>,
     /// Made from a non-rutis error or a message: plugin code's own error.
     foreign: bool,
+    /// Caught at a task boundary ([`panic_error`]), not returned by the
+    /// plugin: a bug, reported even where a returned error would not be
+    /// (#968). Its [`ErrorKind`] is `PluginFailed`, as a returned error's
+    /// may be, so the mark is kept here.
+    panicked: bool,
 }
 
 /// `Result` with [`Error`]: `rutis::Result` is `Result<(), Error>`.
@@ -326,7 +331,15 @@ impl Error {
         Error {
             kind: Box::new(kind),
             foreign,
+            panicked: false,
         }
+    }
+
+    /// A panic caught at a task boundary, not an error the plugin returned.
+    /// A bug in the plugin: a pre-cancelled generation still reports it,
+    /// while a returned error is the cooperative exit (#968).
+    pub(crate) fn is_panic(&self) -> bool {
+        self.panicked
     }
 
     /// Which rutis failure this is, to match on; `None` for an error that
@@ -500,7 +513,8 @@ pub(crate) fn aggregate_arcs(errors: Vec<Arc<ErrorKind>>) -> Option<Arc<ErrorKin
 }
 
 /// Turns a panic caught at a task boundary into a `PluginFailed` carrying
-/// the panic message.
+/// the panic message. The error is also marked as a panic ([`Error::is_panic`]):
+/// a `PluginFailed` alone cannot tell it from an error the plugin returned.
 pub(crate) fn panic_error(p: Box<dyn std::any::Any + Send>) -> Error {
     let msg = if let Some(s) = p.downcast_ref::<&str>() {
         (*s).to_string()
@@ -509,7 +523,9 @@ pub(crate) fn panic_error(p: Box<dyn std::any::Any + Send>) -> Error {
     } else {
         "panic in task".to_string()
     };
-    ErrorKind::PluginFailed(msg.into()).into()
+    let mut error = Error::new(ErrorKind::PluginFailed(msg.into()), false);
+    error.panicked = true;
+    error
 }
 
 /// Turns a `JoinError` into an error. A panic becomes [`panic_error`]; a

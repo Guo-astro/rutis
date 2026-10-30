@@ -1306,7 +1306,7 @@ impl crate::host::CtxHost for Ctx {
                 if let Some(root) = self.root_view() {
                     // Like subtree shutdown: descendants are cancelled before
                     // the root waits for its instance events to drain.
-                    root.inner.cancel_current();
+                    root.inner.pre_cancel();
                     root.inner.cancel_descendants();
                     root.inner.post(Intent::Shutdown(task.clone()));
                 } else {
@@ -1568,7 +1568,7 @@ async fn evict_and_finalize(
         if fiber.id == pid {
             continue;
         }
-        fiber.cancel_current();
+        fiber.pre_cancel();
         if fiber.closing.load(Ordering::SeqCst) {
             let task = {
                 let _admission = shared.admission.lock().unwrap();
