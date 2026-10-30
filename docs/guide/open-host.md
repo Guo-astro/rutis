@@ -268,7 +268,7 @@ added: BUY MILK
 
 ### 等就绪
 
-`reconcile` 在每一行都装载过一遍后才返回：行的 `apply` 结束（这里命令已经登记好），或者失败（列在报告的 `failures` 里，默认的错误汇集也打印一行 `<行>: failed: …`）。运行时还在启动时，它的行先等着它，报告里没有它们的结果，所以先等 `RuntimeHandle::ready()`。等一个没有谁提供的服务的行不卡住 `reconcile`：它继续等，10 秒后错误汇集报一次在等什么。
+`reconcile` 在每一行都装载过一遍后才返回：行的 `apply` 结束（这里命令已经登记好），或者失败（列在报告的 `failures` 里，默认的错误汇集也打印一行 `<行>: failed: …`）。运行时还在启动时，它的行先等着它，报告里没有它们的结果，所以先等 `RuntimeHandle::ready()`。`ready()` 返回过的运行时，它的行在这次 `reconcile` 里装载，`reconcile` 返回时都有结果。等一个没有谁提供的服务的行不卡住 `reconcile`：它继续等，10 秒后错误汇集报一次在等什么。
 
 一行的 `apply` 一直不返回（在等一个不返回的调用）时，`reconcile` 也不返回。rutis 不给 `apply` 限时；等多久由宿主决定。想知道卡在哪里，等的同时打印状态：
 
@@ -482,6 +482,15 @@ Windows 上进程连上宿主之后才有进程号，这一行只写 `wordcount:
 ### 不是限制的东西
 
 - rutis 不给调用限时：调用方自己限时（Rust 的 `tokio::time::timeout`、Python 的 `asyncio.wait_for` 等）。插件卡在同步代码里、取消停不下时，用 `SpawnPlugin::processes()` 的 `kill()` 结束它的进程，再对 `root.plugin(runtime)` 返回的 fiber 调用 `restart()`：新的进程，它的行重新装载。
+
+  `restart()` 返回时新进程还在启动。它运行起来（`RuntimeHandle::ready()` 返回）之后，它的行马上自己重新装载，不用调用 `Loader::reload`；`status()` 里先是第一行，随后是第二行：
+
+  ```text
+    wordcount: waiting for runtime wordcount (starting)
+    wordcount: running
+  ```
+
+  重新装载是加载器的一次操作：加载器正在做另一个操作（比如一个还没返回的 `reconcile`）时，它等那个操作结束。
 - rutis 不管插件能用哪些服务：哪些服务给哪个插件是你的业务，由你自己分配。
 - 服务按名字共享，这不是权限。
 - 同一进程里的插件能用语言本身的办法互相拿到对方（全局变量、模块缓存）；要隔开，放进不同的运行时。
