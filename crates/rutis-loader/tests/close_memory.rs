@@ -74,8 +74,8 @@ impl rutis::Plugin for Plain {
     }
 }
 
-/// A row that listens to every fiber's status, as a host's per-session
-/// code may: one more `FiberStatusChanged` listener per instance.
+/// A row that listens to every fiber's status, as the loader did for each
+/// row in 0.17.1 and a host's per-session code may.
 struct Watch;
 
 impl rutis::Plugin for Watch {
@@ -91,17 +91,30 @@ impl rutis::Plugin for Watch {
     }
 }
 
-/// An instanced group of four rows; the last is `last`.
-fn doc(last: &str) -> String {
+/// Rows of one instance. Like a Dim session on rutis 0.17.1, where the
+/// loader followed each row with a `FiberStatusChanged` listener of its
+/// own: eight rows, each closing with several status changes.
+const ROWS: usize = 8;
+
+/// The two numbers of instances. A debug build takes ten times less: each
+/// queued emit checks every listener, which is slow there (about two
+/// minutes at 1000).
+const SIZES: [usize; 2] = if cfg!(debug_assertions) {
+    [40, 400]
+} else {
+    [100, 1000]
+};
+
+/// An instanced group of [`ROWS`] rows of plugin `row`.
+fn doc(row: &str) -> String {
+    let rows: Vec<String> = (0..ROWS)
+        .map(|i| format!(r#"{{ "id": "r{i}", "name": "{row}" }}"#))
+        .collect();
     format!(
         r#"[{{ "insert": [
-    {{ "id": "doc", "group": true, "instanced": true, "config": [
-        {{ "id": "a", "name": "plain" }},
-        {{ "id": "b", "name": "plain" }},
-        {{ "id": "c", "name": "plain" }},
-        {{ "id": "d", "name": "{last}" }}
-    ] }}
-] }}]"#
+    {{ "id": "doc", "group": true, "instanced": true, "config": [ {} ] }}
+] }}]"#,
+        rows.join(", ")
     )
 }
 
@@ -127,14 +140,20 @@ fn status_listeners(root: &Ctx) -> (usize, usize) {
     (status, all.len())
 }
 
-/// Until the live bytes stop moving: spawned deliveries have drained.
+/// Until the tasks and the live bytes stop moving: queued deliveries have
+/// drained (a debug build drains thousands of them for seconds).
 async fn settle() {
-    let mut last = LIVE.load(Ordering::Relaxed);
+    let tasks = || {
+        tokio::runtime::Handle::current()
+            .metrics()
+            .num_alive_tasks()
+    };
+    let mut last = (tasks(), LIVE.load(Ordering::Relaxed));
     let mut still = 0;
-    for _ in 0..1000 {
+    for _ in 0..30_000 {
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        let live = LIVE.load(Ordering::Relaxed);
-        still = if live.abs_diff(last) < 4096 {
+        let now = (tasks(), LIVE.load(Ordering::Relaxed));
+        still = if now.0 == last.0 && now.1.abs_diff(last.1) < 4096 {
             still + 1
         } else {
             0
@@ -142,7 +161,7 @@ async fn settle() {
         if still == 10 {
             return;
         }
-        last = live;
+        last = now;
     }
 }
 
@@ -220,33 +239,45 @@ fn report(title: &str, samples: &BTreeMap<usize, Sample>) {
     }
 }
 
-/// What closing adds above the running instances grows about ten times
-/// for ten times the instances (a hundred times when quadratic; before the
-/// fix of #977 it was 35 times with one listener per instance).
+/// Closing adds little above what the running instances hold, and what it
+/// adds grows about ten times for ten times the instances. Before the fix
+/// of #977, with a listener per row: 819 MB at the peak against 82 MB for
+/// 1000 running instances, and 93 times as much added for 10 times the
+/// instances; after it, 87 MB and about 8 times (release build).
 fn assert_proportional(samples: &BTreeMap<usize, Sample>) {
-    let (small, large) = (&samples[&100], &samples[&1000]);
+    let (small, large) = (&samples[&SIZES[0]], &samples[&SIZES[1]]);
+    assert!(
+        large.peak * 2 < large.created * 3,
+        "closing {} instances peaked at {} B, against {} B for them running",
+        SIZES[1],
+        large.peak,
+        large.created
+    );
     let added = |s: &Sample| s.peak.saturating_sub(s.created).max(1) as f64;
     let ratio = added(large) / added(small);
     assert!(
         ratio < 20.0,
         "closing added {ratio:.1} times as much for 10 times the instances \
-         ({} B for 100, {} B for 1000)",
+         ({} B for {}, {} B for {})",
         added(small),
+        SIZES[0],
         added(large),
+        SIZES[1],
     );
 }
 
-/// Closing N instances together peaks in proportion to N, whether the
-/// instances add `FiberStatusChanged` listeners or not: a dispatch does not
-/// copy a listener list that grows with N.
+/// Closing N instances together peaks in proportion to N, also with a
+/// `FiberStatusChanged` listener per row (8N listeners, as Dim's sessions
+/// on rutis 0.17.1): the queued emits do not each copy a listener list
+/// that grows with N.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn closing_many_instances_peaks_in_proportion() {
     for (title, last) in [
         ("plain rows (the loader's one listener)", "plain"),
-        ("one FiberStatusChanged listener per instance", "watch"),
+        ("a FiberStatusChanged listener per row", "watch"),
     ] {
         let mut samples = BTreeMap::new();
-        for n in [100, 1000] {
+        for n in SIZES {
             samples.insert(n, measure(n, last).await);
         }
         report(title, &samples);
