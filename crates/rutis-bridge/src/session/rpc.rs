@@ -1464,12 +1464,9 @@ impl Connection {
         }
     }
     pub fn close(&self, error: Error) {
-        // Interrupt a blocked write before taking the writer lock. Serialize
-        // table teardown with encoding/sending so no export can be added after
-        // teardown and no partial encoding rollback races the cleared table.
-        self.0.closer.close(crate::channel::Close::Done);
-        let writer = self.0.writer.lock().unwrap();
-        let (waiting, incoming, awaiting) = {
+        // Why it ended, before closing the channel: that wakes the reader,
+        // which sees the channel end and closes the session too (#965).
+        {
             let mut calls = self.0.calls.lock().unwrap();
             if calls.closed.is_some() {
                 return;
@@ -1478,6 +1475,14 @@ impl Connection {
             if let Error::Transport(reason) = &error {
                 let _ = self.0.end.set(ending(reason));
             }
+        }
+        // Interrupt a blocked write before taking the writer lock. Serialize
+        // table teardown with encoding/sending so no export can be added after
+        // teardown and no partial encoding rollback races the cleared table.
+        self.0.closer.close(crate::channel::Close::Done);
+        let writer = self.0.writer.lock().unwrap();
+        let (waiting, incoming, awaiting) = {
+            let mut calls = self.0.calls.lock().unwrap();
             waits::ended(&self.0.tag);
             (
                 std::mem::take(&mut calls.waiting),
