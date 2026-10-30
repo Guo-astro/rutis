@@ -17,7 +17,7 @@ use std::task::{Context, Poll};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-use crate::bus::run::{AsyncNext, Inv};
+use crate::bus::run::{AsyncNext, Inv, SyncNext};
 use crate::ctx::Ctx;
 use crate::error::Error;
 use crate::BoxFuture;
@@ -226,7 +226,14 @@ pub(crate) trait ErasedAsync: Send + Sync + 'static {
 }
 
 pub(crate) trait ErasedSync: Send + Sync + 'static {
-    fn call(&self, ctx: &Ctx, inv: &Inv<'_>) -> Result<Option<Value>, Error>;
+    /// `next`: the rest of a synchronous waterfall; `None` in every other
+    /// mode and in an asynchronous waterfall.
+    fn call(
+        &self,
+        ctx: &Ctx,
+        inv: &Inv<'_>,
+        next: Option<SyncNext<'_>>,
+    ) -> Result<Option<Value>, Error>;
 }
 
 /// Catches a panic while polling a future inline. `apply` runs inline in the

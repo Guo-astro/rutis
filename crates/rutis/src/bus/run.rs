@@ -365,7 +365,7 @@ pub(crate) fn call_async<'a>(
             )
         }),
         Body::Sync(listener) => {
-            let out = catch_unwind(AssertUnwindSafe(|| listener.call(&entry.ctx, inv)))
+            let out = catch_unwind(AssertUnwindSafe(|| listener.call(&entry.ctx, inv, None)))
                 .unwrap_or_else(|panic| Err(panic_error(panic)));
             Box::pin(std::future::ready(out))
         }
@@ -460,14 +460,66 @@ fn async_listener(entry: &Entry, inv: &Inv<'_>) -> Error {
     .into()
 }
 
-/// Call one entry in the synchronous mode (`bail`).
-pub(crate) fn call_sync(entry: &Entry, inv: &Inv<'_>) -> Result<Option<Value>, Error> {
+/// The end of a synchronous waterfall: what the last listener's `next`
+/// returns.
+pub(crate) trait ErasedSyncTerminal {
+    fn call(&self, inv: &Inv<'_>) -> Result<Option<Value>, Error>;
+}
+
+/// The rest of a synchronous waterfall (`waterfall(event).sync(terminal)`),
+/// run inline on the dispatching thread: the entries left, then the
+/// terminal.
+pub(crate) struct SyncNext<'a> {
+    pub inv: &'a Inv<'a>,
+    pub chain: &'a [Arc<Entry>],
+    pub terminal: &'a (dyn ErasedSyncTerminal + 'a),
+}
+
+impl SyncNext<'_> {
+    pub fn invoke(self) -> Result<Option<Value>, Error> {
+        for (index, entry) in self.chain.iter().enumerate() {
+            let Some(flight) = self.inv.bus.start(entry) else {
+                continue;
+            };
+            let next = SyncNext {
+                inv: self.inv,
+                chain: &self.chain[index + 1..],
+                terminal: self.terminal,
+            };
+            let out = call_sync(entry, self.inv, Some(next));
+            drop(flight);
+            return out;
+        }
+        user_call(self.inv.emitter, || self.terminal.call(self.inv))
+    }
+}
+
+/// Call one entry synchronously: in `bail` (`next` is `None`) or in a
+/// synchronous waterfall (`next` is the rest of its chain).
+pub(crate) fn call_sync(
+    entry: &Entry,
+    inv: &Inv<'_>,
+    next: Option<SyncNext<'_>>,
+) -> Result<Option<Value>, Error> {
     match &entry.body {
-        Body::Sync(listener) => user_call(&entry.ctx, || listener.call(&entry.ctx, inv)),
+        Body::Sync(listener) => user_call(&entry.ctx, || listener.call(&entry.ctx, inv, next)),
         Body::Async(_) => Err(async_listener(entry, inv)),
         Body::Remote(remote) => {
             if remote.kind() == ListenerKind::Async {
                 return Err(async_listener(entry, inv));
+            }
+            if next.is_some() {
+                // The protocol has no synchronous `next` to hand a listener
+                // in another process (events protocol §5.4).
+                return Err(ErrorKind::Validation {
+                    issues: vec![format!(
+                        "listener of {} in {} is in another process and cannot run in a \
+                         synchronous waterfall; register it in this process with on_sync",
+                        inv.name,
+                        entry.info.describe()
+                    )],
+                }
+                .into());
             }
             user_call(&entry.ctx, || remote.call_sync(RemoteSyncCall { inv }))
         }
@@ -546,7 +598,7 @@ pub(crate) fn run_bail(inv: &Inv<'_>, entries: &[Arc<Entry>]) -> Result<Option<V
         let Some(flight) = inv.bus.start(entry) else {
             continue;
         };
-        let out = call_sync(entry, inv);
+        let out = call_sync(entry, inv, None);
         drop(flight);
         match out? {
             Some(value) if !value.is_no_result() => return Ok(Some(value)),

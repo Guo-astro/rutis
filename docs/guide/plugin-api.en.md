@@ -68,6 +68,7 @@ The only exceptions are what is physically impossible (a cycle of synchronous wa
 - **No result**: returning `undefined` / `null` (JavaScript), `None` (Python), `nil` (Go), `None` (Rust), or `false` in any language (Rust's `Some(false)` included). Everything else is a result, `0` and `""` too.
 - **`waterfall` returns as is**: no "result or not" normalization, `false` stays `false`. `next` takes no arguments and returns the result of the rest of the chain (JavaScript: a Promise; Python: an awaitable; Go: a blocking call; Rust: a future). The terminal receives the event's arguments; without one, the last `next()` gives no result. With no listeners, `waterfall` returns the terminal's value.
 - **Asynchronous listeners**: a JavaScript `async` function, a Python `async def`, a Rust listener registered with `on` cannot be called by `bail` (`AsyncListener`); a plain function that returns a Promise / coroutine fails the same (the Promise / coroutine is discarded). Go listeners are all synchronous.
+- **Rust's synchronous waterfall**: `ctx.waterfall(e).sync(terminal)` runs the whole chain synchronously on this thread, under the rules of `bail`: an `on_sync` listener calls `call.next()` as usual (synchronously; it returns the rest of the chain's value); an asynchronous `on` listener fails the dispatch with `AsyncListener`; a listener elsewhere (another process, another language) cannot get a synchronous `next` and fails the dispatch with `Validation`. The event is lent to the listeners (`Arc<E>`), never serialized, so it may carry fields that cannot be (`#[serde(skip)]`). Registration order, vetoes, the terminal and the result with no listener are as in the asynchronous `waterfall`.
 
 ### In each language
 
@@ -80,7 +81,7 @@ Each language has the five modes, written the language's own way:
 | `emit` | `ctx.emit(e)`, `e` an `E` or `Arc<E>` | `ctx.emit(name, ...args): void` | `ctx.emit([thisArg,] name, ...args)` | `ctx.emit(name, *args) -> None` | `ctx.Emit(ctx, name, args...) error` (refusals only) | `try ctx.emit(name, args...)` (refusals only) | `ctx.emit(name, *args)` (throws only when refused) |
 | `parallel` | `ctx.parallel(e).await` | `await ctx.parallel(name, ...args)` | `await ctx.parallel([thisArg,] name, ...args)` | `await ctx.parallel(name, *args)` | `ctx.Parallel(ctx, name, args...) error` | `try await ctx.parallel(name, args...)` | `ctx.parallel(name, *args)` (suspends) |
 | `serial` | `ctx.serial(e).await -> Option<E::Value>` | `await ctx.serial(name, ...args)` | `await ctx.serial([thisArg,] name, ...args)` | `await ctx.serial(name, *args)` | `ctx.Serial(ctx, name, args...) (any, error)` | `try await ctx.serial(name, args..., as: R.self)` | `ctx.serial(name, *args): Any?` (suspends) |
-| `waterfall` | `ctx.waterfall(e).terminal(t).await` (`.terminal` optional) | `ctx.waterfall(name, ...args)`; with a terminal `ctx.waterfall.with(terminal)(name, ...args)` (every argument is the event's, functions too) | `ctx.waterfall([thisArg,] name, ...args, terminal)` | `await ctx.waterfall(name, *args, terminal=None)` | `ctx.Waterfall(ctx, name, terminal, args...) (any, error)` (`terminal` a `rutis.Terminal`, `func(ctx, args ...any) (any, error)`, or `nil`) | `try await ctx.waterfall(name, args..., as: R.self) { terminal }` | `ctx.waterfall(name, *args, terminal = { args -> })` (suspends) |
+| `waterfall` | `ctx.waterfall(e).terminal(t).await` (`.terminal` optional); synchronously `ctx.waterfall(e).sync(t)?` | `ctx.waterfall(name, ...args)`; with a terminal `ctx.waterfall.with(terminal)(name, ...args)` (every argument is the event's, functions too) | `ctx.waterfall([thisArg,] name, ...args, terminal)` | `await ctx.waterfall(name, *args, terminal=None)` | `ctx.Waterfall(ctx, name, terminal, args...) (any, error)` (`terminal` a `rutis.Terminal`, `func(ctx, args ...any) (any, error)`, or `nil`) | `try await ctx.waterfall(name, args..., as: R.self) { terminal }` | `ctx.waterfall(name, *args, terminal = { args -> })` (suspends) |
 | `bail` | `ctx.bail(e)` | `ctx.bail(name, ...args)` | `ctx.bail([thisArg,] name, ...args)` | `ctx.bail(name, *args)` | `ctx.Bail(ctx, name, args...) (any, error)` | `try await ctx.bail(name, args..., as: R.self)` (synchronous on the wire) | `ctx.bail(name, *args): Any?` (blocks its thread) |
 | Filter | `ctx.filter(\|info\| ..)`, then the same five methods | `ctx.filter(d => boolean)` → `{ emit, parallel, serial, waterfall, bail }` | `thisArg[Context.filter] = c => boolean`, `c.rutis` is the descriptor | `ctx.filter(lambda d: ...)` → an object with the five methods | `ctx.Filter(func(rutis.Listener) (bool, error)) *rutis.Emitter` | `ctx.filter { (l: Rutis.Advanced.Listener) in ... }` → `Rutis.Advanced.Emitter` | `ctx.filter { d -> Boolean }` → `Emitter` |
 | Scope | `ctx.scope()` | the descriptor's `scope` | `ctx.rutis.scope` | the descriptor's `scope` | `ctx.Scope()` | `ctx.scope` | `ctx.scope` |
@@ -519,11 +520,14 @@ let out = ctx
     .terminal(|e| async move { Ok(Some(format!("saved {}", e.0))) }) // optional
     .await?;
 let quick = ctx.bail(Created("s1".into(), 3))?;             // synchronous
+let chain = ctx
+    .waterfall(Created("s1".into(), 3))
+    .sync(|e| Ok(Some(e.0.clone())))?;                       // a synchronous waterfall
 let from_python = ctx
     .filter(|l| l.runtime.as_deref() == Some("py"))
     .serial(Created("s1".into(), 3))
     .await?;
-# let _ = (first, out, quick, from_python);
+# let _ = (first, out, quick, chain, from_python);
 # Ok(())
 # }
 ```
@@ -532,12 +536,20 @@ let from_python = ctx
 | --- | --- |
 | Listener | A closure taking `(Arc<E>, Call<E>)`, a synchronous one `(Arc<E>, SyncCall<'_, E>)`; it returns `Result<Option<E::Value>>`, where `Ok(None)` and `Ok(Some(false))` are no result. The compiler infers the parameter types, and `?` works on any error inside. The closure is called many times: clone what moves into `async move` inside the closure first |
 | `call` | `mode()` is this dispatch's mode; `name()` the dispatched name; `next()`, in a `waterfall` only (elsewhere `WaterfallNext`), runs the rest of the chain, and not calling it vetoes the rest; `ctx()` is the `Ctx` that registered the listener, and what is registered on it belongs to this plugin |
-| Sync and async | Every mode can call an `on_sync` listener, but it cannot call `next` in an async `waterfall`; `bail` cannot call an `on` listener (`AsyncListener`) |
+| Sync and async | Every mode can call an `on_sync` listener, but it can call `next` only in a synchronous waterfall (`.sync(…)`): in an async `waterfall`, `next` fails with `WaterfallNext`; neither `bail` nor a synchronous waterfall can call an `on` listener (`AsyncListener`) |
 | Names | Registered and sent under `E::NAME`. `listen::<E>().name(n)` listens under another name; `.prefix(p)` hears every name under the prefix, each decoded as `E`, and an event of another shape fails that call with `EventValue` |
-| Sending | `emit`, `parallel`, `serial`, `waterfall` and `bail` take an `E` or an `Arc<E>`; `waterfall` returns a builder: `.terminal(…)` first if wanted, then `.await`; without a terminal, the last `next()` gets `None`. `ctx.filter(keep)` gives the same five methods, `keep` seeing each listener's `ListenerInfo` |
+| Sending | `emit`, `parallel`, `serial`, `waterfall` and `bail` take an `E` or an `Arc<E>`; `waterfall` returns a builder: `.terminal(…)` first if wanted, then `.await`; without a terminal, the last `next()` gets `None`. Or `.sync(terminal)`, which runs it to its end synchronously and returns `Result<Option<E::Value>>` (the terminal is a synchronous closure and may borrow the caller's locals). `.sync(…)` after `.terminal(…)` fails with `Validation` and runs nothing. `ctx.filter(keep)` gives the same five methods, `keep` seeing each listener's `ListenerInfo` |
 | Failures | An `emit` listener's failure does not reach the emitter; it is reported to the host. `parallel` runs every listener and returns `ListenersFailed` (in registration order, also for a single failure); `serial`, `bail` and `waterfall` stop at the first error and return it |
 | Unload | When the plugin stops its listeners are withdrawn; running calls see `call.ctx().cancelled()`, and the unload waits for them, at most until the shutdown deadline. Dropping a `parallel`, `serial` or `waterfall` future cancels that dispatch |
 | Reserved names | `rutis/*` (`rutis/service`, `rutis/row`, `rutis/runtime`) can be listened to, not sent (`ReservedEvent`) |
+
+When a synchronous waterfall (`.sync(…)`) fails, the error's `to_string()` is, word for word: meeting an asynchronous listener registered with `on` (`ErrorKind::AsyncListener`), meeting a listener elsewhere (`ErrorKind::Validation`, here row `chat`'s), `.terminal(…)` written first (`ErrorKind::Validation`):
+
+```text
+listener of t/draft in plugin root is asynchronous and cannot run in a synchronous waterfall
+config validation failed: ["listener of t/draft in row chat is in another process and cannot run in a synchronous waterfall; register it in this process with on_sync"]
+config validation failed: ["a waterfall with an asynchronous terminal cannot run synchronously: pass the terminal to .sync(…) instead of .terminal(…)"]
+```
 
 `once`, `prepend`, `global`:
 
@@ -694,7 +706,7 @@ A failure nobody waits for is written in one line where it happens (a runtime on
 | Name | When | In each language |
 | --- | --- | --- |
 | `AggregateError` | `parallel` had failures; children in registration order, message `<n> listeners of <name> failed` | JS `AggregateError` (`errors`); Python `rutis.advanced.AggregateError` (`errors`); Go `*advanced.AggregateError` (`Errors`); Rust `ErrorKind::ListenersFailed` |
-| `AsyncListener` | `bail` met an asynchronous listener | JS an `Error` named `AsyncListener`; Python `rutis.advanced.AsyncListener`; Go `advanced.ErrAsyncListener`; Rust `ErrorKind::AsyncListener` |
+| `AsyncListener` | `bail` or Rust's synchronous waterfall met an asynchronous listener | JS an `Error` named `AsyncListener`; Python `rutis.advanced.AsyncListener`; Go `advanced.ErrAsyncListener`; Rust `ErrorKind::AsyncListener` |
 | `WaterfallNext` | `next` called twice, after the dispatch ended or was cancelled; in Rust, `call.next()` outside a waterfall, or by a synchronous listener in an asynchronous waterfall | JS `WaterfallNext`; Python `rutis.advanced.WaterfallNext`; Go `advanced.ErrWaterfallNext`; Rust `ErrorKind::WaterfallNext` |
 | `ReservedEvent` | Emitting `rutis/*`, refused synchronously by the emitting API | JS `ReservedEvent`; Python `rutis.advanced.ReservedEvent`; Go `advanced.ErrReservedEvent`; Rust `ErrorKind::ReservedEvent` |
 | `SyncWaitCycle` | A synchronous call (`bail`) would close a cycle of waits | As for service calls: Python `rutis.advanced.SyncWaitCycle`; Go `advanced.ErrSyncWaitCycle` |
