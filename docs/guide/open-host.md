@@ -756,7 +756,7 @@ test('counts the notes and their words', async () => {
   const commands = new Map<string, (args: string[]) => Promise<string>>()
   const t = await load(plugin, {
     services: {
-      notes: { list: async () => ['buy milk', 'call Ada back'] },
+      notes: { list: () => ['buy milk', 'call Ada back'] },
       commands: { register: async (name: string, run: (args: string[]) => Promise<string>) => { commands.set(name, run) } },
     },
   })
@@ -783,6 +783,13 @@ $ npx rutis-host call commands.run '"count"'
 ```
 
 - 测试里的假服务直接写在 `load` 的 `services` 里；`dev` 里的假服务是 `rutis.dev.json` 里的一行。
+- 测试把收到的命令当函数调用，这种调用在测试的线程上同步等结果；等的时候这个线程无法完成 Promise。所以命令运行中要调用的假服务直接返回结果（`list: () => [...]`，不写 `async`）。写成 `async` 时调用失败：
+
+  ```text
+  SyncWaitCycle: await requires the Node thread occupied by its parent synchronous call; path: test:5 -> rutis-test:3 -> rutis-test:4
+  ```
+
+  `dev` 用的假服务（`dev/fake-jot.ts`）照样写 `async`：那里是 jot 这一侧调用命令，和真的 jot 一样。
 - 用 Python 写命令的作者用 `--python` 写出的 `jot_types.py`；假的 jot 可以照样用 TypeScript 写：`rutis.dev.json` 里不同语言的行可以放在一起。
 - 测试工具、`dev`、`rutis-host call` 的用法见各语言的插件指南（[TypeScript](typescript-plugin.md#6-测试)、[Python](python-plugin.md#6-测试)）与 [rutis-host：用 dev 开发插件](rutis-host.md#用-dev-开发插件)。
 
