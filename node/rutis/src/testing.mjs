@@ -72,21 +72,32 @@ function runtime() {
     const harness = await start({ dispatch, outgoing: hold })
     harness.control.unref()
     held = harness.control
-    // Under `node --test`, its `after`, for the calls of a test (hold).
-    if (!bun && (process.env.NODE_TEST_CONTEXT || process.execArgv.includes('--test'))) ({ after: testEnded } = await import('node:test'))
     return harness.control
   })()
   return started
 }
+
+// `testEnded(fn)`: `fn` runs when the test running now ends, passed or
+// failed (a timeout too): node:test's `after`, under `node --test`, or
+// Bun's `onTestFinished`, under `bun test`. For the calls of a test
+// (hold) and the hosts it makes (host).
 let testEnded
+if (typeof globalThis.Bun !== 'undefined') {
+  const { onTestFinished } = await import('bun:test')
+  // Outside a test (a file's top level, `beforeAll`), Bun has no test to
+  // end: nothing runs.
+  testEnded = fn => { try { onTestFinished(fn) } catch {} }
+} else if (process.env.NODE_TEST_CONTEXT || process.execArgv.includes('--test')) {
+  ({ after: testEnded } = await import('node:test'))
+}
 
 // The driver, synchronously (the test waits) or not.
 let control
 // While an asynchronous call of this process is out (a service's method,
 // a function or promise a plugin handed over), the session keeps the
-// process running, until its reply comes or, under `node --test`, the
-// test that made it ends (it failed at its timeout, say): node:test
-// reports and exits once nothing keeps the process running.
+// process running, until its reply comes or the test that made it ends
+// (it failed at its timeout, say; testEnded): node:test reports and exits
+// once nothing keeps the process running.
 let held
 let out = 0
 function hold() {
@@ -190,7 +201,9 @@ async function fileOf(plugin) {
 
 /**
  * Plugins on the host, sharing its bus. `services` are the test's, given
- * to every plugin that injects them.
+ * to every plugin that injects them. Not unloaded when the test that made
+ * it ends (it failed before `unload`, say), it unloads then: the next test
+ * finds none of its rows or services.
  */
 export function host({ services = {} } = {}) {
   const rows = []
@@ -234,6 +247,7 @@ export function host({ services = {} } = {}) {
     },
     ...emitters(undefined),
   }
+  testEnded?.(() => self.unload())
 
   function loaded(id, plugin, withdrawOwn) {
     // This row's test listeners: withdrawn when it unloads.

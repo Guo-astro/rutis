@@ -193,7 +193,7 @@ if __name__ == "__main__":
 uv run python -m unittest discover -s tests
 ```
 
-检查都是宿主自己做的：配置由宿主的 loader 按 Schema 补默认值并校验，不合格时 `load` 抛出 `PluginTestError`，文字是这一行的状态行（`greeter: config: greeting should be a string, got 3`）；事件经宿主分发。测试工具的其余接口见 [插件 API：Python 的测试工具](plugin-api.md#python-的测试工具)。宿主给了它的服务的 Python 类型时，用法见 [宿主给的类型](#宿主给的类型)。
+检查都是宿主自己做的：配置由宿主的 loader 按 Schema 补默认值并校验，不合格时 `load` 抛出 `PluginTestError`，文字是这一行的状态行（`greeter: config: greeting should be a string, got 3`）；事件经宿主分发。unittest 没有时限，测试工具给插件服务的调用一个时限：30 秒内没有返回的调用被取消，测试以 `PluginTestError: greeter.hello() did not return within 30 s` 失败。测试工具的其余接口见 [插件 API：Python 的测试工具](plugin-api.md#python-的测试工具)。宿主给了它的服务的 Python 类型时，用法见 [宿主给的类型](#宿主给的类型)。
 
 ## 7. 本地运行并试一下
 

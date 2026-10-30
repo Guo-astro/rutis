@@ -195,7 +195,7 @@ bun test
 bun run check
 ```
 
-- `services` 给插件 `inject` 的服务；`t.service(名字)` 是插件提供的服务；`t.on` 像插件旁边的另一个插件一样监听事件（经宿主送达，比服务的返回晚一点到，所以断言放在 `await t.unload()` 之后）；`t.unload()` 卸载插件，运行它的清理。
+- `services` 给插件 `inject` 的服务；`t.service(名字)` 是插件提供的服务；`t.on` 像插件旁边的另一个插件一样监听事件（经宿主送达，比服务的返回晚一点到，所以断言放在 `await t.unload()` 之后）；`t.unload()` 卸载插件，运行它的清理；测试在它之前失败也不留下什么：测试结束时，它装载的插件被卸载，它给的服务被撤下。
 - 宿主做它在真实环境里做的事：按 Schema 检查配置并补上默认值、分发事件。值在插件与测试之间跨进程传递。插件要是它那个文件的默认导出。
 - 宿主给了服务的类型（`rutis-host types` 写出的 `.d.ts`）时，写 `ctx.use<Services['translate']>('translate')`，`bun run check` 在运行前检查调用，见 [做一个开放插件的宿主：给插件作者的类型](open-host.md#给插件作者的类型)。
 - 测试工具的其余接口见 [插件 API：TypeScript 与 Bun 的测试工具](plugin-api.md#typescript-与-bun-的测试工具)。
