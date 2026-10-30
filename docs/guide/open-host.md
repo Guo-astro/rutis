@@ -451,6 +451,7 @@ for command in &commands {
 ```
 
 - 几个插件共用一个进程：它们的行写同一个前缀。
+- 一行在 `apply` 里失败时，它的运行时进程不停，只给这一行用的运行时也一样：运行时是另一个插件，不随它的行停下。要停掉，对 `root.plugin(runtime)` 返回的 fiber（上面的 `fibers`）调用 `dispose()`。
 - 用 `SessionResolver::npm(&catalog, "node")` 创建时，不带前缀的行也放在默认的 Node 运行时 `node` 上；带别的运行时前缀的行仍归那个运行时。
 - 每次解析都问运行时，不按包的 `version` 缓存。
 
@@ -842,7 +843,7 @@ jot: say what to shout: jot shout <text>
 
 - `code` 由插件给：TypeScript 与 Python 是错误的字符串属性 `code`，Go 是方法 `Code()`（[插件 API](plugin-api.md)）。在给插件作者的文档里写明宿主认哪些 `code`。
 - rutis 自己的拒绝也有 `code`（`rutis_bridge::session::code`：`not-declared`、`unavailable`、`no-method`、`bad-argument`、`bad-value`、`peer-gone`、`bad-config`）。
-- 行启动失败、运行时退出这类事由错误汇集报告，默认写到标准错误（`count: failed: …`）。要改成宿主的话，换掉汇集：`Ctx::root_with_sink(handle, sink)`，见 [默认输出](rust-host.md#默认输出)。
+- 行启动失败、运行时退出这类事由错误汇集报告，默认写到标准错误（`count: failed: …`）。要改成宿主的话，换掉汇集：`Ctx::root_with_sink(handle, sink)`，见 [默认输出](rust-host.md#默认输出)。第 6 节的 `RowEvent` / `RuntimeEvent` 报告的是同样的事，见那里怎样二选一。
 
 ## 6. 看得到状态
 
@@ -861,6 +862,21 @@ for call in &status.calls {
 }
 # }
 ```
+
+每一行的状态是 `row.state`（`EntryStatus`），它没有 `Display`。要 `rutis-host status` 里的那个词（`waiting`、`starting`、`running`、`failed`、`stopped`、`disabled`），把快照转成 JSON：每一行的 `state` 就是它，与服务 `loader` 的 `status()` 给插件的相同：
+
+```rust,no_run
+# fn demo(handle: rutis_loader::Loader) -> Result<(), serde_json::Error> {
+let status = serde_json::to_value(handle.status())?;
+for row in status["rows"].as_array().into_iter().flatten() {
+    let (id, state) = (row["id"].as_str().unwrap_or(""), row["state"].as_str().unwrap_or(""));
+    eprintln!("jot: {id}: {state}");                  // "jot: count: running"
+}
+# Ok(())
+# }
+```
+
+程序里要判断一行是不是在运行，直接比较状态：`matches!(&row.state, EntryStatus::Running(s) if s.state == FiberState::Active)`（第 5 节「开发循环」里就是）。
 
 - 与 `rutis-host status` 打印的是同一份（格式见 [rutis-host：查看当前状态](rutis-host.md#查看当前状态)）。
 - 看不到的：同一个运行时里的调用、按引用传过来的函数的调用（只看得到「宿主 → 行」）；进程内的 Rust 插件发起的调用记为 `host`。
@@ -894,4 +910,5 @@ root.on::<RuntimeEvent>(|event, _| async move {
 ```
 
 - `RowEvent`：行 `row` 现在是 `pending`、`running`、`failed`（`error` 写明原因）或 `stopped`。`RuntimeEvent`：运行时 `runtime` 起来了（`running`，每次重连后也发）或结束了（`down`，`reason` 写明怎样结束）。
+- 行失败、运行时结束，错误汇集和这两个事件都报告：两处都打印，每件事就是两行。二选一：只要默认的一行，什么都不用写（不监听这两个事件来打印）；要自己说，就在事件里打印，同时换掉汇集，或在汇集里滤掉 `ErrorKind::StartFailed` 与 `ErrorKind::RuntimeDown`（[默认输出](rust-host.md#默认输出)末尾的例子）。不打印、只据此做事（重启、告诉别的组件）时，两者可以同时用。
 - 它们是总线上的普通事件，各语言的插件也收得到；插件不能发出 `rutis/*`。事件的其余写法见 [Rust 宿主：事件](rust-host.md#事件)。

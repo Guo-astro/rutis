@@ -15,7 +15,7 @@ go mod tidy
 go test ./...
 ```
 
-A Go plugin is compiled into a binary, and a binary is one runtime process in the host.
+A Go plugin is compiled into a binary (`cmd/greeter`), which the host runs.
 
 The project:
 
@@ -77,7 +77,7 @@ var Plugin = rutis.Define(rutis.Plugin[Config]{
 
 - `rutis.Define` defines the plugin; `Apply` runs when the plugin starts.
 - `ctx.Provide("greeter", …)` provides the service `greeter`: the value's exported methods are the service's methods, written with a lower-case first letter in other languages (`Hello` is `hello`).
-- `Provides` says which services the plugin provides and their methods, so the host knows without running the plugin.
+- `Provides` comes with the template: each service's name and the type providing it; add an entry like it for each service you add (what it is for: [Go's rules](#gos-rules)).
 
 ## 3. Use a service
 
@@ -136,7 +136,7 @@ var Plugin = rutis.Define(rutis.Plugin[Config]{
 
 - `Inject` lists the services it uses. The plugin starts once they are all ready, and stops when one of them goes away.
 - `ctx.Use("translate", &translate)` fills a struct of function fields with the service: the field names are the method names, and with a lower-case first letter they are the names on the wire.
-- The `ctx` a method receives carries the call chain: pass it on when you call another service; do not replace it with `context.Background()`.
+- Pass the `ctx` a method receives on when you call another service; do not replace it with `context.Background()` (why: "The call chain" in [Go's rules](#gos-rules)).
 
 The template's test fails now (it gives no `translate`); step 6 replaces it.
 
@@ -341,7 +341,7 @@ uv venv dev/.venv
 uv pip install --python dev/.venv/bin/python rutis
 ```
 
-In TypeScript instead: `"runtimes": { "node": { "project": "dev" } }`, `npm install @arcships/rutis` in `dev/`, and the row's `name` is `./dev/fake-translate.ts`.
+In TypeScript instead: `"runtimes": { "node": { "project": "dev" } }`, `npm install @arcships/rutis` in `dev/`, and the row's `name` is `./dev/fake-translate.ts`. In Go: see [A fake in Go](#a-fake-in-go) at the end of this step.
 
 Run it:
 
@@ -356,7 +356,7 @@ greeter: built in 0.3s
 rutis-host dev: running greeter; changes reload it (Ctrl-C ends)
 ```
 
-`dev` builds `cmd/greeter` and runs it as the runtime `go-greeter`. Then each row prints `greeter: running`, `translate: running` as it comes up (in either order); `rutis-host dev: services:` gives the services there are now and the row providing each (`loader` is the host's own); it is printed once every row is running, waiting or failed, and again whenever the services change, before or after the rows' state lines:
+`dev` builds `cmd/greeter` and runs it as the runtime `go-greeter`: a binary is one runtime process in the host, and the Python fake is in another runtime, `py`. Then each row prints `greeter: running`, `translate: running` as it comes up (in either order); `rutis-host dev: services:` gives the services there are now and the row providing each (`loader` and `sessions` are the host's own services, written `host`: a plugin adds and removes rows while the host runs with `loader`, and hands the host a connection it made with `sessions`; this plugin does not need them, see [rutis-host: Managing plugins with loader](rutis-host.en.md#managing-plugins-with-loader)); it is printed once every row is running, waiting or failed, and again whenever the services change, before or after the rows' state lines:
 
 ```text
 rutis-host dev: services: greeter (greeter), loader (host), sessions (host), translate (translate)
@@ -409,6 +409,79 @@ $ npx @arcships/rutis-host call greeter.hello '"Ada"'
 
 A change to `dev/fake_translate.py` reloads only the row `translate`, without a rebuild; a change to `rutis.dev.json` takes effect while it runs too. What `fmt.Println` and `log` print shows in `dev`'s output. The other rules: see [rutis-host: Developing a plugin with dev](rutis-host.en.md#developing-a-plugin-with-dev).
 
+### A fake in Go
+
+A fake can be written in Go too, but not in `cmd/greeter`: that binary is the plugin you publish, and a host that `add`s it would get the fake as a row too. Write the fake as a binary of its own in `dev/`, run it yourself in another terminal, and have `dev` connect to it with a [connection row](rutis-host.en.md#remote-runtimes-and-devices):
+
+```go
+// dev/fake-translate/main.go: a fake translate for dev only, a binary of its own.
+package main
+
+import "github.com/arcships/rutis/go/rutis"
+
+type FakeTranslate struct{}
+
+func (FakeTranslate) Text(text string) string {
+	words := map[string]string{"Hello": "Bonjour", "Hi": "Salut"}
+	if word, ok := words[text]; ok {
+		return word
+	}
+	return text
+}
+
+var plugin = rutis.Define(rutis.Plugin[struct{}]{
+	Name:     "fake-translate",
+	Provides: rutis.Provides{"translate": rutis.MethodsOf[FakeTranslate]()},
+	Apply: func(ctx *rutis.Ctx, _ struct{}) error {
+		ctx.Provide("translate", FakeTranslate{})
+		return nil
+	},
+})
+
+func main() { rutis.Serve(plugin) }
+```
+
+`rutis.dev.json` becomes:
+
+```json
+{
+  "format": 1,
+  "rows": [
+    { "id": "greeter", "config": { "greeting": "Hello" } },
+    { "id": "fakes", "name": "rutis-host/dial", "config": { "address": "ws://127.0.0.1:7601" } },
+    { "id": "translate", "name": "fakes:fake-translate" }
+  ]
+}
+```
+
+First run the fake in one terminal. It waits on `127.0.0.1:7601` for the host to connect, and takes only connections presenting `RUTIS_TOKEN`:
+
+```console
+$ RUTIS_TOKEN=dev-only go run ./dev/fake-translate listen:ws://127.0.0.1:7601 --id fakes .
+rutis: listening on ws://127.0.0.1:7601/
+```
+
+Then run `dev` in another terminal, with the same token (`RUTIS_TOKEN_<connection row id>`):
+
+```bash
+RUTIS_TOKEN_FAKES=dev-only npx @arcships/rutis-host dev
+```
+
+Besides the lines above, it prints that the row `fakes` connected:
+
+```text
+fakes: running
+fakes: connected
+translate: running
+rutis-host dev: services: greeter (greeter), loader (host), sessions (host), translate (translate)
+```
+
+- The row `fakes` connects to the fake's binary; `fakes:fake-translate` has it run the plugin `fake-translate`, and that row provides `translate`.
+- While the fake is not running, the row `translate` waits for it (`translate: waiting for fakes`) and `fakes` reconnects with backoff (`fakes: disconnected (127.0.0.1:7601: Connection refused (os error 61)); retrying in 0.5s`); once the fake is up, it connects.
+- A loopback address needs a token too: with neither side setting one, `fakes: disconnected (auth-rejected: 127.0.0.1: upgrade refused with 401 Unauthorized: credentials required); retrying in 30s`.
+- `dev` watches every `.go` file in the project: a change in `dev/fake-translate` rebuilds `greeter` too, but does not restart the fake. After changing the fake, Ctrl-C it in its terminal and run it again.
+- `go build ./...` and `go test ./...` compile `dev/fake-translate` too; the template's release workflow builds only `./cmd/greeter`, so the published binaries have no fake.
+
 ## 8. Publish
 
 - The package name: the module path in `go.mod`; change it to your repository, for example `github.com/you/greeter`, and the import in `cmd/greeter/main.go` with it.
@@ -419,10 +492,10 @@ How a host installs your plugin: see [rutis-host: How a host installs plugins](r
 
 ## Debugging
 
-`--debug` builds without optimisation (`-gcflags=all=-N -l`) and starts the runtime under [Delve](https://github.com/go-delve/delve): Delve listens on `127.0.0.1:2345`, the program runs as usual, and you set breakpoints once connected. Install Delve first:
+`--debug` builds without optimisation (`-gcflags=all=-N -l`) and starts the runtime under [Delve](https://github.com/go-delve/delve): Delve listens on `127.0.0.1:2345`, the program runs as usual, and you set breakpoints once connected. Install Delve first (v1.26.3 is the last version Go 1.24 can install; from v1.27 it needs Go 1.25, and on Go 1.24 `@latest` first downloads a newer Go toolchain. When it finds no `dlv`, `dev --debug` suggests `@latest`; on Go 1.24 write the version as here):
 
 ```bash
-go install github.com/go-delve/delve/cmd/dlv@latest
+go install github.com/go-delve/delve/cmd/dlv@v1.26.3
 ```
 
 ```bash
@@ -455,6 +528,7 @@ Once stopped, `stack` shows the call stack, `locals` and `print <variable>` the 
 
 | Topic | Rule |
 | --- | --- |
+| `Provides` | Says which services the plugin provides and which type provides each (`rutis.MethodsOf[*T]()` lists its exported methods), so the host knows without running the plugin |
 | Method names | An exported method's name on the wire has a lower-case first letter (`Hello` → `hello`, `URLFor` → `urlFor`, `HTTPServer` → `httpServer`); `advanced.Rename` changes it (package `github.com/arcships/rutis/go/rutis/advanced`) |
 | Method signatures | `func (T) M([ctx context.Context,] args...) ([result,] [error])` |
 | Sync or async | `async` by default; `rutis.MethodsOf[*T](rutis.Sync("M"))` marks sync methods. A sync method blocks a Node caller's event loop: keep methods doing I/O `async` |

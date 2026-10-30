@@ -147,6 +147,8 @@ $ npx rutis-host call welcome.everyone '["Ana", "Bo"]'
 
 `call` 的每个参数是一个 JSON 值，字符串带引号（`'"Ana"'`）；结果打印成 JSON。见 [查看当前状态](#查看当前状态)、[调用一个服务](#调用一个服务)。
 
+`services` 里的 `loader`、`sessions` 不来自哪一行，是 `rutis-host` 自己提供的服务（写作 `host`）：插件用 `loader` 在宿主运行中加、删行（[用 loader 管理插件](#用-loader-管理插件)），用 `sessions` 把自己建的连接交给宿主（[远程运行时与设备](#远程运行时与设备)末尾）。组装宿主时用不到它们，也不用在 `rutis.json` 里写。
+
 5. 运行中改配置：在 `rutis.json` 的 `greeter` 那一行加上 `"config": { "greeting": "Hej" }` 并保存。有 `--watch-config` 时宿主重新读这个文件，只重启变了的那一行：
 
 ```text
@@ -175,7 +177,7 @@ rutis-host: reloaded rutis.json (1 row changed)
 ```
 
 - `rows`：每个要运行的插件一行；`id` 是行的名字，`name` 是插件（npm 包名、`py:<入口点>` 等，见 [rows](#rows)），按需加上 `config`。
-- `runtimes`：行用到的每个运行时写一个，空对象就是默认设置。npm 包名不会让宿主推断出 Node，不写 `runtimes.node` 时这一行报 `no plugin named "greeter"`；`py:` 行没写 `runtimes.py` 时按默认设置启用并告警（见 [runtimes](#runtimes)）。
+- `runtimes`：行用到的每个运行时写一个，空对象就是默认设置。npm 包名不会让宿主推断出 Node，不写 `runtimes.node` 时这一行报 `greeter: unresolved: no plugin named "greeter"`（`check` 接着提示 `install it where its runtime finds it (a runtime under runtimes), or correct the row's name`），不说缺的是 `runtimes.node`：npm 包的行这样失败时，先看 `runtimes` 里有没有 `node`；`py:` 行没写 `runtimes.py` 时按默认设置启用并告警（见 [runtimes](#runtimes)）。
 - `format`（默认 `1`）和 `installed`（`add` 的记录）可以不写；其余字段见 [rutis.json](#rutisjson)。
 
 ## 安装
@@ -319,7 +321,8 @@ rutis-host: listening on <监听器名> <地址:端口>
 | --- | --- |
 | `waiting for runtime <名字> (starting)` | 这一行的运行时还在启动（重启中也是） |
 | `waiting for runtime <名字> (down: <原因>)` | 这一行的运行时结束了，原因同 `runtime <名字>: down` |
-| `waiting for runtime <名字> (stopped)` / `waiting for runtime <名字>` | 运行时被宿主停下；或运行时已运行、正在重新解析它的行（远程运行时也这样写） |
+| `waiting for runtime <名字> (stopped)` / `waiting for runtime <名字>` | 运行时被宿主停下；或运行时已运行、正在重新解析它的行 |
+| `waiting for <连接行>` | 行 `<连接行>:<插件>` 在等它的连接：连接行还没连上，或正在重新解析（宿主不知道远程运行时的状态，只写连接行的名字，例如 `translate: waiting for fakes`） |
 | `waiting for lmm (no row provides it; did you mean llm?)` | 没有行声明提供它；有名字相近的服务时给出（多半是写错了名字） |
 | `waiting for llm (no enabled row provides it; rutis-host check says whether a disabled row does)` | 没有启用的行提供它，但有被禁用的行（自己或所在的组被禁用）在运行时没有解析过，不知道它们提供什么；`rutis-host check` 会解析它们，写明是不是被禁用的行提供。有相近的名字时同样在 `it` 后面加 `, did you mean llm?` |
 | `waiting for llm (row model failed: <错误第一行>)` | 提供它的行失败了 |
@@ -369,7 +372,17 @@ phone: disconnected phone-1 (replaced by a new connection)
 - listen 上握手失败的连接（token 不对，升级时以 401 / 403 拒绝；协议不兼容）什么都不打印：它没有碰到已有的连接，原因由拨号方那一端写出。
 - 宿主停止、这一行被删或停下时，它的连接随之关闭，不打印 `disconnected`。
 
-在 `emit` 里失败的监听器（发出方不等待，所以没有别人知道）在它运行的地方往 stderr 打一行：宿主自己的是 `rutis: listener of <name> in row <row> failed: <ErrorName>: <message>`，运行时的由运行时打同样的一行；宿主没能送达的调用写明去了哪里（`in runtime <name>`、`in node <peer>`）。`emit` 的过滤函数失败打 `rutis: filter of <name> from row <row> failed: …`（挂载方式加载的插件写作 `from the mount`）。
+在 `emit` 里失败的监听器（发出方不等待，所以没有别人知道）往 stderr 打一行，以监听它的那一行开头，不论插件是哪种语言；下面缩进写出错的位置（插件语言给出的堆栈）：
+
+```text
+boom: listener of demo/ping failed: TypeError: ts boom
+    at file:///home/me/app/boom.mjs:6:13
+pyboom: listener of demo/ping failed: ValueError: py boom
+    File "/home/me/app/pyboom.py", line 15, in fail
+    raise ValueError("py boom")
+```
+
+不属于任何行的监听器写成 `listener of <name> in plugin <插件> failed: …`。宿主没能送达的调用写明去了哪里（`in runtime <name>`、`in node <peer>`）。`emit` 的过滤函数失败打 `filter of <name> from row <row> failed: <ErrorName>: <message>`（不属于任何行的发出方写作 `from plugin <插件>`）。
 
 ### 事件
 
@@ -653,7 +666,7 @@ $ rutis-host call forecast.week '{"days": 3}'
 | 没有这个服务 | `rutis-host: no row provides forcast; did you mean forecast? (services: forecast, llm, loader, sessions)` |
 | 提供它的行没在运行 | `rutis-host: forecast is not available (row weather waits for its runtime go-weather)` |
 | 没有这个方法 | `rutis-host: forecast has no method tomorow (methods: today, week)` |
-| 参数类型不对 | `rutis-host: forecast.today: argument 1 should be a string, got 3` |
+| 参数类型不对（提供方是 Rust 的 `#[rutis::service]`、Go、Swift、Kotlin；TypeScript、JavaScript、Bun、Python 写的方法不检查参数类型，收到的就是传来的值，类型注解只给编辑器看） | `rutis-host: forecast.today: argument 1 should be a string, got 3` |
 | 方法抛错 | `rutis-host: call to forecast.today failed: KeyError: 'region'`，下面是出错的行（`in weather:`）与它的堆栈 |
 | 方法要调用方那一行的 `&Ctx` | `rutis-host: tools.register needs a calling row; call it from a plugin, not from rutis-host call` |
 | 没有在运行的宿主 | `rutis-host: no rutis-host run or dev is running for /work/weather (start one, or name its configuration with --config)` |
@@ -833,6 +846,8 @@ rutis-host: rutis.json: installed.ruby:geo: name it by its row: a Node package, 
 | `inject` | 额外要等的服务名 |
 | `isolate` | `{ "服务名": true }` 让这一行用自己的那份服务；`{ "服务名": "标签" }` 让同标签的行共用一份 |
 | `disabled` | `true` 时不运行 |
+| `group` | `true` 时这一行是一个分组：不写 `name`，`config` 是它的子行（同样格式的数组）；禁用、删除分组时子行一起卸载 |
+| `instanced` | 和 `group: true` 一起写：这个分组只按实例运行，每个实例一份子行。`rutis-host` 自己不建实例，所以这样的分组和它的子行不运行（`run` 打印 `<分组>: inactive`，`status` 里子行是 `stopped (a group around it is not running)`）；实例由嵌入 rutis-loader 的 Rust 宿主用 `Loader::create_instance` 建 |
 
 服务按名字在所有插件之间共享：任何语言、任何节点上提供的 `weather`，所有声明了 `inject: ["weather"]` 的插件都能用。
 

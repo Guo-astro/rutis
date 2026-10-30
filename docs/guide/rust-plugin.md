@@ -569,6 +569,41 @@ plugin = define_plugin(apply, inject=["calendar"])
 
 没标注的类型不对外。能传什么、错误怎样抛、带 `&Ctx` 参数的方法，见 [在类型上标注 `#[rutis::service]`](rust-host.md#在类型上标注-rutisservice)。服务的参数收数据和函数，不收带方法的对象：别的语言把对象交给这样的参数时，这次调用以 `bad-argument` 失败（[插件 API：带方法的对象](plugin-api.md#带方法的对象)）。
 
+### 按名字使用别的语言提供的服务
+
+别的语言的插件提供的服务（Python 的 `ctx.provide("translate", …)`、Go 的 `ctx.Provide("translate", …)`）在 Rust 里没有类型，写不进 `type Deps`：按名字等它、按名字调用它。插件实现对象安全的形式 `rutis::host::DynPlugin`，在 `injects()` 里写 `host_key("translate")`，用 `rutis_bridge::session::call_service` 调用（`cargo add rutis-bridge`，与宿主用的版本相同）：
+
+```rust,ignore
+use rutis::host::*;
+use rutis::Ctx;
+use rutis_bridge::session::{call_service, host_key};
+
+struct Greeter;
+
+impl DynPlugin for Greeter {
+    fn name(&self) -> &str {
+        "greeter"
+    }
+
+    // 有一个名叫 translate 的服务时才启动，它撤下时停下：和 Deps 一样。
+    fn injects(&self) -> Vec<TypeKey> {
+        vec![host_key("translate").erase()]
+    }
+
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
+        Box::pin(async move {
+            let word: String = call_service(ctx, "translate", "text", ("Hello",)).await?;
+            println!("{word}, Ada!");                  // Bonjour, Ada!
+            Ok(Effect::Done)
+        })
+    }
+}
+```
+
+- 参数是元组（一个参数写 `("Hello",)`，没有参数写 `()`），结果解码成你写的类型；失败是 `Err`，`?` 转成 `rutis::Error`。其余规则见 [在 Rust 里按名字调用服务](rust-host.md#在-rust-里按名字调用服务)。
+- 提供方是哪种语言、在哪个运行时或节点上都一样。
+- 宿主直接装它用 `root.plugin(Greeter)`；由 rutis-loader 按行装时用 `Builtins::register_raw`，见 [由 rutis-loader 按配置装](#由-rutis-loader-按配置装)。
+
 ### `type Deps` 能写的
 
 | `type Deps =` | 等什么 | 传入 |
@@ -678,6 +713,38 @@ builtins.register("greeter", GreeterPlugin::new); // 行：{ "id": "greeter", "n
 ```
 
 `new` 之前，loader 给这一行的配置补上 Schema 里的默认值并校验：配置不合格的行以 `config: …` 失败，不调用构造函数（[插件 API：配置](plugin-api.md#配置)）。加载器、运行时和其他语言的行见 [在 Rust 应用里嵌入](rust-host.md#运行时与加载器)。
+
+没有配置的插件：配置类型写一个空结构体，行不写 `config` 或写 `"config": {}` 都能装：
+
+```rust,ignore
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct NoConfig {}
+
+builtins.register("clock", |_: &NoConfig| Ok(Clock)); // 行：{ "id": "clock", "name": "clock" }
+```
+
+写成 `|_: &()|` 时，没写 `config` 的行能装，写了 `"config": {}` 的行失败：`clock: config: config should be null, got an object`。
+
+`DynPlugin`（例如上面[按名字使用服务](#按名字使用别的语言提供的服务)的 `Greeter`）用 `register_raw` 登记，给它一个 `PluginFactory<serde_json::Value>`，要等的服务由它的 `injects()` 给出：
+
+```rust,ignore
+struct GreeterFactory;
+
+impl PluginFactory<serde_json::Value> for GreeterFactory {
+    fn name(&self) -> &str {
+        "greeter"
+    }
+    fn injects(&self) -> Vec<TypeKey> {
+        Greeter.injects()
+    }
+    fn build(&self, _config: &serde_json::Value) -> rutis::Result<Box<dyn DynPlugin>> {
+        Ok(Box::new(Greeter))
+    }
+}
+
+builtins.register_raw("greeter", GreeterFactory, None); // None：没有配置 Schema
+```
+
 
 ### dylib 插件
 
