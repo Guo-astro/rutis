@@ -8,10 +8,10 @@ Android 应用把自己和所在设备的能力（通讯录、通知、设备信
 
 ## 1. 依赖
 
-Android 10（API 29）或更高，JDK 17。Kotlin SDK 不发布到 Maven，从源码引用：把本仓库的 tag `v0.19.0` 取到应用项目旁边，再把应用的 `local.properties`（Android SDK 的位置）复制给它：
+Android 10（API 29）或更高，JDK 17。Kotlin SDK 不发布到 Maven，从源码引用：把本仓库的 tag `v0.19.1` 取到应用项目旁边，再把应用的 `local.properties`（Android SDK 的位置）复制给它：
 
 ```bash
-git clone --depth 1 --branch v0.19.0 https://github.com/arcships/rutis.git ../rutis
+git clone --depth 1 --branch v0.19.1 https://github.com/arcships/rutis.git ../rutis
 cp local.properties ../rutis/kotlin/rutis/
 ```
 

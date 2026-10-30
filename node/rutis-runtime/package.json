@@ -1,6 +1,6 @@
 {
   "name": "@arcships/rutis-runtime",
-  "version": "0.19.0",
+  "version": "0.19.1",
   "description": "The Node runtime of rutis: runs JavaScript and TypeScript plugins (and Cordis plugins) for a rutis host",
   "license": "MIT",
   "repository": {

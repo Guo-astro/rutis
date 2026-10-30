@@ -222,7 +222,7 @@ stateDiagram-v2
 | 在应用中运行插件 | [`rutis-loader`](https://crates.io/crates/rutis-loader)、[`rutis-bridge`](https://crates.io/crates/rutis-bridge)、[`rutis-dylib`](https://crates.io/crates/rutis-dylib)（dylib 插件） | [`@arcships/rutis-runtime`](https://www.npmjs.com/package/@arcships/rutis-runtime)（Node）、[`@arcships/rutis-bun`](https://www.npmjs.com/package/@arcships/rutis-bun)（Bun） | [`rutis`](https://pypi.org/project/rutis/) |
 | 不写 Rust 的宿主 | [`rutis-host`](https://crates.io/crates/rutis-host) | [`@arcships/rutis-host`](https://www.npmjs.com/package/@arcships/rutis-host) | [`rutis-host`](https://pypi.org/project/rutis-host/) |
 
-Go 插件用模块 [`github.com/arcships/rutis/go/rutis`](go/rutis)：SDK，以及每个插件二进制自带的运行时。Swift 插件（macOS）同样用本仓库的 Swift 包 [`Rutis`](swift/README.zh-CN.md)（`.package(url: "https://github.com/arcships/rutis", from: "0.19.0")`）。
+Go 插件用模块 [`github.com/arcships/rutis/go/rutis`](go/rutis)：SDK，以及每个插件二进制自带的运行时。Swift 插件（macOS）同样用本仓库的 Swift 包 [`Rutis`](swift/README.zh-CN.md)（`.package(url: "https://github.com/arcships/rutis", from: "0.19.1")`）。
 
 以上所有包组成发布列车，一起发布、版本相同。各个 rutis 包请使用同一个版本。
 

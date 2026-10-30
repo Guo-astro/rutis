@@ -72,6 +72,12 @@ Expected behavior: the dialer prints `clock: <n>` every second. After a network 
 
 The nightly stress workflow also runs two soak tests (repeated link disconnect/reconnect and repeated process start/exit) and checks that file descriptor and thread counts do not grow and all processes are reaped.
 
+## 0.19.1
+
+0.19.1 is a patch release: it fixes the places where the 0.19.0 developer-experience evaluation (#663) found that what the documentation says does not work (the first two items of #934, the first two items of #935, one item of #933, the documentation example of #932, the Swift guide), and adds the Rust API Dim needs to upgrade (#946, #941, #948). All packages are at 0.19.1; see [the release notes](releases/0.19.1.en.md). There is no migration guide: no API is removed or renamed.
+
+A patch release must stay compatible with 0.19.0: `cargo-semver-checks` compares with 0.19.0 and accepts no breaking Rust API change (this release only adds API: `Waterfall::sync`, `Ctx::mark_scope`, `Loader::instance_rows`; `rutis::internal`, which `mark_scope` leaves, is `doc(hidden)` and promises no stability). `format` of `rutis.json` stays 1 and no configuration changes: the persisted sample is copied from 0.19.0 and its expectations are unchanged; dsh's user layer has not changed, so `cordis.patch.yml` is copied as is. The protocol is unchanged and there is no new capability; the release gate's cross-version tests (`RUTIS_E2E_ONLY_OLDER=1`) meet 0.19.0, which speaks protocol 4, for the first time. The Kotlin SDK, as in 0.19.0, is not published to Maven Central (the `maven` job skips as usual).
+
 ## 0.19.0
 
 0.19.0 is for host owners (#694): remote connections rebuilt (#695, S1–S5), the platform cleanup (#694, #813), hosts writing plugins (#185), installing plugins (#691), the SDKs' default entry (#692), and the guides rewritten by layer (#671). All packages are at 0.19.0; see [the release notes](releases/0.19.0.en.md) and [migrating to 0.19](migration-0.19.en.md).
