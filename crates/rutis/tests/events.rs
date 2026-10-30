@@ -345,6 +345,44 @@ async fn emits_of_one_name_start_in_emit_order() {
     root.shutdown().await.unwrap();
 }
 
+/// Emits queued on one name each call the listeners there when they were
+/// emitted: one registered between two emits only by the later, a `once`
+/// claimed by an earlier emit not by a later one queued before the claim
+/// (the queued emits of a name share one list, #977).
+///
+/// guarantee: events/emit
+#[tokio::test]
+async fn queued_emits_each_call_the_listeners_of_their_moment() {
+    let root = Ctx::root().unwrap();
+    let seen = log();
+    let heard = |label: &'static str| {
+        let seen = seen.clone();
+        move |event: Arc<Ping>, _: Call<Ping>| {
+            push(&seen, format!("{label}:{}", event.0));
+            std::future::ready(Ok(None))
+        }
+    };
+    root.listen::<Ping>().once().on(heard("once")).unwrap();
+    root.on::<Ping>(heard("a")).unwrap();
+    // Nothing runs before the test awaits: the four emits are queued, and
+    // the last two share a list that still has the `once`.
+    root.emit(Ping(1)).unwrap();
+    root.on::<Ping>(heard("b")).unwrap();
+    root.emit(Ping(2)).unwrap();
+    root.listen::<Ping>()
+        .prefix("t/")
+        .on(heard("prefix"))
+        .unwrap();
+    root.emit(Ping(3)).unwrap();
+    root.emit(Ping(4)).unwrap();
+    rutis_test_support::until(|| entries(&seen).len() == 10, "all delivered").await;
+    assert_eq!(
+        entries(&seen),
+        ["once:1", "a:1", "a:2", "b:2", "a:3", "b:3", "prefix:3", "a:4", "b:4", "prefix:4"]
+    );
+    root.shutdown().await.unwrap();
+}
+
 // ── parallel ────────────────────────────────────────────────────
 
 /// `parallel` starts in registration order, waits for all, and aggregates

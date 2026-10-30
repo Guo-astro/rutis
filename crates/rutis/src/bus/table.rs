@@ -110,10 +110,23 @@ impl Drop for CallFlight {
     }
 }
 
+/// The entries an `emit` of one name dispatches over, shared by the emits
+/// queued on that name (#977). Held weakly: the emits own the list, and it
+/// goes with the last of them, so a withdrawn listener is not kept here.
+struct Shared {
+    list: Weak<[Arc<Entry>]>,
+    len: usize,
+    /// Entries of `list` removed from the table since it was built.
+    removed: usize,
+}
+
 #[derive(Default)]
 pub(crate) struct Table {
     exact: HashMap<Arc<str>, Vec<Arc<Entry>>>,
     prefixes: Vec<Arc<Entry>>,
+    shared: HashMap<Arc<str>, Shared>,
+    /// `shared`'s size at which its unused lists are dropped.
+    shared_prune: usize,
     by_id: HashMap<u64, Arc<Entry>>,
     back: i64,
     front: i64,
@@ -152,6 +165,13 @@ impl Table {
     }
 
     pub fn insert(&mut self, entry: Arc<Entry>) {
+        // A list built before does not have it.
+        if entry.prefix {
+            self.shared
+                .retain(|name, _| !name.starts_with(&*entry.name));
+        } else {
+            self.shared.remove(&entry.name);
+        }
         let list = if entry.prefix {
             &mut self.prefixes
         } else {
@@ -171,6 +191,20 @@ impl Table {
         if self.by_id.remove(&entry.id).is_none() {
             return false;
         }
+        // A shared list keeps it until the emits holding the list are done
+        // (it is withdrawn, so they skip it); rebuilt once half of it is
+        // gone, so the emits of a name hold a few lists, not one per change.
+        let stale = |shared: &mut Shared| {
+            shared.removed += 1;
+            shared.list.strong_count() == 0 || shared.removed * 2 > shared.len
+        };
+        if entry.prefix {
+            self.shared
+                .retain(|name, shared| !(name.starts_with(&*entry.name) && stale(shared)));
+        } else if self.shared.get_mut(&entry.name).is_some_and(stale) {
+            self.shared.remove(&entry.name);
+        }
+        shrink_if_sparse(&mut self.shared);
         if entry.prefix {
             self.prefixes.retain(|e| !Arc::ptr_eq(e, entry));
             shrink_vec_if_sparse(&mut self.prefixes);
@@ -213,6 +247,56 @@ impl Table {
             }
         }
         out
+    }
+
+    /// For an `emit` without a filter: what [`select`](Self::select)
+    /// selects, as one list shared by the emits of `name` while no entry is
+    /// added for it (#977); `None` when no entry is live. The list may hold
+    /// entries that stopped being live after it was built, which a call
+    /// skips (`Entry::start`) as it skips any entry that stopped being live
+    /// after its dispatch selected it: an entry that is not live never is
+    /// again (it is withdrawn, its owner is closing or gone, or the
+    /// generation it was registered in has ended).
+    pub fn shared(&mut self, name: &Arc<str>) -> Option<Arc<[Arc<Entry>]>> {
+        let list = match self.shared.get(name).and_then(|s| s.list.upgrade()) {
+            Some(list) => list,
+            None => {
+                let mut all: Vec<Arc<Entry>> = Vec::new();
+                if let Some(list) = self.exact.get(&**name) {
+                    all.extend(list.iter().filter(|e| e.live()).cloned());
+                }
+                let exact = all.len();
+                all.extend(
+                    self.prefixes
+                        .iter()
+                        .filter(|e| name.starts_with(&*e.name) && e.live())
+                        .cloned(),
+                );
+                if all.is_empty() {
+                    self.shared.remove(name);
+                    return None;
+                }
+                if exact > 0 && all.len() > exact {
+                    all.sort_by_key(|e| e.position);
+                }
+                let list: Arc<[Arc<Entry>]> = all.into();
+                if self.shared.len() >= self.shared_prune {
+                    self.shared
+                        .retain(|_, shared| shared.list.strong_count() > 0);
+                    self.shared_prune = (self.shared.len() * 2).max(64);
+                }
+                self.shared.insert(
+                    name.clone(),
+                    Shared {
+                        list: Arc::downgrade(&list),
+                        len: list.len(),
+                        removed: 0,
+                    },
+                );
+                return Some(list);
+            }
+        };
+        list.iter().any(|e| e.live()).then_some(list)
     }
 
     pub fn entries(&self) -> Vec<Arc<Entry>> {
