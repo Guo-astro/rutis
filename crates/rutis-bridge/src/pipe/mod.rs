@@ -76,10 +76,7 @@ pub async fn greeted(channel: Channel, limit: std::time::Duration) -> Result<Cha
         let first = receiver.recv();
         (first, receiver)
     });
-    let read = async {
-        read.await
-            .map_err(|_| "the runtime's channel failed".to_owned())
-    };
+    let read = async { read.await.map_err(read_failed) };
     let (first, receiver) = match limit {
         std::time::Duration::MAX => read.await?,
         limit => tokio::time::timeout(limit, read)
@@ -102,6 +99,24 @@ pub async fn greeted(channel: Channel, limit: std::time::Duration) -> Result<Cha
     })
 }
 
+/// Why the read of a greeting did not end: cancelled (its runtime shut
+/// down), or panicked, with what it panicked with when that is text.
+fn read_failed(error: tokio::task::JoinError) -> String {
+    const FAILED: &str = "the runtime's channel failed";
+    if !error.is_panic() {
+        return format!("{FAILED}: the read of its greeting was cancelled");
+    }
+    let panic = error.into_panic();
+    match panic
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| panic.downcast_ref::<&str>().copied())
+    {
+        Some(message) => format!("{FAILED}: the read of its greeting panicked: {message}"),
+        None => format!("{FAILED}: the read of its greeting panicked"),
+    }
+}
+
 /// A receiver whose first message was already read.
 struct First {
     first: Option<Vec<u8>>,
@@ -114,5 +129,55 @@ impl crate::channel::Receiver for First {
             Some(first) => Ok(Some(first)),
             None => self.rest.recv(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A receiver whose read panics with `panic`.
+    struct Panics(Option<Box<dyn std::any::Any + Send>>);
+    impl crate::channel::Receiver for Panics {
+        fn recv(&mut self) -> Result<Option<Vec<u8>>, crate::channel::ChannelError> {
+            std::panic::resume_unwind(self.0.take().unwrap())
+        }
+    }
+
+    async fn greeting_read_panics(panic: Box<dyn std::any::Any + Send>) -> String {
+        let (channel, _far) = crate::memory::pair();
+        let channel = Channel {
+            receiver: Box::new(Panics(Some(panic))),
+            ..channel
+        };
+        greeted(channel, std::time::Duration::from_secs(10))
+            .await
+            .unwrap_err()
+    }
+
+    #[tokio::test]
+    async fn a_greeting_read_that_panics_says_with_what() {
+        assert_eq!(
+            greeting_read_panics(Box::new(String::from("receiver broke"))).await,
+            "the runtime's channel failed: the read of its greeting panicked: receiver broke"
+        );
+        assert_eq!(
+            greeting_read_panics(Box::new("receiver broke")).await,
+            "the runtime's channel failed: the read of its greeting panicked: receiver broke"
+        );
+        assert_eq!(
+            greeting_read_panics(Box::new(7_u32)).await,
+            "the runtime's channel failed: the read of its greeting panicked"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_greeting_read_that_is_cancelled_says_so() {
+        let task = tokio::spawn(std::future::pending::<()>());
+        task.abort();
+        assert_eq!(
+            read_failed(task.await.unwrap_err()),
+            "the runtime's channel failed: the read of its greeting was cancelled"
+        );
     }
 }
