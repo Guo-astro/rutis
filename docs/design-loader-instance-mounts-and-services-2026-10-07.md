@@ -97,6 +97,21 @@ loader.remove_instance(b1.plugin).await?;
 - 实例随创建它的分组 ctx 存亡：父实例关闭，或该 ctx 被重建、卸载（例如所在分组的 `isolate` 改变）时，其中的实例随子树卸载并移除（`InstanceRemoved`），由创建它们的插件或业务在新 ctx 中重新创建。
 - 实例不写入配置。进程重启后由业务重新创建，例如按数据库恢复会话时逐个 `create_instance`。
 
+### 3.3 宿主开发者看到什么：实例里的行
+
+`loader.instance_rows(instance)` 接收实例分组 fiber 的 `ctx.instance()`（`s1.view.instance()`），返回这个实例里现在运行着的行，每项是 `(行 id, FiberView)`：
+
+```rust
+for (id, view) in loader.instance_rows(s1.view.instance()) {
+    println!("{id} {:?}", view.state());
+}
+```
+
+- 包括嵌套在其中的实例的行（以及嵌套分组自己的 fiber）；不含这个实例自己的分组 fiber。
+- 顺序是配置顺序，再按实例创建顺序。上面的会话里建了一个分支时，行 id 是 `["session-scope", "tool-registry", "timeline-tree", "branch", "branch-scope", "loop", "tool-executor"]`（§2 的配置，每行都在运行）。
+- 只列出活着的行：禁用、已停止、还没启动的副本不在里面。实例不存在或已删除时返回空列表，不报错。
+- 每次调用按当前状态计算：插件加载期间新建的嵌套实例、编辑新增或删除的行，下一次调用就能看到。不缓存；不像 `entries()` 那样生成每一行的配置、Schema 或元数据；不改变就绪状态或生命周期。
+
 ## 4. 工厂
 
 实例里的插件常需要知道自己在哪个实例里，用来生成实例键。
