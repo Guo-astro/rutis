@@ -55,7 +55,7 @@ function projectHost() {
  * of the test (its services and listeners). Resolves once the driver
  * greeted, with `control`, the session with it, and `stop()`.
  */
-export async function start({ dispatch, command = [process.execPath, ...execArgv(), RUNNER], project = DRIVER } = {}) {
+export async function start({ dispatch, outgoing, command = [process.execPath, ...execArgv(), RUNNER], project = DRIVER } = {}) {
   const host = process.env.RUTIS_HOST || projectHost() || 'rutis-host'
   const dir = mkdtempSync(join(tmpdir(), 'rutis-test-'))
   // A Unix socket, or on Windows a named pipe.
@@ -103,7 +103,7 @@ export async function start({ dispatch, command = [process.execPath, ...execArgv
   let control
   try {
     control = await Promise.race([
-      Process.connect(`unix:${address}`, dispatch ?? (() => { throw new Error('the test serves nothing') }), undefined, { local: 'test' }),
+      Process.connect(`unix:${address}`, dispatch ?? (() => { throw new Error('the test serves nothing') }), undefined, { local: 'test' }, { outgoing }),
       failed,
     ])
   } catch (error) {

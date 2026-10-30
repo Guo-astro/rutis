@@ -69,9 +69,10 @@ function runtime() {
       if (error?.code !== 'ERR_MODULE_NOT_FOUND' && error?.code !== 'MODULE_NOT_FOUND' && !/Cannot find (module|package)/.test(error?.message)) throw error
       throw new PluginTestError(`the test tool runs plugins in ${name}: add it as a dev dependency`)
     }
-    const harness = await start({ dispatch })
+    const harness = await start({ dispatch, outgoing: hold })
     harness.control.unref()
-    // Under `node --test`, its `after`, for the calls of a test (askOf).
+    held = harness.control
+    // Under `node --test`, its `after`, for the calls of a test (hold).
     if (!bun && (process.env.NODE_TEST_CONTEXT || process.execArgv.includes('--test'))) ({ after: testEnded } = await import('node:test'))
     return harness.control
   })()
@@ -79,13 +80,26 @@ function runtime() {
 }
 let testEnded
 
-// The driver, synchronously (the test waits) or not. While an asynchronous
-// call is out, the session keeps the process running, until the call
-// returns or, under `node --test`, the test that made it ends (it failed
-// at its timeout, say): node:test reports and exits once nothing keeps
-// the process running.
+// The driver, synchronously (the test waits) or not.
 let control
+// While an asynchronous call of this process is out (a service's method,
+// a function or promise a plugin handed over), the session keeps the
+// process running, until its reply comes or, under `node --test`, the
+// test that made it ends (it failed at its timeout, say): node:test
+// reports and exits once nothing keeps the process running.
+let held
 let out = 0
+function hold() {
+  let holding = true
+  if (out++ === 0) held?.ref()
+  const release = () => {
+    if (!holding) return
+    holding = false
+    if (--out === 0) held?.unref()
+  }
+  testEnded?.(release)
+  return release
+}
 // `target`: the driver itself (''), or a service by its name.
 const NOT_STARTED = 'the host starts at the first load: load a plugin first'
 function call(method, ...args) {
@@ -97,19 +111,7 @@ function ask(method, ...args) {
 }
 async function askOf(target, method, args) {
   if (!control) throw new PluginTestError(NOT_STARTED)
-  let held = true
-  const release = () => {
-    if (!held) return
-    held = false
-    if (--out === 0) control.unref()
-  }
-  if (out++ === 0) control.ref()
-  testEnded?.(release)
-  try {
-    return await control.callAsync(target, method, args)
-  } finally {
-    release()
-  }
+  return control.callAsync(target, method, args)
 }
 
 // The methods rutis sees on a service no declaration describes: its own
