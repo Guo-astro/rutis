@@ -317,12 +317,16 @@ pub(crate) fn answer_status(
     target: &std::path::Path,
     host: &host::Host,
 ) -> Option<control::Serving> {
-    match control::serve(
-        target,
-        host.loader.clone(),
-        host.status_report(),
-        host.root(),
-    ) {
+    answer_status_with(target, host, host.status_report())
+}
+
+/// [`answer_status`] with `status` saying what `rutis-host status` prints.
+pub(crate) fn answer_status_with(
+    target: &std::path::Path,
+    host: &host::Host,
+    status: control::Report,
+) -> Option<control::Serving> {
+    match control::serve(target, host.loader.clone(), status, host.root()) {
         Ok(serving) => Some(serving),
         Err(_) if cfg!(windows) => None,
         Err(why) => {

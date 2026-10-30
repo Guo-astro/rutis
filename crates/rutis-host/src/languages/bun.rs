@@ -89,7 +89,7 @@ impl Language for Bun {
     }
 
     fn is_project(&self, dir: &Path) -> bool {
-        dir.join("package.json").exists() && runs_in_bun(dir)
+        super::is_package_project(dir) && runs_in_bun(dir)
     }
 
     /// The package's source as the row, `bun:<file>`.

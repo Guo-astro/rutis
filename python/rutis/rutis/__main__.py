@@ -317,11 +317,52 @@ def stop_on_signals(stopping: asyncio.Event) -> None:
             signal.signal(number, lambda *_: loop.call_soon_threadsafe(stopping.set))
 
 
+NO_TERMINAL = (
+    "breakpoint() needs a terminal, and this Python runtime has none: "
+    "run rutis-host dev --debug"
+)
+
+
+def breakpoints() -> None:
+    """What `breakpoint()` in a plugin does in this process, unless
+    PYTHONBREAKPOINT names a hook of the user's own (debugpy, remote-pdb).
+
+    Under `rutis-host dev --debug` (RUTIS_DEBUG=1) it stops in pdb, which
+    leaves Ctrl-C alone: the runtime shares the terminal's Ctrl-C with the
+    host, and ends on it as before any breakpoint, instead of stopping in
+    pdb again while the host waits for its cleanups (#938).
+
+    Without a terminal to read (no `--debug`: standard input is empty) it
+    raises, saying how to get one, instead of pdb reading the end of its
+    input and leaving `SystemExit` to whatever called the plugin."""
+    if os.environ.get("PYTHONBREAKPOINT"):
+        return
+    if os.environ.get("RUTIS_DEBUG") == "1":
+        sys.breakpointhook = _pdb
+    elif sys.stdin is None or not sys.stdin.isatty():
+        sys.breakpointhook = _no_terminal
+
+
+def _pdb(*_args, header: str | None = None, **_kwargs) -> None:
+    import pdb
+
+    debugger = pdb.Pdb(nosigint=True)
+    if header is not None:
+        debugger.message(header)
+    # The frame that called breakpoint(), as pdb.set_trace() stops in.
+    debugger.set_trace(sys._getframe(1))
+
+
+def _no_terminal(*_args, **_kwargs) -> None:
+    raise RuntimeError(NO_TERMINAL)
+
+
 def main() -> None:
     # The state lines are UTF-8 everywhere: on Windows a pipe would get the
     # ANSI code page, and an OS error's text in it.
     if hasattr(sys.stderr, "reconfigure"):
         sys.stderr.reconfigure(encoding="utf-8", errors="backslashreplace")
+    breakpoints()
     try:
         channel, endpoint, project = parse(sys.argv[1:])
     except (ValueError, ImportError) as error:

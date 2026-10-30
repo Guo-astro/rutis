@@ -327,8 +327,9 @@ class Runtime:
         # The session's loop, where listeners run and emissions dispatch;
         # other threads' are marshalled onto it.
         self.loop: asyncio.AbstractEventLoop | None = None
-        # The source file of each plugin module when it was imported.
-        self.stamps: dict[str, tuple | None] = {}
+        # The source files of each plugin module when it was imported: its
+        # own and its package's other modules' (`_stamps`).
+        self.stamps: dict[str, dict[str, tuple | None]] = {}
         # Listeners run as their row's code (#688).
         self.bus.within = as_row
         # A row's synchronous method holding the loop for 5 s is said
@@ -681,12 +682,15 @@ class Runtime:
     def module(self, name: str, fresh: bool = True, check: Callable[[Any], Any] | None = None):
         """The plugin module, imported again when its source file changed
         since (rutis-loader's reload describes the row again, asking for the
-        new code). Only the plugin module itself is imported again, not the
-        modules it imports.
+        new code). A changed file of its package counts too (`from .helpers
+        import X`, #938): the package's other modules are then imported
+        again with it, as the plugin module imports them; the modules of
+        other packages, and other rows' plugin modules, are not.
 
         A module imported again is reloaded in place: when that raises (an
-        error while importing it), or `check` raises of it (it declares no
-        plugin), it is put back as it was, not left half updated.
+        error while importing it, or a module of its package), or `check`
+        raises of it (it declares no plugin), it is put back as it was, its
+        package's modules with it, not left half updated.
 
         With `fresh` false (a row loading under `rutis-host dev`), the module
         as this process last imported it, unchanged: a row that loads again
@@ -711,8 +715,14 @@ class Runtime:
                 raise cannot_load(error, name) from error
         elif not fresh and name in self.stamps:
             return module
-        elif name in self.stamps and _stamp(module) != self.stamps[name]:
+        elif name in self.stamps and _changed(self.stamps[name]):
             saved = dict(module.__dict__)
+            # Imported again as the plugin module imports them: not its
+            # parents (reloading needs them), nor other rows' plugins.
+            kept = {name} | _parents(name) | set(self.stamps)
+            others = {other: loaded for other, loaded in _package(name).items() if other not in kept}
+            for other in others:
+                del sys.modules[other]
             try:
                 importlib.invalidate_caches()
                 try:
@@ -722,10 +732,14 @@ class Runtime:
                 if check is not None:
                     check(module)
             except BaseException:
+                for other in _package(name):
+                    if other not in kept:
+                        del sys.modules[other]
+                sys.modules.update(others)
                 module.__dict__.clear()
                 module.__dict__.update(saved)
                 raise
-        self.stamps[name] = _stamp(module)
+        self.stamps[name] = _stamps(name)
         return module
 
     def _plugin(self, entry: Any) -> sdk.Plugin:
@@ -1274,6 +1288,36 @@ def _supported(plugin, name: str):
             f"{sdk.PLUGIN_API}: upgrade the rutis package where the runtime runs"
         )
     return plugin
+
+
+def _package(name: str) -> dict:
+    """The imported modules of the top-level package the module `name` is
+    in, `name` among them; only `name` for a module of no package."""
+    top = name.partition(".")[0]
+    package = hasattr(sys.modules.get(top), "__path__")
+    return {
+        other: loaded
+        for other, loaded in list(sys.modules.items())
+        if loaded is not None
+        and (other == name or package and (other == top or other.startswith(top + ".")))
+    }
+
+
+def _parents(name: str) -> set:
+    """The packages above the module `name` (`a` and `a.b` of `a.b.c`)."""
+    parts = name.split(".")
+    return {".".join(parts[:end]) for end in range(1, len(parts))}
+
+
+def _stamps(name: str) -> dict:
+    """The source files of the module `name` and of the other modules of
+    its package, as they are now."""
+    return {other: _stamp(loaded) for other, loaded in _package(name).items()}
+
+
+def _changed(stamps: dict) -> bool:
+    """Whether a source file of `stamps` changed since."""
+    return any(_stamp(sys.modules.get(other)) != stamp for other, stamp in stamps.items())
 
 
 def _stamp(module) -> tuple | None:

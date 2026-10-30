@@ -379,6 +379,69 @@ fn call_reaches_a_python_service() {
     );
 }
 
+/// `breakpoint()` in a Python service under `dev` without `--debug`: the
+/// runtime has no terminal for pdb, so the call fails saying to run `dev
+/// --debug`, and the row runs on (#938; before, pdb read the end of its
+/// empty input and the call got `SystemExit: 1`).
+/// guarantee: host/dev-debug
+#[test]
+fn a_breakpoint_without_debug_fails_the_call() {
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = tempfile::tempdir().unwrap();
+    let (dir, runtime) = (dir.path(), runtime.path());
+    common::write(
+        dir,
+        &[
+            (
+                "pyproject.toml",
+                "[project]\nname = \"forecast\"\nversion = \"0.1.0\"\n",
+            ),
+            (
+                "forecast.py",
+                "class Forecast:\n\
+                 \x20   async def today(self, city: str) -> str:\n\
+                 \x20       breakpoint()\n\
+                 \x20       return f\"sunny in {city}\"\n\
+                 \n\
+                 provides = {\"forecast\": Forecast}\n\
+                 \n\
+                 def apply(ctx, config):\n\
+                 \x20   ctx.provide(\"forecast\", Forecast())\n",
+            ),
+        ],
+    );
+    let mut host = Host::start_in_env(
+        &["dev", "."],
+        dir,
+        &[("XDG_RUNTIME_DIR", runtime.to_str().unwrap())],
+    );
+    host.wait_line(|line| (line == "forecast: running").then_some(()));
+    let (code, stdout, stderr) = call(&["forecast.today", "\"Oslo\""], dir, runtime);
+    let lines: Vec<&str> = stderr.lines().collect();
+    assert_eq!((code, stdout.as_str()), (Some(1), ""), "{stderr}");
+    assert_eq!(
+        lines[..2],
+        [
+            "rutis-host: call to forecast.today failed: RuntimeError: breakpoint() needs a terminal, \
+             and this Python runtime has none: run rutis-host dev --debug",
+            "    in forecast:",
+        ],
+        "{stderr}"
+    );
+    assert!(
+        status(dir, runtime).contains("  forecast: running"),
+        "{}",
+        status(dir, runtime)
+    );
+    signal(&host, libc::SIGINT, true);
+    let (exit, stderr, output) = host.exit();
+    assert_eq!(exit.code(), Some(0), "{stderr}");
+    assert!(
+        !output.iter().any(|line| line.contains("(Pdb)")),
+        "{output:#?}"
+    );
+}
+
 /// A Bun service, called from the command line.
 /// guarantee: host/call
 #[test]
