@@ -94,12 +94,15 @@ pub(super) fn copy_label(label: &str, copy: Option<u64>) -> String {
 
 impl Row {
     /// The rutis scope of a row whose resolver handles its scope itself
-    /// (`Resolved::foreign_scope`, a runtime's row): its isolates only,
-    /// keyed as the runtime's rows publish and wait for a name (a shared
-    /// name through the catalog, per copy inside instances; any other by
-    /// itself). What it provides, or waits for, under a name it isolates
-    /// stays in that isolate, as for a Rust row; its `inject` is the
-    /// plugin's own.
+    /// (`Resolved::foreign_scope`, a runtime's row): its isolates, keyed as
+    /// the runtime's rows publish and wait for a name (a shared name through
+    /// the catalog, per copy inside instances; any other by itself), and the
+    /// names of its `inject` the catalog shares, which gate it as a Rust
+    /// row's `inject` gates that row and which it leases into its runtime
+    /// (`JsRow::start`). Its runtime resolves the other names of its
+    /// `inject` natively, as `Loader::check` counts them. What it provides,
+    /// or waits for, under a name it isolates stays in that isolate, as for
+    /// a Rust row.
     pub(super) fn foreign_scope(
         &self,
         catalog: &ServiceCatalog,
@@ -119,10 +122,18 @@ impl Row {
                     Ok((name.clone(), key, label.clone()))
                 })
                 .collect::<Result<_, LoaderError>>()?;
-            Ok(BoundScope {
-                isolate,
-                inject: Vec::new(),
-            })
+            // Keyed as the row leases them (`JsModule`'s key of a shared
+            // name), so what gates it is what it leases.
+            let mut inject = self
+                .raw_scope
+                .inject
+                .iter()
+                .filter(|name| catalog.shares(name))
+                .map(|name| Ok((name.clone(), catalog.shared_key_in(name, build)?.erase())))
+                .collect::<Result<Vec<_>, LoaderError>>()?;
+            inject.sort_by(|a, b| a.0.cmp(&b.0));
+            inject.dedup_by(|a, b| a.0 == b.0);
+            Ok(BoundScope { isolate, inject })
         }
         #[cfg(not(feature = "runtimes"))]
         {

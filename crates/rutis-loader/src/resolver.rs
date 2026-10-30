@@ -26,10 +26,16 @@ pub struct Resolved {
     pub schema: Option<Value>,
     /// Diagnostics: version, source path, hash and the like.
     pub meta: Value,
-    /// The plugin handles its row's `isolate` and `inject` itself (they
-    /// name services of another runtime, as for JavaScript rows): the loader
-    /// neither resolves them through its catalog nor applies them, and the
-    /// plugin reads them with `Loader::row`.
+    /// The plugin handles its row's `isolate` and `inject` in its runtime
+    /// (they name services of another runtime, as for JavaScript rows) and
+    /// reads them with `Loader::row`. The loader keys the row's isolates
+    /// through its catalog, and gates the row on the names of its `inject`
+    /// the catalog shares, as `Loader::check` counts them: the row waits
+    /// until rutis has each. Leasing those into the runtime is the plugin's
+    /// (`JsRow::start` does it for this crate's runtimes); a plugin that
+    /// finds such a name inside its runtime and never has it announced to
+    /// rutis waits for ever. Its other names the loader leaves to the
+    /// runtime.
     pub foreign_scope: bool,
     /// Builds the factory for each copy from the instances it runs in
     /// ([`Builtins::register_with`]). Without it, every copy uses `factory`.

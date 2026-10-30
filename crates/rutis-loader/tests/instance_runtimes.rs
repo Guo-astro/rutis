@@ -435,3 +435,86 @@ async fn a_language_row_outside_its_instances_is_unresolved() {
     }
     fixture.root.shutdown().await.unwrap();
 }
+
+/// Uses `tools` through its row's `inject` alone.
+const JS_ROW_INJECT: &str = r#"
+import { definePlugin } from 'PLUGIN'
+export default definePlugin({
+  inject: ['probe'],
+  apply(ctx) {
+    ctx.use('probe').record(`row inject sees ${ctx.use('tools').title()}`)
+  },
+})
+"#;
+
+/// A language row whose own `inject` names a shared name inside instances
+/// waits for and leases each instance's own: the key it is gated on is the
+/// key it leases.
+/// guarantee: loader/rows-gate-on-services
+#[tokio::test(flavor = "multi_thread")]
+async fn a_language_rows_inject_inside_an_instance_is_the_instances() {
+    if !rutis_test_support::runtimes::all_enabled(&["node", "python"]) {
+        return;
+    }
+    let fixture = fixture().await;
+    let plugin = repo()
+        .join("node/rutis/src/index.mjs")
+        .canonicalize()
+        .unwrap();
+    let file = fixture.js.with_file_name("row_inject.mjs");
+    std::fs::write(
+        &file,
+        JS_ROW_INJECT.replace(
+            "PLUGIN",
+            url::Url::from_file_path(&plugin).unwrap().as_str(),
+        ),
+    )
+    .unwrap();
+    let mut rows = fixture.rows.clone();
+    rows[0]["insert"][0]["config"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({ "id": "ri", "name": file.to_string_lossy(), "inject": ["tools"] }));
+    let patches: Vec<Patch> = serde_json::from_value(rows).unwrap();
+    let report = fixture
+        .loader
+        .reconcile(vec![Layer::new("rows", patches)], None)
+        .await
+        .unwrap();
+    assert!(report.failures.is_empty(), "{report:?}");
+    let _a = fixture.create("A").await;
+    let _b = fixture.create("B").await;
+    for line in ["row inject sees A", "row inject sees B"] {
+        fixture.probe.wait_for(line).await;
+    }
+    // `ri` asks through a lease of its own, in its instance's scope: the
+    // shared one the `js` row of its process leased would not name it.
+    // Other tests open instances with the same titles: scopes are compared
+    // as sets.
+    let scopes = |title: &str, id: &str| -> std::collections::BTreeSet<String> {
+        let callers = tool_callers(title);
+        let scopes: std::collections::BTreeSet<String> = callers
+            .iter()
+            .filter(|(caller, _)| caller == id)
+            .map(|(_, scope)| scope.clone().expect("a scope"))
+            .collect();
+        assert!(
+            !scopes.is_empty(),
+            "{id} in {title} asked as a row: {callers:?}"
+        );
+        scopes
+    };
+    for title in ["A", "B"] {
+        let ri = scopes(title, "ri");
+        assert!(ri.iter().all(|s| s.starts_with("rutis-loader/instance/")));
+        assert!(
+            ri.intersection(&scopes(title, "js")).next().is_some(),
+            "{title}'s own"
+        );
+    }
+    assert!(
+        scopes("A", "ri").is_disjoint(&scopes("B", "ri")),
+        "two instances"
+    );
+    fixture.root.shutdown().await.unwrap();
+}

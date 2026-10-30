@@ -478,6 +478,17 @@ impl Transitions {
         transitions
     }
 
+    /// Every fiber that changed state, in the order each first did.
+    pub fn plugins(&self) -> Vec<PluginId> {
+        let mut plugins = Vec::new();
+        for (plugin, _, _) in self.0.lock().unwrap().iter() {
+            if !plugins.contains(plugin) {
+                plugins.push(*plugin);
+            }
+        }
+        plugins
+    }
+
     /// The states `plugin` went to, in order.
     pub fn of(&self, plugin: PluginId) -> Vec<FiberState> {
         self.0

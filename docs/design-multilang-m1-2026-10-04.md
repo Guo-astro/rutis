@@ -123,7 +123,7 @@ catalog.register_shared("weather");
 | `CordisRuntimeRows`（替代现在的 `CordisRuntime`） | 固定 | rutis |
 | `host_key(n)`，`n` 是 `inject` 里 `required` 且在 catalog 里登记为共享的名字 | `rows.schema` | rutis |
 | 其余 `inject` 名字 | `rows.schema` | Cordis，和现在一样：插件在 Cordis 里按原生规则等待 |
-| 行配置里的 `inject` | loader 行 | Cordis（`foreign_scope`，现状不变） |
+| 行配置里的 `inject` | loader 行 | Cordis（`foreign_scope`，现状不变）（后来其中服务目录共享的名字也由 rutis 门控并租借，见[运行时行的行 inject](design-row-inject-gate-2026-10-31.md)） |
 
 可选依赖（`required: false`）不进 rutis 的依赖：apply 时存在就提供给 Cordis，之后它出现或撤销不会重启这一行。和 rutis 原生插件对可选服务的处理一致。
 

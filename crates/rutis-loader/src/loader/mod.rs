@@ -118,9 +118,12 @@ pub struct RowInfo {
     /// `isolate` as (service name, scope label): rows naming the same label
     /// share a scope; a private scope's label is unique to the row. Inside
     /// an instance the labels are the instance's own: a private scope is
-    /// one per copy, a named one is shared within the instance.
+    /// one per copy, a named one is shared within the instance. The row's
+    /// own: an `isolate` of a group around it is not here.
     pub isolate: Vec<(String, String)>,
-    /// `inject`: extra service names the row waits for.
+    /// `inject`: extra service names the row waits for. A runtime's row
+    /// (`Resolved::foreign_scope`) waits only for those the service catalog
+    /// shares, and leases them; the others the runtime resolves itself.
     pub inject: Vec<String>,
 }
 
