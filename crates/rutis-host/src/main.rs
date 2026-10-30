@@ -68,7 +68,8 @@ usage:
   rutis-host check [rutis.json] [--strict]    describe every row and Go or Swift binary; fail on what
                                               cannot run (in a plugin project without
                                               rutis.json: the project); warn of a service
-                                              no row declares, which --strict fails
+                                              no row declares, a misspelt row field and a
+                                              row id used twice, which --strict fails
   rutis-host status [rutis.json | dir]        what the host running that configuration (or
                                               that dev project) does now: each row's state and
                                               why, each service's provider, the runtimes, the
@@ -609,7 +610,19 @@ async fn check(args: &[String]) -> Result<(), String> {
         (None, false) => project::dev_config(std::path::Path::new("."))?.0,
         _ => config::HostConfig::read(&path)?,
     };
-    warn(&config);
+    // With `--strict`, a row field the loader does not know (a misspelt
+    // one) is an error, not a warning (#935).
+    for warning in &config.warnings {
+        let error = strict
+            && config
+                .unknown_row_fields
+                .iter()
+                .any(|(_, unknown)| unknown == warning);
+        match error {
+            true => errln!("rutis-host: error: {warning}"),
+            false => errln!("rutis-host: warning: {warning}"),
+        }
+    }
     let host = host::Host::start(&config).await?;
     host.runtimes_ready().await?;
     // Only with binaries to check (#668), naming the languages there are.
@@ -628,8 +641,17 @@ async fn check(args: &[String]) -> Result<(), String> {
         }
     }
     let report = host.check(config.rows()).await?;
+    // With `--strict`, a row skipped for its id, which another row has, is
+    // an error, and one row that cannot run (#935).
+    let mut skipped = 0;
     for issue in &report.issues {
-        errln!("rutis-host: warning: {issue}");
+        match strict && issue.starts_with("duplicate id ") {
+            true => {
+                errln!("rutis-host: error: {issue}");
+                skipped += 1;
+            }
+            false => errln!("rutis-host: warning: {issue}"),
+        }
     }
     // The rows that cannot run, each once however many reasons it has;
     // `failed` counts the binaries.
@@ -640,6 +662,14 @@ async fn check(args: &[String]) -> Result<(), String> {
         if print_row(&config, &report, row, strict) {
             cannot.insert(row.id.as_str());
         }
+    }
+    if strict {
+        cannot.extend(
+            config
+                .unknown_row_fields
+                .iter()
+                .map(|(row, _)| row.as_str()),
+        );
     }
     // Errors from 0.18 (warnings in 0.17.2, #676): no row of a cycle
     // starts, and of rows providing one name all but the first to start
@@ -652,7 +682,7 @@ async fn check(args: &[String]) -> Result<(), String> {
         errln!("rutis-host: error: {}", clash_line(clash));
         cannot.extend(clash.rows.iter().skip(1).map(String::as_str));
     }
-    failed += cannot.len();
+    failed += cannot.len() + skipped;
     for binaries in &host.binaries {
         outln!("{} binaries:", binaries.key);
         for binary in binaries.binaries() {

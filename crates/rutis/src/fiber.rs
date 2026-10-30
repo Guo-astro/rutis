@@ -329,6 +329,14 @@ pub(crate) struct Trans {
     /// driver reaches them starts cancelled (as a dispose stops it from
     /// starting), so its `apply` does not keep them waiting.
     pub pending_restarts: usize,
+    /// The driver stopped this generation before `build`, `validate` or
+    /// `apply` returned: an eviction, restart, update, dispose or shutdown
+    /// pre-cancelled it. A load error after that is no failed start: the
+    /// generation unloads to `Pending` (#968). Set only where the driver
+    /// cancels; a plugin that cancels its own generation token (it gets the
+    /// token itself, see `CtxHost::cancellation_token`) leaves it false, so
+    /// its error is still a failed load.
+    pub pre_cancelled: bool,
 }
 
 pub(crate) struct FiberInner {
@@ -524,6 +532,20 @@ impl FiberInner {
         self.token.lock().unwrap().cancel();
     }
 
+    /// Cancel the current generation because the driver is stopping it
+    /// (eviction, restart, update, dispose, shutdown), and record that: a
+    /// load that returns an error after this unloads to `Pending` instead
+    /// of failing (#968). The transition lock is taken first, so a load
+    /// that is deciding between `Failed` and `Pending` sees the record and
+    /// the cancellation together.
+    pub(crate) fn pre_cancel(&self) {
+        {
+            let mut tr = self.transition.lock().unwrap();
+            tr.pre_cancelled = true;
+        }
+        self.cancel_current();
+    }
+
     /// Cancel the current token of every live descendant, so callbacks that
     /// cooperate with their owner's cancellation can end before the drain.
     pub(crate) fn cancel_descendants(&self) {
@@ -535,7 +557,7 @@ impl FiberInner {
             .filter_map(Weak::upgrade)
             .collect();
         while let Some(fiber) = pending.pop() {
-            fiber.cancel_current();
+            fiber.pre_cancel();
             pending.extend(
                 fiber
                     .children
@@ -874,7 +896,11 @@ impl FiberInner {
                 return;
             }
             let token = this.new_generation_token();
-            if tr.pending_restarts > 0 {
+            // A generation that starts while a restart (or update) waits
+            // starts cancelled: the driver is stopping it before its
+            // `apply` runs, so an error from it is not a failed load (#968).
+            tr.pre_cancelled = tr.pending_restarts > 0;
+            if tr.pre_cancelled {
                 token.cancel();
             }
             tr.generation += 1;
@@ -1008,15 +1034,37 @@ impl FiberInner {
     /// same set (such as one per key when a provider activates) do not reload
     /// it. Unless the load was being stopped or the plugin is rutis's own, a
     /// `StartFailed` error also goes to the error sink.
+    ///
+    /// A generation the driver pre-cancelled (eviction, restart, update,
+    /// dispose, shutdown) is no failed start, whatever it returned: it
+    /// unloads to `Pending` (#968), so the queued intent (restart, dispose)
+    /// or the dependency's return reloads it. The record is read under the
+    /// transition lock the pre-cancels take, so the decision cannot miss one
+    /// that arrived before it: the queued intent handles a later one.
+    /// A returned error there is the plugin answering the cancellation and
+    /// is not reported, but a panic is a bug in the plugin: it still goes to
+    /// the error sink, as a non-terminal unload's cleanup errors do (#968).
     async fn fail_load(
         this: &Arc<Self>,
         error: Error,
         deps: HashSet<(PluginId, u64, TypeKey, Option<ScopeId>)>,
     ) {
-        {
+        let pre_cancelled = {
             let _admission = this.ctx.shared().admission.lock().unwrap();
             let mut tr = this.transition.lock().unwrap();
-            Self::set_state(this, &mut tr, FiberState::Unloading);
+            if tr.pre_cancelled {
+                true
+            } else {
+                Self::set_state(this, &mut tr, FiberState::Unloading);
+                false
+            }
+        };
+        if pre_cancelled {
+            if error.is_panic() {
+                (this.ctx.error_sink())(error.shared());
+            }
+            Self::unload(this, NextState::Pending).await;
+            return;
         }
         this.flush_status();
         // A load that failed because it was being stopped (a dispose,
@@ -1574,6 +1622,7 @@ fn spawn_fiber_inner(
                 status_queue: Vec::new(),
                 terminal_task: closed_task,
                 pending_restarts: 0,
+                pre_cancelled: false,
             }),
             snapshot_tx: snapshot_tx.clone(),
             snapshot_rx,
@@ -1679,7 +1728,7 @@ impl FiberView {
             let mut pending = vec![self.inner.clone()];
             while let Some(fiber) = pending.pop() {
                 fiber.closing.store(true, Ordering::SeqCst);
-                fiber.cancel_current();
+                fiber.pre_cancel();
                 pending.extend(
                     fiber
                         .children
@@ -1756,6 +1805,7 @@ impl FiberView {
             match &tr.terminal_task {
                 Some(task) => (task.clone(), false),
                 None => {
+                    tr.pre_cancelled = true;
                     self.inner.cancel_current();
                     let task = TransitionTask::new();
                     tr.terminal_task = Some(task.clone());
@@ -1823,8 +1873,10 @@ impl FiberView {
                 }
                 // 预取消:运行中的 apply 协作退出。Counted under the same
                 // lock: a generation `load()` starts before the driver takes
-                // this restart up starts cancelled too.
+                // this restart up starts cancelled too, and neither is a
+                // failed load (#968).
                 tr.pending_restarts += 1;
+                tr.pre_cancelled = true;
                 this.cancel_current();
             }
             let task = TransitionTask::new();
@@ -1914,6 +1966,7 @@ impl FiberView {
                 }
                 // 预取消(同 restart),counted under the same lock.
                 tr.pending_restarts += 1;
+                tr.pre_cancelled = true;
                 this.cancel_current();
             }
             *this.config.lock().unwrap() = Some(boxed);

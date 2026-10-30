@@ -544,6 +544,63 @@ async fn explicit_close_interrupts_a_writer_whose_peer_stopped_reading() {
     peer.closed().await;
 }
 
+/// What ends a session is what it was closed with, though closing wakes
+/// its reader, which sees its channel end and closes it too: here the
+/// reader is let finish first. Not recorded before the reader woke, the
+/// session ended as `peer disconnected`, and an object from a runtime
+/// whose process exited said `runtime py disconnected` (#965).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_session_closed_with_a_reason_ends_with_it_though_its_reader_wakes_first() {
+    /// Closes the channel, then, the first time, waits until the session
+    /// recorded why it ended: the reader's close, if it got there first.
+    struct ReaderFirst {
+        closer: Arc<dyn Closer>,
+        session: Arc<std::sync::OnceLock<std::sync::Weak<SessionState>>>,
+        waited: AtomicBool,
+    }
+    impl Closer for ReaderFirst {
+        fn close(&self, why: crate::channel::Close) {
+            self.closer.close(why);
+            if self.waited.swap(true, Ordering::SeqCst) {
+                return;
+            }
+            let Some(session) = self.session.get().and_then(std::sync::Weak::upgrade) else {
+                return;
+            };
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while Connection(session.clone()).close_reason().is_none() {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "the reader closed nothing"
+                );
+                std::thread::yield_now();
+            }
+        }
+    }
+    let (local, mut far) = far_pair();
+    let session = Arc::default();
+    let local = Channel {
+        closer: Arc::new(ReaderFirst {
+            closer: local.closer,
+            session: Arc::clone(&session),
+            waited: AtomicBool::new(false),
+        }),
+        ..local
+    };
+    let peer = Connection::open(local, Arc::new(NoExports), rust()).unwrap();
+    session.set(Arc::downgrade(&peer.0)).unwrap();
+    send(&mut far, hello(ENDPOINT_PROTOCOL));
+    peer.ready().await.unwrap();
+    peer.close(Error::Transport(
+        "the process exited with exit status: 1".into(),
+    ));
+    assert_eq!(
+        peer.close_reason().map(|error| error.to_string()),
+        Some(Error::Transport("the process exited with exit status: 1".into()).to_string())
+    );
+    assert_eq!(peer.0.end.get().map(String::as_str), Some("exited"));
+}
+
 /// A scripted peer on the far end of a connection, after the handshake.
 struct Remote {
     reader: Far,

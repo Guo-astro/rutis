@@ -193,7 +193,7 @@ if __name__ == "__main__":
 uv run python -m unittest discover -s tests
 ```
 
-检查都是宿主自己做的：配置由宿主的 loader 按 Schema 补默认值并校验，不合格时 `load` 抛出 `PluginTestError`，文字是这一行的状态行（`greeter: config: greeting should be a string, got 3`）；事件经宿主分发。测试工具的其余接口见 [插件 API：Python 的测试工具](plugin-api.md#python-的测试工具)。宿主给了它的服务的 Python 类型时，用法见 [宿主给的类型](#宿主给的类型)。
+检查都是宿主自己做的：配置由宿主的 loader 按 Schema 补默认值并校验，不合格时 `load` 抛出 `PluginTestError`，文字是这一行的状态行（`greeter: config: greeting should be a string, got 3`）；事件经宿主分发。unittest 没有时限，测试工具给插件服务的调用一个时限：30 秒内没有返回的调用被取消，测试以 `PluginTestError: greeter.hello() did not return within 30 s` 失败。测试工具的其余接口见 [插件 API：Python 的测试工具](plugin-api.md#python-的测试工具)。宿主给了它的服务的 Python 类型时，用法见 [宿主给的类型](#宿主给的类型)。
 
 ## 7. 本地运行并试一下
 
@@ -210,7 +210,7 @@ uv run python -m unittest discover -s tests
 }
 ```
 
-- `id` 和插件同名的那一行（`greeter`）就是插件自己，`config` 是给它的配置。
+- `id` 是项目插件名的那一行（`greeter`）就是插件自己，`config` 是给它的配置。项目插件名是 `pyproject.toml` 里 `[project.entry-points."rutis.plugins"]` 的入口点名（模板写的是 `greeter = "greeter"`，左边那个），没有入口点时是 `[project]` 的 `name`；不是模块名，也不是改过的发行包名。`dev` 启动时打印的 `running greeter` 就是它。写成别的 id（比如入口点改成 `tool = "my_tool"` 后仍写 `my-tool`），这一行就不是插件自己，而是一行没写 `name` 的别的插件：`my-tool: unresolved: invalid entry: "my-tool" has no name`。
 - 另一行是假的 `translate`：`py:fake_translate` 是项目 `src/` 里的模块 `fake_translate`，内容如下。它只在本地运行时用，不在发布的包里（`pyproject.toml` 只打包 `src/greeter`）。
 
 <!-- example: python file=greeter/src/fake_translate.py -->

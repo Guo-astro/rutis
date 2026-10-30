@@ -76,7 +76,7 @@ ctx.plugin_with(TypedFactory::with_keys(factory, keys), config);
 If a required dependency becomes unavailable after gating but before `apply` reads it, the plugin returns to `Pending`, not `Failed`.
 
 - A typed read that encounters `Unavailable` returns `CordisError::InjectUnsatisfied`.
-- **Core rule:** when `apply` returns `InjectUnsatisfied`, the core checks this generation's access log (cleared at the start of each load). If the log contains a failed strict read (`require` / `require_as`) of a declared dependency due to `Unavailable`, this generation is evicted: cleanup drains in normal LIFO order, cleanup errors go to ErrorSink, then it returns to `Pending`. If the dependency has already returned, a recheck is queued immediately and the plugin reloads.
+- **Core rule:** when `apply` returns `InjectUnsatisfied` — and the driver did not pre-cancel this generation (an eviction, restart, update or dispose pre-cancelled generation returns to `Pending` whatever it returned, #968) — the core checks this generation's access log (cleared at the start of each load). If the log contains a failed strict read (`require` / `require_as`) of a declared dependency due to `Unavailable`, this generation is evicted: cleanup drains in normal LIFO order, cleanup errors go to ErrorSink, then it returns to `Pending`. If the dependency has already returned, a recheck is queued immediately and the plugin reloads.
 - **Why use a failed read as evidence:** the first two revisions checked “is it absent now?” and “is this still the binding that passed gating?”; both had holes:
   - The dependency may return before the error is handled.
   - The same provider may be withdrawn and re-provided within one generation.
@@ -87,7 +87,7 @@ If a required dependency becomes unavailable after gating but before `apply` rea
 - **Avoid loops:** without such a read in this generation, do not accept this reason; treat it as an ordinary failure and enter `Failed`.
 - This generation's `InjectUnsatisfied` is not sent to ErrorSink (silent like eviction). A `restart()` in this window returns `Ok`; the fiber returns to `Pending` or reloads.
 - **Untyped plugins:** calling `require` / `require_as` and returning this error has the same effect, as does returning that read's own error as is (`require(..)?`: `ServiceRead` with reason `Unavailable`, #438); `get` does not count as evidence. `rutis-agent` driver and TUI use `get_as`, so they remain ordinary failures as before.
-- **Difference from Cordis:** Cordis treats an `apply` exception in this window as `FAILED` (and retries when the dependency returns). rutis relaxes only this explicit error variant (or the strict read's own error returned as is) with proof of a failed read; other errors remain sticky `Failed`.
+- **Difference from Cordis:** Cordis treats an `apply` exception in this window as `FAILED` (and retries when the dependency returns). rutis relaxes only this explicit error variant (or the strict read's own error returned as is) with proof of a failed read; other errors are still failures, but stay a sticky `Failed` only when the driver did not pre-cancel the generation — a generation an eviction, restart, update or dispose pre-cancelled goes back to `Pending`, whatever the error says (#968).
 
 ## Claim boundary
 

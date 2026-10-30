@@ -145,3 +145,89 @@ async fn settled_waits_for_the_rows_a_restart_restarts() {
         );
     }
 }
+
+/// `stuck` never returns from `apply`; `echo` returns at once.
+struct Stuck(bool);
+
+impl DynPlugin for Stuck {
+    fn name(&self) -> &str {
+        if self.0 {
+            "stuck"
+        } else {
+            "echo"
+        }
+    }
+
+    fn apply<'a>(&'a self, _: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
+        let stuck = self.0;
+        Box::pin(async move {
+            if stuck {
+                std::future::pending::<()>().await;
+            }
+            Ok(Effect::Done)
+        })
+    }
+}
+
+struct StuckFactory(bool);
+
+impl PluginFactory<Value> for StuckFactory {
+    fn name(&self) -> &str {
+        if self.0 {
+            "stuck"
+        } else {
+            "echo"
+        }
+    }
+
+    fn build(&self, _: &Value) -> Result<Box<dyn DynPlugin>, Error> {
+        Ok(Box::new(Stuck(self.0)))
+    }
+}
+
+/// A host that gives up on a `reconcile` waiting for a row whose `apply`
+/// never returns (drops its future) is not held up by it afterwards: a
+/// `reload` of another row returns (#934).
+#[tokio::test]
+async fn an_abandoned_reconcile_holds_up_no_later_operation() {
+    let mut builtins = Builtins::new();
+    builtins.register_raw("stuck", StuckFactory(true), None);
+    builtins.register_raw("echo", StuckFactory(false), None);
+    let root = Ctx::root().unwrap();
+    let plugin = LoaderPlugin::new(builtins, LoaderOptions::default());
+    let loader = plugin.handle();
+    root.plugin(plugin).await.unwrap();
+    let layers = vec![rutis_loader::Layer::new(
+        "rows",
+        patches(json!([{ "insert": [
+            { "id": "s", "name": "stuck" },
+            { "id": "e", "name": "echo" }
+        ] }])),
+    )];
+    let gave_up = tokio::time::timeout(
+        Duration::from_millis(200),
+        loader.reconcile(layers.clone(), None),
+    )
+    .await;
+    assert!(gave_up.is_err(), "reconcile returned: {gave_up:?}");
+    assert_eq!(state(&loader, "e"), Some(FiberState::Active));
+
+    let reload = tokio::time::timeout(Duration::from_secs(5), loader.reload("e")).await;
+    assert!(reload.is_ok(), "reload of another row did not return");
+    reload.unwrap().unwrap();
+    assert_eq!(state(&loader, "e"), Some(FiberState::Active));
+    assert_eq!(state(&loader, "s"), Some(FiberState::Loading));
+
+    // Nor does a reconcile of the same layers wait for it again.
+    let again = tokio::time::timeout(Duration::from_secs(5), loader.reconcile(layers, None)).await;
+    assert!(again.is_ok(), "a second reconcile did not return");
+    again.unwrap().unwrap();
+    assert_eq!(state(&loader, "s"), Some(FiberState::Loading));
+
+    // `settled` still waits for every row.
+    let settled = tokio::time::timeout(Duration::from_millis(200), loader.settled()).await;
+    assert!(
+        settled.is_err(),
+        "settled returned with a row still loading"
+    );
+}

@@ -263,16 +263,31 @@ fn call_in_a_dev_project_says_what_it_did() {
         "rutis-host: forecast is not available (row weather waits for its runtime node)\n",
     );
 
+    // The host's socket, the one runtime directory's one file.
+    let socket = std::fs::read_dir(runtime)
+        .unwrap()
+        .flat_map(|own| std::fs::read_dir(own.unwrap().path()).unwrap())
+        .map(|socket| socket.unwrap().path())
+        .collect::<Vec<_>>();
+    let [socket] = socket.as_slice() else {
+        panic!("one socket: {socket:?}");
+    };
     signal(&host, libc::SIGINT, true);
     let (exit, stderr, _) = host.exit();
     assert_eq!(exit.code(), Some(0), "{stderr}");
-    // No host now.
+    // No host now: where it looked, and that a host run elsewhere (a
+    // service) is found from its environment (#935).
     fails(
         &["forecast.today", "\"Oslo\""],
         &format!(
-            "rutis-host: no rutis-host run or dev is running for {} (start one, or name its \
-             configuration with --config)\n",
-            dir.canonicalize().unwrap().display()
+            "rutis-host: no rutis-host answers for {} at {} (XDG_RUNTIME_DIR={}): a host started \
+             in another environment (a service, another user) has its socket where that \
+             environment says, so run `rutis-host call` as its user with its XDG_RUNTIME_DIR; \
+             if none runs, start one with `rutis-host run` or `rutis-host dev`, or name its \
+             configuration with --config\n",
+            dir.canonicalize().unwrap().display(),
+            socket.display(),
+            runtime.display()
         ),
     );
 }

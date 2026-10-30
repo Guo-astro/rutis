@@ -311,6 +311,8 @@ calls:
 
 The row `starting` is the `apply` that has not returned; when it is calling a row's service, `calls` shows which call.
 
+Ending there (dropping the `reconcile` future) leaves that row `starting` until its `apply` returns. The loader's later operations do not wait for it again: a `reload` of another row, another `reconcile`, and the reload of a restarted runtime's rows (section 3) return once what they change has loaded. `Loader::settled()` still waits for every row, this one too. Killing its process and restarting its runtime (section 3) starts it again, and the operations wait for that start as for any other.
+
 ### Paths and environment
 
 - Each runtime's process starts in a directory of its own (Python: its project directory, here `commands/`; Node: the runtime's package directory) and takes the paths it is given as they are: write absolute paths, since a relative one counts from that directory.
@@ -451,6 +453,7 @@ for command in &commands {
 ```
 
 - Several plugins share a process when their rows have the same prefix.
+- A row failing in `apply` does not stop its runtime's process, not even a runtime only that row uses: the runtime is another plugin and does not stop with its rows. To stop it, call `dispose()` on the fiber `root.plugin(runtime)` returned (`fibers` above).
 - Made with `SessionResolver::npm(&catalog, "node")`, the resolver also puts the rows without a prefix on the default Node runtime `node`; a row with another runtime's prefix stays that runtime's.
 - The runtime is asked at every resolution; nothing is cached by the package's `version`.
 
@@ -490,7 +493,7 @@ On Windows a process has an id here only once it has connected to the host, so t
     wordcount: running
   ```
 
-  Loading them again is one of the loader's operations: while the loader is doing another (a `reconcile` that has not returned, say), it waits for that one to end.
+  Loading them again is one of the loader's operations: while the loader is doing another (a `reconcile` that has not returned, say), it waits for that one to end. A `reconcile` the host gave up on (its future dropped) does not hold it up, nor does the `apply` that reconcile was waiting for (section 1).
 - rutis does not decide which services a plugin may use: which services go to which plugin is your business, yours to hand out.
 - Services are shared by name; that is not a permission.
 - Plugins in one process can reach each other through the language itself (globals, the module cache); to keep plugins apart, put them in different runtimes.
@@ -842,7 +845,7 @@ Without this it prints `jot: shout failed: UsageError: say what to shout: jot sh
 
 - The plugin gives the `code`: a string property `code` on the error in TypeScript and Python, a method `Code()` in Go ([Plugin API](plugin-api.en.md)). Say in the documentation for plugin authors which codes the host knows.
 - rutis's own refusals carry a `code` too (`rutis_bridge::session::code`: `not-declared`, `unavailable`, `no-method`, `bad-argument`, `bad-value`, `peer-gone`, `bad-config`).
-- A row that fails to start, a runtime that ends: the error sink reports these, on standard error by default (`count: failed: …`). To say them in the host's words, replace the sink: `Ctx::root_with_sink(handle, sink)`, see [default output](rust-host.en.md#default-output).
+- A row that fails to start, a runtime that ends: the error sink reports these, on standard error by default (`count: failed: …`). To say them in the host's words, replace the sink: `Ctx::root_with_sink(handle, sink)`, see [default output](rust-host.en.md#default-output). `RowEvent` / `RuntimeEvent` in section 6 report the same things; how to pick one is there.
 
 ## 6. See the state
 
@@ -861,6 +864,21 @@ for call in &status.calls {
 }
 # }
 ```
+
+Each row's state is `row.state` (an `EntryStatus`), which has no `Display`. For the word `rutis-host status` shows (`waiting`, `starting`, `running`, `failed`, `stopped`, `disabled`), turn the snapshot into JSON: each row's `state` is that word, the same as the `loader` service's `status()` gives plugins:
+
+```rust,no_run
+# fn demo(handle: rutis_loader::Loader) -> Result<(), serde_json::Error> {
+let status = serde_json::to_value(handle.status())?;
+for row in status["rows"].as_array().into_iter().flatten() {
+    let (id, state) = (row["id"].as_str().unwrap_or(""), row["state"].as_str().unwrap_or(""));
+    eprintln!("jot: {id}: {state}");                  // "jot: count: running"
+}
+# Ok(())
+# }
+```
+
+To decide in code whether a row runs, compare the state itself: `matches!(&row.state, EntryStatus::Running(s) if s.state == FiberState::Active)` (as in "The development loop" in section 5).
 
 - It is what `rutis-host status` prints (the format is in [rutis-host: seeing the current state](rutis-host.en.md#seeing-the-current-state)).
 - What it cannot see: calls within one runtime, and calls of functions passed by reference (only "host → row" shows); calls from Rust plugins in the process count as `host`.
@@ -894,4 +912,5 @@ root.on::<RuntimeEvent>(|event, _| async move {
 ```
 
 - `RowEvent`: the row `row` is now `pending`, `running`, `failed` (`error` saying why) or `stopped`. `RuntimeEvent`: the runtime `runtime` is up (`running`, also after each reconnect) or ended (`down`, `reason` saying how).
+- A failed row and an ended runtime are reported both by the error sink and by these events: print from both and each is two lines. Pick one: for the default line, write nothing (do not print from these events); to say it yourself, print in the events and replace the sink, or filter out `ErrorKind::StartFailed` and `ErrorKind::RuntimeDown` in it (the example at the end of [default output](rust-host.en.md#default-output)). Acting on them without printing (restarting, telling another component) goes with either.
 - They are ordinary events on the bus, which plugins of every language receive too; plugins cannot emit `rutis/*`. The other ways to use events are in [Rust host: events](rust-host.en.md#events).

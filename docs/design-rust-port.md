@@ -141,7 +141,7 @@ impl Ctx {
 | D4 | 四模式:emit fire-and-forget(spawn 观察 JoinHandle,panic/Err 路由 ErrorSink);parallel 聚合 `Aggregate{errors}`(JoinSet);serial 顺序至短路;waterfall = CPS(`Next<'_>`),veto=不调 next;全异步 | tower Service 先证;resolution D16(删 bail:bail 与 serial 短路语义本就相同,同步性仅服务已删的 `internal/listener`) |
 | D5 | fiber 状态机:`transition: Mutex<Transition>` 单锁域内改状态+读 token;**锁内只做 FIFO 入队,绝不持锁跨 await,回调/锁外执行** | tokio shared-state 官方(短临界区 std Mutex);std RwLock 死锁示例→快照后释放;resolution D24 修正 |
 | D6 | 恰好一次 = 锁内单 `Arc<TransitionTask>`(内嵌 generation);同代 join 同一 Arc,跨代新建;watch 仅观察(晚订阅先 `borrow()` 再 `changed().await` 循环) | codex 评审:watch last-value 证明不了同代只执行一次;resolution D20 最小修法(不建三件套) |
-| D7 | 协作取消统一 `CancellationToken`:每 fiber generation 独立 child token,`ctx.cancelled().await` 暴露;卸载五步:①标 Unloading、②cancel 当前代、③等 apply 退出,三者都先于 ④EffectRecord 按 LIFO 清理,⑤发布终态在全部清理结束之后;①②③ 之间的先后不固定——dispose/restart/update/驱逐在调用时就预取消当前代(②先于①),apply 仍在运行时 Unloading 要等 apply 退出才发布(③先于①),驱动内部发起的卸载(如依赖失效)先①后②;写明协作取消限制(不观察 token 则 dispose 无限等待) | tokio graceful-shutdown 官方;resolution D27 |
+| D7 | 协作取消统一 `CancellationToken`:每 fiber generation 独立 child token,`ctx.cancelled().await` 暴露;卸载五步:①标 Unloading、②cancel 当前代、③等 apply 退出,三者都先于 ④EffectRecord 按 LIFO 清理,⑤发布终态在全部清理结束之后;①②③ 之间的先后不固定——dispose/restart/update/驱逐在调用时就预取消当前代(②先于①),apply 仍在运行时 Unloading 要等 apply 退出才发布(③先于①),驱动内部发起的卸载(如依赖失效)先①后②;被预取消的这一代以卸载收尾——`apply`(以及 `build`、`validate`)返回 `Err` 也一样,它回 `Pending`(#968),不是装载失败;返回 `Err` 是插件配合取消、不报,但这代若以 panic 结束,panic 仍进 ErrorSink 一次(panic 是插件的 bug,不随协作退出丢弃);判据是驱动自己的预取消记录,不是令牌状态(`CtxHost::cancellation_token` 把这一代的令牌本身交给插件,插件能自己取消);只有驱动没有取消的那一代的错误才是粘性 `Failed`;写明协作取消限制(不观察 token 则 dispose 无限等待) | tokio graceful-shutdown 官方;resolution D27 |
 | D8 | runtime 接入:构造注入 `Handle` 优先;自动路径 `Handle::try_current()` → 明确错误;绝不隐式建 runtime | tokio Handle 文档 |
 | D9 | yield_now 仅公平性 hint;stale/epoch 检查只靠锁内 token 比较,无调度顺序假设;listener 完成顺序不作契约 | tokio yield_now 文档;resolution D24 |
 | D10 | 插件身份 = `FiberView.id: PluginId` + `Plugin::name()` 显示名;`is_unique` 式去重可选 | Bevy Plugin trait(name/is_unique) |
@@ -239,7 +239,7 @@ TS 96 spec 降级为灵感来源;其中纯范式部分(fiber/dispose/reentrant)�
   6. `parallel` 单错原样、多错聚合(crate 一致语义;TS 恒聚合为偏差,已声明)。
   7. watch 保活:`FiberInner` 持有常驻 receiver——无 receiver 时 tokio watch 通道视为关闭,`send` 静默失败(实现期实锤的坑)。
   8. settle(`FiberView` 的 `IntoFuture`)语义:已解析 + 非 Loading/Unloading + **无在途意图**(`intents_inflight` 计数)——防"resolved Pending + 未处理的再装载通知"竞态(demo 场景实锤)。
-  9. 卸载五步的落位:意图串行驱动;dispose/restart/update/驱逐在**入队前预取消当前代 token**(驱动串行,不预取消则运行中的 apply 等不到第②步;因此这些入口的②先于①,见 D7);apply 不被中止,协作退出后驱动继续(D7 ③"等 apply 退出"忠实落法)。每代 token 为新建(非 child 派生),load 换新。
+  9. 卸载五步的落位:意图串行驱动;dispose/restart/update/驱逐在**入队前预取消当前代 token**(驱动串行,不预取消则运行中的 apply 等不到第②步;因此这些入口的②先于①,见 D7);apply 不被中止,协作退出后驱动继续(D7 ③"等 apply 退出"忠实落法)。每代 token 为新建(非 child 派生),load 换新。被预取消的这一代即使 `apply`(或 `build`、`validate`)返回 `Err` 也按卸载收尾:回到 `Pending`(#968),不发布 `Failed`;返回的 `Err` 不报,这一代若以 panic 结束则 panic 仍进 ErrorSink 一次;驱动在各预取消入口记下这件事(`FiberInner::pre_cancel` 与各调用点),插件自己取消令牌不算。
   10. root 驱动常驻(root 可重启;应用生命周期资源);非 root 终态后驱动退出,句柄仍可 join 缓存终态。
   11. 实现期补充 API:`Ctx::get_as`/`provide_as_with_check`/`refresh`(check() 谓词重查触发)/`root_view`(root dispose/restart 入口);`FiberView::name`;`FiberStatusChanged{seq}` 携带序号。
   12. 提前释放单服务的驱逐:`mark_binding_removing`(严格解析立即失败)→ 驱逐 → 排干后 `finalize_binding`(清理期自访问保留,§四"卸载=注册表摘除"语义)。

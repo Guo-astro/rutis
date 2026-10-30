@@ -328,7 +328,7 @@ root.provide_at(host_key("clock"), Arc::new(Clock))?; // host_key 返回 Key<dyn
 
 要让错误像标注服务的 `Err(e)` 那样带 code 和 data，返回 `rutis_bridge::exports::failure(name, code, message, data)`：调用方语言里抛出名为 `name`、消息为 `message` 的错误，附带 `code` 和 `data`（`serde_json::Value` 或 `None`）。
 
-插件提供的服务同样以 `host_key(名字)` 出现在 rutis 里，Rust 插件可以按名字使用它们。
+插件提供的服务同样以 `host_key(名字)` 出现在 rutis 里，Rust 插件可以按名字使用它们（例子见 [写一个 Rust 插件：按名字使用别的语言提供的服务](rust-plugin.md#按名字使用别的语言提供的服务)）。
 
 ### 在 Rust 里按名字调用服务
 
@@ -472,7 +472,8 @@ let app = std::env::current_dir()?.join("app");
 
 // 服务名到键：所有名字都按名字跨语言共享，与 rutis-host 相同。
 let catalog = ServiceCatalog::new();
-// 这一端与每个运行时问候时用的 id：运行时的进程是一个会话的对面。
+// 这一端与每个运行时问候时用的 id：运行时的进程是一个会话的对面。没有它，每个运行时的会话都失败：
+// `the host provides no id for its sessions`。
 root.provide(LocalId(PeerId::new("main")?))?;
 
 // 本机的 Node 运行时（行 `node`）：运行的 @arcships/rutis-runtime 包，和插件解析所用的 package.json。
@@ -495,9 +496,9 @@ let loader = LoaderPlugin::new(
     LoaderOptions { catalog, ..LoaderOptions::default() },
 );
 let handle = loader.handle();
-sessions.attach(&handle);
+sessions.attach(&handle);                      // 告诉解析器它为哪个 loader 解析行：没有它，运行时的行一个也解析不了
 root.plugin(loader).await?;
-// 运行时一运行起来就放行它的行。
+// 运行时一运行起来就放行它的行（loader 挂上之后才能调用）。
 sessions.follow_row("node");
 sessions.follow_row("py");
 
@@ -512,9 +513,8 @@ for runtime in &runtimes {
 }
 // 每一行都装载过一遍才返回：见下面。
 let report = handle.reconcile(vec![Layer::new("app", rows)], None).await?;
-for failure in &report.failures {
-    eprintln!("{failure}");                                                  // "<行 id>: <错误>"
-}
+// 失败的行默认的错误汇集已经打印过（"<行 id>: failed: <错误>"）：report.failures 给程序判断，不再打印一遍。
+let all_started = report.failures.is_empty();
 # root.shutdown().await?;
 # Ok(())
 # }
@@ -530,6 +530,9 @@ for failure in &report.failures {
 # }
 ```
 
+- 例子里的零件：`LocalId` 是宿主与每个运行时问候时报的 id；`SessionResolver` 把 `<运行时名>:<插件>`（用 `npm(&catalog, "node")` 创建时还有 npm 名和文件）解析成那个运行时里的插件，`runtime(handle)` 让 `Loader::status()` 列出这个运行时；`attach(&handle)` 在挂上 loader 之前告诉它为哪个 loader 解析；`follow_row(名字)` 在挂上之后让这个运行时一运行起来（包括重启后）就放行它的行，行重新解析，用上插件现在的声明。各自为什么这样组合见 [做一个开放插件的宿主：每个零件做什么](open-host.md#每个零件做什么)。
+- 只用 Python（没有 Node）时：`rutis-loader` 只开 feature `runtimes`（不开 `node`），解析器写 `SessionResolver::new(&catalog)`，只建 `py` 的 `SpawnPlugin`，`follow_row("py")`；行写 `py:<模块>`。
+- 失败的行由错误汇集打印一次（默认的汇集写到标准错误，见[默认输出](#默认输出)）；`report.failures` 是同样的失败，给程序判断用。两处都打印，每个失败就是两行。只想自己打印时，换掉汇集（`Ctx::root_with_sink`），或在汇集里滤掉 `ErrorKind::StartFailed`（[默认输出](#默认输出)末尾的例子）。
 - `reconcile` 在每一行都装载过一遍后返回，对每一行就像 `view.await`：服务都在的行已经运行了插件的 `apply`（别的语言的行在它的运行时里运行），或者失败了，列在报告的 `failures` 里；等着一个还没有行提供的服务的行继续等，`Loader::waits(&entry)` 说明它在等什么。还在启动的运行时（比如在等调试器）不等：它的行等它，其他行照常启动，报告里没有它的行装载的结果（还没装载）；要完整的报告，像上面那样先等 `RuntimeHandle::ready()`。`Chain` 按顺序问它的解析器，`builtins` 和运行时都认识的行名归 `builtins`。
 - 配置：凡是有 Schema 的行（`Builtins` 的行、写了 `schema:` 的 dylib 行、你自己的 resolver 用 `Resolved::with_schema` 给了 Schema 的行、别的语言运行时的行；Cordis 行除外），loader 在 `build` 之前补默认值并校验，把补过默认值的配置交给插件，不合格的行以 `config: …` 失败，列在 `failures` 里（[插件 API：配置](plugin-api.md#配置)）。多余的键默认写到标准错误（`<行>: config: …`），每行每个配置值一次；`Loader::on_config_warning(Arc::new(|row, issue| …))` 改为交给你。
 - 路径：每个运行时的进程在它自己的目录里启动（Python、Go：它的项目目录；Node：运行时的包目录），收到的路径照原样使用。相对路径会从那个目录算起，而不是应用的目录：照上面那样写绝对路径。
@@ -568,10 +571,10 @@ let node = SpawnPlugin::new("node", languages::node::launcher(&runtime_package),
 | `.env(名字, 值)` | 设置进程的环境变量 |
 | `.stdio(stdin, stdout, stderr)` | 进程的标准流去哪里 |
 | `.handle()` | 运行时的状态 `RuntimeHandle`：`state()`、`ready()`、`pid()`；交给 `SessionResolver::runtime` |
-| `.processes()` | 它启动的进程：`kill()` 结束它们 |
+| `.processes()` | 它启动的进程，类型是 `rutis_bridge::pipe::Processes`：`kill()` 结束它们，`pid()`、`running()`、`status()`（最后一个进程怎样结束的）、`ended().await`（全部结束） |
 | `.greeting(时限)` | 进程启动后问候的时限，默认 30 秒；`Duration::MAX` 不限（调试器停在第一行时） |
 
-每个插件一个进程：每个插件一个用它自己名字的 `SpawnPlugin`，行写 `<运行时名>:<npm 名或文件>`，由 `SessionResolver` 解析（Node、Python 都这样）。
+每个插件一个进程：每个插件一个用它自己名字的 `SpawnPlugin`，行写 `<运行时名>:<npm 名或文件>`，由 `SessionResolver` 解析（Node、Python 都这样）。行在 `apply` 里失败时，它的运行时进程不停：运行时是另一个插件，不随它的行停下，只给这一行用的运行时也一样。要停掉，对 `root.plugin(runtime)` 返回的 fiber 调用 `dispose()`。
 
 ### Go 运行时
 

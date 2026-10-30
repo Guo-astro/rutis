@@ -1212,7 +1212,7 @@ Each language's plugin guide shows loading a plugin with its test tool, getting 
 | Name | What it does |
 | --- | --- |
 | `load(plugin, { config, services })` | Loads one plugin, as the one row of a `host()` of its own; unloading it unloads that `host()` too |
-| `host({ services })` | Plugins on the host, sharing its bus. `services` are the test's, given to every row that injects them |
+| `host({ services })` | Plugins on the host, sharing its bus. `services` are the test's, given to every row that injects them. One made in a test and not unloaded is unloaded when that test ends, passed or failed (`node:test`'s `after`, Bun's `onTestFinished`): its rows and the test's services go, and the next test does not find them. This holds for `load` too, which makes a `host()` of its own |
 | `h.load(plugin, { config, services, id, isolate })` | Loads another row on the `host()`; `services` are this row's only; `id` is the row's id (by default its module's file name); `isolate` is as in a row of `rutis.json` (`{ forecast: true }`, or a label) |
 | The five methods on `h`, `h.filter`, `await h.reported()`, `h.unload()` | Emit from the test's plugin; the failures the host reported of these rows; unload every row, latest first, then withdraw the test's services |
 
@@ -1259,7 +1259,7 @@ The `t` that `load` and `h.load` return:
 | `await t.update(config)` | The host changes the config: unload, then run again with the new config; a config that does not match fails in the host's words, and the row keeps its config |
 | `await t.unload()` | The host unloads it: withdraw listeners and services, cancel and wait for running listeners, then run the cleanups, latest first (done when the `async with` block exits) |
 
-`Bus()`: a host for tests; the plugins on the same `bus` are on one host and hear each other; it starts with the first `load` and stops when the last one ends. It has `await bus.reported()` (of the rows on the bus, row by row) and `emitter()` (emit as the test's plugin). `Reported`: one failure nobody received, with the field `line`, the line the host prints (`ticker: listener of tick failed: ValueError: boom`, then the stack). `PluginTestError`: the host refused to load the plugin or change its config (the text is the host's), the plugin does not provide the service asked for, or `rutis-host` cannot be started; a subclass of `AssertionError`.
+`Bus()`: a host for tests; the plugins on the same `bus` are on one host and hear each other; it starts with the first `load` and stops when the last one ends. It has `await bus.reported()` (of the rows on the bus, row by row) and `emitter()` (emit as the test's plugin). `Reported`: one failure nobody received, with the field `line`, the line the host prints (`ticker: listener of tick failed: ValueError: boom`, then the stack). `PluginTestError`: the host refused to load the plugin or change its config (the text is the host's), the plugin does not provide the service asked for, a call of its service did not return within 30 seconds (`weather.today() did not return within 30 s`; the call is cancelled), or `rutis-host` cannot be started; a subclass of `AssertionError`.
 
 A plugin definition a test double receives can be passed to `load` as it is.
 

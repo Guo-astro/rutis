@@ -141,6 +141,21 @@ pub(crate) fn depends_on_runtime(manifest: &Value) -> bool {
         .any(|field| !manifest[field]["@arcships/rutis-bun"].is_null())
 }
 
+/// The Bun runtime package (`@arcships/rutis-bun`) for the project
+/// `project`: `configured` (`runtimes.bun.runtime`), else the project's.
+/// A `configured` package that is not there is an error, not passed over.
+pub(crate) fn runtime_package(
+    configured: Option<&Path>,
+    project: &Path,
+) -> Result<Option<PathBuf>, String> {
+    if let Some(configured) = configured {
+        super::configured_package("runtimes.bun.runtime", configured)?;
+        return Ok(Some(configured.to_owned()));
+    }
+    let package = project.join("node_modules/@arcships/rutis-bun");
+    Ok(Some(package).filter(|package| package.join("package.json").exists()))
+}
+
 /// Where the Bun runtime's inspector listens under `dev --debug`: Bun's
 /// own default port, with a fixed path, so its address is the same on
 /// every start.
@@ -150,20 +165,12 @@ pub const INSPECT: &str = "127.0.0.1:6499/rutis";
 /// installed there (or given), run by a Bun that answers; with `debug`, its
 /// inspector on [`INSPECT`].
 fn runtime(bun: &BunRuntime, debug: bool) -> Result<SpawnPlugin, Error> {
-    let candidates = [
-        bun.runtime.clone(),
-        Some(bun.project.join("node_modules/@arcships/rutis-bun")),
-    ];
-    let package = candidates
-        .into_iter()
-        .flatten()
-        .find(|package| package.join("package.json").exists())
-        .ok_or_else(|| {
-            format!(
-                "the Bun runtime is not installed in {}: run `bun add -d @arcships/rutis-bun` there",
-                bun.project.display()
-            )
-        })?;
+    let package = runtime_package(bun.runtime.as_deref(), &bun.project)?.ok_or_else(|| {
+        format!(
+            "the Bun runtime is not installed in {}: run `bun add -d @arcships/rutis-bun` there",
+            bun.project.display()
+        )
+    })?;
     let program = bun.program.clone().unwrap_or_else(|| PathBuf::from("bun"));
     let answers = std::process::Command::new(&program)
         .arg("--version")

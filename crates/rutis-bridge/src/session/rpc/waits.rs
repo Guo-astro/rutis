@@ -316,6 +316,23 @@ fn gid_of(hop: &Hop) -> Gid<'_> {
     (&hop.dst, &hop.did)
 }
 
+#[cfg(test)]
+thread_local! {
+    /// The steps [`cycle_among`] took on this thread: what a test counts
+    /// to see how the check grows, whatever the machine's load.
+    static STEPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// `n` steps of [`cycle_among`]: one for each call, chain entry and edge
+/// it looks at. Only tests count them.
+#[inline(always)]
+fn steps(n: usize) {
+    #[cfg(test)]
+    STEPS.with(|steps| steps.set(steps.get() + n));
+    #[cfg(not(test))]
+    let _ = n;
+}
+
 /// The cycle that `new` would close among `hops`, if any. Linear in the
 /// calls and the lengths of their chains, but for the put-aside edges (each
 /// hop into a non-reentrant runtime, for each call out of it).
@@ -328,6 +345,7 @@ fn cycle_among<'a>(
     let mut all: Vec<&Hop> = hops.collect();
     all.sort_unstable_by(|a, b| (&a.dst, a.seq).cmp(&(&b.dst, b.seq)));
     all.push(new);
+    steps(all.len());
     let last = all.len() - 1;
     let index: HashMap<Gid, usize> = all
         .iter()
@@ -339,6 +357,7 @@ fn cycle_among<'a>(
     let mut named: std::collections::HashSet<Gid> = std::collections::HashSet::new();
     for hop in all.iter().filter(|hop| !hop.entry) {
         for (session, id) in &hop.chain {
+            steps(1);
             if *session == hop.src {
                 named.insert((session, id));
             }
@@ -353,6 +372,7 @@ fn cycle_among<'a>(
             continue;
         }
         for (session, id) in hop.chain[..hop.chain.len() - 1].iter().rev() {
+            steps(1);
             let gid = (session.as_str(), id.as_str());
             if let Some(&c) = index.get(&gid) {
                 successors[c].push(d);
@@ -366,6 +386,7 @@ fn cycle_among<'a>(
     let mut into: HashMap<&str, Vec<usize>> = HashMap::new();
     let mut out: HashMap<&str, Vec<usize>> = HashMap::new();
     for (i, hop) in all.iter().enumerate() {
+        steps(1);
         into.entry(&hop.dst).or_default().push(i);
         if !hop.entry {
             out.entry(&hop.src).or_default().push(i);
@@ -385,11 +406,12 @@ fn cycle_among<'a>(
                 outs.iter().map(|&o| all[o].sid.as_str()).collect();
             for &h in calls.iter() {
                 let hop = all[h];
-                let related = hop
-                    .chain
-                    .iter()
-                    .any(|(session, id)| session == y && sids.contains(id.as_str()));
+                let related = hop.chain.iter().any(|(session, id)| {
+                    steps(1);
+                    session == y && sids.contains(id.as_str())
+                });
                 if !hop.entry && !related && !started[h] {
+                    steps(outs.len());
                     successors[h].extend(outs.iter().copied().filter(|&o| o != h));
                 }
             }
@@ -398,6 +420,7 @@ fn cycle_among<'a>(
         // there; through the next one that did, which waits for the rest.
         let mut next_started = None;
         for &c in calls.iter().rev() {
+            steps(1);
             if let Some(d) = next_started {
                 successors[c].push(d);
             }
@@ -412,6 +435,7 @@ fn cycle_among<'a>(
     let mut seen = vec![false; all.len()];
     while let Some(h) = stack.pop() {
         for &next in &successors[h] {
+            steps(1);
             if next == last {
                 let mut names = vec![name(all[last])];
                 let mut at = h;
@@ -828,32 +852,70 @@ mod tests {
         assert_eq!(found, ["c/rust:1", "a/rust:1", "a/rust:2"]);
     }
 
-    /// The check stays near linear in the calls in progress: many entries
+    /// The steps one check of `new` among `hops` takes.
+    fn steps_of(hops: &[Hop], new: &Hop, profiles: &HashMap<String, Profile>) -> usize {
+        STEPS.with(|steps| steps.set(0));
+        std::hint::black_box(cycle(hops, new, profiles));
+        STEPS.with(|steps| steps.get())
+    }
+
+    /// The check stays linear in the calls in progress: many entries
     /// (asynchronous calls and emits while a synchronous call waits) cost
-    /// in proportion. Quadratic, four times the entries took about sixteen
-    /// times as long (1,000: 5.9 ms, 3,000: 57 ms).
+    /// in proportion. It counts the check's steps, not its time, so the
+    /// machine's load does not change the result (#922). Quadratic, four
+    /// times the entries took sixteen times the steps.
     #[test]
     fn the_check_is_near_linear_in_entries() {
         let p = profiles(&[("n", true, false), ("py", true, true), ("g", false, true)]);
-        let time = |count: usize| {
+        let count = |count: usize| {
             let mut hops = vec![hop("n", "node:1", "py", 1, &["n/node:1"])];
             for i in 0..count {
                 hops.push(entry("py", 2 + i as u64, &["g/go:1", "g/go:2", "g/go:3"]));
             }
             let new = hop("py", "py:1", "g", 1, &["n/node:1", "py/rust:1", "py/py:1"]);
-            (0..5)
-                .map(|_| {
-                    let start = std::time::Instant::now();
-                    std::hint::black_box(cycle(&hops, &new, &p));
-                    start.elapsed()
-                })
-                .min()
-                .unwrap()
+            steps_of(&hops, &new, &p)
         };
-        let (small, large) = (time(1_000), time(4_000));
+        let (small, large) = (count(1_000), count(4_000));
         assert!(
-            large < small * 8,
-            "4,000 entries took {large:?}, 1,000 took {small:?}: not near linear"
+            large <= small * 5,
+            "4,000 entries took {large} steps, 1,000 took {small}: not linear"
+        );
+    }
+
+    /// The counted steps see a quadratic graph: the put-aside edges, each
+    /// hop not started in a non-reentrant runtime to each call out of it,
+    /// are the one part of the check that is not linear. Four times the
+    /// calls take more than ten times the steps, which the check above
+    /// would reject.
+    #[test]
+    fn the_steps_see_a_quadratic_graph() {
+        let p = profiles(&[("n", true, false), ("g", false, true), ("h", false, true)]);
+        let count = |count: usize| {
+            let mut hops = Vec::new();
+            for i in 1..=count {
+                // g calls n (not started there), and n calls h.
+                hops.push(hop(
+                    "g",
+                    &format!("go:{i}"),
+                    "n",
+                    i as u64,
+                    &[&format!("g/go:{i}")],
+                ));
+                hops.push(hop(
+                    "n",
+                    &format!("node:{i}"),
+                    "h",
+                    i as u64,
+                    &[&format!("n/node:{i}")],
+                ));
+            }
+            let new = hop("g", "go:0", "h", 0, &["g/go:0"]);
+            steps_of(&hops, &new, &p)
+        };
+        let (small, large) = (count(250), count(1_000));
+        assert!(
+            large > small * 10,
+            "1,000 calls took {large} steps, 250 took {small}: the steps miss the quadratic edges"
         );
     }
 

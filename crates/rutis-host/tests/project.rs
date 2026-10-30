@@ -304,7 +304,7 @@ fn the_dev_file_is_merged_into_the_project() {
         .collect();
     assert_eq!(
         warnings,
-        ["<dir>/rutis.dev.json: rows[0] (id \"x\"): unknown field `nam` is ignored; a row has `id`, `name`, `config`, `inject`, `isolate`, `disabled`, `group`, `instanced`"]
+        ["<dir>/rutis.dev.json: rows[0] (id \"x\"): unknown field `nam` is ignored (did you mean `name`?); a row has `id`, `name`, `config`, `inject`, `isolate`, `disabled`, `group`, `instanced`"]
     );
 }
 

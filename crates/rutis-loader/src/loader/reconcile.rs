@@ -762,6 +762,10 @@ impl Inner {
     /// Bring the running tree to the current layers and wait until settled.
     /// The caller holds the operation lock.
     pub(super) async fn reconcile_inner(self: &Arc<Self>) -> ReconcileReport {
+        let mut give_up = GiveUp {
+            inner: self,
+            armed: true,
+        };
         let (before, names) = {
             let mut state = self.state.lock().unwrap();
             let before = Self::failures(&state);
@@ -1075,6 +1079,7 @@ impl Inner {
             failures: Failing::public(after.iter()),
         };
         drop(state);
+        give_up.armed = false;
         if let Some(root) = root {
             let sink = rutis::host::CtxHost::error_sink(&root);
             for error in refused {
@@ -1090,7 +1095,21 @@ impl Inner {
     /// was already waited for: a `Pending` one goes on to load once what it
     /// uses runs), so repeat until neither the set of records nor any of
     /// their states changed while waiting.
+    ///
+    /// This is the wait of an operation: a transition an earlier operation
+    /// was waiting for when its caller gave up on it (an `apply` that does
+    /// not return) is not waited for again, and one this wait is given up
+    /// on is not waited for by the next (#934). [`Loader::settled`] waits
+    /// for every record.
     pub(super) async fn settle(&self, scope: Option<u64>) {
+        self.wait_settled(scope, true).await
+    }
+
+    pub(super) async fn wait_settled(&self, scope: Option<u64>, operation: bool) {
+        let mut give_up = GiveUp {
+            inner: self,
+            armed: operation,
+        };
         let states = |views: &[FiberView]| -> HashSet<(PluginId, u64)> {
             views
                 .iter()
@@ -1099,11 +1118,24 @@ impl Inner {
         };
         let views = || -> Vec<FiberView> {
             let state = self.state.lock().unwrap();
-            state
+            let mut abandoned = self.abandoned.lock().unwrap();
+            let running: Vec<FiberView> = state
                 .running
                 .iter()
                 .filter(|(slot, _)| scope.is_none() || slot.scope == scope)
                 .map(|(_, r)| r.view.clone())
+                .collect();
+            if !operation {
+                return running;
+            }
+            // A transition that moved on is waited for as any other.
+            if scope.is_none() {
+                let current = states(&running);
+                abandoned.retain(|entry| current.contains(entry));
+            }
+            running
+                .into_iter()
+                .filter(|view| !abandoned.contains(&(view.id, view.sequenced_state().0)))
                 .collect()
         };
         loop {
@@ -1113,8 +1145,36 @@ impl Inner {
                 let _ = view.await;
             }
             if states(&views()) == before {
+                give_up.armed = false;
                 return;
             }
+        }
+    }
+
+    /// The caller gave up on an operation: the transitions under way are
+    /// not waited for by the next ones.
+    fn abandon(&self) {
+        if std::thread::panicking() {
+            return;
+        }
+        let Ok(state) = self.state.lock() else {
+            return;
+        };
+        let under_way: Vec<(PluginId, u64)> = state
+            .running
+            .values()
+            .filter_map(|running| {
+                let (seq, snapshot) = running.view.sequenced_state();
+                (!matches!(
+                    snapshot.state,
+                    FiberState::Active | FiberState::Failed | FiberState::Disposed
+                ))
+                .then_some((running.view.id, seq))
+            })
+            .collect();
+        drop(state);
+        if let Ok(mut abandoned) = self.abandoned.lock() {
+            abandoned.extend(under_way);
         }
     }
 
@@ -1189,6 +1249,22 @@ impl Inner {
             schema: resolved.and_then(|r| r.schema.clone()),
             meta: resolved.map(|r| r.meta.clone()).unwrap_or(Value::Null),
             instance,
+        }
+    }
+}
+
+/// Held by an operation's wait; dropped before the wait ended (its caller
+/// gave up on the operation), it marks the transitions under way as
+/// abandoned ([`Inner::settle`]).
+struct GiveUp<'a> {
+    inner: &'a Inner,
+    armed: bool,
+}
+
+impl Drop for GiveUp<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            self.inner.abandon();
         }
     }
 }

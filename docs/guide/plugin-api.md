@@ -1212,7 +1212,7 @@ fn mount(at: &Ctx, definition: &Definition) -> Result {
 | 名字 | 作用 |
 | --- | --- |
 | `load(plugin, { config, services })` | 装载一个插件，它是自己那个 `host()` 的唯一一行；卸载它也卸掉这个 `host()` |
-| `host({ services })` | 宿主上的几个插件，共用它的总线。`services` 是测试的服务，给每个 `inject` 了它的行 |
+| `host({ services })` | 宿主上的几个插件，共用它的总线。`services` 是测试的服务，给每个 `inject` 了它的行。在一个测试里建的、没卸载的，这个测试结束时（通过或失败，`node:test` 的 `after`、Bun 的 `onTestFinished`）自动卸载：它的行和测试的服务都撤下，下一个测试碰不到。`load` 也一样，它自己建一个 `host()` |
 | `h.load(plugin, { config, services, id, isolate })` | 在 `host()` 上再装载一行；`services` 只给这一行；`id` 是行 id（默认模块的文件名）；`isolate` 与 `rutis.json` 里一行的相同（`{ forecast: true }`，或一个标签） |
 | `h.emit` 等五个方法、`h.filter`、`await h.reported()`、`h.unload()` | 从测试的插件发出；宿主报告的这些行的失败；倒序卸载每一行，再撤下测试的服务 |
 
@@ -1259,7 +1259,7 @@ fn mount(at: &Ctx, definition: &Definition) -> Result {
 | `await t.update(config)` | 由宿主换配置：卸载后用新配置再运行；配置不合格时以宿主的话失败，这一行保持原配置 |
 | `await t.unload()` | 由宿主卸载：撤下监听器和服务，取消并等待正在运行的监听器，再按倒序运行清理（退出 `async with` 时自动做） |
 
-`Bus()`：一个测试用的宿主，同一个 `bus` 上的插件在同一个宿主上，互相听得到；第一个 `load` 时起，最后一个结束时停。它的 `await bus.reported()`（同一个 bus 上各行的，按行）、`emitter()`（以测试的插件发出）。`Reported`：没人接收的一次失败，字段 `line`，宿主打印的那一行（`ticker: listener of tick failed: ValueError: boom`，后面是栈）。`PluginTestError`：宿主拒绝装载或换配置（文字是宿主的话），插件没有提供要的服务，或起不了 `rutis-host`；是 `AssertionError` 的子类。
+`Bus()`：一个测试用的宿主，同一个 `bus` 上的插件在同一个宿主上，互相听得到；第一个 `load` 时起，最后一个结束时停。它的 `await bus.reported()`（同一个 bus 上各行的，按行）、`emitter()`（以测试的插件发出）。`Reported`：没人接收的一次失败，字段 `line`，宿主打印的那一行（`ticker: listener of tick failed: ValueError: boom`，后面是栈）。`PluginTestError`：宿主拒绝装载或换配置（文字是宿主的话），插件没有提供要的服务，它的服务的一次调用 30 秒内没有返回（`weather.today() did not return within 30 s`，这次调用被取消），或起不了 `rutis-host`；是 `AssertionError` 的子类。
 
 替身收到的插件定义可以直接交给 `load` 装上。
 

@@ -503,20 +503,14 @@ impl Core {
         let (runtime_package, runtime_there) = match lang {
             Lang::Node => (
                 "@arcships/rutis-runtime",
-                crate::languages::node::runtime_package(places.node_runtime.as_deref(), project)
-                    .is_some(),
+                crate::languages::node::runtime_package(places.node_runtime.as_deref(), project),
             ),
             _ => (
                 "@arcships/rutis-bun",
-                [
-                    places.bun_runtime.clone(),
-                    Some(project.join("node_modules/@arcships/rutis-bun")),
-                ]
-                .into_iter()
-                .flatten()
-                .any(|package| package.join("package.json").exists()),
+                crate::languages::bun::runtime_package(places.bun_runtime.as_deref(), project),
             ),
         };
+        let runtime_there = runtime_there.map_err(Error::Other)?.is_some();
         let runtime = format!("{runtime_package}@{VERSION}");
         match lang {
             Lang::Node => {
