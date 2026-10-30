@@ -2,12 +2,13 @@
 
 [English](swift-plugin.en.md)
 
-从创建项目到发布。需要 macOS 14 或更高、带 Swift 6.2 工具链的 Xcode 26 或更高（`swift test` 要用 Xcode 的测试框架），以及 Node.js 22 或更高（运行 `npx` 和第 7 步的假服务）。Swift 用来接入 macOS 给本机程序的能力：日历与提醒（EventKit）、通讯录、辅助功能与 Apple 事件自动化、屏幕录制、Core ML。
+从创建项目到发布。需要 macOS 14 或更高、带 Swift 6.2 工具链的 Xcode 26 或更高（`swift test` 要用 Xcode 的测试框架），以及 Node.js 22 或更高（运行 `npx` 和第 7 步的假服务）。测试（`swift test`）需要装好的 `rutis-host`：在 `PATH` 上，或由 `RUTIS_HOST` 给出路径；第一段命令用 npm 装上它。Swift 用来接入 macOS 给本机程序的能力：日历与提醒（EventKit）、通讯录、辅助功能与 Apple 事件自动化、屏幕录制、Core ML。
 
 ## 1. 起项目
 
 <!-- example: swift run -->
 ```bash
+npm install --global @arcships/rutis-host
 npx @arcships/rutis-host new greeter --lang swift
 cd greeter
 swift test

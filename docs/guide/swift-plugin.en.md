@@ -2,12 +2,13 @@
 
 [中文](swift-plugin.md)
 
-From creating a project to publishing it. Needs macOS 14 or later, Xcode 26 or later with the Swift 6.2 toolchain (`swift test` needs Xcode's test frameworks), and Node.js 22 or later (for `npx` and the fake service of step 7). Swift is the language for what macOS offers its own programs: calendars and reminders (EventKit), contacts, accessibility and Apple events automation, screen capture, Core ML.
+From creating a project to publishing it. Needs macOS 14 or later, Xcode 26 or later with the Swift 6.2 toolchain (`swift test` needs Xcode's test frameworks), and Node.js 22 or later (for `npx` and the fake service of step 7). The tests (`swift test`) need `rutis-host` installed: on `PATH`, or its path in `RUTIS_HOST`; the first block installs it with npm. Swift is the language for what macOS offers its own programs: calendars and reminders (EventKit), contacts, accessibility and Apple events automation, screen capture, Core ML.
 
 ## 1. Start a project
 
 <!-- example: swift-en run -->
 ```bash
+npm install --global @arcships/rutis-host
 npx @arcships/rutis-host new greeter --lang swift
 cd greeter
 swift test
