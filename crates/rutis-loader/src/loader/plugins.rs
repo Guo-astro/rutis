@@ -158,6 +158,7 @@ impl LoaderPlugin {
                     catalog: options.catalog,
                     expressions: options.expressions,
                     op: tokio::sync::Mutex::new(()),
+                    abandoned: Mutex::default(),
                     #[cfg(feature = "runtimes")]
                     rekey_pending: Default::default(),
                     warned: Default::default(),

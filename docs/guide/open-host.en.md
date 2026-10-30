@@ -311,6 +311,8 @@ calls:
 
 The row `starting` is the `apply` that has not returned; when it is calling a row's service, `calls` shows which call.
 
+Ending there (dropping the `reconcile` future) leaves that row `starting` until its `apply` returns. The loader's later operations do not wait for it again: a `reload` of another row, another `reconcile`, and the reload of a restarted runtime's rows (section 3) return once what they change has loaded. `Loader::settled()` still waits for every row, this one too. Killing its process and restarting its runtime (section 3) starts it again, and the operations wait for that start as for any other.
+
 ### Paths and environment
 
 - Each runtime's process starts in a directory of its own (Python: its project directory, here `commands/`; Node: the runtime's package directory) and takes the paths it is given as they are: write absolute paths, since a relative one counts from that directory.
@@ -490,7 +492,7 @@ On Windows a process has an id here only once it has connected to the host, so t
     wordcount: running
   ```
 
-  Loading them again is one of the loader's operations: while the loader is doing another (a `reconcile` that has not returned, say), it waits for that one to end.
+  Loading them again is one of the loader's operations: while the loader is doing another (a `reconcile` that has not returned, say), it waits for that one to end. A `reconcile` the host gave up on (its future dropped) does not hold it up, nor does the `apply` that reconcile was waiting for (section 1).
 - rutis does not decide which services a plugin may use: which services go to which plugin is your business, yours to hand out.
 - Services are shared by name; that is not a permission.
 - Plugins in one process can reach each other through the language itself (globals, the module cache); to keep plugins apart, put them in different runtimes.

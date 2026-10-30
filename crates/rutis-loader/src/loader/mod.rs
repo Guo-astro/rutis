@@ -368,6 +368,10 @@ struct Inner {
     expressions: Option<Arc<dyn Expressions>>,
     /// Serializes reconcile and edits.
     op: tokio::sync::Mutex<()>,
+    /// The transitions (fiber, state sequence) an operation was waiting
+    /// for when its caller gave up on it (dropped its future): later
+    /// operations do not wait for them ([`Inner::settle`], #934).
+    abandoned: Mutex<std::collections::HashSet<(rutis::host::PluginId, u64)>>,
     /// A rekeying reconcile is spawned and has not read the keys yet
     /// ([`Loader::rekeying`]): announcements meanwhile need no other.
     #[cfg(feature = "runtimes")]
