@@ -890,11 +890,21 @@ impl Host {
     /// What `rutis-host status` answers: the loader's status, then what
     /// each connection row has connected.
     pub fn status_report(&self) -> crate::control::Report {
+        self.status_report_with(|_| {})
+    }
+
+    /// [`Host::status_report`] with the loader's status as `adjust` leaves
+    /// it (`dev`: a row whose reload failed runs its previous version).
+    pub fn status_report_with(
+        &self,
+        adjust: impl Fn(&mut rutis_loader::status::Status) + Send + Sync + 'static,
+    ) -> crate::control::Report {
         let (loader, connections) = (self.loader.clone(), self.connections.clone());
         Arc::new(move || {
+            let mut status = loader.status();
+            adjust(&mut status);
             format!(
-                "{}{}",
-                loader.status(),
+                "{status}{}",
                 crate::status::connections(&connections.rows())
             )
         })

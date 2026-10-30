@@ -107,7 +107,8 @@ pub async fn dev(args: &[String]) -> Result<Stopped, String> {
         }
     }
     let mut host = Host::start(&config).await?;
-    let _status = crate::answer_status(&dir, &host);
+    let previous = Previous::default();
+    let _status = crate::answer_status_with(&dir, &host, previous.report(&host));
     for line in status::listening(&host.listening) {
         errln!("{line}");
     }
@@ -145,6 +146,7 @@ pub async fn dev(args: &[String]) -> Result<Stopped, String> {
         debug,
         prefix_output,
         stale: Vec::new(),
+        previous,
         // Printed at the start (`warn`).
         warned: config.warnings.iter().cloned().collect(),
     };
@@ -275,8 +277,9 @@ fn debugging(config: &HostConfig) -> Result<Vec<String>, String> {
 struct Project {
     /// Its directory, absolute.
     dir: PathBuf,
-    /// The id of its own row (of a Go or Swift project, the first of its
-    /// rows).
+    /// The id of its own row; of a Go or Swift project, which only the
+    /// line saying it runs uses, those of its rows the dev file writes
+    /// (else all of them), `weather, llm`.
     own: String,
     /// A compiled language's project (Go, Swift): its language's key and its
     /// build.
@@ -290,6 +293,8 @@ struct Project {
     /// Builds no runtime runs any more, still to delete: Windows refuses
     /// while it still holds the image of a process that just ended.
     stale: Vec<PathBuf>,
+    /// The rows running their previous version: their last reload failed.
+    previous: Previous,
     /// The configuration's warnings printed so far: reading `rutis.dev.json`
     /// again prints a warning once, not on every reload.
     warned: HashSet<String>,
@@ -376,6 +381,10 @@ impl Project {
                 .flat_map(|(_, files)| files.iter().cloned())
                 .collect::<Vec<_>>();
             start_again(host, &runtime, &format!("{} changed", self.files(&why))).await;
+            // Back with the code as it is then.
+            for row in &rows {
+                self.previous.running(row, false);
+            }
             skip.extend(rows);
         }
         let mut reloaded: HashSet<String> = HashSet::new();
@@ -388,6 +397,8 @@ impl Project {
             match host.loader.reload(id).await {
                 Ok(_) => {
                     host.loader.settled().await;
+                    // Before it is said: `status` agrees from then on.
+                    self.previous.running(id, false);
                     errln!("{id}: reloaded ({} changed)", self.files(files));
                     reloaded.insert(id.clone());
                     let cause = [(id.clone(), format!("{id} reloaded"))];
@@ -395,6 +406,7 @@ impl Project {
                 }
                 Err(error) => {
                     let running = Rows::of(host).active(id);
+                    self.previous.running(id, running);
                     errln!("{}", cannot_reload(id, &error, running));
                 }
             }
@@ -536,8 +548,16 @@ impl Project {
                     .filter(|(_, change)| *change != RowChange::Removed)
                     .map(|(id, _)| (id.clone(), Vec::new()))
                     .collect();
-                for (runtime, _) in down_runtimes(host, &plan) {
+                for (id, change) in &changes {
+                    if *change == RowChange::Removed {
+                        self.previous.running(id, false);
+                    }
+                }
+                for (runtime, rows) in down_runtimes(host, &plan) {
                     start_again(host, &runtime, &format!("{DEV_FILE} changed")).await;
+                    for row in &rows {
+                        self.previous.running(row, false);
+                    }
                 }
             }
             Err(error) => {
@@ -574,6 +594,48 @@ impl Project {
             dev.dev = started.dev.clone();
         }
         Ok(config)
+    }
+}
+
+/// The rows whose last reload failed while their previous version kept
+/// running: `rutis-host status` says so of each while it runs, `weather:
+/// running (the previous version: its last reload failed)`, instead of a
+/// plain `running` (#938).
+#[derive(Default, Clone)]
+struct Previous(std::sync::Arc<std::sync::Mutex<HashSet<String>>>);
+
+/// What `status` says of a row [`Previous`] has.
+const PREVIOUS: &str = "the previous version: its last reload failed";
+
+impl Previous {
+    /// Note whether the row `id` runs its previous version now.
+    fn running(&self, id: &str, previous: bool) {
+        let mut rows = self.0.lock().unwrap();
+        match previous {
+            true => rows.insert(id.to_owned()),
+            false => rows.remove(id),
+        };
+    }
+
+    /// `host`'s status report, saying it of these rows while they run.
+    fn report(&self, host: &Host) -> rutis_host::control::Report {
+        let previous = self.clone();
+        host.status_report_with(move |status| {
+            let rows = previous.0.lock().unwrap();
+            for row in &mut status.rows {
+                let active = matches!(
+                    &row.state,
+                    EntryStatus::Running(snapshot) if snapshot.state == FiberState::Active
+                );
+                if active
+                    && row.instance.is_none()
+                    && row.reason.is_none()
+                    && rows.contains(&row.id)
+                {
+                    row.reason = Some(PREVIOUS.to_owned());
+                }
+            }
+        })
     }
 }
 
@@ -741,7 +803,7 @@ impl Rows {
 /// The rows that restarted, started or stopped because other rows changed,
 /// each with the changes it uses.
 #[derive(Default)]
-struct Affected(BTreeMap<String, (&'static str, Vec<String>)>);
+struct Affected(BTreeMap<String, (&'static str, Vec<Cause>)>);
 
 impl Affected {
     /// Note the rows that differ between `before` and `after`, but the
@@ -777,23 +839,36 @@ impl Affected {
                     .iter()
                     .any(|rows| rows.uses.get(*id).is_some_and(|uses| uses.contains(other)))
             };
-            let mut said: Vec<String> = causes
+            let mut said: Vec<Cause> = causes
                 .iter()
                 .filter(|(cause, _)| uses(cause))
-                .map(|(_, said)| said.clone())
+                .map(|(cause, said)| Cause {
+                    row: cause.clone(),
+                    said: said.clone(),
+                    changed: true,
+                })
                 .collect();
             if said.is_empty() {
                 said = noted
                     .iter()
                     .filter(|(other, _)| other != id && uses(other))
-                    .map(|(other, what)| format!("{other} {what}"))
+                    .map(|(other, what)| Cause {
+                        row: (*other).clone(),
+                        said: format!("{other} {what}"),
+                        changed: false,
+                    })
                     .collect();
             }
             let entry = self.0.entry((*id).clone()).or_insert((what, Vec::new()));
             entry.0 = what;
             for cause in said {
-                if !entry.1.contains(&cause) {
-                    entry.1.push(cause);
+                // A row named once: by its own change (`weather
+                // reloaded`), rather than by a restart that reached it
+                // through another change (`weather restarted`, #938).
+                match entry.1.iter_mut().find(|known| known.row == cause.row) {
+                    Some(known) if cause.changed && !known.changed => *known = cause,
+                    Some(_) => {}
+                    None => entry.1.push(cause),
                 }
             }
         }
@@ -808,10 +883,23 @@ impl Affected {
             .filter(|(id, _)| !skip(id))
             .map(|(id, (what, causes))| match causes.is_empty() {
                 true => format!("{id}: {what}"),
-                false => format!("{id}: {what} ({})", causes.join(", ")),
+                false => {
+                    let said: Vec<&str> = causes.iter().map(|cause| cause.said.as_str()).collect();
+                    format!("{id}: {what} ({})", said.join(", "))
+                }
             })
             .collect()
     }
+}
+
+/// What an [`Affected`] row restarted for: a row, and how it is said.
+struct Cause {
+    row: String,
+    /// `weather reloaded`, `greeter restarted`.
+    said: String,
+    /// The row changed itself (a cause of [`Affected::add`]), rather than
+    /// restarting with it.
+    changed: bool,
 }
 
 /// Print the services line, and keep it as the one last said.
@@ -989,6 +1077,43 @@ mod tests {
         assert_eq!(
             affected.lines(&|id| id == "llm" || id == "weather"),
             ["caller: restarted (weather reloaded, llm reloaded)"]
+        );
+
+        // Two files at once, weather's and llm's: weather reloads, then
+        // restarts with llm. caller, which uses only weather, names it
+        // once, by its own change (#938: not `weather reloaded, weather
+        // restarted`), in either order.
+        let uses: &[(&str, &[&str])] = &[("weather", &["llm"]), ("caller", &["weather"])];
+        let at = |generations: [u64; 3]| {
+            rows(
+                &[
+                    ("weather", generations[0], FiberState::Active),
+                    ("llm", generations[1], FiberState::Active),
+                    ("caller", generations[2], FiberState::Active),
+                ],
+                uses,
+            )
+        };
+        let weather = ("weather".to_owned(), "weather reloaded".to_owned());
+        let llm = ("llm".to_owned(), "llm reloaded".to_owned());
+        let mut affected = Affected::default();
+        affected.add(
+            &at([1, 1, 1]),
+            &at([2, 1, 2]),
+            std::slice::from_ref(&weather),
+        );
+        affected.add(&at([2, 1, 2]), &at([3, 2, 3]), std::slice::from_ref(&llm));
+        let changed = |id: &str| id == "llm" || id == "weather";
+        assert_eq!(
+            affected.lines(&changed),
+            ["caller: restarted (weather reloaded)"]
+        );
+        let mut affected = Affected::default();
+        affected.add(&at([1, 1, 1]), &at([2, 2, 2]), &[llm]);
+        affected.add(&at([2, 2, 2]), &at([3, 2, 3]), &[weather]);
+        assert_eq!(
+            affected.lines(&changed),
+            ["caller: restarted (weather reloaded)"]
         );
     }
 }

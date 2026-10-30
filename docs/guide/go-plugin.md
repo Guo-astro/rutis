@@ -463,7 +463,7 @@ dlv connect 127.0.0.1:2345
 | 并发 | 每个进来的调用在自己的 goroutine 上执行：提供的对象要能被并发调用，调用别的服务时不要持有锁 |
 | 值 | 数据（数字、字符串、切片、map、结构体）复制，字段名按 `json` 标签；`time.Time`、`[]byte`、`*big.Int`、键不是字符串的 map、`map[K]struct{}`（Set）与 `advanced.DateTime`、`advanced.Date`、`advanced.TimeOfDay`、`advanced.Decimal`、`advanced.UUID` 按各自的值传；超出 ±(2^53−1) 的整数自动按大整数传；函数按引用；对象要按引用传时写 `rutis.Ref(v)`。见 [值怎样传递](plugin-api.md#值怎样传递) |
 | 错误 | 返回的 `error` 带着类型名跨进程（`*QuotaError` → `QuotaError`，实现 `Name() string` 可以自定）；实现 `Code() string` 和 `Data() any` 时带上 code 和 data；panic 变成名为 `Panic` 的错误。收到的错误是 `*rutis.RemoteError`，有 `Name`、`Message`、`Code`、`Data` |
-| 一个二进制几个插件 | `rutis.Serve(greeter.Plugin, other.Plugin)`：想把你的插件编进自己二进制的人直接导入你的包 |
+| 一个二进制几个插件 | `rutis.Serve(greeter.Plugin, other.Plugin)`：想把你的插件编进自己二进制的人直接导入你的包。`dev` 里每个插件都是项目自己的一行，都从这次构建运行；横幅写 `rutis.dev.json` 写出的那几行（`rutis-host dev: running greeter; …`），一行也没写时写全部（`running greeter, other`）。和其中一个同 id 的行写了 `name` 时，`name` 不用，`dev` 告警 `rutis-host: warning: <目录>/rutis.dev.json: row other: its name ./dev/fake-other.ts is ignored: other is the project's own plugin (go:other)`：要用假的，就别把真的编进这个二进制 |
 
 ## 进阶：插件 API
 

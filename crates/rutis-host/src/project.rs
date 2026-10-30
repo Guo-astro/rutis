@@ -13,13 +13,14 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
-use crate::config::HostConfig;
+use crate::config::{read_text, HostConfig};
 use crate::languages::{self, LANGUAGES};
 
 pub use crate::languages::GoDev;
 
 /// The configuration that runs the plugin project in `dir`, and the id of
-/// its row.
+/// its row: of a compiled project serving several plugins, those of its
+/// rows `rutis.dev.json` writes (else all), `weather, llm`.
 pub fn dev_config(dir: &Path) -> Result<(HostConfig, String), String> {
     dev_config_with(dir, None, None)
 }
@@ -61,7 +62,6 @@ fn dev_config_with(
     };
     language.available()?;
     let (rows, runtimes) = language.dev(&dir, built)?;
-    let id = rows[0]["id"].as_str().unwrap_or("plugin").to_owned();
     let own_ids: Vec<Value> = rows.iter().map(|row| row["id"].clone()).collect();
     let mut config = HostConfig {
         format: crate::config::FORMAT,
@@ -75,11 +75,25 @@ fn dev_config_with(
     let extra = dir.join("rutis.dev.json");
     // Its rows also run in the project's own runtime, which this sets up:
     // not a runtime the dev file leaves undeclared.
-    let extra = match dev_text {
-        Some(text) => Some(HostConfig::parse_beside(text, &extra, &config.runtimes)?),
-        None if extra.exists() => Some(HostConfig::read_beside(&extra, &config.runtimes)?),
+    let path = extra.clone();
+    let text = match dev_text {
+        Some(text) => Some(text.to_owned()),
+        None if extra.exists() => Some(read_text(&extra)?),
         None => None,
     };
+    let extra = match &text {
+        Some(text) => Some(HostConfig::parse_beside(text, &extra, &config.runtimes)?),
+        None => None,
+    };
+    // A row's name as the dev file writes it, before it is made absolute.
+    let written_name = |id: &Value| -> Option<Value> {
+        let file: Value = serde_json::from_str(text.as_deref()?).ok()?;
+        let rows = file["rows"].as_array()?;
+        Some(rows.iter().find(|row| row["id"] == *id)?["name"].clone())
+    };
+    // The project's own rows the dev file writes: what `dev` says it runs
+    // (of a binary serving several plugins, not merely the first, #938).
+    let mut written: Vec<String> = Vec::new();
     if let Some(extra) = extra {
         // The dev file may configure the plugin's own rows.
         let (own, others): (Vec<Value>, Vec<Value>) = extra
@@ -87,16 +101,30 @@ fn dev_config_with(
             .iter()
             .cloned()
             .partition(|row| own_ids.contains(&row["id"]));
+        let mut ignored: Vec<String> = Vec::new();
         for own in own {
             let target = config.rows.iter_mut().find(|row| row["id"] == own["id"]);
             if let Some(object) = target.and_then(Value::as_object_mut) {
+                written.extend(own["id"].as_str().map(str::to_owned));
                 for (key, value) in own.as_object().into_iter().flatten() {
                     if key != "name" {
                         object.insert(key.clone(), value.clone());
+                    } else if *value != object["name"] {
+                        // The project's own plugin runs, whatever the
+                        // dev file names: said, not silently dropped.
+                        ignored.push(format!(
+                            "{}: row {}: its name {} is ignored: {} is the project's own plugin ({})",
+                            path.display(),
+                            own["id"].as_str().unwrap_or_default(),
+                            named(&written_name(&own["id"]).unwrap_or_else(|| value.clone())),
+                            own["id"].as_str().unwrap_or_default(),
+                            named(&object["name"]),
+                        ));
                     }
                 }
             }
         }
+        config.warnings.extend(ignored);
         // What the dev file says of the plugin's own runtime, where its
         // language lets it win (Bun: the Bun to use).
         for language in LANGUAGES {
@@ -107,7 +135,24 @@ fn dev_config_with(
             ..extra
         });
     }
+    // Every row of the project when the dev file writes none of them.
+    let id = match written.is_empty() {
+        true => own_ids
+            .iter()
+            .filter_map(|id| id.as_str().map(str::to_owned))
+            .collect::<Vec<_>>()
+            .join(", "),
+        false => written.join(", "),
+    };
     Ok((config, id))
+}
+
+/// A row's `name` as a warning shows it: a string as it is, else as JSON.
+fn named(name: &Value) -> String {
+    match name {
+        Value::String(name) => name.clone(),
+        other => other.to_string(),
+    }
 }
 
 /// The source file of the row named `name` under `runtimes`: the module its
@@ -301,6 +346,36 @@ mod tests {
         assert!(config.runtimes.implicit.is_empty());
     }
 
+    /// A Python project with a package.json beside its pyproject.toml, for
+    /// a fake service in TypeScript (`npm init`'s `"main": "index.js"`, no
+    /// such file): still a Python project (#938). One whose package.json
+    /// names a plugin that is there is a Node project, as before.
+    #[test]
+    fn a_package_json_beside_pyproject_is_not_a_node_project() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("pyproject.toml"),
+            "[project]\nname = \"weather\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{ "name": "weather", "main": "index.js", "devDependencies": { "@arcships/rutis": "*" } }"#,
+        )
+        .unwrap();
+        let (config, id) = dev_config(dir.path()).unwrap();
+        assert_eq!(
+            (id.as_str(), &config.rows[0]["name"]),
+            ("weather", &json!("py:weather"))
+        );
+        assert!(config.runtimes.node.is_none());
+
+        std::fs::create_dir(dir.path().join("src")).unwrap();
+        std::fs::write(dir.path().join("src/index.ts"), "").unwrap();
+        let (config, _) = dev_config(dir.path()).unwrap();
+        assert!(config.runtimes.node.is_some());
+    }
+
     #[test]
     fn a_python_project_runs_its_entry_point() {
         let dir = tempfile::tempdir().unwrap();
@@ -446,5 +521,62 @@ mod tests {
         assert_eq!(config.rows[0]["name"], "go:probe");
         let go = config.runtimes.go.unwrap();
         assert_eq!(go.dev, Some((binary, "go-net-probe".to_owned())));
+    }
+
+    /// A binary serving two plugins (`rutis.Serve(weather.Plugin,
+    /// llm.Plugin)`): the project is the rows the dev file writes of them,
+    /// not the first by name, else all of them; a name the dev file gives
+    /// one of them is said to be ignored, not dropped silently (#938).
+    #[cfg(unix)]
+    #[test]
+    fn a_binary_of_several_plugins_is_the_rows_the_dev_file_writes() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("go.mod"),
+            "module example.com/weather\n\ngo 1.24\n",
+        )
+        .unwrap();
+        let binary = dir.path().join("weather-1");
+        std::fs::write(
+            &binary,
+            "#!/bin/sh\n[ \"$1\" = --rutis-manifest ] || exit 1\n\
+             echo '{\"pluginApi\":3,\"plugins\":{\"llm\":{\"inject\":[],\"provides\":{}},\"weather\":{\"inject\":[],\"provides\":{}}}}'\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let (config, id) = dev_config_built(dir.path(), &binary).unwrap();
+        assert_eq!(id, "llm, weather");
+        assert!(config.warnings.is_empty(), "{:?}", config.warnings);
+
+        let dev = dir.path().join("rutis.dev.json");
+        std::fs::write(
+            &dev,
+            r#"{ "rows": [{ "id": "weather", "config": { "city": "Oslo" } }] }"#,
+        )
+        .unwrap();
+        let (config, id) = dev_config_built(dir.path(), &binary).unwrap();
+        assert_eq!(id, "weather");
+        assert!(config.warnings.is_empty(), "{:?}", config.warnings);
+
+        std::fs::write(
+            &dev,
+            r#"{ "rows": [{ "id": "weather" }, { "id": "llm", "name": "./dev/fake-llm.ts" }] }"#,
+        )
+        .unwrap();
+        let (config, id) = dev_config_built(dir.path(), &binary).unwrap();
+        assert_eq!(id, "weather, llm");
+        let llm = config.rows.iter().find(|row| row["id"] == "llm").unwrap();
+        assert_eq!(llm["name"], "go:llm");
+        assert_eq!(
+            config.warnings[0],
+            format!(
+                "{}: row llm: its name ./dev/fake-llm.ts is ignored: llm is the project's own plugin (go:llm)",
+                std::path::absolute(&dev).unwrap().display()
+            ),
+            "{:?}",
+            config.warnings
+        );
     }
 }

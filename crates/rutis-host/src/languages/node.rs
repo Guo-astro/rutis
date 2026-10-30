@@ -106,7 +106,7 @@ impl Language for Node {
 
     /// A package.json project, unless it runs in Bun.
     fn is_project(&self, dir: &Path) -> bool {
-        dir.join("package.json").exists() && !super::bun::runs_in_bun(dir)
+        super::is_package_project(dir) && !super::bun::runs_in_bun(dir)
     }
 
     /// The package's source as the row.

@@ -588,6 +588,167 @@ fn dev_follows_a_python_project() {
     the_dev_loop(&PYTHON);
 }
 
+/// A Python plugin package's own module that it imports (`from .helpers
+/// import WORD`): editing it reloads the row on the new code, not on the
+/// module as first imported (#938); an edit of it that does not import
+/// leaves both as they were.
+/// guarantee: host/dev-reload, host/dev-failed-reload-keeps-old
+#[test]
+fn dev_reloads_a_python_plugins_own_modules() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("pyproject.toml"),
+        "[project]\nname = \"weather\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+    let helpers = dir.path().join("src/weather/helpers.py");
+    edit(
+        &dir.path().join("src/weather/__init__.py"),
+        "import os, sys\n\
+         from rutis import define_plugin\n\
+         from .helpers import WORD\n\
+         \n\
+         def apply(ctx, config):\n\
+         \x20   sys.stdout.write(f\"plugin weather {WORD} applied in {os.getpid()}\\n\")\n\
+         \x20   sys.stdout.flush()\n\
+         \n\
+         plugin = define_plugin(apply)\n",
+    );
+    edit(&helpers, "WORD = \"v1\"\n");
+    let runtime = tempfile::tempdir().unwrap();
+    let runtime = runtime.path().to_str().unwrap();
+    let status = || {
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_rutis-host"))
+            .arg("status")
+            .current_dir(dir.path())
+            .env("XDG_RUNTIME_DIR", runtime)
+            .output()
+            .unwrap();
+        let said = String::from_utf8_lossy(&output.stdout).into_owned();
+        said.lines()
+            .find(|line| line.starts_with("  weather: "))
+            .map(str::to_owned)
+            .unwrap_or(said)
+    };
+    let mut host = Host::start_in_env(&["dev", "."], dir.path(), &[("XDG_RUNTIME_DIR", runtime)]);
+    expect(
+        &mut host,
+        &["plugin weather v1 applied in *", "weather: running"],
+    );
+    edit(&helpers, "WORD = \"v2\"\n");
+    expect(
+        &mut host,
+        &[
+            "plugin weather v2 applied in *",
+            "weather: reloaded (src/weather/helpers.py changed)",
+        ],
+    );
+    // A helper that does not import: the version running stays, helper
+    // and all.
+    edit(&helpers, "WORD = \n");
+    let failed = expect(&mut host, &["weather: cannot reload: *"]);
+    assert!(
+        failed[0].ends_with("; the previous version keeps running"),
+        "{failed:?}"
+    );
+    // `status` says which version runs (#938), until a reload succeeds.
+    assert_eq!(
+        status(),
+        "  weather: running (the previous version: its last reload failed)"
+    );
+    edit(&helpers, "WORD = \"v3\"\n");
+    expect(
+        &mut host,
+        &[
+            "plugin weather v3 applied in *",
+            "weather: reloaded (src/weather/helpers.py changed)",
+        ],
+    );
+    assert_eq!(status(), "  weather: running");
+    signal(&host, libc::SIGTERM, false);
+    let (status, stderr, output) = host.exit();
+    assert_eq!(status.code(), Some(0), "{stderr}");
+    assert_eq!(
+        output
+            .iter()
+            .filter(|line| unprefixed(line).starts_with("plugin weather"))
+            .count(),
+        3,
+        "{output:#?}"
+    );
+}
+
+/// A Python project with a fake in TypeScript as the Python guide puts it
+/// (#938): the fake and its packages in `dev/`, `runtimes.node.project`
+/// `dev`; a package.json at the project's root, as `npm init` writes it,
+/// does not make it a Node project.
+/// guarantee: host/dev-reload
+#[test]
+fn a_python_project_runs_a_typescript_fake_from_dev() {
+    let dir = tempfile::tempdir().unwrap();
+    let modules = dir.path().join("dev/node_modules/@arcships");
+    std::fs::create_dir_all(&modules).unwrap();
+    for (package, from) in [
+        ("rutis", "node/rutis"),
+        ("rutis-runtime", "node/rutis-runtime"),
+    ] {
+        std::os::unix::fs::symlink(
+            repo().join(from).canonicalize().unwrap(),
+            modules.join(package),
+        )
+        .unwrap();
+    }
+    std::fs::write(
+        dir.path().join("dev/package.json"),
+        r#"{ "name": "dev", "type": "module" }"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("package.json"),
+        r#"{ "name": "weather", "version": "1.0.0", "main": "index.js" }"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("pyproject.toml"),
+        "[project]\nname = \"weather\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+    edit(
+        &dir.path().join("src/weather/__init__.py"),
+        &python_source("weather", "v1"),
+    );
+    edit(
+        &dir.path().join("dev/fake-llm.ts"),
+        "import { definePlugin } from '@arcships/rutis'\n\
+         export default definePlugin({\n\
+           provides: { llm: { ask: 'async' } },\n\
+           apply(ctx) { ctx.provide('llm', { ask: async () => 'ok' }) },\n\
+         })\n",
+    );
+    let dev = json!({
+        "runtimes": { "node": { "project": "dev" } },
+        "rows": [
+            { "id": "weather", "config": { "city": "Oslo" } },
+            { "id": "llm", "name": "./dev/fake-llm.ts" },
+        ]
+    });
+    std::fs::write(dir.path().join("rutis.dev.json"), dev.to_string()).unwrap();
+    let mut host = Host::start(&["dev", "."], dir.path());
+    expect(
+        &mut host,
+        &[
+            "rutis-host dev: running weather; changes reload it (Ctrl-C ends)",
+            "plugin weather v1 applied city=Oslo in *",
+            "weather: running",
+            "llm: running",
+            "rutis-host dev: services: llm (llm), loader (host), sessions (host), weather (weather)",
+        ],
+    );
+    signal(&host, libc::SIGTERM, false);
+    let (status, stderr, _) = host.exit();
+    assert_eq!(status.code(), Some(0), "{stderr}");
+}
+
 /// A project whose rows provide nothing: its services line says `none`
 /// (#670).
 #[test]

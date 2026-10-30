@@ -306,6 +306,18 @@ pub(crate) fn rebase_program(path: &mut Option<PathBuf>, at: &dyn Fn(&mut PathBu
     }
 }
 
+/// Whether `dir` is a package.json project (Node or Bun): it has a
+/// package.json, and is not a Python project (pyproject.toml) whose
+/// package.json has no plugin to run, one only there for the dev file's
+/// rows, say (#938): the file its plugin would be is not there.
+pub(crate) fn is_package_project(dir: &Path) -> bool {
+    if !dir.join("package.json").exists() {
+        return false;
+    }
+    !dir.join("pyproject.toml").exists()
+        || package_entry(dir).is_ok_and(|(_, entry)| entry.is_file())
+}
+
 /// The package's name and the source file of its plugin while developing:
 /// src/index.ts or .js, else what the package exports (Node and Bun).
 pub(crate) fn package_entry(dir: &Path) -> Result<(String, PathBuf), String> {

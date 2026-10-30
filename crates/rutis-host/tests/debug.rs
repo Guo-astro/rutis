@@ -245,6 +245,50 @@ fn dev_debug_stops_python_at_breakpoint() {
     stop(host);
 }
 
+/// After a breakpoint pdb went on from, Ctrl-C (SIGINT to the terminal's
+/// group: the host and the Python runtime) ends `dev --debug` at once, as
+/// before any breakpoint: pdb does not take Ctrl-C to stop the runtime
+/// again, waiting for input while the host waits for its cleanups (#938).
+/// guarantee: host/dev-debug
+#[test]
+fn dev_debug_ends_on_ctrl_c_after_a_breakpoint() {
+    let _ports = lock_ports();
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("pyproject.toml"),
+        "[project]\nname = \"marker\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(dir.path().join("marker")).unwrap();
+    std::fs::write(
+        dir.path().join("marker/__init__.py"),
+        "from rutis import define_plugin\n\
+         \n\
+         def apply(ctx, config):\n\
+         \x20   breakpoint()\n\
+         \x20   print(\"plugin went on\", flush=True)\n\
+         \n\
+         plugin = define_plugin(apply)\n",
+    )
+    .unwrap();
+    let (mut host, mut input) = Host::start_talking(&["dev", "--debug", "."], dir.path(), &[]);
+    host.wait_line(|line| {
+        (line == "-> breakpoint()" || line.starts_with("-> print(")).then_some(())
+    });
+    input.write_all(b"c\n").unwrap();
+    host.wait_lines(&["(Pdb) plugin went on", "marker: running"]);
+    let started = std::time::Instant::now();
+    signal(&host, libc::SIGINT, true);
+    let (status, stderr, output) = host.exit();
+    let context = format!("status {status:?}; output: {output:#?}; stderr: {stderr}");
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "{context}"
+    );
+    assert!(!stderr.contains("cleanups did not finish"), "{context}");
+    assert_eq!(status.code(), Some(0), "{context}");
+}
+
 /// guarantee: host/dev-debug
 #[test]
 fn dev_debug_opens_the_node_inspector() {

@@ -276,7 +276,22 @@ greeter: reloaded (src/greeter/__init__.py changed)
 rutis-host dev: services: greeter (greeter), loader (host), sessions (host), translate (translate)
 ```
 
-再 `call greeter.hello '"Ada"'` 得到 `"Bonjour, Ada!!"`。只有文件变了的那一行重新加载；`rutis.dev.json` 改了也在运行中生效。只重新导入插件模块本身，它导入的其他模块改了要重启 `dev`。见 [用 dev 开发插件](rutis-host.md#用-dev-开发插件)。
+再 `call greeter.hello '"Ada"'` 得到 `"Bonjour, Ada!!"`。只有文件变了的那一行重新加载；`rutis.dev.json` 改了也在运行中生效。插件包里的其他模块（`src/greeter/helpers.py`，`__init__.py` 里 `from .helpers import …`）改了，插件包连同它们重新导入，打印 `greeter: reloaded (src/greeter/helpers.py changed)`；插件包以外的模块（另一个顶层模块、环境里装的包）不重新导入，改了要重启 `dev`，所以辅助代码放进插件包里。见 [用 dev 开发插件](rutis-host.md#用-dev-开发插件)。
+
+用 TypeScript 写假服务时，把它和它的 `package.json` 放进 `dev/`，在 `rutis.dev.json` 里让 Node 运行时以 `dev/` 为项目：
+
+```json
+{
+  "format": 1,
+  "runtimes": { "node": { "project": "dev" } },
+  "rows": [
+    { "id": "greeter", "config": { "greeting": "Hello" } },
+    { "id": "translate", "name": "./dev/fake-translate.ts" }
+  ]
+}
+```
+
+在 `dev/` 里 `npm install @arcships/rutis @arcships/rutis-runtime`（版本与 `rutis-host` 相同）；行的 `name` 和文件里其他路径一样相对 `rutis.dev.json` 所在的目录。项目根目录也有 `package.json` 时，`dev` 仍把项目当成 Python 项目，除非这个 `package.json` 写的入口文件（`src/index.ts`、`main` 等）真的存在。
 
 ## 8. 发布
 
@@ -308,8 +323,8 @@ uv run rutis-host dev --debug
 ```
 
 - 停在断点时整个 Python 运行时停着：这个运行时里其他行的调用也等它继续。
-- 不加 `--debug` 时运行时没有标准输入，`breakpoint()` 让这一行失败。
-- 运行时和 `dev` 共用终端，Ctrl-C 也送到运行时：它直接退出，插件的清理可能来不及运行。
+- 不加 `--debug` 时运行时没有终端，`breakpoint()` 抛出 `RuntimeError`，调用它的那次调用失败（在 `apply` 里时这一行失败），这一行照常运行：`rutis-host call` 打印 `rutis-host: call to greeter.hello failed: RuntimeError: breakpoint() needs a terminal, and this Python runtime has none: run rutis-host dev --debug`。设了 `PYTHONBREAKPOINT`（`debugpy`、`remote-pdb` 等）时用它设的。
+- 运行时和 `dev` 共用终端，Ctrl-C 也送到运行时：它直接退出（用过断点之后也一样，pdb 不接 Ctrl-C），插件的清理可能来不及运行。
 - 插件 `print` 的内容和写到标准错误的内容出现在 `dev` 的输出里。
 - 用图形界面的调试器（VS Code 等）：在项目环境里装 `debugpy`，在 `apply` 里调用 `debugpy.listen(5678)`，再用调试器连 `127.0.0.1:5678`。
 - 测试（第 6 步）在测试进程里运行插件，`breakpoint()` 不用 `--debug` 也能用。

@@ -276,7 +276,22 @@ greeter: reloaded (src/greeter/__init__.py changed)
 rutis-host dev: services: greeter (greeter), loader (host), sessions (host), translate (translate)
 ```
 
-`call greeter.hello '"Ada"'` now gives `"Bonjour, Ada!!"`. Only the row whose file changed reloads; a change to `rutis.dev.json` takes effect while it runs too. Only the plugin's module is imported again; when a module it imports changes, restart `dev`. See [Developing a plugin with `dev`](rutis-host.en.md#developing-a-plugin-with-dev).
+`call greeter.hello '"Ada"'` now gives `"Bonjour, Ada!!"`. Only the row whose file changed reloads; a change to `rutis.dev.json` takes effect while it runs too. When another module of the plugin's package changes (`src/greeter/helpers.py`, with `from .helpers import …` in `__init__.py`), the package is imported again with it, and `dev` prints `greeter: reloaded (src/greeter/helpers.py changed)`; modules outside the plugin's package (another top-level module, a package installed in the environment) are not imported again: after changing one, restart `dev`. So keep helper code in the plugin's package. See [Developing a plugin with `dev`](rutis-host.en.md#developing-a-plugin-with-dev).
+
+For a fake service in TypeScript, put it and its `package.json` in `dev/`, and have the Node runtime use `dev/` as its project in `rutis.dev.json`:
+
+```json
+{
+  "format": 1,
+  "runtimes": { "node": { "project": "dev" } },
+  "rows": [
+    { "id": "greeter", "config": { "greeting": "Hello" } },
+    { "id": "translate", "name": "./dev/fake-translate.ts" }
+  ]
+}
+```
+
+In `dev/`, `npm install @arcships/rutis @arcships/rutis-runtime` (the version of `rutis-host`); a row's `name`, as every path in the file, is relative to the directory of `rutis.dev.json`. A `package.json` at the project's root too leaves it a Python project for `dev`, unless the entry file that `package.json` names (`src/index.ts`, `main`, …) is there.
 
 ## 8. Publish
 
@@ -308,8 +323,8 @@ uv run rutis-host dev --debug
 ```
 
 - While it is stopped at a breakpoint, the whole Python runtime is stopped: calls to its other rows wait too.
-- Without `--debug` the runtime has no standard input, and `breakpoint()` fails the row.
-- The runtime shares the terminal with `dev`, so Ctrl-C reaches it too: it exits at once, and the plugin's cleanups may not run.
+- Without `--debug` the runtime has no terminal: `breakpoint()` raises a `RuntimeError`, which fails the call it is in (the row, in `apply`), and the row runs on: `rutis-host call` prints `rutis-host: call to greeter.hello failed: RuntimeError: breakpoint() needs a terminal, and this Python runtime has none: run rutis-host dev --debug`. With `PYTHONBREAKPOINT` set (`debugpy`, `remote-pdb`, …), the hook it names runs instead.
+- The runtime shares the terminal with `dev`, so Ctrl-C reaches it too: it exits at once (after a breakpoint as well: pdb leaves Ctrl-C alone), and the plugin's cleanups may not run.
 - What the plugin prints, and what it writes to standard error, appears in `dev`'s output.
 - With a graphical debugger (VS Code and others): install `debugpy` in the project's environment, call `debugpy.listen(5678)` in `apply`, and attach the debugger to `127.0.0.1:5678`.
 - Tests (step 6) run the plugin in the test process, where `breakpoint()` works without `--debug`.
