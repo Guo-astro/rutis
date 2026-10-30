@@ -268,7 +268,7 @@ To run plugins on another machine, see [the remote section of rutis-host.en.md](
 
 ### Waiting until ready
 
-`reconcile` returns once every row has loaded once: its `apply` ended (here the command is registered by then), or it failed (listed in the report's `failures`, and the default error sink prints a line `<row>: failed: …`). Rows of a runtime still starting wait for it and have no result in the report yet, so wait for `RuntimeHandle::ready()` first. A row waiting for a service nobody provides does not hold `reconcile` up: it keeps waiting, and after 10 s the error sink says once what it waits for.
+`reconcile` returns once every row has loaded once: its `apply` ended (here the command is registered by then), or it failed (listed in the report's `failures`, and the default error sink prints a line `<row>: failed: …`). Rows of a runtime still starting wait for it and have no result in the report yet, so wait for `RuntimeHandle::ready()` first. The rows of a runtime whose `ready()` returned load in that `reconcile`, and all have their result when it returns. A row waiting for a service nobody provides does not hold `reconcile` up: it keeps waiting, and after 10 s the error sink says once what it waits for.
 
 A row whose `apply` never returns (it waits for a call that never returns) holds `reconcile` up too. rutis puts no limit on `apply`; how long to wait is the host's decision. To see where it is stuck, print the status while waiting:
 
@@ -482,6 +482,15 @@ On Windows a process has an id here only once it has connected to the host, so t
 ### What is not a limit
 
 - rutis does not limit calls: the caller limits its own (Rust's `tokio::time::timeout`, Python's `asyncio.wait_for` and so on). For a plugin stuck in synchronous code that a cancellation cannot stop, end its process with `kill()` on `SpawnPlugin::processes()`, then call `restart()` on the fiber `root.plugin(runtime)` returned: a new process, its rows loaded again.
+
+  When `restart()` returns, the new process is still starting. Once it runs (`RuntimeHandle::ready()` returned), its rows load again by themselves at once, with no `Loader::reload`; `status()` says the first line, then the second:
+
+  ```text
+    wordcount: waiting for runtime wordcount (starting)
+    wordcount: running
+  ```
+
+  Loading them again is one of the loader's operations: while the loader is doing another (a `reconcile` that has not returned, say), it waits for that one to end.
 - rutis does not decide which services a plugin may use: which services go to which plugin is your business, yours to hand out.
 - Services are shared by name; that is not a permission.
 - Plugins in one process can reach each other through the language itself (globals, the module cache); to keep plugins apart, put them in different runtimes.

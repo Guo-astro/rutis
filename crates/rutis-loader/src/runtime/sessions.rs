@@ -96,6 +96,11 @@ struct Sessions {
     /// connection tag: another session may run other code, so they are
     /// resolved again with it.
     described: Mutex<HashMap<String, (String, String)>>,
+    /// By row, the connection tag of the last session whose
+    /// [`SessionRowsPlugin`] released the rows, or set off the refresh that
+    /// does: a row resolved with that session waits for it, so that the
+    /// `reconcile` resolving it starts it (#934).
+    released: tokio::sync::watch::Sender<HashMap<String, String>>,
 }
 
 impl SessionResolver {
@@ -122,6 +127,7 @@ impl SessionResolver {
                 mounted: Mutex::default(),
                 offline: Mutex::default(),
                 described: Mutex::default(),
+                released: tokio::sync::watch::Sender::new(HashMap::new()),
             }),
         }
     }
@@ -195,11 +201,11 @@ impl SessionResolver {
     /// The names of `row`'s rows to resolve again before they start with
     /// the session whose connection is tagged `session`.
     fn take_stale(&self, row: &str, session: &str) -> HashSet<String> {
-        let mut stale: HashSet<String> = self
-            .inner
-            .offline
-            .lock()
-            .unwrap()
+        // Both under the lock of `offline`, as `resolve` moves a name from
+        // one to the other: a name being resolved with this session is
+        // stale in neither.
+        let offline = self.inner.offline.lock().unwrap();
+        let mut stale: HashSet<String> = offline
             .iter()
             .filter(|(_, of)| *of == row)
             .map(|(name, _)| name.clone())
@@ -210,6 +216,27 @@ impl SessionResolver {
             }
         }
         stale
+    }
+
+    /// `row`'s rows are released for the session tagged `session`, or a
+    /// refresh that releases them is set off.
+    fn released(&self, row: &str, session: &str) {
+        self.inner.released.send_modify(|released| {
+            released.insert(row.to_owned(), session.to_owned());
+        });
+    }
+
+    /// Until `row`'s rows are released for `process`'s session (or a refresh
+    /// that releases them is set off), or the session ended: its
+    /// [`SessionRowsPlugin`] applies apart from the resolution, and a row
+    /// started before the release would wait on after `reconcile` returned.
+    async fn until_released(&self, row: &str, process: &Process) {
+        let tag = process.connection().tag();
+        let mut released = self.inner.released.subscribe();
+        tokio::select! {
+            _ = released.wait_for(|released| released.get(row).is_some_and(|by| by == tag)) => {}
+            () = process.closed() => {}
+        }
     }
 
     /// Whether `row` is a local runtime's.
@@ -279,47 +306,67 @@ impl Resolver for SessionResolver {
             if let Some(ctx) = &ctx {
                 self.follow(ctx, row);
             }
-            // Marked first: a session arriving between reading it and
-            // marking the name would leave the name unmarked.
-            let marked_before = self
-                .inner
-                .offline
-                .lock()
-                .unwrap()
-                .insert(name.to_owned(), row.to_owned())
-                .is_some();
-            let process = ctx
-                .and_then(|ctx| ctx.get_at(&session_key(row)))
-                .and_then(|handle: Arc<SessionHandle>| handle.process());
+            // The session read and the name marked under the lock
+            // `take_stale` reads under: resolved without the session, the
+            // name is offline; with it, it is described with it already, so
+            // the session's rows plugin does not take it for stale (and
+            // refresh it only after this reconcile, #934).
+            let (marked_before, process, before) = {
+                let mut offline = self.inner.offline.lock().unwrap();
+                let process = ctx
+                    .and_then(|ctx| ctx.get_at(&session_key(row)))
+                    .and_then(|handle: Arc<SessionHandle>| handle.process());
+                match process {
+                    None => {
+                        let marked = offline.insert(name.to_owned(), row.to_owned());
+                        (marked.is_some(), None, None)
+                    }
+                    Some(process) => {
+                        let marked = offline.remove(name);
+                        let tag = process.connection().tag().to_owned();
+                        let before = self
+                            .inner
+                            .described
+                            .lock()
+                            .unwrap()
+                            .insert(name.to_owned(), (row.to_owned(), tag));
+                        (marked.is_some(), Some(process), before)
+                    }
+                }
+            };
             let Some(process) = process else {
                 return Ok(self.offline(name, row, plugin));
             };
-            let tag = process.connection().tag().to_owned();
+            // Not resolved with this session after all: marked as before.
+            let undo = || {
+                if marked_before {
+                    self.inner
+                        .offline
+                        .lock()
+                        .unwrap()
+                        .insert(name.to_owned(), row.to_owned());
+                }
+                let mut described = self.inner.described.lock().unwrap();
+                match before.clone() {
+                    Some(before) => described.insert(name.to_owned(), before),
+                    None => described.remove(name),
+                };
+            };
             let entry = PathBuf::from(plugin);
             let described = match discover::describe(&process, Path::new(plugin)).await {
                 Described::Found(found) => found,
                 // A local runtime without the plugin: no plugin by this
                 // name (installed where the runtime finds it, it would be).
                 Described::Missing if self.is_local(row) => {
-                    if !marked_before {
-                        self.inner.offline.lock().unwrap().remove(name);
-                    }
+                    undo();
                     return Err(not_found());
                 }
                 Described::Missing => {
-                    self.inner.offline.lock().unwrap().remove(name);
-                    self.inner
-                        .described
-                        .lock()
-                        .unwrap()
-                        .insert(name.to_owned(), (row.to_owned(), tag));
                     let why = discover::missing(row, plugin);
                     return Ok(Arc::new(unavailable_resolved(name, &entry, why)));
                 }
                 Described::Failed(message) => {
-                    if !marked_before {
-                        self.inner.offline.lock().unwrap().remove(name);
-                    }
+                    undo();
                     return Err(LoaderError::Resolve {
                         name: name.to_owned(),
                         message,
@@ -335,12 +382,8 @@ impl Resolver for SessionResolver {
                 .filter(|name| leaf || self.inner.catalog.is_shared(name))
                 .cloned()
                 .collect();
-            self.inner.offline.lock().unwrap().remove(name);
-            self.inner
-                .described
-                .lock()
-                .unwrap()
-                .insert(name.to_owned(), (row.to_owned(), tag));
+            // Released, the row starts in the reconcile resolving it.
+            self.until_released(row, &process).await;
             Ok(Arc::new(leaf_resolved_on(
                 name,
                 RowRuntime::Session(row.to_owned()),
@@ -369,6 +412,10 @@ pub(crate) trait RowsSource: Send + Sync + 'static {
     /// whose connection is tagged `session`. A name is returned again until
     /// it is resolved anew.
     fn take_stale(&self, session: &str) -> HashSet<String>;
+
+    /// The rows of the session tagged `session` are released, or the
+    /// refresh that releases them is set off.
+    fn released(&self, _session: &str) {}
 }
 
 /// The rows [`SessionResolver`] resolved to one row's session.
@@ -380,6 +427,10 @@ struct Stale {
 impl RowsSource for Stale {
     fn take_stale(&self, session: &str) -> HashSet<String> {
         self.resolver.take_stale(&self.row, session)
+    }
+
+    fn released(&self, session: &str) {
+        self.resolver.released(&self.row, session);
     }
 }
 
@@ -425,7 +476,8 @@ impl DynPlugin for SessionRowsPlugin {
             let Some(process) = handle.process() else {
                 return Ok(Effect::Done);
             };
-            let stale = self.source.take_stale(process.connection().tag());
+            let tag = process.connection().tag().to_owned();
+            let stale = self.source.take_stale(&tag);
             let rows: Vec<String> = loader
                 .entries()
                 .into_iter()
@@ -437,6 +489,14 @@ impl DynPlugin for SessionRowsPlugin {
                 .map(|entry| entry.id)
                 .collect();
             let (owner, key, row) = (ctx.clone(), SessionRows::key(&self.row), self.row.clone());
+            // A resolution waiting for the release does not wait for the
+            // refresh: the refresh waits for the loader's lock, which the
+            // reconcile resolving holds.
+            let refreshing = !rows.is_empty();
+            if refreshing {
+                self.source.released(&tag);
+            }
+            let (source, released) = (self.source.clone(), tag.clone());
             // In a task: reloading takes the loader's lock, which a
             // reconcile that (re)started this plugin may hold.
             let refresh = tokio::spawn(async move {
@@ -449,12 +509,19 @@ impl DynPlugin for SessionRowsPlugin {
                         eprintln!("{row}: cannot release its rows: {error}");
                     }
                 }
+                if !refreshing {
+                    source.released(&released);
+                }
             });
             let refresh = Mutex::new(Some(refresh));
+            let source = self.source.clone();
             ctx.effect(move || async move {
                 if let Some(refresh) = refresh.lock().unwrap().take() {
                     refresh.abort();
                 }
+                // Gone without releasing them: a resolution waiting for it
+                // goes on.
+                source.released(&tag);
                 Ok(())
             })?;
             Ok(Effect::Done)
