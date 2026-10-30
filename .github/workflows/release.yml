@@ -409,11 +409,14 @@ jobs:
         with:
           pattern: binary-*
           merge-multiple: true
+      # The notes' relative links point into the repository at this tag:
+      # on the release page they would resolve against /releases/tag/.
       - name: Release
         run: |
+          node tools/release-notes.mjs "${GITHUB_REF_NAME#v}" > "$RUNNER_TEMP/notes.md"
           gh release create "$GITHUB_REF_NAME" dist/rutis-host-* \
             --title "rutis $GITHUB_REF_NAME" \
-            --notes-file "docs/releases/${GITHUB_REF_NAME#v}.en.md"
+            --notes-file "$RUNNER_TEMP/notes.md"
         env:
           GH_TOKEN: ${{ github.token }}
 

@@ -253,7 +253,7 @@ Go 插件用模块 [`github.com/arcships/rutis/go/rutis`](go/rutis)：SDK，以�
 
 ## 平台与状态
 
-rutis 仍处于 0.x，API 还会演进。不兼容的变化会写进发布说明，并附迁移指南。
+rutis 仍处于 0.x，API 还会演进。不兼容的变化会写进发布说明，并附迁移指南；各版本的变化见[更新记录](CHANGELOG.zh-CN.md)。
 
 - **内核** 是纯 Rust，依赖只有 tokio、tokio-util、thiserror、serde 和 serde_json；需要 Rust 1.88 或更高。
 - **语言运行时与 rutis-host**（Node、Bun、Python 与 Go 行、远程运行时、跨语言共享服务、节点、Cordis 挂载）支持 Linux、macOS 和 Windows x64（MSVC）；需要 Node 22+、Bun 1.4+ 或 Python 3.12+；Go 插件是编译好的二进制，构建时需要 Go 1.24+；Swift 插件是 macOS 14+ 的编译好的二进制，构建时需要 Swift 6.2 工具链。Bun 运行时还没有在 Windows 上测试。
