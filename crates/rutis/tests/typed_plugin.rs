@@ -687,20 +687,52 @@ async fn returns_to_pending(read: Read) {
     assert_eq!(*seen.lock().unwrap(), [2]);
 }
 
-/// A `get` that finds nothing is not evidence of a lost dependency: the
-/// same claim after a `get` is an ordinary, sticky failure.
+/// A `get` claim in a generation the driver cancelled (the withdrawal here)
+/// is no different from the others: the cancellation decides, not the
+/// error's kind, so it returns to `Pending` (#968).
+///
+/// guarantee: core/D7
+#[tokio::test]
+async fn a_get_claim_in_a_cancelled_generation_returns_to_pending() {
+    returns_to_pending(Read::Get).await;
+}
+
+/// A `get` that finds nothing is not evidence of a lost dependency: a plugin
+/// that claims one after a `get` gets an ordinary, sticky failure. (`get` is
+/// not a strict read and the key is not declared, so the generation records
+/// no evidence — and nothing cancelled it.)
 ///
 /// guarantee: core/typed.get-not-evidence
 #[tokio::test]
 async fn a_get_read_is_not_evidence_of_a_lost_dependency() {
-    let (_ctx, view, seen, settled) = untyped_loss(Read::Get).await;
-    let error = settled.expect_err("a get read does not count");
+    struct GetOnly;
+
+    impl DynPlugin for GetOnly {
+        fn name(&self) -> &str {
+            "get-only"
+        }
+
+        fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
+            Box::pin(async move {
+                assert!(ctx.get::<Llm>().is_none(), "nothing provides Llm");
+                Err(Error::from(ErrorKind::InjectUnsatisfied(
+                    vec!["Llm".into()],
+                )))
+            })
+        }
+    }
+
+    let ctx = Ctx::root().unwrap();
+    let view = ctx.plugin(GetOnly);
+    let error = within("the load", (&view).into_future())
+        .await
+        .expect_err("a get read does not count");
     assert!(
         matches!(*error, ErrorKind::InjectUnsatisfied(_)),
         "{error:?}"
     );
     assert_eq!(view.state().state, FiberState::Failed);
-    assert!(seen.lock().unwrap().is_empty());
+    ctx.shutdown().await.unwrap();
 }
 
 type Withdrawal = Arc<Mutex<Option<std::thread::JoinHandle<Result<(), Arc<ErrorKind>>>>>>;

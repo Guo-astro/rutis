@@ -89,7 +89,8 @@ ctx.plugin_with(TypedFactory::with_keys(factory, keys), config);
 门控通过后、`apply` 读取前，必需依赖失效：插件回到 Pending，而不是 Failed。
 
 - typed 读取遇到 `Unavailable` 时，返回 `CordisError::InjectUnsatisfied`。
-- **内核规则**：`apply` 返回 `InjectUnsatisfied` 时，内核查看这一代的访问记录（每次装载开始时
+- **内核规则**：`apply` 返回 `InjectUnsatisfied` 时（且驱动没有预取消这一代——驱逐、restart、update、
+  dispose 预取消的那一代不看错误，一律按驱逐回 Pending，#968），内核查看这一代的访问记录（每次装载开始时
   清空）。如果其中确有一次对声明依赖的严格读取（`require` / `require_as`）因 `Unavailable`
   而失败，这一代就按驱逐处理：清理照常 LIFO 排干，清理错误进 ErrorSink，然后回到 Pending。
   依赖若已恢复，立即投递重查，重新装载。
@@ -110,7 +111,9 @@ ctx.plugin_with(TypedFactory::with_keys(factory, keys), config);
   也一样（#438）。用 `get` 读取不算证据。rutis-agent 的 driver 和 tui 都用 `get_as`，仍按普通失败处理，
   行为与改动前一致。
 - **与 Cordis 的差异**：Cordis 在此窗口内 `apply` 抛错会进 FAILED（依赖回来时重试）；
-  rutis 只对这个明确的错误变体（或严格读取原样返回的错误）、且有失败读取为证时放宽，其它错误仍是粘性 Failed。
+  rutis 只对这个明确的错误变体（或严格读取原样返回的错误）、且有失败读取为证时放宽；其它错误仍是失败，
+  但只有驱动没有预取消这一代时才是粘性 `Failed`——驱逐、restart、update、dispose 预取消的
+  那一代回到 `Pending`，不看错误内容（#968）。
 
 ## 宣称边界
 
