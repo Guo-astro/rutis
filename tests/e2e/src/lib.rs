@@ -260,7 +260,8 @@ impl Scenario {
     /// caches in it), none of this checkout's runtimes (no
     /// `RUTIS_NODE_RUNTIME`, `RUTIS_PYTHON_PATH`), none of the caller's
     /// `NODE_PATH`, `PYTHONPATH`, `VIRTUAL_ENV`, and a `PATH` without
-    /// `~/.cargo/bin` or this checkout's `target/`.
+    /// this checkout's `target/` or what `cargo install` put in
+    /// `~/.cargo/bin` (its Rust toolchain stays).
     pub fn installed(name: &str) -> Self {
         let mut scenario = Self::new(name);
         scenario.installed = true;
@@ -706,11 +707,55 @@ impl Scenario {
             .env("LOCALAPPDATA", home.join("AppData/Local"));
         if let Some(path) = std::env::var_os("PATH") {
             let target = repo().join("target");
-            let kept: Vec<PathBuf> = std::env::split_paths(&path)
-                .filter(|dir| !dir.ends_with(".cargo/bin") && !dir.starts_with(&target))
-                .collect();
+            let mut kept: Vec<PathBuf> = Vec::new();
+            for dir in std::env::split_paths(&path) {
+                if dir.starts_with(&target) {
+                    continue;
+                }
+                if dir.ends_with(".cargo/bin") {
+                    // The Rust toolchain stays (the Rust guides build with
+                    // cargo); what `cargo install` put there does not.
+                    #[cfg(unix)]
+                    kept.push(self.toolchain(&dir));
+                    continue;
+                }
+                kept.push(dir);
+            }
             command.env("PATH", std::env::join_paths(kept).expect("PATH"));
         }
+        // rustup finds its toolchains under the home it was installed in.
+        if std::env::var_os("RUSTUP_HOME").is_none() {
+            if let Some(home) = std::env::var_os("HOME") {
+                command.env("RUSTUP_HOME", PathBuf::from(home).join(".rustup"));
+            }
+        }
+    }
+
+    /// A directory with links to the Rust toolchain's programs in
+    /// `cargo_bin` (`toolchain/` in the scenario), and nothing else of it.
+    #[cfg(unix)]
+    fn toolchain(&self, cargo_bin: &Path) -> PathBuf {
+        let dir = self.dir.join("toolchain");
+        std::fs::create_dir_all(&dir).expect("the scenario's toolchain directory");
+        for program in [
+            "cargo",
+            "rustc",
+            "rustup",
+            "rustdoc",
+            "rustfmt",
+            "cargo-fmt",
+            "cargo-clippy",
+            "clippy-driver",
+            "rust-lldb",
+            "rust-gdb",
+        ] {
+            let source = cargo_bin.join(program);
+            let link = dir.join(program);
+            if source.exists() && !link.exists() {
+                std::os::unix::fs::symlink(&source, &link).expect("a toolchain link");
+            }
+        }
+        dir
     }
 
     /// Run the residue checks and return what they found, without failing.
