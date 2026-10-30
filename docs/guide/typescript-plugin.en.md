@@ -209,6 +209,7 @@ npm test
 - `services` gives fakes of the services the plugin injects, by name.
 - `t.service('greeter')` is the service the plugin provides; only the methods in `provides` can be called, as in a host.
 - `t.on(name, listener)` listens to an event as another plugin next to it does: whatever the plugin emits arrives. Events arrive through the host, a little after `hello` returns, so the assertion comes after `await t.unload()`.
+- When a call of the service may never return, give the test a time limit with `node:test`'s `timeout` (`test('…', { timeout: 2000 }, async () => { … })`): at the limit that test fails (`test timed out after 2000ms`), the other tests run as usual, and `npm test` exits with exit code 1 once they are done, not waiting for that call.
 - The plugin runs in the real Node runtime, managed by a real host: the host checks the configuration against the schema and fills its defaults, and dispatches the events; values between the plugin and the test cross between processes, so a plugin that passes its tests behaves the same in a host. The plugin must be the default export of its file (`src/index.ts` is).
 
 When the host gives TypeScript declarations of its services (a `.d.ts`), use them in place of your own `Translate` interface, as in `ctx.use<Services['translate']>('translate')`; your editor and `tsc` then check the calls before anything runs, and the fake in the test follows the same interface. The rest of the test tool is in [plugin API: the TypeScript and Bun test tool](plugin-api.en.md#the-typescript-and-bun-test-tool).

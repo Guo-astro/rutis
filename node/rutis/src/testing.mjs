@@ -71,13 +71,19 @@ function runtime() {
     }
     const harness = await start({ dispatch })
     harness.control.unref()
+    // Under `node --test`, its `after`, for the calls of a test (askOf).
+    if (!bun && (process.env.NODE_TEST_CONTEXT || process.execArgv.includes('--test'))) ({ after: testEnded } = await import('node:test'))
     return harness.control
   })()
   return started
 }
+let testEnded
 
 // The driver, synchronously (the test waits) or not. While an asynchronous
-// call is out, the session keeps the process running.
+// call is out, the session keeps the process running, until the call
+// returns or, under `node --test`, the test that made it ends (it failed
+// at its timeout, say): node:test reports and exits once nothing keeps
+// the process running.
 let control
 let out = 0
 // `target`: the driver itself (''), or a service by its name.
@@ -91,11 +97,18 @@ function ask(method, ...args) {
 }
 async function askOf(target, method, args) {
   if (!control) throw new PluginTestError(NOT_STARTED)
+  let held = true
+  const release = () => {
+    if (!held) return
+    held = false
+    if (--out === 0) control.unref()
+  }
   if (out++ === 0) control.ref()
+  testEnded?.(release)
   try {
     return await control.callAsync(target, method, args)
   } finally {
-    if (--out === 0) control.unref()
+    release()
   }
 }
 
