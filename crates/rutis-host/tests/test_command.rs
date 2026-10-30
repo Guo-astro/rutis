@@ -321,17 +321,69 @@ async fn python_plugins_load_hear_emit_update_and_unload_through_rutis_host_test
     }
 }
 
-/// A command with `fd` as its fd 3.
+/// A command with `fd` as its fd 3. `fd` may be 3 already (the lowest
+/// number free when it was opened): dup2 onto itself would leave it
+/// close-on-exec, and the command would start without it.
 #[cfg(unix)]
 fn with_fd3(command: &mut tokio::process::Command, fd: std::os::fd::RawFd) {
-    // SAFETY: between fork and exec only dup2 runs, which is
+    // SAFETY: between fork and exec only dup2 and fcntl run, which are
     // async-signal-safe.
     unsafe {
-        command.pre_exec(move || match libc::dup2(fd, 3) {
-            -1 => Err(std::io::Error::last_os_error()),
-            _ => Ok(()),
+        command.pre_exec(move || {
+            let handed = match fd {
+                3 => libc::fcntl(3, libc::F_SETFD, 0),
+                fd => libc::dup2(fd, 3),
+            };
+            match handed {
+                -1 => Err(std::io::Error::last_os_error()),
+                _ => Ok(()),
+            }
         });
     }
+}
+
+/// A channel the test tool already has as fd 3, close-on-exec, reaches
+/// the host as its fd 3: the host hears its end close. Not cleared, the
+/// host started without fd 3, its async runtime took that number, and
+/// `--channel fd:3` took the runtime's own descriptor (#965).
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_channel_that_is_already_fd_3_is_handed_over() {
+    use std::os::fd::AsRawFd;
+    let (ours, theirs) = std::os::unix::net::UnixStream::pair().unwrap();
+    let mut host = tokio::process::Command::new(env!("CARGO_BIN_EXE_rutis-host"));
+    host.args(["test", "tester", "--channel", "fd:3"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    // In the child, before `with_fd3`: the channel at fd 3, close-on-exec,
+    // as in a test tool whose fd 3 was free when it opened the channel.
+    let ours = ours.as_raw_fd();
+    // SAFETY: between fork and exec only dup2 and fcntl run, which are
+    // async-signal-safe.
+    unsafe {
+        host.pre_exec(move || {
+            if libc::dup2(ours, 3) < 0 || libc::fcntl(3, libc::F_SETFD, libc::FD_CLOEXEC) < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    with_fd3(&mut host, 3);
+    let host = host.spawn().unwrap();
+    drop(theirs);
+    let output = COLD
+        .within("the host's exit", host.wait_with_output())
+        .await
+        .unwrap();
+    assert_eq!(
+        (
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr).as_ref()
+        ),
+        (Some(1), "rutis-host: test: peer disconnected\n")
+    );
 }
 
 /// `rutis-host test <tester> --channel <channel>`, the runtime started by
