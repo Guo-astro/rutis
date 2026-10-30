@@ -203,7 +203,7 @@ class RemotePromise extends Promise {
 // The transport owns I/O; every decoder, reference table and callback stays on
 // the owning JS thread, including while a synchronous caller pumps its chain.
 export class Session {
-  #send; #pump; #dispatch; #abort; #settled; #inline; #holds; #report; #owner; #within
+  #send; #pump; #dispatch; #abort; #settled; #inline; #holds; #report; #owner; #within; #outgoing
   #next = 0; #received = 0; #ref = 0; #pending = new Map(); #sites = new Map(); #exports = new Map(); #identities = new WeakMap()
   #imports = new Map(); #proxies = new WeakMap(); #finalizer
   #closed; #handshake = false; #resolveReady; #rejectReady
@@ -226,7 +226,7 @@ export class Session {
   // beyond the session's, such as the contract.
   // `report(line, details?)`: where a session-end loss is reported (local
   // emits still queued, #546); a no-op when not configured.
-  constructor({ send, pump, dispatch, abort, settled, endpoint, inline, holds, report = () => {}, owner, within, maxMessage = MAX_MESSAGE }) {
+  constructor({ send, pump, dispatch, abort, settled, endpoint, inline, holds, report = () => {}, owner, within, outgoing, maxMessage = MAX_MESSAGE }) {
     this.#send = send; this.#pump = pump; this.#dispatch = dispatch; this.#abort = abort; this.#settled = settled
     // `owner()`: whose code is running now (the runtime's row, #688), kept
     // with each function or object exported; `within(owner, run)` runs a
@@ -241,6 +241,10 @@ export class Session {
     // `holds(method, args)`: the key of a control call (empty target) that
     // a later call of the same key waits behind, or undefined.
     this.#holds = holds
+    // `outgoing()`: told of each asynchronous call this side makes as it
+    // goes out; the function it returns is called once its reply comes (or
+    // the session ends). A test tool keeps its process running meanwhile.
+    this.#outgoing = typeof outgoing === 'function' ? outgoing : undefined
     this.#inline = new Set(inline ?? [])
     if (!ENDPOINT_ID.test(endpoint?.local)) throw new Error(`invalid endpoint id ${endpoint?.local}`)
     this.#endpoint = endpoint; this.#local = `${endpoint.local}:`
@@ -567,7 +571,11 @@ export class Session {
   #requestAsync(op, fields, args, origin) {
     // Taken here, before the Promise's executor adds its frame.
     const site = callSite()
-    return new Promise((resolve, reject) => this.#request(op, fields, args, result => result.ok ? resolve(result.value) : reject(result.value), origin, false, site))
+    return new Promise((resolve, reject) => {
+      const done = this.#outgoing?.()
+      const finish = result => { done?.(); if (result.ok) resolve(result.value); else reject(result.value) }
+      try { this.#request(op, fields, args, finish, origin, false, site) } catch (error) { done?.(); throw error }
+    })
   }
   invoke(target, method, args) { return this.#requestSync('invoke', { target, method }, args) }
   // Promise assimilation here is intentional: this is the generated async

@@ -53,7 +53,7 @@ function projectHost() {
  * of the test (its services and listeners). Resolves once the driver
  * greeted, with `control`, the session with it, and `stop()`.
  */
-export async function start({ dispatch, command = [process.execPath, '--no-install', '--no-env-file', MAIN], project = process.cwd() }: { dispatch?: (target: string, method: string, args: unknown) => unknown, command?: string[], project?: string } = {}) {
+export async function start({ dispatch, outgoing, command = [process.execPath, '--no-install', '--no-env-file', MAIN], project = process.cwd() }: { dispatch?: (target: string, method: string, args: unknown) => unknown, outgoing?: () => () => void, command?: string[], project?: string } = {}) {
   const host = process.env.RUTIS_HOST || projectHost() || 'rutis-host'
   const dir = mkdtempSync(join(tmpdir(), 'rutis-test-'))
   // A Unix socket, or on Windows a named pipe.
@@ -101,7 +101,7 @@ export async function start({ dispatch, command = [process.execPath, '--no-insta
   let control
   try {
     control = await Promise.race([
-      Client.connect(`unix:${address}`, { dispatch: dispatch ?? (() => { throw new Error('the test serves nothing') }), endpoint: { local: 'test' } }),
+      Client.connect(`unix:${address}`, { dispatch: dispatch ?? (() => { throw new Error('the test serves nothing') }), endpoint: { local: 'test' }, outgoing }),
       failed,
     ])
   } catch (error) {
