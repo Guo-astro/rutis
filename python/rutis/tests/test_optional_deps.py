@@ -78,6 +78,7 @@ class Reading(background.TestCase):
 
         def read(ctx, config):
             seen["present"] = ctx.get("llm")
+            seen["use present"] = caught(lambda: ctx.use("llm"))
             seen["absent"] = ctx.get("vision")
             seen["row"] = ctx.get("extra")
             seen["use absent"] = caught(lambda: ctx.use("vision"))
@@ -99,7 +100,10 @@ class Reading(background.TestCase):
         self.assertIsNone(seen["absent"])
         self.assertIsNone(seen["row"])
         # `use` reads only what `inject` lists, as Rust's `require`: an
-        # optional one is told to go in `inject`.
+        # optional one, there or not, is told to go in `inject`.
+        self.assertEqual(
+            seen["use present"], (LookupError, undeclared_use("llm"), "not-declared", {"service": "llm"})
+        )
         self.assertEqual(
             seen["use absent"], (LookupError, undeclared_use("vision"), "not-declared", {"service": "vision"})
         )
@@ -119,6 +123,58 @@ class Reading(background.TestCase):
         # `use`'s own text is unchanged.
         self.assertEqual(
             seen["use undeclared"], (LookupError, undeclared_use("nope"), "not-declared", {"service": "nope"})
+        )
+
+    def test_a_neighbours_service_is_not_declared(self):
+        # A name declared nowhere is refused even when another row here
+        # provides it (#676): the answer does not depend on who else is in
+        # the process.
+        seen = {}
+
+        def provide(ctx, config):
+            ctx.provide("neighbour", Llm())
+
+        def read(ctx, config):
+            seen["use"] = caught(lambda: ctx.use("neighbour"))
+            seen["get"] = caught(lambda: ctx.get("neighbour"))
+
+        runtime = Runtime()
+
+        async def run():
+            await runtime.load("p", module("neighbour_provider", provide), None, None)
+            await runtime.load("r", module("neighbour_reader", read), None, None)
+
+        asyncio.run(run())
+        self.assertEqual(
+            seen["use"], (LookupError, undeclared_use("neighbour"), "not-declared", {"service": "neighbour"})
+        )
+        self.assertEqual(
+            seen["get"], (LookupError, undeclared_get("neighbour"), "not-declared", {"service": "neighbour"})
+        )
+
+    def test_a_plugin_may_use_and_get_what_it_provides_itself(self):
+        # Providing a name declares it, for use and get alike, while it is
+        # provided; withdrawn, it is like a name never declared.
+        seen = {}
+
+        def apply(ctx, config):
+            withdraw = ctx.provide("own", Llm())
+            seen["use"] = type(ctx.use("own"))
+            seen["get"] = type(ctx.get("own"))
+            withdraw()
+            seen["use withdrawn"] = caught(lambda: ctx.use("own"))
+            seen["get withdrawn"] = caught(lambda: ctx.get("own"))
+
+        runtime = Runtime()
+        asyncio.run(runtime.load("o", module("own_provider", apply), None, None))
+        self.assertEqual(
+            seen,
+            {
+                "use": Llm,
+                "get": Llm,
+                "use withdrawn": (LookupError, undeclared_use("own"), "not-declared", {"service": "own"}),
+                "get withdrawn": (LookupError, undeclared_get("own"), "not-declared", {"service": "own"}),
+            },
         )
 
     def test_a_service_whose_row_stopped_is_unavailable_to_who_holds_it(self):

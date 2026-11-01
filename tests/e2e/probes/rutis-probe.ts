@@ -10,7 +10,10 @@
 // and it goes on polling.
 // The harness writes one copy per probe, with the services it calls in
 // place of `INJECT` (a plugin declares what it uses), so it starts once they
-// run.
+// run. A watching probe has its services in place of `OPTIONAL` instead:
+// declared `optional`, it runs while they are down and reads each with
+// `ctx.get` at the call, answering `{"error":"no <service> now"}` while it
+// is not there.
 import { definePlugin } from '@arcships/rutis'
 import { readdirSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
@@ -28,8 +31,13 @@ interface Request {
 
 type Service = Record<string, (...args: unknown[]) => unknown>
 
+const optional: string[] = OPTIONAL
+
 export default definePlugin<Config>({
   inject: INJECT,
+  // Only when there are any: the releases before `optional` meet this
+  // probe too (tests/e2e/tests/cross_version.rs).
+  ...(optional.length > 0 ? { optional } : {}),
   apply(ctx, config) {
     const say = (record: object) => console.log(JSON.stringify({ probe: config.id, ...record }))
     let busy = false
@@ -46,7 +54,10 @@ export default definePlugin<Config>({
           rmSync(path)
           const seq = Number.parseInt(name)
           try {
-            const service = ctx.use<Service>(request.service)
+            const service = optional.includes(request.service)
+              ? ctx.get<Service>(request.service)
+              : ctx.use<Service>(request.service)
+            if (service === undefined) throw new Error(`no ${request.service} now`)
             say({ seq, ok: (await service[request.method](...request.args)) ?? null })
           } catch (error) {
             say({ seq, error: String((error as Error)?.message ?? error) })

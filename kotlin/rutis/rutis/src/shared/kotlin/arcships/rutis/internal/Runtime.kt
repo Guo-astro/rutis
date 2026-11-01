@@ -112,6 +112,8 @@ internal class Row(
     val config: Any?,
     val exports: Map<String, Map<String, String>>,
     val isolate: Map<String, String>,
+    /** The row's own `inject` (rows.load): names its plugin may use too. */
+    val inject: List<String> = emptyList(),
     /** Its scope chain, outermost first. */
     val scope: List<Scope>,
     /** The chain of the call that loaded it, which its own code keeps. */
@@ -501,7 +503,7 @@ class RuntimeState(plugins: List<Plugin>, private val open: Boolean = false) {
             val name = plugin.name
             if (loading) {
                 try {
-                    load(name, name, name, config, emptyMap(), emptyMap(), emptyList(), supported(plugin), own = true)
+                    load(name, name, name, config, emptyMap(), emptyMap(), emptyList(), plugin = supported(plugin), own = true)
                     synchronized(lock) { ownStates[name] = OwnState.Loaded }
                 } catch (e: Throwable) {
                     synchronized(lock) { ownStates[name] = OwnState.Failed }
@@ -530,10 +532,11 @@ class RuntimeState(plugins: List<Plugin>, private val open: Boolean = false) {
         exports: Map<String, Map<String, String>>,
         isolate: Map<String, String>,
         scope: List<Scope>,
+        inject: List<String> = emptyList(),
         plugin: Plugin = definition(entry),
         own: Boolean = false,
     ) {
-        val row = Row(key, name.ifEmpty { key }, entry, plugin, config, exports, isolate, scope, CallChain.current(), own)
+        val row = Row(key, name.ifEmpty { key }, entry, plugin, config, exports, isolate, inject, scope, CallChain.current(), own)
         synchronized(lock) {
             if (closing) throw IllegalStateException("runtime is closing")
             if (rows.containsKey(key)) throw IllegalStateException("row $key is already loaded")
@@ -724,7 +727,7 @@ class RuntimeState(plugins: List<Plugin>, private val open: Boolean = false) {
         val row = synchronized(lock) { rows[key] } ?: throw IllegalStateException("row $key is not loaded")
         // Leaf plugins have no volatile fields: a new config restarts the row.
         unload(key)
-        load(key, row.name, row.entry, config, row.exports, row.isolate, row.scope, row.plugin)
+        load(key, row.name, row.entry, config, row.exports, row.isolate, row.scope, row.inject, row.plugin)
     }
 
     /** Registers a cleanup if `row` is still the loaded row with `key`. */

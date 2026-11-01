@@ -288,21 +288,19 @@ class Context(sdk.Context):
         self._emitter = Emitter(lambda *request: runtime.send(row, *request))
 
     def use(self, name: str) -> Any:
-        # One only in its plugin's `optional` is read with `get`, never with
-        # `use`, whether or not it is there (as Rust's `require`).
-        if name in self._row.inject and name not in self._row.uses:
+        # Not injected by it or its row (an optional one is read with
+        # `get`, as Rust's `require` reads only the injects): say what to
+        # declare, not that it is missing (#676), whether or not another
+        # row here provides it.
+        if name not in self._row.uses and self._row.id(name) not in self._row.provided:
             raise not_declared(LookupError, name)
         try:
             return self._runtime.lookup(self._row.id(name))
         except LookupError:
-            # Not given to it, though it may run: say so (#676). An
-            # optional one is read with `get`.
-            if name not in self._row.uses:
-                raise not_declared(LookupError, name) from None
             raise unavailable(name) from None
 
     def get(self, name: str) -> Any | None:
-        if name not in self._row.inject:
+        if name not in self._row.inject and self._row.id(name) not in self._row.provided:
             raise not_declared(LookupError, name, undeclared_get)
         # None: an optional service rutis did not have when the row
         # started, or one no row here provides now.

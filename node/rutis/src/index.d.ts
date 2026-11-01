@@ -7,9 +7,9 @@ import type * as advanced from './advanced.js'
  * the thrower's own class: match errors by `name`.
  */
 export interface Context extends advanced.Emitter {
-  /** The service `name`, which the plugin declares in `inject`: the object itself when a plugin in the same process provides it, else a proxy whose methods are sync or async as declared. */
+  /** The service `name`, which the plugin or its row injects (in `inject`, in its row's `inject`, or by providing it now; an `optional` one is read with `get`): the object itself when a plugin in the same process provides it, else a proxy whose methods are sync or async as declared. */
   use<T = any>(name: string): T
-  /** The optional service `name`, which the plugin declares in `optional`: as `use` gives it, else `undefined`. Never waited for: a host service is leased in if rutis had it when the plugin started; one that comes later is sure to be seen only once the plugin restarts (until then, one this process already has is read too). */
+  /** The optional service `name`, in `optional` or declared as for `use`: as `use` gives it, else `undefined`. Never waited for: a host service is leased in if rutis had it when the plugin started; one that comes later is sure to be seen only once the plugin restarts (until then, one this process already has is read too). */
   get<T = any>(name: string): T | undefined
   /** Provide `value` as the service `name` until the plugin unloads, or until the returned function is called. It reaches rutis by itself: its methods are the object's functions (own and inherited, not `constructor`), `async` unless `provides` marks them `sync`. */
   provide(name: string, value: unknown): () => unknown

@@ -34,7 +34,7 @@ Issue：尚无，随本稿开。相关：[#683](https://github.com/arcships/ruti
 | 门控与租借共用 `gated` | `JsFactory.gated` → `injects()` 与 `JsRow::start` 的租借循环 | `optional` 另存一份，只进租借，不进 `injects` |
 | 为一行租借宿主服务 | `Process::lease_host_for`：共享登记加这一行自己的标签；最后一个租约释放时 `hosts.withdraw`；运行时不支持 `scopes` 时只有共享租约，调用不点名行 | 可选的名字用同一个函数；无 `scopes` 时与必需租约一样退化为共享租约 |
 | 租约在行卸载之后归还 | `JsRow::apply` 返回的清理里，先 `unload_row` 再 `release(leases)`（"插件不会在自己卸载之前看到它注入的服务消失"） | 可选的租约放进同一个 `leases`，顺序不变 |
-| 各语言的 `use` | 先查进程里的服务表，查不到时没声明的报 `not-declared`，声明了的报 `unavailable`；"声明" = 插件的 `inject` ∪ `optional`；Node/Bun/Python 再加行的 `inject`，Go/Swift/Kotlin 目前丢弃行的 `inject` | `use` 的声明集合不变（不含 `optional`，与 Rust 的 `require` 相同）；`get` 另加，它的声明集合是 `inject` ∪ `optional`；Go/Swift/Kotlin 的行 `inject` 缺口不在本稿修 |
+| 各语言的 `use` | 先查进程里的服务表，查不到时没声明的报 `not-declared`，声明了的报 `unavailable`；"声明" = 插件的 `inject` ∪ `optional`；Node/Bun/Python 再加行的 `inject`，Go/Swift/Kotlin 目前丢弃行的 `inject` | `use` 的声明集合不变（不含 `optional`，与 Rust 的 `require` 相同）；`get` 另加，它的声明集合是 `inject` ∪ `optional`；Go/Swift/Kotlin 的行 `inject` 缺口不在本稿修（已由[声明集合](design-declared-services-2026-10-29.md)补上：六种语言的声明集合都含行的 `inject`） |
 
 ## 三、决策
 
@@ -116,7 +116,7 @@ Issue：尚无，随本稿开。相关：[#683](https://github.com/arcships/ruti
 | Kotlin | `ctx.get(name, type): I?` | `ctx.use(name, type): I` |
 
 - 读的是这个进程的服务表此刻有什么：本进程的提供方返回对象本身（与 `use` 相同）；租借进来的返回代理；没有返回空值。所以宿主服务以 §4.4 的快照为准，本进程别的行提供的服务按运行时自己的表随时变化（与 Cordis 的 `ctx.get` 相同）。
-- `get` 的已声明 = 插件的 `inject` ∪ 插件的 `optional`；`use` 的已声明不含 `optional`（下一条）；Node/Bun/Python 再加行的 `inject`。Go/Swift/Kotlin 目前只认插件的 `inject`，本稿只把 `optional` 加进 `get` 的集合，不把行的 `inject` 一并修（那是一个独立的缺口，§六 记一条）。`get` 一个未声明的名字：报 `not-declared`（§五 第 1 条）。Cordis 插件例外：它用 Cordis 的 `ctx.get`，rutis 不改，未声明的照 Cordis 返回 `undefined`。
+- `get` 的已声明 = 插件的 `inject` ∪ 插件的 `optional`；`use` 的已声明不含 `optional`（下一条）；Node/Bun/Python 再加行的 `inject`。Go/Swift/Kotlin 目前只认插件的 `inject`，本稿只把 `optional` 加进 `get` 的集合，不把行的 `inject` 一并修（那是一个独立的缺口，§六 记一条）（已由[声明集合](design-declared-services-2026-10-29.md)补上：六种语言的声明集合都含行的 `inject` 与插件自己提供的名字，`use` 也先查声明；rutis 为运行时的行门控、租借行 `inject`，是那份设计 §七 记的后续。）`get` 一个未声明的名字：报 `not-declared`（§五 第 1 条）。Cordis 插件例外：它用 Cordis 的 `ctx.get`，rutis 不改，未声明的照 Cordis 返回 `undefined`。
 - `use` 一个只写在 `optional` 里的名字：与没声明的一样报 `service llm is not available to this plugin, which does not declare it in inject: add 'llm' to its inject`，码 `not-declared`（`use` 原来那句，§五 第 2 条），与 Rust 的 `ctx.require` 对 `Option<Arc<T>>` 报 `Undeclared` 相同。可选的服务用 `get` 读。
 - Swift、Kotlin 的有类型的 `get`：服务在、但缺少代理要的方法时，照 `use` 的检查抛错，开头写 `get` 而不是 `use`（§五 第 6 条）；服务不在时返回 `nil` / `null`，不查方法。
 
@@ -202,7 +202,7 @@ return llm.Ask("summarize: " + text)
 - 全是新增：不写 `optional` 的插件行为、输出不变，不进迁移指南。
 - 旧运行时、新宿主：`rows.schema` 没有 `optional`，按 `[]`。
 - 新 SDK、旧宿主：旧宿主的 `RowSchema` 忽略不认识的字段，不租借可选的名字；插件的 `get` 一直返回空值，不报错。这一组合在各语言指南里写明"要 rutis-host 0.20 或以后"。原计划实施步 2 有一条旧宿主上 `get` 为空的用例，落地时没有写（要在测试里起一个 0.19 的宿主）。
-- Go/Swift/Kotlin 的 `use` 目前不认行 `inject`；本稿只把 `optional` 加进声明集合，不改变这一点。
+- Go/Swift/Kotlin 的 `use` 目前不认行 `inject`；本稿只把 `optional` 加进声明集合，不改变这一点（已由[声明集合](design-declared-services-2026-10-29.md)补上：六种语言的声明集合都含行的 `inject` 与插件自己提供的名字，`use` 也先查声明；rutis 为运行时的行门控、租借行 `inject`，是那份设计 §七 记的后续。）
 - Cordis 3 / Koishi 的对象写法与 `optional` 并存的行为未核实，不在本稿范围。
 - 协议版本、控制操作不变。
 
@@ -211,6 +211,6 @@ return llm.Ask("summarize: " + text)
 | 步 | 内容 | 完成条件 |
 | --- | --- | --- |
 | 1 rutis-bridge、rutis-loader | `RowSchema.optional`；§4.3 的拆分函数，loader 的三处路径都用，bridge 的 `RunRow` 同样检查与租借；`JsFactory`、`JsModule` 的 `optional`；§4.4 ②；行 `inject` 与 `optional` 的重名检查 | 用 Node leaf 运行时的 Rust 测试：启动时在（`apply` 里 `get` 读到）；启动时不在（行 `active`，不在 `waiting for` 里，`report_waiting_after` 之后也没有 `StillWaiting`；之后出现仍为空，重启后读到）；提供方是 Rust 服务，运行中撤销（行仍 `active`；手写 `HostDispatch` 到旧对象，`#[rutis::service]`/Marked 报 `service <name> is not available`）；提供方是别的运行时的行，运行中停止（行仍 `active`，调用报 `service <name> is not available`，进程没了报 `peer-gone`）；被替换（按服务形态：手写 `HostDispatch` 旧对象留到重启，Marked 与别的运行时的行报 `unavailable`，各一条用例）；行卸载时可选租约在 `unload_row` 之后归还；租借中途或 `rows.load` 失败归还；三处路径的插件 `inject`/`optional` 重名（§五 第 4 条逐字）；在 `combined_injects` 之前查行 `inject` 与 `optional` 重名（§五 第 4b 条）；运行时没有 `scopes` 时只有共享租约；`rutis-host check` 打印 `optional`；Cordis 运行时只租借共享名字；`RowSchema.optional` 不写时为 `[]` |
-| 2 各语言 SDK 与测试工具 | Node（leaf 与 Cordis 插件）、Bun、Python、Go、Swift、Kotlin：§4.1 的声明、schema、§4.5 的 `get` 与 `use` 的声明集合（`get` 认 `optional`，`use` 不认）；§4.6 的测试工具；各运行时 `RowService`/handle 在提供方行停后报 `unavailable`（Node 的 `TypeError` 修掉） | 每种语言各自的用例（落地时没有放进 rutis-bridge 由六种语言共跑：测试工具改在真实宿主上运行后，各语言的用例已经经过宿主与真实运行时；另有 loader 的 `optional_deps.rs`（Node、Python 运行时）与 `optional_deps_go.rs`（Go，`--features go`））：§五 第 1、2、4、6 条逐字，`get` 在 / 不在，`use` 对可选名报 `not-declared`，行的 `inject` 只在 Node/Bun/Python 算已声明，Go/Swift/Kotlin 维持现状；每种语言的测试工具各一组，都断言 §4.6 第 4 条（两处都写由宿主拒绝，断言宿主的那句：Bun、Python、Go、Kotlin 断言结尾，Node 按正则、Swift 按包含；Bun 用 `@arcships/rutis/testing`）；§4.6 第 1–3 条即上面的 `get` 在 / 不在与 §五 第 1 条，不都经过测试工具（Kotlin 的第 3 条直接对 `RuntimeState` 断言）；§4.1 的非字符串校验、`optional` 不写为 `[]` 各有断言，Cordis 形态的插件由 `rutis-host check` 的用例断言（`optional` 照常列出，含非字符串的不能装载）；Cordis 未声明 `get` 返回 `undefined`（照 Cordis，rutis 不改）与旧宿主上 `get` 为空没有单独的用例（§六） |
+| 2 各语言 SDK 与测试工具 | Node（leaf 与 Cordis 插件）、Bun、Python、Go、Swift、Kotlin：§4.1 的声明、schema、§4.5 的 `get` 与 `use` 的声明集合（`get` 认 `optional`，`use` 不认）；§4.6 的测试工具；各运行时 `RowService`/handle 在提供方行停后报 `unavailable`（Node 的 `TypeError` 修掉） | 每种语言各自的用例（落地时没有放进 rutis-bridge 由六种语言共跑：测试工具改在真实宿主上运行后，各语言的用例已经经过宿主与真实运行时；另有 loader 的 `optional_deps.rs`（Node、Python 运行时）与 `optional_deps_go.rs`（Go，`--features go`））：§五 第 1、2、4、6 条逐字，`get` 在 / 不在，`use` 对可选名报 `not-declared`，行的 `inject` 只在 Node/Bun/Python 算已声明，Go/Swift/Kotlin 维持现状（这一句已由[声明集合](design-declared-services-2026-10-29.md)改为六种语言都算）；每种语言的测试工具各一组，都断言 §4.6 第 4 条（两处都写由宿主拒绝，断言宿主的那句：Bun、Python、Go、Kotlin 断言结尾，Node 按正则、Swift 按包含；Bun 用 `@arcships/rutis/testing`）；§4.6 第 1–3 条即上面的 `get` 在 / 不在与 §五 第 1 条，不都经过测试工具（Kotlin 的第 3 条直接对 `RuntimeState` 断言）；§4.1 的非字符串校验、`optional` 不写为 `[]` 各有断言，Cordis 形态的插件由 `rutis-host check` 的用例断言（`optional` 照常列出，含非字符串的不能装载）；Cordis 未声明 `get` 返回 `undefined`（照 Cordis，rutis 不改）与旧宿主上 `get` 为空没有单独的用例（§六） |
 | 3 文档 | plugin-api 指南的 API 表加 `ctx.get` 一行；各语言插件指南在"使用服务"处加可选依赖一段（含"晚到要重启"）；cordis 指南写 `optional`；`docs/guarantees.md` 登记，每条写明验证它的测试 | 文档链接检查、doc 例子检查通过 |
 | 4 #683 | §4.7 | 随 #683 的步 2 |

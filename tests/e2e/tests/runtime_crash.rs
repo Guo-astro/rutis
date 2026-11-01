@@ -88,8 +88,8 @@ const BUN: bool = cfg!(not(windows));
 struct Project {
     /// Uses `report` (and `audit`): stops while they wait.
     probe: Probe,
-    /// Declares no service, so it keeps running while the others wait; it
-    /// looks the service up at each call.
+    /// Has the same services as its `optional`, so it keeps running while
+    /// the others wait; it reads the service at each call.
     watch: Probe,
 }
 
@@ -119,7 +119,7 @@ fn project_with(s: &Scenario, py: serde_json::Value) -> Project {
         uses.push("audit");
     }
     let probe = s.probe("probe", Lang::Node, &uses);
-    let watch = s.probe("watch", Lang::Node, &[]);
+    let watch = s.watch("watch", &uses);
     rows.extend([probe.row(), watch.row()]);
     // Port 0: the first host picks it and reports it (#455).
     s.write_json(
@@ -262,20 +262,21 @@ fn a_killed_runtime_fails_its_calls_and_a_restart_recovers() {
         host.expect(&format!("{row}: waiting for "));
     }
     probe.event(&mut host, "stopped");
-    // Later calls fail, naming the service, instead of hanging.
-    for (service, method) in [("store", "get"), ("report", "summary")] {
-        let error = watch
-            .call(&mut host, service, method, json!(["greeting"]))
-            .unwrap_err();
-        // `watch` declares nothing: told what to declare (#676).
-        assert_eq!(
-            error,
-            format!(
-                "service {service} is not available to this plugin, which does not declare it \
-                 in inject: add '{service}' to its inject"
-            )
-        );
-    }
+    // Later calls fail, naming the service, instead of hanging: `report`,
+    // which `watch` declares, is not there; `store`, which it does not, is
+    // told what to declare (#676).
+    assert_eq!(
+        watch.call(&mut host, "report", "summary", json!(["greeting"])),
+        Err("no report now".to_owned())
+    );
+    assert_eq!(
+        watch.call(&mut host, "store", "get", json!(["greeting"])),
+        Err(
+            "service store is not available to this plugin, which does not declare it \
+             in inject: add 'store' to its inject"
+                .to_owned()
+        )
+    );
     // The other runtimes are the same processes (C3), and the Python
     // runtime is gone.
     let after = s.descendants(&host);

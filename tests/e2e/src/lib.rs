@@ -392,13 +392,35 @@ impl Scenario {
     /// is the module `<id>`, found in the Python runtime's project, which
     /// `dir` then has to be.
     pub fn probe_in(&self, dir: &str, id: &str, lang: Lang, inject: &[&str]) -> Probe {
+        self.probe_with(dir, id, lang, inject, &[])
+    }
+
+    /// A Node probe that keeps running while the services it calls are
+    /// down: they are its `optional`, read at each call, so it does not
+    /// wait for them (a plugin calls only what it declares, #676).
+    pub fn watch(&self, id: &str, optional: &[&str]) -> Probe {
+        self.probe_with("", id, Lang::Node, &[], optional)
+    }
+
+    fn probe_with(
+        &self,
+        dir: &str,
+        id: &str,
+        lang: Lang,
+        inject: &[&str],
+        optional: &[&str],
+    ) -> Probe {
         let inject = serde_json::to_string(inject).unwrap();
         let (file, name, source) = match lang {
             Lang::Node => (
                 format!("{id}.ts"),
                 format!("./{id}.ts"),
                 include_str!("../probes/rutis-probe.ts")
-                    .replace("inject: INJECT,", &format!("inject: {inject},")),
+                    .replace("inject: INJECT,", &format!("inject: {inject},"))
+                    .replace(
+                        "string[] = OPTIONAL",
+                        &format!("string[] = {}", serde_json::to_string(optional).unwrap()),
+                    ),
             ),
             Lang::Python => {
                 let module: String = id

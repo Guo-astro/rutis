@@ -241,16 +241,16 @@ def apply(ctx, config):
     ctx.use("probe").record(f"user: {ctx.use('notes').get()}")
 "#;
 
-/// Looks `notes` up without injecting it: it finds the host's.
+/// Looks `notes` up, declared in its inject: it finds the host's.
 const PEEKS_JS: &str = r#"{
-  inject: ['probe'],
+  inject: ['notes', 'probe'],
   apply(ctx) {
     ctx.use('probe').record(`peeker: ${ctx.use('notes').get()}`)
   },
 }"#;
 
 const PEEKS_PY: &str = r#"
-inject = ["probe"]
+inject = ["notes", "probe"]
 
 
 def apply(ctx, config):

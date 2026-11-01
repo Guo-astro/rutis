@@ -43,13 +43,15 @@ class Context:
     """What `apply` receives."""
 
     def use(self, name: str) -> Any:
-        """The service `name`: the object itself when a plugin in this
-        process provides it, otherwise a proxy whose methods call it."""
+        """The service `name`, which the plugin or its row injects (in
+        `inject`, in its row's `inject`, or by providing it now; an
+        `optional` one is read with `get`): the object itself when a plugin in this process provides it, otherwise a
+        proxy whose methods call it."""
         raise NotImplementedError
 
     def get(self, name: str) -> Any | None:
-        """The optional service `name`, which the plugin declares in
-        `optional`: as `use` gives it, else None. Never waited for: a host
+        """The optional service `name`, in `optional` or declared as for
+        `use`: as `use` gives it, else None. Never waited for: a host
         service is leased in if rutis had it when the plugin started; one
         that comes later is sure to be seen only once the plugin restarts
         (until then, one this process already has is read too)."""

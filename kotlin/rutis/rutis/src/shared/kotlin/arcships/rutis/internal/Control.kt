@@ -57,9 +57,12 @@ internal object Control {
             val handed = args.getOrNull(1) as? Plugin
             val entry = handed?.name ?: string(args, 1, "rows.load entry")
             val config = if (args.size > 2) args[2] else Undefined
-            // args[4], the row's own `inject`, names services a Cordis row
-            // waits for in Cordis; a leaf runtime's rows wait in rutis, which
-            // gates every name its plugin injects.
+            // args[4], the row's own `inject`: services its plugin may use
+            // too. A Cordis row waits for them in Cordis; rutis gates a leaf
+            // row on its plugin's own list.
+            val inject = (args.getOrNull(4) as? List<*>)?.map {
+                it as? String ?: throw IllegalArgumentException("inject: a name is not a string")
+            } ?: emptyList()
             val isolate = LinkedHashMap<String, String>()
             for (pair in arg(args, 3) as? List<*> ?: emptyList<Any?>()) {
                 val (name, label) = (pair as? List<*>)?.takeIf { it.size == 2 } ?: throw IllegalArgumentException("isolate: expected [name, label] pairs")
@@ -77,7 +80,7 @@ internal object Control {
                 Scope(s["id"] as? String ?: "", s["group"] as? String ?: "")
             }
             val plugin = handed?.let(rt::supported) ?: rt.definition(entry)
-            rt.load(key, placed["id"] as? String ?: "", entry, config, exports, isolate, scope, plugin)
+            rt.load(key, placed["id"] as? String ?: "", entry, config, exports, isolate, scope, inject, plugin)
             null
         }
         "rows.update" -> {

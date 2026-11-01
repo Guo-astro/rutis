@@ -36,7 +36,15 @@ export interface Plugin {
   announces: boolean
   config: unknown
   api: number
+  // The test driver (./testing/rutis-test.ts): it uses any service.
+  usesAny: boolean
 }
+
+// Marks the test driver: it is the test, not a plugin under the rules, and
+// uses whatever service the test names, declared or not, as Python's test
+// tool reads the runtime's services. Not Symbol.for: no plugin outside
+// this package can set it.
+export const USES_ANY = Symbol('rutis.uses-any')
 
 function notFound(entry: string): Error {
   return Object.assign(new Error(`no plugin ${entry} here`), { name: 'NotFound' })
@@ -94,7 +102,7 @@ function check(plugin: any, entry: string): Plugin {
   // An SDK's plugin says (0.12 on); a module's own exports may always
   // provide more than they declare.
   const announces = typeof plugin.announces === 'boolean' ? plugin.announces : true
-  return { name: typeof plugin.name === 'string' ? plugin.name : null, apply: plugin.apply, inject: [...inject], optional: [...optional], provides, announces, config: plugin.config ?? null, api }
+  return { name: typeof plugin.name === 'string' ? plugin.name : null, apply: plugin.apply, inject: [...inject], optional: [...optional], provides, announces, config: plugin.config ?? null, api, usesAny: plugin[USES_ANY] === true }
 }
 
 // A plugin definition this runtime handed over, back to be described or

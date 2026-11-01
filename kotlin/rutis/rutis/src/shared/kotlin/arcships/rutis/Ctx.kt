@@ -29,7 +29,7 @@ class Ctx internal constructor(private val rt: RuntimeState, internal val row: R
     /** This row's scope chain, outermost first; empty at the root. */
     val scope: List<Scope> get() = row.scope.toList()
 
-    /** The service `name` (which `inject` lists; an `optional` one is read with [get]) through the `@RutisClient` interface `I`. */
+    /** The service `name` (which it or its row injects, or it provides now; an `optional` one is read with [get]) through the `@RutisClient` interface `I`. */
     inline fun <reified I : Any> use(name: String): I = use(name, I::class.java)
 
     /**
@@ -44,7 +44,7 @@ class Ctx internal constructor(private val rt: RuntimeState, internal val row: R
         return client(name, type, "use") ?: throw UnavailableException(name)
     }
 
-    /** The optional service `name` (which `optional` or `inject` lists) through the `@RutisClient` interface `I`, or null. */
+    /** The optional service `name` (in `optional`, or declared as for [use]) through the `@RutisClient` interface `I`, or null. */
     inline fun <reified I : Any> get(name: String): I? = get(name, I::class.java)
 
     /**
@@ -59,11 +59,18 @@ class Ctx internal constructor(private val rt: RuntimeState, internal val row: R
         return client(name, type, "get")
     }
 
-    /** What the plugin may [use]: its `inject` (not its row's `inject`); as Rust's `require` reads only the injects. */
-    private fun uses(name: String): Boolean = name in row.plugin.inject
+    /**
+     * What the plugin may [use]: what it or its row injects, and what it provides now (which changes as it
+     * provides, withdraws and unloads, under the runtime's lock). Not `optional`, as Rust's `require`.
+     */
+    private fun uses(name: String): Boolean {
+        if (name in row.plugin.inject || name in row.inject) return true
+        val id = row.id(name)
+        return synchronized(rt.lock) { id in row.provided }
+    }
 
-    /** What the plugin may [get]: its `inject` and `optional` (not its row's `inject`). */
-    private fun declares(name: String): Boolean = uses(name) || name in row.plugin.optional
+    /** What the plugin may [get]: what it may [use], and its `optional`. */
+    private fun declares(name: String): Boolean = name in row.plugin.optional || uses(name)
 
     /** The service `name` through `type`, or null when nothing provides it now; `verb` names the caller in errors. */
     private fun <I : Any> client(name: String, type: Class<I>, verb: String): I? {
