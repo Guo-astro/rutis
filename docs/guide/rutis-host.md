@@ -619,6 +619,17 @@ rutis-host: reload rejected: row weather's config does not match its plugin's sc
 - Go：`runtimes.go.restart` 对每个 Go 运行时生效，各算各的（各自的等待和上限；打印 `runtime go-<名字>: restarting`）。空闲停下的运行时不算自己结束；握手被拒（旧 SDK）的二进制也不算，文件改变前不再启动。不论 `restart` 怎么写，崩溃的 Go 运行时换了二进制后有行用到时也会再启动。运行中改 `runtimes.go` 仍要重启宿主。`runtimes.swift.restart` 对 Swift 运行时相同（打印 `runtime swift-<名字>: restarting`）。
 - `rutis-host/dial` 的行自己重连，不受它影响。
 
+### 宿主启动期间
+
+`run` 和 `dev` 启动时依次等本机运行时就绪（`py`、`bun`、`node`，以及 Go、Swift 的每个运行时）：轮到某个运行时，它的启动才算有了结果。其他运行时不等着它：自己的行在它一就绪后就可以运行。
+
+轮到某个运行时、而它已经不在运行时，宿主以 1 退出（见[停止与退出码](#停止与退出码)），并像收到终止信号那样卸载已经启动的行和运行时。这时说哪种错，看它**跑过没有**：
+
+- 跑过（曾经就绪）之后才结束的，说它结束了，并写出进程怎样结束：`rutis-host: the bun runtime ended: exited with exit status: 7`（被信号结束的写 `exited with signal: 9 (SIGKILL)`）。插件让进程退出、进程崩溃都算这种，不算「没启动」。
+- 从没有就绪过的（进程在打招呼之前就结束），说它没启动：`rutis-host: the py runtime did not start: the runtime ended before it greeted: the process exited with exit status: 1`。
+
+运行时自己写到 stderr 的内容（结束前的最后几行）按它写的顺序出现在这条错误之前：宿主照原样转发运行时的输出，不收集、不改写。启动全部完成后才结束的运行时不算启动失败，按上面的 `restart` 处理，宿主继续运行。
+
 ## 查看当前状态
 
 `run` 和 `dev` 运行时，另开一个终端，在同一个目录里运行 `rutis-host status`（或 `rutis-host status path/to/rutis.json`、`rutis-host status <dev 的项目目录>`），打印一次宿主现在的状态。启动卡住时（一行的 `apply` 在等一个不返回的调用，`run` 还没开始打印状态行）也能问：

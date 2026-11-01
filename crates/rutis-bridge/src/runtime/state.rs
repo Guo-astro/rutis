@@ -43,6 +43,10 @@ pub struct RuntimeStates {
     anchor: PathBuf,
     state: Arc<watch::Sender<RuntimeState>>,
     starts: Arc<AtomicU64>,
+    /// Whether it has been ready at any time: kept past its end, so that a
+    /// runtime that ran and then ended is not taken for one that never
+    /// started (#1023).
+    was_ready: Arc<AtomicBool>,
     announcing: Arc<AtomicBool>,
     /// Every change, in order, for [`RuntimeStates::announce`]: the watch
     /// keeps only the latest, so a down and the next start in quick
@@ -60,6 +64,7 @@ impl RuntimeStates {
             anchor: anchor.into(),
             state: Arc::new(watch::channel(RuntimeState::Idle).0),
             starts: Arc::default(),
+            was_ready: Arc::default(),
             announcing: Arc::default(),
             changes: Arc::default(),
             processes: None,
@@ -83,6 +88,7 @@ impl RuntimeStates {
 
     /// It runs plugins through `process`.
     pub fn ready(&self, process: Arc<Process>) {
+        self.was_ready.store(true, Ordering::SeqCst);
         self.set(RuntimeState::Ready(process));
     }
 
@@ -110,6 +116,7 @@ impl RuntimeStates {
             anchor: self.anchor.clone(),
             state: self.state.subscribe(),
             starts: self.starts.clone(),
+            was_ready: self.was_ready.clone(),
             processes: self.processes.clone(),
         }
     }
@@ -199,6 +206,7 @@ pub struct RuntimeHandle {
     anchor: PathBuf,
     state: watch::Receiver<RuntimeState>,
     starts: Arc<AtomicU64>,
+    was_ready: Arc<AtomicBool>,
     processes: Option<crate::pipe::Processes>,
 }
 
@@ -233,6 +241,13 @@ impl RuntimeHandle {
     /// went down again, however short it ran.
     pub fn starts(&self) -> u64 {
         self.starts.load(Ordering::SeqCst)
+    }
+
+    /// Whether the runtime has ever been ready, also if it is down now: a
+    /// runtime that ran and then ended is not one that did not start
+    /// (#1023).
+    pub fn was_ready(&self) -> bool {
+        self.was_ready.load(Ordering::SeqCst)
     }
 
     /// Resolves at the next change of [`RuntimeHandle::state`]. A change

@@ -619,6 +619,17 @@ Also:
 - Go: `runtimes.go.restart` applies to every Go runtime, each on its own (its own waits and limit; `runtime go-<name>: restarting`). A runtime stopped for being idle did not end on its own; nor did one whose binary's handshake was refused (an old SDK), which is not restarted until its file changes. Whatever `restart` says, a crashed Go runtime also starts again when a row uses it once its binary changed. Changing `runtimes.go` while the host runs needs a restart, as before. `runtimes.swift.restart` is the same for the Swift runtimes (`runtime swift-<name>: restarting`).
 - `rutis-host/dial` rows reconnect by themselves and are not affected.
 
+### While the host starts
+
+`run` and `dev` wait for their local runtimes one after another (`py`, `bun`, `node`, each Go and Swift runtime): at a runtime's turn, its start has a result. The others do not wait for it: their own rows may run as soon as they are ready.
+
+When a runtime's turn comes and it is not running, the host exits with 1 (see [Stopping and exit status](#stopping-and-exit-status)) and unloads the rows and runtimes that started, as on a termination signal. Which error it says depends on whether the runtime **ever ran**:
+
+- A runtime that ran (was ready) and then ended: the error says it ended, with how its process ended: `rutis-host: the bun runtime ended: exited with exit status: 7` (`exited with signal: 9 (SIGKILL)` for a process killed by a signal). A plugin making the process exit and a crash are both this, not "did not start".
+- One that never was ready (its process ended before it greeted) did not start: `rutis-host: the py runtime did not start: the runtime ended before it greeted: the process exited with exit status: 1`.
+
+What the runtime itself wrote to stderr (its last lines) comes before that error, in the order it wrote them: the host passes the runtimes' output on as it is, and neither collects nor rewrites it. A runtime that ends after every runtime has started is no failed start: its `restart` applies, as above, and the host runs on.
+
 ## Seeing the current state
 
 While `run` or `dev` runs, run `rutis-host status` in another terminal in the same directory (or `rutis-host status path/to/rutis.json`, `rutis-host status <the dev project's directory>`) to print the host's state now, once. It answers while starting is stuck too (a row's `apply` waiting on a call that does not return, before `run` prints any state line):
