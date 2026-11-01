@@ -18,7 +18,7 @@ use run::{
     run_serial, AsyncNext, ErasedSyncTerminal, ErasedTerminal, FilterSpec, Inv, NoTerminal,
     OwnedInv, RawTerm, Started, SyncNext,
 };
-use table::{Body, Entry, Table};
+use table::{Body, Entry, Selected, Table};
 
 use crate::ctx::Ctx;
 use crate::error::{Error, ErrorKind};
@@ -600,10 +600,11 @@ impl EventBus {
     ) -> Result<tokio::sync::oneshot::Receiver<()>, Error> {
         let (started, receiver) = tokio::sync::oneshot::channel();
         let mut batch = None;
-        let entries: Arc<[Arc<Entry>]> = if opts.filter.is_none() {
-            // The emits of a name share one list while no listener is added
-            // for it (#977). A copy per emit made a mass shutdown hold one
-            // copy per queued status change, each as long as the listeners.
+        let entries: Selected = if opts.filter.is_none() {
+            // The emits of a name share one list (#977), and the listeners
+            // registered since it was built are added to it (#980). A copy
+            // per emit made a mass shutdown hold one copy per queued status
+            // change, each as long as the listeners.
             let shared = self.snapshot_with(ctx, &name, &**payload.arc(), &mut opts, |table| {
                 table.shared(&name)
             })?;
@@ -632,7 +633,7 @@ impl EventBus {
                 let _ = started.send(());
                 return Ok(receiver);
             }
-            entries.into()
+            Selected::from_vec(entries)
         };
         let owned = Arc::new(OwnedInv {
             bus: self.clone(),
@@ -673,9 +674,9 @@ impl EventBus {
             if let Some(prev) = prev {
                 let _ = prev.await;
             }
-            let entries: Arc<[Arc<Entry>]> = if batch.is_some() {
+            let entries = if batch.is_some() {
                 match filter_any(&owned.name, entries.to_vec(), batch).await {
-                    Ok(entries) => entries.into(),
+                    Ok(entries) => Selected::from_vec(entries),
                     Err(error) => {
                         report_filter(&owned.emitter, &owned.name, error);
                         let _ = started.send(());

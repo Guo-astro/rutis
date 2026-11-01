@@ -111,13 +111,86 @@ impl Drop for CallFlight {
 }
 
 /// The entries an `emit` of one name dispatches over, shared by the emits
-/// queued on that name (#977). Held weakly: the emits own the list, and it
-/// goes with the last of them, so a withdrawn listener is not kept here.
+/// queued on that name (#977), and the entries registered since the list was
+/// built (#980).
+pub(crate) struct Selected {
+    /// The list built when the name was last selected, in call order.
+    base: Arc<[Arc<Entry>]>,
+    /// Prepends registered after `base` was built, in call order: the last
+    /// one first, its position being the smallest.
+    before: Vec<Arc<Entry>>,
+    /// Appends registered after `base` was built, in call order.
+    after: Vec<Arc<Entry>>,
+}
+
+impl Selected {
+    pub fn from_vec(entries: Vec<Arc<Entry>>) -> Self {
+        Self {
+            base: entries.into(),
+            before: Vec::new(),
+            after: Vec::new(),
+        }
+    }
+
+    /// Every entry, in call order: registration order by position, prepends
+    /// before the list they were prepended to.
+    pub fn iter(&self) -> impl Iterator<Item = &Arc<Entry>> {
+        self.before
+            .iter()
+            .chain(self.base.iter())
+            .chain(self.after.iter())
+    }
+
+    pub fn to_vec(&self) -> Vec<Arc<Entry>> {
+        self.iter().cloned().collect()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.base.is_empty() && self.before.is_empty() && self.after.is_empty()
+    }
+}
+
+/// The entries an `emit` of one name dispatches over, as kept between the
+/// emits of that name (#977).
+///
+/// Registering a listener adds it here instead of throwing the list away
+/// (#980): rebuilding the list for every registration, and asking every
+/// listener whether it is still live, made creating sessions with a listener
+/// each cost time in proportion to the square of their number. The added
+/// entries are weak, so a withdrawn listener is not kept here, and the list
+/// is rebuilt once half of what it holds was removed or [`ADDED`] listeners
+/// were added, which keeps the cost of one registration amortized.
 struct Shared {
     list: Weak<[Arc<Entry>]>,
     len: usize,
     /// Entries of `list` removed from the table since it was built.
     removed: usize,
+    /// Prepends added since `list` was built, in call order.
+    before: Vec<Weak<Entry>>,
+    /// Appends added since `list` was built, in call order.
+    after: Vec<Weak<Entry>>,
+}
+
+/// How many entries are added to a list before it is rebuilt. Bounds what one
+/// emit walks beside the list (an `emit` dispatches to every listener anyway)
+/// and keeps the rebuild, which asks every listener whether it is live, to
+/// one per that many registrations.
+const ADDED: usize = 32;
+
+impl Shared {
+    fn add(&mut self, entry: &Arc<Entry>) {
+        if entry.prepend {
+            self.before.insert(0, Arc::downgrade(entry));
+        } else {
+            self.after.push(Arc::downgrade(entry));
+        }
+    }
+
+    /// Half of what it holds is not in the table any more, or enough was
+    /// added: rebuild the list on the next emit.
+    fn stale(&self) -> bool {
+        self.removed * 2 > self.len || self.before.len() + self.after.len() >= ADDED
+    }
 }
 
 #[derive(Default)]
@@ -165,11 +238,16 @@ impl Table {
     }
 
     pub fn insert(&mut self, entry: Arc<Entry>) {
-        // A list built before does not have it.
+        // A prefix matches names this cannot list: their lists are rebuilt.
+        // An exact entry is added to the list the emits of its name hold
+        // (#980), unless that list is full of additions already.
         if entry.prefix {
             self.shared
                 .retain(|name, _| !name.starts_with(&*entry.name));
-        } else {
+        } else if self.shared.get_mut(&entry.name).is_some_and(|shared| {
+            shared.add(&entry);
+            shared.stale()
+        }) {
             self.shared.remove(&entry.name);
         }
         let list = if entry.prefix {
@@ -194,6 +272,7 @@ impl Table {
         // A shared list keeps it until the emits holding the list are done
         // (it is withdrawn, so they skip it); rebuilt once half of it is
         // gone, so the emits of a name hold a few lists, not one per change.
+        // An entry added to a shared list since it was built is not in it.
         let stale = |shared: &mut Shared| {
             shared.removed += 1;
             shared.list.strong_count() == 0 || shared.removed * 2 > shared.len
@@ -249,17 +328,32 @@ impl Table {
         out
     }
 
-    /// For an `emit` without a filter: what [`select`](Self::select)
-    /// selects, as one list shared by the emits of `name` while no entry is
-    /// added for it (#977); `None` when no entry is live. The list may hold
-    /// entries that stopped being live after it was built, which a call
-    /// skips (`Entry::start`) as it skips any entry that stopped being live
-    /// after its dispatch selected it: an entry that is not live never is
-    /// again (it is withdrawn, its owner is closing or gone, or the
-    /// generation it was registered in has ended).
-    pub fn shared(&mut self, name: &Arc<str>) -> Option<Arc<[Arc<Entry>]>> {
-        let list = match self.shared.get(name).and_then(|s| s.list.upgrade()) {
-            Some(list) => list,
+    /// For an `emit` without a filter: the entries of `name`, as one list
+    /// shared by the emits of `name` (#977) plus the entries registered
+    /// since it was built (#980); `None` when no entry is live.
+    ///
+    /// The list asks each listener whether it is live when it is built, and
+    /// not again until it is rebuilt: a registration adds the listener to the
+    /// list the emits hold instead of throwing it away (#980). Rebuilding per
+    /// registration made every queued emit check every listener, so creating
+    /// and closing instances cost time in proportion to the square of their
+    /// number. A call skips a dead entry itself (`Entry::start`), as it skips
+    /// any entry that stopped being live after its dispatch selected it: an
+    /// entry that is not live never is again (it is withdrawn, its owner is
+    /// closing or gone, or the generation it was registered in has ended).
+    pub fn shared(&mut self, name: &Arc<str>) -> Option<Selected> {
+        let base = match self.shared.get(name).and_then(|s| {
+            let base = s.list.upgrade()?;
+            Some((
+                base,
+                s.before
+                    .iter()
+                    .filter_map(Weak::upgrade)
+                    .collect::<Vec<_>>(),
+                s.after.iter().filter_map(Weak::upgrade).collect::<Vec<_>>(),
+            ))
+        }) {
+            Some(parts) => parts,
             None => {
                 let mut all: Vec<Arc<Entry>> = Vec::new();
                 if let Some(list) = self.exact.get(&**name) {
@@ -291,12 +385,27 @@ impl Table {
                         list: Arc::downgrade(&list),
                         len: list.len(),
                         removed: 0,
+                        before: Vec::new(),
+                        after: Vec::new(),
                     },
                 );
-                return Some(list);
+                return Some(Selected {
+                    base: list,
+                    before: Vec::new(),
+                    after: Vec::new(),
+                });
             }
         };
-        list.iter().any(|e| e.live()).then_some(list)
+        let (base, before, after) = base;
+        let selected = Selected {
+            base,
+            before,
+            after,
+        };
+        if selected.is_empty() || !selected.iter().any(|e| e.live()) {
+            return None;
+        }
+        Some(selected)
     }
 
     pub fn entries(&self) -> Vec<Arc<Entry>> {
