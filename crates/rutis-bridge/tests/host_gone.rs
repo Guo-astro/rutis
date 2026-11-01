@@ -8,12 +8,14 @@
 //! Each plugin starts such work, and its cleanup writes a marker file and,
 //! with `hang`, never returns.
 
+use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use rutis_bridge::runtime::{Mount, Process};
 use rutis_bridge::session::Error;
-use rutis_test_support::eventually;
+use rutis_test_support::{eventually_with, scaled, HANG_GUARD};
 use serde_json::json;
 
 mod common;
@@ -22,6 +24,50 @@ use rutis_test_support::runtimes;
 
 fn repo() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+}
+
+/// How long a runtime's process may take to start and greet: rutis-host's
+/// own greeting limit (`rutis-host/src/connect/spawn.rs`), scaled on a
+/// loaded machine like every hang guard here. A wait that only guards
+/// against a hang: the greeting itself is what the test waits for.
+const GREETING: Duration = Duration::from_secs(30);
+
+/// `wait`, unless it outlasts `guard` (scaled): then the test fails, naming
+/// `what` and saying what the runtime was doing (`describe`), instead of
+/// hanging until something else kills it (#985).
+async fn answered<T>(
+    guard: Duration,
+    what: &str,
+    wait: impl Future<Output = T>,
+    describe: impl FnOnce() -> String,
+) -> T {
+    let limit = scaled(guard);
+    match tokio::time::timeout(limit, wait).await {
+        Ok(value) => value,
+        Err(_) => panic!("timed out ({limit:?}): {what}\nstate: {}", describe()),
+    }
+}
+
+/// What the runtime's process was doing, for a wait that did not end: it
+/// still runs (or how it ended), and the calls into its rows that have not
+/// returned.
+fn doing(process: &Process) -> String {
+    let running = match process.exit_status() {
+        Some(status) => format!("its process {status}"),
+        None => "its process still runs".to_owned(),
+    };
+    let calls: Vec<String> = process
+        .calls()
+        .into_iter()
+        .map(|call| format!("{}.{} for {:?}", call.service, call.method, call.elapsed))
+        .collect();
+    match calls.is_empty() {
+        true => running,
+        false => format!(
+            "{running}; calls into its rows that have not returned: {}",
+            calls.join(", ")
+        ),
+    }
 }
 
 const NODE: &str = r#"
@@ -65,6 +111,16 @@ export function apply(ctx, config) {
     if (config.hang) return new Promise(() => {})
   }
 }
+"#;
+
+/// A plugin whose `apply` never returns: the runtime is healthy, and the
+/// load of its row never answers.
+const STUCK: &str = r#"
+import asyncio
+
+
+async def apply(ctx, config):
+    await asyncio.Event().wait()
 "#;
 
 #[derive(Clone, Copy, Debug)]
@@ -118,13 +174,18 @@ async fn start(runtime: Runtime, dir: &Path, deadline: &str) -> (Arc<Process>, P
         }
     };
     let launcher = launcher.env("RUTIS_SHUTDOWN_TIMEOUT", deadline);
-    let process = Process::mount(
-        &package,
-        Mount {
-            anchor: Some(&anchor),
-            launcher: Some(&launcher),
-            ..Mount::default()
-        },
+    let process = answered(
+        GREETING,
+        &format!("{runtime:?} starts and greets"),
+        Process::mount(
+            &package,
+            Mount {
+                anchor: Some(&anchor),
+                launcher: Some(&launcher),
+                ..Mount::default()
+            },
+        ),
+        || "it did not greet: its process was started, and said nothing".to_owned(),
     )
     .await
     .unwrap_or_else(|error| panic!("{runtime:?} failed to start: {error}"));
@@ -153,26 +214,31 @@ async fn host_goes_away(runtime: Runtime, hang: bool, deadline: &str) -> String 
     let dir = tempfile::tempdir().unwrap();
     let (process, entry) = start(runtime, dir.path(), deadline).await;
     let marker = dir.path().join("cleaned-up");
-    process
-        .load_row(
+    answered(
+        HANG_GUARD,
+        &format!("{runtime:?}: rows.load of the lingering row returns"),
+        process.load_row(
             "lingering",
             &entry,
             json!({ "marker": marker, "hang": hang }),
             &[],
             &[],
             &[],
-        )
-        .await
-        .unwrap_or_else(|error| panic!("{runtime:?}: rows.load: {error}"));
+        ),
+        || doing(&process),
+    )
+    .await
+    .unwrap_or_else(|error| panic!("{runtime:?}: rows.load: {error}"));
     assert!(process.exit_status().is_none(), "{runtime:?} runs");
     // The host is gone: its end of the channel closes, and no `dispose`
     // came first.
     process
         .connection()
         .close(Error::Transport("the host went away".into()));
-    let status = eventually(
+    let status = eventually_with(
         || process.exit_status(),
         &format!("{runtime:?} exits once its host went away"),
+        || doing(&process),
     )
     .await;
     assert_eq!(
@@ -198,6 +264,46 @@ async fn gives_up_a_cleanup_at_its_deadline(runtime: Runtime) {
         status.starts_with("exited with exit ") && status.ends_with(" 1"),
         "{runtime:?}: {status}"
     );
+}
+
+/// A runtime that stops answering is a hang: the test's waits end at a hang
+/// guard, saying what the runtime was doing, instead of waiting for ever
+/// (#985). Here the load of a plugin whose `apply` never returns, with a
+/// one-second guard rather than the ten seconds a test's waits get.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_runtime_that_does_not_answer_fails_the_test_with_what_it_was_doing() {
+    if !rutis_test_support::runtimes::enabled("python") {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("stuck.py"), STUCK).unwrap();
+    let (process, _) = start(Runtime::Python, dir.path(), "0.5").await;
+    let loading = process.clone();
+    let loading_what = "Python: rows.load of a plugin whose apply never returns returns".to_owned();
+    let task = tokio::spawn(async move {
+        answered(
+            Duration::from_secs(1),
+            &loading_what,
+            loading.load_row("stuck", Path::new("stuck"), json!({}), &[], &[], &[]),
+            || doing(&loading),
+        )
+        .await
+    });
+    let panic = task
+        .await
+        .expect_err("the load does not return")
+        .into_panic();
+    let text = panic
+        .downcast_ref::<String>()
+        .cloned()
+        .or_else(|| panic.downcast_ref::<&str>().map(|text| text.to_string()))
+        .unwrap_or_default();
+    assert!(text.starts_with("timed out ("), "{text}");
+    assert!(
+        text.contains("rows.load of a plugin whose apply never returns"),
+        "{text}"
+    );
+    assert!(text.contains("state: its process still runs"), "{text}");
 }
 
 // ── A plugin keeping the runtime busy (#682) ────────────────────
@@ -259,18 +365,23 @@ def apply(ctx, config):
         let (process, _) = start(runtime, dir.path(), "1").await;
         let entry = busy_entry(runtime, dir.path());
         let marker = dir.path().join("busy");
-        process
-            .load_row("busy", &entry, json!({ "marker": marker }), &[], &[], &[])
-            .await
-            .unwrap_or_else(|error| panic!("{runtime:?}: rows.load: {error}"));
+        answered(
+            HANG_GUARD,
+            &format!("{runtime:?}: rows.load of the busy row returns"),
+            process.load_row("busy", &entry, json!({ "marker": marker }), &[], &[], &[]),
+            || doing(&process),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("{runtime:?}: rows.load: {error}"));
         rutis_test_support::until(|| marker.exists(), "the plugin to keep its runtime busy").await;
         let gone = std::time::Instant::now();
         process
             .connection()
             .close(Error::Transport("the host went away".into()));
-        let status = eventually(
+        let status = eventually_with(
             || process.exit_status(),
             &format!("{runtime:?} ends once its host went away, busy as it is"),
+            || doing(&process),
         )
         .await;
         let took = gone.elapsed();
