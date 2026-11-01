@@ -94,6 +94,7 @@ When it goes wrong (verbatim):
 | An interface target, `workspace` provided by another process (another language, another Go process, the host) | `use workspace: editor.Workspace is an interface, which only a service provided in this process fills: for one of another process, use a struct of function fields or *advanced.Service` | Use a struct of function fields, or `*advanced.Service` |
 | An interface target, this process's object lacks a method | `use workspace: *editor.files does not implement editor.Workspace (missing method OnDraw)` | Add the method to `*editor.files`, or change the interface |
 | An interface target, the object has the method with another signature | `use workspace: *editor.files does not implement editor.Workspace (wrong type for method Open)` | Make the two signatures the same |
+| An interface target, `Provide` given a value whose methods are on its pointer | `use workspace: editor.files does not implement editor.Workspace (method OnDraw has pointer receiver)` | Provide a pointer (`newFiles()` already is one), or put the method on the value |
 | A function field whose type differs from this process's method and does not end with an error | `use canvas: field Draw: func(string) string must return an error last` (unchanged) | Write the field as the method's type, or in the shape that crosses |
 
 These are the `error` `Use` / `Get` return, without an error code (like the other lines `bind` writes), and they are not written to stderr.

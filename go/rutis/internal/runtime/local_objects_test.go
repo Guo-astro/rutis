@@ -129,6 +129,16 @@ func TestAnInterfaceTheObjectDoesNotImplementSaysWhichMethod(t *testing.T) {
 	if err == nil || err.Error() != want {
 		t.Fatalf("wrong type: got %v, want %q", err, want)
 	}
+
+	// Provided as a value whose methods are on its pointer.
+	var byValue Canvas
+	err = loadPair(t, func(c *Ctx) { c.Provide("canvas", canvas{}) }, func(c *Ctx) error {
+		return c.Use("canvas", &byValue)
+	})
+	want = `use canvas: rutis.canvas does not implement rutis.Canvas (method Draw has pointer receiver)`
+	if err == nil || err.Error() != want {
+		t.Fatalf("pointer receiver: got %v, want %q", err, want)
+	}
 }
 
 // An interface target for a service of another process: methods and no Go

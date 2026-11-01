@@ -94,6 +94,7 @@ var Tabs = rutis.Define(rutis.Plugin[rutis.NoConfig]{
 | 接口目标，`workspace` 由别的进程（另一种语言、另一个 Go 进程、宿主）提供 | `use workspace: editor.Workspace is an interface, which only a service provided in this process fills: for one of another process, use a struct of function fields or *advanced.Service` | 用函数字段的结构体，或 `*advanced.Service` |
 | 接口目标，本进程的对象少一个方法 | `use workspace: *editor.files does not implement editor.Workspace (missing method OnDraw)` | 给 `*editor.files` 补上方法，或改接口 |
 | 接口目标，本进程的对象有这个方法但签名不同 | `use workspace: *editor.files does not implement editor.Workspace (wrong type for method Open)` | 让两边签名一致 |
+| 接口目标，提供方 `Provide` 的是值，方法在它的指针上 | `use workspace: editor.files does not implement editor.Workspace (method OnDraw has pointer receiver)` | `Provide` 指针（`newFiles()` 已是 `*files`），或把方法放在值上 |
 | 函数字段的类型与本进程的方法不同，又没有以 error 结尾 | `use canvas: field Draw: func(string) string must return an error last`（不变） | 字段写成方法的类型，或写成跨进程的形状 |
 
 这些错误是 `Use` / `Get` 返回的 `error`，不带错误码（与 `bind` 已有的几句相同），不写到 stderr。

@@ -1100,6 +1100,13 @@ func lacking(object reflect.Value, want reflect.Type) string {
 		method := want.Method(i)
 		have, ok := object.Type().MethodByName(method.Name)
 		if !ok {
+			// Provided as a value, its pointer has the method: the
+			// compiler says so rather than calling it missing.
+			if object.Kind() != reflect.Pointer {
+				if _, onPointer := reflect.PointerTo(object.Type()).MethodByName(method.Name); onPointer {
+					return "method " + method.Name + " has pointer receiver"
+				}
+			}
 			return "missing method " + method.Name
 		}
 		// A concrete method's type starts with its receiver, an interface
