@@ -12,7 +12,7 @@ import { rmSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { PLUGIN_API, USES_ANY, isLeaf, supported } from '../leaf.mjs'
 import { CONTROL } from './service.mjs'
-import { registerDefinition, releaseDefinition } from './definitions.mjs'
+import { registerDefinition, releaseDefinition } from '../definitions.mjs'
 
 // The plugin a service of the test is a row of (./service.mjs).
 const SERVICE = fileURLToPath(new URL('./service.mjs', import.meta.url))

@@ -13,7 +13,7 @@ import { rmSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { PLUGIN_API, USES_ANY, definition } from '../plugin.ts'
 import { CONTROL } from './service.ts'
-import { registerDefinition, releaseDefinition } from './definitions.ts'
+import { registerDefinition, releaseDefinition } from '../definitions.ts'
 
 // The plugin a service of the test is a row of (./service.ts).
 const SERVICE = fileURLToPath(new URL('./service.ts', import.meta.url))
