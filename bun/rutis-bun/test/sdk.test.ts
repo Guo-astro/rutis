@@ -9,8 +9,10 @@ import greeter from './fixtures/sdk/greeter.ts'
 import events from './fixtures/sdk/events.ts'
 import warmer from './fixtures/sdk/warmer.ts'
 import crossing from '../../../node/rutis/test/fixtures/crossing.mjs'
+import crossingLater from '../../../node/rutis/test/fixtures/crossing-later.mjs'
 import summary from './fixtures/sdk/summary.ts'
 import both from './fixtures/sdk/both.ts'
+import callingBack from './fixtures/sdk/calling-back.ts'
 
 test('a plugin runs with the SDK test tool', async () => {
   const t = await load(greeter, { config: { greeting: 'Hi' }, services: { clock: { now: () => 7 } } })
@@ -64,6 +66,32 @@ test('a callback of the plugin while the plugin calls a service of the test, und
   const t = await load(crossing, { services: { files: { open: () => scope }, other: { ping: () => 'pong' } } })
   expect(await t.service('probe').go()).toEqual(['got', 'pong'])
   await t.unload()
+})
+
+// The same crossing one await later (#987, reproduction 2): the test's
+// service awaits before it calls the plugin's callback, and the plugin
+// calls the test's `other` while the callback is out.
+test('a callback of the plugin, after an await, while the plugin calls a service of the test, under Bun', async () => {
+  const files = {
+    async withLock(work: () => unknown) { await null; return await work() },
+    async other() { return 'other' },
+  }
+  const t = await load(crossingLater, { services: { files } })
+  expect(await t.service('probe').go()).toEqual(['worked', 'other'])
+  await t.unload()
+})
+
+// A service of the test that calls the test tool while the plugin calls the
+// service (#994): the test tool registers the hooks that end the test from
+// inside the runtime session's async context there, and Bun took them for
+// done-callback hooks and waited for a `done` that never came: "a
+// beforeEach/afterEach hook timed out" once the test itself had finished.
+test('a service of the test that calls the test tool while the plugin calls it, under Bun', async () => {
+  const h = host()
+  const files = { async outer() { await h.parallel('saw') } }
+  const t = await h.load(callingBack, { services: { files } })
+  expect(await t.service('probe').go()).toBe(1)
+  await h.unload()
 })
 
 // The testing tool's optional services under Bun: not required by the test,
