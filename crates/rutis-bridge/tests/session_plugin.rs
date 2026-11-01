@@ -447,6 +447,111 @@ async fn events_reach_both_ways() {
     assert_eq!(heard(&a, "t/pong").await, json!("from b"));
 }
 
+/// How many listeners the test registers while the peer reads nothing.
+const LISTENERS: usize = 200;
+
+/// #1005: a peer that stopped reading holds the others of the process
+/// nothing. Listeners registered here while that peer's process is
+/// suspended (`/suspend`, then a new client starts) are announced as they
+/// register, in order, and reach it once it reads again.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_peer_that_stopped_reading_holds_no_listener_registered_here() {
+    let (a, b) = (kernel("a"), kernel("b"));
+    let (near, far) = rutis_bridge::memory::pair();
+    let stalled = Arc::new(Stalled::default());
+    let near = Channel {
+        sender: Box::new(StalledSender {
+            inner: near.sender,
+            stalled: stalled.clone(),
+        }),
+        receiver: near.receiver,
+        closer: near.closer,
+    };
+    a.plugin(Session::new(near));
+    b.plugin(Session::new(far));
+    a.listen::<Args>()
+        .name("t/before")
+        .on(|_: Arc<Args>, _: Call<Args>| async { Ok(Some(ArgValue(json!("from a").into()))) })
+        .unwrap();
+    assert_eq!(heard(&b, "t/before").await, json!("from a"));
+
+    // b's process stops: it reads nothing, and what a sends waits for it.
+    stalled.stop();
+    let (registered, done) = std::sync::mpsc::channel();
+    let registering = {
+        let (a, stalled) = (a.clone(), stalled.clone());
+        let runtime = tokio::runtime::Handle::current();
+        std::thread::spawn(move || {
+            let _entered = runtime.enter();
+            for n in 0..LISTENERS {
+                a.listen::<Args>()
+                    .name(format!("t/during-{n}"))
+                    .on(|_: Arc<Args>, _: Call<Args>| async {
+                        Ok(Some(ArgValue(json!("from a").into())))
+                    })
+                    .unwrap();
+            }
+            let _ = registered.send(());
+            // The far end reads again; what waited goes out, in order.
+            stalled.go();
+        })
+    };
+    done.recv_timeout(Duration::from_secs(20))
+        .expect("a peer that stopped reading held the listeners registered here");
+    // b hears the first and the last of them.
+    assert_eq!(heard(&b, "t/during-0").await, json!("from a"));
+    assert_eq!(
+        heard(&b, &format!("t/during-{}", LISTENERS - 1)).await,
+        json!("from a")
+    );
+    within(
+        "the registering thread",
+        tokio::task::spawn_blocking(move || registering.join().unwrap()),
+    )
+    .await
+    .unwrap();
+}
+
+/// Whether sends go out: a far end whose process is stopped reads nothing,
+/// and a send waits for it to read again.
+#[derive(Default)]
+struct Stalled {
+    stopped: std::sync::Mutex<bool>,
+    changed: std::sync::Condvar,
+}
+
+impl Stalled {
+    fn stop(&self) {
+        *self.stopped.lock().unwrap() = true;
+    }
+
+    fn go(&self) {
+        *self.stopped.lock().unwrap() = false;
+        self.changed.notify_all();
+    }
+}
+
+/// [`Stalled`] over a channel's sender.
+struct StalledSender {
+    inner: Box<dyn rutis_bridge::channel::Sender>,
+    stalled: Arc<Stalled>,
+}
+
+impl rutis_bridge::channel::Sender for StalledSender {
+    fn send(&mut self, message: &[u8]) -> Result<(), ChannelError> {
+        let mut stopped = self.stalled.stopped.lock().unwrap();
+        while *stopped {
+            stopped = self.stalled.changed.wait(stopped).unwrap();
+        }
+        drop(stopped);
+        self.inner.send(message)
+    }
+
+    fn max_message(&self) -> Option<usize> {
+        self.inner.max_message()
+    }
+}
+
 /// The first answer of `serial` of `name` at `ctx`, once someone answers.
 async fn heard(ctx: &Ctx, name: &str) -> Json {
     eventually_async(|| async {

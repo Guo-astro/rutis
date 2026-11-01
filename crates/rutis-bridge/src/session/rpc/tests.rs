@@ -523,25 +523,172 @@ async fn a_cancelled_awaited_call_leaves_no_mark() {
     drop(a);
 }
 
-#[tokio::test(flavor = "current_thread")]
-async fn explicit_close_interrupts_a_writer_whose_peer_stopped_reading() {
+/// #1005: a far end that stopped reading (a suspended process, a slow
+/// link) holds neither the thread that made the frame nor the other
+/// sessions of the process, and what waited for it goes out in order once
+/// it reads again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn frames_to_a_peer_that_stopped_reading_wait_in_order_and_hold_nobody() {
     let (peer, mut remote) = pair();
     send(&mut remote, hello(ENDPOINT_PROTOCOL));
     peer.ready().await.unwrap();
-    let (entered, blocked) = mpsc::channel();
-    let writing = peer.clone();
-    let writer = std::thread::spawn(move || -> Result<(), ChannelError> {
-        let mut stream = writing.0.writer.lock().unwrap();
-        entered.send(()).unwrap();
-        // The far end reads nothing: sending blocks once the channel is full.
-        loop {
-            stream.send(b"{}")?;
+    assert!(
+        matches!(read(&mut remote), Frame::Hello { .. }),
+        "the greeting"
+    );
+    const COUNT: usize = 200;
+    let sending = peer.clone();
+    let (sent, sending_done) = mpsc::channel();
+    std::thread::spawn(move || {
+        // More frames than the memory channel buffers (64): a send to a
+        // far end that reads nothing must not wait for it.
+        let mut started = Vec::new();
+        for n in 0..COUNT {
+            let args = Value::List(vec![Value::Data(json!(n))]);
+            started.push(sending.invoke_started("", "echo", args).unwrap());
         }
+        let _ = sent.send(());
     });
-    blocked.recv().unwrap();
-    peer.close(Error::Transport("explicit close".into()));
-    assert!(writer.join().unwrap().is_err());
+    sending_done
+        .recv_timeout(STEP)
+        .expect("a far end that reads nothing held the thread sending to it");
+    // Another client attaches meanwhile, and its far end reads and answers.
+    let (other, mut far) = pair();
+    send(&mut far, hello(ENDPOINT_PROTOCOL));
+    other.ready().await.unwrap();
+    // The far end reads again: every frame it waited for, in the order the
+    // calls were made.
+    for n in 1..=COUNT {
+        let Frame::Invoke { id, args, .. } = read(&mut remote) else {
+            panic!("invoke expected")
+        };
+        assert_eq!(id, format!("rust:{n}"), "frame {n} out of order");
+        let WireValue::List(mut arguments) = args else {
+            panic!("the arguments expected")
+        };
+        assert_eq!(
+            data_of(arguments.remove(0)),
+            json!(n - 1),
+            "frame {n} changed"
+        );
+    }
+}
+
+/// #1005: what waits for a far end that never reads is bounded: the
+/// session ends, saying the far end is not reading, rather than queueing
+/// for it without end or holding whoever sends.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_far_end_that_never_reads_ends_the_session_instead_of_queueing_without_end() {
+    let (peer, mut remote) = pair();
+    send(&mut remote, hello(ENDPOINT_PROTOCOL));
+    peer.ready().await.unwrap();
+    // More than the memory channel buffers (64), each large enough to
+    // pass the queue's limit soon after it fills.
+    let chunk = Value::Data(json!("x".repeat(1 << 18)));
+    let mut started = Vec::new();
+    let mut error = None;
+    for _ in 0..200 {
+        match peer.invoke_started("", "echo", Value::List(vec![chunk.clone()])) {
+            Ok(future) => started.push(future),
+            Err(reason) => {
+                error = Some(reason);
+                break;
+            }
+        }
+    }
+    let error = error.expect("the queue for a far end that never reads is bounded");
+    assert!(
+        error.to_string().contains("not reading"),
+        "says why the session ended: {error}"
+    );
+    assert!(peer.close_reason().is_some(), "the session ended");
+    assert!(
+        peer.invoke_started("", "echo", Value::List(vec![]))
+            .is_err(),
+        "no more calls after it"
+    );
+    // The far end reads what it had, then the end.
+    let mut frames = 0;
+    let mut receiver = remote.receiver.lock().unwrap();
+    while let Ok(Some(_)) = receiver.recv() {
+        frames += 1;
+    }
+    assert!(frames <= 64, "the channel holds no more: {frames}");
+    drop(started);
+}
+
+/// Closing does not wait for the writer: a far end that stopped reading
+/// holds its send (some platforms do not wake one when the stream is shut
+/// down, `pipe::lines`), and closing goes on without it. Before (#1005),
+/// closing waited for the writer lock, which that send held.
+#[tokio::test(flavor = "multi_thread")]
+async fn explicit_close_does_not_wait_for_a_writer_whose_peer_stopped_reading() {
+    /// A channel that holds what is sent once it is armed, until the test
+    /// lets it go, and whose close does not wake it.
+    struct Held {
+        inner: Box<dyn Sender>,
+        armed: Arc<AtomicBool>,
+        blocked: mpsc::Sender<()>,
+        go: mpsc::Receiver<()>,
+        returned: mpsc::Sender<()>,
+    }
+    impl Sender for Held {
+        fn send(&mut self, message: &[u8]) -> Result<(), ChannelError> {
+            if !self.armed.load(Ordering::SeqCst) {
+                return self.inner.send(message);
+            }
+            self.blocked.send(()).unwrap();
+            let _ = self.go.recv();
+            let _ = self.returned.send(());
+            Err(ChannelError::Closed {
+                reason: "released".into(),
+            })
+        }
+        fn max_message(&self) -> Option<usize> {
+            self.inner.max_message()
+        }
+    }
+    let (local, mut remote) = far_pair();
+    let (entered, blocked) = mpsc::channel();
+    let (go, released) = mpsc::channel();
+    let (returned, written) = mpsc::channel();
+    let armed = Arc::new(AtomicBool::new(false));
+    let held = Channel {
+        sender: Box::new(Held {
+            inner: local.sender,
+            armed: armed.clone(),
+            blocked: entered,
+            go: released,
+            returned,
+        }),
+        receiver: local.receiver,
+        closer: local.closer,
+    };
+    let peer = Connection::open(held, Arc::new(NoExports), rust()).unwrap();
+    send(&mut remote, hello(ENDPOINT_PROTOCOL));
+    peer.ready().await.unwrap();
+    armed.store(true, Ordering::SeqCst);
+    // A frame for the far end, written by the writer thread, which stops.
+    let frame = peer
+        .invoke_started("", "echo", Value::List(Vec::new()))
+        .unwrap();
+    blocked
+        .recv_timeout(STEP)
+        .expect("the writer waits for the far end");
+    let closing = peer.clone();
+    let (closed, closing_done) = mpsc::channel();
+    std::thread::spawn(move || {
+        closing.close(Error::Transport("explicit close".into()));
+        let _ = closed.send(());
+    });
+    closing_done
+        .recv_timeout(STEP)
+        .expect("closing waited for the writer");
+    // The send let go of, the writer thread ends.
+    go.send(()).unwrap();
+    written.recv_timeout(STEP).expect("the send returned");
     peer.closed().await;
+    drop(frame);
 }
 
 /// What ends a session is what it was closed with, though closing wakes
@@ -2561,8 +2708,11 @@ async fn a_mismatched_reference_to_an_import_left_last_closes_the_session() {
     assert!(second.await.unwrap().is_err());
     assert!(peer.0.imports.lock().unwrap().is_empty());
     drop(peer);
-    // The import was released once, when its last holder dropped.
-    assert_eq!(remote.join().unwrap(), 1);
+    // The import was released when its last holder dropped; if the writer
+    // had not written that release when the session ended, it went with the
+    // session (a frame waits in the session's queue, #1005). At most once,
+    // and never what ended the session.
+    assert!(remote.join().unwrap() <= 1);
 }
 
 // ── What a call cannot send (#675) ───────────────────────────────────

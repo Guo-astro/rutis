@@ -209,6 +209,7 @@ pub enum Close { Done, Replaced, Rejected(String) }
 ```
 
 - 沿用 `Sender` / `Receiver` / `Closer` 三分：发送与接收各在一个线程，关闭在任何线程。按消息、同步阻塞，与 `rpc.rs` 的 `open(channel, dispatch)` 现在的用法相同。
+- session 自己不等待慢端：帧按产生的顺序排进一个有界队列（8 MiB，另加一帧），由 session 的写线程写进 Channel。一个读端停住（进程被挂起、链路很慢）不再拖住产生这一帧的线程，也不再拖住同一进程里的其他会话（#1005）；Channel 的 `send` 仍按背压阻塞，阻塞的是这个写线程。队列满时 session 以 `the far end is not reading: N messages, B bytes waited for it` 结束：既不无界积压，也不悄悄丢帧。关闭不等这个写线程；Channel 关闭会唤醒它正阻塞在的 `send`。
 - **id 一律来自握手**：会话协议只留 endpoint 格式，双方都在握手里报自己的 id。endpoint 协议版本从 3 升到 4：0.18 的运行时与节点也说 endpoint 版本 3，只删 compat 挡不住它们；升到 4 后，0.18 连上时在握手里被拒，消息照协议现有的写法说明升级哪一端（`rpc.rs:1277` 的 `version_mismatch`）。删掉 compat 格式：`rpc.rs` 的 `Format::Compat`（`rpc.rs:1208`）与 `COMPAT_CAPABILITIES`、调用 id 的 `rust:` / `node:` 前缀、`PROTOCOL = 2` 的本机握手、`link.rs:361` 的 `compat` 与 `name_far_end`。本机运行时由 `rutis-host/spawn` 用 `--id <运行时名>` 起，握手里就报这个名字。运行时期望的控制方（它的 `--peer`）仍由现有的握手检查（`rpc.rs:2482` 的 `Handshake::IdentityMismatch`）核对。
 - 各语言运行时的本机模式改为 endpoint 格式（逐个核实过现状）：
 
