@@ -136,7 +136,7 @@ Today `rows.schema(entry)` returns only the configuration JSON Schema. Change it
 | `CordisRuntimeRows` (replacing `CordisRuntime`) | Fixed | rutis |
 | `host_key(n)`, where `n` is required in `inject` and registered as shared in the catalog | `rows.schema` | rutis |
 | Other `inject` names | `rows.schema` | Cordis, which waits using its existing native rules |
-| `inject` in row configuration | Loader row | Cordis (`foreign_scope`), unchanged |
+| `inject` in row configuration | Loader row | Cordis (`foreign_scope`), unchanged (the names of it the service catalog shares later gated and leased by rutis too, see [a runtime row's own inject](design-row-inject-gate-2026-10-31.en.md)) |
 
 Optional dependencies (`required: false`) do not become rutis dependencies. If present at apply time they are exposed to Cordis; their later appearance or withdrawal does not restart the row. This matches how native rutis plugins handle optional services.
 

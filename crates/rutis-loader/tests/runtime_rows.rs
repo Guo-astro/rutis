@@ -128,13 +128,14 @@ async fn javascript_rows() {
     // `fiber.await()`): applied, or waiting for its inject. `record` is a
     // sync call, so a start of c3 or c4 is recorded before their rows run.
     // c3's private scope has no greeter: it waits for it in rutis, as a
-    // Rust row isolating the name would.
+    // Rust row isolating the name would. c4 waits in rutis too, for `late`,
+    // which its row injects, as a Rust row's `inject` gates that row.
     until(
         || {
             row_state(&loader, "c3") == Some(FiberState::Pending)
-                && row_state(&loader, "c4") == Some(FiberState::Active)
+                && row_state(&loader, "c4") == Some(FiberState::Pending)
         },
-        "c3 waiting for greeter, c4 loaded in Cordis",
+        "c3 waiting for greeter, c4 for late",
     )
     .await;
     let lines = probe.take();

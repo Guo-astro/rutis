@@ -116,7 +116,7 @@ Issue：尚无，随本稿开。相关：[#683](https://github.com/arcships/ruti
 | Kotlin | `ctx.get(name, type): I?` | `ctx.use(name, type): I` |
 
 - 读的是这个进程的服务表此刻有什么：本进程的提供方返回对象本身（与 `use` 相同）；租借进来的返回代理；没有返回空值。所以宿主服务以 §4.4 的快照为准，本进程别的行提供的服务按运行时自己的表随时变化（与 Cordis 的 `ctx.get` 相同）。
-- `get` 的已声明 = 插件的 `inject` ∪ 插件的 `optional`；`use` 的已声明不含 `optional`（下一条）；Node/Bun/Python 再加行的 `inject`。Go/Swift/Kotlin 目前只认插件的 `inject`，本稿只把 `optional` 加进 `get` 的集合，不把行的 `inject` 一并修（那是一个独立的缺口，§六 记一条）（已由[声明集合](design-declared-services-2026-10-29.md)补上：六种语言的声明集合都含行的 `inject` 与插件自己提供的名字，`use` 也先查声明；rutis 为运行时的行门控、租借行 `inject`，是那份设计 §七 记的后续。）`get` 一个未声明的名字：报 `not-declared`（§五 第 1 条）。Cordis 插件例外：它用 Cordis 的 `ctx.get`，rutis 不改，未声明的照 Cordis 返回 `undefined`。
+- `get` 的已声明 = 插件的 `inject` ∪ 插件的 `optional`；`use` 的已声明不含 `optional`（下一条）；Node/Bun/Python 再加行的 `inject`。Go/Swift/Kotlin 目前只认插件的 `inject`，本稿只把 `optional` 加进 `get` 的集合，不把行的 `inject` 一并修（那是一个独立的缺口，§六 记一条）（已由[声明集合](design-declared-services-2026-10-29.md)补上：六种语言的声明集合都含行的 `inject` 与插件自己提供的名字，`use` 也先查声明；rutis 为运行时的行门控、租借行 `inject`，由[运行时行的行 inject](design-row-inject-gate-2026-10-31.md)补上。）`get` 一个未声明的名字：报 `not-declared`（§五 第 1 条）。Cordis 插件例外：它用 Cordis 的 `ctx.get`，rutis 不改，未声明的照 Cordis 返回 `undefined`。
 - `use` 一个只写在 `optional` 里的名字：与没声明的一样报 `service llm is not available to this plugin, which does not declare it in inject: add 'llm' to its inject`，码 `not-declared`（`use` 原来那句，§五 第 2 条），与 Rust 的 `ctx.require` 对 `Option<Arc<T>>` 报 `Undeclared` 相同。可选的服务用 `get` 读。
 - Swift、Kotlin 的有类型的 `get`：服务在、但缺少代理要的方法时，照 `use` 的检查抛错，开头写 `get` 而不是 `use`（§五 第 6 条）；服务不在时返回 `nil` / `null`，不查方法。
 
@@ -202,7 +202,7 @@ return llm.Ask("summarize: " + text)
 - 全是新增：不写 `optional` 的插件行为、输出不变，不进迁移指南。
 - 旧运行时、新宿主：`rows.schema` 没有 `optional`，按 `[]`。
 - 新 SDK、旧宿主：旧宿主的 `RowSchema` 忽略不认识的字段，不租借可选的名字；插件的 `get` 一直返回空值，不报错。这一组合在各语言指南里写明"要 rutis-host 0.20 或以后"。原计划实施步 2 有一条旧宿主上 `get` 为空的用例，落地时没有写（要在测试里起一个 0.19 的宿主）。
-- Go/Swift/Kotlin 的 `use` 目前不认行 `inject`；本稿只把 `optional` 加进声明集合，不改变这一点（已由[声明集合](design-declared-services-2026-10-29.md)补上：六种语言的声明集合都含行的 `inject` 与插件自己提供的名字，`use` 也先查声明；rutis 为运行时的行门控、租借行 `inject`，是那份设计 §七 记的后续。）
+- Go/Swift/Kotlin 的 `use` 目前不认行 `inject`；本稿只把 `optional` 加进声明集合，不改变这一点（已由[声明集合](design-declared-services-2026-10-29.md)补上：六种语言的声明集合都含行的 `inject` 与插件自己提供的名字，`use` 也先查声明；rutis 为运行时的行门控、租借行 `inject`，由[运行时行的行 inject](design-row-inject-gate-2026-10-31.md)补上。）
 - Cordis 3 / Koishi 的对象写法与 `optional` 并存的行为未核实，不在本稿范围。
 - 协议版本、控制操作不变。
 

@@ -402,7 +402,7 @@ rutis 0.12 及更早的运行时（或节点）连进来时按协议版本被拒
 
 - 插件能找到并解析；
 - 行的设置能通过加载前的检查（作用域、内置插件如连接行的配置）；
-- 它等待的每个服务（插件的 `inject`，加上行自己的 `inject`）有别的行提供：按插件声明的 `provides`。
+- 它等待的每个服务（插件的 `inject`，加上行自己的 `inject`）有别的行提供：按插件声明的 `provides`。运行时的行（Node、Bun、Python、Go、Swift、Kotlin 的行）只看行 `inject` 里服务目录共享的名字——别的名字不是 `dyn HostDispatch`，跨不了语言，`check` 不管它们，交给运行时自己解析（[运行时行的行 `inject`](../design-row-inject-gate-2026-10-31.md)）。
 
 一个服务没有任何行提供、也没有行可能在运行时提供时，这一行永远停在等待依赖：`check` 写明缺哪个服务、怎么处理，并以 1 退出；只有被禁用的行提供它时会指出是哪些行。有的行提供什么在检查时还不知道——在连接对面运行的行（检查时不连接）——这时缺的服务只提示可能来自它们，不算失败。
 
@@ -873,7 +873,7 @@ rutis-host: rutis.json: installed.ruby:geo: name it by its row: a Node package, 
 | `id` | 行的名字，在本文件内唯一 |
 | `name` | 插件：npm 包名（或包的子路径）、`py:<名字>`（Python 入口点或模块）、`bun:<模块>`（Bun 运行时里的模块）、`go:<插件>`（含这个插件的 Go 二进制；一个插件名只能在一个二进制里）、`swift:<插件>`（同上，Swift 二进制）、`./相对路径`（插件文件）、`rutis-host/dial` / `rutis-host/listen`（连接，见 [远程运行时与设备](#远程运行时与设备)）（节点也这样连，见 [连接节点](nodes.md)）、`<连接行>:<插件>`（在连接的对面运行的插件） |
 | `config` | 插件的配置 |
-| `inject` | 额外要等的服务名 |
+| `inject` | 额外要等的服务名。运行时的行（Node、Bun、Python、Go、Swift、Kotlin 的行）只等其中服务目录共享的名字，其余名字交给运行时自己解析：Node 的行停在进程里的 Cordis 门控上等，其余语言 `use` 报 `service <名字> is not available`（[运行时行的行 `inject`](../design-row-inject-gate-2026-10-31.md)） |
 | `isolate` | `{ "服务名": true }` 让这一行用自己的那份服务；`{ "服务名": "标签" }` 让同标签的行共用一份 |
 | `disabled` | `true` 时不运行 |
 | `group` | `true` 时这一行是一个分组：不写 `name`，`config` 是它的子行（同样格式的数组）；禁用、删除分组时子行一起卸载 |
