@@ -17,18 +17,18 @@ Ctx::provide_native (crates/rutis/src/ctx.rs)
 ├─ ② register_internal_effect(label, origin, …)     → the same effects list ctx.effect pushes to
 └─ ③ returns Effect::AsyncDisposer(evict_and_finalize(key))
 
-Fiber::drain_effects (crates/rutis/src/fiber.rs:1128-1140)
+Fiber::drain_effects (crates/rutis/src/fiber.rs)
 └─ for record in effects.into_iter().rev()          → in reverse, one at a time
    ├─ a cleanup: runs the closure
    └─ a withdrawal: evict_and_finalize (consumers stop first, then the entry goes)
 ```
 
-So whether a cleanup can read a service it provided depends only on **registration order**: a cleanup registered after `provide` runs first and reads it; one registered before runs later and does not. `crates/rutis/tests/contract.rs:1396` (`self_access_during_cleanup`) asserts the first case (`Some(77)`), and `core/D14` in `docs/guarantees.md` states it as "the provider cleans up last and can still reach its own services meanwhile".
+So whether a cleanup can read a service it provided depends only on **registration order**: a cleanup registered after `provide` runs first and reads it; one registered before runs later and does not. `crates/rutis/tests/contract.rs` (`self_access_during_cleanup`) asserts the first case (`Some(77)`), and `core/D14` in `docs/guarantees.md` states it as "the provider cleans up last and can still reach its own services meanwhile".
 
 The reading side is the other half:
 
 ```
-Ctx::read_binding_as (crates/rutis/src/ctx.rs:520-556)
+Ctx::read_binding_as (crates/rutis/src/ctx.rs)
 ├─ self_access = in_subtree_of(provider)            → is the reader in the provider's subtree
 ├─ not: provider.state() != Active or binding.removing → not visible
 └─ yes: state is not consulted; visible until the withdrawal really removes the entry
@@ -58,7 +58,7 @@ The consequence: a cleanup can **never** read a service its row provided, not ev
 | D2 | Other readers lose the row's services when the unload starts, wherever the withdrawal sits in the stack | Rust's `read_binding_as`: for a reader outside the provider's subtree, `provider.state() != Active` is enough, and the state turns `Unloading` in the unload's first step. An SDK has no subtrees, and "is the reader the provider" is already decided by `row.key`, so the mapping is "this row is itself; every other row is another". Dropped: letting the withdrawal's position decide when others lose it — then whether a call a cleanup makes into another row finds a service would depend on registration order, which cannot be explained |
 | D3 | Once the withdrawal has run, the row no longer counts the name as its own: `use` says `not-declared` | An existing rule ([declared services](design-declared-services-2026-10-29.en.md) D4): `own_service` is true only while `fiber.provided` still holds the key, and the withdrawal removes it. The same in all six, nothing new |
 | D4 | The carrier: one stack per row, its entries either "run this cleanup" or "withdraw this service (the one registered)" | A withdrawal has to tell whether the entry in the table is still the one it registered — a plugin may `provide` the name again after calling the returned function (the mirror of `reentrant_provide_fails`). Comparing objects by value cannot tell two equal instances apart, so an entry carries the identity it was registered with |
-| D5 | Registering a cleanup while unloading is refused, with the line `rutis: row <row> is not active: cleanup is not registered` (Node writes `plugin <plugin>`). All six gain this line in this design: before it, only Kotlin wrote it (`Ctx.kt`, where `addCleanup` returns `Boolean` and makes the caller handle the failure); Go, Python, Bun and Swift appended silently to a list the unload had already taken, so that cleanup never ran and nothing was said | Rust returns `InactiveEffect` at that moment (`ctx.rs:861`, `contract.rs::effect_during_cleanup_fails`). An SDK's `effect` returns nothing, so a line is all it can give. Dropped: dropping it silently — a registered cleanup that never runs leaves the plugin no way to know, which is what those five did |
+| D5 | Registering a cleanup while unloading is refused, with the line `rutis: row <row> is not active: cleanup is not registered` (Node writes `plugin <plugin>`). All six gain this line in this design: before it, only Kotlin wrote it (`Ctx.kt`, where `addCleanup` returns `Boolean` and makes the caller handle the failure); Go, Python, Bun and Swift appended silently to a list the unload had already taken, so that cleanup never ran and nothing was said | Rust returns `InactiveEffect` at that moment (`ctx.effect` in `crates/rutis/src/ctx.rs`, `contract.rs::effect_during_cleanup_fails`). An SDK's `effect` returns nothing, so a line is all it can give. Dropped: dropping it silently — a registered cleanup that never runs leaves the plugin no way to know, which is what those five did |
 | D6 | The host side is unchanged: when announced services are withdrawn and when `rows.unload` is answered stay as they are | A runtime row's host already withdraws the projection before sending `rows.unload` (`projection.withdraw().await` before `process.unload_row` in `crates/rutis-loader/src/runtime.rs`), and the host sees withdrawals before the reply (the comment on `unload_row` in `process.rs`). This design changes the in-process tables, not the frame order |
 | D7 | Node runs one at a time in reverse too: the adapter keeps a stack of its own and drains it with one Cordis effect | Cordis's `_unload` is `Promise.all`, and its own disposal order cannot be changed; but the adapter can push `effect`, `provide` and the cleanup `apply` returns onto a stack of its own and register **one** Cordis effect that drains it. Listeners and `signal` stay with Cordis: they do not touch services. Dropped: leaving Node concurrent — five runtimes one at a time and one concurrently gives plugin authors no way to predict a cleanup's order |
 
@@ -70,13 +70,14 @@ A row provides `counter`, then registers a cleanup that reads it:
 
 ```go
 func (p *plugin) Apply(ctx *rutis.Ctx, cfg Config) error {
-	err := ctx.Provide("counter", counter{p.inject.Listen()})
-	if err != nil {
-		return err
-	}
-	ctx.Effect(func(ctx context.Context) error {
+	ctx.Provide("counter", counter{p.inject.Listen()})
+	ctx.Effect(func(c context.Context) error {
+		var service *rutis.Service
+		if err := ctx.Use("counter", &service); err != nil {
+			return err
+		}
 		var n int
-		return ctx.Use("counter", &service).Call(ctx, "Count", &n)
+		return service.Call(c, "Count", &n)
 	})
 	return nil
 }
@@ -128,7 +129,7 @@ One stack per row: `provide` and `effect` both push to it, unload takes it and r
 | 3 Bun | `bun/rutis-bun/src/runner.ts`: `Row.steps`, `provide`, `effect`, `lookup`/`#find`, `unload` | as above | `bun/rutis-bun/test/unload-order.test.ts` |
 | 4 Kotlin | `internal/Runtime.kt`: `Row.steps`, `provide`, `addCleanup`, `unloadRow`; `Ctx.use` in `Ctx.kt` | as above | `jvmTest/.../UnloadOrderTest.kt` |
 | 5 Swift | `API/Runtime.swift`: `Row.steps`, `provide`, `effect`, `unload`; `Ctx.use` in `API/Ctx.swift` | as above | `Tests/SelfTest/UnloadOrderTests.swift` |
-| 6 Node | `node/rutis-runtime/src/leaf.mjs`: one stack per fiber in `toCordis` and one Cordis effect draining it in reverse; `unloadRow` in `runner.mjs` drains before `fiber.dispose()` | `effect`, `provide` and the cleanup `apply` returns all go on the stack | `node/rutis-runtime/test/` (or where the existing ones live) |
+| 6 Node | `toCordis` in `node/rutis-runtime/src/leaf.mjs`: one stack per fiber and **one** Cordis effect registered first to drain it — Cordis's `_unload` starts every disposal at once (`Promise.all`), this effect among them, and it runs the stack in reverse one entry at a time before returning | `effect`, `provide` and the cleanup `apply` returns all go on the stack; draining leaves `unloadRow` in `runner.mjs` unchanged | The two cases in `node/rutis-runtime/test/leaf.test.mjs` |
 | 7 Docs | `docs/design-events-protocol-2026-10-18.md` §7.1 steps 3 and 5, `docs/guide/*`, `docs/guarantees.md` | Step 3 becomes "not visible to others from the start of the unload, withdrawn in its place"; step 5 becomes "cleanups and withdrawals in reverse" | — |
 
 [Declared services](design-declared-services-2026-10-29.en.md) §3 item 6 becomes one sentence saying all six match Rust, and §7's follow-up entry goes.

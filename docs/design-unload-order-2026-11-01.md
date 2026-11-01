@@ -17,18 +17,18 @@ Ctx::provide_native（crates/rutis/src/ctx.rs）
 ├─ ② register_internal_effect(label, origin, …)     → 与 ctx.effect 进同一个 effects 列表
 └─ ③ 返回 Effect::AsyncDisposer(evict_and_finalize(key))
 
-Fiber::drain_effects（crates/rutis/src/fiber.rs:1128-1140）
+Fiber::drain_effects（crates/rutis/src/fiber.rs）
 └─ for record in effects.into_iter().rev()          → 逆序，一条一条
    ├─ 清理：运行闭包
    └─ 撤回：evict_and_finalize（消费者先停，再从表里删去）
 ```
 
-于是“清理读不读得到自己提供的服务”只由**登记先后**决定：`provide` 之后登记的清理先跑，读得到；之前登记的后跑，读不到。`crates/rutis/tests/contract.rs:1396` 的 `self_access_during_cleanup` 断言的就是前者（`Some(77)`），`docs/guarantees.md` 的 `core/D14` 把它写成“提供方最后清理，清理期间仍能访问自身服务”。
+于是“清理读不读得到自己提供的服务”只由**登记先后**决定：`provide` 之后登记的清理先跑，读得到；之前登记的后跑，读不到。`crates/rutis/tests/contract.rs` 的 `self_access_during_cleanup` 断言的就是前者（`Some(77)`），`docs/guarantees.md` 的 `core/D14` 把它写成“提供方最后清理，清理期间仍能访问自身服务”。
 
 另一半在读取侧：
 
 ```
-Ctx::read_binding_as（crates/rutis/src/ctx.rs:520-556）
+Ctx::read_binding_as（crates/rutis/src/ctx.rs）
 ├─ self_access = in_subtree_of(provider)            → 是不是提供方的子树
 ├─ 不是：provider.state() != Active 或 binding.removing → 读不到
 └─ 是：不看状态，一直读到撤回真的删去这一条
@@ -58,7 +58,7 @@ Ctx::read_binding_as（crates/rutis/src/ctx.rs:520-556）
 | D2 | 别的读者在卸载开始时就看不懂这一行的服务，不看撤回那一条排在哪里 | Rust 的 `read_binding_as`：不是提供方的子树，`provider.state() != Active` 就读不到，而状态在卸载的第一步就变成 `Unloading`。SDK 里没有子树的概念，读者是不是提供方本身就是拿 `row.key` 比的，所以对应关系是“同一个行算自己，其余算别人”。放弃“让撤回那一条的位置决定别人什么时候看不见”：那样一个清理里调用的另一个行，能不能拿到服务取决于登记顺序，无法解释 |
 | D3 | 撤回跑完之后，这一行自己也不再把名字算作“我提供的”：`use` 报 `not-declared` | 已有规则（[声明集合](design-declared-services-2026-10-29.md) D4）：`own_service` 只在 `fiber.provided` 还记着这个键时为真，撤回时删去。六家一致，不新增规则 |
 | D4 | 载体：每一行一个栈，栈里的条目是“运行这个清理”或“撤回这个服务（带着它登记时的那一份）” | 撤回要能认出“表里现在这一条还是不是我登记的那一份”——插件可以撤回后再提供同名服务（`reentrant_provide_fails` 的反面：撤回函数被调用后重新 `provide`）。按值比较对象不足以区分两个相等的实例，所以条目里带着登记时的指针/对象身份 |
-| D5 | 卸载期间再登记清理：拒绝，并写一行 `rutis: row <行> is not active: cleanup is not registered`（Node 写 `plugin <插件>`）。六家都是这一稿新加的：此前只有 Kotlin 写这一句（`Ctx.kt`，`addCleanup` 返回 `Boolean` 逼着调用方处理），Go、Python、Bun、Swift 静默 append 进一个卸载时已被取走的列表，那条清理永远不会跑也没有任何输出 | Rust 在这一刻返回 `InactiveEffect`（`ctx.rs:861`，`contract.rs::effect_during_cleanup_fails`）。SDK 的 `effect` 没有返回值，只能写一行。放弃“静默丢弃”：登记了却永远不跑，插件无从知道，正是前五家的现状 |
+| D5 | 卸载期间再登记清理：拒绝，并写一行 `rutis: row <行> is not active: cleanup is not registered`（Node 写 `plugin <插件>`）。六家都是这一稿新加的：此前只有 Kotlin 写这一句（`Ctx.kt`，`addCleanup` 返回 `Boolean` 逼着调用方处理），Go、Python、Bun、Swift 静默 append 进一个卸载时已被取走的列表，那条清理永远不会跑也没有任何输出 | Rust 在这一刻返回 `InactiveEffect`（`crates/rutis/src/ctx.rs` 的 `ctx.effect`，`contract.rs::effect_during_cleanup_fails`）。SDK 的 `effect` 没有返回值，只能写一行。放弃“静默丢弃”：登记了却永远不跑，插件无从知道，正是前五家的现状 |
 | D6 | 宿主那一侧不改：撤下宣布的服务、回复 `rows.unload` 的时机都不动 | 运行时行的宿主持有方本来就先撤投影再发 `rows.unload`（`crates/rutis-loader/src/runtime.rs` 的 `projection.withdraw().await` 在 `process.unload_row` 之前），宿主在回复前看到撤回（`process.rs` 的 `unload_row` 注释）。本稿改的是进程内的表，不影响帧的顺序 |
 | D7 | Node 也一条一条逆序：适配层自己持有一个栈，用一个 Cordis effect 逆序排干 | Cordis 的 `_unload` 是 `Promise.all`，它自己的处置顺序改不了；但适配层可以把 `effect`、`provide`、`apply` 返回的清理都放进自己的栈，注册**一个** Cordis effect 排干它。监听器、`signal` 这些仍交给 Cordis，它们不与服务交互。放弃“Node 保持并发”：六家里五种一条一条、一种并发，插件作者写清理时无法预期 |
 
@@ -70,13 +70,14 @@ Ctx::read_binding_as（crates/rutis/src/ctx.rs:520-556）
 
 ```go
 func (p *plugin) Apply(ctx *rutis.Ctx, cfg Config) error {
-	err := ctx.Provide("counter", counter{p.inject.Listen()})
-	if err != nil {
-		return err
-	}
-	ctx.Effect(func(ctx context.Context) error {
+	ctx.Provide("counter", counter{p.inject.Listen()})
+	ctx.Effect(func(c context.Context) error {
+		var service *rutis.Service
+		if err := ctx.Use("counter", &service); err != nil {
+			return err
+		}
 		var n int
-		return ctx.Use("counter", &service).Call(ctx, "Count", &n)
+		return service.Call(c, "Count", &n)
 	})
 	return nil
 }
@@ -128,7 +129,7 @@ func (p *plugin) Apply(ctx *rutis.Ctx, cfg Config) error {
 | 3 Bun | `bun/rutis-bun/src/runner.ts`：`Row.steps`、`provide`、`effect`、`lookup`/`#find`、`unload` | 同上 | `bun/rutis-bun/test/unload-order.test.ts` |
 | 4 Kotlin | `internal/Runtime.kt`：`Row.steps`、`provide`、`addCleanup`、`unloadRow`；`Ctx.kt` 的 `use` | 同上 | `jvmTest/.../UnloadOrderTest.kt` |
 | 5 Swift | `API/Runtime.swift`：`Row.steps`、`provide`、`effect`、`unload`；`API/Ctx.swift` 的 `use` | 同上 | `Tests/SelfTest/UnloadOrderTests.swift` |
-| 6 Node | `node/rutis-runtime/src/leaf.mjs`：`toCordis` 里每 fiber 一个栈，注册一个 Cordis effect 逆序排干；`runner.mjs` 的 `unloadRow` 在 `fiber.dispose()` 之前排干 | `effect`、`provide`、`apply` 返回的清理都进栈 | `node/rutis-runtime/test/`（或 `node/rutis` 里现成的位置） |
+| 6 Node | `node/rutis-runtime/src/leaf.mjs` 的 `toCordis`：每 fiber 一个栈，最先注册**一个** Cordis effect 负责排干——Cordis 的 `_unload` 会 `Promise.all` 同时开始全部处置，这个 effect 也在其中，但它把栈逆序逐条跑完才返回 | `effect`、`provide`、`apply` 返回的清理都进栈；排干本身不改 `runner.mjs` 的 `unloadRow` | `node/rutis-runtime/test/leaf.test.mjs` 的两条 |
 | 7 文档 | `docs/design-events-protocol-2026-10-18.md` §7.1 第 3、5 步、`docs/guide/*`、`docs/guarantees.md` | 第 3 步改成“卸载开始时对别人不可见，撤回在自己的位置上”；第 5 步改成“逆序运行清理与撤回” | — |
 
 `[声明集合](design-declared-services-2026-10-29.md)` §三 第 6 条改成一句“六家都与 Rust 相同”，§七 的后续条目删去。
