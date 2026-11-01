@@ -38,7 +38,7 @@ TypeScript / JavaScript 插件（`@arcships/rutis`）、Python 插件（`rutis`�
 
 清理按注册的相反顺序运行：`apply` 返回的清理函数最先，然后是 `ctx.effect` 注册的。Node 运行时上，Cordis 按这个顺序同时开始它们，异步的清理不等前一个完成。
 
-Go 里：`ctx.Use(name, &target)` 把服务绑定到函数字段的结构体（或 `*advanced.Service`）；`ctx.Provide(name, value)`；`ctx.Effect(func(context.Context) error)`；`ctx.Go(task)` 起一个卸载时停下的 goroutine。`*rutis.Ctx` 是插件卸载时取消的 `context.Context`。
+Go 里：`ctx.Use(name, &target)` 把服务绑定到函数字段的结构体、接口（本进程的提供方，对象实现了它时给的是对象本身）、`any`（同上）或 `*advanced.Service`；`ctx.Provide(name, value)`；`ctx.Effect(func(context.Context) error)`；`ctx.Go(task)` 起一个卸载时停下的 goroutine。`*rutis.Ctx` 是插件卸载时取消的 `context.Context`。
 
 Kotlin 里：`ctx.use<I>(name)` 经 `@RutisClient` 接口 `I` 使用服务（同进程提供者实现了 `I` 时就是对象本身）；`ctx.provide(name, obj)` 的 `obj` 是 `@RutisService` 类的实例，方法表由 KSP 处理器在编译期生成；`ctx.effect { }`；`ctx` 是插件卸载时取消的协程作用域，`ctx.launch { }` 起的协程卸载时取消并等待。收到的错误是 `RutisException`，按 `name` 匹配。
 

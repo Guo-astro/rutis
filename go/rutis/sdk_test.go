@@ -388,3 +388,29 @@ func TestTheManifestReportsOptionalServices(t *testing.T) {
 		t.Fatalf("summary: %s", got)
 	}
 }
+
+// guarantee: sdk/optional-deps (the test's service taken through an
+// interface in this process is the object the test gave)
+func TestAServiceTheTestGivesIsTheObjectThroughAnInterface(t *testing.T) {
+	socket := &board{}
+	var got interface{ Title() string }
+	plugin := rutis.Define(rutis.Plugin[rutis.NoConfig]{
+		Name:   "boarduser",
+		Inject: []string{"board"},
+		Apply: func(ctx *rutis.Ctx, _ rutis.NoConfig) error {
+			return ctx.Use("board", &got)
+		},
+	})
+	_ = rutistest.Load(t, plugin, nil, map[string]any{"board": socket})
+	if got != interface{ Title() string }(socket) {
+		t.Fatalf("use gave %T %v, not the object the test gave", got, got)
+	}
+	if got.Title() != "board" {
+		t.Fatalf("title: %q", got.Title())
+	}
+}
+
+// board is the test's service: a pointer, so "the same object" is observable.
+type board struct{}
+
+func (b *board) Title() string { return "board" }
