@@ -1525,25 +1525,28 @@ fn settled_row() -> Row {
 /// runtime in tens of seconds, and the row had not even been reached.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_slow_start_does_not_use_up_the_rows_guard() {
-    let root = Ctx::root_with(tokio::runtime::Handle::current());
-    let view = root.plugin(SlowStart(Duration::from_millis(300)));
-    let row = settled_row();
-    // Shorter than the runtime's start: the window a loaded case had.
+    // Both waits last `guard` here (times `RUTIS_TEST_TIME_SCALE` on a loaded
+    // machine): the runtime takes four of those to come up, so the window a
+    // row on its own gets runs out while it starts.
     let guard = Guard(Duration::from_millis(100));
+    let window = guard.limit();
+    let root = Ctx::root_with(tokio::runtime::Handle::current());
+    let view = root.plugin(SlowStart(window * 4));
+    let row = settled_row();
     let pending = || (Some((FiberState::Pending, None)), None);
     let alone = row_settled(&row, Some((&view, "rt-x")), pending, guard, no_report).await;
     assert_eq!(
         alone.unwrap_err().lines().next().unwrap(),
-        "row c did not start within 100ms"
+        format!("row c did not start within {window:?}")
     );
-    // The runtime first (it takes 300 ms, under its own guard), then the
-    // row in the same 100 ms window: the runtime's start is not the row's.
-    runtime_up(&view, "rt-x", Guard(Duration::from_secs(2)), no_report)
+    // The runtime first (four windows, under its own guard), then the row in
+    // its one window: the runtime's start is not taken out of the row's.
+    runtime_up(&view, "rt-x", Guard(window * 8), no_report)
         .await
         .unwrap();
     let started = std::time::Instant::now();
     let runs = || {
-        let up = started.elapsed() >= Duration::from_millis(20);
+        let up = started.elapsed() >= window / 5;
         let fiber = if up {
             FiberState::Active
         } else {
@@ -1611,18 +1614,19 @@ async fn the_failure_names_every_runtime_and_its_last_words() {
     };
     let mut row = settled_row();
     row.at = Location::Y;
+    let guard = Guard(Duration::from_millis(50));
     let why = row_settled(
         &row,
         Some((&view, "rt-y-swift")),
         || (Some((FiberState::Pending, None)), None),
-        Guard(Duration::from_millis(50)),
+        guard,
         report,
     )
     .await
     .unwrap_err();
     // The row, then what it saw, then every runtime: a line each.
     assert!(
-        why.starts_with("row c did not start within 50ms\n"),
+        why.starts_with(format!("row c did not start within {:?}\n", guard.limit()).as_str()),
         "{why}"
     );
     assert!(why.contains("\n  its fiber Pending\n"), "{why}");
