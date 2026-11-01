@@ -164,7 +164,7 @@ for def in parts.of("session") {
 | R7 | **重载之后：** 新一代的 `apply` 交出的是新的定义，用的一方重新登记、重新挂；旧定义的副本这时已经结束（R6）。 |
 | R8 | **检查：** `rutis-host check` 不知道运行时才交出来的插件定义。挂上以后，如果门控条件不满足，只有那一份等待，和行一样。 |
 | R9 | **各语言的客户端：** <br>· Rust：参数、返回值直接写 `Definition`，`#[rutis::service]` 认它；dylib 插件经 `rutis-sdk` 拿到它；<br>· Go：函数字段直接传 `*rutis.Definition`，参数照常按值转换；<br>· Swift：`@RutisClient` 的参数类型写 `Rutis.Definition`；<br>· Kotlin：KSP 客户端接口的参数类型写 `Plugin`；<br>· TS：`rutis-host types` 把 `Definition` 写成 TS 的插件类型（`definePlugin` 的结果或 Cordis 插件）；<br>· Python、Node、Bun：不用声明。 |
-| R10 | **测试工具：** 插件定义交给测试替身时，替身收到的值可以直接交给测试工具的 `load` 装上，和真实运行时一致。Node 严格模式下，冻结的 `definePlugin` 结果也能这样交出（今天会在 Proxy 里报错）。Python 测试工具今天能交出 `Plugin`，真实运行时却会报错，这次两者一致。 |
+| R10 | **测试工具：** 插件定义交给测试替身时，替身收到的值可以直接交给测试工具的 `load` 装上，和真实运行时一致。Node 严格模式下，冻结的 `definePlugin` 结果也能这样交出（今天会在 Proxy 里报错）。Python 测试工具今天能交出 `Plugin`，真实运行时却会报错，这次两者一致。Node/Bun 的做法见[测试工具的 `load`](design-test-tool-definition-load-2026-11-01.md)：`load` 把替身收到的定义装成宿主上的一行，和 `ctx.plugin(def.at(..))` 挂出的副本的差别写在那份稿子的「与真实宿主的差异」一节。 |
 
 ## 五、线上格式与运行时契约
 
