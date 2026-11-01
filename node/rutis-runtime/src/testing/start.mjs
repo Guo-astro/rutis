@@ -102,8 +102,11 @@ export async function start({ dispatch, outgoing, command = [process.execPath, .
   failed.catch(() => {})
   let control
   try {
+    // A test host: it takes the far end's plugin definitions, to hand them
+    // back to `load`, and declares `plugins` for them
+    // (docs/design-test-tool-definition-load-2026-11-01.md).
     control = await Promise.race([
-      Process.connect(`unix:${address}`, dispatch ?? (() => { throw new Error('the test serves nothing') }), undefined, { local: 'test' }, { outgoing, answersWaiting: true }),
+      Process.connect(`unix:${address}`, dispatch ?? (() => { throw new Error('the test serves nothing') }), undefined, { local: 'test', host: true }, { outgoing, answersWaiting: true }),
       failed,
     ])
   } catch (error) {

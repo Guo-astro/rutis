@@ -10,8 +10,9 @@
 import { Process } from '../client.mjs'
 import { rmSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { PLUGIN_API, USES_ANY } from '../leaf.mjs'
+import { PLUGIN_API, USES_ANY, isLeaf, supported } from '../leaf.mjs'
 import { CONTROL } from './service.mjs'
+import { Definitions } from '../definitions.mjs'
 
 // The plugin a service of the test is a row of (./service.mjs).
 const SERVICE = fileURLToPath(new URL('./service.mjs', import.meta.url))
@@ -72,9 +73,40 @@ export default Object.freeze({
         }
       }
     }
+    // The definitions the test handed back, registered so the host can load
+    // them as rows (../definitions.mjs).
+    const definitions = new Definitions()
     const methods = {
       ...emitting,
       load: (file, config, options) => harness.load(file, config ?? null, options ?? null),
+      // A plugin definition the test handed back (`@arcships/rutis/testing`'s
+      // `load`): the runtime resolves the registered name to the definition it
+      // made, and the host loads it as a row, as `load` of a file is
+      // (docs/design-test-tool-definition-load-2026-11-01.md).
+      loadDefinition: async (definition, config, options) => {
+        if (!isLeaf(definition)) throw new Error('load needs a plugin definition a test double received')
+        supported(definition, definition.name ?? 'plugin definition')
+        // The name's last segment is the definition's name, so the host's
+        // row id is that name (`-2`, `-3`… while taken): it plays the part a
+        // file's name plays for `load` of a file.
+        const name = definitions.add(definition)
+        let id
+        try {
+          id = await harness.load(name, config ?? null, options ?? null)
+        } catch (error) {
+          definitions.failed(name)
+          throw error
+        }
+        definitions.loaded(id, name)
+        return { id, provides: definition.provides ?? {} }
+      },
+      unloadDefinition: async id => {
+        try {
+          await harness.unload(id)
+        } finally {
+          definitions.released(id)
+        }
+      },
       update: (id, config) => harness.update(id, config),
       unload: id => harness.unload(id),
       reported: id => harness.reported(id),
