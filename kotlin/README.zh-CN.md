@@ -55,8 +55,9 @@ dependencies {
 
 | | |
 | --- | --- |
-| `Rutis.define<C>(name, inject, provides?, schema?) { ctx, config -> }` | `C` 是 `@Serializable` 类型（无配置用 `Rutis.NoConfig`）。`provides` 可选：没写时 `ctx.provide` 提供的服务自动对外，方法全为 `async`；`service<T>(sync = setOf(...))` 把方法标成 `sync`。插件 API 3 |
+| `Rutis.define<C>(name, inject, optional?, provides?, schema?) { ctx, config -> }` | `C` 是 `@Serializable` 类型（无配置用 `Rutis.NoConfig`）。`optional`（在 `inject` 之后；0.20 起在这个位置，后面的参数请按名字传）列出插件用 `ctx.get` 读的服务。`provides` 可选：没写时 `ctx.provide` 提供的服务自动对外，方法全为 `async`；`service<T>(sync = setOf(...))` 把方法标成 `sync`。插件 API 3 |
 | `ctx.use<I>(name)` | `I` 是 `@RutisClient` 接口，`name` 在 `inject` 中。同进程提供者的对象实现了 `I` 时得到对象本身，否则得到代理。`suspend` 函数挂起等待，普通函数阻塞本线程 |
+| `ctx.get<I>(name)` | `name` 在 `optional` 中（`Rutis.define(name, inject, optional = listOf("llm"), …)`）：不等；在时与 `use` 给的相同，插件启动时不在则是 `null`。要 rutis-host 0.20 或以后 |
 | `ctx.provide(name, obj)` | `obj` 是 `@RutisService` 类的实例：它的 public 成员函数（含父类的）就是方法，按函数名；至插件卸载或调用返回的函数为止 |
 | `ctx.effect { }` | 清理，插件卸载时逆序运行 |
 | `ctx.on(name, prepend, global) { args -> }` | 监听器：`args` 是解码成原生值的事件参数，waterfall 中最后一个是 `args.next`；返回值在 `serial`、`bail`、`waterfall` 中算结果 |

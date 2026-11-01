@@ -97,6 +97,8 @@ plugin = define_plugin(
 
 `inject` lists the services the plugin uses, and `ctx.use("translate")` gets one. The plugin starts once all of them are there; when one goes, the plugin stops, and it starts again when the service is back. `greeter` need not know which plugin provides `translate` or in which language; call its methods with `await`.
 
+A service the plugin can do without goes in `optional = ["llm"]` (or `define_plugin(apply, optional=["llm"])`) instead of `inject`: rutis does not wait for it, and `ctx.get("llm")` gives it, or `None` when it was not there as the plugin started (one that comes later is not leased for the row, and is sure to be seen only after the row restarts). See [plugin API: optional services](plugin-api.en.md#optional-services); it needs rutis-host 0.20 or later.
+
 The template's test now fails: it gives no `translate`. Step 6 replaces it.
 
 ## 4. Configuration

@@ -97,6 +97,8 @@ plugin = define_plugin(
 
 `inject` 写出插件用到的服务，`ctx.use("translate")` 拿到它。`inject` 里的服务都就绪了插件才启动，其中一个撤下时插件停下，回来时再启动。`translate` 由哪个插件提供、用什么语言写，`greeter` 不用知道；调用它的方法用 `await`。
 
+没有也能运行的服务写进 `optional = ["llm"]`（或 `define_plugin(apply, optional=["llm"])`），不写进 `inject`：rutis 不等它，`ctx.get("llm")` 给出它，插件启动时它不在则是 `None`（之后才出现的，rutis 不为这一行租借，这一行重启后才一定看得到）。见[插件 API：可选服务](plugin-api.md#可选服务)；要 rutis-host 0.20 或以后。
+
 现在模板自带的测试会失败：它没有给 `translate`。第 6 步换掉它。
 
 ## 4. 配置

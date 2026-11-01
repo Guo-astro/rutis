@@ -42,7 +42,7 @@ export interface Loaded extends TestEmitter {
 
 export interface LoadOptions {
   config?: unknown
-  /** The test's services the plugin injects, by name. */
+  /** The test's services the plugin injects or uses optionally (`optional`), by name. */
   services?: Record<string, unknown>
 }
 

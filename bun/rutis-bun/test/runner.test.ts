@@ -56,8 +56,20 @@ test('rows isolating a name with different labels provide different services', a
   await control('rows.unload', ['a'])
   expect(() => runtime.lookup(scopedId('tools', 'a'))).toThrow('not available')
   expect(runtime.lookup(scopedId('tools', 'b'))).toBeDefined()
-  // The retired handle lives until the host releases it.
-  expect(runtime.dispatch('tools\0a', 'title', [])).toBe('A')
+  // The retired handle lives until the host releases it, but no longer
+  // reaches the object: a caller still holding it (an optional service,
+  // leased at start) is told it is gone, by a call or a property read.
+  // guarantee: sdk/optional-deps
+  const pick = (run: () => unknown) => { try { run() } catch (error: any) { return [error.name, error.message, error.code, error.data] } }
+  const gone = ['BindingError', 'service tools is not available', 'unavailable', { service: 'tools' }]
+  expect(pick(() => runtime.dispatch('tools\0a', 'title', []))).toEqual(gone)
+  expect(pick(() => runtime.dispatch('', 'get', ['tools\0a', 'title']))).toEqual(gone)
+  expect(runtime.dispatch('tools\0b', 'title', [])).toBe('B')
+  // Loaded again, its service has a handle of its own: the old one stays
+  // retired rather than reaching the new object.
+  await control('rows.load', ['a', './scoped.ts', { title: 'A2' }, [['tools', 'a']], [], { tools: { title: 'sync' } }])
+  expect(runtime.dispatch(handleOf('tools\0a', 2), 'title', [])).toBe('A2')
+  expect(pick(() => runtime.dispatch('tools\0a', 'title', []))).toEqual(gone)
   runtime.dispatch('', 'release', ['tools\0a'])
   expect(() => runtime.dispatch('tools\0a', 'title', [])).toThrow('unknown or released')
 })
@@ -101,6 +113,93 @@ export function apply(ctx) {
   expect((globalThis as any).missing).toEqual({ message: 'service gone is not available', code: 'unavailable', data: { service: 'gone' } })
 })
 
+// Its `swap` withdraws `flip` and provides another object under the name.
+const FLIP = `
+export const provides = { flip: { toss: 'sync', swap: 'sync' } }
+export function apply(ctx) {
+  const coin = side => ({
+    toss: () => side,
+    swap() { withdraw(); withdraw = ctx.provide('flip', coin(side === 'heads' ? 'tails' : 'heads')); return null },
+  })
+  let withdraw = ctx.provide('flip', coin('heads'))
+}
+`
+
+// guarantee: sdk/optional-deps — one its row replaced while running keeps
+// its object until the row unloads, as a snapshot of a service does in
+// Rust (boundary/5.1).
+test('a handle on a service its row replaced keeps its object until the row unloads', async () => {
+  const runtime = new Runtime(project({ 'flip.ts': FLIP }))
+  const control = (method: string, args: unknown[]) => runtime.dispatch('', method, args) as Promise<unknown>
+  await control('rows.load', ['f', './flip.ts', {}, [], [], { flip: { toss: 'sync', swap: 'sync' } }])
+  expect(runtime.dispatch('flip', 'toss', [])).toBe('heads')
+  runtime.dispatch('flip', 'swap', [])
+  expect(runtime.dispatch(handleOf('flip', 2), 'toss', [])).toBe('tails')
+  expect(runtime.dispatch('flip', 'toss', [])).toBe('heads')
+  await control('rows.unload', ['f'])
+  const pick = (run: () => unknown) => { try { run() } catch (error: any) { return [error.name, error.message, error.code, error.data] } }
+  expect(pick(() => runtime.dispatch('flip', 'toss', []))).toEqual(['BindingError', 'service flip is not available', 'unavailable', { service: 'flip' }])
+})
+
+// Provides `coin`, declaring none of its methods (announced); `swap` puts
+// an object with other methods under the name.
+const RESHAPE = `
+export function apply(ctx) {
+  let withdraw = ctx.provide('coin', {
+    toss: () => 'heads',
+    swap() { withdraw(); withdraw = ctx.provide('coin', { spin: () => 'spun' }); return null },
+  })
+}
+`
+
+// guarantee: sdk/optional-deps — an announced service offers its object's
+// methods: a handle its row replaced keeps the old object's.
+test('a handle its row replaced answers with its own object\'s methods', async () => {
+  const runtime = new Runtime(project({ 'reshape.ts': RESHAPE }))
+  await runtime.dispatch('', 'rows.load', ['c', './reshape.ts', {}, [], [], null])
+  expect(runtime.dispatch('coin', 'toss', [])).toBe('heads')
+  runtime.dispatch('coin', 'swap', [])
+  expect(runtime.dispatch(handleOf('coin', 2), 'spin', [])).toBe('spun')
+  expect(runtime.dispatch('coin', 'toss', [])).toBe('heads')
+  expect(() => runtime.dispatch('coin', 'spin', [])).toThrow('coin has no method spin (methods: swap, toss)')
+})
+
+// An optional service: `get` gives it when there (the object itself for a
+// row here, a proxy for the host's) and undefined when not; `use` reads
+// only what `inject` lists, as Rust's `require` (an optional one: add it to
+// `inject`); the row's `inject` counts as declared too; `get` of a name
+// declared nowhere says to add it to `optional`.
+// guarantee: sdk/optional-deps
+test('a plugin reads its optional services with get', async () => {
+  const dir = project({
+    'notes.ts': "export function apply(ctx) { ctx.provide('notes', globalThis.notes = { count: () => 3 }) }\n",
+    'summary.ts': `
+export const optional = ['llm', 'notes', 'absent']
+export function apply(ctx) {
+  const seen = globalThis.optional = {}
+  seen.llm = typeof ctx.get('llm')?.ask
+  seen.notes = ctx.get('notes')
+  seen.absent = ctx.get('absent')
+  seen.extra = ctx.get('extra')
+  for (const [key, run] of [['use absent', () => ctx.use('absent')], ['get undeclared', () => ctx.get('nope')]]) {
+    try { run(); seen[key] = 'no error' } catch (error) { seen[key] = [error.name, error.message, error.code, error.data] }
+  }
+}
+`,
+  })
+  const runtime = new Runtime(dir)
+  runtime.dispatch('', 'hosts.provide', ['llm', { ask: 'sync' }])
+  await runtime.dispatch('', 'rows.load', ['n', './notes.ts', {}, [], [], null])
+  await runtime.dispatch('', 'rows.load', ['s', './summary.ts', {}, [], ['extra'], null])
+  const seen = (globalThis as any).optional
+  expect(seen.llm).toBe('function')
+  expect(seen.notes).toBe((globalThis as any).notes)
+  expect(seen.absent).toBeUndefined()
+  expect(seen.extra).toBeUndefined()
+  expect(seen['use absent']).toEqual(['BindingError', "service absent is not available to this plugin, which does not declare it in inject: add 'absent' to its inject", 'not-declared', { service: 'absent' }])
+  expect(seen['get undeclared']).toEqual(['BindingError', "service nope is not available to this plugin, which does not declare it: add 'nope' to its optional (or to its inject, if it cannot run without it)", 'not-declared', { service: 'nope' }])
+})
+
 test('host services expose their declared methods only', () => {
   const runtime = new Runtime(project({}))
   runtime.dispatch('', 'hosts.provide', ['llm', { ask: 'sync' }])
@@ -118,13 +217,18 @@ test('rows.schema reports what a module declares', async () => {
   const dir = project({ 'scoped.ts': SCOPED })
   const runtime = new Runtime(dir)
   expect(await runtime.dispatch('', 'rows.schema', ['./scoped.ts'])).toEqual({
-    config: null, inject: [], provides: { tools: { title: 'sync' } }, announces: true, version: null,
+    config: null, inject: [], optional: [], provides: { tools: { title: 'sync' } }, announces: true, version: null,
   })
   // With or without `provides`, what it provides beyond it is announced when
   // it runs (#442).
   const undeclared = project({ 'plain.ts': 'export function apply(ctx) { ctx.provide("tools", { title() {} }) }' })
   expect(await new Runtime(undeclared).dispatch('', 'rows.schema', ['./plain.ts'])).toEqual({
-    config: null, inject: [], provides: {}, announces: true, version: null,
+    config: null, inject: [], optional: [], provides: {}, announces: true, version: null,
+  })
+  // guarantee: sdk/optional-deps
+  const optional = project({ 'summary.ts': "export const inject = ['notes']\nexport const optional = ['llm']\nexport function apply() {}\n" })
+  expect(await new Runtime(optional).dispatch('', 'rows.schema', ['./summary.ts'])).toEqual({
+    config: null, inject: ['notes'], optional: ['llm'], provides: {}, announces: true, version: null,
   })
 })
 

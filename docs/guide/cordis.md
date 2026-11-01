@@ -12,6 +12,8 @@ Cordis 插件作为 rutis-loader 的行运行时，`rutis.json` 的行里写包�
 - 同名服务已经有别的提供者（另一个运行时的行、Rust 插件、相连节点的插件）时，后提供的那一行失败（装载后才提供的也一样），错误写明双方，例如 `service storage is already provided by row prompts: row storage cannot provide it too`。
 - `rutis-host check` 不运行插件，看不到没有声明的服务：一行依赖的服务只可能由这类行提供时，写一条告警 `nothing declares <服务>; it may be provided at runtime by …`，不算失败（`check --strict` 时算）。
 
+- Cordis 插件用 Cordis 自己的 `ctx.get('llm')` 读没有也能运行的服务。它由别的运行时或宿主提供时，在 `inject` 旁边写 `optional = ['llm']`（插件对象、函数或类上；Cordis 忽略这个字段）：这一行启动时它在，rutis 就把它租借进这个进程，不等它。不写 `optional`，`ctx.get` 只看得到这个进程里的服务（否则是 `undefined`）。见[插件 API：可选服务](plugin-api.md#可选服务)。
+
 ## 事件
 
 Cordis 插件照常用 Cordis 自己的事件 API，它就是 rutis 的事件 API：`ctx.on`、`ctx.emit`、`ctx.parallel`、`ctx.serial`、`ctx.waterfall`、`ctx.bail`。Cordis 的监听器自动登记到宿主的逻辑总线上，所以不论 Cordis 插件作为 rutis.json 的行运行，还是挂载在 Rust 应用里，它的事件都按同一套规则到达任何语言、任何进程、任何相连节点里的监听器（平总线、按名字），别处发出的事件也到达它的监听器。规则见 [插件 API：事件](plugin-api.md#事件)。

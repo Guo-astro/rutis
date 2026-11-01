@@ -705,6 +705,10 @@ pub struct RowSchema {
     /// The services the plugin injects; Cordis has only required ones.
     #[serde(default)]
     pub inject: Vec<String>,
+    /// The optional services the plugin uses: leased in if there when the
+    /// row starts, not waited for.
+    #[serde(default)]
+    pub optional: Vec<String>,
     /// The services it provides to rutis: `{ name: { method: "sync" | "async" } }`.
     #[serde(default)]
     pub provides: serde_json::Map<String, Value>,

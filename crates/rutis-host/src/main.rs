@@ -910,8 +910,13 @@ fn print_row(
             // A plugin needing a newer plugin API does not resolve: its
             // runtime refuses it, saying what to upgrade.
             let meta = &resolved.meta;
-            for field in ["runtime", "binary", "version", "inject", "provides"] {
+            for field in [
+                "runtime", "binary", "version", "inject", "optional", "provides",
+            ] {
                 if let Some(value) = meta.get(field).filter(|value| !value.is_null()) {
+                    if field == "optional" && value.as_array().is_some_and(Vec::is_empty) {
+                        continue;
+                    }
                     outln!("  {field}: {value}");
                 }
             }

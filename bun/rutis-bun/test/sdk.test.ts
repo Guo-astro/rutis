@@ -9,6 +9,8 @@ import greeter from './fixtures/sdk/greeter.ts'
 import events from './fixtures/sdk/events.ts'
 import warmer from './fixtures/sdk/warmer.ts'
 import crossing from '../../../node/rutis/test/fixtures/crossing.mjs'
+import summary from './fixtures/sdk/summary.ts'
+import both from './fixtures/sdk/both.ts'
 
 test('a plugin runs with the SDK test tool', async () => {
   const t = await load(greeter, { config: { greeting: 'Hi' }, services: { clock: { now: () => 7 } } })
@@ -62,4 +64,32 @@ test('a callback of the plugin while the plugin calls a service of the test, und
   const t = await load(crossing, { services: { files: { open: () => scope }, other: { ping: () => 'pong' } } })
   expect(await t.service('probe').go()).toEqual(['got', 'pong'])
   await t.unload()
+})
+
+// The testing tool's optional services under Bun: not required by the test,
+// read with `get`; `use` of one says to add it to `inject` (as Rust's
+// `require`); a name in both lists fails the load.
+// guarantee: sdk/optional-deps
+test('the SDK testing tool runs optional services under Bun', async () => {
+  const without = await load(summary, { services: { notes: {} } })
+  expect(await without.service('summary').seen()).toEqual({
+    llm: false,
+    use: ["service llm is not available to this plugin, which does not declare it in inject: add 'llm' to its inject", 'not-declared', { service: 'llm' }],
+    get: ["service other is not available to this plugin, which does not declare it: add 'other' to its optional (or to its inject, if it cannot run without it)", 'not-declared', { service: 'other' }],
+  })
+  await without.unload()
+  const llm = { ask: async (question: string) => `re: ${question}` }
+  const withLlm = await load(summary, { services: { notes: {}, llm } })
+  // `use` does not read `optional`, even when the service is there.
+  expect(await withLlm.service('summary').seen()).toEqual({
+    llm: true,
+    use: ["service llm is not available to this plugin, which does not declare it in inject: add 'llm' to its inject", 'not-declared', { service: 'llm' }],
+    get: ["service other is not available to this plugin, which does not declare it: add 'other' to its optional (or to its inject, if it cannot run without it)", 'not-declared', { service: 'other' }],
+  })
+  expect(await withLlm.service('summary').ask('x')).toBe('re: x')
+  await withLlm.unload()
+  let refused: any
+  try { await load(both, { services: { llm } }) } catch (error) { refused = error }
+  expect(refused?.name).toBe('PluginTestError')
+  expect(refused?.message).toEndWith(': llm is in both inject and optional; keep it in one')
 })

@@ -10,7 +10,7 @@ import { isLeaf, supported, toCordis } from './leaf.mjs'
 import { Bus } from './events.mjs'
 import { install } from './cordis-events.mjs'
 import { rowTracking, install as handleUnhandled, failureText, kindText, realFile, reportText, stackFiles, unhandledError } from './unhandled.mjs'
-import { cannotLoad, encodeError, entryGone, fileShown, noMethod, notDefinePlugin, serviceName } from './errors.mjs'
+import { cannotLoad, encodeError, entryGone, fileShown, noMethod, notDefinePlugin, serviceName, unavailable } from './errors.mjs'
 import { prefixOutput, say, watchBlocking } from './output.mjs'
 
 // `<channel> --id <endpoint> [--peer <endpoint>] <first plugin or anchor>`.
@@ -174,7 +174,11 @@ const isolated = (name, label) => Symbol.for(`rutis-row:${JSON.stringify([label,
 // changes, the Rust side receives a new handle and replaces its native proxy.
 // The first object of a slot uses its id (scopedId) as its handle.
 const slots = new Map() // id -> { name, methods, scope, object, identity, handle, generation, exporter, row? }
-const handles = new Map() // handle -> { name: slot id, object, current, released }
+const handles = new Map() // handle -> { name: slot id, object, methods, current, released, gone? }
+// The last generation each id's handles reached, kept as its slots go and
+// come again (a row restarting): a handle is never given to two objects, so
+// one held for a retired object stays retired.
+const generations = new Map() // id -> generation
 
 // Cordis wraps Service instances in a new tracing proxy on every read; the
 // proxy reports its target under this symbol. Compare targets, not wrappers.
@@ -213,6 +217,20 @@ function retire(handle) {
   if (entry.released) handles.delete(handle)
 }
 
+// The row of slot `id` unloaded: every handle on its objects, the current
+// one and those it replaced, says the service is gone (to a row holding it,
+// an optional service leased at start); the released ones are forgotten.
+// A handle its row replaced while running keeps its object until then, as a
+// snapshot of a service does in Rust.
+function gone(id) {
+  for (const [handle, entry] of handles) {
+    if (entry.name !== id) continue
+    entry.current = false
+    entry.gone = true
+    if (entry.released) handles.delete(handle)
+  }
+}
+
 // Re-read every slot after any signal that may change it. Cordis emits
 // internal/service for provide, withdrawal and provider activation, and
 // internal/set for property assignment; a direct ctx.set() emits nothing and
@@ -232,11 +250,14 @@ function refresh() {
     slot.identity = current
     slot.handle = null
     if (object !== undefined) {
-      slot.generation++
+      slot.generation = (generations.get(id) ?? 0) + 1
+      generations.set(id, slot.generation)
       slot.handle = handleOf(id, slot.generation)
-      handles.set(slot.handle, { name: id, object, current: true, released: false })
       // A service no declaration describes offers the methods it has.
       if (slot.row !== undefined) slot.methods = methodsOf(current)
+      // A handle answers with its object's methods: one its row replaced
+      // keeps the old object's, as the old object.
+      handles.set(slot.handle, { name: id, object, methods: slot.methods, current: true, released: false })
     }
     slot.version = ++version
     if (mounted && !closing) {
@@ -472,7 +493,7 @@ function definedPlugin(value, rowInject = []) {
 function describeDefinition(value) {
   if (isLeaf(value)) {
     supported(value, value.name ?? 'plugin definition')
-    return { name: value.name ?? null, config: value.config ?? null, inject: value.inject, provides: value.provides, announces: value.announces === true }
+    return { name: value.name ?? null, config: value.config ?? null, inject: value.inject, optional: value.optional ?? [], provides: value.provides, announces: value.announces === true }
   }
   if (!isCordisPlugin(value)) throw new Error('not a plugin definition: expected a definePlugin result, a function, a class, or an object with apply')
   const schema = value.Config ?? value.schema
@@ -481,6 +502,7 @@ function describeDefinition(value) {
     name,
     config: schema ? toJsonSchema(schema) : null,
     inject: Object.keys(Inject.resolve(value.inject)),
+    optional: optionalOf(value.optional),
     // A value has no package.json: what it provides is announced.
     provides: {},
     announces: true,
@@ -689,7 +711,7 @@ async function unloadRow(key) {
   for (const id of row.exports) {
     const slot = slots.get(id)
     await slot?.exporter?.dispose()
-    if (slot) retire(slot.handle)
+    gone(id)
     slots.delete(id)
   }
   row.abort.abort(new DOMException('the row is unloading', 'AbortError'))
@@ -723,13 +745,14 @@ async function describe(entry) {
   const version = typeof pkg?.version === 'string' ? pkg.version : undefined
   // A leaf plugin declares in code; one that declares no `provides` (an
   // SDK of 0.12 or later says so) has its services announced.
-  if (isLeaf(declared)) return { config: declared.config ?? null, inject: declared.inject, provides: declared.provides, announces: declared.announces === true, version }
+  if (isLeaf(declared)) return { config: declared.config ?? null, inject: declared.inject, optional: declared.optional ?? [], provides: declared.provides, announces: declared.announces === true, version }
   const plugin = declared
   const schema = plugin.Config ?? plugin.schema
   const provides = pkg?.rutis?.provides
   return {
     config: schema ? toJsonSchema(schema) : null,
     inject: Object.keys(Inject.resolve(plugin.inject)),
+    optional: optionalOf(plugin.optional),
     provides: provides ?? {},
     announces: provides === undefined,
     version,
@@ -737,6 +760,15 @@ async function describe(entry) {
     // runtime resolves in Cordis.
     cordis: true,
   }
+}
+
+// A Cordis plugin's `optional`, beside its `inject`: the shared services
+// rutis leases into this process for its rows when there at start, read
+// with Cordis's own `ctx.get`. Cordis ignores the field.
+function optionalOf(optional) {
+  optional ??= []
+  if (!Array.isArray(optional) || optional.some(name => typeof name !== 'string')) throw new TypeError('optional must be a list of service names')
+  return optional
 }
 
 // The package.json nearest the plugin, if there is one.
@@ -779,6 +811,9 @@ async function updateRow([key, config]) {
   // and waited for (§7.1); then the plugin applies again, and the update
   // is answered once its new listeners are registered (§4.3, §4.4 2).
   bus.withdraw(key, { restart: true })
+  // Its objects go with it: the handles on them say so, as after an unload
+  // (what it provides again comes under handles of its own).
+  for (const id of row.exports) gone(id)
   row.abort.abort(new DOMException('the row is unloading', 'AbortError'))
   await bus.settle(key, deadline)
   row.abort = new AbortController()
@@ -917,7 +952,8 @@ function dispatchCall(target, method, args) {
         const [handle, property] = args ?? []
         const entry = handles.get(handle)
         if (!entry) throw new Error(`unknown or released service object ${handle}`)
-        if (!slots.get(entry.name).methods.has(property)) throw new Error(`unknown service property ${entry.name}.${property}`)
+        if (entry.gone) throw unavailable(serviceName(entry.name))
+        if (!entry.methods.has(property)) throw new Error(`unknown service property ${entry.name}.${property}`)
         return entry.object[property]
       }
       case 'rows.load': return loadRow(args ?? [])
@@ -970,7 +1006,10 @@ function dispatchCall(target, method, args) {
   }
   const entry = handles.get(target)
   if (!entry) throw new Error(`unknown or released service object ${target}`)
-  if (!slots.get(entry.name).methods.has(method)) throw noMethod(serviceName(entry.name), method, slots.get(entry.name).methods)
+  // Its row unloaded (`gone`): a caller still holding it (an optional
+  // service, leased at start) is told it is gone.
+  if (entry.gone) throw unavailable(serviceName(entry.name))
+  if (!entry.methods.has(method)) throw noMethod(serviceName(entry.name), method, entry.methods)
   if (!Array.isArray(args)) throw new TypeError('method arguments must be an array')
   let result
   try {

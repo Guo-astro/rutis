@@ -135,6 +135,7 @@ var Plugin = rutis.Define(rutis.Plugin[Config]{
 ```
 
 - `Inject` lists the services it uses. The plugin starts once they are all ready, and stops when one of them goes away.
+- A service the plugin can do without goes in `Optional: []string{"llm"}` instead of `Inject`: rutis does not wait for it; `ok, err := ctx.Get("llm", &llm)` binds it as `Use` does, `false, nil` when it was not there as the plugin started (see [plugin API: optional services](plugin-api.en.md#optional-services); rutis-host 0.20 or later).
 - `ctx.Use("translate", &translate)` fills a struct of function fields with the service: the field names are the method names, and with a lower-case first letter they are the names on the wire.
 - Pass the `ctx` a method receives on when you call another service; do not replace it with `context.Background()` (why: "The call chain" in [Go's rules](#gos-rules)).
 

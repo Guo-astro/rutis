@@ -22,6 +22,12 @@ test('module exports and definePlugin both declare a plugin', () => {
   expect([refused.name, refused.message]).toEqual(['LoadError', 'the default export of /work/src/index.ts is not a plugin made with definePlugin'])
   expect(() => declared({}, 'x')).toThrow('the default export of x is not a plugin made with definePlugin')
   expect(() => declared({ apply, provides: { s: { m: 'later' } } }, 'x')).toThrow("kind must be 'sync' or 'async'")
+  // guarantee: sdk/optional-deps
+  expect(declared({ apply }, 'x').optional).toEqual([])
+  expect(declared({ apply, optional: ['llm'] }, 'x').optional).toEqual(['llm'])
+  let notNames: any
+  try { declared({ apply, optional: [1] }, 'x') } catch (error) { notNames = error }
+  expect([notNames.name, notNames.message]).toEqual(['TypeError', 'x: optional must be a list of service names'])
   expect(() => declared({ apply, api: PLUGIN_API + 1 }, 'x')).toThrow(`needs plugin API ${PLUGIN_API + 1}; this runtime supports ${PLUGIN_API}`)
 })
 

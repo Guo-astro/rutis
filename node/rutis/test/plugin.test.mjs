@@ -13,6 +13,8 @@ import { host, load, PluginTestError } from '../src/testing.mjs'
 import weather from './fixtures/weather.mjs'
 import store from './fixtures/store.mjs'
 import unnamed from './fixtures/unnamed.mjs'
+import summary from './fixtures/summary.mjs'
+import both from './fixtures/both.mjs'
 
 const llm = { ask: async city => city === 'Oslo' ? 'sunny' : 'rain' }
 
@@ -110,4 +112,28 @@ test('a row takes its id and isolate as on a host', async () => {
 
 test('PluginTestError is an Error', () => {
   assert.ok(new PluginTestError('x') instanceof Error)
+})
+
+// guarantee: sdk/optional-deps
+test('optional services: declared beside inject, read with get, not required by the test', async () => {
+  assert.deepEqual(definePlugin({ apply() {} }).optional, [])
+  assert.throws(() => definePlugin({ optional: [1], apply() {} }), { name: 'TypeError', message: 'optional must be a list of service names' })
+  const without = await load(summary, { services: { notes: {} } })
+  assert.deepEqual(await without.service('summary').seen(), {
+    llm: false,
+    use: ["service llm is not available to this plugin, which does not declare it in inject: add 'llm' to its inject", 'not-declared', { service: 'llm' }],
+    get: ["service other is not available to this plugin, which does not declare it: add 'other' to its optional (or to its inject, if it cannot run without it)", 'not-declared', { service: 'other' }],
+  })
+  assert.equal(await without.service('summary').ask('x'), 'none')
+  await without.unload()
+  const withLlm = await load(summary, { services: { notes: {}, llm: { ask: async question => `re: ${question}` } } })
+  // `use` does not read `optional`, even when the service is there.
+  assert.deepEqual(await withLlm.service('summary').seen(), {
+    llm: true,
+    use: ["service llm is not available to this plugin, which does not declare it in inject: add 'llm' to its inject", 'not-declared', { service: 'llm' }],
+    get: ["service other is not available to this plugin, which does not declare it: add 'other' to its optional (or to its inject, if it cannot run without it)", 'not-declared', { service: 'other' }],
+  })
+  assert.equal(await withLlm.service('summary').ask('x'), 're: x')
+  await withLlm.unload()
+  await assert.rejects(load(both, { services: { llm } }), { name: 'PluginTestError', message: /llm is in both inject and optional; keep it in one/ })
 })

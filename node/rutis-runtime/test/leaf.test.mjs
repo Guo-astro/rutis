@@ -104,3 +104,34 @@ test('a leaf plugin using a service it does not inject is told to declare it', a
   assert.deepEqual(errors['extra code'], ['BindingError', 'unavailable', { service: 'extra' }])
   await plugin.dispose()
 })
+
+// An optional service: `get` gives it when there and undefined when not;
+// `use` reads only what `inject` lists, as Rust's `require` (an optional
+// one: add it to `inject`); `get` of a name the plugin declares nowhere
+// says to add it to `optional`.
+// guarantee: sdk/optional-deps
+test('a leaf plugin reads its optional services with get', async () => {
+  const root = new Context()
+  root.provide('present')
+  root.present = { hello: () => 'hi' }
+  const seen = {}
+  const spec = definePlugin({
+    optional: ['present', 'absent'],
+    apply(ctx) {
+      seen.present = ctx.get('present')?.hello()
+      seen.absent = ctx.get('absent')
+      seen.extra = ctx.get('extra')
+      for (const [key, run] of [['use absent', () => ctx.use('absent')], ['get undeclared', () => ctx.get('nope')]]) {
+        try { run() } catch (caught) { seen[key] = [caught.message, caught.code, caught.data] }
+      }
+    },
+  })
+  const plugin = root.plugin(toCordis(supported(spec, 'optional'), ['extra']))
+  await plugin.await()
+  assert.equal(seen.present, 'hi')
+  assert.equal(seen.absent, undefined)
+  assert.equal(seen.extra, undefined, "the row's inject counts as declared")
+  assert.deepEqual(seen['use absent'], ["service absent is not available to this plugin, which does not declare it in inject: add 'absent' to its inject", 'not-declared', { service: 'absent' }])
+  assert.deepEqual(seen['get undeclared'], ["service nope is not available to this plugin, which does not declare it: add 'nope' to its optional (or to its inject, if it cannot run without it)", 'not-declared', { service: 'nope' }])
+  await plugin.dispose()
+})

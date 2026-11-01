@@ -1120,7 +1120,13 @@ impl<L: BinaryLanguage> BinaryResolver<L> {
         }
         let described = &manifest.plugins[plugin];
         // A leaf runtime: every service the plugin injects gates it in rutis.
-        let gated = described.inject.clone();
+        let (gated, optional) =
+            super::split_dependencies(described, true, &self.catalog).map_err(|message| {
+                LoaderError::Resolve {
+                    name: name.to_owned(),
+                    message,
+                }
+            })?;
         let meta = json!({
             "source": L::PREFIX,
             "binary": binary.path,
@@ -1129,6 +1135,7 @@ impl<L: BinaryLanguage> BinaryResolver<L> {
             "version": described.version,
             "sdk": manifest.sdk,
             "inject": described.inject,
+            "optional": described.optional,
             "provides": described.provides,
         });
         let resolved = leaf_resolved_on(
@@ -1136,6 +1143,7 @@ impl<L: BinaryLanguage> BinaryResolver<L> {
             RowRuntime::Session(binary.runtime.clone()),
             PathBuf::from(plugin),
             gated,
+            optional,
             described,
             &self.catalog,
             meta,

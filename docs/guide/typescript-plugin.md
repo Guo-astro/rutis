@@ -107,6 +107,8 @@ export default definePlugin<Config>({
 
 `inject` 里的服务都就绪了插件才启动，其中一个撤掉时插件停下，它回来时插件再启动。`translate` 由哪个插件、哪种语言提供，插件不用管。别的插件的方法调用都是异步的，所以要 `await`。
 
+没有也能运行的服务写进 `optional: ['llm']`，不写进 `inject`：rutis 不等它，`ctx.get<Llm>('llm')` 给出它，插件启动时它不在则是 `undefined`（之后才出现的，rutis 不为这一行租借，这一行重启后才一定看得到）。见[插件 API：可选服务](plugin-api.md#可选服务)；要 rutis-host 0.20 或以后，测试工具不要求测试给出它。
+
 模板自带的测试这时不再通过（它没有给出 `translate`），第 6 步换掉它。
 
 ## 4. 配置

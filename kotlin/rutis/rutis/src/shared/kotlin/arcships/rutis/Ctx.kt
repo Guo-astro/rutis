@@ -29,7 +29,7 @@ class Ctx internal constructor(private val rt: RuntimeState, internal val row: R
     /** This row's scope chain, outermost first; empty at the root. */
     val scope: List<Scope> get() = row.scope.toList()
 
-    /** The service `name` (which `inject` lists) through the `@RutisClient` interface `I`. */
+    /** The service `name` (which `inject` lists; an `optional` one is read with [get]) through the `@RutisClient` interface `I`. */
     inline fun <reified I : Any> use(name: String): I = use(name, I::class.java)
 
     /**
@@ -40,7 +40,33 @@ class Ctx internal constructor(private val rt: RuntimeState, internal val row: R
      * service has.
      */
     fun <I : Any> use(name: String, type: Class<I>): I {
-        if (name !in row.plugin.inject) throw NotDeclaredException(name)
+        if (!uses(name)) throw NotDeclaredException(name)
+        return client(name, type, "use") ?: throw UnavailableException(name)
+    }
+
+    /** The optional service `name` (which `optional` or `inject` lists) through the `@RutisClient` interface `I`, or null. */
+    inline fun <reified I : Any> get(name: String): I? = get(name, I::class.java)
+
+    /**
+     * The optional service `name` through the `@RutisClient` interface
+     * `type`, as [use] gives it, or null when there is none. Never waited
+     * for: a host service is leased in if rutis had it when the row started;
+     * one that comes later is sure to be seen only once the row restarts
+     * (until then, one this process already has is read too).
+     */
+    fun <I : Any> get(name: String, type: Class<I>): I? {
+        if (!declares(name)) throw NotDeclaredException.optional(name)
+        return client(name, type, "get")
+    }
+
+    /** What the plugin may [use]: its `inject` (not its row's `inject`); as Rust's `require` reads only the injects. */
+    private fun uses(name: String): Boolean = name in row.plugin.inject
+
+    /** What the plugin may [get]: its `inject` and `optional` (not its row's `inject`). */
+    private fun declares(name: String): Boolean = uses(name) || name in row.plugin.optional
+
+    /** The service `name` through `type`, or null when nothing provides it now; `verb` names the caller in errors. */
+    private fun <I : Any> client(name: String, type: Class<I>, verb: String): I? {
         val factory = Tables.clientFactory(type)
             ?: throw IllegalArgumentException("${type.name} has no proxy: annotate it @RutisClient and apply the rutis-ksp processor")
         val id = row.id(name)
@@ -53,10 +79,10 @@ class Ctx internal constructor(private val rt: RuntimeState, internal val row: R
             }
             remote != null -> FarHandle(rt, name, remote.methods!!, remote.functions)
             host != null -> HostHandle(rt, name, "host:$id", host)
-            else -> throw UnavailableException(name)
+            else -> return null
         }
         val missing = factory.methods.filter { it !in handle.kinds }
-        if (missing.isNotEmpty()) throw IllegalArgumentException("use $name: ${type.simpleName} calls ${missing.joinToString()}, which the service does not have")
+        if (missing.isNotEmpty()) throw IllegalArgumentException("$verb $name: ${type.simpleName} calls ${missing.joinToString()}, which the service does not have")
         return factory.create(handle)
     }
 

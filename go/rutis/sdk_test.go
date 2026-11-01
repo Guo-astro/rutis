@@ -269,3 +269,122 @@ func TestAnUndeclaredServiceIsAnnounced(t *testing.T) {
 		t.Fatalf("the manifest says it announces: %s", data)
 	}
 }
+
+// summary uses `llm` when the host has it as the row starts: its service
+// `summary` answers with what `llm` says, or the text cut short.
+var summary = rutis.Define(rutis.Plugin[rutis.NoConfig]{
+	Name:     "summary",
+	Inject:   []string{"notes"},
+	Optional: []string{"llm"},
+	Apply: func(ctx *rutis.Ctx, _ rutis.NoConfig) error {
+		var llm LLM
+		ok, err := ctx.Get("llm", &llm)
+		if err != nil {
+			return err
+		}
+		used := ctx.Use("llm", &LLM{})
+		_, undeclared := ctx.Get("search", &struct{}{})
+		ctx.Provide("summary", &summarizer{llm: llm, ok: ok, used: used, undeclared: undeclared})
+		return nil
+	},
+})
+
+type summarizer struct {
+	llm              LLM
+	ok               bool
+	used, undeclared error
+}
+
+func (s *summarizer) Of(ctx context.Context, text string) (string, error) {
+	if !s.ok {
+		return text[:min(len(text), 5)], nil
+	}
+	return s.llm.Ask(ctx, "summarize: "+text)
+}
+
+// Errors are what Use and Get said in Apply, as text.
+func (s *summarizer) Errors() []string {
+	text := func(err error) string {
+		if err == nil {
+			return ""
+		}
+		return err.Error()
+	}
+	return []string{text(s.used), text(s.undeclared)}
+}
+
+type echoLLM struct{}
+
+func (echoLLM) Ask(question string) string { return "re: " + question }
+
+// guarantee: sdk/optional-deps (rutistest leases an optional service when
+// the test gives one and loads without it otherwise; Get then reports it
+// absent; Use reads only what Inject lists, as Rust's `require`, so it says
+// to add an Optional one there; Get of a name declared nowhere says to add
+// it to Optional)
+func TestAnOptionalServiceIsUsedWhenGiven(t *testing.T) {
+	ctx := context.Background()
+	var of string
+	var errs []string
+
+	with := rutistest.Load(t, summary, nil, map[string]any{"notes": fakeLLM{}, "llm": echoLLM{}})
+	if err := with.Service("summary").Call(ctx, "of", &of, "a long text"); err != nil || of != "re: summarize: a long text" {
+		t.Fatalf("with llm: %q %v", of, err)
+	}
+	notInject := `service llm is not available to this plugin, which does not declare it in Inject: add "llm" to its Inject`
+	if err := with.Service("summary").Call(ctx, "errors", &errs); err != nil || errs[0] != notInject {
+		t.Fatalf("use with llm: %q %v", errs, err)
+	}
+	with.Unload()
+
+	without := rutistest.Load(t, summary, nil, map[string]any{"notes": fakeLLM{}})
+	if err := without.Service("summary").Call(ctx, "of", &of, "a long text"); err != nil || of != "a lon" {
+		t.Fatalf("without llm: %q %v", of, err)
+	}
+	if err := without.Service("summary").Call(ctx, "errors", &errs); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		notInject,
+		`service search is not available to this plugin, which does not declare it: add "search" to its Optional (or to its Inject, if it cannot run without it)`,
+	}
+	if fmt.Sprintf("%q", errs) != fmt.Sprintf("%q", want) {
+		t.Fatalf("errors %q", errs)
+	}
+}
+
+// guarantee: sdk/optional-deps (rutistest refuses a name in both Inject and
+// Optional before loading, with the host's message)
+func TestANameIsNotBothRequiredAndOptional(t *testing.T) {
+	both := rutis.Define(rutis.Plugin[rutis.NoConfig]{
+		Name:     "both",
+		Inject:   []string{"llm"},
+		Optional: []string{"llm"},
+		Apply:    func(*rutis.Ctx, rutis.NoConfig) error { return nil },
+	})
+	// The host refuses the row, saying why.
+	if message := loadFails(t, both, map[string]any{"llm": fakeLLM{}}); !strings.HasSuffix(message, ": llm is in both inject and optional; keep it in one") {
+		t.Fatal(message)
+	}
+}
+
+// guarantee: sdk/optional-deps (the manifest reports optional, [] when the
+// plugin declares none)
+func TestTheManifestReportsOptionalServices(t *testing.T) {
+	data, err := advanced.Manifest(weather, summary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var manifest struct {
+		Plugins map[string]map[string]json.RawMessage `json:"plugins"`
+	}
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	if got := string(manifest.Plugins["weather"]["optional"]); got != "[]" {
+		t.Fatalf("weather: %s", got)
+	}
+	if got := string(manifest.Plugins["summary"]["optional"]); got != `["llm"]` {
+		t.Fatalf("summary: %s", got)
+	}
+}

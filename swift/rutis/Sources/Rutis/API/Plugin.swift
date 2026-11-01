@@ -1,7 +1,8 @@
 import Foundation
 
-/// A plugin: the services it uses (`inject`), those it provides (optional
-/// `provides`), its configuration type, and `apply`, which starts it.
+/// A plugin: the services it uses (`inject`, and `optional` for those it can
+/// do without), those it provides (optional `provides`), its configuration
+/// type, and `apply`, which starts it.
 ///
 /// ```swift
 /// let weather = Rutis.define(Plugin(
@@ -23,6 +24,10 @@ public struct Plugin<Config: Decodable> {
     public var name: String
     /// The services it uses: it runs only while all are there.
     public var inject: [String]
+    /// The services it uses when they are there (`ctx.get`): rutis does not
+    /// wait for them, and leases in those it has when the plugin starts. A
+    /// name is in `inject` or here, not both.
+    public var optional: [String]
     /// The services it provides and their methods (optional).
     public var provides: [String: Rutis.Advanced.Shape]
     /// Its version, if its author gives one (the manifest's `version`).
@@ -31,11 +36,12 @@ public struct Plugin<Config: Decodable> {
     /// so far run.
     public var apply: (Rutis.Ctx, Config) async throws -> Void
 
-    public init(name: String, inject: [String] = [], provides: [String: Rutis.Advanced.Shape] = [:], version: String? = nil,
-                config _: Config.Type, apply: @escaping (Rutis.Ctx, Config) async throws -> Void)
+    public init(name: String, inject: [String] = [], optional: [String] = [], provides: [String: Rutis.Advanced.Shape] = [:],
+                version: String? = nil, config _: Config.Type, apply: @escaping (Rutis.Ctx, Config) async throws -> Void)
     {
         self.name = name
         self.inject = inject
+        self.optional = optional
         self.provides = provides
         self.version = version
         self.apply = apply
@@ -44,10 +50,11 @@ public struct Plugin<Config: Decodable> {
 
 extension Plugin where Config == Rutis.NoConfig {
     /// A plugin without configuration.
-    public init(name: String, inject: [String] = [], provides: [String: Rutis.Advanced.Shape] = [:], version: String? = nil,
-                apply: @escaping (Rutis.Ctx) async throws -> Void)
+    public init(name: String, inject: [String] = [], optional: [String] = [], provides: [String: Rutis.Advanced.Shape] = [:],
+                version: String? = nil, apply: @escaping (Rutis.Ctx) async throws -> Void)
     {
-        self.init(name: name, inject: inject, provides: provides, version: version, config: Rutis.NoConfig.self) { ctx, _ in
+        self.init(name: name, inject: inject, optional: optional, provides: provides, version: version,
+                  config: Rutis.NoConfig.self) { ctx, _ in
             try await apply(ctx)
         }
     }
@@ -274,17 +281,19 @@ extension Rutis {
     public final class Definition: @unchecked Sendable {
         public let name: String
         let inject: [String]
+        let optional: [String]
         let provides: [String: Rutis.Advanced.Shape]
         package let schema: JSON
         let version: String?
         let api: Int
         let apply: (Ctx, Value) async throws -> Void
 
-        init(name: String, inject: [String], provides: [String: Rutis.Advanced.Shape], schema: JSON, version: String?, api: Int,
-             apply: @escaping (Ctx, Value) async throws -> Void)
+        init(name: String, inject: [String], optional: [String], provides: [String: Rutis.Advanced.Shape], schema: JSON,
+             version: String?, api: Int, apply: @escaping (Ctx, Value) async throws -> Void)
         {
             self.name = name
             self.inject = inject
+            self.optional = optional
             self.provides = provides
             self.schema = schema
             self.version = version
@@ -298,6 +307,7 @@ extension Rutis {
             .object([
                 ("config", schema),
                 ("inject", .array(inject.map(JSON.string))),
+                ("optional", .array(optional.map(JSON.string))),
                 ("provides", .object(provides.sorted { $0.key < $1.key }.map { name, shape in
                     (name, .object(shape.kinds.sorted { $0.key < $1.key }.map { ($0.key, .string($0.value.rawValue)) }))
                 })),
@@ -344,8 +354,8 @@ extension Rutis {
             schema = Rutis._Generated.Schema.anyObject.json
         }
         let apply = plugin.apply
-        return Definition(name: plugin.name, inject: plugin.inject, provides: plugin.provides, schema: schema,
-                          version: plugin.version, api: Rutis.Advanced.pluginAPI)
+        return Definition(name: plugin.name, inject: plugin.inject, optional: plugin.optional, provides: plugin.provides,
+                          schema: schema, version: plugin.version, api: Rutis.Advanced.pluginAPI)
         { ctx, config in
             // The host validated the config and filled its defaults; a
             // decoder error is the schema and the type disagreeing (§3.3).

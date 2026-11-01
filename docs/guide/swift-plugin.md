@@ -122,6 +122,7 @@ public let plugin = Rutis.define(Plugin(
 ```
 
 - `inject` 列出插件用到的服务。这些服务都就绪了插件才启动；其中一个撤销，插件就停下，它回来时插件再启动。
+- 没有也能运行的服务写进 `optional: ["llm"]` 而不是 `inject`：rutis 不等它；`try ctx.get("llm", LLMProxy.self)` 像 `use` 一样返回它，插件启动时它不在则是 `nil`（见[插件 API：可选服务](plugin-api.md#可选服务)；要 rutis-host 0.20 或以后）。
 - `@RutisClient` 从协议生成 `TranslateProxy`；`ctx.use("translate", TranslateProxy.self)` 返回 `any Translate`，调用它的方法就是调用这个服务。用到的服务的方法写成 `async throws`。
 
 现在模板自带的测试会失败（它没有给 `translate`），第 6 步换掉它。

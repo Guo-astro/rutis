@@ -9,6 +9,8 @@ import type * as advanced from './advanced.js'
 export interface Context extends advanced.Emitter {
   /** The service `name`, which the plugin declares in `inject`: the object itself when a plugin in the same process provides it, else a proxy whose methods are sync or async as declared. */
   use<T = any>(name: string): T
+  /** The optional service `name`, which the plugin declares in `optional`: as `use` gives it, else `undefined`. Never waited for: a host service is leased in if rutis had it when the plugin started; one that comes later is sure to be seen only once the plugin restarts (until then, one this process already has is read too). */
+  get<T = any>(name: string): T | undefined
   /** Provide `value` as the service `name` until the plugin unloads, or until the returned function is called. It reaches rutis by itself: its methods are the object's functions (own and inherited, not `constructor`), `async` unless `provides` marks them `sync`. */
   provide(name: string, value: unknown): () => unknown
   /** Run `cleanup` when the plugin unloads. */
@@ -26,6 +28,8 @@ export interface PluginSpec<C = any> {
   name?: string
   /** Services the plugin uses: rutis starts it once they are all available, and stops it when one goes. */
   inject?: string[]
+  /** Services the plugin uses when they are there: rutis does not wait for them, and leases in those it has when the plugin starts, for `ctx.get`. A name is in `inject` or here, not both. */
+  optional?: string[]
   /** Optional: services it provides, with the kind of methods to call `sync` (the others are `async`). Without it, what `ctx.provide` provides still reaches rutis; with it, `rutis-host check` knows before the plugin runs. */
   provides?: Record<string, Record<string, advanced.MethodKind>>
   /** The JSON Schema of its config. */
@@ -33,7 +37,7 @@ export interface PluginSpec<C = any> {
   apply(ctx: Context, config: C): void | (() => unknown) | Promise<void | (() => unknown)>
 }
 
-export interface Plugin<C = any> extends Readonly<Required<Pick<PluginSpec<C>, 'inject' | 'provides'>>>, Readonly<Omit<PluginSpec<C>, 'inject' | 'provides'>> {
+export interface Plugin<C = any> extends Readonly<Required<Pick<PluginSpec<C>, 'inject' | 'optional' | 'provides'>>>, Readonly<Omit<PluginSpec<C>, 'inject' | 'optional' | 'provides'>> {
   /** The plugin API it was written against. */
   readonly api: number
   /** Always `true`: what it provides beyond `provides` reaches rutis by itself, known once it runs. */

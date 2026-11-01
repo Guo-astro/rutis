@@ -122,6 +122,7 @@ public let plugin = Rutis.define(Plugin(
 ```
 
 - `inject` lists the services the plugin uses. The plugin starts once they are all there; when one is withdrawn, the plugin stops, and it starts again when the service is back.
+- A service the plugin can do without goes in `optional: ["llm"]` instead of `inject`: rutis does not wait for it; `try ctx.get("llm", LLMProxy.self)` returns it as `use` does, or `nil` when it was not there as the plugin started (see [plugin API: optional services](plugin-api.en.md#optional-services); rutis-host 0.20 or later).
 - `@RutisClient` makes `TranslateProxy` from the protocol; `ctx.use("translate", TranslateProxy.self)` returns an `any Translate`, and calling its methods calls the service. The methods of a service you use are `async throws`.
 
 The template's own test now fails (it gives no `translate`); step 6 replaces it.

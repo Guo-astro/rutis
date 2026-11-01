@@ -2,14 +2,14 @@
 // TypeScript plugin that needs no Cordis. The runtime loads it into its
 // Cordis Context like any plugin, so it shares services — and the logical
 // event bus (./cordis-events.mjs) — with Cordis plugins in the same
-// process; the plugin itself only sees `ctx.use`, `ctx.provide`,
+// process; the plugin itself only sees `ctx.use`, `ctx.get`, `ctx.provide`,
 // `ctx.effect`, `ctx.signal`, `ctx.on` and the five ways to emit (`emit`,
 // `parallel`, `serial`, `waterfall`, `bail`), with `ctx.filter`.
 // The runtime does not import the SDK: it recognises its plugins by the
 // symbol the SDK marks them with.
 import { KEEP, LEAF_FIBERS, LEAF_NAME } from './cordis-events.mjs'
 import { refuseReserved } from './events.mjs'
-import { UNDECLARED, notDeclared, unavailable } from './errors.mjs'
+import { UNDECLARED, notDeclared, notDeclaredOptional, unavailable } from './errors.mjs'
 
 // The plugin API this runtime runs: a plugin written against a newer one
 // is refused, naming both. 3: the unified events of rutis 0.13 (#464).
@@ -68,6 +68,11 @@ export const ALREADY_PROVIDED = (name, provider) => `${name} is already provided
 // `providerOf(context, name)`: who already provides `name` there (a row's
 // name, or `the host`), to say so when the plugin provides it too.
 export function toCordis(spec, rowInject = [], providerOf) {
+  // What the plugin may `use`: its `inject` and its row's `inject`. What
+  // it may `get`: those and its `optional` (as Rust's `require` reads only
+  // the injects, and `get` anything).
+  const uses = name => (spec.inject ?? []).includes(name) || rowInject.includes(name)
+  const declares = name => uses(name) || (spec.optional ?? []).includes(name)
   return {
     name: spec.name ?? 'leaf',
     inject: spec.inject,
@@ -75,14 +80,23 @@ export function toCordis(spec, rowInject = [], providerOf) {
       LEAF_FIBERS.add(context.fiber)
       const ctx = {
         use(name) {
+          // One only in its `optional` is read with `get`, never with
+          // `use`, whether or not it is there (as Rust's `require`).
+          if (!uses(name) && (spec.optional ?? []).includes(name)) throw notDeclared(name)
           const value = context.get(name)
           if (value === undefined) {
-            // One neither the plugin nor its row declares: say what to
-            // declare, not that it is missing (#676).
-            if (!(spec.inject ?? []).includes(name) && !rowInject.includes(name)) throw notDeclared(name)
+            // One neither the plugin nor its row injects (an optional one
+            // is read with `get`): say what to declare, not that it is
+            // missing (#676).
+            if (!uses(name)) throw notDeclared(name)
             throw unavailable(name)
           }
           return value
+        },
+        // An optional service: the service when there, else undefined.
+        get(name) {
+          if (!declares(name)) throw notDeclaredOptional(name)
+          return context.get(name)
         },
         provide: (name, value) => {
           try {

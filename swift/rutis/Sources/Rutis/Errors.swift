@@ -70,6 +70,12 @@ public struct RutisError: Error, CustomStringConvertible, LocalizedError, @unche
 
     /// A call with no session to the host.
     package static func hostGone() -> RutisError { ended(SessionEnded.hostGone()) }
+
+    /// A declared service nothing provides (now), or one whose provider
+    /// withdrew or replaced it.
+    package static func unavailable(_ service: String) -> RutisError {
+        RutisError(name: Name.bindingError, message: "service \(service) is not available", code: "unavailable", data: ["service": service])
+    }
 }
 
 /// The name an error crosses with: a RutisError's own, else the simple name

@@ -189,6 +189,14 @@ pub trait PluginFactory<C: Send + Sync + 'static>: Send + Sync + 'static {
         Vec::new()
     }
 
+    /// The dependencies the plugin uses when they are there at load,
+    /// without waiting for them: never in [`injects`](Self::injects), so
+    /// they do not gate it. A host adding required dependencies of its own
+    /// to a plugin checks them against these.
+    fn optional_injects(&self) -> Vec<TypeKey> {
+        Vec::new()
+    }
+
     /// Validates a config without building an instance. The first step of
     /// `update`'s dry run.
     fn validate_config(&self, _config: &C) -> Result<(), Error> {

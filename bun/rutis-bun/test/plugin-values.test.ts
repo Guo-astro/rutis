@@ -22,7 +22,10 @@ test('the runtime takes plugin definitions back', () => {
 test('plugins.read describes a definition at once', () => {
   const part = definePlugin({ name: 'part', inject: ['history'], config: { type: 'object' }, apply() {} })
   const described = runtime().dispatch('', 'plugins.read', [part])
-  expect(described).toEqual({ name: 'part', config: { type: 'object' }, inject: ['history'], provides: {}, announces: true, version: null })
+  expect(described).toEqual({ name: 'part', config: { type: 'object' }, inject: ['history'], optional: [], provides: {}, announces: true, version: null })
+  // guarantee: sdk/optional-deps
+  const summary = definePlugin({ name: 'summary', optional: ['llm'], apply() {} })
+  expect((runtime().dispatch('', 'plugins.read', [summary]) as any).optional).toEqual(['llm'])
   expect(() => runtime().dispatch('', 'plugins.read', [42])).toThrow('not a plugin definition')
 })
 

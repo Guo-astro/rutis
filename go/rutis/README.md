@@ -45,6 +45,8 @@ var Plugin = rutis.Define(rutis.Plugin[Config]{
 
 What `ctx.Provide` provides reaches rutis by itself, its methods the value's exported ones, called as `async`. `Provides` is optional: `Provides: rutis.Provides{"weather": rutis.MethodsOf[*Weather](rutis.Sync("Unit"))}` marks methods synchronous and tells `rutis-host check` what the plugin provides before it runs.
 
+A service the plugin can do without goes in `Optional: []string{"llm"}` instead of `Inject`, and is read with `ok, err := ctx.Get("llm", &llm)`: rutis does not wait for it, and leases it in only if it is there when the plugin starts (`ok` is false otherwise); one that comes later is sure to be seen only once the plugin restarts. This needs rutis-host 0.20 or later; an older host leases none, and `Get` reports each one absent.
+
 A binary serves one or more plugins, and is what a host runs:
 
 ```go
