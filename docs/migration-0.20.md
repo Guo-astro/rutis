@@ -10,6 +10,7 @@
 - **`use` 先查声明**：插件和行都没声明、靠同一进程里别的行声明才拿到的服务，现在报 `not-declared`（[`use` 先查声明](#use-先查声明1000)）。
 - **运行时行的行 `inject`**：行 `inject` 里的服务不在时，五种语言的行不再启动；提供方走了行会停下（[运行时行的行 `inject`](#运行时行的行-inject1001)）。
 - **运行时进程的问候时限**：`Process::mount` 到时限还没等到问候就失败，`Mount` 多一个公有字段（[运行时进程的问候时限](#运行时进程的问候时限1014)）。
+- **会话结束时的排队帧**：`invoke_started` / `invoke_settled` 返回时帧只入队；关闭时还没写出的帧随会话丢弃（[会话结束时的排队帧](#会话结束时的排队帧1005)）。
 
 Go 与 Kotlin 的两处只放宽：原来报错的写法现在成功，原来成功的写法结果不变，只是错误文字换了（[Go 的接口与 `any` 目标](#go-的接口与-any-目标1015)、[Kotlin：`use` 先给本进程的对象](#kotlinuse-先给本进程的对象1006)）。
 
@@ -118,7 +119,7 @@ Go 与 Kotlin 的两处只放宽：原来报错的写法现在成功，原来成
 没有要改的：只放宽。
 
 - 只在本进程用的接口不必再标 `@RutisClient`：`@RutisService` 的提供方加 `ctx.use(name, 接口)` 就够。
-- `provide` 一个不是 `@RutisService` 的对象仍然失败：`rutis: provide <名字>: <类名> is not a @RutisService class (no generated method table: apply the rutis-ksp processor)`。只在本进程用的服务也要标 `@RutisService`。
+- `provide` 一个不是 `@RutisService` 的对象仍然失败；只在本进程用的服务也要标 `@RutisService`。
 
 ### 影响
 
@@ -191,3 +192,25 @@ use canvas: field Draw: func(string) string must return an error last
 ### 影响
 
 宿主持有者：一个不问候的运行时现在按时限失败，报错写明哪个运行时的进程、时限多少，进程也结束；以前是一直等。用 rutis-host 的看不到变化：它本来就是 30 秒。
+
+## 会话结束时的排队帧（#1005）
+
+### 改了什么
+
+会话不再在产生帧的线程上写：调用、回复、释放把帧按顺序排进队列，由会话自己的写线程写出。`invoke_started` 与 `invoke_settled` 的 rustdoc 原来写的是"返回前已写出"，现在写实际的语义——返回前已**入队**，按调用顺序写出，不等对面；写失败时会话结束，这次调用也以那个原因失败。
+
+- 会话结束时，队列里还没写出的帧随会话丢弃：对面在通道结束时放掉整份状态，不靠这些帧。
+- 关闭不再等写线程：Channel 关闭会唤醒卡在 `send` 里的写线程。
+- 积压上限是宿主打开的选项 `SessionOptions::outbound_limit`，默认 `None`（不限）：慢端只影响它自己那条会话，事件不丢。配了上限，超限时以 `Error::Transport` 结束会话，文字是 `the far end is not reading: N messages, B bytes waited for it`，队列里的帧随会话丢弃。两条边界：空队列永远收一帧（上限是 `0` 也收），写线程手里那一帧（正卡在 `send` 里）不计入。
+- 谁设它：用 `SpawnPlugin` 嵌入的宿主用 `SpawnPlugin::session(options)`；`rutis-host/dial`、`rutis-host/listen` 行与 `sessions.open(far)` 用默认，`rutis.json` 不设资源上限。
+
+### 要改什么
+
+- **不要依赖"关闭返回时对面已经收到"。** 关闭时还排在队列里的帧会丢；要确认对面收到，等它的回复，或在应用层确认。
+- **不要依赖 `invoke_started` / `invoke_settled` 返回时帧已写出。** 只保证已入队、按调用顺序。
+- **要挡住慢端的宿主**：设 `SessionOptions::outbound_limit`，超限时这条会话结束（`the far end is not reading: …`），不会无界积压；不设时（默认）积压留在本进程内存里，等对面读，或随会话丢弃。
+
+### 影响
+
+- Rust 嵌入者：按旧注释理解"返回时对面已收到"的代码要改；正常调用、回复、释放的行为不变，调用方线程不再被慢端挡住。
+- 宿主持有者：默认不限、不丢事件，与 0.19 一样；上限现在由宿主自己打开，rutis-host 的行不打开。

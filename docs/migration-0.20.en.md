@@ -10,6 +10,7 @@ The incompatible changes, by kind, each with the section saying how to change:
 - **`use` checks declarations first**: a plugin that declared a name in neither its `inject` nor its row's `inject` and got it from another row in the same process now gets `not-declared` ([`use` checks declarations first](#use-checks-declarations-first-1000)).
 - **A runtime row's row `inject`**: when a service in it is not there, the rows of five languages no longer start, and they stop when the provider goes ([A runtime row's row `inject`](#a-runtime-rows-row-inject-1001)).
 - **The greeting limit of a runtime process**: `Process::mount` fails when no greeting comes in time, and `Mount` has one more public field ([The greeting limit of a runtime process](#the-greeting-limit-of-a-runtime-process-1014)).
+- **Frames queued when a session ends**: `invoke_started` / `invoke_settled` queue the frame before returning, and frames not written when the session closes go with it ([Frames queued when a session ends](#frames-queued-when-a-session-ends-1005)).
 
 Two changes in Go and Kotlin only loosen: what used to fail now works, and what used to work gives the same result; only the error texts they print changed ([Go: interface and `any` targets](#go-interface-and-any-targets-1015), [Kotlin: `use` gives the object of this process first](#kotlin-use-gives-the-object-of-this-process-first-1006)).
 
@@ -118,7 +119,7 @@ The order `ctx.use(name, type)` takes:
 Nothing: it only loosens.
 
 - An interface used only in this process needs no `@RutisClient`: a provider marked `@RutisService` and `ctx.use(name, Interface)` are enough.
-- `provide` of an object not marked `@RutisService` still fails: `rutis: provide <name>: <class> is not a @RutisService class (no generated method table: apply the rutis-ksp processor)`. A service used only in this process still needs `@RutisService`.
+- `provide` of an object not marked `@RutisService` still fails; a service used only in this process still needs `@RutisService`.
 
 ### What it affects
 
@@ -191,3 +192,25 @@ Plugin authors: with these three forms unavailable, objects had to be passed aro
 ### What it affects
 
 Host owners: a runtime that does not greet now fails at its limit, with an error naming which runtime's process and how long it was given, and the process is ended; it used to wait for ever. With rutis-host nothing is visible: it was 30 s already.
+
+## Frames queued when a session ends (#1005)
+
+### What changed
+
+A session no longer writes on the thread that makes a frame: calls, replies and releases queue their frames in order, and the session's own writer thread writes them. The rustdoc of `invoke_started` and `invoke_settled` used to say the frame was written before they returned; it now says what happens — the frame is **queued** before the return, written in call order without waiting for the far end, and a write that fails ends the session, failing that call with why.
+
+- Frames still queued when a session ends go with it: the far end drops the whole state when the channel ends, and does not depend on them.
+- Closing no longer waits for the writer: closing the channel wakes a writer thread stuck in `send`.
+- The backlog a host allows is an option it turns on, `SessionOptions::outbound_limit`, `None` (unbounded) by default: a slow far end holds up only its own session, and no events are dropped. With a limit set, going over it ends the session with `Error::Transport`, `the far end is not reading: N messages, B bytes waited for it`, and the queued frames go with it. Two edges: an empty queue always takes one frame (even with a limit of `0`), and the frame the writer thread already holds (stuck in a `send`) is not counted.
+- Who sets it: a host embedding with `SpawnPlugin` uses `SpawnPlugin::session(options)`; `rutis-host/dial`, `rutis-host/listen` rows and `sessions.open(far)` use the default, and `rutis.json` sets no resource limits.
+
+### What to change
+
+- **Do not rely on "the far end has it when close returns".** Frames still queued at that moment are lost; to know the far end has one, await its reply, or confirm it in your own protocol.
+- **Do not rely on the frame being written when `invoke_started` / `invoke_settled` return.** Only that it is queued, in call order.
+- **A host that would rather not keep a slow far end's backlog**: set `SessionOptions::outbound_limit`; going over it ends that session (`the far end is not reading: …`) instead of queueing without bound. Unset (the default), the backlog waits in this process's memory, for the far end to read or for the session to end.
+
+### What it affects
+
+- Rust embedders: code that read the old rustdoc as "the far end has it when it returns" changes; calls, replies and releases behave as before, and the caller's thread is no longer held up by a slow far end.
+- Host owners: unbounded by default and no events dropped, as in 0.19; the limit is now the host's to turn on, and rutis-host's own rows do not turn it on.
