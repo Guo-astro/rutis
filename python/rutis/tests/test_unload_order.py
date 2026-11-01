@@ -70,8 +70,16 @@ class Order(background.TestCase):
 
         def provider(ctx, config):
             ctx.provide("tally", Tally(2))
-            # Registered after the provide: it runs before the withdrawal.
-            ctx.effect(lambda: log.append(f"own: {read(ctx)}"))
+
+            # Registered after the provide: it runs before the withdrawal, and
+            # at that same moment the other row no longer sees the service.
+            # Reading it only after the unload would not prove this: by then
+            # the registration is gone for everyone.
+            def during():
+                log.append(f"own: {read(ctx)}")
+                log.append(f"other: {read(holder['ctx'])}")
+
+            ctx.effect(during)
 
         def user(ctx, config):
             holder["ctx"] = ctx
@@ -87,7 +95,12 @@ class Order(background.TestCase):
         asyncio.run(run())
         self.assertEqual(
             log,
-            ["before: count 2", "own: count 2", "after: error unavailable"],
+            [
+                "before: count 2",
+                "own: count 2",
+                "other: error unavailable",
+                "after: error unavailable",
+            ],
         )
 
     def test_a_cleanup_registering_one_is_refused(self):
