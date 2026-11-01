@@ -2,7 +2,7 @@
 
 [English](design-remote-session-2026-10-28.en.md)
 
-状态：定稿，未实现。日期：2026-10-28；2026-10-29 修订：宿主停止时 WebSocket 以 1000 关闭（不再用 1001，§三）；§七 写出实际的文字（认证被拒带拨号方的地址，listen 上握手失败不打印，应用插件装不上只在设备日志里），`status` 的 `connections:` 写实际形式（0.19 不列远程插件），并加上决定 3 的 `loader` 写法（§2.6）。rutis-host 在 0.19 只带 dial 与 listen，本机运行时照旧由 `runtimes.*` 起，`rutis-host/spawn` 在下一个 PR（S4b）。基准：`main` `3d19634f`。排期：0.19。
+状态：定稿，未实现。日期：2026-10-28；2026-10-29 修订：宿主停止时 WebSocket 以 1000 关闭（不再用 1001，§三）；§七 写出实际的文字（认证被拒带拨号方的地址，listen 上握手失败不打印，应用插件装不上只在设备日志里），`status` 的 `connections:` 写实际形式（0.19 不列远程插件），并加上决定 3 的 `loader` 写法（§2.6）。rutis-host 在 0.19 只带 dial 与 listen，本机运行时照旧由 `runtimes.*` 起，`rutis-host/spawn` 在下一个 PR（S4b）。2026-11-01 修订：会话的发送改由它自己的写线程做，一个停住读取的对端不再阻塞同一进程里的其他会话；积压的上限做成宿主打开的选项（`SessionOptions::outbound_limit`，默认不限），§三 与 §七 写明，含超限时的逐字输出（#1005）。基准：`main` `3d19634f`。排期：0.19。
 Issue：[#695](https://github.com/arcships/rutis/issues/695)（实施 [#696](https://github.com/arcships/rutis/issues/696) loader、[#698](https://github.com/arcships/rutis/issues/698) rutis-host）。依据：#695 的 2026-10-28 两条评论。
 与旧设计的关系：取代 [远程运行时一致性](design-remote-runtime-consistency-2026-10-26.md) 的实施部分（§四"rutis-host 内部"一列、§五、§七、§八）；它的"缺插件一律 `Unavailable`"保留，`runtimes.remote` 的写法删掉（§六）。[决策记录](decision-remote-runtime-consistency-2026-10-26.md) 里"不新增交接接口、不重写 link 与接入点"一条由本稿推翻，理由见 §一。
 
@@ -209,6 +209,7 @@ pub enum Close { Done, Replaced, Rejected(String) }
 ```
 
 - 沿用 `Sender` / `Receiver` / `Closer` 三分：发送与接收各在一个线程，关闭在任何线程。按消息、同步阻塞，与 `rpc.rs` 的 `open(channel, dispatch)` 现在的用法相同。
+- session 自己不等待慢端：帧按产生的顺序排进队列，由 session 的写线程写进 Channel。一个读端停住（进程被挂起、链路很慢）不再拖住产生这一帧的线程，也不再拖住同一进程里的其他会话（#1005）；Channel 的 `send` 仍按背压阻塞，阻塞的是这个写线程。**默认不设上限**：还没写出的帧排在会话的队列里等读端收下（用户 `fg` 回来还要用），会话结束时随会话丢弃。写线程在读端能收的时候一直写；读端慢（消费慢、写线程被调度落下）或完全不读时，帧才堆在这条会话的队列里。这份积压算在宿主进程的内存里，但只属于这一条会话：它不挡住同一进程里的其他会话，读端恢复或会话结束就消失。上限是宿主打开的选项（`SessionOptions::outbound_limit`，§七）：配了之后，超过它的会话以 `the far end is not reading: N messages, B bytes waited for it` 结束——不无界积压，也不悄悄丢帧。两条边界：排队为空时总收一帧（`Some(0)` 也一样，一帧可以大到一个通道的上限），已经交给写线程、正阻塞在 `send` 里的那一帧不计数；被限住的是它后面排队的那些。上限留给宿主：多大合适取决于产品（挂起多久、积压时断开还是继续等），rutis 不替它定；按 [#694](https://github.com/arcships/rutis/issues/694) 规则 3，资源上限默认关、由宿主打开。关闭不等这个写线程；Channel 关闭会唤醒它正阻塞在的 `send`。
 - **id 一律来自握手**：会话协议只留 endpoint 格式，双方都在握手里报自己的 id。endpoint 协议版本从 3 升到 4：0.18 的运行时与节点也说 endpoint 版本 3，只删 compat 挡不住它们；升到 4 后，0.18 连上时在握手里被拒，消息照协议现有的写法说明升级哪一端（`rpc.rs:1277` 的 `version_mismatch`）。删掉 compat 格式：`rpc.rs` 的 `Format::Compat`（`rpc.rs:1208`）与 `COMPAT_CAPABILITIES`、调用 id 的 `rust:` / `node:` 前缀、`PROTOCOL = 2` 的本机握手、`link.rs:361` 的 `compat` 与 `name_far_end`。本机运行时由 `rutis-host/spawn` 用 `--id <运行时名>` 起，握手里就报这个名字。运行时期望的控制方（它的 `--peer`）仍由现有的握手检查（`rpc.rs:2482` 的 `Handshake::IdentityMismatch`）核对。
 - 各语言运行时的本机模式改为 endpoint 格式（逐个核实过现状）：
 
@@ -360,6 +361,7 @@ export default definePlugin({
 
 - rutis.json：`runtimes.*`（本机运行时）；`rutis-host/dial`、`rutis-host/listen` 的行（远程运行时、设备、节点）；运行在对面的行写 `<连接行>:<插件>`。
 - Rust：`LocalId`（宿主放进根 ctx）、`Session::handshake(&ctx, channel)` 与 `ctx.plugin(greeted)`、`Session::new(channel)`、`SessionHandle::{id, run}`；`websocket::{dial, listen}`、`pipe::spawn`、`memory::pair`。
+- Rust 的会话上限（#1005，§三），默认不限：`ctx.plugin(Session::new(channel).options(SessionOptions { outbound_limit: Some(8 * 1024 * 1024) }))`；握手与挂载分两步时 `Session::handshake_with(&ctx, channel, options)`；rutis-host 的 Rust 嵌入用 `SpawnPlugin::session(options)`。rutis.json、其他语言的 `open(far)` 与 rutis-host 的 dial / listen 行都不设它：按 #694 规则 3，资源上限默认关。
 - 其他语言：服务 `sessions` 的 `open(far)`。
 
 **`run` 的输出**：前缀是连接行的 id，只用 connected / disconnected 两个词，原因写在括号里。
@@ -402,6 +404,7 @@ connections:
 | 应用里的插件装不上（配置不合 Schema、`apply` 失败、服务名已有） | 0.19 只在设备的日志里写出（Swift 的 `log`、Kotlin 的 `System.err`，例如 `rutis: plugin device: BindingError: config: installation is required`），宿主上不打印：这个远程插件只是没有出现 |
 | listen 的行没有 token | `phone: set RUTIS_TOKEN_PHONE: the token the far ends present when they connect` |
 | listen 的监听器不存在 | `no listener named private: add it to listen` |
+| 宿主给会话开了 `outbound_limit`，对面停住不读，排队的帧超过它（§三） | 会话结束，和对面的进程退出一样。Rust 嵌入：`Session` 的 `FiberView` 变成 `Disposed`；在途与之后的调用得到 `Error::Transport("the far end is not reading: 2 messages, 202 bytes waited for it")`（`code` 是 `peer-gone`），对象上的调用包装成 `a call on an object from gpu failed: runtime gpu disconnected`（`data.reason` 是那句原话）。`run` 里这个连接行写 `gpu: disconnected (connection lost); retrying in 2.1s`（dial）或本机运行时的那一行按失败停掉。改法：把 `outbound_limit` 调大或去掉；对面恢复读取后新会话照常工作，旧会话的插件与调用要重新建立。会话关闭时还没写出的帧随会话丢弃（§三）；对面的通道以 `Done` 结束，与对面自己的插件卸载一样 |
 
 ## 八、删除与收回清单
 

@@ -24,6 +24,7 @@ use rutis_bridge::pipe::Processes;
 use rutis_bridge::runtime::{
     ended_status, Launcher, RuntimeHandle, RuntimeState, RuntimeStates, Stdio,
 };
+use rutis_bridge::session::SessionOptions;
 use rutis_bridge::{session_key, PeerId, Session};
 
 /// How long a runtime's process may take to greet, by default.
@@ -39,6 +40,8 @@ pub struct SpawnPlugin {
     processes: Processes,
     /// How long its process may take to greet.
     greeting: Duration,
+    /// The limits its session runs with.
+    session: SessionOptions,
     /// What watches the running session, until the plugin unloads.
     watching: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
 }
@@ -62,6 +65,7 @@ impl SpawnPlugin {
             anchor,
             processes,
             greeting: GREETING,
+            session: SessionOptions::default(),
             watching: Arc::default(),
         }
     }
@@ -72,6 +76,14 @@ impl SpawnPlugin {
     /// which stays starting meanwhile.
     pub fn greeting(mut self, limit: Duration) -> Self {
         self.greeting = limit;
+        self
+    }
+
+    /// The limits its session runs with ([`SessionOptions`]): none by
+    /// default, so a stopped runtime's events wait for it rather than
+    /// ending its session (`docs/design-remote-session-2026-10-28.md` §三).
+    pub fn session(mut self, options: SessionOptions) -> Self {
+        self.session = options;
         self
     }
 
@@ -167,7 +179,7 @@ impl DynPlugin for SpawnPlugin {
                     return Ok(Effect::Done);
                 }
             };
-            let session = ctx.plugin(Session::new(channel));
+            let session = ctx.plugin(Session::new(channel).options(self.session.clone()));
             // Running once the session is: it greeted, and runs plugins.
             let mut states = session.watch();
             loop {
