@@ -36,5 +36,5 @@ A row's unload runs **one** stack: `provide` puts "withdraw this service" on it,
 
 ### What it affects
 
-- Plugin authors: a plugin working on 0.19 needs changes only if it relies on cleanups running in parallel, or on registering a cleanup from a cleanup. Neither was promised on 0.19 either; it just happened to hold then.
+- Plugin authors: a plugin working on 0.19 needs changes only if it relies on one of the differences in the table above: cleanups running in parallel, registering a cleanup from a cleanup (all six), and the two Node-only ones — a cleanup registered before `provide` reading its own service, and another row reading the service while this row's cleanups run (Node read it before and does not now, as in the other five). None of them was promised on 0.19 either; it just happened to hold then.
 - Host owners: the frame order does not change — announced services are still withdrawn before `rows.unload` is answered, and the reply still comes after every cleanup has run; `--shutdown-timeout` means the same, and slow cleanups behave as the table above says.
