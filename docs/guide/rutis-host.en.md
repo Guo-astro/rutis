@@ -621,14 +621,14 @@ Also:
 
 ### While the host starts
 
-`run` and `dev` wait for their local runtimes one after another (`py`, `bun`, `node`, each Go and Swift runtime): at a runtime's turn, its start has a result. The others do not wait for it: their own rows may run as soon as they are ready.
+`run` and `dev` wait for their Node, Bun and Python runtimes one after another: at a runtime's turn, its start has a result. The others do not wait for it: their own rows may run as soon as they are ready. Go and Swift runtimes are not in that order: they start as `runtimes.go.start` / `runtimes.swift.start` says (`eager` starts all and keeps them running, `on-demand` the first time a row uses one), the host's start does not wait for them (their rows wait for them), and their endings are `restart`'s, as above; one that ended before the host started supervising, while other runtimes were still starting, is handled by its `restart` once supervising starts.
 
 When a runtime's turn comes and it is not running, the host exits with 1 (see [Stopping and exit status](#stopping-and-exit-status)) and unloads the rows and runtimes that started, as on a termination signal. Which error it says depends on whether the runtime **ever ran**:
 
 - A runtime that ran (was ready) and then ended: the error says it ended, with how its process ended: `rutis-host: the bun runtime ended: exited with exit status: 7` (`exited with signal: 9 (SIGKILL)` for a process killed by a signal). A plugin making the process exit and a crash are both this, not "did not start".
 - One that never was ready (its process ended before it greeted) did not start: `rutis-host: the py runtime did not start: the runtime ended before it greeted: the process exited with exit status: 1`.
 
-What the runtime itself wrote to stderr (its last lines) comes before that error, in the order it wrote them: the host passes the runtimes' output on as it is, and neither collects nor rewrites it. A runtime that ends after every runtime has started is no failed start: its `restart` applies, as above, and the host runs on.
+Runtime stderr is passed on line by line: under `run` without a prefix, under `dev` with the row that wrote the line (the runtime's name where the row cannot be told). The order of those lines next to this error on stderr is not guaranteed, and the error line itself says only the exit status or the signal, not the runtime's stderr. A runtime that ends after every runtime has started is no failed start: its `restart` applies, as above, and the host runs on.
 
 ## Seeing the current state
 

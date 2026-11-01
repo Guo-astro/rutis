@@ -621,14 +621,14 @@ rutis-host: reload rejected: row weather's config does not match its plugin's sc
 
 ### 宿主启动期间
 
-`run` 和 `dev` 启动时依次等本机运行时就绪（`py`、`bun`、`node`，以及 Go、Swift 的每个运行时）：轮到某个运行时，它的启动才算有了结果。其他运行时不等着它：自己的行在它一就绪后就可以运行。
+`run` 和 `dev` 启动时依次等 Node、Bun、Python 这三个本机运行时就绪：轮到某个运行时，它的启动才算有了结果。其他运行时不等着它：自己的行在它一就绪后就可以运行。Go 和 Swift 的运行时不在这个顺序里：按 `runtimes.go.start` / `runtimes.swift.start` 启动（`eager` 全部启动并保持运行，`on-demand` 在第一次有行用到时起），宿主的启动不等它们，行自己等它们；它们结束按上面的 `restart` 处理，宿主开始监督前（其他运行时还在启动时）就结束的，监督开始时照样按 `restart` 处理。
 
 轮到某个运行时、而它已经不在运行时，宿主以 1 退出（见[停止与退出码](#停止与退出码)），并像收到终止信号那样卸载已经启动的行和运行时。这时说哪种错，看它**跑过没有**：
 
 - 跑过（曾经就绪）之后才结束的，说它结束了，并写出进程怎样结束：`rutis-host: the bun runtime ended: exited with exit status: 7`（被信号结束的写 `exited with signal: 9 (SIGKILL)`）。插件让进程退出、进程崩溃都算这种，不算「没启动」。
 - 从没有就绪过的（进程在打招呼之前就结束），说它没启动：`rutis-host: the py runtime did not start: the runtime ended before it greeted: the process exited with exit status: 1`。
 
-运行时自己写到 stderr 的内容（结束前的最后几行）按它写的顺序出现在这条错误之前：宿主照原样转发运行时的输出，不收集、不改写。启动全部完成后才结束的运行时不算启动失败，按上面的 `restart` 处理，宿主继续运行。
+运行时的 stderr 逐行透传：`run` 下不加前缀，`dev` 下每行加上写它的行（不知道行时加运行时的名字）。这些行和这条错误行在 stderr 上的先后不保证；错误行本身只写退出码或信号，不带运行时的 stderr。启动全部完成后才结束的运行时不算启动失败，按上面的 `restart` 处理，宿主继续运行。
 
 ## 查看当前状态
 
