@@ -72,6 +72,12 @@ cargo run -p rutis-bridge --features websocket --example smoke -- \
 
 每晚的 stress 工作流还跑两个浸泡测试（link 反复断开重连、进程反复拉起结束），检查文件描述符、线程数不增长、进程都被回收。
 
+## 0.20.0
+
+0.20 让插件可以写可选依赖（`optional` 与 `ctx.get`，#999），行的 `inject` 在六种语言里都算这一行的声明、运行时的行由 rutis 门控并租借（#1000、#1001），同一进程里的服务在 Go、Kotlin 也拿到对象本身（#1006、#1015），测试工具收下插件交出的定义（#1004）；卸载顺序改成清理与服务撤回在同一个逆序栈里（#1010），每个实例的常驻占用更小（#979）。所有包均为 0.20.0；见[发布说明](releases/0.20.0.md)与[迁移到 0.20](migration-0.20.md)。
+
+0.x 的次版本号变化允许不兼容的改动，所以 `cargo-semver-checks` 与 0.19.3 比较时接受 Rust API 的改动（`Mount` 多一个公有字段 `greeting`，`rutis_bridge::runtime::GREETING` 是它的默认；其余不兼容处是六种语言的运行时行为，见迁移指南）。`rutis.json` 的 `format` 仍是 1，配置没有变化：持久化样本从 0.19.3 复制，期望不变；dsh 的用户层没变，`cordis.patch.yml` 原样复制。会话协议仍是 4，没有新的能力，插件 API 仍是 3：发布门的跨版本测试（`RUTIS_E2E_ONLY_OLDER=1`）与 0.19.3 相遇，两边都说协议 4，相遇正常工作。Kotlin SDK 随列车一起打版本；Maven Central 按 `release.yml` 的规则发：environment `maven` 缺四个 secret 里任何一个时，`maven` 任务在运行摘要里写明缺哪些并跳过，其余照常发布（仓库里看不出这个环境有没有凭据）。
+
 ## 0.19.3
 
 0.19.3 是补丁版本：修复 0.19.2 之后的几个 bug（#983 的清理错误、#987 与 #988 的 TypeScript 测试工具、#984 的指南例子），并按维护者的决定把 rutis 自己的两个服务改名（#986：`loader` → `rutis/loader`、`sessions` → `rutis/sessions`）。所有包均为 0.19.3；见[发布说明](releases/0.19.3.md)。**不兼容**的只有这两个服务名，改法见[迁移到 0.19](migration-0.19.md) 的「0.19.3」一节；其余与 0.19.2 兼容：`cargo-semver-checks` 与 0.19.2 比较，不接受不兼容的 Rust API 改动（这一版没有改动签名）。`rutis.json` 的 `format` 仍是 1，配置没有变化：持久化样本从 0.19.2 复制，期望不变；dsh 的用户层没变，`cordis.patch.yml` 原样复制。协议不变，没有新的能力；发布门的跨版本测试（`RUTIS_E2E_ONLY_OLDER=1`）与 0.19.2 相遇。Kotlin SDK 同 0.19.0，不发布到 Maven Central（`maven` 任务照常跳过）。

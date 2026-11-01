@@ -18,10 +18,10 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-rutis = "0.19"
-rutis-loader = { version = "0.19", features = ["node"] }
-rutis-bridge = "0.19"
-rutis-host = "0.19"
+rutis = "0.20"
+rutis-loader = { version = "0.20", features = ["node"] }
+rutis-bridge = "0.20"
+rutis-host = "0.20"
 serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 ```

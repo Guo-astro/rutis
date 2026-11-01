@@ -472,7 +472,7 @@ Bonjour, Ada!
 
 ## 8. Publish
 
-Publish to crates.io: add `description` and `license` to `Cargo.toml` (crates.io requires them); the package name is global on crates.io, for example `your-name-greeter`. The dependency range is `rutis = "0.19"`, that is `>=0.19.0, <0.20.0`: a 0.x minor release of rutis may make incompatible changes.
+Publish to crates.io: add `description` and `license` to `Cargo.toml` (crates.io requires them); the package name is global on crates.io, for example `your-name-greeter`. The dependency range is `rutis = "0.20"`, that is `>=0.20.0, <0.21.0`: a 0.x minor release of rutis may make incompatible changes.
 
 ```toml
 [package]
@@ -486,7 +486,7 @@ license = "MIT"
 name = "greeter"
 
 [dependencies]
-rutis = "0.19"
+rutis = "0.20"
 serde = { version = "1", features = ["derive"] }
 
 [dev-dependencies]

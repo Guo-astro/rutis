@@ -8,10 +8,10 @@
 
 ```toml
 [dependencies]
-rutis = "0.19"
-rutis-loader = { version = "0.19", features = ["node"] }
-rutis-bridge = { version = "0.19", features = ["websocket"] }
-rutis-host = "0.19"                # connect::SpawnPlugin 和 languages 启动本机的语言运行时
+rutis = "0.20"
+rutis-loader = { version = "0.20", features = ["node"] }
+rutis-bridge = { version = "0.20", features = ["websocket"] }
+rutis-host = "0.20"                # connect::SpawnPlugin 和 languages 启动本机的语言运行时
 schemars = "1"                     # Builtins::register 解码的配置类型派生 schemars::JsonSchema
 serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

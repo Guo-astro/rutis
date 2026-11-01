@@ -472,7 +472,7 @@ Bonjour, Ada!
 
 ## 8. 发布
 
-发布到 crates.io：`Cargo.toml` 补上 `description` 与 `license`（crates.io 要求），包名在 crates.io 上全局唯一，例如 `your-name-greeter`。依赖范围写 `rutis = "0.19"`，即 `>=0.19.0, <0.20.0`：rutis 0.x 的小版本可能有不兼容的改动。
+发布到 crates.io：`Cargo.toml` 补上 `description` 与 `license`（crates.io 要求），包名在 crates.io 上全局唯一，例如 `your-name-greeter`。依赖范围写 `rutis = "0.20"`，即 `>=0.20.0, <0.21.0`：rutis 0.x 的小版本可能有不兼容的改动。
 
 ```toml
 [package]
@@ -486,7 +486,7 @@ license = "MIT"
 name = "greeter"
 
 [dependencies]
-rutis = "0.19"
+rutis = "0.20"
 serde = { version = "1", features = ["derive"] }
 
 [dev-dependencies]
