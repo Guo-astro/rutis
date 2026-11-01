@@ -6,17 +6,19 @@ use std::time::Duration;
 
 use crate::channel::{Channel, PeerId};
 use crate::peer::Operations;
-use crate::session::rpc::{Connection, Endpoint};
+use crate::session::rpc::{Connection, Endpoint, SessionOptions};
 use crate::session::{Error, Handshake};
 
 /// How this end opens a session: as `local`, expecting a far end (if it
-/// names one), declaring and requiring capabilities.
+/// names one), declaring and requiring capabilities, under the limits the
+/// host turns on.
 pub(crate) struct Greet<'a> {
     pub(crate) local: PeerId,
     pub(crate) expected: Option<PeerId>,
     pub(crate) declare: &'a [String],
     pub(crate) require: &'a [String],
     pub(crate) timeout: Duration,
+    pub(crate) options: SessionOptions,
 }
 
 impl Greet<'_> {
@@ -34,7 +36,8 @@ impl Greet<'_> {
         // A rutis endpoint is a full framework node.
         endpoint.capabilities.push("node".into());
         endpoint.capabilities.extend(self.declare.iter().cloned());
-        let session = Connection::open(channel, operations.clone(), endpoint)?;
+        let session =
+            Connection::open_with(channel, operations.clone(), endpoint, self.options.clone())?;
         let closing = Closing(Some(session.clone()));
         let ready = tokio::time::timeout(self.timeout, session.ready()).await;
         match ready {

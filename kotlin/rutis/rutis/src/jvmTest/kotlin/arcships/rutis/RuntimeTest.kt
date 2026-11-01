@@ -42,6 +42,17 @@ class Hello(private val prefix: String) : Greeter {
     override suspend fun greetLater(name: String): String = "$prefix $name, later"
 }
 
+/** A provider's own interface, in this process: no `@RutisClient`. */
+interface Wording {
+    fun say(who: String): String
+}
+
+/** A service of the test's own, provided in this process as `words`. */
+@RutisService
+class Words(private val prefix: String) : Wording {
+    override fun say(who: String): String = "$prefix $who"
+}
+
 /** A test service the plugin injects. */
 @RutisService
 class Journal {
@@ -97,6 +108,24 @@ class RuntimeTest {
             assertEquals(mapOf("greet" to "async", "greetLater" to "async"), loaded.service("extra").methods)
         }
         assertEquals(listOf("applied 3", "second cleanup", "first cleanup"), journal.lines)
+    }
+
+    /**
+     * A service this process provides is the object itself even through an
+     * interface of its own without a proxy: only a proxy needs
+     * `@RutisClient`.
+     */
+    @Test
+    fun aServiceThisProcessProvidesIsTheObjectItselfWithoutAProxy() = runBlocking<Unit> {
+        val words = Words("hi")
+        val same = java.util.concurrent.atomic.AtomicReference("not applied")
+        val plugin = Rutis.define<Rutis.NoConfig>(name = "picks-the-object", inject = listOf("words")) { ctx, _ ->
+            val read: Wording = ctx.use("words", Wording::class.java)
+            same.set(if (read === words) "the object itself" else "a proxy")
+            assertEquals("hi there", read.say("there"))
+        }
+        RutisTest.load(plugin, null, services = mapOf("words" to words)).use { }
+        assertEquals("the object itself", same.get())
     }
 
     @Test

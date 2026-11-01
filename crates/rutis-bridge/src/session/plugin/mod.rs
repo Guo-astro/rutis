@@ -36,7 +36,7 @@ use crate::channel::{Channel, Close, PeerId};
 use crate::peer::Operations;
 use crate::peer::{peer_key, Peer};
 use crate::runtime::{Mount, Process};
-use crate::session::rpc::Connection;
+use crate::session::rpc::{Connection, SessionOptions};
 use crate::session::Error;
 
 /// The plugin name of every session, and of the root plugin that serves
@@ -71,13 +71,22 @@ fn failed(error: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> RutisEr
 /// handshake failed (the plugin fails with why).
 pub struct Session {
     channel: Mutex<Option<Channel>>,
+    options: SessionOptions,
 }
 
 impl Session {
     pub fn new(channel: Channel) -> Self {
         Self {
             channel: Mutex::new(Some(channel)),
+            options: SessionOptions::default(),
         }
+    }
+
+    /// The limits the host turns on for this session ([`SessionOptions`]):
+    /// none by default.
+    pub fn options(mut self, options: SessionOptions) -> Self {
+        self.options = options;
+        self
     }
 
     /// The root plugin serving the service `rutis/sessions` to plugins of
@@ -99,7 +108,19 @@ impl Session {
     /// version or format is [`Handshake::Incompatible`](crate::session::Handshake),
     /// a far end refusing this end's id (4003) `IdentityMismatch`, no
     /// greeting in time `Transport("the far end did not greet in time")`.
+    ///
+    /// A session with no [`SessionOptions`], as this one: nothing waits for
+    /// a far end beyond what it reads.
     pub async fn handshake(ctx: &Ctx, channel: Channel) -> Result<Greeted, Error> {
+        Self::handshake_with(ctx, channel, SessionOptions::default()).await
+    }
+
+    /// [`Session::handshake`], with the limits the host turns on.
+    pub async fn handshake_with(
+        ctx: &Ctx,
+        channel: Channel,
+        options: SessionOptions,
+    ) -> Result<Greeted, Error> {
         let Some(local) = ctx.get::<LocalId>() else {
             channel.closer.close(Close::Done);
             return Err(Error::refused(
@@ -112,6 +133,7 @@ impl Session {
             declare: &[],
             require: &[],
             timeout: HANDSHAKE,
+            options,
         };
         let (connection, operations) = greet.open(channel).await?;
         let far = connection
@@ -145,7 +167,9 @@ impl DynPlugin for Session {
             let channel = self.channel.lock().unwrap().take().ok_or_else(|| {
                 failed("a session runs once: its channel is gone with the first run")
             })?;
-            let greeted = Session::handshake(ctx, channel).await.map_err(failed)?;
+            let greeted = Session::handshake_with(ctx, channel, self.options.clone())
+                .await
+                .map_err(failed)?;
             greeted.mount(ctx).await
         })
     }

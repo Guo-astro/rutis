@@ -7,6 +7,7 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 /// What the rows of a runtime need from it ([`Process::check_rows`]).
 const ROW_FEATURES: [&str; 2] = ["rows.v2", "hosts"];
@@ -163,6 +164,18 @@ type RowEnded = Box<dyn FnOnce() + Send>;
 /// error its code left unhandled (#688).
 type RowFailed = Box<dyn FnOnce(crate::session::Error) + Send>;
 
+/// How long a runtime's process may take to greet once it was started, by
+/// default: 30 s. A process may be slow to start (a cold interpreter on a
+/// loaded machine); one that has not greeted by then fails its mount with
+/// [`Error::Transport`], saying so, rather than waiting for ever (#985).
+///
+/// The other entries that wait for a greeting use their own limits, for
+/// their own situation: [`Session::handshake`](crate::Session::handshake)
+/// waits 10 s, for a channel something else already opened (no process to
+/// start there), and rutis-host's runtime plugin passes this constant on as
+/// its own default (`SpawnPlugin::greeting`, which a host may change).
+pub const GREETING: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// Everything one mount needs: the plugins loaded in order into one Cordis
 /// Context, the exported services, and what the rutis side contributes.
 #[derive(Default)]
@@ -190,6 +203,12 @@ pub struct Mount<'a> {
     /// How to start the runtime process; `None` runs the Cordis runtime,
     /// Node, in the npm package ([`cordis_node`]).
     pub launcher: Option<&'a Launcher>,
+    /// How long its process may take to greet once started: [`GREETING`]
+    /// (30 s) unless set. [`std::time::Duration::MAX`] waits for as long as
+    /// it takes, for a process stopped at its first line for a debugger.
+    /// One that has not greeted in time fails the mount: its process is
+    /// ended, and the error says it started but did not greet (#985).
+    pub greeting: Option<std::time::Duration>,
 }
 
 /// The Cordis runtime of the npm package `package` (`node/rutis-runtime`,
@@ -627,6 +646,7 @@ impl Started {
             runtime,
             anchor: _,
             launcher: _,
+            greeting: _,
         } = mount;
         let provided = hosts
             .iter()
@@ -774,9 +794,13 @@ impl HostLease {
 }
 
 impl Process {
-    /// Launch a mount: see [`Mount`].
+    /// Launch a mount: see [`Mount`]. The runtime's process is given
+    /// [`GREETING`] (or the mount's [`Mount::greeting`]) to greet; one that
+    /// started and did not fails the mount with [`Error::Transport`],
+    /// naming it and the limit, and its process is ended.
     pub async fn mount(node_package: &Path, mount: Mount<'_>) -> Result<Arc<Self>, Error> {
         let (anchor, launcher) = (mount.anchor, mount.launcher);
+        let greeting = mount.greeting.unwrap_or(GREETING);
         // Without a launcher, the Node runtime.
         let name = far_name(
             &mount,
@@ -814,19 +838,41 @@ impl Process {
             Some(processes),
             started,
             crate::runtime::rpc::Endpoint::rust(main).expect(id),
+            greeting,
         )
         .await
     }
 
+    /// The session's handshake, at most `greeting` for the far end's
+    /// greeting: one that does not come fails the mount, naming the runtime
+    /// and the limit, and closes the session — which ends its process.
     async fn start(
         channel: crate::channel::Channel,
         processes: Option<crate::pipe::Processes>,
         started: Started,
         endpoint: crate::runtime::rpc::Endpoint,
+        greeting: Duration,
     ) -> Result<Arc<Self>, Error> {
         let (imports, rest) = Self::imports(started);
+        // The runtime the far end must be, when this side knows it (a mount
+        // of a process names it): what the error calls it.
+        let name = endpoint
+            .expected
+            .as_ref()
+            .map(ToString::to_string)
+            .unwrap_or_else(|| "runtime".to_owned());
         let peer = Connection::open(channel, imports.clone(), endpoint)?;
-        peer.ready().await?;
+        match tokio::time::timeout(greeting, peer.ready()).await {
+            Ok(ready) => ready?,
+            Err(_) => {
+                let error = Error::Transport(format!(
+                    "the runtime process {name} started but did not greet within {}s",
+                    greeting.as_secs_f64()
+                ));
+                peer.close(error.clone());
+                return Err(error);
+            }
+        }
         // The runtime calls `events.*` only once mounted, after this.
         Self::join_bus(&imports, &peer, &rest)?;
         Self::finish(peer, imports, processes, None, rest).await

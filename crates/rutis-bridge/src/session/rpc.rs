@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{mpsc, Arc, Mutex, Weak};
+use std::sync::{mpsc, Arc, Condvar, Mutex, Weak};
 use std::task::{Context, Poll, Waker};
 use std::thread::ThreadId;
 
@@ -1096,7 +1096,7 @@ impl Calls {
 }
 
 /// A call recorded in the wait graph ([`waits::forward`]) that leaves it
-/// unless it was sent.
+/// unless it was queued for the far end.
 struct Unsent(Option<(String, String)>);
 impl Unsent {
     fn sent(mut self) {
@@ -1181,6 +1181,36 @@ impl Endpoint {
         self.expected = Some(peer);
         self
     }
+}
+
+/// What a session allows beyond the protocol, for the host that makes it:
+/// the limits it turns on (#694 rule 3). A session limits nothing by
+/// default.
+///
+/// Sending never waits for the far end whatever this says (#1005): a peer
+/// that has not taken what was sent (a suspended process, a slow link)
+/// holds neither the thread that made the frame nor the other sessions of
+/// the process. What it has not taken yet waits for it, in the session's
+/// queue, in this process's memory.
+#[derive(Clone, Debug, Default)]
+pub struct SessionOptions {
+    /// The most a far end may fall behind before its session ends: bytes of
+    /// frames made for it, queued for the session's writer thread and not
+    /// yet written. `None`, the default, is no bound: what waits for a far
+    /// end that stopped reading is written when it reads again, or goes
+    /// with the session when the far end is gone. A host that would rather
+    /// not keep that backlog ends such a session at `Some(bytes)`: it
+    /// closes with `the far end is not reading: <n> messages, <bytes> bytes
+    /// waited for it` (a
+    /// [`Error::Transport`](crate::session::Error::Transport), code
+    /// `peer-gone`), and what is queued goes with it.
+    ///
+    /// Two edges: an empty queue takes one frame whatever the limit, `0`
+    /// included (a frame may be as large as the channel takes), and the
+    /// frame the writer thread already holds, waiting in a `send` the far
+    /// end does not read, is not counted. What is bounded is the queue
+    /// behind that one.
+    pub outbound_limit: Option<usize>,
 }
 
 /// What the far end said of itself in its handshake.
@@ -1268,7 +1298,11 @@ struct SessionState {
     /// The far end's: `<endpoint>:` once it greeted.
     remote_prefix: std::sync::OnceLock<String>,
     greeting: std::sync::OnceLock<Greeting>,
-    writer: Mutex<Box<dyn Sender>>,
+    /// Frames waiting for the writer thread, in send order, and their
+    /// bound ([`Outbound`]).
+    outbound: Arc<Outbound>,
+    /// The channel's message limit, if it has one (#675).
+    max_message: Option<usize>,
     closer: Arc<dyn Closer>,
     calls: Mutex<Calls>,
     exports: Mutex<Exports>,
@@ -1296,6 +1330,111 @@ struct Ordered {
 impl Drop for SessionState {
     fn drop(&mut self) {
         self.closer.close(crate::channel::Close::Done);
+        // The writer thread ends with the session, waking from its wait.
+        let mut queued = self
+            .outbound
+            .queued
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        queued.closed = true;
+        queued.frames.clear();
+        self.outbound.ready.notify_all();
+    }
+}
+
+/// Frames on their way to the far end, in the order they were made, and
+/// the thread that writes them (#1005).
+///
+/// A send never waits for the far end: a peer that stopped reading (a
+/// suspended process, a slow link) holds neither the thread that made the
+/// frame nor the other sessions sharing this process, which is what
+/// happened before when the frame was written on the caller's thread. What
+/// it does not read waits for it here; a host that bounds that backlog
+/// ends such a session instead ([`SessionOptions::outbound_limit`]).
+struct Outbound {
+    queued: Mutex<Queued>,
+    /// The writer thread waits here for a frame, or for the end.
+    ready: Condvar,
+    /// What may wait for the far end before the session ends; `None` is no
+    /// bound.
+    limit: Option<usize>,
+}
+
+impl Outbound {
+    fn new(limit: Option<usize>) -> Self {
+        Self {
+            queued: Mutex::new(Queued::default()),
+            ready: Condvar::new(),
+            limit,
+        }
+    }
+}
+
+#[derive(Default)]
+struct Queued {
+    frames: std::collections::VecDeque<Vec<u8>>,
+    /// The bytes `frames` hold.
+    bytes: usize,
+    /// The session ended: the writer thread stops, and sending fails.
+    closed: bool,
+}
+
+impl Outbound {
+    /// Queue `bytes` to go, in order, under the lock that orders frames and
+    /// serializes encoding with the session's teardown. Over the limit a
+    /// host set, the session ends instead; one frame waits however large it
+    /// is, and without a limit so does everything else.
+    fn push(&self, queued: &mut Queued, bytes: Vec<u8>) -> Result<(), Error> {
+        if queued.closed {
+            return Err(transport("the session ended"));
+        }
+        if let Some(limit) = self.limit {
+            if !queued.frames.is_empty() && queued.bytes + bytes.len() > limit {
+                return Err(transport(format!(
+                    "the far end is not reading: {} messages, {} bytes waited for it",
+                    queued.frames.len(),
+                    queued.bytes
+                )));
+            }
+        }
+        queued.bytes += bytes.len();
+        queued.frames.push_back(bytes);
+        self.ready.notify_all();
+        Ok(())
+    }
+}
+
+/// Write what is queued, in order, until the session ends. A send blocked
+/// on a far end that stopped reading ends when the channel does (its
+/// closer wakes it, `pipe::lines`); the thread is let go of then, never
+/// waited for.
+fn write_frames(outbound: Arc<Outbound>, mut sender: Box<dyn Sender>, channel: Weak<SessionState>) {
+    loop {
+        let bytes = {
+            let mut queued = outbound
+                .queued
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            loop {
+                if queued.closed {
+                    return;
+                }
+                if let Some(bytes) = queued.frames.pop_front() {
+                    queued.bytes -= bytes.len();
+                    break bytes;
+                }
+                queued = outbound
+                    .ready
+                    .wait(queued)
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+            }
+        };
+        if let Err(error) = sender.send(&bytes) {
+            if let Some(channel) = channel.upgrade() {
+                Connection(channel).close(ended(error));
+            }
+            return;
+        }
     }
 }
 
@@ -1323,21 +1462,34 @@ impl Connection {
         self.0.executor.clone()
     }
     /// Start a session on `channel` as `endpoint`: sends `hello` and reads
-    /// frames on a thread of its own. The session is ready only once the far
-    /// end greeted with the endpoint this side expects (if it expects one);
-    /// otherwise [`Connection::ready`] fails with [`Error::Handshake`]. When
-    /// the channel ends, the session closes with `peer disconnected` (a
-    /// normal end) or the channel's reason.
+    /// and writes frames on threads of its own. The session is ready only
+    /// once the far end greeted with the endpoint this side expects (if it
+    /// expects one); otherwise [`Connection::ready`] fails with
+    /// [`Error::Handshake`]. When the channel ends, the session closes with
+    /// `peer disconnected` (a normal end) or the channel's reason.
+    ///
+    /// A session with no [`SessionOptions`], as this one: nothing waits for
+    /// a far end beyond what it reads.
     pub fn open(
         channel: Channel,
         dispatch: Arc<dyn Dispatch>,
         endpoint: Endpoint,
     ) -> Result<Self, Error> {
+        Self::open_with(channel, dispatch, endpoint, SessionOptions::default())
+    }
+    /// [`Connection::open`], with the limits the host turns on.
+    pub(crate) fn open_with(
+        channel: Channel,
+        dispatch: Arc<dyn Dispatch>,
+        endpoint: Endpoint,
+        options: SessionOptions,
+    ) -> Result<Self, Error> {
         let Channel {
-            sender,
+            mut sender,
             mut receiver,
             closer,
         } = channel;
+        let max_message = sender.max_message();
         let local_prefix = format!("{}:", endpoint.local);
         let hello = Frame::Hello {
             version: crate::session::ENDPOINT_PROTOCOL,
@@ -1352,8 +1504,9 @@ impl Connection {
             local_prefix,
             remote_prefix: std::sync::OnceLock::new(),
             greeting: std::sync::OnceLock::new(),
+            outbound: Arc::new(Outbound::new(options.outbound_limit)),
+            max_message,
             closer,
-            writer: Mutex::new(sender),
             calls: Mutex::new(Calls::default()),
             exports: Mutex::new(Exports::default()),
             imports: Mutex::new(HashMap::new()),
@@ -1379,10 +1532,21 @@ impl Connection {
         // a failed greeting does not end the session here: the reader reads
         // what the far end sent, and `ready` reports its greeting as
         // incompatible, or else the channel end.
-        {
-            let mut writer = peer.0.writer.lock().unwrap();
-            let _ = peer.write_locked(&mut writer, hello);
+        //
+        // Written here, before the writer thread takes the channel, so the
+        // greeting is on it before anything else, as it is before the reader
+        // starts.
+        if let Ok(bytes) = serde_json::to_vec(&hello) {
+            let _ = sender.send(&bytes);
         }
+        let outbound = Arc::clone(&peer.0.outbound);
+        std::thread::Builder::new()
+            .name("rutis-writer".into())
+            .spawn({
+                let channel = Arc::downgrade(&peer.0);
+                move || write_frames(outbound, sender, channel)
+            })
+            .map_err(transport)?;
         let weak = Arc::downgrade(&peer.0);
         std::thread::Builder::new()
             .name("rutis-reader".into())
@@ -1476,11 +1640,17 @@ impl Connection {
                 let _ = self.0.end.set(ending(reason));
             }
         }
-        // Interrupt a blocked write before taking the writer lock. Serialize
-        // table teardown with encoding/sending so no export can be added after
+        // Interrupt a blocked write before taking the queue. Serialize table
+        // teardown with encoding/sending so no export can be added after
         // teardown and no partial encoding rollback races the cleared table.
         self.0.closer.close(crate::channel::Close::Done);
-        let writer = self.0.writer.lock().unwrap();
+        let mut queued = self.0.outbound.queued.lock().unwrap();
+        // What was not written goes with the session, and the writer thread
+        // ends: a far end that stopped reading is not written to any more.
+        queued.closed = true;
+        queued.frames.clear();
+        queued.bytes = 0;
+        self.0.outbound.ready.notify_all();
         let (waiting, incoming, awaiting) = {
             let mut calls = self.0.calls.lock().unwrap();
             waits::ended(&self.0.tag);
@@ -1492,7 +1662,7 @@ impl Connection {
         };
         let exports = std::mem::take(&mut *self.0.exports.lock().unwrap());
         self.0.imports.lock().unwrap().clear();
-        drop(writer);
+        drop(queued);
         self.0.ready.send_if_modified(|ready| {
             if ready.is_none() {
                 *ready = Some(Err(error.clone()));
@@ -1573,10 +1743,15 @@ impl Connection {
         )
         .await
     }
-    /// [`Connection::invoke_async`], its frame written before this returns:
-    /// calls started one after another reach the far end in that order,
-    /// whenever their replies are awaited. Dropping the returned future
-    /// cancels the call (`cancel`), as dropping `invoke_async`'s does.
+    /// [`Connection::invoke_async`] whose frame is queued before this
+    /// returns: calls started one after another reach the far end in that
+    /// order, whenever their replies are awaited. The frame is queued, not
+    /// written: the session's writer thread writes it in its turn, after
+    /// whatever was made before it, without waiting for the far end
+    /// (#1005). A frame still queued when the session ends goes with it,
+    /// and a write that fails ends the session, failing the call with why.
+    /// Dropping the returned future cancels the call (`cancel`), as
+    /// dropping `invoke_async`'s does.
     pub fn invoke_started(
         &self,
         target: &str,
@@ -1603,9 +1778,9 @@ impl Connection {
         })
     }
     /// [`Connection::invoke_started`], settled: a future the far end answers
-    /// with is awaited too. Dropped before that, the call is cancelled,
-    /// also after the far end answered with its future (it is still
-    /// running it).
+    /// with is awaited too. Queued as `invoke_started`'s frame is. Dropped
+    /// before that, the call is cancelled, also after the far end answered
+    /// with its future (it is still running it).
     pub fn invoke_settled(
         &self,
         target: &str,
@@ -1645,26 +1820,29 @@ impl Connection {
     }
     fn write(&self, frame: Frame) -> Result<(), Error> {
         let result = {
-            let mut writer = self.0.writer.lock().unwrap();
-            self.write_locked(&mut writer, frame)
+            let mut queued = self.0.outbound.queued.lock().unwrap();
+            self.write_locked(&mut queued, frame)
         };
         if let Err(error) = &result {
             self.close(error.clone());
         }
         result
     }
-    fn write_locked(&self, writer: &mut Box<dyn Sender>, frame: Frame) -> Result<(), Error> {
+    fn write_locked(&self, queued: &mut Queued, frame: Frame) -> Result<(), Error> {
         let bytes = serde_json::to_vec(&frame).map_err(transport)?;
-        self.write_bytes_locked(writer, &bytes)
+        self.write_bytes_locked(queued, bytes)
     }
-    fn write_bytes_locked(&self, writer: &mut Box<dyn Sender>, bytes: &[u8]) -> Result<(), Error> {
+    /// Queue `bytes` for the far end, under the queue's lock: frames go out
+    /// in the order they are made, and what is encoded here is not torn down
+    /// under it.
+    fn write_bytes_locked(&self, queued: &mut Queued, bytes: Vec<u8>) -> Result<(), Error> {
         if let Some(error) = &self.0.calls.lock().unwrap().closed {
             return Err(error.clone());
         }
-        writer.send(bytes).map_err(ended)
+        self.0.outbound.push(queued, bytes)
     }
     fn send(&self, call: Operation, mut waiting: Waiting) -> Result<String, Error> {
-        let mut writer = self.0.writer.lock().unwrap();
+        let mut queued = self.0.outbound.queued.lock().unwrap();
         if !matches!(*self.0.ready.borrow(), Some(Ok(()))) {
             return Err(Error::Transport("protocol handshake incomplete".into()));
         }
@@ -1759,7 +1937,7 @@ impl Connection {
                 Vec::new(),
             ),
         };
-        let bytes = match self.serialized(&frame, writer.max_message(), &described) {
+        let bytes = match self.serialized(&frame, self.0.max_message, &described) {
             Ok(bytes) => bytes,
             Err(error) => {
                 self.ungrant(grants);
@@ -1801,8 +1979,8 @@ impl Connection {
             }
             calls.waiting.insert(id.clone(), waiting);
         }
-        let result = self.write_bytes_locked(&mut writer, &bytes);
-        drop(writer);
+        let result = self.write_bytes_locked(&mut queued, bytes);
+        drop(queued);
         if let Err(error) = result {
             self.close(error.clone());
             return Err(error);
@@ -2845,7 +3023,7 @@ impl Connection {
     fn respond_to(&self, id: String, result: Reply, call: Option<&str>) {
         waits::answered(&self.0.tag, &id);
         let result = {
-            let mut writer = self.0.writer.lock().unwrap();
+            let mut queued = self.0.outbound.queued.lock().unwrap();
             let (frame, grants) = match &result {
                 Ok(value) => match self.encode_granting(value, MAX_DEPTH) {
                     Ok((value, grants)) => (
@@ -2880,7 +3058,7 @@ impl Connection {
                 Some(call) => format!("{call}: {what} cannot be sent"),
                 None => format!("{what} cannot be sent"),
             };
-            let bytes = match self.serialized(&frame, writer.max_message(), &described) {
+            let bytes = match self.serialized(&frame, self.0.max_message, &described) {
                 Ok(bytes) => Ok(bytes),
                 Err(error) => {
                     self.ungrant(grants);
@@ -2891,7 +3069,7 @@ impl Connection {
                     .map_err(transport)
                 }
             };
-            bytes.and_then(|bytes| self.write_bytes_locked(&mut writer, &bytes))
+            bytes.and_then(|bytes| self.write_bytes_locked(&mut queued, bytes))
         };
         if let Err(error) = result {
             self.close(error);

@@ -22,12 +22,10 @@ use rutis::internal::CtxInternal;
 use rutis::{Ctx, Error};
 use rutis_bridge::pipe::Processes;
 use rutis_bridge::runtime::{
-    ended_status, Launcher, RuntimeHandle, RuntimeState, RuntimeStates, Stdio,
+    ended_status, Launcher, RuntimeHandle, RuntimeState, RuntimeStates, Stdio, GREETING,
 };
+use rutis_bridge::session::SessionOptions;
 use rutis_bridge::{session_key, PeerId, Session};
-
-/// How long a runtime's process may take to greet, by default.
-const GREETING: Duration = Duration::from_secs(30);
 
 /// One local runtime: what starts its process, and its state.
 pub struct SpawnPlugin {
@@ -39,6 +37,8 @@ pub struct SpawnPlugin {
     processes: Processes,
     /// How long its process may take to greet.
     greeting: Duration,
+    /// The limits its session runs with.
+    session: SessionOptions,
     /// What watches the running session, until the plugin unloads.
     watching: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
 }
@@ -62,16 +62,26 @@ impl SpawnPlugin {
             anchor,
             processes,
             greeting: GREETING,
+            session: SessionOptions::default(),
             watching: Arc::default(),
         }
     }
 
-    /// How long its process may take to greet once started: 30 s by
-    /// default; [`Duration::MAX`] waits for as long as it takes, for a
-    /// process stopped at its first line for a debugger (`--inspect-brk`),
-    /// which stays starting meanwhile.
+    /// How long its process may take to greet once started:
+    /// [`rutis_bridge::runtime::GREETING`] (30 s) by default, as
+    /// [`rutis_bridge::runtime::Process::mount`] gives one; [`Duration::MAX`]
+    /// waits for as long as it takes, for a process stopped at its first
+    /// line for a debugger (`--inspect-brk`), which stays starting meanwhile.
     pub fn greeting(mut self, limit: Duration) -> Self {
         self.greeting = limit;
+        self
+    }
+
+    /// The limits its session runs with ([`SessionOptions`]): none by
+    /// default, so a stopped runtime's events wait for it rather than
+    /// ending its session (`docs/design-remote-session-2026-10-28.md` §三).
+    pub fn session(mut self, options: SessionOptions) -> Self {
+        self.session = options;
         self
     }
 
@@ -167,7 +177,7 @@ impl DynPlugin for SpawnPlugin {
                     return Ok(Effect::Done);
                 }
             };
-            let session = ctx.plugin(Session::new(channel));
+            let session = ctx.plugin(Session::new(channel).options(self.session.clone()));
             // Running once the session is: it greeted, and runs plugins.
             let mut states = session.watch();
             loop {

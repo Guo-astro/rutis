@@ -12,6 +12,7 @@ import { install } from './cordis-events.mjs'
 import { rowTracking, install as handleUnhandled, failureText, kindText, realFile, reportText, stackFiles, unhandledError } from './unhandled.mjs'
 import { cannotLoad, encodeError, entryGone, fileShown, noMethod, notDefinePlugin, serviceName, unavailable } from './errors.mjs'
 import { prefixOutput, say, watchBlocking } from './output.mjs'
+import { registeredDefinition } from './definitions.mjs'
 
 // `<channel> --id <endpoint> [--peer <endpoint>] <first plugin or anchor>`.
 // The session greets as `--id`, expecting `--peer` as the controller when
@@ -459,6 +460,10 @@ function located(entry) {
 // `rowInject`: the names the row's own `inject` adds, which a leaf plugin
 // may use too.
 async function pluginOf(entry, rowInject = []) {
+  // A definition a test handed over, registered by the test driver: loaded
+  // as a row of this process, not imported from a file (definitions.mjs).
+  const registered = registeredDefinition(entry)
+  if (registered) return definedPlugin(registered, rowInject)
   entry = located(entry)
   const declared = await declaredOf(entry, described)
   return isLeaf(declared) ? toCordis(declared, rowInject, providerOf) : declared
@@ -514,6 +519,8 @@ function describeDefinition(value) {
 // Cordis plugin. `version` picks the module URL: `fresh` describes the file
 // as it is now, `described` loads the module a row was described with.
 async function declaredOf(entry, version = fresh) {
+  const registered = registeredDefinition(entry)
+  if (registered) return registered
   const own = cordisOf(entry)
   if (cordisPath && own && own !== cordisPath) {
     throw new Error(`${fileShown(entry)} uses its own copy of @deepseek-ai/cordis (${fileShown(own)}), not the one ${fileShown(pluginPath)} uses (${fileShown(cordisPath)}): install a single copy`)
@@ -630,7 +637,7 @@ async function loadRow([key, entry, config, isolate, inject, exports, place]) {
   }
   const row = { key, plugin, fiber: undefined, inner: undefined, config, exports: ids, loading: true, scope, labelOf, chain: chainOf(place?.scope), abort: new AbortController() }
   // Its plugin's file, by which a call of process.exit names it (#688).
-  row.file = typeof entry === 'string' ? realFile(located(entry)) : undefined
+  row.file = typeof entry === 'string' && !registeredDefinition(entry) ? realFile(located(entry)) : undefined
   // An error the row leaves unhandled while it loads fails the load (#688):
   // also one that comes once the load is done but not yet answered.
   let settled = false
@@ -737,6 +744,13 @@ function chainOf(scope) {
 // provide services all the same: they reach rutis when it provides them
 // (`announces`), so what it provides is known only then.
 async function describe(entry) {
+  // A registered definition: no file, no package; what it declares is what
+  // its `definePlugin` says.
+  const registered = registeredDefinition(entry)
+  if (registered) {
+    supported(registered, registered.name ?? 'plugin definition')
+    return { config: registered.config ?? null, inject: registered.inject, optional: registered.optional ?? [], provides: registered.provides, announces: registered.announces === true }
+  }
   entry = located(entry)
   const declared = await declaredOf(entry)
   // The package the plugin file belongs to: its version, and what it says

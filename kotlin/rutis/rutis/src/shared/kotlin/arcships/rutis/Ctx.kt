@@ -74,21 +74,20 @@ class Ctx internal constructor(private val rt: RuntimeState, internal val row: R
 
     /** The service `name` through `type`, or null when nothing provides it now; `verb` names the caller in errors. */
     private fun <I : Any> client(name: String, type: Class<I>, verb: String): I? {
-        val factory = Tables.clientFactory(type)
-            ?: throw IllegalArgumentException("${type.name} has no proxy: annotate it @RutisClient and apply the rutis-ksp processor")
         val id = row.id(name)
-        // One whose row is unloading is that row's still, and no other's: as
         // Rust's read_binding_as, where a provider out of Active hides what
         // it provides from every reader but its own subtree.
         val (local, host) = synchronized(rt.lock) {
             rt.services[id]?.takeIf { !it.unloading || it.row == row.key } to rt.hosts[id]
         }
+        // One this process provides is the object itself, whether or not it
+        // has a proxy: a provider's own interface needs no `@RutisClient`.
+        if (local != null && type.isInstance(local.value)) return type.cast(local.value)
+        val factory = Tables.clientFactory(type)
+            ?: throw IllegalArgumentException("${type.name} has no proxy: annotate it @RutisClient and apply the rutis-ksp processor")
         val remote = synchronized(rt.lock) { rt.far[id] }?.takeIf { it.methods != null }
         val handle: ServiceHandle = when {
-            local != null -> {
-                if (type.isInstance(local.value)) return type.cast(local.value)
-                LocalHandle(name, local.value, local.table, local.shape?.kinds ?: local.table.methods.associateWith { "async" })
-            }
+            local != null -> LocalHandle(name, local.value, local.table, local.shape?.kinds ?: local.table.methods.associateWith { "async" })
             remote != null -> FarHandle(rt, name, remote.methods!!, remote.functions)
             host != null -> HostHandle(rt, name, "host:$id", host)
             else -> return null
