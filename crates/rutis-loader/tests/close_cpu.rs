@@ -6,6 +6,12 @@
 //! Its own test binary: the numbers are the process's, and no other test may
 //! run beside the measured one. Print them with
 //! `cargo test -p rutis-loader --release --test close_cpu -- --nocapture`.
+//!
+//! Unix only: the numbers are the process's CPU time, which the tests read
+//! with `clock_gettime`; Windows has no such reading here (wall time cannot
+//! tell an idle host from a busy one), and the baseline runs on the Linux
+//! runners.
+#![cfg(unix)]
 
 mod common;
 
@@ -91,27 +97,14 @@ const CLOSE_RATIO: f64 = 60.0;
 /// The CPU time this process used: what its threads spent, not how long it
 /// took, so a machine that runs other work beside the tests, or has fewer
 /// cores, gives the same number.
-///
-/// On a platform without `clock_gettime` it is the wall time instead, which
-/// counts the time the process was not running either; the ratios and the
-/// share of a window hold there as long as the machine is not busy with
-/// something else.
 fn cpu() -> Duration {
-    #[cfg(unix)]
-    {
-        let mut ts = libc::timespec {
-            tv_sec: 0,
-            tv_nsec: 0,
-        };
-        let ok = unsafe { libc::clock_gettime(libc::CLOCK_PROCESS_CPUTIME_ID, &mut ts) };
-        assert_eq!(ok, 0, "clock_gettime");
-        Duration::new(ts.tv_sec as u64, ts.tv_nsec as u32)
-    }
-    #[cfg(not(unix))]
-    {
-        static START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
-        START.get_or_init(Instant::now).elapsed()
-    }
+    let mut ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    let ok = unsafe { libc::clock_gettime(libc::CLOCK_PROCESS_CPUTIME_ID, &mut ts) };
+    assert_eq!(ok, 0, "clock_gettime");
+    Duration::new(ts.tv_sec as u64, ts.tv_nsec as u32)
 }
 
 /// An instanced group of [`ROWS`] rows of plugin `row`.

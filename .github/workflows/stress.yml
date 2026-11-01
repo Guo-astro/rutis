@@ -385,7 +385,8 @@ jobs:
   # queued. Release build, where 1000 instances take about a minute; the
   # thresholds and the measured numbers are in the test
   # (crates/rutis-loader/tests/close_cpu.rs). Pull requests run the same test
-  # in a debug build in ci.yml's `rust` job (PURE_TESTS_LOADER).
+  # in a debug build in ci.yml's `rust` job, on Linux; Windows skips it
+  # (WINDOWS_SKIP_TESTS_LOADER): the numbers are the process's CPU time.
   cpu:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
