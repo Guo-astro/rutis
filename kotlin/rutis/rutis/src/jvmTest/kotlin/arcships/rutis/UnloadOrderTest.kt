@@ -3,6 +3,9 @@ package arcships.rutis
 import arcships.rutis.internal.Report
 import arcships.rutis.internal.RuntimeState
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import java.util.Collections
 import kotlin.test.Test
@@ -121,7 +124,10 @@ class UnloadOrderTest {
         load(rt, "slow", slow)
         val previous = Report.replace { lines.add(it) }
         try {
-            assertFalse(rt.dispose(200), "the cleanups finished in time")
+            // The deadline given to this row alone: nothing else cancels it,
+            // so which step runs out of time is the test's to decide.
+            val deadline = System.nanoTime() + 200 * 1_000_000L
+            assertFalse(rt.unload("slow", deadline), "the cleanups finished in time")
             assertTrue("rutis: gave up the cleanups of row slow" in lines, "the first cleanup did not run out of time: $lines")
             assertFalse("hello" in rt.services, "the withdrawal behind the cleanup that timed out did not run")
             // The name is free: the row loaded again provides it.
@@ -130,6 +136,68 @@ class UnloadOrderTest {
         } finally {
             Report.replace(previous)
             hang.complete(Unit)
+        }
+    }
+
+    /**
+     * A caller that cancels the unload while a cleanup runs (the session
+     * ending, say) still gets every withdrawal: they run after the loop, in
+     * `NonCancellable`. One skipped would keep the service registered and the
+     * name taken for the row's next load.
+     */
+    @Test
+    fun aCancelledUnloadStillWithdrawsTheServices() = runBlocking<Unit> {
+        val hung = CompletableDeferred<Unit>()
+        val slow = Rutis.define<Rutis.NoConfig>(name = "slow") { ctx, _ ->
+            ctx.provide("hello", Hello("hi"))
+            // Registered after the provide: it hangs, so the cancel lands
+            // before the withdrawal's place comes.
+            ctx.effect { hung.await() }
+        }
+        val rt = RuntimeState(listOf(slow))
+        load(rt, "slow", slow)
+        try {
+            val unloading = launch { rt.unload("slow") }
+            // The cleanup is running and hanging: cancel the unload now.
+            delay(100)
+            unloading.cancelAndJoin()
+            assertFalse("hello" in rt.services, "the cancellation skipped the row's withdrawal")
+            // The name is free: the row loaded again provides it.
+            load(rt, "slow", slow)
+            assertTrue("hello" in rt.services)
+        } finally {
+            hung.complete(Unit)
+        }
+    }
+
+    /**
+     * Each wait before the stack has its own cap, the shutdown budget, so a
+     * caller with a larger deadline cannot make one wait run for it: a
+     * listener that never returns is given up at the budget, not at
+     * `dispose`'s deadline.
+     */
+    @Test
+    fun aWaitBeforeTheStackIsCappedByTheShutdownBudget() = runBlocking<Unit> {
+        val lines = Collections.synchronizedList(ArrayList<String>())
+        val slow = Rutis.define<Rutis.NoConfig>(name = "slow") { ctx, _ -> ctx.provide("hello", Hello("hi")) }
+        val rt = RuntimeState(listOf(slow))
+        rt.shutdownMillis = 200
+        load(rt, "slow", slow)
+        // A listener that never returns: waited for, at most the budget.
+        rt.rows["slow"]!!.listening.add()
+        val previous = Report.replace { lines.add(it) }
+        try {
+            val started = System.nanoTime()
+            // A deadline far past the shutdown budget: without its own cap the
+            // wait would run for five seconds.
+            assertFalse(rt.dispose(5_000), "dispose finished in time")
+            val took = (System.nanoTime() - started) / 1_000_000
+            assertTrue(took < 3_000, "the wait used dispose's deadline: ${took}ms")
+            assertTrue(lines.any { it.startsWith("rutis: listeners of row slow still running") }, "the listener wait was not given up: $lines")
+            assertFalse("hello" in rt.services, "the withdrawal behind the wait did not run")
+        } finally {
+            Report.replace(previous)
+            rt.rows["slow"]?.listening?.done()
         }
     }
 }

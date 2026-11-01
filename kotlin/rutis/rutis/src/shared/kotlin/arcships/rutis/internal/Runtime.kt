@@ -18,6 +18,7 @@ import arcships.rutis.internal.peer.Peer
 import arcships.rutis.internal.peer.Undefined
 import kotlinx.coroutines.CompletableJob
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.launch
@@ -712,20 +713,23 @@ class RuntimeState(plugins: List<Plugin>, private val open: Boolean = false) {
         }
         // rutis answers the withdrawals of its services before it cleans up
         // (an application's own plugin), within the deadline.
+        fun leftMillis(): Long? = deadlineNanos?.let { ((it - System.nanoTime()) / 1_000_000).coerceAtLeast(0) }
+        // What a wait before the stack may take: the deadline's remainder,
+        // and never more than the shutdown budget (§7.1), so that a caller
+        // with a large budget cannot make one wait run for it.
+        fun waitMillis(): Long = leftMillis()?.coerceAtMost(shutdownMillis) ?: shutdownMillis
         val withdrawals = synchronized(lock) {
             withdrawing.removeAll { it.isDone }
             ArrayList(withdrawing)
         }
         if (withdrawals.isNotEmpty()) {
-            val wait = deadlineNanos?.let { ((it - System.nanoTime()) / 1_000_000).coerceAtLeast(0) } ?: shutdownMillis
-            withTimeoutOrNull(wait) { withdrawals.forEach { it.await() } }
+            withTimeoutOrNull(waitMillis()) { withdrawals.forEach { it.await() } }
         }
         // The row's coroutines are cancelled; its running listeners waited
         // for, at most the shutdown deadline (§7.1); then its cleanups run,
         // latest first.
         row.job.cancel()
-        fun leftMillis(): Long? = deadlineNanos?.let { ((it - System.nanoTime()) / 1_000_000).coerceAtLeast(0) }
-        val budget = leftMillis() ?: shutdownMillis
+        val budget = waitMillis()
         val listened = if (deadlineNanos == null) {
             row.listening.await(budget)
         } else {
@@ -737,10 +741,10 @@ class RuntimeState(plugins: List<Plugin>, private val open: Boolean = false) {
         if (!listened) {
             Report.line("rutis: listeners of row ${row.name} still running after ${Shutdown.shown(budget)}s; unloading anyway")
         }
-        val joinBudget = leftMillis() ?: budget
+        val joinBudget = waitMillis()
         if (joinBudget > 0) withTimeoutOrNull(joinBudget) { row.job.cancelAndJoin() }
         var failure: Throwable? = null
-        val steps = synchronized(lock) { ArrayList(row.steps).also { row.steps.clear() } }
+        val steps = synchronized(lock) { ArrayList(row.steps).also { row.steps.clear() } }.asReversed()
         var gaveUpCleanups = false
         fun noteGaveUp() {
             if (!gaveUpCleanups) {
@@ -749,36 +753,69 @@ class RuntimeState(plugins: List<Plugin>, private val open: Boolean = false) {
             }
             gaveUp = true
         }
-        for (step in steps.asReversed()) {
-            if (step.withdrawal) {
-                // No deadline applies: a withdrawal does not suspend, and
-                // skipping it would leave the service registered and its name
-                // taken (see Step). Run even when the cleanups ran out of
-                // time, at its place in the stack.
+        fun failing(e: Throwable) {
+            val had = failure
+            if (had == null) failure = e else had.addSuppressed(e)
+        }
+        var next = 0
+        try {
+            while (next < steps.size) {
+                val step = steps[next]
+                if (step.withdrawal) {
+                    // No deadline applies: a withdrawal does not suspend, and
+                    // skipping it would leave the service registered and its
+                    // name taken (see Step). Run even when the cleanups ran
+                    // out of time, at its place in the stack.
+                    try {
+                        step.run()
+                    } catch (e: Throwable) {
+                        failing(e)
+                    }
+                    next++
+                    continue
+                }
+                val left = leftMillis()
+                if (deadlineNanos != null && left == 0L) {
+                    noteGaveUp()
+                    next++
+                    continue
+                }
                 try {
-                    step.run()
-                } catch (e: Throwable) {
-                    if (failure == null) failure = e else failure.addSuppressed(e)
-                }
-                continue
-            }
-            val left = leftMillis()
-            if (deadlineNanos != null && left == 0L) {
-                noteGaveUp()
-                continue
-            }
-            try {
-                val done = if (deadlineNanos == null) {
-                    withContext(CallChain.element(row.chain)) { step.run() }
-                    true
-                } else {
-                    withTimeoutOrNull(left!!) {
+                    val done = if (deadlineNanos == null) {
                         withContext(CallChain.element(row.chain)) { step.run() }
-                    } != null
+                        true
+                    } else {
+                        withTimeoutOrNull(left!!) {
+                            withContext(CallChain.element(row.chain)) { step.run() }
+                        } != null
+                    }
+                    if (!done) noteGaveUp()
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    // The caller is going away: the withdrawal loop below
+                    // still runs (in the `finally`), so the row leaves
+                    // nothing registered behind.
+                    throw e
+                } catch (e: Throwable) {
+                    failing(e)
                 }
-                if (!done) noteGaveUp()
-            } catch (e: Throwable) {
-                if (failure == null) failure = e else failure.addSuppressed(e)
+                next++
+            }
+        } finally {
+            // Whatever stopped the loop — the deadline, or this coroutine
+            // being cancelled from outside (`dispose` bounds a whole row with
+            // its own timeout) — the withdrawals left still run: one skipped
+            // keeps the service registered and the name taken for the row's
+            // next load.
+            withContext(NonCancellable) {
+                for (i in next until steps.size) {
+                    val step = steps[i]
+                    if (!step.withdrawal) continue
+                    try {
+                        step.run()
+                    } catch (e: Throwable) {
+                        failing(e)
+                    }
+                }
             }
         }
         return Unloaded(!gaveUp, failure)
