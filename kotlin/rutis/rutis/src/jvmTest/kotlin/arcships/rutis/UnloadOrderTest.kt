@@ -200,5 +200,34 @@ class UnloadOrderTest {
             rt.rows["slow"]?.listening?.done()
         }
     }
+
+    /**
+     * The cancellation can land before the stack is reached: `dispose` bounds
+     * the whole row with its own timeout, and a listener that does not return
+     * within the shutdown budget keeps the row in the wait before the stack.
+     * The withdrawals still run — the protection covers the waits too.
+     */
+    @Test
+    fun aCancellationDuringTheListenerWaitStillWithdrawsTheServices() = runBlocking<Unit> {
+        val slow = Rutis.define<Rutis.NoConfig>(name = "slow") { ctx, _ -> ctx.provide("hello", Hello("hi")) }
+        val rt = RuntimeState(listOf(slow))
+        // The listener budget far above the dispose deadline: the wait runs
+        // past it, so the unload is cancelled there, before any cleanup or
+        // withdrawal.
+        rt.shutdownMillis = 5_000
+        load(rt, "slow", slow)
+        val row = rt.rows["slow"]!!
+        // A listener of the row that never returns.
+        row.listening.add()
+        try {
+            assertFalse(rt.dispose(200), "dispose finished in time")
+            assertFalse("hello" in rt.services, "the cancellation during the listener wait skipped the withdrawal")
+            // The name is free: the row loaded again provides it.
+            load(rt, "slow", slow)
+            assertTrue("hello" in rt.services)
+        } finally {
+            row.listening.done()
+        }
+    }
 }
 

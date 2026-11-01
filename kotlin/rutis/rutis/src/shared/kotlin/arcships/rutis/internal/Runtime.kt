@@ -711,40 +711,16 @@ class RuntimeState(plugins: List<Plugin>, private val open: Boolean = false) {
             row.announced.clear()
             row
         }
-        // rutis answers the withdrawals of its services before it cleans up
-        // (an application's own plugin), within the deadline.
         fun leftMillis(): Long? = deadlineNanos?.let { ((it - System.nanoTime()) / 1_000_000).coerceAtLeast(0) }
-        // What a wait before the stack may take: the deadline's remainder,
-        // and never more than the shutdown budget (§7.1), so that a caller
-        // with a large budget cannot make one wait run for it.
-        fun waitMillis(): Long = leftMillis()?.coerceAtMost(shutdownMillis) ?: shutdownMillis
-        val withdrawals = synchronized(lock) {
-            withdrawing.removeAll { it.isDone }
-            ArrayList(withdrawing)
-        }
-        if (withdrawals.isNotEmpty()) {
-            withTimeoutOrNull(waitMillis()) { withdrawals.forEach { it.await() } }
-        }
-        // The row's coroutines are cancelled; its running listeners waited
-        // for, at most the shutdown deadline (§7.1); then its cleanups run,
-        // latest first.
-        row.job.cancel()
-        val budget = waitMillis()
-        val listened = if (deadlineNanos == null) {
-            row.listening.await(budget)
-        } else {
-            withTimeoutOrNull(budget) {
-                runInterruptible(Dispatchers.IO) { row.listening.await(budget) }
-            } ?: false
-        }
-        var gaveUp = !listened
-        if (!listened) {
-            Report.line("rutis: listeners of row ${row.name} still running after ${Shutdown.shown(budget)}s; unloading anyway")
-        }
-        val joinBudget = waitMillis()
-        if (joinBudget > 0) withTimeoutOrNull(joinBudget) { row.job.cancelAndJoin() }
+        // What a wait before the stack may take has its own cap, the shutdown
+        // budget (§7.1) — not the caller's deadline: a caller with a large
+        // budget cannot make one wait run for it, and a caller with a small
+        // one cancels the row from outside (`dispose`'s `withTimeoutOrNull`),
+        // which the `finally` below turns into the same withdrawals having
+        // run.
+        val waitBudget = shutdownMillis
         var failure: Throwable? = null
-        val steps = synchronized(lock) { ArrayList(row.steps).also { row.steps.clear() } }.asReversed()
+        var gaveUp = false
         var gaveUpCleanups = false
         fun noteGaveUp() {
             if (!gaveUpCleanups) {
@@ -757,8 +733,46 @@ class RuntimeState(plugins: List<Plugin>, private val open: Boolean = false) {
             val had = failure
             if (had == null) failure = e else had.addSuppressed(e)
         }
+        // Taken before the waits: once the row left `rows`, nothing can join
+        // its stack any more (a task providing or registering a cleanup finds
+        // it gone), so the waits cannot add to it.
+        val steps = synchronized(lock) { ArrayList(row.steps).also { row.steps.clear() } }.asReversed()
         var next = 0
+        // Everything that suspends is inside the protection, the waits before
+        // the stack included: this coroutine ends either at the deadline or
+        // cancelled from outside (`dispose` bounds a whole row with its own
+        // timeout, which can land on any suspension point — a listener still
+        // running, a row's task still joining), and the withdrawals must run
+        // in every case: one skipped keeps the service registered and the
+        // name taken for the row's next load.
         try {
+            // rutis answers the withdrawals of its services before it cleans
+            // up (an application's own plugin), within the deadline.
+            val withdrawals = synchronized(lock) {
+                withdrawing.removeAll { it.isDone }
+                ArrayList(withdrawing)
+            }
+            if (withdrawals.isNotEmpty()) {
+                withTimeoutOrNull(waitBudget) { withdrawals.forEach { it.await() } }
+            }
+            // The row's coroutines are cancelled; its running listeners waited
+            // for, at most the shutdown deadline (§7.1); then its cleanups run,
+            // latest first.
+            row.job.cancel()
+            val budget = waitBudget
+            val listened = if (deadlineNanos == null) {
+                row.listening.await(budget)
+            } else {
+                withTimeoutOrNull(budget) {
+                    runInterruptible(Dispatchers.IO) { row.listening.await(budget) }
+                } ?: false
+            }
+            gaveUp = !listened
+            if (!listened) {
+                Report.line("rutis: listeners of row ${row.name} still running after ${Shutdown.shown(budget)}s; unloading anyway")
+            }
+            val joinBudget = waitBudget
+            if (joinBudget > 0) withTimeoutOrNull(joinBudget) { row.job.cancelAndJoin() }
             while (next < steps.size) {
                 val step = steps[next]
                 if (step.withdrawal) {
@@ -791,9 +805,9 @@ class RuntimeState(plugins: List<Plugin>, private val open: Boolean = false) {
                     }
                     if (!done) noteGaveUp()
                 } catch (e: kotlinx.coroutines.CancellationException) {
-                    // The caller is going away: the withdrawal loop below
-                    // still runs (in the `finally`), so the row leaves
-                    // nothing registered behind.
+                    // The caller is going away: the withdrawals below still
+                    // run (in the `finally`), so the row leaves nothing
+                    // registered behind.
                     throw e
                 } catch (e: Throwable) {
                     failing(e)
@@ -801,11 +815,6 @@ class RuntimeState(plugins: List<Plugin>, private val open: Boolean = false) {
                 next++
             }
         } finally {
-            // Whatever stopped the loop — the deadline, or this coroutine
-            // being cancelled from outside (`dispose` bounds a whole row with
-            // its own timeout) — the withdrawals left still run: one skipped
-            // keeps the service registered and the name taken for the row's
-            // next load.
             withContext(NonCancellable) {
                 for (i in next until steps.size) {
                     val step = steps[i]
