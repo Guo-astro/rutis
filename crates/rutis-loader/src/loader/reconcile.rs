@@ -2,9 +2,11 @@
 
 use std::collections::HashSet;
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
-use rutis::host::{CtxHost, ErrorKind, FiberState, FiberView, PluginFactory, PluginId, TypeKey};
+use rutis::host::{
+    CtxHost, ErrorKind, FiberState, FiberView, PluginFactory, PluginId, Snapshot, TypeKey,
+};
 use rutis::internal::CtxInternal;
 use rutis::{Ctx, Error, Event};
 use serde_json::Value;
@@ -567,104 +569,8 @@ impl Inner {
     /// - An instance's group fiber: the instance is removed.
     fn monitor(self: &Arc<Self>, slot: Slot, view: FiberView) {
         let weak = Arc::downgrade(self);
-        let mut watch = view.watch();
-        tokio::spawn(async move {
-            loop {
-                if watch.borrow().state == FiberState::Disposed {
-                    break;
-                }
-                if watch.changed().await.is_err() {
-                    return;
-                }
-            }
-            let Some(inner) = weak.upgrade() else {
-                return;
-            };
-            enum Outcome {
-                Disable,
-                Events(Dropped),
-            }
-            let outcome = {
-                let mut state = inner.state.lock().unwrap();
-                let state = &mut *state;
-                match state.running.get(&slot) {
-                    Some(running) if running.view.id == view.id => {}
-                    _ => return,
-                }
-                let cascading = Self::cascading(state, &slot);
-                let instance = Self::is_instance(state, &slot);
-                let running = state.running.remove(&slot).unwrap();
-                let key = Some(slot.clone());
-                if state.groups.get(&key).map(|g| g.token) == Some(running.token) {
-                    state.groups.remove(&key);
-                }
-                Self::forget(state, key, running.token);
-                state.shrink_sparse();
-                if cascading {
-                    return;
-                }
-                if instance {
-                    let number = slot.scope.unwrap();
-                    let removed = state.instances.remove(&number).unwrap();
-                    state.stopped.retain(|s, _| s.scope != Some(number));
-                    state.rejected.retain(|s, _| s.scope != Some(number));
-                    let (disposals, mut events) = Self::prune_instances(state);
-                    events.insert(
-                        0,
-                        LoaderChanged::InstanceRemoved {
-                            group: removed.group,
-                            plugin: removed.plugin,
-                        },
-                    );
-                    Outcome::Events((disposals, events))
-                } else if let Some(number) = slot.scope {
-                    state.stopped.insert(slot.clone(), view.id);
-                    let plugin = state.instances.get(&number).map(|i| i.plugin);
-                    let events = plugin
-                        .map(|instance| LoaderChanged::Stopped {
-                            id: slot.row.clone(),
-                            instance,
-                            plugin: view.id,
-                        })
-                        .into_iter()
-                        .collect();
-                    Outcome::Events((Vec::new(), events))
-                } else {
-                    Outcome::Disable
-                }
-            };
-            match outcome {
-                Outcome::Events((disposals, events)) => {
-                    for disposal in disposals {
-                        disposal.await;
-                    }
-                    for event in events {
-                        inner.emit(event);
-                    }
-                }
-                Outcome::Disable => {
-                    // A row disposing itself is rare, but its future
-                    // (`set_disabled`, a whole loader operation) is large:
-                    // inlined, every row's monitor task was 1.8 KiB, about
-                    // 14 KiB for an instance of eight rows (#979). Boxed,
-                    // the resident monitor task is 256 B, and the box is
-                    // paid only when a row disposes itself.
-                    let id = slot.row;
-                    let loader = super::Loader {
-                        inner: inner.clone(),
-                    };
-                    Box::pin(async move {
-                        let error = loader
-                            .set_disabled(&id, true)
-                            .await
-                            .err()
-                            .map(|e| e.to_string());
-                        inner.emit(LoaderChanged::SelfDisposed { id, error });
-                    })
-                    .await;
-                }
-            }
-        });
+        let watch = view.watch();
+        tokio::spawn(watch_for_dispose(weak, slot, view, watch));
     }
 
     pub(super) fn root(&self) -> Option<Ctx> {
@@ -1301,5 +1207,156 @@ impl Drop for GiveUp<'_> {
         if self.armed {
             self.inner.abandon();
         }
+    }
+}
+
+/// One row's monitor task: waits for the fiber to be disposed, then removes
+/// its record (and its instance, or disables its row). A named `async fn` so
+/// the test below can assert its size: it is allocated for every running row,
+/// and must not grow back to inlining `set_disabled` (#979).
+async fn watch_for_dispose(
+    weak: Weak<Inner>,
+    slot: Slot,
+    view: FiberView,
+    mut watch: tokio::sync::watch::Receiver<Snapshot>,
+) {
+    loop {
+        if watch.borrow().state == FiberState::Disposed {
+            break;
+        }
+        if watch.changed().await.is_err() {
+            return;
+        }
+    }
+    let Some(inner) = weak.upgrade() else {
+        return;
+    };
+    enum Outcome {
+        Disable,
+        Events(Dropped),
+    }
+    let outcome = {
+        let mut state = inner.state.lock().unwrap();
+        let state = &mut *state;
+        match state.running.get(&slot) {
+            Some(running) if running.view.id == view.id => {}
+            _ => return,
+        }
+        let cascading = Inner::cascading(state, &slot);
+        let instance = Inner::is_instance(state, &slot);
+        let running = state.running.remove(&slot).unwrap();
+        let key = Some(slot.clone());
+        if state.groups.get(&key).map(|g| g.token) == Some(running.token) {
+            state.groups.remove(&key);
+        }
+        Inner::forget(state, key, running.token);
+        state.shrink_sparse();
+        if cascading {
+            return;
+        }
+        if instance {
+            let number = slot.scope.unwrap();
+            let removed = state.instances.remove(&number).unwrap();
+            state.stopped.retain(|s, _| s.scope != Some(number));
+            state.rejected.retain(|s, _| s.scope != Some(number));
+            let (disposals, mut events) = Inner::prune_instances(state);
+            events.insert(
+                0,
+                LoaderChanged::InstanceRemoved {
+                    group: removed.group,
+                    plugin: removed.plugin,
+                },
+            );
+            Outcome::Events((disposals, events))
+        } else if let Some(number) = slot.scope {
+            state.stopped.insert(slot.clone(), view.id);
+            let plugin = state.instances.get(&number).map(|i| i.plugin);
+            let events = plugin
+                .map(|instance| LoaderChanged::Stopped {
+                    id: slot.row.clone(),
+                    instance,
+                    plugin: view.id,
+                })
+                .into_iter()
+                .collect();
+            Outcome::Events((Vec::new(), events))
+        } else {
+            Outcome::Disable
+        }
+    };
+    match outcome {
+        Outcome::Events((disposals, events)) => {
+            for disposal in disposals {
+                disposal.await;
+            }
+            for event in events {
+                inner.emit(event);
+            }
+        }
+        Outcome::Disable => {
+            // A row disposing itself is rare, but its future
+            // (`set_disabled`, a whole loader operation) is large:
+            // inlined, every row's monitor task was 1.8 KiB, about 14 KiB
+            // for an instance of eight rows (#979). Boxed, the resident
+            // monitor task is 344 B, and the box is paid only when a row
+            // disposes itself.
+            let id = slot.row;
+            let loader = super::Loader {
+                inner: inner.clone(),
+            };
+            Box::pin(async move {
+                let error = loader
+                    .set_disabled(&id, true)
+                    .await
+                    .err()
+                    .map(|e| e.to_string());
+                inner.emit(LoaderChanged::SelfDisposed { id, error });
+            })
+            .await;
+        }
+    }
+}
+
+#[cfg(test)]
+mod monitor_tests {
+    use std::mem::size_of_val;
+    use std::sync::Weak;
+
+    use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect};
+    use rutis::{Ctx, Error};
+
+    use super::{watch_for_dispose, Slot};
+
+    struct Row;
+
+    impl DynPlugin for Row {
+        fn name(&self) -> &str {
+            "row"
+        }
+
+        fn apply<'a>(&'a self, _: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
+            Box::pin(async { Ok(Effect::Done) })
+        }
+    }
+
+    /// The monitor task is allocated once per running row. Its future must
+    /// not inline `set_disabled` again: 344 B when the branch is boxed,
+    /// 1,872 B when it is not. 512 B allows compiler drift and still fails
+    /// the inlined form by more than three times.
+    ///
+    /// guarantee: loader/instance-close-leaves-nothing
+    #[tokio::test]
+    async fn the_monitor_future_stays_small() {
+        let root = Ctx::root().unwrap();
+        let view = root.plugin(Row);
+        let watch = view.watch();
+        let future = watch_for_dispose(Weak::new(), Slot::global("row"), view, watch);
+        let size = size_of_val(&future);
+        assert!(
+            size <= 512,
+            "the monitor future is {size} B: the row-dispose branch inlined set_disabled again"
+        );
+        drop(future);
+        root.shutdown().await.unwrap();
     }
 }

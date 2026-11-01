@@ -348,9 +348,13 @@ fn report(title: &str, samples: &BTreeMap<usize, Sample>) {
 
 /// The most one instance may hold while it runs: its group fiber and the
 /// eight rows. Measured on 2026-11-02 in debug and release, plain and watch
-/// rows: 48.5-59.2 KiB per instance (48.5-51.1 plain, 56.7-59.2 watch). The
-/// bound is 1.6 times the worst, so a regression of that size fails.
-const MAX_CREATED_PER_INSTANCE: usize = 96 * 1024;
+/// rows: 49.6-60.3 KiB per instance (49.6-52.2 plain, 57.8-60.3 watch).
+/// Inlining the row-dispose branch again puts the cheapest configuration at
+/// 62.0 KiB (debug, N=40) and the worst at 72.7 KiB; 61.5 KiB sits between
+/// the two, 1.02 times the worst and 0.99 times the cheapest rollback. A
+/// regression that removes that `Box` fails here as well as in the monitor
+/// future's own size test.
+const MAX_CREATED_PER_INSTANCE: usize = 61 * 1024 + 512;
 
 /// What closing may leave for the loader: measured 18-58 KiB after closing
 /// 40 to 1000 instances, in debug and release. The bound is a fixed 128 KiB
