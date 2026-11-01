@@ -81,9 +81,13 @@ Nothing shows while the row starts. A row asking for the old name `loader` waits
 maker: waiting for loader (no row provides it)
 ```
 
-`rutis-host check` on the same row: `maker (./maker.ts): cannot run: nothing provides loader`, exiting with 1.
+`rutis-host check` on the same row prints this line (a local file row shows its resolved address) and exits with 1:
 
-A Rust service that really is unmarked still gets the advice:
+```text
+maker (file://<dir>/maker.ts): cannot run: nothing provides loader
+```
+
+A Rust service that really is unmarked still gets the advice (`demo::Hidden` is a type of your own crate; what runs prints the full type path Rust gives it):
 
 ```text
 jh: waiting for hidden (`hidden` is the Rust service demo::Hidden, which is not exported: add #[rutis::service] to its impl)
@@ -92,8 +96,10 @@ jh: waiting for hidden (`hidden` is the Rust service demo::Hidden, which is not 
 | # | How it happens | Output (word for word) | How to fix it |
 | --- | --- | --- | --- |
 | 1 | The row's `inject` says `loader` (the name of `rutis/loader` before 0.19.3) and no row provides it | `maker: waiting for loader (no row provides it)` | Say `"rutis/loader"`, as in "Migrating to 0.19", its 0.19.3 section |
-| 2 | The row's `inject` says `hidden`, and a context has an unmarked `demo::Hidden` whose default name is `hidden` | `jh: waiting for hidden (`hidden` is the Rust service demo::Hidden, which is not exported: add #[rutis::service] to its impl)` | Mark its `impl` with `#[rutis::service]`, or drop it from `inject` and ask for another service |
+| 2 | The row's `inject` says `hidden`, and a context has an unmarked `demo::Hidden` whose default name is `hidden` | ``jh: waiting for hidden (`hidden` is the Rust service demo::Hidden, which is not exported: add #[rutis::service] to its impl)`` | Mark its `impl` with `#[rutis::service]`, or drop it from `inject` and ask for another service |
 | 3 | The row's `inject` says `loader`, and what provides that handle is a plugin of rutis itself (the loader) | As in 1: no advice to mark a type | As in 1 |
+
+Acceptance: two cases in `crates/rutis-loader/tests/marked_services.rs` compare lines 1 and 2 word for word (line 2 whole, its type path taken from `std::any::type_name`), and `crates/rutis-bridge/tests/marked_services.rs` keeps a handle a plugin of rutis provides from getting the advice.
 
 ### Host owners
 

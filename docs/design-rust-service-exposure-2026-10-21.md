@@ -81,9 +81,13 @@ await calendar.add({ title: 'Standup', startsAt: new Date() })
 maker: waiting for loader (no row provides it)
 ```
 
-`rutis-host check` 对同一行：`maker (./maker.ts): cannot run: nothing provides loader`，退出码 1。
+`rutis-host check` 对同一行，输出里是这一行（本地文件行给的是解析后的地址），退出码 1：
 
-一个真的忘了标注的 Rust 服务照旧给出标注建议：
+```text
+maker (file://<dir>/maker.ts): cannot run: nothing provides loader
+```
+
+一个真的忘了标注的 Rust 服务照旧给出标注建议（`demo::Hidden` 指你自己的 crate 里的类型，运行时打印的是它完整的类型路径）：
 
 ```text
 jh: waiting for hidden (`hidden` is the Rust service demo::Hidden, which is not exported: add #[rutis::service] to its impl)
@@ -92,8 +96,10 @@ jh: waiting for hidden (`hidden` is the Rust service demo::Hidden, which is not 
 | # | 怎样引起 | 输出（逐字） | 怎样改 |
 | --- | --- | --- | --- |
 | 1 | 行的 `inject` 写 `loader`（`rutis/loader` 在 0.19.3 之前的名字），没有行提供它 | `maker: waiting for loader (no row provides it)` | 改成 `"rutis/loader"`，见《迁移到 0.19》的 0.19.3 一节 |
-| 2 | 行的 `inject` 写 `hidden`，上下文里有一个未标注的 `demo::Hidden` 会被默认命名成 `hidden` | `jh: waiting for hidden (`hidden` is the Rust service demo::Hidden, which is not exported: add #[rutis::service] to its impl)` | 给它的 `impl` 加 `#[rutis::service]`，或从 `inject` 里去掉、换别的服务 |
+| 2 | 行的 `inject` 写 `hidden`，上下文里有一个未标注的 `demo::Hidden` 会被默认命名成 `hidden` | ``jh: waiting for hidden (`hidden` is the Rust service demo::Hidden, which is not exported: add #[rutis::service] to its impl)`` | 给它的 `impl` 加 `#[rutis::service]`，或从 `inject` 里去掉、换别的服务 |
 | 3 | 行的 `inject` 写 `loader`，而提供这个句柄的是 rutis 自己的插件（加载器） | 同第 1 条：不给标注建议 | 同第 1 条 |
+
+验收：`crates/rutis-loader/tests/marked_services.rs` 的两条用例逐字断言第 1 行与第 2 行（第 2 行整句比较，类型路径取 `std::any::type_name`），`crates/rutis-bridge/tests/marked_services.rs` 守住「平台插件提供的句柄不给建议」。
 
 ### 宿主持有者
 

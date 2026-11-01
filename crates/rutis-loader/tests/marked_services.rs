@@ -485,14 +485,14 @@ async fn waiting_for_an_unmarked_rust_service_says_how_to_serve_it() {
         )
         .await;
     assert_eq!(waits.len(), 1, "{waits:?}");
-    assert!(
-        matches!(
-            &waits[0].reason,
-            WaitReason::Explained(why)
-                if why.starts_with("`hidden` is the Rust service")
-                    && why.ends_with("add #[rutis::service] to its impl")
-        ),
-        "{waits:?}"
+    // The whole line, as the design's "What developers see" writes it: the
+    // type path is the one Rust gives the type.
+    assert_eq!(
+        rutis_loader::status::describe_waits(&waits, &|_| None),
+        format!(
+            "waiting for hidden (`hidden` is the Rust service {}, which is not exported: add #[rutis::service] to its impl)",
+            std::any::type_name::<Hidden>()
+        )
     );
     fixture.root.shutdown().await.unwrap();
 }
