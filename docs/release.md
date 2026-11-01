@@ -76,7 +76,7 @@ cargo run -p rutis-bridge --features websocket --example smoke -- \
 
 0.20 让插件可以写可选依赖（`optional` 与 `ctx.get`，#999），行的 `inject` 在六种语言里都算这一行的声明、运行时的行由 rutis 门控并租借（#1000、#1001），同一进程里的服务在 Go、Kotlin 也拿到对象本身（#1006、#1015），测试工具收下插件交出的定义（#1004）；卸载顺序改成清理与服务撤回在同一个逆序栈里（#1010），每个实例的常驻占用更小（#979）。所有包均为 0.20.0；见[发布说明](releases/0.20.0.md)与[迁移到 0.20](migration-0.20.md)。
 
-0.x 的次版本号变化允许不兼容的改动，所以 `cargo-semver-checks` 与 0.19.3 比较时接受 Rust API 的改动（`Mount` 多一个公有字段 `greeting`，`rutis_bridge::runtime::GREETING` 是它的默认；其余不兼容处是六种语言的运行时行为，见迁移指南）。`rutis.json` 的 `format` 仍是 1，配置没有变化：持久化样本从 0.19.3 复制，期望不变；dsh 的用户层没变，`cordis.patch.yml` 原样复制。会话协议仍是 4，没有新的能力，插件 API 仍是 3：发布门的跨版本测试（`RUTIS_E2E_ONLY_OLDER=1`）与 0.19.3 相遇，两边都说协议 4，相遇正常工作。Kotlin SDK 同 0.19.x，不发布到 Maven Central（`maven` 任务照常跳过）。
+0.x 的次版本号变化允许不兼容的改动，所以 `cargo-semver-checks` 与 0.19.3 比较时接受 Rust API 的改动（`Mount` 多一个公有字段 `greeting`，`rutis_bridge::runtime::GREETING` 是它的默认；其余不兼容处是六种语言的运行时行为，见迁移指南）。`rutis.json` 的 `format` 仍是 1，配置没有变化：持久化样本从 0.19.3 复制，期望不变；dsh 的用户层没变，`cordis.patch.yml` 原样复制。会话协议仍是 4，没有新的能力，插件 API 仍是 3：发布门的跨版本测试（`RUTIS_E2E_ONLY_OLDER=1`）与 0.19.3 相遇，两边都说协议 4，相遇正常工作。Kotlin SDK 随列车一起打版本；Maven Central 按 `release.yml` 的规则发：environment `maven` 缺四个 secret 里任何一个时，`maven` 任务在运行摘要里写明缺哪些并跳过，其余照常发布（仓库里看不出这个环境有没有凭据）。
 
 ## 0.19.3
 
