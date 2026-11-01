@@ -226,6 +226,22 @@ class Slot:
 
 
 @dataclass
+class Provided:
+    """A service a row of this process provides: the registration, and
+    whether its row is unloading."""
+
+    row: str
+    value: Any
+    # This registration's identity: the withdrawal on the unload stack
+    # removes the entry only while it is still this one (a plugin may
+    # provide the name again after calling the returned function).
+    token: object = field(default_factory=object)
+    # Its row is unloading: no other row sees it any more, its own row
+    # still does until the withdrawal on its unload stack runs.
+    unloading: bool = False
+
+
+@dataclass
 class Row:
     key: str
     # A module's name, or a plugin definition this runtime handed over.
@@ -241,7 +257,10 @@ class Row:
     plugin: str | None = None
     # What messages call the row: its id, or the key when it was not named.
     named: str = ""
-    cleanups: list = field(default_factory=list)
+    # The unload stack: cleanups and the withdrawals of the services the row
+    # provides, in the order they were registered, run in reverse when the
+    # row unloads (as Rust's effects: a withdrawal is an effect too).
+    steps: list = field(default_factory=list)
     # Ids of the services it provided.
     provided: list = field(default_factory=list)
     # Ids of the slots of services it announced.
@@ -295,7 +314,7 @@ class Context(sdk.Context):
         if name not in self._row.uses and self._row.id(name) not in self._row.provided:
             raise not_declared(LookupError, name)
         try:
-            return self._runtime.lookup(self._row.id(name))
+            return self._runtime.lookup(self._row.id(name), self._row)
         except LookupError:
             raise unavailable(name) from None
 
@@ -305,7 +324,7 @@ class Context(sdk.Context):
         # None: an optional service rutis did not have when the row
         # started, or one no row here provides now.
         try:
-            return self._runtime.lookup(self._row.id(name))
+            return self._runtime.lookup(self._row.id(name), self._row)
         except LookupError:
             return None
 
@@ -313,7 +332,12 @@ class Context(sdk.Context):
         return self._runtime.provide(self._row, name, value)
 
     def effect(self, cleanup: Callable) -> None:
-        self._row.cleanups.append(cleanup)
+        # As Rust's InactiveEffect: once the row is unloading, the stack it
+        # would join is the one the unload took, so it would never run.
+        if self._runtime.rows.get(self._row.key) is not self._row:
+            say(f"rutis: row {self._row.named or self._row.key} is not active: cleanup is not registered")
+            return
+        self._row.steps.append(cleanup)
 
     def on(self, name: str, listener: Callable, *, prepend: bool = False, global_: bool = False) -> Callable[[], None]:
         if self._runtime.rows.get(self._row.key) is not self._row:
@@ -377,9 +401,13 @@ class Runtime:
 
     # ── Services ─────────────────────────────────────────────────
 
-    def lookup(self, id: str) -> Any:
-        if id in self.services:
-            return self.services[id][1]
+    def lookup(self, id: str, reader: Row | None = None) -> Any:
+        provided = self.services.get(id)
+        # One whose row is unloading is that row's still, and no other's: as
+        # Rust's read_binding_as, where a provider out of Active hides what it
+        # provides from every reader but its own subtree.
+        if provided is not None and (not provided.unloading or (reader is not None and reader.key == provided.row)):
+            return provided.value
         if id in self.hosts:
             return self.hosts[id]
         raise unavailable(id.split("\0", 1)[0])
@@ -387,8 +415,9 @@ class Runtime:
     def provide(self, row: Row, name: str, value: Any) -> Callable[[], None]:
         id = row.id(name)
         if id in self.services:
-            raise ValueError(f"{name} is already provided by {self.bus.row_id(self.services[id][0])}")
-        self.services[id] = (row.key, value)
+            raise ValueError(f"{name} is already provided by {self.bus.row_id(self.services[id].row)}")
+        entry = Provided(row.key, value)
+        self.services[id] = entry
         row.provided.append(id)
         # Not declared: announced, with the methods it has.
         if id not in self.slots and "#" not in name:
@@ -396,13 +425,20 @@ class Runtime:
             row.announced.append(id)
         self._refresh(id)
 
+        # Whichever comes first, the returned function or the registration's
+        # own entry on the unload stack, withdraws it; the other finds it
+        # gone (or the name provided again, which it leaves alone).
         def withdraw() -> None:
-            if self.services.get(id, (None, None))[1] is value:
+            if self.services.get(id) is entry:
                 del self.services[id]
                 if id in row.provided:
                     row.provided.remove(id)
                 self._refresh(id)
 
+        # The withdrawal is an entry of the unload stack, as an effect is: a
+        # cleanup registered after this one runs before it and still reads
+        # the service; one registered before runs after it and does not.
+        row.steps.append(withdraw)
         return withdraw
 
     def _refresh(self, id: str) -> None:
@@ -411,7 +447,7 @@ class Runtime:
         if slot is None:
             return
         provided = self.services.get(id)
-        current = provided[1] if provided is not None and provided[0] == slot.row else None
+        current = provided.value if provided is not None and provided.row == slot.row and not provided.unloading else None
         if current is slot.object:
             return
         if slot.handle is not None:
@@ -562,7 +598,7 @@ class Runtime:
         if cleanup is not None:
             if not callable(cleanup):
                 raise TypeError("apply must return a cleanup function or None")
-            row.cleanups.append(cleanup)
+            row.steps.append(cleanup)
         for name in exports:
             self._refresh(row.id(name))
         # rutis has published the announced services (or refused one,
@@ -697,12 +733,15 @@ class Runtime:
         # them is refused (the host withdrew them already: telling it again
         # does no harm).
         self._withdrawn(self.bus.withdraw_row(key))
-        # Withdrawals first: rutis hears them before the plugin goes away.
+        # From here on no other row sees what this one provides; it still
+        # does, until each withdrawal's place on the unload stack comes (as
+        # Rust's read_binding_as). The host hears the withdrawals now, before
+        # the row is gone from it.
         for id in list(row.provided):
-            if self.services.get(id, (None,))[0] == key:
-                del self.services[id]
+            provided = self.services.get(id)
+            if provided is not None and provided.row == key:
+                provided.unloading = True
                 self._refresh(id)
-        row.provided.clear()
         for id in [row.id(name) for name in row.exports] + row.announced:
             slot = self.slots.get(id)
             if slot is None or slot.row != key:
@@ -711,17 +750,18 @@ class Runtime:
             self._gone(id)
         row.announced.clear()
         # Its running listeners are cancelled and waited for, at most the
-        # shutdown deadline (§7.1 step 4), before its cleanups run.
+        # shutdown deadline (§7.1 step 4), before its unload stack runs.
         await self.bus.stop(key, shutdown_deadline())
         self.bus.row_ids.pop(key, None)
         errors = []
-        cleanups = row.cleanups[::-1]
-        row.cleanups.clear()
-        for cleanup in cleanups:
+        steps = row.steps[::-1]
+        row.steps.clear()
+        for step in steps:
             try:
-                await _settle(cleanup())
-            except Exception as error:  # noqa: BLE001 - run every cleanup
+                await _settle(step())
+            except Exception as error:  # noqa: BLE001 - run every step
                 errors.append(error)
+        row.provided.clear()
         if errors:
             raise errors[0]
 
@@ -1083,7 +1123,7 @@ class Runtime:
         # The method runs as the code of the row whose service it is (#688).
         owner = slot.row if slot is not None else None
         if owner is None and entry["name"] in self.services:
-            owner = self.services[entry["name"]][0]
+            owner = self.services[entry["name"]].row
         shown = self._runtime_name() if owner is None else (self.bus.row_id(owner) or owner)
         # One that holds the loop for 5 s is said (#678): a `def` method, or
         # a step of an `async def` one.

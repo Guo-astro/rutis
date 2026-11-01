@@ -428,7 +428,7 @@ Who changes something: plugins using either service, in any language: rename it 
 A plugin still asking for an old name waits. The row state lines of `rutis-host run` and `rutis-host check` say (`maker` asks for `loader`, `relay` for `sessions`):
 
 ```text
-maker: waiting for loader (`loader` is the Rust service rutis_loader::loader::Loader, which is not exported: add #[rutis::service] to its impl)
+maker: waiting for loader (no row provides it)
 relay: waiting for sessions (no row provides it)
 ```
 
@@ -443,4 +443,10 @@ relay (file:///…/relay.mjs): cannot run: nothing provides sessions
   sessions: add a row that provides it
 ```
 
-The `add #[rutis::service]` of the `maker` line does not apply: rename the name to `rutis/loader`.
+Rename `maker`'s name to `rutis/loader`. 0.19.3's line for `maker` said to add the marker, which did not apply (the loader puts its own Rust handle `Loader` in the context, and its name happens to be the one asked for):
+
+```text
+maker: waiting for loader (`loader` is the Rust service rutis_loader::loader::Loader, which is not exported: add #[rutis::service] to its impl)
+```
+
+From 0.20 a handle a plugin of rutis itself provides is no longer described as an unmarked service (#996), and that line is `(no row provides it)` as `relay`'s is.

@@ -434,6 +434,37 @@ jobs:
           cargo test -q -p rutis-bridge --test local_soak -- --ignored --nocapture 2>&1 | tee local.txt
           grep -h '^soak:' websocket.txt local.txt >> "$GITHUB_STEP_SUMMARY"
 
+  # The resource baseline of instances (#979): what one instance of eight
+  # rows holds while it runs, the peak of closing N of them at once (#977),
+  # and what closing leaves behind — live bytes, fibers, service bindings,
+  # event listeners and tasks. Release build, where 1000 instances take
+  # about a minute; the thresholds and the measured distribution are in the
+  # test (crates/rutis-loader/tests/close_memory.rs). Pull requests run the
+  # same test in a debug build in ci.yml's `rust` job (PURE_TESTS_LOADER).
+  memory:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.98.1
+      - uses: Swatinem/rust-cache@v2
+      - name: Instances fit the resource baseline
+        # bash -eo pipefail: a failing test fails the step through tee.
+        shell: bash
+        run: |
+          cargo test -p rutis-loader --release --test close_memory -- --nocapture 2>&1 \
+            | tee "$RUNNER_TEMP/close-memory.txt"
+      - name: Baseline numbers
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo '### Resource baseline (#979)'
+            echo '```'
+            sed -n '/^plain rows/,$p' "$RUNNER_TEMP/close-memory.txt" || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
   # S8 (#192, tests/e2e/tests/soak.rs): one rutis-host run for
   # `host_soak_secs` with random operations from a seed (configuration
   # edits and reloads, runtimes killed, the link to a node cut), its

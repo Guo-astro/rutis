@@ -211,3 +211,92 @@ test('a leaf plugin may use and get a service it provides itself', async () => {
   assert.equal(seen.again, 2)
   await plugin.dispose()
 })
+
+// Unloading runs one stack in reverse, one entry at a time: cleanups and the
+// withdrawals of what the plugin provides, in the order they were registered
+// (Rust's drain_effects; docs/design-unload-order-2026-11-01.md).
+// guarantee: sdk/unload-order (a withdrawal is a step of the unload stack)
+test('a cleanup registered after provide reads it; one before does not', async () => {
+  const root = new Context()
+  const log = []
+  const read = ctx => {
+    try { return `count ${ctx.use('tally').count()}` } catch (error) { return `error ${error.code ?? error.name}` }
+  }
+  const spec = definePlugin({
+    apply(ctx) {
+      ctx.effect(() => { log.push(`before: ${read(ctx)}`) })
+      ctx.provide('tally', { count: () => 7 })
+      ctx.effect(async () => {
+        // Not concurrent: the next entry waits for this one.
+        await new Promise(resolve => setTimeout(resolve, 10))
+        log.push(`after: ${read(ctx)}`)
+      })
+      return () => { log.push(`returned: ${read(ctx)}`) }
+    },
+  })
+  const plugin = root.plugin(toCordis(supported(spec, 'order')))
+  await plugin.await()
+  await plugin.dispose()
+  assert.deepEqual(log, ['returned: count 7', 'after: count 7', 'before: error not-declared'])
+})
+
+// Another row loses what a plugin provides when the plugin starts unloading,
+// not when the withdrawal's place on the stack comes; the plugin itself still
+// reads it then (Rust's read_binding_as; docs/design-unload-order-2026-11-01.md
+// D2). Reading it only after the unload would not prove this: by then the
+// registration is gone for everyone.
+// guarantee: sdk/unload-order
+test('another row loses it when the unload starts; the plugin itself still reads it', async () => {
+  const root = new Context()
+  const log = []
+  const read = ctx => {
+    try { return `count ${ctx.use('tally').count()}` } catch (error) { return `error ${error.code ?? error.name}` }
+  }
+  let other
+  const provider = definePlugin({
+    name: 'provider',
+    apply(ctx) {
+      ctx.provide('tally', { count: () => 2 })
+      // Registered after the provide: it runs before the withdrawal, and at
+      // that same moment the other row no longer sees the service.
+      ctx.effect(() => {
+        log.push(`own: ${read(ctx)}`)
+        log.push(`other: ${read(other)}`)
+      })
+    },
+  })
+  const user = definePlugin({ name: 'user', apply(ctx) { other = ctx } })
+  const first = root.plugin(toCordis(supported(provider, 'provider')))
+  await first.await()
+  // The row's own `inject`: the other row may read the name it declares.
+  const second = root.plugin(toCordis(supported(user, 'user'), ['tally']))
+  await second.await()
+  log.push(`before: ${read(other)}`)
+  await first.dispose()
+  log.push(`after: ${read(other)}`)
+  assert.deepEqual(log, ['before: count 2', 'own: count 2', 'other: error unavailable', 'after: error unavailable'])
+  await second.dispose()
+})
+
+test('a cleanup registering one is refused and the new one does not run', async () => {
+  const root = new Context()
+  let ran = false
+  const reported = []
+  const original = process.stderr.write
+  process.stderr.write = chunk => { reported.push(String(chunk)); return true }
+  try {
+    const spec = definePlugin({
+      name: 'nested',
+      apply(ctx) {
+        ctx.effect(() => { ctx.effect(() => { ran = true }) })
+      },
+    })
+    const plugin = root.plugin(toCordis(supported(spec, 'nested')))
+    await plugin.await()
+    await plugin.dispose()
+  } finally {
+    process.stderr.write = original
+  }
+  assert.equal(ran, false)
+  assert.deepEqual(reported, ['rutis: plugin nested is not active: cleanup is not registered\n'])
+})

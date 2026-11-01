@@ -61,6 +61,11 @@ final class Provided {
     let row: String
     let value: RutisExportable
     let shape: Rutis.Advanced.Shape?
+    /// Its row is unloading: no other row sees it any more, its own row still
+    /// does until the withdrawal on its unload stack runs. The instance is the
+    /// registration's identity: a withdrawal removes the entry only while it
+    /// is still this one.
+    var unloading = false
     init(row: String, value: RutisExportable, shape: Rutis.Advanced.Shape?) {
         self.row = row
         self.value = value
@@ -124,7 +129,10 @@ final class Row: @unchecked Sendable {
     let own: Bool
     /// Its runtime's: where its lines go, how long its listeners may take.
     let settings: Events.Settings
-    var cleanups: [() async throws -> Void] = []
+    /// The unload stack: cleanups and the withdrawals of the services the row
+    /// provides, in the order they were registered, run in reverse when the
+    /// row unloads (as Rust's effects: a withdrawal is an effect too).
+    var steps: [() async throws -> Void] = []
     var provided: [String] = []
     var announced: [String] = []
     /// What the host has yet to answer while the row loads (announcements,
@@ -414,7 +422,10 @@ final class Runtime: @unchecked Sendable {
     /// Reports the object now in an exported slot under a new handle;
     /// `lock` is held, the report queued.
     func refresh(_ id: String) {
-        if let gone = shared[id], services[id]?.row != gone.row {
+        // Gone for rutis once its row starts unloading, as for every other
+        // reader: the withdrawal goes now, not when its place on the stack
+        // comes.
+        if let gone = shared[id], services[id].flatMap({ $0.unloading ? nil : $0.row }) != gone.row {
             shared[id] = nil
             announcements += 1
             // Also while closing: rutis hears it before the plugin cleans up.
@@ -431,7 +442,7 @@ final class Runtime: @unchecked Sendable {
         guard let slot = slots[id] else { return }
         var current: RutisExportable?
         var present = false
-        if let provided = services[id], provided.row == slot.row {
+        if let provided = services[id], provided.row == slot.row, !provided.unloading {
             current = provided.value
             present = true
         }
@@ -525,7 +536,8 @@ final class Runtime: @unchecked Sendable {
             fail(row, RutisError(name: "Error", message: "\(name) is already provided by rutis"))
             return {}
         }
-        services[id] = Provided(row: row.key, value: value, shape: shape)
+        let entry = Provided(row: row.key, value: value, shape: shape)
+        services[id] = entry
         row.provided.append(id)
         if row.own {
             share(row, id, value, shape)
@@ -535,12 +547,13 @@ final class Runtime: @unchecked Sendable {
             row.announced.append(id)
         }
         refresh(id)
-        lock.unlock()
-        flush()
-        return { [weak self] in
+        // Whichever comes first, the returned function or the registration's
+        // own entry on the unload stack, withdraws it; the other finds it gone
+        // (or the name provided again, which it leaves alone).
+        let withdraw: () -> Void = { [weak self] in
             guard let self else { return }
             lock.lock()
-            if let existing = services[id], existing.row == row.key, same(existing.value, value) {
+            if services[id] === entry {
                 services[id] = nil
                 row.provided.removeAll { $0 == id }
                 refresh(id)
@@ -548,6 +561,13 @@ final class Runtime: @unchecked Sendable {
             lock.unlock()
             flush()
         }
+        // The withdrawal is an entry of the unload stack, as an effect is: a
+        // cleanup registered after this one runs before it and still reads
+        // the service; one registered before runs after it and does not.
+        row.steps.append { withdraw() }
+        lock.unlock()
+        flush()
+        return withdraw
     }
 
     /// Shares the service `id` an app's own plugin provides: announced
@@ -637,7 +657,7 @@ final class Runtime: @unchecked Sendable {
 
     /// Whether the service `name` is there for an app's own plugin.
     private func available(_ name: String) -> Bool {
-        services[name] != nil || far[name]?.methods != nil || hosts[name] != nil
+        services[name].map { !$0.unloading } == true || far[name]?.methods != nil || hosts[name] != nil
     }
 
     /// Installs an app's own plugins once rutis greeted: offers `services`
@@ -795,14 +815,16 @@ final class Runtime: @unchecked Sendable {
             rows[key] = nil
             row.unloading = true
             forgetListeners(row)
-            // Withdrawals first: rutis hears them before the plugin goes.
+            // From here on no other row sees what this one provides; it still
+            // does, until each withdrawal's place on the unload stack comes
+            // (as Rust's read_binding_as). rutis hears the withdrawals now,
+            // before the row is gone from it.
             for id in row.provided {
                 if let existing = services[id], existing.row == key {
-                    services[id] = nil
+                    existing.unloading = true
                     refresh(id)
                 }
             }
-            row.provided = []
             for id in row.announced + row.exports.keys.map(row.id) {
                 if let slot = slots[id], slot.row == key {
                     slots[id] = nil
@@ -816,15 +838,15 @@ final class Runtime: @unchecked Sendable {
         // Taken and cleared before awaiting: a cleanup that captures the
         // row's context would otherwise form Row -> cleanup -> Ctx -> Row,
         // and the row would outlive its unload even when a cleanup hangs.
-        let cleanups: [() async throws -> Void] = lock.withLock {
-            let cleanups = row.cleanups
-            row.cleanups = []
-            return cleanups
+        let steps: [() async throws -> Void] = lock.withLock {
+            let steps = row.steps
+            row.steps = []
+            return steps
         }
         flush()
         await row.stop()
         var errors: [Error] = []
-        for cleanup in cleanups.reversed() {
+        for cleanup in steps.reversed() {
             do { try await cleanup() } catch { errors.append(error) }
         }
         if let first = errors.first {
@@ -1058,7 +1080,12 @@ final class Runtime: @unchecked Sendable {
     /// here gives its object too; nil when there is none.
     func lookup(_ row: Row, _ name: String) -> (Rutis.Advanced.Client, RutisExportable?)? {
         let id = row.id(name)
-        let (local, host, remote) = lock.withLock { (services[id], hosts[id], far[id]) }
+        // One whose row is unloading is that row's still, and no other's: as
+        // Rust's read_binding_as, where a provider out of Active hides what it
+        // provides from every reader but its own subtree.
+        let (local, host, remote) = lock.withLock {
+            (services[id].flatMap { !$0.unloading || $0.row == row.key ? $0 : nil }, hosts[id], far[id])
+        }
         if let local {
             let table = local.value.rutisMethods()
             var methods: [String: String] = [:]

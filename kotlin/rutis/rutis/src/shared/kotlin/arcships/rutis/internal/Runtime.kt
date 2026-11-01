@@ -18,6 +18,7 @@ import arcships.rutis.internal.peer.Peer
 import arcships.rutis.internal.peer.Undefined
 import kotlinx.coroutines.CompletableJob
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.launch
@@ -87,7 +88,15 @@ internal class Shared(val row: String, val plugin: String, val value: Any, val t
 /** A service rutis announced to this side; withdrawn when `methods` is null. */
 internal class FarService(val version: Long, val methods: Map<String, String>?, val functions: Map<String, arcships.rutis.advanced.RemoteFunction>)
 
-internal class Provided(val row: String, val value: Any, val shape: ServiceShape?, val table: ServiceTable<Any>)
+internal class Provided(val row: String, val value: Any, val shape: ServiceShape?, val table: ServiceTable<Any>) {
+    /**
+     * Its row is unloading: no other row sees it any more, its own row still
+     * does until the withdrawal on its unload stack runs. The instance is the
+     * registration's identity: a withdrawal removes the entry only while it
+     * is still this one.
+     */
+    var unloading = false
+}
 
 internal class Slot(val row: String, val name: String, var methods: Set<String>?, val announced: Boolean = false) {
     var obj: Any? = null
@@ -102,6 +111,19 @@ internal class HandleEntry(val id: String, val name: String, val obj: Any, val t
     /** Its row unloaded (see `gone`). */
     var gone = false
 }
+
+/**
+ * An entry of the unload stack: a plugin's cleanup, or the withdrawal of a
+ * service the row provides ([withdrawal]).
+ *
+ * A withdrawal only takes the lock and tells rutis, so it never suspends,
+ * and the deadline does not apply to it: one skipped would leave the
+ * service registered, and the next load of the row would find the name
+ * taken (`dispose` gives up whole rows rather than leave one like that). So
+ * a row whose cleanups ran out of time still withdraws what it provided
+ * before its unload ends.
+ */
+internal class Step(val run: suspend () -> Unit, val withdrawal: Boolean = false)
 
 internal class Row(
     val key: String,
@@ -122,7 +144,12 @@ internal class Row(
     val own: Boolean = false,
 ) {
     val job: CompletableJob = SupervisorJob()
-    val cleanups = ArrayList<suspend () -> Unit>()
+    /**
+     * The unload stack: cleanups and the withdrawals of the services the row
+     * provides, in the order they were registered, run in reverse when the
+     * row unloads (as Rust's effects: a withdrawal is an effect too).
+     */
+    val steps = ArrayList<Step>()
     val provided = ArrayList<String>()
     val announced = ArrayList<String>()
     val listening = Counter()
@@ -234,7 +261,10 @@ class RuntimeState(plugins: List<Plugin>, private val open: Boolean = false) {
     /** Reports the object now in an exported slot under a new handle; `lock` is held. */
     internal fun refresh(id: String) {
         val gone = shared[id]
-        if (gone != null && services[id]?.row != gone.row) {
+        // Gone for rutis once its row starts unloading, as for every other
+        // reader: the withdrawal goes now, not when its place on the stack
+        // comes.
+        if (gone != null && services[id]?.takeUnless { it.unloading }?.row != gone.row) {
             shared.remove(id)
             announcements++
             // Also while closing: rutis hears it before the plugin cleans up.
@@ -242,7 +272,7 @@ class RuntimeState(plugins: List<Plugin>, private val open: Boolean = false) {
             reconcile()
         }
         val slot = slots[id] ?: return
-        val provided = services[id]?.takeIf { it.row == slot.row }
+        val provided = services[id]?.takeIf { it.row == slot.row && !it.unloading }
         val present = provided != null
         val current = provided?.value
         if (present == slot.present && current === slot.obj) return
@@ -307,17 +337,38 @@ class RuntimeState(plugins: List<Plugin>, private val open: Boolean = false) {
             throw IllegalArgumentException("rutis: provide $name: ${value.javaClass.name} is not the ${type.name} provides declares")
         }
         val id = row.id(name)
-        var inactive = false
+        // The registration and its place on the unload stack are taken under
+        // one lock, so an unload cannot come between them: either it starts
+        // after both (its stack has the withdrawal, which runs at its place)
+        // or it started before them (this row is no longer the loaded one, so
+        // nothing is registered at all). Under two locks, an unload in
+        // between takes a stack without this withdrawal: the registration
+        // stays for good, hidden from every reader but still holding the name
+        // against the next load of the row.
+        var registered: Provided? = null
+        // Whichever comes first, the returned function or the registration's
+        // own entry on the unload stack, withdraws it; the other finds it gone
+        // (or the name provided again, which it leaves alone).
+        val withdraw: () -> Unit = {
+            synchronized(lock) {
+                if (registered != null && services[id] === registered) {
+                    services.remove(id)
+                    row.provided.remove(id)
+                    refresh(id)
+                }
+            }
+        }
         synchronized(lock) {
             if (rows[row.key] !== row) {
                 // A task of an unloaded row providing: refused, or the
                 // service would outlive its row and the next load find it
                 // taken.
-                inactive = true
             } else {
                 services[id]?.let { throw IllegalStateException("$name is already provided by ${rows[it.row]?.name ?: it.row}") }
                 if (row.own && far[id]?.methods != null) throw IllegalStateException("$name is already provided by rutis")
-                services[id] = Provided(row.key, value, shape, table)
+                val entry = Provided(row.key, value, shape, table)
+                registered = entry
+                services[id] = entry
                 row.provided.add(id)
                 if (row.own) {
                     share(row, id, value, table, shape)
@@ -326,23 +377,19 @@ class RuntimeState(plugins: List<Plugin>, private val open: Boolean = false) {
                     slots[id] = Slot(row.key, name, null, announced = true)
                     row.announced.add(id)
                 }
+                // The withdrawal is an entry of the unload stack, as an effect is:
+                // a cleanup registered after this one runs before it and still
+                // reads the service; one registered before runs after it and
+                // does not. Never skipped by the deadline ([Step]).
+                row.steps.add(Step({ withdraw() }, withdrawal = true))
                 refresh(id)
             }
         }
-        if (inactive) {
+        if (registered == null) {
             Report.line("rutis: row ${row.name} is not active: service $name is not provided")
             return {}
         }
-        return {
-            synchronized(lock) {
-                val existing = services[id]
-                if (existing != null && existing.row == row.key && existing.value === value) {
-                    services.remove(id)
-                    row.provided.remove(id)
-                    refresh(id)
-                }
-            }
-        }
+        return withdraw
     }
 
     /** Shares the service `id` an application's own plugin provides: announced once rutis offers `services`; `lock` is held. */
@@ -444,7 +491,8 @@ class RuntimeState(plugins: List<Plugin>, private val open: Boolean = false) {
     }
 
     /** Whether the service `name` is there for an application's own plugin; `lock` is held. */
-    private fun available(name: String): Boolean = services.containsKey(name) || far[name]?.methods != null || hosts.containsKey(name)
+    private fun available(name: String): Boolean =
+        services[name]?.takeUnless { it.unloading } != null || far[name]?.methods != null || hosts.containsKey(name)
 
     /**
      * Installs an application's own plugins once rutis greeted: offers
@@ -644,15 +692,17 @@ class RuntimeState(plugins: List<Plugin>, private val open: Boolean = false) {
         val row = synchronized(lock) {
             val row = rows.remove(key) ?: return Unloaded(true, null)
             EventsRuntime.forgetListeners(this, row)
-            // Withdrawals first: rutis hears them before the plugin goes away.
+            // From here on no other row sees what this one provides; it still
+            // does, until each withdrawal's place on the unload stack comes
+            // (as Rust's read_binding_as). rutis hears the withdrawals now,
+            // before the row is gone from it.
             for (id in row.provided.toList()) {
                 val existing = services[id]
                 if (existing != null && existing.row == key) {
-                    services.remove(id)
+                    existing.unloading = true
                     refresh(id)
                 }
             }
-            row.provided.clear()
             val ids = row.announced.toMutableList()
             for (service in row.exports.keys) ids.add(row.id(service))
             for (id in ids) {
@@ -665,59 +715,120 @@ class RuntimeState(plugins: List<Plugin>, private val open: Boolean = false) {
             row.announced.clear()
             row
         }
-        // rutis answers the withdrawals of its services before it cleans up
-        // (an application's own plugin), within the deadline.
-        val withdrawals = synchronized(lock) {
-            withdrawing.removeAll { it.isDone }
-            ArrayList(withdrawing)
-        }
-        if (withdrawals.isNotEmpty()) {
-            val wait = deadlineNanos?.let { ((it - System.nanoTime()) / 1_000_000).coerceAtLeast(0) } ?: shutdownMillis
-            withTimeoutOrNull(wait) { withdrawals.forEach { it.await() } }
-        }
-        // The row's coroutines are cancelled; its running listeners waited
-        // for, at most the shutdown deadline (§7.1); then its cleanups run,
-        // latest first.
-        row.job.cancel()
         fun leftMillis(): Long? = deadlineNanos?.let { ((it - System.nanoTime()) / 1_000_000).coerceAtLeast(0) }
-        val budget = leftMillis() ?: shutdownMillis
-        val listened = if (deadlineNanos == null) {
-            row.listening.await(budget)
-        } else {
-            withTimeoutOrNull(budget) {
-                runInterruptible(Dispatchers.IO) { row.listening.await(budget) }
-            } ?: false
-        }
-        var gaveUp = !listened
-        if (!listened) {
-            Report.line("rutis: listeners of row ${row.name} still running after ${Shutdown.shown(budget)}s; unloading anyway")
-        }
-        val joinBudget = leftMillis() ?: budget
-        if (joinBudget > 0) withTimeoutOrNull(joinBudget) { row.job.cancelAndJoin() }
+        // What a wait before the stack may take has its own cap, the shutdown
+        // budget (§7.1) — not the caller's deadline: a caller with a large
+        // budget cannot make one wait run for it, and a caller with a small
+        // one cancels the row from outside (`dispose`'s `withTimeoutOrNull`),
+        // which the `finally` below turns into the same withdrawals having
+        // run.
+        val waitBudget = shutdownMillis
         var failure: Throwable? = null
-        for (cleanup in row.cleanups.asReversed()) {
-            val left = leftMillis()
-            if (deadlineNanos != null && left == 0L) {
+        var gaveUp = false
+        var gaveUpCleanups = false
+        fun noteGaveUp() {
+            if (!gaveUpCleanups) {
                 Report.line("rutis: gave up the cleanups of row ${row.name}")
-                gaveUp = true
-                break
+                gaveUpCleanups = true
             }
-            try {
-                val done = if (deadlineNanos == null) {
-                    withContext(CallChain.element(row.chain)) { cleanup() }
-                    true
-                } else {
-                    withTimeoutOrNull(left!!) {
-                        withContext(CallChain.element(row.chain)) { cleanup() }
-                    } != null
+            gaveUp = true
+        }
+        fun failing(e: Throwable) {
+            val had = failure
+            if (had == null) failure = e else had.addSuppressed(e)
+        }
+        // Taken before the waits: once the row left `rows`, nothing can join
+        // its stack any more (a task providing or registering a cleanup finds
+        // it gone), so the waits cannot add to it.
+        val steps = synchronized(lock) { ArrayList(row.steps).also { row.steps.clear() } }.asReversed()
+        var next = 0
+        // Everything that suspends is inside the protection, the waits before
+        // the stack included: this coroutine ends either at the deadline or
+        // cancelled from outside (`dispose` bounds a whole row with its own
+        // timeout, which can land on any suspension point — a listener still
+        // running, a row's task still joining), and the withdrawals must run
+        // in every case: one skipped keeps the service registered and the
+        // name taken for the row's next load.
+        try {
+            // rutis answers the withdrawals of its services before it cleans
+            // up (an application's own plugin), within the deadline.
+            val withdrawals = synchronized(lock) {
+                withdrawing.removeAll { it.isDone }
+                ArrayList(withdrawing)
+            }
+            if (withdrawals.isNotEmpty()) {
+                withTimeoutOrNull(waitBudget) { withdrawals.forEach { it.await() } }
+            }
+            // The row's coroutines are cancelled; its running listeners waited
+            // for, at most the shutdown deadline (§7.1); then its cleanups run,
+            // latest first.
+            row.job.cancel()
+            val budget = waitBudget
+            val listened = if (deadlineNanos == null) {
+                row.listening.await(budget)
+            } else {
+                withTimeoutOrNull(budget) {
+                    runInterruptible(Dispatchers.IO) { row.listening.await(budget) }
+                } ?: false
+            }
+            gaveUp = !listened
+            if (!listened) {
+                Report.line("rutis: listeners of row ${row.name} still running after ${Shutdown.shown(budget)}s; unloading anyway")
+            }
+            val joinBudget = waitBudget
+            if (joinBudget > 0) withTimeoutOrNull(joinBudget) { row.job.cancelAndJoin() }
+            while (next < steps.size) {
+                val step = steps[next]
+                if (step.withdrawal) {
+                    // No deadline applies: a withdrawal does not suspend, and
+                    // skipping it would leave the service registered and its
+                    // name taken (see Step). Run even when the cleanups ran
+                    // out of time, at its place in the stack.
+                    try {
+                        step.run()
+                    } catch (e: Throwable) {
+                        failing(e)
+                    }
+                    next++
+                    continue
                 }
-                if (!done) {
-                    Report.line("rutis: gave up the cleanups of row ${row.name}")
-                    gaveUp = true
-                    break
+                val left = leftMillis()
+                if (deadlineNanos != null && left == 0L) {
+                    noteGaveUp()
+                    next++
+                    continue
                 }
-            } catch (e: Throwable) {
-                if (failure == null) failure = e else failure.addSuppressed(e)
+                try {
+                    val done = if (deadlineNanos == null) {
+                        withContext(CallChain.element(row.chain)) { step.run() }
+                        true
+                    } else {
+                        withTimeoutOrNull(left!!) {
+                            withContext(CallChain.element(row.chain)) { step.run() }
+                        } != null
+                    }
+                    if (!done) noteGaveUp()
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    // The caller is going away: the withdrawals below still
+                    // run (in the `finally`), so the row leaves nothing
+                    // registered behind.
+                    throw e
+                } catch (e: Throwable) {
+                    failing(e)
+                }
+                next++
+            }
+        } finally {
+            withContext(NonCancellable) {
+                for (i in next until steps.size) {
+                    val step = steps[i]
+                    if (!step.withdrawal) continue
+                    try {
+                        step.run()
+                    } catch (e: Throwable) {
+                        failing(e)
+                    }
+                }
             }
         }
         return Unloaded(!gaveUp, failure)
@@ -733,7 +844,7 @@ class RuntimeState(plugins: List<Plugin>, private val open: Boolean = false) {
     /** Registers a cleanup if `row` is still the loaded row with `key`. */
     internal fun addCleanup(row: Row, cleanup: suspend () -> Unit): Boolean = synchronized(lock) {
         if (rows[row.key] !== row) return false
-        row.cleanups.add(cleanup)
+        row.steps.add(Step(cleanup))
         true
     }
 

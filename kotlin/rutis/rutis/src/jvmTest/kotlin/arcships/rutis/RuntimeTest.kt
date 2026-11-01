@@ -144,7 +144,7 @@ class RuntimeTest {
             val stale = late!!
             stale.provide("hello", Hello("late"))
             stale.effect { lateCleanupRan = true }
-            assertTrue(stale.row.cleanups.isEmpty(), "the unloaded row registered a cleanup")
+            assertTrue(stale.row.steps.isEmpty(), "the unloaded row registered a cleanup")
             val again = first.load()
             assertEquals("row Kim", again.service("hello").call("greet", "Kim"))
         }

@@ -4,6 +4,7 @@
 //! process and record their cleanups.
 
 use std::io::{BufRead, BufReader};
+use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -145,6 +146,9 @@ pub struct Host {
     /// The runtime processes seen: in process groups of their own, they
     /// are killed with the host when the test fails.
     pub runtimes: Vec<i32>,
+    /// What a failure of this host adds: what the test knows and the host's
+    /// output does not ([`Host::note`]).
+    notes: Vec<String>,
 }
 
 impl Host {
@@ -273,11 +277,19 @@ impl Host {
             stdout_ended,
             seen: Vec::new(),
             runtimes: Vec::new(),
+            notes: Vec::new(),
         }
     }
 
     pub fn pid(&self) -> i32 {
         self.child.id() as i32
+    }
+
+    /// What every failure of this host adds to its message: something the
+    /// test knows and the host's own output does not, such as the Bun that
+    /// ran (`bun 1.4.2`), set before the waits that could fail.
+    pub fn note(&mut self, note: impl Into<String>) {
+        self.notes.push(note.into());
     }
 
     /// Read lines until one satisfies `want`; what it returns.
@@ -375,10 +387,26 @@ impl Host {
     }
 
     pub fn fail(&mut self, what: &str) -> ! {
+        // How it ended, when it did: a closed channel is usually that, and
+        // the rest of the message says nothing of it (#1020). A host still
+        // running is killed below, and that is no status to report.
+        let ended = self.child.try_wait().ok().flatten();
         kill_all(self.pid(), &self.runtimes);
         let _ = self.child.wait();
         let stderr = self.stderr.recv_timeout(scaled(GUARD)).unwrap_or_default();
-        panic!("{what}; output: {:#?}; stderr: {stderr}", self.seen);
+        let host = match ended {
+            Some(status) => match (status.code(), status.signal()) {
+                (Some(code), _) => format!("exited with exit status: {code}"),
+                (None, Some(signal)) => format!("exited with signal: {signal}"),
+                _ => format!("{status:?}"),
+            },
+            None => "still running".to_owned(),
+        };
+        let notes: String = self.notes.iter().map(|note| format!("; {note}")).collect();
+        panic!(
+            "{what}{notes}; host: {host}; output: {:#?}; stderr: {stderr}",
+            self.seen
+        );
     }
 }
 

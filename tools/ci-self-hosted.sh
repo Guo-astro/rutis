@@ -13,9 +13,10 @@
 #          emptied above RUTIS_CI_TARGET_MAX_GB; and limits CARGO_BUILD_JOBS
 #          and RUST_TEST_THREADS to the machine's share of this instance
 #          (RUTIS_CI_JOBS overrides it); GOCACHE, this instance's own;
-#          RUTIS_TEST_TIME_SCALE when the workflow passes one (the Linux
-#          runners: their containers share a loaded host), which lengthens
-#          the tests' hang guards (crates/rutis-test-support)
+#          RUTIS_TEST_TIME_SCALE when the workflow passes one (every
+#          self-hosted Linux and macOS runner: their instances share a
+#          loaded machine), which lengthens the tests' hang guards
+#          (crates/rutis-test-support, docs/ci.md §10)
 #   end    ends what this job left running and empties the scenario
 #          directory; after a failed job (JOB_STATUS=failure), empties the
 #          instance's Go build cache
@@ -187,7 +188,7 @@ if [ "$phase" = start ]; then
     # files from under another instance's build.
     echo "GOCACHE=$cache/go-build"
     # The tests' hang guards, lengthened on a loaded machine; a real hang
-    # still fails, only later (docs/ci.md §11).
+    # still fails, only later (docs/ci.md §10).
     [ -z "${RUTIS_TEST_TIME_SCALE:-}" ] || echo "RUTIS_TEST_TIME_SCALE=$RUTIS_TEST_TIME_SCALE"
   } >> "$GITHUB_ENV"
   [ -z "${RUTIS_TEST_TIME_SCALE:-}" ] || echo "test hang guards scaled by $RUTIS_TEST_TIME_SCALE"

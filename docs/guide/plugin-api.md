@@ -36,9 +36,9 @@ TypeScript / JavaScript 插件（`@arcships/rutis`）、Python 插件（`rutis`�
 
 一个跨过会话的错误被再次抛出时，Node、Bun、Python 和 Go 都带着它完整的错误图（cause、`AggregateError` 的子错误）再跨一次，不限于聚合的情形：Node 解码出的是真正的 `Error` 对象，重新编码时自然带上整个图，Python 和 Go 的 `encode_error` / `encodeError` 把 `RemoteError` 的图拼进去（节点追加、引用偏移）以保持一致。
 
-清理按注册的相反顺序运行：`apply` 返回的清理函数最先，然后是 `ctx.effect` 注册的。Node 运行时上，Cordis 按这个顺序同时开始它们，异步的清理不等前一个完成。
+清理与服务撤回在同一个栈里，卸载时按注册的相反顺序一条一条运行：`apply` 返回的清理最先，然后是 `ctx.effect` 与 `ctx.provide` 登记的（先登记的后运行），撤回在自己的位置上发生。所以 `provide` 之后登记的清理读得到这一行自己提供的服务，之前登记的读不到；卸载一开始别的行就读不到它。这一段六种语言相同（[卸载顺序](../design-unload-order-2026-11-01.md)）。清理里再登记清理被拒绝，并写一行 `rutis: row <行> is not active: cleanup is not registered`（Node：`plugin <插件>`）。
 
-Go 里：`ctx.Use(name, &target)` 把服务绑定到函数字段的结构体（或 `*advanced.Service`）；`ctx.Provide(name, value)`；`ctx.Effect(func(context.Context) error)`；`ctx.Go(task)` 起一个卸载时停下的 goroutine。`*rutis.Ctx` 是插件卸载时取消的 `context.Context`。
+Go 里：`ctx.Use(name, &target)` 把服务绑定到函数字段的结构体、接口（本进程的提供方，对象实现了它时给的是对象本身）、`any`（同上）或 `*advanced.Service`；`ctx.Provide(name, value)`；`ctx.Effect(func(context.Context) error)`；`ctx.Go(task)` 起一个卸载时停下的 goroutine。`*rutis.Ctx` 是插件卸载时取消的 `context.Context`。
 
 Kotlin 里：`ctx.use<I>(name)` 经 `@RutisClient` 接口 `I` 使用服务（同进程提供者实现了 `I` 时就是对象本身）；`ctx.provide(name, obj)` 的 `obj` 是 `@RutisService` 类的实例，方法表由 KSP 处理器在编译期生成；`ctx.effect { }`；`ctx` 是插件卸载时取消的协程作用域，`ctx.launch { }` 起的协程卸载时取消并等待。收到的错误是 `RutisException`，按 `name` 匹配。
 
@@ -1232,7 +1232,7 @@ fn mount(at: &Ctx, definition: &Definition) -> Result {
 
 ### TypeScript 与 Bun 的测试工具
 
-`@arcships/rutis/testing`，Bun 里同一个。插件运行在真实的运行时里（`@arcships/rutis-runtime`，Bun 下 `@arcships/rutis-bun`），由真实的宿主管理（`rutis-host test`，见 [rutis-host](rutis-host.md)）：宿主检查配置并补上默认值、按注入的服务门控、分发事件，插件与测试之间的值按跨进程的规则传递。每个测试进程第一次 `load` 时起一个宿主和运行时，之后的用例共用它们，用例之间只卸载行。测试的 `on` 和发出，是同一个运行时里插件旁边的一个测试插件的；测试的每个服务是那里单独的一行 `rutis-test/<名字>`。测试给的服务 rutis 里已经有了（例如宿主提供的），只让给它的那次 `load` 失败，文字是那一行的状态，如 `rutis-test/llm: llm is already provided by the host`；宿主照常服务之后的测试。需要：
+`@arcships/rutis/testing`，Bun 里同一个。插件运行在真实的运行时里（`@arcships/rutis-runtime`，Bun 下 `@arcships/rutis-bun`），由真实的宿主管理（`rutis-host test`，见 [rutis-host](rutis-host.md)）：宿主检查配置并补上默认值、按注入的服务门控、分发事件，插件与测试之间的值按跨进程的规则传递。每个测试进程第一次 `load` 时起一个宿主和运行时，之后的用例共用它们，用例之间只卸载行；那个测试如果在这之前就结束了（超时了），这次启动放弃，宿主停下，下一次 `load` 重新起一个。测试的 `on` 和发出，是同一个运行时里插件旁边的一个测试插件的；测试的每个服务是那里单独的一行 `rutis-test/<名字>`。测试给的服务 rutis 里已经有了（例如宿主提供的），只让给它的那次 `load` 失败，文字是那一行的状态，如 `rutis-test/llm: llm is already provided by the host`；宿主照常服务之后的测试。需要：
 
 - `@arcships/rutis-runtime`（Bun 下 `@arcships/rutis-bun`）与 `@arcships/rutis-host` 作为开发依赖（`rutis-host new` 生成的项目已经有），或 `RUTIS_HOST` 指向一个 `rutis-host`；
 - 插件是它那个模块的默认导出：测试工具让运行时按文件加载它。在测试文件里直接 `definePlugin` 的插件不能加载，报 `load needs a plugin that its module exports as default`。测试的替身收到的插件定义是例外，见下。

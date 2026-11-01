@@ -238,9 +238,9 @@ When a row unloads (the host sends `rows.unload`, or the runtime reports `rows.e
 
 1. The host withdraws the row's entries from the table (and sends `events.elsewhere`) when it sends `rows.unload` or receives `rows.ended`; a runtime that sends `events.off` for them as well is harmless. `rows.ended` is handled in frame order with the session's `events.*` operations (it only changes tables too, §4.1): an `events.on` sent before it enters the table first and leaves with the row, and an `events.dispatch` sent after it no longer reaches the row.
 2. The runtime stops admitting invocations for the row at once: an `events.call` arriving afterwards fails with the withdrawn error (§5.3).
-3. Provides are withdrawn (as in 0.12).
+3. The provided services stop being visible to the row's **other** readers from here: another row gets `service <name> is not available` rather than a stale answer. Deleting the entry, and the row no longer counting the name as its own, both happen at step 5, when that withdrawal's own entry in the stack runs ([unload order](design-unload-order-2026-11-01.en.md) D1, D2). When the host hears these services withdrawn does not change: still at this step, before `rows.unload` is answered.
 4. Running listener invocations of the row get the cancellation signal (Go: the context; Python: task cancellation; JavaScript: the row's `ctx.signal` aborts; Rust: the fiber's stop, as for its other tasks) and are waited for, at most `RUTIS_SHUTDOWN_TIMEOUT` (default 10 s; the host's own shutdown deadline for Rust plugins). Past it the runtime writes `rutis: listeners of row <row> still running after <s>s; unloading anyway`, abandons them, and continues.
-5. Cleanups run in reverse order, then `rows.unload` is answered.
+5. The row's unload stack runs in reverse: cleanups and the withdrawals of step 3 mixed together, one entry at a time, each withdrawal in its place (a cleanup registered after `provide` still reads the service; one registered before does not, as with Rust's `drain_effects`). Then `rows.unload` is answered.
 
 An invocation that was already sent when its entry was withdrawn fails once, with the withdrawn error or the transport error; it is never retried.
 

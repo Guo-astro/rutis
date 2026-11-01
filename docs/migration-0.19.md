@@ -428,7 +428,7 @@ rutis 自己提供的两个服务改了名，放到 `rutis/` 下，与 rutis 自
 还在要旧名的插件一直等。`rutis-host run` 的行状态与 `rutis-host check` 是这样（`maker` 要 `loader`，`relay` 要 `sessions`）：
 
 ```text
-maker: waiting for loader (`loader` is the Rust service rutis_loader::loader::Loader, which is not exported: add #[rutis::service] to its impl)
+maker: waiting for loader (no row provides it)
 relay: waiting for sessions (no row provides it)
 ```
 
@@ -443,4 +443,10 @@ relay (file:///…/relay.mjs): cannot run: nothing provides sessions
   sessions: add a row that provides it
 ```
 
-`maker` 那一行说的 `add #[rutis::service]` 不适用：把名字改成 `rutis/loader` 即可。
+把 `maker` 的名字改成 `rutis/loader` 即可。0.19.3 的 `maker` 一行说的是加标注，不适用（加载器把自己的 Rust 句柄 `Loader` 放进上下文，名字碰巧与要的 `loader` 相同）：
+
+```text
+maker: waiting for loader (`loader` is the Rust service rutis_loader::loader::Loader, which is not exported: add #[rutis::service] to its impl)
+```
+
+0.20 起 rutis 自己插件提供的句柄不再当成没标注的服务（#996），这一行与 `relay` 一样是 `(no row provides it)`。

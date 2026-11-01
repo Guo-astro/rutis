@@ -172,6 +172,15 @@ export default definePlugin({
 })
 "#;
 
+/// Asks for `loader`, the name the loader service had before 0.19.3 (#996).
+const JS_OLD_LOADER: &str = r#"
+import { definePlugin } from 'PLUGIN'
+export default definePlugin({
+  inject: ['loader'],
+  apply(ctx) {},
+})
+"#;
+
 const JS_NOTES: &str = r#"
 import { definePlugin } from 'PLUGIN'
 export default definePlugin({
@@ -239,6 +248,7 @@ async fn fixture() -> Fixture {
         ("js_calendar", JS_CALENDAR),
         ("js_notes", JS_NOTES),
         ("js_hidden", JS_HIDDEN),
+        ("js_old_loader", JS_OLD_LOADER),
         ("js_sneak", JS_SNEAK),
         ("js_peek", JS_PEEK),
     ] {
@@ -475,14 +485,64 @@ async fn waiting_for_an_unmarked_rust_service_says_how_to_serve_it() {
         )
         .await;
     assert_eq!(waits.len(), 1, "{waits:?}");
-    assert!(
-        matches!(
-            &waits[0].reason,
-            WaitReason::Explained(why)
-                if why.starts_with("`hidden` is the Rust service")
-                    && why.ends_with("add #[rutis::service] to its impl")
-        ),
+    // The whole line, as the design's "What developers see" writes it: the
+    // type path is the one Rust gives the type.
+    assert_eq!(
+        rutis_loader::status::describe_waits(&waits, &|_| None),
+        format!(
+            "waiting for hidden (`hidden` is the Rust service {}, which is not exported: add #[rutis::service] to its impl)",
+            std::any::type_name::<Hidden>()
+        )
+    );
+    fixture.root.shutdown().await.unwrap();
+}
+
+/// A row asking for `loader`, the loader service's name before 0.19.3, waits
+/// for a name nothing provides: the loader's own handle is no service to
+/// mark, and the line does not say to add `#[rutis::service]` (#996).
+#[tokio::test(flavor = "multi_thread")]
+async fn waiting_for_the_old_loader_name_does_not_talk_about_marking_a_type() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
+    let fixture = fixture().await;
+    let rows = vec![fixture.js("maker", "js_old_loader")];
+    fixture.loader.reconcile(layer(rows), None).await.unwrap();
+    let entry = || {
+        fixture
+            .loader
+            .entries()
+            .into_iter()
+            .find(|entry| entry.id == "maker")
+            .unwrap()
+    };
+    // As for `hidden`: the row may first wait for its runtime (`node`).
+    let waits_for_loader =
+        |waits: &[Wait]| !waits.is_empty() && waits.iter().all(|wait| wait.service == "loader");
+    let waits = Guard(HANG_GUARD * 3)
+        .eventually_with(
+            || Some(fixture.loader.waits(&entry())).filter(|waits| waits_for_loader(waits)),
+            "maker to wait for loader",
+            || {
+                format!(
+                    "{:?}, waiting for {:?}",
+                    entry(),
+                    fixture.loader.waits(&entry())
+                )
+            },
+        )
+        .await;
+    assert_eq!(waits.len(), 1, "{waits:?}");
+    assert_eq!(
+        waits[0].reason,
+        WaitReason::NoProvider { like: None },
         "{waits:?}"
+    );
+    // What `rutis-host run` prints for the row (the migration guide has this
+    // line); `rutis-host check` says `cannot run: nothing provides loader`.
+    assert_eq!(
+        rutis_loader::status::describe_waits(&waits, &|_| None),
+        "waiting for loader (no row provides it)"
     );
     fixture.root.shutdown().await.unwrap();
 }

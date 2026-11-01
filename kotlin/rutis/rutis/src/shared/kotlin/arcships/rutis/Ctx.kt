@@ -75,7 +75,11 @@ class Ctx internal constructor(private val rt: RuntimeState, internal val row: R
     /** The service `name` through `type`, or null when nothing provides it now; `verb` names the caller in errors. */
     private fun <I : Any> client(name: String, type: Class<I>, verb: String): I? {
         val id = row.id(name)
-        val (local, host) = synchronized(rt.lock) { rt.services[id] to rt.hosts[id] }
+        // Rust's read_binding_as, where a provider out of Active hides what
+        // it provides from every reader but its own subtree.
+        val (local, host) = synchronized(rt.lock) {
+            rt.services[id]?.takeIf { !it.unloading || it.row == row.key } to rt.hosts[id]
+        }
         // One this process provides is the object itself, whether or not it
         // has a proxy: a provider's own interface needs no `@RutisClient`.
         if (local != null && type.isInstance(local.value)) return type.cast(local.value)

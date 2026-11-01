@@ -63,11 +63,16 @@ export class Client {
     this.#session.receive(message)
   }
   // Connect on `channel` and greet; rejects when the channel or the
-  // handshake fails.
-  static async connect(channel: string, options: ConstructorParameters<typeof Client>[1]): Promise<Client> {
-    const client = new Client(channel, options)
+  // handshake fails, and ends the channel where `signal` aborts.
+  static async connect(channel: string, options: ConstructorParameters<typeof Client>[1] & { signal?: AbortSignal }): Promise<Client> {
+    const { signal, ...rest } = options
+    const client = new Client(channel, rest)
+    const abandon = () => client.#port.postMessage({ abort: true })
+    if (signal?.aborted) abandon()
+    else signal?.addEventListener('abort', abandon, { once: true })
     try { await client.#session.ready; return client }
     catch (error) { client.#port.postMessage({ abort: true }); await client.#exited; throw error }
+    finally { signal?.removeEventListener('abort', abandon) }
   }
   get session() { return this.#session }
   call(target: string, method: string, args: unknown) { return this.#session.invoke(target, method, args) }

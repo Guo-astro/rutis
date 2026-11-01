@@ -27,7 +27,7 @@ fn js(body: &str) -> String {
         .canonicalize()
         .unwrap();
     format!(
-        "import {{ definePlugin }} from '{}'\nimport {{ writeFileSync }} from 'node:fs'\nexport default definePlugin({body})\n",
+        "import {{ definePlugin }} from '{}'\nimport {{ existsSync, writeFileSync }} from 'node:fs'\nexport default definePlugin({body})\n",
         file_url(&sdk)
     )
 }
@@ -59,20 +59,33 @@ def apply(ctx, config):
     asyncio.get_running_loop().create_task(boom(config["row"]))
 "#;
 
-/// Ends its process once it runs: `process.exit(config.code)`. Not in a
-/// tail position: Bun leaves out the frame of a tail call, and with it the
+/// Ends its process once it runs and the test says so (the file
+/// `config.quit` exists): `process.exit(config.code)`. Not in a tail
+/// position: Bun leaves out the frame of a tail call, and with it the
 /// plugin's file.
-const QUITTER_JS: &str =
-    "{ apply(ctx, config) { setTimeout(() => { process.exit(config.code) }, 300) } }";
+const QUITTER_JS: &str = r#"{ apply(ctx, config) {
+  const quit = () => {
+    if (existsSync(config.quit)) { process.exit(config.code) }
+    else { setTimeout(quit, 20) }
+  }
+  setTimeout(quit, 20)
+} }"#;
 
-/// The same from a thread of its own: `os._exit(config["code"])`.
+/// The same from a thread of its own, once the test says so:
+/// `os._exit(config["code"])`.
 const QUITTER_PY: &str = r#"
 import os
 import threading
+import time
 
 
 def apply(ctx, config):
-    threading.Timer(0.3, lambda: os._exit(config["code"])).start()
+    def quit():
+        while not os.path.exists(config["quit"]):
+            time.sleep(0.02)
+        os._exit(config["code"])
+
+    threading.Thread(target=quit, daemon=True).start()
 "#;
 
 /// A project in `dir` with the Node, Python and Bun runtimes, the plugins
@@ -148,6 +161,17 @@ fn wait_for_files(host: &mut Host, files: &[PathBuf]) {
         }
         std::thread::sleep(Duration::from_millis(50));
     }
+}
+
+/// What `bun --version` says: which Bun ran, for a failure's message.
+fn bun_version() -> String {
+    std::process::Command::new("bun")
+        .arg("--version")
+        .output()
+        .ok()
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .map(|version| version.trim().to_owned())
+        .unwrap_or_else(|| "unknown".into())
 }
 
 /// As under `rutis-host dev` (which sets `RUTIS_DEV=1` for its runtimes):
@@ -252,38 +276,55 @@ fn where_rows_are_not_traced_an_unhandled_error_is_reported() {
 /// A plugin ending its process ends it, in every runtime; the line before
 /// says which row called it, here from the plugin's file on the stack
 /// (outside `dev`, from a timer, from a thread).
+///
+/// They end it once the test says so (`config.quit`), not a moment after
+/// they apply: a runtime whose process ends while the host still starts its
+/// runtimes is one that "did not start", and `rutis-host` exits 1 then
+/// (#1020). A wait of a moment was a race with just how long the runtimes
+/// before it take to start, which on a loaded machine is longer.
 #[test]
 fn a_plugin_ending_its_process_is_named() {
     let dir = tempfile::tempdir().unwrap();
+    // Written once every row runs: see above.
+    let quit = dir.path().join("quit");
+    let go = quit.to_str().unwrap();
     let rows = vec![
         json!({ "id": "node-witness", "name": "./witness.mjs" }),
-        json!({ "id": "node-quitter", "name": "./quitter.mjs", "config": { "code": 7 } }),
+        json!({ "id": "node-quitter", "name": "./quitter.mjs", "config": { "code": 7, "quit": go } }),
         json!({ "id": "py-witness", "name": "py:witness" }),
-        json!({ "id": "py-quitter", "name": "py:quitter", "config": { "code": 5 } }),
+        json!({ "id": "py-quitter", "name": "py:quitter", "config": { "code": 5, "quit": go } }),
         json!({ "id": "bun-witness", "name": "bun:./witness.mjs" }),
-        json!({ "id": "bun-quitter", "name": "bun:./quitter.mjs", "config": { "code": 6 } }),
+        json!({ "id": "bun-quitter", "name": "bun:./quitter.mjs", "config": { "code": 6, "quit": go } }),
     ];
     let file = project(dir.path(), rows);
     let mut host = Host::start(&["run", file.to_str().unwrap()], dir.path());
-    let mut waiting = Vec::new();
-    while waiting.len() < 3 {
-        let row = host.wait_line(|line| {
-            ["node-quitter", "py-quitter", "bun-quitter"]
-                .into_iter()
-                .find(|row| line.starts_with(&format!("{row}: waiting for runtime")))
-        });
-        if !waiting.contains(&row) {
-            waiting.push(row);
-        }
-    }
-    signal(&host, libc::SIGTERM, false);
-    let (_status, stderr, _output) = host.exit();
-    let context = format!("stderr: {stderr}");
-    for line in [
+    // Which Bun ran, said by every failure below, the waits here first: they
+    // are where a machine's speed shows (#1020).
+    let bun = bun_version();
+    host.note(format!("bun {bun}"));
+    // Every row running: the host started, so a runtime ending from here on
+    // leaves its rows waiting instead of failing the start.
+    host.wait_lines(&[
+        "node-witness: running",
+        "node-quitter: running",
+        "py-witness: running",
+        "py-quitter: running",
+        "bun-witness: running",
+        "bun-quitter: running",
+    ]);
+    std::fs::write(&quit, "").unwrap();
+    // What each runtime says before its process goes.
+    let said = [
         "runtime node: row node-quitter called process.exit(7)",
         "runtime py: row py-quitter called os._exit(5)",
         "runtime bun: row bun-quitter called process.exit(6)",
-    ] {
+    ];
+    host.wait_lines(&said);
+    signal(&host, libc::SIGTERM, false);
+    let (status, stderr, _output) = host.exit();
+    let context = format!("bun {bun}; status {status:?}; stderr: {stderr}");
+    for line in said {
         assert!(stderr.contains(line), "{line}: {context}");
     }
+    assert_eq!(status.code(), Some(0), "{context}");
 }

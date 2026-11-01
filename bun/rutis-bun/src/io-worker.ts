@@ -22,10 +22,13 @@ function channelEnded() {
 process.on('uncaughtExceptionMonitor', (error: Error) => send({ closed: error.message }))
 
 let channel: Channel | undefined
+// An abort that arrives before the channel is open closes it once it is
+// (the main thread gave the connection up meanwhile).
+let aborted = false
 // What ends the channel when nothing failed (main.ts knows this text).
 let failure = 'the host disconnected'
 port.on('message', (message: any) => {
-  if (message.abort) { channel?.close(message.reason); return }
+  if (message.abort) { aborted = true; channel?.close(message.reason); return }
   if (message.end) { channel?.end(); return }
   if (message.frame) channel?.send(message.frame)
 })
@@ -47,7 +50,10 @@ try {
     message: text => { if (early) early.push(text); else forward(text) },
     closed: reason => { if (reason) failure = reason; channelEnded(); ended() },
   }, token)
-  send({ ready: true })
+  // Given up meanwhile (an abort before the channel was open): the channel
+  // ends now, and the far end sees this side go.
+  if (aborted) channel.close()
+  else send({ ready: true })
   for (const text of early) forward(text)
   early = undefined
   await done
