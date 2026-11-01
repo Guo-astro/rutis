@@ -506,12 +506,17 @@ async fn a_peer_that_stopped_reading_holds_no_listener_registered_here() {
 /// The limit a host turns on (#1005) reaches the session it makes: a peer
 /// that stops reading ends that session, past the bytes the host allows to
 /// wait for it, and the peer's kernel sees it end.
+///
+/// Nothing here depends on when the writer thread happens to run: the limit
+/// is far above what mounting a session sends (checked below), a send is
+/// known to be waiting before the frames pile up, and the frames after it
+/// are several times the limit.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_session_limit_the_host_turns_on_ends_a_peer_that_stopped_reading() {
     let (a, b) = (kernel("a"), kernel("b"));
     let (near, far, stalled) = stalled_pair();
-    a.plugin(Session::new(near).options(SessionOptions {
-        outbound_limit: Some(2048),
+    let at_a = a.plugin(Session::new(near).options(SessionOptions {
+        outbound_limit: Some(LIMIT),
     }));
     let at_b = b.plugin(Session::new(far));
     a.listen::<Args>()
@@ -519,17 +524,44 @@ async fn a_session_limit_the_host_turns_on_ends_a_peer_that_stopped_reading() {
         .on(|_: Arc<Args>, _: Call<Args>| async { Ok(Some(ArgValue(json!("from a").into()))) })
         .unwrap();
     assert_eq!(heard(&b, "t/before").await, json!("from a"));
+    // Mounting a session sends some 4 KiB in 26 frames. The limit is well
+    // above that, so only what waits for the stopped far end can reach it;
+    // a guard, should the mount grow.
+    let mounted = stalled.pushed();
+    assert!(
+        mounted * 4 < LIMIT,
+        "mounting sent {mounted} bytes, near the limit of {LIMIT}"
+    );
 
-    // b's process stops. The listeners registered here are announced to it
-    // as they register; past the host's 2 KiB, the session ends rather than
-    // queueing for it.
+    // b's process stops. This frame is the one the writer takes and waits
+    // with; the listeners registered after it are announced to b as they
+    // register, and pile up behind it.
     stalled.stop();
-    for n in 0..LISTENERS {
+    a.listen::<Args>()
+        .name("t/stopped")
+        .on(|_: Arc<Args>, _: Call<Args>| async { Ok(Some(ArgValue(json!("from a").into()))) })
+        .unwrap();
+    stalled.held(Duration::from_secs(20));
+    // Past the limit the session ends rather than queueing for it, within
+    // the frames this test makes and before the far end reads again.
+    let mut ended = false;
+    for n in 0..OVER {
         a.listen::<Args>()
             .name(format!("t/during-{n}"))
             .on(|_: Arc<Args>, _: Call<Args>| async { Ok(Some(ArgValue(json!("from a").into()))) })
             .unwrap();
+        ended = matches!(
+            at_a.state().state,
+            FiberState::Disposed | FiberState::Failed
+        );
+        if ended {
+            break;
+        }
     }
+    assert!(
+        ended,
+        "the session did not end within {OVER} listeners past the limit"
+    );
     disposed(&at_b).await;
     // The send the writer waited in ended with the channel, as a channel's
     // close wakes one: no thread is left waiting on this far end.
@@ -538,6 +570,15 @@ async fn a_session_limit_the_host_turns_on_ends_a_peer_that_stopped_reading() {
         "the writer's send ended with the channel"
     );
 }
+
+/// The limit the test above sets: well above what mounting a session sends
+/// (some 4 KiB), and several times below what its listeners send once the
+/// far end stopped reading (some 300 bytes each).
+const LIMIT: usize = 32 * 1024;
+
+/// How many listeners it registers once the far end stopped reading: some
+/// 300 KiB, several times `LIMIT`, so the session must end within them.
+const OVER: usize = 1000;
 
 /// A memory pair whose first end stops sending when told to, as a far end
 /// whose process is suspended reads nothing: a send waits for it to read
@@ -572,8 +613,12 @@ struct State {
     stopped: bool,
     /// The channel closed: what waits returns instead.
     closed: bool,
+    /// A send waits now.
+    waiting: bool,
     /// Sends that waited and then left the wait.
     returned: usize,
+    /// Bytes the far end took, or is to take.
+    pushed: usize,
 }
 
 impl Stalled {
@@ -592,6 +637,23 @@ impl Stalled {
     fn close(&self) {
         self.state.lock().unwrap().closed = true;
         self.changed.notify_all();
+    }
+
+    /// Bytes sent so far, waiting ones included.
+    fn pushed(&self) -> usize {
+        self.state.lock().unwrap().pushed
+    }
+
+    /// Wait `timeout` for a send to wait on the far end.
+    fn held(&self, timeout: Duration) {
+        let deadline = std::time::Instant::now() + timeout;
+        let mut state = self.state.lock().unwrap();
+        while !state.waiting {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            assert!(!left.is_zero(), "the writer is not waiting on the far end");
+            let (next, _) = self.changed.wait_timeout(state, left).unwrap();
+            state = next;
+        }
     }
 
     /// Wait `timeout` for a send that stopped waiting to return.
@@ -619,11 +681,16 @@ struct StalledSender {
 impl rutis_bridge::channel::Sender for StalledSender {
     fn send(&mut self, message: &[u8]) -> Result<(), ChannelError> {
         let mut state = self.stalled.state.lock().unwrap();
+        state.pushed += message.len();
         if state.stopped {
+            state.waiting = true;
+            self.stalled.changed.notify_all();
             while state.stopped && !state.closed {
                 state = self.stalled.changed.wait(state).unwrap();
             }
+            state.waiting = false;
             state.returned += 1;
+            self.stalled.changed.notify_all();
             if state.closed {
                 drop(state);
                 return Err(ChannelError::Closed {
