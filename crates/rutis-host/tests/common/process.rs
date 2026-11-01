@@ -4,6 +4,7 @@
 //! process and record their cleanups.
 
 use std::io::{BufRead, BufReader};
+use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -375,10 +376,25 @@ impl Host {
     }
 
     pub fn fail(&mut self, what: &str) -> ! {
+        // How it ended, when it did: a closed channel is usually that, and
+        // the rest of the message says nothing of it (#1020). A host still
+        // running is killed below, and that is no status to report.
+        let ended = self.child.try_wait().ok().flatten();
         kill_all(self.pid(), &self.runtimes);
         let _ = self.child.wait();
         let stderr = self.stderr.recv_timeout(scaled(GUARD)).unwrap_or_default();
-        panic!("{what}; output: {:#?}; stderr: {stderr}", self.seen);
+        let host = match ended {
+            Some(status) => match (status.code(), status.signal()) {
+                (Some(code), _) => format!("exited with exit status: {code}"),
+                (None, Some(signal)) => format!("exited with signal: {signal}"),
+                _ => format!("{status:?}"),
+            },
+            None => "still running".to_owned(),
+        };
+        panic!(
+            "{what}; host: {host}; output: {:#?}; stderr: {stderr}",
+            self.seen
+        );
     }
 }
 
