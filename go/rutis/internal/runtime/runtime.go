@@ -919,9 +919,13 @@ type Ctx struct {
 
 // Use binds the service `name`, which the plugin or its row injects (in
 // Inject, in its row's `inject`, or by providing it now), to `target`: a
-// pointer to a struct of function fields, or to a *Service. A required
-// service that went is an error; an Optional one is read with Get (as
-// Rust's `require` reads only the injects).
+// pointer to a struct of function fields, or to a *Service. When the
+// provider is in this process, also a pointer to an interface its object
+// implements, to that object's type, or to `any`: the object itself. An
+// `any` target for a provider in another process takes its *Service; a
+// non-empty interface it cannot fill. A required service that went is an
+// error; an Optional one is read with Get (as Rust's `require` reads only
+// the injects).
 //
 // A field calls the service method its name maps to (Ask -> ask; a
 // `rutis:"name"` tag overrides). The struct may list only the methods it
