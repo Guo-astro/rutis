@@ -64,6 +64,14 @@ type providedService struct {
 	row   string
 	value any
 	shape *Shape
+	// This registration's identity: the withdrawal on the unload stack
+	// deletes the entry only while it is still this one (a plugin may
+	// provide the name again after calling the returned function). A `new`
+	// each time: zero-sized values (`&struct{}{}`) may share an address.
+	token *int
+	// Its row is unloading: no other row sees it any more, its own row
+	// still does until the withdrawal on its unload stack runs.
+	unloading bool
 }
 
 type slot struct {
@@ -104,10 +112,13 @@ type row struct {
 	exports map[string]map[string]string
 	isolate map[string]string
 	// The row's own `inject` (rows.load): names its plugin may use too.
-	inject   []string
-	ctx      context.Context
-	cancel   context.CancelFunc
-	cleanups []func(context.Context) error
+	inject []string
+	ctx    context.Context
+	cancel context.CancelFunc
+	// The unload stack: cleanups and the withdrawals of the services the row
+	// provides, in the order they were registered, run in reverse when the
+	// row unloads (as Rust's effects: a withdrawal is an effect too).
+	steps    []func(context.Context) error
 	provided []string
 	tasks    sync.WaitGroup
 	// The listener invocations running or queued: unload waits for them,
@@ -307,7 +318,7 @@ func (rt *runtimeState) refresh(id string) {
 	}
 	var current any
 	present := false
-	if provided, ok := rt.services[id]; ok && provided.row == s.row {
+	if provided, ok := rt.services[id]; ok && provided.row == s.row && !provided.unloading {
 		current, present = provided.value, true
 	}
 	if present == s.present && same(current, s.object) {
@@ -415,7 +426,7 @@ func (rt *runtimeState) provide(r *row, name string, value any) func() {
 		rt.mu.Unlock()
 		panic(fmt.Sprintf("%s is already provided by %s", name, owner))
 	}
-	rt.services[id] = providedService{row: r.key, value: value, shape: shape}
+	rt.services[id] = providedService{row: r.key, value: value, shape: shape, token: new(int)}
 	r.provided = append(r.provided, id)
 	// Not declared: announced, with its exported methods.
 	if rt.slots[id] == nil && !strings.Contains(name, "#") {
@@ -423,23 +434,39 @@ func (rt *runtimeState) provide(r *row, name string, value any) func() {
 		r.announced = append(r.announced, id)
 	}
 	rt.refresh(id)
+	token := rt.services[id].token
+	// The withdrawal is an entry of the unload stack, as an effect is: a
+	// cleanup registered after this one runs before it and still reads the
+	// service; one registered before runs after it and does not.
+	r.steps = append(r.steps, func(context.Context) error {
+		rt.withdrawService(r, id, token)
+		return nil
+	})
 	rt.mu.Unlock()
 	rt.flush()
 	return func() {
-		rt.mu.Lock()
-		if existing, ok := rt.services[id]; ok && existing.row == r.key && same(existing.value, value) {
-			delete(rt.services, id)
-			for i, provided := range r.provided {
-				if provided == id {
-					r.provided = append(r.provided[:i], r.provided[i+1:]...)
-					break
-				}
-			}
-			rt.refresh(id)
-		}
-		rt.mu.Unlock()
-		rt.flush()
+		rt.withdrawService(r, id, token)
 	}
+}
+
+// withdrawService removes the service registration `token` put in `id`, and the
+// name from the row's `provided`: called by the returned function, or by
+// the registration's own entry on the unload stack. Whichever comes first
+// does it; the other finds it gone.
+func (rt *runtimeState) withdrawService(r *row, id string, token *int) {
+	rt.mu.Lock()
+	if existing, ok := rt.services[id]; ok && existing.row == r.key && existing.token == token {
+		delete(rt.services, id)
+		for i, provided := range r.provided {
+			if provided == id {
+				r.provided = append(r.provided[:i], r.provided[i+1:]...)
+				break
+			}
+		}
+		rt.refresh(id)
+	}
+	rt.mu.Unlock()
+	rt.flush()
 }
 
 // rowName is the name of the row `key` (rt.mu held), as the configuration
@@ -550,14 +577,18 @@ func (rt *runtimeState) unload(ctx context.Context, key string) error {
 	}
 	delete(rt.rows, key)
 	rt.forgetListeners(r)
-	// Withdrawals first: rutis hears them before the plugin goes away.
+	// From here on no other row sees what this one provides; it still does,
+	// until each withdrawal's place on the unload stack comes (as Rust's
+	// read_binding_as: `provider.state() != Active` hides it from others,
+	// its own subtree reads it until the record is drained). The host hears
+	// the withdrawals now, before the row is gone from it.
 	for _, id := range append([]string{}, r.provided...) {
 		if existing, ok := rt.services[id]; ok && existing.row == key {
-			delete(rt.services, id)
+			existing.unloading = true
+			rt.services[id] = existing
 			rt.refresh(id)
 		}
 	}
-	r.provided = nil
 	ids := append([]string{}, r.announced...)
 	for name := range r.exports {
 		ids = append(ids, r.id(name))
@@ -569,18 +600,23 @@ func (rt *runtimeState) unload(ctx context.Context, key string) error {
 		}
 	}
 	r.announced = nil
+	steps := r.steps
+	r.steps = nil
 	rt.mu.Unlock()
 	rt.flush()
 	r.cancel()
 	waitListeners(r)
 	r.tasks.Wait()
 	var errs []error
-	for i := len(r.cleanups) - 1; i >= 0; i-- {
-		cleanup := r.cleanups[i]
-		if _, err := peer.Protect(func() (any, error) { return nil, cleanup(ctx) }); err != nil {
+	for i := len(steps) - 1; i >= 0; i-- {
+		step := steps[i]
+		if _, err := peer.Protect(func() (any, error) { return nil, step(ctx) }); err != nil {
 			errs = append(errs, err)
 		}
 	}
+	rt.mu.Lock()
+	r.provided = nil
+	rt.mu.Unlock()
 	return errors.Join(errs...)
 }
 
@@ -992,6 +1028,12 @@ func (c *Ctx) service(name string) *Service {
 	id := c.row.id(name)
 	c.rt.mu.Lock()
 	local, isLocal := c.rt.services[id]
+	// One its row provides and is unloading is its own row's still, and no
+	// other row's: as Rust's read_binding_as, where a provider out of
+	// Active hides what it provides from every reader but its own subtree.
+	if isLocal && local.unloading && local.row != c.row.key {
+		isLocal = false
+	}
 	methods, isHost := c.rt.hosts[id]
 	c.rt.mu.Unlock()
 	switch {
@@ -1018,7 +1060,18 @@ func (c *Ctx) Provide(name string, value any) func() {
 
 // Effect registers a cleanup, run when the plugin unloads (latest first).
 func (c *Ctx) Effect(cleanup func(context.Context) error) {
-	c.row.cleanups = append(c.row.cleanups, cleanup)
+	c.rt.mu.Lock()
+	active := c.rt.rows[c.row.key] == c.row
+	if active {
+		c.row.steps = append(c.row.steps, cleanup)
+	}
+	name := c.row.name
+	c.rt.mu.Unlock()
+	if !active {
+		// As Rust's InactiveEffect: the stack it would join is the one the
+		// unload took, so it would never run.
+		fmt.Fprintf(rowOutput, "rutis: row %s is not active: cleanup is not registered\n", name)
+	}
 }
 
 // Go runs `task` on a goroutine of its own: a panic is recovered and

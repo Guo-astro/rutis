@@ -36,7 +36,7 @@ TypeScript / JavaScript 插件（`@arcships/rutis`）、Python 插件（`rutis`�
 
 一个跨过会话的错误被再次抛出时，Node、Bun、Python 和 Go 都带着它完整的错误图（cause、`AggregateError` 的子错误）再跨一次，不限于聚合的情形：Node 解码出的是真正的 `Error` 对象，重新编码时自然带上整个图，Python 和 Go 的 `encode_error` / `encodeError` 把 `RemoteError` 的图拼进去（节点追加、引用偏移）以保持一致。
 
-清理按注册的相反顺序运行：`apply` 返回的清理函数最先，然后是 `ctx.effect` 注册的。Node 运行时上，Cordis 按这个顺序同时开始它们，异步的清理不等前一个完成。
+清理与服务撤回在同一个栈里，卸载时按注册的相反顺序一条一条运行：`apply` 返回的清理最先，然后是 `ctx.effect` 与 `ctx.provide` 登记的（先登记的后运行），撤回在自己的位置上发生。所以 `provide` 之后登记的清理读得到这一行自己提供的服务，之前登记的读不到；卸载一开始别的行就读不到它。这一段六种语言相同（[卸载顺序](../design-unload-order-2026-11-01.md)）。清理里再登记清理被拒绝，并写一行 `rutis: row <行> is not active: cleanup is not registered`（Node：`plugin <插件>`）。
 
 Go 里：`ctx.Use(name, &target)` 把服务绑定到函数字段的结构体、接口（本进程的提供方，对象实现了它时给的是对象本身）、`any`（同上）或 `*advanced.Service`；`ctx.Provide(name, value)`；`ctx.Effect(func(context.Context) error)`；`ctx.Go(task)` 起一个卸载时停下的 goroutine。`*rutis.Ctx` 是插件卸载时取消的 `context.Context`。
 

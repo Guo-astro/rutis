@@ -78,7 +78,16 @@ extension Rutis {
 
         /// Runs `cleanup` when the plugin unloads, latest first.
         public func effect(_ cleanup: @escaping () async throws -> Void) {
-            runtime.lock.withLock { row.cleanups.append(cleanup) }
+            // As Rust's InactiveEffect: once the row is unloading, the stack
+            // it would join is the one the unload took, so it would never run.
+            let active = runtime.lock.withLock { () -> Bool in
+                guard runtime.rows[row.key] === row else { return false }
+                row.steps.append(cleanup)
+                return true
+            }
+            if !active {
+                row.settings.log("rutis: row \(row.name) is not active: cleanup is not registered")
+            }
         }
 
         /// Runs `task` in a Task of its own, with the call chain: its error

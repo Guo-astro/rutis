@@ -238,9 +238,9 @@ Cordis 的 `events.dispatch(type, args)`（五个方法底下的原语，返回�
 
 1. 宿主在发出 `rows.unload` 或收到 `rows.ended` 时，把这一行的条目撤出监听器表（并发 `events.elsewhere`）；运行时再为它们发 `events.off` 也无妨。`rows.ended` 与同一会话的 `events.*` 按帧的顺序处理（它也只改表，§4.1）：在它之前发出的 `events.on` 先进表、再随这一行撤下，在它之后发出的 `events.dispatch` 不再送达这一行。
 2. 运行时立即不再接受这一行的调用：之后到达的 `events.call` 以已撤下的错误失败（§5.3）。
-3. 撤下提供的服务（同 0.12）。
+3. 提供的服务从这里起对这一行的**其他**读者不可见：别的行拿到的是 `service <name> is not available`，不看到旧答案。删表与“这一行自己也不再把它算作自己提供的”都在第 5 步里那一条撤回跑到的时候（[卸载顺序](design-unload-order-2026-11-01.md) D1、D2）。宿主收到这些服务撤回的时刻不变：仍是这一步，在 `rows.unload` 的回复之前。
 4. 这一行正在运行的监听器调用收到取消信号（Go：context；Python：任务取消；JavaScript：这一行的 `ctx.signal` 被中止；Rust：fiber 的停止，与它的其他任务相同），并被等待，最多 `RUTIS_SHUTDOWN_TIMEOUT`（默认 10 秒；Rust 插件用宿主自己的关闭截止时间）。超过时运行时写 `rutis: listeners of row <row> still running after <s>s; unloading anyway`，放弃它们，继续。
-5. 按逆序执行清理，然后回复 `rows.unload`。
+5. 按逆序执行这一行的卸载栈：清理与第 3 步说的那些撤回混在一起，一条一条运行，撤回在自己的位置上发生（`provide` 之后登记的清理读得到自己提供的服务，之前登记的不行，与 Rust 的 `drain_effects` 相同）。跑完回复 `rows.unload`。
 
 条目被撤下时已经发出的调用失败一次，错误为已撤下的错误或传输错误；从不重试。
 
