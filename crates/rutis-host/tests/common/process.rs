@@ -146,6 +146,9 @@ pub struct Host {
     /// The runtime processes seen: in process groups of their own, they
     /// are killed with the host when the test fails.
     pub runtimes: Vec<i32>,
+    /// What a failure of this host adds: what the test knows and the host's
+    /// output does not ([`Host::note`]).
+    notes: Vec<String>,
 }
 
 impl Host {
@@ -274,11 +277,19 @@ impl Host {
             stdout_ended,
             seen: Vec::new(),
             runtimes: Vec::new(),
+            notes: Vec::new(),
         }
     }
 
     pub fn pid(&self) -> i32 {
         self.child.id() as i32
+    }
+
+    /// What every failure of this host adds to its message: something the
+    /// test knows and the host's own output does not, such as the Bun that
+    /// ran (`bun 1.4.2`), set before the waits that could fail.
+    pub fn note(&mut self, note: impl Into<String>) {
+        self.notes.push(note.into());
     }
 
     /// Read lines until one satisfies `want`; what it returns.
@@ -391,8 +402,9 @@ impl Host {
             },
             None => "still running".to_owned(),
         };
+        let notes: String = self.notes.iter().map(|note| format!("; {note}")).collect();
         panic!(
-            "{what}; host: {host}; output: {:#?}; stderr: {stderr}",
+            "{what}{notes}; host: {host}; output: {:#?}; stderr: {stderr}",
             self.seen
         );
     }

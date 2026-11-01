@@ -298,6 +298,10 @@ fn a_plugin_ending_its_process_is_named() {
     ];
     let file = project(dir.path(), rows);
     let mut host = Host::start(&["run", file.to_str().unwrap()], dir.path());
+    // Which Bun ran, said by every failure below, the waits here first: they
+    // are where a machine's speed shows (#1020).
+    let bun = bun_version();
+    host.note(format!("bun {bun}"));
     // Every row running: the host started, so a runtime ending from here on
     // leaves its rows waiting instead of failing the start.
     host.wait_lines(&[
@@ -318,7 +322,7 @@ fn a_plugin_ending_its_process_is_named() {
     host.wait_lines(&said);
     signal(&host, libc::SIGTERM, false);
     let (status, stderr, _output) = host.exit();
-    let context = format!("bun {}; status {status:?}; stderr: {stderr}", bun_version());
+    let context = format!("bun {bun}; status {status:?}; stderr: {stderr}");
     for line in said {
         assert!(stderr.contains(line), "{line}: {context}");
     }
