@@ -1096,7 +1096,7 @@ impl Calls {
 }
 
 /// A call recorded in the wait graph ([`waits::forward`]) that leaves it
-/// unless it was sent.
+/// unless it was queued for the far end.
 struct Unsent(Option<(String, String)>);
 impl Unsent {
     fn sent(mut self) {
@@ -1181,6 +1181,28 @@ impl Endpoint {
         self.expected = Some(peer);
         self
     }
+}
+
+/// What a session allows beyond the protocol, for the host that makes it:
+/// the limits it turns on (#694 rule 3). A session limits nothing by
+/// default.
+///
+/// Sending never waits for the far end whatever this says (#1005): a peer
+/// that stopped reading (a suspended process, a slow link) holds neither
+/// the thread that made the frame nor the other sessions of the process.
+/// What it does not read waits for it, in the session's queue.
+#[derive(Clone, Debug, Default)]
+pub struct SessionOptions {
+    /// The most a far end may fall behind before its session ends: bytes of
+    /// frames made for it and not yet written. `None`, the default, is no
+    /// bound: what waits for a far end that stopped reading is written when
+    /// it reads again, or goes with the session when the far end is gone.
+    /// A host that would rather not keep that backlog ends such a session
+    /// at `Some(bytes)`: it closes with `the far end is not reading: <n>
+    /// messages, <bytes> bytes waited for it` (a
+    /// [`Error::Transport`](crate::session::Error::Transport), code
+    /// `peer-gone`), and what is queued goes with it.
+    pub outbound_limit: Option<usize>,
 }
 
 /// What the far end said of itself in its handshake.
@@ -1319,13 +1341,25 @@ impl Drop for SessionState {
 /// suspended process, a slow link) holds neither the thread that made the
 /// frame nor the other sessions sharing this process, which is what
 /// happened before when the frame was written on the caller's thread. What
-/// waits is bounded: a far end [`OUTBOUND_LIMIT`] bytes behind ends the
-/// session rather than having the process queue for it without end.
-#[derive(Default)]
+/// it does not read waits for it here; a host that bounds that backlog
+/// ends such a session instead ([`SessionOptions::outbound_limit`]).
 struct Outbound {
     queued: Mutex<Queued>,
     /// The writer thread waits here for a frame, or for the end.
     ready: Condvar,
+    /// What may wait for the far end before the session ends; `None` is no
+    /// bound.
+    limit: Option<usize>,
+}
+
+impl Outbound {
+    fn new(limit: Option<usize>) -> Self {
+        Self {
+            queued: Mutex::new(Queued::default()),
+            ready: Condvar::new(),
+            limit,
+        }
+    }
 }
 
 #[derive(Default)]
@@ -1337,24 +1371,23 @@ struct Queued {
     closed: bool,
 }
 
-/// How much may wait for a far end before the session ends: 8 MiB, or one
-/// frame more whatever its size (a frame may be as large as the channel
-/// takes).
-const OUTBOUND_LIMIT: usize = 8 * 1024 * 1024;
-
 impl Outbound {
     /// Queue `bytes` to go, in order, under the lock that orders frames and
-    /// serializes encoding with the session's teardown.
+    /// serializes encoding with the session's teardown. Over the limit a
+    /// host set, the session ends instead; one frame waits however large it
+    /// is, and without a limit so does everything else.
     fn push(&self, queued: &mut Queued, bytes: Vec<u8>) -> Result<(), Error> {
         if queued.closed {
             return Err(transport("the session ended"));
         }
-        if !queued.frames.is_empty() && queued.bytes + bytes.len() > OUTBOUND_LIMIT {
-            return Err(transport(format!(
-                "the far end is not reading: {} messages, {} bytes waited for it",
-                queued.frames.len(),
-                queued.bytes
-            )));
+        if let Some(limit) = self.limit {
+            if !queued.frames.is_empty() && queued.bytes + bytes.len() > limit {
+                return Err(transport(format!(
+                    "the far end is not reading: {} messages, {} bytes waited for it",
+                    queued.frames.len(),
+                    queued.bytes
+                )));
+            }
         }
         queued.bytes += bytes.len();
         queued.frames.push_back(bytes);
@@ -1426,10 +1459,22 @@ impl Connection {
     /// expects one); otherwise [`Connection::ready`] fails with
     /// [`Error::Handshake`]. When the channel ends, the session closes with
     /// `peer disconnected` (a normal end) or the channel's reason.
+    ///
+    /// A session with no [`SessionOptions`], as this one: nothing waits for
+    /// a far end beyond what it reads.
     pub fn open(
         channel: Channel,
         dispatch: Arc<dyn Dispatch>,
         endpoint: Endpoint,
+    ) -> Result<Self, Error> {
+        Self::open_with(channel, dispatch, endpoint, SessionOptions::default())
+    }
+    /// [`Connection::open`], with the limits the host turns on.
+    pub(crate) fn open_with(
+        channel: Channel,
+        dispatch: Arc<dyn Dispatch>,
+        endpoint: Endpoint,
+        options: SessionOptions,
     ) -> Result<Self, Error> {
         let Channel {
             mut sender,
@@ -1451,7 +1496,7 @@ impl Connection {
             local_prefix,
             remote_prefix: std::sync::OnceLock::new(),
             greeting: std::sync::OnceLock::new(),
-            outbound: Arc::default(),
+            outbound: Arc::new(Outbound::new(options.outbound_limit)),
             max_message,
             closer,
             calls: Mutex::new(Calls::default()),
@@ -1690,10 +1735,15 @@ impl Connection {
         )
         .await
     }
-    /// [`Connection::invoke_async`], its frame written before this returns:
-    /// calls started one after another reach the far end in that order,
-    /// whenever their replies are awaited. Dropping the returned future
-    /// cancels the call (`cancel`), as dropping `invoke_async`'s does.
+    /// [`Connection::invoke_async`] whose frame is queued before this
+    /// returns: calls started one after another reach the far end in that
+    /// order, whenever their replies are awaited. The frame is queued, not
+    /// written: the session's writer thread writes it in its turn, after
+    /// whatever was made before it, without waiting for the far end
+    /// (#1005). A frame still queued when the session ends goes with it,
+    /// and a write that fails ends the session, failing the call with why.
+    /// Dropping the returned future cancels the call (`cancel`), as
+    /// dropping `invoke_async`'s does.
     pub fn invoke_started(
         &self,
         target: &str,
@@ -1720,9 +1770,9 @@ impl Connection {
         })
     }
     /// [`Connection::invoke_started`], settled: a future the far end answers
-    /// with is awaited too. Dropped before that, the call is cancelled,
-    /// also after the far end answered with its future (it is still
-    /// running it).
+    /// with is awaited too. Queued as `invoke_started`'s frame is. Dropped
+    /// before that, the call is cancelled, also after the far end answered
+    /// with its future (it is still running it).
     pub fn invoke_settled(
         &self,
         target: &str,

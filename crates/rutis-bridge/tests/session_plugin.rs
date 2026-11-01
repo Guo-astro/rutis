@@ -13,7 +13,7 @@ use rutis_bridge::channel::{Channel, ChannelError};
 use rutis_bridge::events::{ArgValue, Args};
 use rutis_bridge::session::{
     call_service, host_key, Dispatch, Endpoint, Error as SessionError, Handshake, HostDispatch,
-    Reply, Value, ENDPOINT_PROTOCOL,
+    Reply, SessionOptions, Value, ENDPOINT_PROTOCOL,
 };
 use rutis_bridge::{
     catalog_key, session_key, Installed, LocalId, PeerId, PluginCatalog, Session, StaticCatalog,
@@ -510,6 +510,45 @@ async fn a_peer_that_stopped_reading_holds_no_listener_registered_here() {
     )
     .await
     .unwrap();
+}
+
+/// The limit a host turns on (#1005) reaches the session it makes: a peer
+/// that stops reading ends that session, past the bytes the host allows to
+/// wait for it, and the peer's kernel sees it end.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_limit_the_host_turns_on_ends_a_peer_that_stopped_reading() {
+    let (a, b) = (kernel("a"), kernel("b"));
+    let (near, far) = rutis_bridge::memory::pair();
+    let stalled = Arc::new(Stalled::default());
+    let near = Channel {
+        sender: Box::new(StalledSender {
+            inner: near.sender,
+            stalled: stalled.clone(),
+        }),
+        receiver: near.receiver,
+        closer: near.closer,
+    };
+    a.plugin(Session::new(near).options(SessionOptions {
+        outbound_limit: Some(2048),
+    }));
+    let at_b = b.plugin(Session::new(far));
+    a.listen::<Args>()
+        .name("t/before")
+        .on(|_: Arc<Args>, _: Call<Args>| async { Ok(Some(ArgValue(json!("from a").into()))) })
+        .unwrap();
+    assert_eq!(heard(&b, "t/before").await, json!("from a"));
+
+    // b's process stops. The listeners registered here are announced to it
+    // as they register; past the host's 2 KiB, the session ends rather than
+    // queueing for it.
+    stalled.stop();
+    for n in 0..LISTENERS {
+        a.listen::<Args>()
+            .name(format!("t/during-{n}"))
+            .on(|_: Arc<Args>, _: Call<Args>| async { Ok(Some(ArgValue(json!("from a").into()))) })
+            .unwrap();
+    }
+    disposed(&at_b).await;
 }
 
 /// Whether sends go out: a far end whose process is stopped reads nothing,

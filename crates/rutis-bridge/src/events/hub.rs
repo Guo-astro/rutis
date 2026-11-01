@@ -1106,7 +1106,7 @@ impl RemoteListener for WireEntry {
             Some(source) => connection.forward(source, build),
             None => build(),
         };
-        // Sent now, so calls started one after another arrive in that
+        // Queued now, so calls started one after another arrive in that
         // order (an `emit`'s calls, §5.5); only the answer is awaited.
         let send = || {
             request.and_then(|request| {

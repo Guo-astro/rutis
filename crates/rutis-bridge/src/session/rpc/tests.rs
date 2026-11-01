@@ -574,47 +574,187 @@ async fn frames_to_a_peer_that_stopped_reading_wait_in_order_and_hold_nobody() {
     }
 }
 
-/// #1005: what waits for a far end that never reads is bounded: the
-/// session ends, saying the far end is not reading, rather than queueing
-/// for it without end or holding whoever sends.
+/// #1005: by default nothing bounds what waits for a far end that never
+/// reads — more than the 8 MiB a fixed limit would have held — and it all
+/// goes out, in order, once the far end reads again.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_far_end_that_never_reads_ends_the_session_instead_of_queueing_without_end() {
-    let (peer, mut remote) = pair();
+async fn a_far_end_that_never_reads_keeps_its_frames_by_default() {
+    let (local, mut remote) = far_pair();
+    let (local, halt) = holding(local);
+    let peer = Connection::open(local, Arc::new(NoExports), rust()).unwrap();
     send(&mut remote, hello(ENDPOINT_PROTOCOL));
     peer.ready().await.unwrap();
-    // More than the memory channel buffers (64), each large enough to
-    // pass the queue's limit soon after it fills.
-    let chunk = Value::Data(json!("x".repeat(1 << 18)));
+    assert!(
+        matches!(read(&mut remote), Frame::Hello { .. }),
+        "the greeting"
+    );
+    halt.hold();
+    // Past what a fixed 8 MiB limit would hold: the writer waits on the far
+    // end, so every frame is in the session's queue.
+    const COUNT: usize = 40;
+    let chunk = Value::Data(json!("x".repeat(256 << 10)));
     let mut started = Vec::new();
-    let mut error = None;
-    for _ in 0..200 {
-        match peer.invoke_started("", "echo", Value::List(vec![chunk.clone()])) {
-            Ok(future) => started.push(future),
-            Err(reason) => {
-                error = Some(reason);
-                break;
-            }
+    for _ in 0..COUNT {
+        let call = peer
+            .invoke_started("", "echo", Value::List(vec![chunk.clone()]))
+            .expect("nothing bounds the queue by default");
+        started.push(call);
+    }
+    assert!(peer.close_reason().is_none(), "the session goes on");
+    // The far end reads again: every frame, in order.
+    halt.go();
+    for n in 1..=COUNT {
+        let Frame::Invoke { id, .. } = read(&mut remote) else {
+            panic!("invoke expected")
+        };
+        assert_eq!(id, format!("rust:{n}"), "frame {n} out of order");
+    }
+    drop(started);
+}
+
+/// #1005: the limit a host turns on ends the session, saying how far the
+/// far end is behind, rather than queueing for it beyond it; what was
+/// queued goes with the session.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_session_limit_the_host_turns_on_ends_a_far_end_that_never_reads() {
+    /// The frame the `n`th call of this test is written as.
+    fn frame(n: u64) -> Frame {
+        Frame::Invoke {
+            id: format!("rust:{n}"),
+            path: vec![],
+            target: "".into(),
+            method: "echo".into(),
+            args: WireValue::List(Vec::new()),
+            sync: false,
         }
     }
-    let error = error.expect("the queue for a far end that never reads is bounded");
+    let size = serde_json::to_vec(&frame(1)).unwrap().len();
+    // What §7 of `docs/design-remote-session-2026-10-28.md` prints, word for
+    // word: two frames of 101 bytes.
+    assert_eq!(size, 101, "the frame the design doc counts");
+    let (local, mut remote) = far_pair();
+    let (local, halt) = holding(local);
+    let peer = Connection::open_with(
+        local,
+        Arc::new(NoExports),
+        rust(),
+        SessionOptions {
+            outbound_limit: Some(2 * size),
+        },
+    )
+    .unwrap();
+    send(&mut remote, hello(ENDPOINT_PROTOCOL));
+    peer.ready().await.unwrap();
     assert!(
-        error.to_string().contains("not reading"),
-        "says why the session ended: {error}"
+        matches!(read(&mut remote), Frame::Hello { .. }),
+        "the greeting"
+    );
+    halt.hold();
+    // The writer takes the first frame and waits on the far end with it;
+    // two wait behind it, and the fourth is over the limit.
+    let first = peer.invoke_started("", "echo", Value::List(Vec::new()));
+    halt.held();
+    let second = peer
+        .invoke_started("", "echo", Value::List(Vec::new()))
+        .expect("within the limit");
+    let third = peer
+        .invoke_started("", "echo", Value::List(Vec::new()))
+        .expect("within the limit");
+    let error = match peer.invoke_started("", "echo", Value::List(Vec::new())) {
+        Ok(_) => panic!("over the limit"),
+        Err(error) => error,
+    };
+    assert_eq!(
+        error.to_string(),
+        format!(
+            "the far end is not reading: 2 messages, {} bytes waited for it",
+            2 * size
+        )
+    );
+    assert_eq!(
+        error.code(),
+        Some(crate::session::code::PEER_GONE),
+        "a program decides by the code"
     );
     assert!(peer.close_reason().is_some(), "the session ended");
     assert!(
-        peer.invoke_started("", "echo", Value::List(vec![]))
+        peer.invoke_started("", "echo", Value::List(Vec::new()))
             .is_err(),
         "no more calls after it"
     );
-    // The far end reads what it had, then the end.
-    let mut frames = 0;
-    let mut receiver = remote.receiver.lock().unwrap();
-    while let Ok(Some(_)) = receiver.recv() {
-        frames += 1;
+    drop((first, second, third));
+    halt.go();
+}
+
+/// A channel whose sending side waits on the test once [`Halt::hold`] is
+/// called: a far end that reads nothing, with the session's queue
+/// countable.
+fn holding(local: Channel) -> (Channel, Halt) {
+    let halt = Halt::default();
+    let channel = Channel {
+        sender: Box::new(Held {
+            inner: local.sender,
+            halt: halt.clone(),
+        }),
+        receiver: local.receiver,
+        closer: local.closer,
+    };
+    (channel, halt)
+}
+
+/// Whether a [`Held`] sender waits, and the test's side of it.
+#[derive(Clone, Default)]
+struct Halt {
+    /// Sends wait while this is set.
+    holding: Arc<AtomicBool>,
+    /// A send is waiting now.
+    stuck: Arc<AtomicBool>,
+}
+
+impl Halt {
+    /// From now on, sends wait.
+    fn hold(&self) {
+        self.holding.store(true, Ordering::SeqCst);
     }
-    assert!(frames <= 64, "the channel holds no more: {frames}");
-    drop(started);
+
+    /// Wait until a send waits on the test.
+    fn held(&self) {
+        let deadline = std::time::Instant::now() + STEP;
+        while !self.stuck.load(Ordering::SeqCst) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the writer is not waiting on the far end"
+            );
+            std::thread::yield_now();
+        }
+    }
+
+    /// Sends go again.
+    fn go(&self) {
+        self.holding.store(false, Ordering::SeqCst);
+    }
+}
+
+/// A [`Sender`] that waits while its [`Halt`] holds.
+struct Held {
+    inner: Box<dyn Sender>,
+    halt: Halt,
+}
+
+impl Sender for Held {
+    fn send(&mut self, message: &[u8]) -> Result<(), ChannelError> {
+        if self.halt.holding.load(Ordering::SeqCst) {
+            self.halt.stuck.store(true, Ordering::SeqCst);
+            while self.halt.holding.load(Ordering::SeqCst) {
+                std::thread::yield_now();
+            }
+            self.halt.stuck.store(false, Ordering::SeqCst);
+        }
+        self.inner.send(message)
+    }
+    fn max_message(&self) -> Option<usize> {
+        self.inner.max_message()
+    }
 }
 
 /// Closing does not wait for the writer: a far end that stopped reading
