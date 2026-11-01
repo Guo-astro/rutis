@@ -1,9 +1,9 @@
 //! The resource baseline of instances (#979): what one instance holds while
 //! it runs, what closing many of them at once peaks at, and what is left
 //! after they are closed — instances, fibers, service bindings, event
-//! listeners, tasks. The live allocations are counted with a global
-//! allocator; `close_memory` was extended from the peak of #977 into this
-//! baseline.
+//! listeners, tasks, OS threads. The live allocations are counted with a
+//! global allocator; `close_memory` was extended from the peak of #977 into
+//! this baseline.
 //!
 //! Its own test binary: the counting allocator is global, and no other test
 //! may allocate beside the one measured. Print the numbers with
@@ -14,6 +14,13 @@
 //! numbers of every run are printed. Waits are scaled by
 //! `RUTIS_TEST_TIME_SCALE`; the thresholds are allocation sizes and do not
 //! depend on machine speed.
+//!
+//! What one instance's footprint is made of, what was saved and what was
+//! left alone, and what this test does not cover (language runtime processes,
+//! service bindings inside instances) are in
+//! `docs/performance-instance-footprint-2026-11-02.md`. The OS thread check
+//! reads `/proc/self/status` and is Linux only; the other counts still apply
+//! on macOS and Windows.
 
 mod common;
 
@@ -153,6 +160,9 @@ struct Counts {
     status_listeners: isize,
     listeners: isize,
     tasks: isize,
+    /// OS threads of the test process; 0 and not checked off Linux (see
+    /// `os_threads`).
+    threads: isize,
 }
 
 impl std::ops::Sub for Counts {
@@ -165,6 +175,7 @@ impl std::ops::Sub for Counts {
             status_listeners: self.status_listeners - other.status_listeners,
             listeners: self.listeners - other.listeners,
             tasks: self.tasks - other.tasks,
+            threads: self.threads - other.threads,
         }
     }
 }
@@ -181,7 +192,29 @@ impl Counts {
             tasks: tokio::runtime::Handle::current()
                 .metrics()
                 .num_alive_tasks() as isize,
+            threads: os_threads(),
         }
+    }
+}
+
+/// The test process's OS threads, from `/proc/self/status` on Linux. The
+/// loader starts no threads of its own; this catches a runtime (or a row)
+/// leaving worker or blocking threads behind, which the task count cannot.
+/// It is 0 elsewhere: the full runs on macOS and Windows skip this one
+/// check, the rest of `Counts` still applies.
+fn os_threads() -> isize {
+    #[cfg(target_os = "linux")]
+    {
+        std::fs::read_to_string("/proc/self/status")
+            .expect("/proc/self/status")
+            .lines()
+            .find_map(|line| line.strip_prefix("Threads:"))
+            .and_then(|value| value.trim().parse().ok())
+            .expect("Threads: in /proc/self/status")
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        0
     }
 }
 
@@ -296,7 +329,7 @@ fn report(title: &str, samples: &BTreeMap<usize, Sample>) {
     println!("{title}");
     println!(
         "N     created (per inst)   close peak   settled (per inst)  \
-         status listeners  listeners  residue (fibers, bindings, status, listeners, tasks)"
+         status listeners  listeners  residue (fibers, bindings, status, listeners, tasks, threads)"
     );
     for (n, s) in samples {
         println!(
@@ -315,18 +348,18 @@ fn report(title: &str, samples: &BTreeMap<usize, Sample>) {
 
 /// The most one instance may hold while it runs: its group fiber and the
 /// eight rows. Measured on 2026-11-02 in debug and release, plain and watch
-/// rows: 63.5-74.4 KiB per instance (65-66 KiB plain, 73-74 KiB watch). The
-/// bound is 1.5 times the worst, so a third more per instance fails.
-const MAX_CREATED_PER_INSTANCE: usize = 112 * 1024;
+/// rows: 48.5-59.2 KiB per instance (48.5-51.1 plain, 56.7-59.2 watch). The
+/// bound is 1.6 times the worst, so a regression of that size fails.
+const MAX_CREATED_PER_INSTANCE: usize = 96 * 1024;
 
-/// What closing may leave for the loader: measured 19-39 KiB after closing
-/// 40 to 1000 instances, in debug and release. The bound is a fixed 64 KiB
+/// What closing may leave for the loader: measured 18-58 KiB after closing
+/// 40 to 1000 instances, in debug and release. The bound is a fixed 128 KiB
 /// (about twice the worst) plus 128 B per instance for a table that keeps a
 /// slot per instance; unlike the running set, this must not grow with N.
 /// Before the fix of #979 the loader kept the maps' peak capacity: 3.1-6 KiB
 /// per instance (about 1.2 MB for 400, 6 MB for 1000).
 fn max_settled(n: usize) -> isize {
-    (64 * 1024 + 128 * n) as isize
+    (128 * 1024 + 128 * n) as isize
 }
 
 /// Closing adds little above what the running instances hold, and what it

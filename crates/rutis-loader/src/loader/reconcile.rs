@@ -643,16 +643,25 @@ impl Inner {
                     }
                 }
                 Outcome::Disable => {
+                    // A row disposing itself is rare, but its future
+                    // (`set_disabled`, a whole loader operation) is large:
+                    // inlined, every row's monitor task was 1.8 KiB, about
+                    // 14 KiB for an instance of eight rows (#979). Boxed,
+                    // the resident monitor task is 256 B, and the box is
+                    // paid only when a row disposes itself.
                     let id = slot.row;
                     let loader = super::Loader {
                         inner: inner.clone(),
                     };
-                    let error = loader
-                        .set_disabled(&id, true)
-                        .await
-                        .err()
-                        .map(|e| e.to_string());
-                    inner.emit(LoaderChanged::SelfDisposed { id, error });
+                    Box::pin(async move {
+                        let error = loader
+                            .set_disabled(&id, true)
+                            .await
+                            .err()
+                            .map(|e| e.to_string());
+                        inner.emit(LoaderChanged::SelfDisposed { id, error });
+                    })
+                    .await;
                 }
             }
         });
