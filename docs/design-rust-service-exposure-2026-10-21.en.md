@@ -2,7 +2,7 @@
 
 [中文](design-rust-service-exposure-2026-10-21.md)
 
-Status: implemented (2026-10-21), #510, 0.15. Replaces the `build.rs` list as the way a Rust service reaches other languages. The list stayed in 0.15 for types whose source you cannot change (R10) and retired in 0.17 (#647): such a type is wrapped in a type of your own and marked; `rutis_bridge::build::Exports` is left writing TypeScript declarations only.
+Status: implemented (2026-10-21), #510, 0.15; revised 2026-11-01 (#996): R7 leaves out handles a plugin of rutis provides, and a "What developers see" section is added. Replaces the `build.rs` list as the way a Rust service reaches other languages. The list stayed in 0.15 for types whose source you cannot change (R10) and retired in 0.17 (#647): such a type is wrapped in a type of your own and marked; `rutis_bridge::build::Exports` is left writing TypeScript declarations only.
 
 ## 1. Goal
 
@@ -69,7 +69,45 @@ To rename it, use `#[service(name = "cal")]`. That is the only option.
 | R9 | **TypeScript declarations:** `rutis-host types <crate dir> -o services.d.ts` finds every marked type in the source and writes the same declarations as today (same generator). To refresh them on every build, write one line in `build.rs`, `rutis_bridge::build::Exports::new().typescript("services.d.ts").generate()`, with no type list. Calls themselves need no declarations. |
 | R10 | **Compatibility:** `build.rs` `.service(…)` / `.service_in(…)` keep working, for third-party types you cannot change. A type that is both marked and listed is a build error asking to remove the list entry. Hand-written `HostDispatch` keeps working.<br>**Retired (0.17, #647):** the list is removed; a type whose source you cannot change is wrapped in a type of your own, marked, its methods forwarded. Hand-written `HostDispatch` still works. |
 
-## 5. Implementation
+## 5. What developers see
+
+This changes one sentence in the status of a row that waits for a service by name. Plugin code and configuration change only to replace a name from before 0.19.3.
+
+### Plugin authors, people assembling plugins with `rutis-host`
+
+Nothing shows while the row starts. A row asking for the old name `loader` waits, and `rutis-host run` shows:
+
+```text
+maker: waiting for loader (no row provides it)
+```
+
+`rutis-host check` on the same row: `maker (./maker.ts): cannot run: nothing provides loader`, exiting with 1.
+
+A Rust service that really is unmarked still gets the advice:
+
+```text
+jh: waiting for hidden (`hidden` is the Rust service demo::Hidden, which is not exported: add #[rutis::service] to its impl)
+```
+
+| # | How it happens | Output (word for word) | How to fix it |
+| --- | --- | --- | --- |
+| 1 | The row's `inject` says `loader` (the name of `rutis/loader` before 0.19.3) and no row provides it | `maker: waiting for loader (no row provides it)` | Say `"rutis/loader"`, as in "Migrating to 0.19", its 0.19.3 section |
+| 2 | The row's `inject` says `hidden`, and a context has an unmarked `demo::Hidden` whose default name is `hidden` | `jh: waiting for hidden (`hidden` is the Rust service demo::Hidden, which is not exported: add #[rutis::service] to its impl)` | Mark its `impl` with `#[rutis::service]`, or drop it from `inject` and ask for another service |
+| 3 | The row's `inject` says `loader`, and what provides that handle is a plugin of rutis itself (the loader) | As in 1: no advice to mark a type | As in 1 |
+
+### Host owners
+
+`Loader::waits` gives `WaitReason::NoProvider` for a handle a plugin of rutis provides, not the `Explained` advice; the API and its types are unchanged, so no code changes.
+
+### People deploying
+
+No change.
+
+### New concepts
+
+None.
+
+## 6. Implementation
 
 Three parts, all inside rutis; user code only sees the one-line marker from R1.
 
@@ -79,7 +117,7 @@ Three parts, all inside rutis; user code only sees the one-line marker from R1.
 
 The value rules, error rules and `caller_row` are those of the code `build.rs` generates; the TypeScript declarations are still written by the source-reading generator, which finds the marked blocks in the crates that depend on rutis (R9).
 
-## 6. Performance
+## 7. Performance
 
 In short: calls cost about what they cost today, startup and provide costs are negligible, and builds are faster than with today's `build.rs`.
 
@@ -93,7 +131,7 @@ In short: calls cost about what they cost today, startup and provide costs are n
 | Binary size | One dispatch arm per exported method, about as today; unmarked types generate no code. |
 | Memory | One dispatcher object per provided marked service; a claim is one name per instance. |
 
-## 7. Alternatives considered
+## 8. Alternatives considered
 
 | Alternative | Why not |
 | --- | --- |
@@ -104,7 +142,7 @@ In short: calls cost about what they cost today, startup and provide costs are n
 | Mark a trait and provide it with `provide_as::<dyn Trait>` | Adds a trait and a key, more ceremony than marking the `impl`; marking the type already covers this need. |
 | Pass the name at provide time, `ctx.provide_named("calendar", v)` | Changes how Rust provides services, and the name still lives only at the provide site; the type name by default, renamed in the marker when needed, is more natural. |
 
-## 8. Acceptance
+## 9. Acceptance
 
 - A built-in Rust plugin that only adds `#[rutis::service]` and calls `provide`, with no `build.rs`, no `export_all` and no `HostDispatch` in the host, is callable by name from Node, Bun, Python and Go rows. This covers serde parameters and results, sync and async methods, `Result` errors, callbacks and `&Ctx`.
 - The same service provided in two instances: each instance's rows get their own; provided outside instances, it is available globally.
@@ -116,6 +154,6 @@ In short: calls cost about what they cost today, startup and provide costs are n
 - `rutis-host types` writes exactly the declarations today's `Exports` writes for the same type, and they pass `tsc --strict`.
 - Existing `build.rs` export examples and tests pass unchanged (`examples/rust-services`); the new example `examples/marked-services` uses the marker.
 
-## 9. Delivery
+## 10. Delivery
 
 One PR: `rutis-macros` and `rutis::service` (registry, hook, `Wire`), `rutis-bridge`'s `Exposer` and claims, rutis-loader resolving through claims and `Loader::waiting_for`, the generator finding marked blocks and the duplicate check, `rutis-host types`, tests (Node, Bun, Python and Go rows, instances, a dylib swap), docs.

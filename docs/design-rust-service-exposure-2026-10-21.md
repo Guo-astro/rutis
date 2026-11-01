@@ -2,7 +2,7 @@
 
 [English](design-rust-service-exposure-2026-10-21.en.md)
 
-状态：已实现（2026-10-21），#510，0.15。取代 `build.rs` 清单作为 Rust 服务对外的方式。清单在 0.15 保留给改不了源码的类型（R10），0.17 退休（#647）：这样的类型包一层自己的类型再标注；`rutis_bridge::build::Exports` 只留下写 TypeScript 声明。
+状态：已实现（2026-10-21），#510，0.15；2026-11-01 修订（#996）：R7 排除 rutis 自己插件提供的句柄，补「开发者看到什么」一节。取代 `build.rs` 清单作为 Rust 服务对外的方式。清单在 0.15 保留给改不了源码的类型（R10），0.17 退休（#647）：这样的类型包一层自己的类型再标注；`rutis_bridge::build::Exports` 只留下写 TypeScript 声明。
 
 ## 一、目标
 
@@ -69,7 +69,45 @@ await calendar.add({ title: 'Standup', startsAt: new Date() })
 | R9 | **TypeScript 声明：** `rutis-host types <crate 目录> -o services.d.ts` 从源码里找出全部带标注的类型，写出与今天相同的声明（同一个生成器）。想每次构建自动更新的，`build.rs` 里写一行 `rutis_bridge::build::Exports::new().typescript("services.d.ts").generate()`，不用列类型。调用本身不需要声明。 |
 | R10 | **兼容：** `build.rs` 的 `.service(…)` / `.service_in(…)` 继续可用，用于改不了源码的第三方类型。一个类型既有标注又在清单里，构建报错，提示删掉清单里那一行。手写 `HostDispatch` 继续可用。<br>**已退休（0.17，#647）：** 清单删除；改不了源码的类型包一层自己的类型，标注，逐个转发方法。手写 `HostDispatch` 照旧可用。 |
 
-## 五、怎么实现
+## 五、开发者看到什么
+
+只影响「行按名字等一个服务」时状态行里的那句话。插件代码与配置不用为它改什么，除了把 0.19.3 之前起的旧名字换掉。
+
+### 插件作者、用 `rutis-host` 组装插件的人
+
+正常时这条提示不出现（行起得来）。要旧名 `loader` 的行等不到服务时，`rutis-host run` 的状态里是：
+
+```text
+maker: waiting for loader (no row provides it)
+```
+
+`rutis-host check` 对同一行：`maker (./maker.ts): cannot run: nothing provides loader`，退出码 1。
+
+一个真的忘了标注的 Rust 服务照旧给出标注建议：
+
+```text
+jh: waiting for hidden (`hidden` is the Rust service demo::Hidden, which is not exported: add #[rutis::service] to its impl)
+```
+
+| # | 怎样引起 | 输出（逐字） | 怎样改 |
+| --- | --- | --- | --- |
+| 1 | 行的 `inject` 写 `loader`（`rutis/loader` 在 0.19.3 之前的名字），没有行提供它 | `maker: waiting for loader (no row provides it)` | 改成 `"rutis/loader"`，见《迁移到 0.19》的 0.19.3 一节 |
+| 2 | 行的 `inject` 写 `hidden`，上下文里有一个未标注的 `demo::Hidden` 会被默认命名成 `hidden` | `jh: waiting for hidden (`hidden` is the Rust service demo::Hidden, which is not exported: add #[rutis::service] to its impl)` | 给它的 `impl` 加 `#[rutis::service]`，或从 `inject` 里去掉、换别的服务 |
+| 3 | 行的 `inject` 写 `loader`，而提供这个句柄的是 rutis 自己的插件（加载器） | 同第 1 条：不给标注建议 | 同第 1 条 |
+
+### 宿主持有者
+
+`Loader::waits` 对 rutis 自己插件提供的句柄给 `WaitReason::NoProvider`，不再给 `Explained` 的标注建议；API 与返回类型不变，不需要改代码。
+
+### 部署的人
+
+看不到变化。
+
+### 新增的概念
+
+没有。
+
+## 六、怎么实现
 
 三部分，都在 rutis 里，用户代码只看到 R1 的一行标注。
 
@@ -79,7 +117,7 @@ await calendar.add({ title: 'Standup', startsAt: new Date() })
 
 值规则、错误规则、`caller_row` 与 `build.rs` 生成的完全相同；TypeScript 声明仍由读源码的生成器写出，它在依赖 rutis 的 crate 里找带标注的块（R9）。
 
-## 六、性能
+## 七、性能
 
 结论：调用的开销与今天相当；启动和提供的开销可以忽略；编译比今天的 `build.rs` 方式更快。
 
@@ -93,7 +131,7 @@ await calendar.add({ title: 'Standup', startsAt: new Date() })
 | 二进制大小 | 每个对外方法一段分发代码，与今天相当；没标注的类型不生成任何代码。 |
 | 内存 | 每个已提供的带标注服务多一个 dispatcher 对象；每个实例的认领是一个名字。 |
 
-## 七、考虑过的其他方案
+## 八、考虑过的其他方案
 
 | 方案 | 为什么不选 |
 | --- | --- |
@@ -104,7 +142,7 @@ await calendar.add({ title: 'Standup', startsAt: new Date() })
 | 在 trait 上标注，用 `provide_as::<dyn Trait>` 提供 | 多一层 trait 和键，比在 `impl` 上标注更啰嗦；直接在类型上标注已经覆盖这个需求。 |
 | 提供时传名字，`ctx.provide_named("calendar", v)` | 改了 Rust 的提供方式，而且名字仍然只在提供的地方；默认用类型名、需要时在标注里改名，更自然。 |
 
-## 八、验收
+## 九、验收
 
 - 一个内置 Rust 插件只加 `#[rutis::service]` 并 `provide`，宿主不写 `build.rs`、不调用 `export_all`、不写 `HostDispatch`，Node、Bun、Python、Go 的行都能按名字调用它的方法，覆盖 serde 参数与返回值、同步与异步方法、`Result` 错误、回调、`&Ctx`。
 - 同一个服务在两个实例里分别提供，两个实例的行各自拿到自己的那一份；在实例外提供时全局可用。
@@ -116,6 +154,6 @@ await calendar.add({ title: 'Standup', startsAt: new Date() })
 - `rutis-host types` 写出的声明与今天 `Exports` 对同一类型写出的完全相同，并通过 `tsc --strict`。
 - 现有 `build.rs` 导出的示例与测试不改也能通过（`examples/rust-services`）；新示例 `examples/marked-services` 用标注写法。
 
-## 九、实施
+## 十、实施
 
 一个 PR：`rutis-macros` 与 `rutis::service`（登记表、钩子、`Wire`）、`rutis-bridge` 的 `Exposer` 与认领、rutis-loader 按认领解析与 `Loader::waiting_for`、生成器找带标注的块与重复检查、`rutis-host types`、测试（Node、Bun、Python、Go 的行，实例，dylib 换代）、文档。
