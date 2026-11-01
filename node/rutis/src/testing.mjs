@@ -118,8 +118,12 @@ function starting() {
 // Bun's `onTestFinished`, under `bun test`. For the calls of a test
 // (hold) and the hosts it makes (host). `ended` says whether the test
 // running now has ended — `beforeEach` opens the next one — so that what a
-// test left running when it ended keeps nothing of it alive (#997).
+// test left running when it ended keeps nothing of it alive (#997). What
+// those hooks still do (unload a host, say) stays held meanwhile
+// (`flushing`): node:test cancels the tests after it when the event loop
+// empties while an `after` hook is pending.
 let ended = false
+let flushing = false
 let testEnded
 if (typeof globalThis.Bun !== 'undefined') {
   const { onTestFinished, beforeEach } = await import('bun:test')
@@ -140,18 +144,23 @@ if (typeof globalThis.Bun !== 'undefined') {
     try {
       onTestFinished(done => {
         ended = true
+        flushing = true
         const finish = typeof done === 'function' ? done : () => {}
         let result
-        try { result = fn() } catch (error) { finish(error); return }
-        if (result && typeof result.then === 'function') result.then(() => finish(), error => finish(error))
-        else finish()
+        try { result = fn() } catch (error) { flushing = false; finish(error); return }
+        if (result && typeof result.then === 'function') result.then(() => { flushing = false; finish() }, error => { flushing = false; finish(error) })
+        else { flushing = false; finish() }
       })
     } catch {}
   }
 } else if (process.env.NODE_TEST_CONTEXT || process.execArgv.includes('--test')) {
   const { after, beforeEach } = await import('node:test')
   beforeEach(() => { ended = false })
-  testEnded = fn => { after(() => { ended = true; return fn() }) }
+  testEnded = fn => after(async () => {
+    ended = true
+    flushing = true
+    try { return await fn() } finally { flushing = false }
+  })
 }
 
 // The driver, synchronously (the test waits) or not.
@@ -167,7 +176,7 @@ function hold() {
   // The test that made this call is over (it failed at its timeout, say):
   // the call keeps nothing running, and its `after` hooks ran already, so
   // nothing would release it (#997).
-  if (ended) return () => {}
+  if (ended && !flushing) return () => {}
   let holding = true
   if (out++ === 0) held?.ref()
   const release = () => {
