@@ -41,16 +41,16 @@ class Ctx internal constructor(private val rt: RuntimeState, internal val row: R
      */
     fun <I : Any> use(name: String, type: Class<I>): I {
         if (name !in row.plugin.inject) throw NotDeclaredException(name)
-        val factory = Tables.clientFactory(type)
-            ?: throw IllegalArgumentException("${type.name} has no proxy: annotate it @RutisClient and apply the rutis-ksp processor")
         val id = row.id(name)
         val (local, host) = synchronized(rt.lock) { rt.services[id] to rt.hosts[id] }
+        // One this process provides is the object itself, whether or not it
+        // has a proxy: a provider's own interface needs no `@RutisClient`.
+        if (local != null && type.isInstance(local.value)) return type.cast(local.value)
+        val factory = Tables.clientFactory(type)
+            ?: throw IllegalArgumentException("${type.name} has no proxy: annotate it @RutisClient and apply the rutis-ksp processor")
         val remote = synchronized(rt.lock) { rt.far[id] }?.takeIf { it.methods != null }
         val handle: ServiceHandle = when {
-            local != null -> {
-                if (type.isInstance(local.value)) return type.cast(local.value)
-                LocalHandle(name, local.value, local.table, local.shape?.kinds ?: local.table.methods.associateWith { "async" })
-            }
+            local != null -> LocalHandle(name, local.value, local.table, local.shape?.kinds ?: local.table.methods.associateWith { "async" })
             remote != null -> FarHandle(rt, name, remote.methods!!, remote.functions)
             host != null -> HostHandle(rt, name, "host:$id", host)
             else -> throw UnavailableException(name)
