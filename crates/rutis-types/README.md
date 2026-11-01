@@ -18,7 +18,7 @@ fn main() {
 
 ```toml
 [build-dependencies]
-rutis-types = "0.19"
+rutis-types = "0.20"
 ```
 
 Without a build script, `rutis-host types <crate dir> -o services.d.ts --python services.py` writes the same. A type with a hand-written serde implementation is declared with `.declared(path, typescript)` and `.declared_python(path, python)`. The rules are in the Rust host guide, ["Declarations"](https://github.com/arcships/rutis/blob/main/docs/guide/rust-host.en.md#declarations).

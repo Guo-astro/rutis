@@ -8,10 +8,10 @@ This is the API reference. To build a host open to plugins from the start, follo
 
 ```toml
 [dependencies]
-rutis = "0.19"
-rutis-loader = { version = "0.19", features = ["node"] }
-rutis-bridge = { version = "0.19", features = ["websocket"] }
-rutis-host = "0.19"                # connect::SpawnPlugin and languages start the local language runtimes
+rutis = "0.20"
+rutis-loader = { version = "0.20", features = ["node"] }
+rutis-bridge = { version = "0.20", features = ["websocket"] }
+rutis-host = "0.20"                # connect::SpawnPlugin and languages start the local language runtimes
 schemars = "1"                     # the config types Builtins::register decodes derive schemars::JsonSchema
 serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

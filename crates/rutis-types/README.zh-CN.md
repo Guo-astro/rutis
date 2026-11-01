@@ -18,7 +18,7 @@ fn main() {
 
 ```toml
 [build-dependencies]
-rutis-types = "0.19"
+rutis-types = "0.20"
 ```
 
 不用构建脚本时，`rutis-host types <crate 目录> -o services.d.ts --python services.py` 写出同样的内容。手写 serde 实现的类型用 `.declared(路径, TypeScript)`、`.declared_python(路径, Python)` 写出它的类型。规则见 Rust 宿主指南的[「声明」](https://github.com/arcships/rutis/blob/main/docs/guide/rust-host.md#声明)。

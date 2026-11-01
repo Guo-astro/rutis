@@ -1,0 +1,51 @@
+{
+  "format": 1,
+  "id": "edge-host",
+  "runtimes": {
+    "node": { "restart": "on-failure" },
+    "py": { "python": ".venv/bin/python", "restart": "exit" },
+    "bun": { "project": "edge", "restart": "no" },
+    "go": { "binaries": ["bin/netkit", "bin/dns"], "start": "eager", "restart": "on-failure" },
+    "swift": { "binaries": ["bin/MacKit"], "idle": 120, "restart": "exit" }
+  },
+  "listen": [
+    { "name": "public", "address": "[::]:7443", "cert": "../tls/server.pem", "key": "../tls/server.key" }
+  ],
+  "installed": {
+    "weather-plugin": { "from": "npm:weather-plugin" },
+    "py:llm_gateway": { "from": "pypi:llm-gateway" }
+  },
+  "rows": [
+    { "id": "weather", "name": "weather-plugin", "config": { "city": "Oslo", "units": ["metric"] }, "inject": ["llm", "cache"] },
+    { "id": "llm", "name": "py:llm_gateway", "isolate": { "http": true } },
+    { "id": "edge-fn", "name": "bun:./fn/edge.ts" },
+    { "id": "probe", "name": "go:probe", "disabled": true },
+    { "id": "local-tool", "name": "./tools/tool.ts" },
+    { "id": "tools", "group": true, "config": [
+      { "id": "tool-a", "name": "./tools/a.ts" },
+      { "id": "nested", "group": true, "config": [
+        { "id": "tool-c", "name": "../shared/c.mjs" }
+      ] }
+    ] },
+    { "id": "per-session", "group": true, "instanced": true, "config": [
+      { "id": "session-state", "name": "session-state-plugin" }
+    ] },
+    { "id": "gpu", "name": "rutis-host/dial", "config": { "address": "wss://gpu.example.com/rutis" } },
+    { "id": "embedder", "name": "gpu:embedder" },
+    { "id": "edge-bun", "name": "rutis-host/listen", "config": { "listener": "public" } },
+    { "id": "render", "name": "edge-bun:render" },
+    { "id": "phones", "group": true, "instanced": true, "config": [
+      { "id": "camera", "name": "phone:camera" }
+    ] },
+    { "id": "kiosks", "group": true, "instanced": true, "config": [
+      { "id": "screen", "name": "kiosk:screen" }
+    ] },
+    { "id": "iphones", "group": true, "instanced": true, "config": [
+      { "id": "contacts", "name": "iphone:contacts" }
+    ] },
+    { "id": "androids", "group": true, "instanced": true, "config": [
+      { "id": "notify", "name": "android:notify" }
+    ] },
+    { "id": "device", "name": "tablet:device" }
+  ]
+}
