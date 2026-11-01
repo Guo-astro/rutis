@@ -4,7 +4,7 @@
 //! `docs/design-events-protocol-2026-10-18.md`).
 
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Barrier, Mutex};
 use std::time::Duration;
 
 use rutis::events::{Call, Listener, ListenerInfo, Mode, Scope};
@@ -681,6 +681,80 @@ async fn prefixes_prepend_and_once_keep_registration_order() {
         ]
     );
     root.shutdown().await.unwrap();
+}
+
+/// An `emit` calls the listeners of its name in registration order, also the
+/// ones registered while an earlier `emit` of the name still holds the list it
+/// dispatches over (#980): a `prepend` goes before that list, an append after
+/// it.
+///
+/// The two gates hold the first emit inside its listeners, so the list is
+/// still held while the test registers more; waiting on them blocks a thread
+/// of the runtime, which is why there are four.
+///
+/// guarantee: events/order
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn emits_call_listeners_registered_after_their_list_was_built() {
+    let root = Ctx::root().unwrap();
+    let order = log();
+    let calls = Arc::new(AtomicUsize::new(0));
+    // The first call of "first" and of "last" wait here: the emit that started
+    // them still holds the list of listeners while the test registers more.
+    let (first_gate, last_gate) = (Arc::new(Barrier::new(2)), Arc::new(Barrier::new(2)));
+    let blocking = |label: &'static str, gate: Arc<Barrier>| {
+        let order = order.clone();
+        let calls = calls.clone();
+        let armed = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        root.listen::<Ping>()
+            .on(move |_, _| {
+                push(&order, label);
+                calls.fetch_add(1, Ordering::SeqCst);
+                if armed.swap(false, Ordering::SeqCst) {
+                    gate.wait();
+                }
+                std::future::ready(Ok(None))
+            })
+            .unwrap();
+    };
+    blocking("first", first_gate.clone());
+    blocking("last", last_gate.clone());
+    root.emit(Ping(0)).unwrap();
+    first_gate.wait();
+    let listen = |label: &'static str, prepend: bool| {
+        let order = order.clone();
+        let calls = calls.clone();
+        let builder = root.listen::<Ping>();
+        let builder = if prepend { builder.prepend() } else { builder };
+        builder
+            .on(move |_, _| {
+                push(&order, label);
+                calls.fetch_add(1, Ordering::SeqCst);
+                std::future::ready(Ok(None))
+            })
+            .unwrap();
+    };
+    listen("prepended", true);
+    listen("second", false);
+    root.emit(Ping(1)).unwrap();
+    last_gate.wait();
+    wait_for_calls(&calls, 6).await;
+    assert_eq!(
+        entries(&order),
+        ["first", "last", "prepended", "first", "last", "second"]
+    );
+    root.shutdown().await.unwrap();
+}
+
+/// Waits until `calls` counts `n`: the calls an `emit` started. The timeout
+/// only guards against a hang.
+async fn wait_for_calls(calls: &Arc<AtomicUsize>, n: usize) {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while calls.load(Ordering::SeqCst) < n {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the emit did not reach its listeners");
 }
 
 /// Only rutis emits `rutis/*`: every mode refuses it, listening is fine.

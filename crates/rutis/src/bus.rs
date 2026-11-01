@@ -18,7 +18,7 @@ use run::{
     run_serial, AsyncNext, ErasedSyncTerminal, ErasedTerminal, FilterSpec, Inv, NoTerminal,
     OwnedInv, RawTerm, Started, SyncNext,
 };
-use table::{Body, Entry, Table};
+use table::{Body, Entry, Selected, Table};
 
 use crate::ctx::Ctx;
 use crate::error::{Error, ErrorKind};
@@ -547,6 +547,16 @@ impl EventBus {
     /// of every dispatch on this bus, right after it selected its
     /// listeners. A listener registered after the hook ran for a dispatch
     /// is not in that dispatch. The hook stays as long as the bus.
+    /// Test hook (feature `testing`): how many listeners the selection paths
+    /// have asked whether they are live so far. Registering a listener
+    /// appends it to the list the emits of its name share, which asks nobody
+    /// (#980).
+    #[cfg(feature = "testing")]
+    #[doc(hidden)]
+    pub fn selection_checks_for_testing(&self) -> u64 {
+        table::SELECTION_CHECKS.load(Ordering::Relaxed)
+    }
+
     #[cfg(feature = "testing")]
     #[doc(hidden)]
     pub fn on_selected_for_testing(
@@ -600,10 +610,11 @@ impl EventBus {
     ) -> Result<tokio::sync::oneshot::Receiver<()>, Error> {
         let (started, receiver) = tokio::sync::oneshot::channel();
         let mut batch = None;
-        let entries: Arc<[Arc<Entry>]> = if opts.filter.is_none() {
-            // The emits of a name share one list while no listener is added
-            // for it (#977). A copy per emit made a mass shutdown hold one
-            // copy per queued status change, each as long as the listeners.
+        let entries: Selected = if opts.filter.is_none() {
+            // The emits of a name share one list (#977), and the listeners
+            // registered since it was built are added to it (#980). A copy
+            // per emit made a mass shutdown hold one copy per queued status
+            // change, each as long as the listeners.
             let shared = self.snapshot_with(ctx, &name, &**payload.arc(), &mut opts, |table| {
                 table.shared(&name)
             })?;
@@ -632,7 +643,7 @@ impl EventBus {
                 let _ = started.send(());
                 return Ok(receiver);
             }
-            entries.into()
+            Selected::from_vec(entries)
         };
         let owned = Arc::new(OwnedInv {
             bus: self.clone(),
@@ -673,9 +684,9 @@ impl EventBus {
             if let Some(prev) = prev {
                 let _ = prev.await;
             }
-            let entries: Arc<[Arc<Entry>]> = if batch.is_some() {
+            let entries = if batch.is_some() {
                 match filter_any(&owned.name, entries.to_vec(), batch).await {
-                    Ok(entries) => entries.into(),
+                    Ok(entries) => Selected::from_vec(entries),
                     Err(error) => {
                         report_filter(&owned.emitter, &owned.name, error);
                         let _ = started.send(());
@@ -685,10 +696,25 @@ impl EventBus {
             } else {
                 entries
             };
-            for entry in entries.iter() {
+            // The chains are turned into lists here, when the dispatch starts:
+            // a copy made when the emit was queued would hold the listeners of
+            // that moment, and N queued emits would hold them N times over.
+            let (before, after) = entries.chains();
+            for entry in before.iter().chain(entries.base()).chain(after.iter()) {
                 let Some(flight) = owned.bus.start(entry) else {
                     continue;
                 };
+                // A synchronous listener runs here instead of through a future
+                // the emit polls to completion at once: building and polling
+                // that future was a fifth of what one call cost (#980).
+                if let Body::Sync(listener) = &entry.body {
+                    let inv = owned.inv();
+                    if let Err(error) = run::call_sync_listener(entry, &**listener, &inv) {
+                        run::report_listener(&owned.emitter, &owned.name, entry, error);
+                    }
+                    drop(flight);
+                    continue;
+                }
                 let call =
                     run::emit_call(owned.clone(), entry.clone(), flight, Some(ticket.clone()));
                 if let Started::Pending(rest) = first_poll(call).await {

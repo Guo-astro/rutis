@@ -397,6 +397,12 @@ pub(crate) struct FiberInner {
     /// and completes their tasks at once, so an intent queued after the driver
     /// exits does not leave a join waiting forever.
     pub alive: crate::sync::AtomicBool,
+    /// The generation whose listeners are still live: this fiber's generation
+    /// while it is loading or active, [`NOT_LIVE`] otherwise. An event call
+    /// reads it instead of the snapshot (#980): with a listener per session,
+    /// every call checked every listener, and the snapshot is another
+    /// allocation to read for each.
+    pub live_generation: std::sync::atomic::AtomicU64,
     /// The `(key, scope)` pairs this fiber provides.
     pub provided: Mutex<Vec<(TypeKey, Option<crate::key::ScopeId>)>>,
     /// The dependencies the last load resolved, including a load that failed:
@@ -420,6 +426,10 @@ pub(crate) struct FiberInner {
     /// (`waiting`): reported once per wait.
     pub waiting_watch: Mutex<Option<u64>>,
 }
+
+/// [`FiberInner::live_generation`] while no listener of the generation is
+/// live: the fiber is not loading or active.
+pub(crate) const NOT_LIVE: u64 = u64::MAX;
 
 /// The type-erased interface of a generic `PluginFactory<C>`, used inside
 /// the kernel.
@@ -729,14 +739,26 @@ impl FiberInner {
         }
     }
 
+    /// Under the transition lock: publish the generation whose listeners are
+    /// live, in the same atomic for every call to read (#980).
+    fn publish_live(&self, tr: &Trans) {
+        let live = match tr.state {
+            FiberState::Loading | FiberState::Active => tr.generation,
+            _ => NOT_LIVE,
+        };
+        self.live_generation.store(live, Ordering::SeqCst);
+    }
+
     /// Under the transition lock: change the state, queue the status event in
     /// order and publish the snapshot. The lock is never held across an await.
     fn set_state(&self, tr: &mut Trans, new: FiberState) {
         let old = tr.state;
         if old == new {
+            self.publish_live(tr);
             return;
         }
         tr.state = new;
+        self.publish_live(tr);
         tr.seq += 1;
         tr.status_queue.push(FiberStatusChanged {
             plugin_id: self.id,
@@ -1593,6 +1615,10 @@ fn spawn_fiber_inner(
     let (tx, rx) = mpsc::unbounded_channel();
     let token = CancellationToken::new();
     let closing = Arc::new(AtomicBool::new(closed));
+    let initial_live = match initial {
+        FiberState::Loading | FiberState::Active => 0,
+        _ => NOT_LIVE,
+    };
     let parent_fiber = parent_ctx.map(|p| p.weak_fiber());
 
     let this = Arc::new_cyclic(|weak: &Weak<FiberInner>| {
@@ -1645,6 +1671,7 @@ fn spawn_fiber_inner(
             declared_injects,
             intents_tx: tx.clone(),
             alive: crate::sync::AtomicBool::new(!closed),
+            live_generation: std::sync::atomic::AtomicU64::new(initial_live),
             provided: Mutex::new(Vec::new()),
             last_deps: Mutex::new(None),
             accesses: Mutex::new(Vec::new()),
