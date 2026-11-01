@@ -178,7 +178,14 @@ impl Followers {
 
     /// Takes the row out of the map.
     fn remove(&self, id: PluginId) {
-        self.rows.lock().unwrap().remove(&id);
+        let mut rows = self.rows.lock().unwrap();
+        rows.remove(&id);
+        // The same sparse rule as the loader's own tables
+        // (`State::shrink_sparse`): rows of closed instances would otherwise
+        // leave the map's peak capacity behind (#979).
+        if rows.capacity() > 64 && rows.len() * 4 < rows.capacity() {
+            rows.shrink_to_fit();
+        }
     }
 
     /// How many rows it follows: the map's size (`internal::followed_rows`,

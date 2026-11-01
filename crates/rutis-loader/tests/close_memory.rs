@@ -1,9 +1,19 @@
-//! Closing many instances at once (#977): the live allocations while they
-//! close stay in proportion to the instances, not to their square.
+//! The resource baseline of instances (#979): what one instance holds while
+//! it runs, what closing many of them at once peaks at, and what is left
+//! after they are closed — instances, fibers, service bindings, event
+//! listeners, tasks. The live allocations are counted with a global
+//! allocator; `close_memory` was extended from the peak of #977 into this
+//! baseline.
 //!
 //! Its own test binary: the counting allocator is global, and no other test
 //! may allocate beside the one measured. Print the numbers with
 //! `cargo test -p rutis-loader --release --test close_memory -- --nocapture`.
+//!
+//! Thresholds: see `assert_baseline` and the constants above it. They come
+//! from measurements on a 32-core Linux machine (2026-11-02), and the
+//! numbers of every run are printed. Waits are scaled by
+//! `RUTIS_TEST_TIME_SCALE`; the thresholds are allocation sizes and do not
+//! depend on machine speed.
 
 mod common;
 
@@ -19,6 +29,7 @@ use rutis::Ctx;
 use rutis::Event;
 use rutis_loader::edit::Editable;
 use rutis_loader::{Builtins, Layer, LoaderOptions, LoaderPlugin};
+use rutis_test_support::time_scale;
 use serde_json::Value;
 
 struct Counting;
@@ -129,6 +140,49 @@ struct Sample {
     status_listeners: usize,
     /// Every listener with the N instances running.
     listeners: usize,
+    /// What is left of the fibers (`plugins`), of the service bindings, of
+    /// the event listeners and of the tasks after closing, as `after - base`.
+    residue: Counts,
+}
+
+/// What a root holds, for the residue check after closing.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct Counts {
+    plugins: isize,
+    bindings: isize,
+    status_listeners: isize,
+    listeners: isize,
+    tasks: isize,
+}
+
+impl std::ops::Sub for Counts {
+    type Output = Counts;
+
+    fn sub(self, other: Counts) -> Counts {
+        Counts {
+            plugins: self.plugins - other.plugins,
+            bindings: self.bindings - other.bindings,
+            status_listeners: self.status_listeners - other.status_listeners,
+            listeners: self.listeners - other.listeners,
+            tasks: self.tasks - other.tasks,
+        }
+    }
+}
+
+impl Counts {
+    fn of(root: &Ctx) -> Counts {
+        let diagnostics = root.diagnostics();
+        let (status, listeners) = status_listeners(root);
+        Counts {
+            plugins: diagnostics.plugins.len() as isize,
+            bindings: diagnostics.bindings.len() as isize,
+            status_listeners: status as isize,
+            listeners: listeners as isize,
+            tasks: tokio::runtime::Handle::current()
+                .metrics()
+                .num_alive_tasks() as isize,
+        }
+    }
 }
 
 fn status_listeners(root: &Ctx) -> (usize, usize) {
@@ -141,8 +195,14 @@ fn status_listeners(root: &Ctx) -> (usize, usize) {
 }
 
 /// Until the tasks and the live bytes stop moving: queued deliveries have
-/// drained (a debug build drains thousands of them for seconds).
+/// drained (a debug build drains thousands of them for seconds). The bound
+/// and how long it has to stay still grow with `RUTIS_TEST_TIME_SCALE`: a
+/// loaded machine drains slower, and a real leak still fails in bounded
+/// time.
 async fn settle() {
+    let scale = time_scale();
+    let quiet = (10.0 * scale).ceil() as usize;
+    let rounds = (30_000.0 * scale) as usize;
     let tasks = || {
         tokio::runtime::Handle::current()
             .metrics()
@@ -150,7 +210,7 @@ async fn settle() {
     };
     let mut last = (tasks(), LIVE.load(Ordering::Relaxed));
     let mut still = 0;
-    for _ in 0..30_000 {
+    for _ in 0..rounds {
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         let now = (tasks(), LIVE.load(Ordering::Relaxed));
         still = if now.0 == last.0 && now.1.abs_diff(last.1) < 4096 {
@@ -158,7 +218,7 @@ async fn settle() {
         } else {
             0
         };
-        if still == 10 {
+        if still == quiet {
             return;
         }
         last = now;
@@ -193,6 +253,7 @@ async fn measure(n: usize, last: &str) -> Sample {
     assert!(report.failures.is_empty(), "{report:?}");
     settle().await;
     let base = LIVE.load(Ordering::Relaxed);
+    let base_counts = Counts::of(&root);
 
     let mut instances = Vec::with_capacity(n);
     for _ in 0..n {
@@ -218,6 +279,7 @@ async fn measure(n: usize, last: &str) -> Sample {
     settle().await;
     let peak = PEAK.load(Ordering::Relaxed).saturating_sub(base);
     let settled = LIVE.load(Ordering::Relaxed) as isize - base as isize;
+    let residue = Counts::of(&root) - base_counts;
     root.shutdown().await.unwrap();
     Sample {
         created,
@@ -225,18 +287,46 @@ async fn measure(n: usize, last: &str) -> Sample {
         settled,
         status_listeners: status,
         listeners,
+        residue,
     }
 }
 
+/// The numbers of one run, total and per instance, for the PR and the logs.
 fn report(title: &str, samples: &BTreeMap<usize, Sample>) {
     println!("{title}");
-    println!("N     created      close peak   settled    status listeners  listeners");
+    println!(
+        "N     created (per inst)   close peak   settled (per inst)  \
+         status listeners  listeners  residue (fibers, bindings, status, listeners, tasks)"
+    );
     for (n, s) in samples {
         println!(
-            "{n:<5} {:>10} B {:>12} B {:>9} B {:>17} {:>10}",
-            s.created, s.peak, s.settled, s.status_listeners, s.listeners
+            "{n:<5} {:>10} B ({:>7} B) {:>12} B {:>9} B ({:>7} B) {:>17} {:>10}  {:?}",
+            s.created,
+            s.created / n,
+            s.peak,
+            s.settled,
+            s.settled / *n as isize,
+            s.status_listeners,
+            s.listeners,
+            s.residue
         );
     }
+}
+
+/// The most one instance may hold while it runs: its group fiber and the
+/// eight rows. Measured on 2026-11-02 in debug and release, plain and watch
+/// rows: 63.5-74.4 KiB per instance (65-66 KiB plain, 73-74 KiB watch). The
+/// bound is 1.5 times the worst, so a third more per instance fails.
+const MAX_CREATED_PER_INSTANCE: usize = 112 * 1024;
+
+/// What closing may leave for the loader: measured 19-39 KiB after closing
+/// 40 to 1000 instances, in debug and release. The bound is a fixed 64 KiB
+/// (about twice the worst) plus 128 B per instance for a table that keeps a
+/// slot per instance; unlike the running set, this must not grow with N.
+/// Before the fix of #979 the loader kept the maps' peak capacity: 3.1-6 KiB
+/// per instance (about 1.2 MB for 400, 6 MB for 1000).
+fn max_settled(n: usize) -> isize {
+    (64 * 1024 + 128 * n) as isize
 }
 
 /// Closing adds little above what the running instances hold, and what it
@@ -266,12 +356,41 @@ fn assert_proportional(samples: &BTreeMap<usize, Sample>) {
     );
 }
 
-/// Closing N instances together peaks in proportion to N, also with a
-/// `FiberStatusChanged` listener per row (8N listeners, as Dim's sessions
-/// on rutis 0.17.1): the queued emits do not each copy a listener list
-/// that grows with N.
+/// One instance holds what the baseline allows, and closing them leaves
+/// nothing behind: every fiber, service binding, event listener and task
+/// the instances added is gone, and the live bytes do not grow with N.
+fn assert_baseline(samples: &BTreeMap<usize, Sample>) {
+    for (n, s) in samples {
+        let per_instance = s.created / n;
+        assert!(
+            per_instance <= MAX_CREATED_PER_INSTANCE,
+            "{n} instances hold {per_instance} B each, over the {} B baseline",
+            MAX_CREATED_PER_INSTANCE
+        );
+        let allowed = max_settled(*n);
+        assert!(
+            s.settled <= allowed,
+            "closing {n} instances left {} B ({:?}), over the {allowed} B baseline",
+            s.settled,
+            s.residue
+        );
+        assert_eq!(
+            s.residue,
+            Counts::default(),
+            "closing {n} instances left fibers, bindings, listeners or tasks behind"
+        );
+    }
+}
+
+/// One instance of eight rows stays within the per-instance baseline of
+/// live bytes; closing N at once peaks in proportion to N, also with a
+/// `FiberStatusChanged` listener per row (8N listeners, as Dim's sessions on
+/// rutis 0.17.1); and closing leaves no fiber, service binding, listener,
+/// task or live bytes behind (#979).
+///
+/// guarantee: loader/instance-close-leaves-nothing
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn closing_many_instances_peaks_in_proportion() {
+async fn instances_fit_the_resource_baseline() {
     for (title, last) in [
         ("plain rows (the loader's one listener)", "plain"),
         ("a FiberStatusChanged listener per row", "watch"),
@@ -282,5 +401,6 @@ async fn closing_many_instances_peaks_in_proportion() {
         }
         report(title, &samples);
         assert_proportional(&samples);
+        assert_baseline(&samples);
     }
 }

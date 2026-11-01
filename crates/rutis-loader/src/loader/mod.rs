@@ -511,4 +511,26 @@ impl State {
     fn layer_name(&self, index: usize) -> Option<&str> {
         self.layers.get(index).map(|l| l.name.as_str())
     }
+
+    /// Drops the peak capacity of the tables rows and instances live in once
+    /// they are mostly empty: a loader that created and closed thousands of
+    /// instances would otherwise keep their peak tables for the life of the
+    /// process (#979). The rule is the kernel's for its registry and the
+    /// event table (capacity over 64 slots, under a quarter full), so the
+    /// cost is spread over the removals: each shrink moves the entries that
+    /// are left, and the table has to grow fourfold to be checked again.
+    fn shrink_sparse(&mut self) {
+        shrink_if_sparse(&mut self.groups);
+        shrink_if_sparse(&mut self.running);
+        shrink_if_sparse(&mut self.instances);
+        shrink_if_sparse(&mut self.stopped);
+        shrink_if_sparse(&mut self.rejected);
+    }
+}
+
+/// The sparse rule of [`State::shrink_sparse`].
+fn shrink_if_sparse<K: Eq + std::hash::Hash, V>(map: &mut HashMap<K, V>) {
+    if map.capacity() > 64 && map.len() * 4 < map.capacity() {
+        map.shrink_to_fit();
+    }
 }

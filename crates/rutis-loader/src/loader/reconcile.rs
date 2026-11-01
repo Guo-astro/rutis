@@ -523,6 +523,9 @@ impl Inner {
                 });
             }
         }
+        // The records are gone: do not keep the tables at their peak for a
+        // loader that closed many instances (#979).
+        state.shrink_sparse();
         (disposals, events)
     }
 
@@ -596,6 +599,7 @@ impl Inner {
                     state.groups.remove(&key);
                 }
                 Self::forget(state, key, running.token);
+                state.shrink_sparse();
                 if cascading {
                     return;
                 }
