@@ -215,6 +215,7 @@ test('a leaf plugin may use and get a service it provides itself', async () => {
 // Unloading runs one stack in reverse, one entry at a time: cleanups and the
 // withdrawals of what the plugin provides, in the order they were registered
 // (Rust's drain_effects; docs/design-unload-order-2026-11-01.md).
+// guarantee: sdk/unload-order (a withdrawal is a step of the unload stack)
 test('a cleanup registered after provide reads it; one before does not', async () => {
   const root = new Context()
   const log = []

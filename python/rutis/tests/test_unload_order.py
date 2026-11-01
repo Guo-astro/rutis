@@ -1,6 +1,9 @@
 """Unloading runs one stack in reverse: cleanups and the withdrawals of the
 services a row provides, in the order they were registered (Rust's
-drain_effects; docs/design-unload-order-2026-11-01.md)."""
+drain_effects; docs/design-unload-order-2026-11-01.md).
+
+guarantee: sdk/unload-order
+"""
 
 import asyncio
 import contextlib
