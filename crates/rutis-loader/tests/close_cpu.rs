@@ -81,18 +81,17 @@ const IDLE_SHARE: f64 = 0.05;
 /// Ten times the instances may take at most this much of the CPU of one tenth
 /// of them, creating and closing.
 ///
-/// Ten times is what the work alone would be. These numbers are more, because
-/// every status change reaches every listener: a listener per row means the
-/// calls of one instance's status changes grow with the instances too, so ten
-/// times the instances is about twelve times the CPU creating (measured 11.9
-/// in release and 11.8 in debug; before #980, which rebuilt the list of
-/// listeners per registration and asked every listener whether it is live for
-/// every emit, 48.6 and 33.9). Closing grows more than that, 14 to 34 times
-/// whatever the listeners (measured before and after #980; the loader looks
-/// the copy up and rebuilds its tables per instance). The thresholds hold
-/// those numbers against getting worse.
-const CREATE_RATIO: f64 = 30.0;
-const CLOSE_RATIO: f64 = 60.0;
+/// Ten times is what the work alone would be. These numbers are about a
+/// hundred, because every status change reaches every listener: a listener per
+/// row means one instance's status changes cost 8N calls, so ten times the
+/// instances is a hundred times the calls. Measured (Linux, 32 cores,
+/// 2026-11-02, `cpu` of the process, the phase taken until the events it
+/// queued are delivered): creating 100 → 1000 instances took 222 times
+/// (release) and 108 times (debug) before #980, 192 and 99 after it; closing
+/// 121 and 87 before, 120 and 87 after. The thresholds are the measured ratios
+/// with room for a machine that caches differently.
+const CREATE_RATIO: f64 = if cfg!(debug_assertions) { 180.0 } else { 300.0 };
+const CLOSE_RATIO: f64 = if cfg!(debug_assertions) { 160.0 } else { 200.0 };
 
 /// The CPU time this process used: what its threads spent, not how long it
 /// took, so a machine that runs other work beside the tests, or has fewer
@@ -205,16 +204,20 @@ async fn idle(root: &Ctx) -> (Duration, Duration) {
 }
 
 /// One round of the fixture: the host, N instances with a listener per row,
-/// and the two idle windows.
+/// the two phases (until the events they queue are delivered) and the two idle
+/// windows.
 async fn measure(n: usize) -> Sample {
     let (root, loader) = host("watch").await;
     // The listeners of the loader itself: what the instances must not add to.
     let listening = root.events().subscriptions().len();
+    // What creating them costs, the status changes they cause until every
+    // call they start has started included: the queued events are most of it.
     let start = cpu();
     let mut instances = Vec::with_capacity(n);
     for _ in 0..n {
         instances.push(loader.create_instance(&root, "doc").await.unwrap().plugin);
     }
+    drained(&root).await;
     let created = cpu() - start;
     let (idle_with, idle_window) = idle(&root).await;
 
@@ -231,6 +234,8 @@ async fn measure(n: usize) -> Sample {
         close.await.unwrap().unwrap();
     }
     drop(instances);
+    // The same for closing: until the status changes they cause are delivered.
+    drained(&root).await;
     let closed = cpu() - start;
     let (idle_after, _) = idle(&root).await;
     assert_eq!(

@@ -10,12 +10,24 @@ use crate::events::{
     ErasedAsync, ErasedSync, ListenerInfo, ListenerKind, RemoteListener, TableEntry,
 };
 use crate::fiber::FiberInner;
-use crate::FiberState;
 
 pub(crate) enum Body {
     Async(Arc<dyn ErasedAsync>),
     Sync(Arc<dyn ErasedSync>),
     Remote(Arc<dyn RemoteListener>),
+}
+
+/// How many listeners the selection paths have asked whether they are live
+/// (feature `testing`): a registration that appends to the list a name's emits
+/// share asks nobody (#980).
+#[cfg(feature = "testing")]
+pub(crate) static SELECTION_CHECKS: AtomicU64 = AtomicU64::new(0);
+
+/// [`Entry::live`] in the selection paths, counted under `testing`.
+fn live_for_selection(entry: &Entry) -> bool {
+    #[cfg(feature = "testing")]
+    SELECTION_CHECKS.fetch_add(1, Ordering::Relaxed);
+    entry.live()
 }
 
 pub(crate) struct Entry {
@@ -74,9 +86,7 @@ impl Entry {
             {
                 return false;
             }
-            let snapshot = owner.snapshot_rx.borrow();
-            snapshot.generation == self.generation
-                && matches!(snapshot.state, FiberState::Loading | FiberState::Active)
+            owner.live_generation.load(Ordering::SeqCst) == self.generation
         })
     }
 
@@ -150,46 +160,77 @@ impl Selected {
     }
 }
 
+/// Entries appended to the list a name's emits share, after it was built: the
+/// entry, and the one appended before it (#980).
+struct Added {
+    entry: Arc<Entry>,
+    prev: Option<Arc<Added>>,
+}
+
 /// The entries an `emit` of one name dispatches over, as kept between the
-/// emits of that name (#977).
+/// emits of that name (#977): the list built when the name was last selected,
+/// and the chains of what was appended since (#980).
 ///
-/// Registering a listener adds it here instead of throwing the list away
-/// (#980): rebuilding the list for every registration, and asking every
-/// listener whether it is still live, made creating sessions with a listener
-/// each cost time in proportion to the square of their number. The added
-/// entries are weak, so a withdrawn listener is not kept here, and the list
-/// is rebuilt once half of what it holds was removed or [`ADDED`] listeners
-/// were added, which keeps the cost of one registration amortized.
+/// Registering a listener appends it here in constant time instead of throwing
+/// the list away: rebuilding the list for every registration, and asking every
+/// listener whether it is still live for every emit, made creating sessions
+/// with a listener each cost time in proportion to the square of their number.
+/// The chains die with the last emit that selected them, and the list is
+/// rebuilt once half of it was removed, so a withdrawn listener is kept no
+/// longer than it was before.
 struct Shared {
     list: Weak<[Arc<Entry>]>,
+    /// Entries in `list`.
     len: usize,
     /// Entries of `list` removed from the table since it was built.
     removed: usize,
-    /// Prepends added since `list` was built, in call order.
-    before: Vec<Weak<Entry>>,
-    /// Appends added since `list` was built, in call order.
-    after: Vec<Weak<Entry>>,
+    /// Prepends appended since, the newest first: their call order. Held
+    /// here, as `list` is not, so that the appends of a name survive between
+    /// its emits; the list is rebuilt once half of it was removed, which drops
+    /// the chain with it.
+    before: Option<Arc<Added>>,
+    /// Appends appended since, the newest last.
+    after: Option<Arc<Added>>,
 }
 
-/// How many entries are added to a list before it is rebuilt. Bounds what one
-/// emit walks beside the list (an `emit` dispatches to every listener anyway)
-/// and keeps the rebuild, which asks every listener whether it is live, to
-/// one per that many registrations.
-const ADDED: usize = 32;
-
 impl Shared {
+    /// Append `entry` to its chain, in constant time.
     fn add(&mut self, entry: &Arc<Entry>) {
+        let node = Arc::new(Added {
+            entry: entry.clone(),
+            prev: if entry.prepend {
+                self.before.clone()
+            } else {
+                self.after.clone()
+            },
+        });
         if entry.prepend {
-            self.before.insert(0, Arc::downgrade(entry));
+            self.before = Some(node);
         } else {
-            self.after.push(Arc::downgrade(entry));
+            self.after = Some(node);
         }
     }
 
-    /// Half of what it holds is not in the table any more, or enough was
-    /// added: rebuild the list on the next emit.
+    /// The entries of the chain `head` starts, in call order: newest first (as
+    /// prepends are called) or oldest first.
+    fn chain(head: Option<&Arc<Added>>, newest_first: bool) -> Vec<Arc<Entry>> {
+        let mut entries = Vec::new();
+        let mut node = head;
+        while let Some(current) = node {
+            entries.push(current.entry.clone());
+            node = current.prev.as_ref();
+        }
+        if !newest_first {
+            entries.reverse();
+        }
+        entries
+    }
+
+    /// Half of what it holds is not in the table any more, or an entry of the
+    /// chains was removed (a chain cannot drop it, and the emits of the name
+    /// would keep walking over it): rebuild the list on the next emit.
     fn stale(&self) -> bool {
-        self.removed * 2 > self.len || self.before.len() + self.after.len() >= ADDED
+        self.removed * 2 > self.len || self.before.is_some() || self.after.is_some()
     }
 }
 
@@ -238,17 +279,14 @@ impl Table {
     }
 
     pub fn insert(&mut self, entry: Arc<Entry>) {
-        // A prefix matches names this cannot list: their lists are rebuilt.
-        // An exact entry is added to the list the emits of its name hold
-        // (#980), unless that list is full of additions already.
+        // A prefix matches names this cannot list: their lists are rebuilt. An
+        // exact entry is appended to the list the emits of its name hold, in
+        // constant time (#980).
         if entry.prefix {
             self.shared
                 .retain(|name, _| !name.starts_with(&*entry.name));
-        } else if self.shared.get_mut(&entry.name).is_some_and(|shared| {
+        } else if let Some(shared) = self.shared.get_mut(&entry.name) {
             shared.add(&entry);
-            shared.stale()
-        }) {
-            self.shared.remove(&entry.name);
         }
         let list = if entry.prefix {
             &mut self.prefixes
@@ -275,7 +313,7 @@ impl Table {
         // An entry added to a shared list since it was built is not in it.
         let stale = |shared: &mut Shared| {
             shared.removed += 1;
-            shared.list.strong_count() == 0 || shared.removed * 2 > shared.len
+            shared.list.strong_count() == 0 || shared.stale()
         };
         if entry.prefix {
             self.shared
@@ -309,7 +347,7 @@ impl Table {
     /// entry stays until a call of it starts.
     pub fn select(&self, name: &str) -> Vec<Arc<Entry>> {
         let mut out: Vec<Arc<Entry>> = Vec::new();
-        let take = |entry: &Arc<Entry>| entry.live();
+        let take = |entry: &Arc<Entry>| live_for_selection(entry);
         if let Some(list) = self.exact.get(name) {
             out.extend(list.iter().filter(|e| take(e)).cloned());
         }
@@ -342,28 +380,24 @@ impl Table {
     /// entry that is not live never is again (it is withdrawn, its owner is
     /// closing or gone, or the generation it was registered in has ended).
     pub fn shared(&mut self, name: &Arc<str>) -> Option<Selected> {
-        let base = match self.shared.get(name).and_then(|s| {
+        let cached = self.shared.get(name).and_then(|s| {
             let base = s.list.upgrade()?;
-            Some((
-                base,
-                s.before
-                    .iter()
-                    .filter_map(Weak::upgrade)
-                    .collect::<Vec<_>>(),
-                s.after.iter().filter_map(Weak::upgrade).collect::<Vec<_>>(),
-            ))
-        }) {
+            let before = Shared::chain(s.before.as_ref(), true);
+            let after = Shared::chain(s.after.as_ref(), false);
+            Some((base, before, after))
+        });
+        let (base, before, after) = match cached {
             Some(parts) => parts,
             None => {
                 let mut all: Vec<Arc<Entry>> = Vec::new();
                 if let Some(list) = self.exact.get(&**name) {
-                    all.extend(list.iter().filter(|e| e.live()).cloned());
+                    all.extend(list.iter().filter(|e| live_for_selection(e)).cloned());
                 }
                 let exact = all.len();
                 all.extend(
                     self.prefixes
                         .iter()
-                        .filter(|e| name.starts_with(&*e.name) && e.live())
+                        .filter(|e| name.starts_with(&*e.name) && live_for_selection(e))
                         .cloned(),
                 );
                 if all.is_empty() {
@@ -385,8 +419,8 @@ impl Table {
                         list: Arc::downgrade(&list),
                         len: list.len(),
                         removed: 0,
-                        before: Vec::new(),
-                        after: Vec::new(),
+                        before: None,
+                        after: None,
                     },
                 );
                 return Some(Selected {
@@ -396,13 +430,12 @@ impl Table {
                 });
             }
         };
-        let (base, before, after) = base;
         let selected = Selected {
             base,
             before,
             after,
         };
-        if selected.is_empty() || !selected.iter().any(|e| e.live()) {
+        if selected.is_empty() || !selected.iter().any(|e| live_for_selection(e)) {
             return None;
         }
         Some(selected)

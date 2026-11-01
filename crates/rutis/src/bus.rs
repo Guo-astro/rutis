@@ -547,6 +547,16 @@ impl EventBus {
     /// of every dispatch on this bus, right after it selected its
     /// listeners. A listener registered after the hook ran for a dispatch
     /// is not in that dispatch. The hook stays as long as the bus.
+    /// Test hook (feature `testing`): how many listeners the selection paths
+    /// have asked whether they are live so far. Registering a listener
+    /// appends it to the list the emits of its name share, which asks nobody
+    /// (#980).
+    #[cfg(feature = "testing")]
+    #[doc(hidden)]
+    pub fn selection_checks_for_testing(&self) -> u64 {
+        table::SELECTION_CHECKS.load(Ordering::Relaxed)
+    }
+
     #[cfg(feature = "testing")]
     #[doc(hidden)]
     pub fn on_selected_for_testing(
@@ -690,6 +700,17 @@ impl EventBus {
                 let Some(flight) = owned.bus.start(entry) else {
                     continue;
                 };
+                // A synchronous listener runs here instead of through a future
+                // the emit polls to completion at once: building and polling
+                // that future was a fifth of what one call cost (#980).
+                if let Body::Sync(listener) = &entry.body {
+                    let inv = owned.inv();
+                    if let Err(error) = run::call_sync_listener(entry, &**listener, &inv) {
+                        run::report_listener(&owned.emitter, &owned.name, entry, error);
+                    }
+                    drop(flight);
+                    continue;
+                }
                 let call =
                     run::emit_call(owned.clone(), entry.clone(), flight, Some(ticket.clone()));
                 if let Started::Pending(rest) = first_poll(call).await {
