@@ -10,10 +10,10 @@
 //! `cargo test -p rutis-loader --release --test close_memory -- --nocapture`.
 //!
 //! Thresholds: see `assert_baseline` and the constants above it. They come
-//! from measurements on a 32-core Linux machine (2026-11-02), and the
-//! numbers of every run are printed. Waits are scaled by
-//! `RUTIS_TEST_TIME_SCALE`; the thresholds are allocation sizes and do not
-//! depend on machine speed.
+//! from measurements on a 32-core Linux machine (2026-11-02) and, for the
+//! macOS bound, from the CI runner's numbers; the numbers of every run are
+//! printed. Waits are scaled by `RUTIS_TEST_TIME_SCALE`; the thresholds are
+//! allocation sizes and do not depend on machine speed.
 //!
 //! What one instance's footprint is made of, what was saved and what was
 //! left alone, and what this test does not cover (language runtime processes,
@@ -347,13 +347,18 @@ fn report(title: &str, samples: &BTreeMap<usize, Sample>) {
 }
 
 /// The most one instance may hold while it runs: its group fiber and the
-/// eight rows. Measured on 2026-11-02 in debug and release, plain and watch
-/// rows: 49.6-60.3 KiB per instance (49.6-52.2 plain, 57.8-60.3 watch).
-/// Inlining the row-dispose branch again puts the cheapest configuration at
-/// 62.0 KiB (debug, N=40) and the worst at 72.7 KiB; 61.5 KiB sits between
-/// the two, 1.02 times the worst and 0.99 times the cheapest rollback. A
-/// regression that removes that `Box` fails here as well as in the monitor
+/// eight rows. Measured on 2026-11-02: Linux 49.6-60.3 KiB per instance
+/// (49.6-52.2 plain, 57.8-60.3 watch); macOS 68,234-70,772 B (66.6-69.1
+/// KiB), where the allocator spends more per allocation. Inlining the
+/// row-dispose branch again adds about 13.5 KiB per instance, so the bounds
+/// sit below the rollback and above the normal worst on both platforms: on
+/// Linux the cheapest rollback is 62.0 KiB (debug, N=40) and the bound is
+/// 61.5 KiB; on macOS the rollback is about 84 KiB and the bound is 78 KiB.
+/// A regression that removes that `Box` fails here as well as in the monitor
 /// future's own size test.
+#[cfg(target_os = "macos")]
+const MAX_CREATED_PER_INSTANCE: usize = 78 * 1024;
+#[cfg(not(target_os = "macos"))]
 const MAX_CREATED_PER_INSTANCE: usize = 61 * 1024 + 512;
 
 /// What closing may leave for the loader: measured 18-58 KiB after closing
