@@ -402,7 +402,7 @@ For each row (except disabled ones), `check` verifies that:
 
 - its plugin is found and resolves;
 - the row passes the checks made before loading (scopes, and the config of built-in plugins such as connection rows);
-- every service it waits for (its plugin's `inject`, plus the row's own `inject`) is provided by another row: as plugins declare in `provides`.
+- every service it waits for (its plugin's `inject`, plus the row's own `inject`) is provided by another row: as plugins declare in `provides`. For a runtime row (Node, Bun, Python, Go, Swift and Kotlin rows) only the names its `inject` shares through the service catalog count: other names are not `dyn HostDispatch` and cannot cross a language boundary, so `check` leaves them to the runtime ([a runtime row's `inject`](../design-row-inject-gate-2026-10-31.en.md)).
 
 A row waiting for a service no row provides, and no row may provide at runtime, would wait forever: `check` says which service is missing and what to do, and exits with 1; when only disabled rows provide it, it names them. What some rows provide is not known during the check (rows run on a connection's far end, which the check does not connect to); a service missing then is only reported as possibly coming from them, not as a failure.
 
@@ -874,7 +874,7 @@ Each row runs a plugin:
 | `id` | Row name, unique within this file. |
 | `name` | Plugin identifier: an npm package (or package subpath), `py:<name>` (Python entry point or module), `bun:<module>` (a module in the Bun runtime), `go:<plugin>` (the Go binary that has it; a plugin name is in one binary only), `swift:<plugin>` (likewise, Swift binaries), `./relative-path` (plugin file), `rutis-host/dial` / `rutis-host/listen` (a connection; see [Remote runtimes and devices](#remote-runtimes-and-devices); nodes connect the same way, see [Connect nodes](nodes.en.md)), or `<connection row>:<plugin>` (a plugin run on a connection's far end). |
 | `config` | Plugin configuration. |
-| `inject` | Additional service names to wait for. |
+| `inject` | Additional service names to wait for. A runtime row (Node, Bun, Python, Go, Swift and Kotlin rows) waits only for the names shared through the service catalog; other names go to the runtime, which resolves them itself: a Node row waits on the Cordis gate in its process, and the other languages report `service <name> is not available` from `use` ([a runtime row's `inject`](../design-row-inject-gate-2026-10-31.en.md)). |
 | `isolate` | `{ "service": true }` gives this row its own instance of the service; `{ "service": "label" }` shares one instance among rows with that label. |
 | `disabled` | When `true`, the row does not run. |
 | `group` | When `true`, the row is a group: no `name`, and `config` is its child rows (an array in the same format); disabling or removing the group unloads its children with it. |
