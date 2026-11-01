@@ -30,6 +30,7 @@ pub use definitions::{mounter_key, returned, ForeignPlugin, PluginMounter};
 pub(crate) use process::calling as calling_process;
 pub use process::{
     scoped_id, Host, HostLease, Launcher, Mount, PluginSchema, Process, RowSchema, ServiceEvents,
+    GREETING,
 };
 pub use projection::Projection;
 pub use rows::{row_projection, row_projection_of, row_projection_with, RowService};
