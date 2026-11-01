@@ -52,10 +52,12 @@ function projectHost() {
 /**
  * Start `rutis-host test`, which starts this runtime (`command`, then
  * `project`). `dispatch(target, method, args)` answers the driver's calls
- * of the test (its services and listeners). Resolves once the driver
- * greeted, with `control`, the session with it, and `stop()`.
+ * of the test (its services and listeners). `signal` gives the start up: once
+ * it aborts, the host that was starting stops, and the promise rejects. Resolves
+ * once the driver greeted, with `control`, the session with it, and `stop()`.
  */
-export async function start({ dispatch, outgoing, command = [process.execPath, ...execArgv(), RUNNER], project = DRIVER } = {}) {
+export async function start({ dispatch, outgoing, command = [process.execPath, ...execArgv(), RUNNER], project = DRIVER, signal } = {}) {
+  if (signal?.aborted) throw signal.reason ?? new Error('the start was given up')
   const host = process.env.RUTIS_HOST || projectHost() || 'rutis-host'
   const dir = mkdtempSync(join(tmpdir(), 'rutis-test-'))
   // A Unix socket, or on Windows a named pipe.
@@ -100,21 +102,39 @@ export async function start({ dispatch, outgoing, command = [process.execPath, .
     hostProcess.once('exit', code => reject(new Error(`${host} exited (${code}) before the test could start${said.length ? `:\n${said.join('').trimEnd()}` : ''}`)))
   })
   failed.catch(() => {})
+  // Nothing of this host keeps the process running: the host may be gone
+  // while its pipes wait for the end of what it started.
+  const leave = () => {
+    hostProcess.unref()
+    for (const stream of [hostProcess.stdout, hostProcess.stderr]) stream.unref?.()
+  }
+  // `signal`: the test tool gives the start up when the test that asked for
+  // the host ends before it is up (it timed out while `load` was starting
+  // it, #997). The host stops, and the promise rejects.
+  let giveUp
+  const givenUp = new Promise((_, reject) => { giveUp = reason => { stop(); leave(); reject(reason) } })
+  givenUp.catch(() => {})
+  const abandon = () => giveUp(signal.reason ?? new Error('the start was given up'))
+  if (signal?.aborted) abandon()
+  else signal?.addEventListener('abort', abandon, { once: true })
   let control
   try {
     // A test host: it takes the far end's plugin definitions, to hand them
     // back to `load`, and declares `plugins` for them
     // (docs/design-test-tool-definition-load-2026-11-01.md).
     control = await Promise.race([
-      Process.connect(`unix:${address}`, dispatch ?? (() => { throw new Error('the test serves nothing') }), undefined, { local: 'test', host: true }, { outgoing, answersWaiting: true }),
+      Process.connect(`unix:${address}`, dispatch ?? (() => { throw new Error('the test serves nothing') }), undefined, { local: 'test', host: true }, { outgoing, answersWaiting: true, signal }),
       failed,
+      givenUp,
     ])
   } catch (error) {
     stop()
+    leave()
     throw error
+  } finally {
+    signal?.removeEventListener('abort', abandon)
   }
   said = undefined
-  hostProcess.unref()
-  for (const stream of [hostProcess.stdout, hostProcess.stderr]) stream.unref?.()
+  leave()
   return { control, stop }
 }

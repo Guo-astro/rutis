@@ -52,11 +52,17 @@ export class Process {
   }
   // `endpoint` ({ local, expected? }): this side's endpoint id and the far end's;
   // `options`: the session's `inline`, `holds`, `report`,
-  // `owner`, `within`, `outgoing` and `answersWaiting`.
+  // `owner`, `within`, `outgoing` and `answersWaiting`; `signal`, which ends
+  // the channel (and rejects this) where it aborts.
   static async connect(channel, dispatch, settled, endpoint, options = {}) {
-    const process = new Process({ channel, dispatch, settled, endpoint, ...options })
+    const { signal, ...rest } = options
+    const process = new Process({ channel, dispatch, settled, endpoint, ...rest })
+    const abandon = () => process.#port.postMessage({ abort: true })
+    if (signal?.aborted) abandon()
+    else signal?.addEventListener('abort', abandon, { once: true })
     try { await process.#session.ready; return process }
     catch (error) { process.#port.postMessage({ abort: true }); await process.#exited; throw error }
+    finally { signal?.removeEventListener('abort', abandon) }
   }
   get greeting() { return this.#session.greeting }
   // What this side found wrong with the session, if that ended it.
