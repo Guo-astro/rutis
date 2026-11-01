@@ -118,7 +118,7 @@ The order `ctx.use(name, type)` takes:
 Nothing: it only loosens.
 
 - An interface used only in this process needs no `@RutisClient`: a provider marked `@RutisService` and `ctx.use(name, Interface)` are enough.
-- `provide` of an object not marked `@RutisService` still fails (no KSP-generated table): a service used only in this process still needs `@RutisService`.
+- `provide` of an object not marked `@RutisService` still fails: `rutis: provide <name>: <class> is not a @RutisService class (no generated method table: apply the rutis-ksp processor)`. A service used only in this process still needs `@RutisService`.
 
 ### What it affects
 

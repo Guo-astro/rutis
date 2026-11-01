@@ -118,7 +118,7 @@ Go 与 Kotlin 的两处只放宽：原来报错的写法现在成功，原来成
 没有要改的：只放宽。
 
 - 只在本进程用的接口不必再标 `@RutisClient`：`@RutisService` 的提供方加 `ctx.use(name, 接口)` 就够。
-- `provide` 一个不是 `@RutisService` 的对象仍然失败（找不到 KSP 生成的表）：只在本进程用的服务也要标 `@RutisService`。
+- `provide` 一个不是 `@RutisService` 的对象仍然失败：`rutis: provide <名字>: <类名> is not a @RutisService class (no generated method table: apply the rutis-ksp processor)`。只在本进程用的服务也要标 `@RutisService`。
 
 ### 影响
 
