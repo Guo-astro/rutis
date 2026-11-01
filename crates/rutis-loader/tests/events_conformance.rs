@@ -41,7 +41,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use common::runtimes::{greet_as_main, launcher, repo, rows_stage, TestRuntime, COLD};
-use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, FiberState, FiberView, PluginFactory};
+use rutis::host::{
+    BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind, FiberState, FiberView, PluginFactory,
+    Snapshot,
+};
 use rutis::internal::CtxInternal;
 use rutis::{Ctx, Error};
 use rutis_bridge::events::testing::Tap;
@@ -55,6 +58,7 @@ use rutis_loader::runtime::SessionResolver;
 use rutis_loader::{
     Builtins, Chain, Layer, Loader, LoaderOptions, LoaderPlugin, Patch, RowEvent, ServiceCatalog,
 };
+use rutis_test_support::Guard;
 use serde_json::{json, Value as Json};
 
 // ── Languages ───────────────────────────────────────────────────
@@ -709,63 +713,35 @@ impl Host {
             })
     }
 
+    /// Wait until `row` runs (or failed as it should): its runtime first,
+    /// then the row itself ([`row_settled`]).
     async fn settled(&self, row: &Row) -> Result<(), String> {
         if row.at == Location::Node {
             return Ok(());
         }
-        let fails = row.config.get("fails").is_some();
-        let deadline = tokio::time::Instant::now() + COLD.limit();
-        loop {
-            let state = self.row_state(&row.label, &row.scope);
-            // And its `rutis/row` has selected its listeners: whatever the
-            // case does next (a row it loads registers later) is not in
-            // that dispatch (§5.1: the listeners registered when it
-            // selects).
-            let said = self.said.of(row);
-            match &state {
-                Some((FiberState::Active, _)) if !fails && said == Some(RowEventState::Running) => {
-                    return Ok(())
-                }
-                Some((FiberState::Failed, _)) if fails && said == Some(RowEventState::Failed) => {
-                    return Ok(())
-                }
-                // Failed as it should, its `failed` not out yet: wait.
-                Some((FiberState::Failed, _)) if fails => {}
-                Some((FiberState::Failed, error)) => {
-                    return Err(format!("row {} failed: {error:?}", row.label))
-                }
-                _ => {}
-            }
-            // A runtime that refused the host (or failed) loads nothing:
-            // say so at once rather than at the deadline.
-            if matches!(row.at, Location::X | Location::Y) {
-                let name = runtime_name(row.at, &self.state.lock().unwrap().y);
-                if let Some(runtime) = self.runtimes.get(&name) {
-                    let state = runtime.view.state();
-                    if state.state == FiberState::Failed {
-                        return Err(format!("runtime {name} failed: {:?}", state.error));
-                    }
-                }
-            }
-            if tokio::time::Instant::now() > deadline {
-                // Each runtime's state and the end of all it wrote.
-                let runtimes: Vec<String> = self
-                    .runtimes
-                    .iter()
-                    .map(|(name, runtime)| {
-                        let text = std::fs::read_to_string(&runtime.stderr).unwrap_or_default();
-                        let last: Vec<&str> = text.lines().rev().take(5).collect();
-                        format!("{name} {:?} {last:?}", runtime.view.state().state)
-                    })
-                    .collect();
-                return Err(format!(
-                    "row {} did not start: {state:?}, its last rutis/row {said:?} (runtimes: {})",
-                    row.label,
-                    runtimes.join(", ")
-                ));
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
+        let name = match row.at {
+            Location::X | Location::Y => Some(runtime_name(row.at, &self.state.lock().unwrap().y)),
+            _ => None,
+        };
+        let view = name
+            .as_ref()
+            .and_then(|name| self.runtimes.get(name))
+            .map(|runtime| &runtime.view);
+        // Its runtime first: rows run only on a runtime that is up, and a
+        // runtime starts cold (a language VM, a compiled binary), which is
+        // what takes the time on a loaded machine (#1003). Waiting for it
+        // there is not taken out of the row's own window.
+        if let (Some(view), Some(name)) = (view, name.as_ref()) {
+            runtime_up(view, name, COLD, || self.runtimes_report()).await?;
         }
+        row_settled(
+            row,
+            view.zip(name.as_deref()),
+            || (self.row_state(&row.label, &row.scope), self.said.of(row)),
+            COLD,
+            || self.runtimes_report(),
+        )
+        .await
     }
 
     /// After `row` unloaded: its `stopped` has selected its listeners too,
@@ -863,6 +839,16 @@ impl Host {
         out
     }
 
+    /// What every runtime is doing and the end of what it wrote, for the
+    /// summary a failure gives (#1003).
+    fn runtimes_report(&self) -> String {
+        let mut out = String::new();
+        for (name, runtime) in &self.runtimes {
+            out.push_str(&runtime_lines(name, &runtime.view.state(), &runtime.stderr));
+        }
+        out
+    }
+
     fn y_runtime(&self) -> String {
         runtime_name(Location::Y, &self.state.lock().unwrap().y)
     }
@@ -928,6 +914,196 @@ impl Host {
         }
         Ok(())
     }
+}
+
+// ── Waiting for a row, and saying why it did not ────────────────
+
+/// What a row shows at one moment: its fiber's state and error, and the
+/// state of its last `rutis/row` ([`Said`]), `None` before any.
+type Seen = (Option<(FiberState, Option<String>)>, Option<RowEventState>);
+
+/// Wait for the runtime `name`'s row to come up, `guard` long: a runtime
+/// starts cold (a language VM, a compiled binary, #238) and its rows run
+/// only once it has greeted. Its fiber reaches [`FiberState::Active`] after
+/// the runtime set its own `RuntimeState::Ready` (`TestRuntime`), so this
+/// waits on the runtime's readiness, not on a fixed time: time spent here
+/// is not taken out of the row's own window (#1003). A runtime that fails,
+/// or does not come up within `guard`, is `report`'s failure to tell.
+async fn runtime_up(
+    view: &FiberView,
+    name: &str,
+    guard: Guard,
+    report: impl Fn() -> String,
+) -> Result<(), String> {
+    let limit = guard.limit();
+    let mut states = view.watch();
+    let up = |snapshot: &Snapshot| {
+        matches!(
+            snapshot.state,
+            FiberState::Active | FiberState::Failed | FiberState::Disposed
+        )
+    };
+    let snapshot = match tokio::time::timeout(limit, states.wait_for(up)).await {
+        Ok(Ok(snapshot)) => snapshot.clone(),
+        // The runtime's fiber is gone: nothing will change its state again.
+        Ok(Err(_)) => {
+            return Err(format!(
+                "runtime {name} went away before its rows could run\n{}",
+                report()
+            ))
+        }
+        Err(_) => {
+            return Err(format!(
+                "runtime {name} did not come up within {limit:?}\n{}",
+                report()
+            ))
+        }
+    };
+    match snapshot.state {
+        FiberState::Active => Ok(()),
+        state => Err(format!(
+            "runtime {name} is {state:?}: {}\n{}",
+            snapshot
+                .error
+                .map(|error| error.to_string())
+                .unwrap_or_else(|| "no error".into()),
+            report()
+        )),
+    }
+}
+
+/// Wait for `row` to settle, `guard` long: its fiber [`FiberState::Active`]
+/// and its `rutis/row` `Running`, or `Failed` with `Failed` for a row that
+/// fails on purpose. `saw` is what the row shows now, and `runtime` (with
+/// its name) the runtime it waits on.
+///
+/// A runtime that fails loads nothing: the case hears of it at once, not at
+/// the deadline. Both failures, and the deadline, say how far the row got
+/// and what every runtime is doing, from `report` ([`row_failure`], #1003).
+async fn row_settled(
+    row: &Row,
+    runtime: Option<(&FiberView, &str)>,
+    saw: impl Fn() -> Seen,
+    guard: Guard,
+    report: impl Fn() -> String,
+) -> Result<(), String> {
+    let fails = row.config.get("fails").is_some();
+    let limit = guard.limit();
+    let deadline = tokio::time::Instant::now() + limit;
+    loop {
+        let (state, said) = saw();
+        match &state {
+            Some((FiberState::Active, _)) if !fails && said == Some(RowEventState::Running) => {
+                return Ok(())
+            }
+            Some((FiberState::Failed, _)) if fails && said == Some(RowEventState::Failed) => {
+                return Ok(())
+            }
+            // Failed as it should, its `failed` not out yet: wait.
+            Some((FiberState::Failed, _)) if fails => {}
+            // The row's own failure: the reason, and the runtimes, as the
+            // deadline's failure gives them.
+            Some((FiberState::Failed, _)) => {
+                return Err(row_failure(row, "failed", &state, said, &report()))
+            }
+            _ => {}
+        }
+        if let Some((view, name)) = runtime {
+            let state = view.state();
+            if state.state == FiberState::Failed {
+                return Err(format!(
+                    "runtime {name} failed: {:?}\n{}",
+                    state.error,
+                    report()
+                ));
+            }
+        }
+        if tokio::time::Instant::now() > deadline {
+            return Err(row_failure(
+                row,
+                &format!("did not start within {limit:?}"),
+                &state,
+                said,
+                &report(),
+            ));
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+/// Why `row` is not settled, `reason` after its label, in the shape a log
+/// keeps (#1003): what it walks to, its error whole (it is the reason, so
+/// not [`cut`]: a long one over several lines is still all there), its last
+/// `rutis/row`, and then every runtime, a line each.
+fn row_failure(
+    row: &Row,
+    reason: &str,
+    state: &Option<(FiberState, Option<String>)>,
+    said: Option<RowEventState>,
+    report: &str,
+) -> String {
+    let mut out = format!("row {} {reason}\n", row.label);
+    let (fiber, error) = match state {
+        Some((state, error)) => (format!("{state:?}"), error.as_deref()),
+        None => ("none".to_owned(), None),
+    };
+    out.push_str(&format!("  its fiber {fiber}\n"));
+    if let Some(error) = error {
+        for line in error.lines() {
+            out.push_str(&format!("  its error: {line}\n"));
+        }
+    }
+    let said = match said {
+        Some(said) => format!("{said:?}"),
+        None => "none".to_owned(),
+    };
+    out.push_str(&format!("  its last rutis/row {said}\n"));
+    out.push_str(report);
+    out
+}
+
+/// At most how long a line of a failure may be. A log keeps a failure's
+/// lines only up to a width (the `(runtimes: …)` of #1003 ended at
+/// `Some((Pending, No`), so a line here says one thing.
+const WIDTH: usize = 80;
+
+/// `text` at most [`WIDTH`] characters, cut with `…`.
+fn cut(text: &str) -> String {
+    match text.char_indices().nth(WIDTH) {
+        Some((at, _)) => format!("{}…", &text[..at]),
+        None => text.to_owned(),
+    }
+}
+
+/// What runtime `name` is doing, then the end of what it wrote (`stderr`):
+/// a line each, so that a log keeps them whole (#1003).
+fn runtime_lines(name: &str, snapshot: &Snapshot, stderr: &Path) -> String {
+    let mut out = format!(
+        "  {name}: {}\n",
+        cut(&format!("fiber {:?}", snapshot.state))
+    );
+    if let Some(error) = &snapshot.error {
+        out.push_str(&format!(
+            "  {name}: {}\n",
+            cut(&format!("its error {error}"))
+        ));
+    }
+    for line in tail(stderr, 5) {
+        out.push_str(&format!("  {name}: | {line}\n"));
+    }
+    out
+}
+
+/// The last `n` lines of `stderr`, each at most [`WIDTH`] characters: the
+/// end of what a runtime wrote, nothing while it wrote nothing.
+fn tail(stderr: &Path, n: usize) -> Vec<String> {
+    let text = std::fs::read(stderr).unwrap_or_default();
+    let text = String::from_utf8_lossy(&text);
+    let lines: Vec<&str> = text.lines().collect();
+    lines[lines.len().saturating_sub(n)..]
+        .iter()
+        .map(|line| cut(line.trim_end()))
+        .collect()
 }
 
 impl World for Host {
@@ -1324,6 +1500,252 @@ async fn events_with_x_a_swift_plugin() {
 #[tokio::test(flavor = "multi_thread")]
 async fn events_with_x_a_bun_plugin() {
     conformance("bun").await;
+}
+
+// ── The waits of a case, and what a failure says (#1003) ────────
+
+/// A runtime that takes its time to come up, as a language VM or a
+/// compiled binary does on a loaded machine (#238, #1003).
+struct SlowStart(Duration);
+
+impl DynPlugin for SlowStart {
+    fn platform(&self) -> bool {
+        true
+    }
+
+    fn name(&self) -> &str {
+        "a runtime starting cold"
+    }
+
+    fn apply<'a>(&'a self, _ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
+        Box::pin(async move {
+            tokio::time::sleep(self.0).await;
+            Ok(Effect::Done)
+        })
+    }
+}
+
+/// A wait whose failure needs no summary of the runtimes (a test's own).
+fn no_report() -> String {
+    String::new()
+}
+
+/// The row `c` of a case, as a load of it gives one.
+fn settled_row() -> Row {
+    Row {
+        label: "c".into(),
+        at: Location::X,
+        language: "node".into(),
+        scope: "root".into(),
+        config: json!({}),
+    }
+}
+
+/// A runtime that starts slowly does not fail its row: the runtime is
+/// waited for on its own, and the row's window starts after it (#1003). The
+/// one window `settled` had before #1003 ran out: a loaded machine starts a
+/// runtime in tens of seconds, and the row had not even been reached.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_slow_start_does_not_use_up_the_rows_guard() {
+    // Both waits last `guard` here (times `RUTIS_TEST_TIME_SCALE` on a loaded
+    // machine): the runtime takes four of those to come up, so the window a
+    // row on its own gets runs out while it starts.
+    let guard = Guard(Duration::from_millis(100));
+    let window = guard.limit();
+    let root = Ctx::root_with(tokio::runtime::Handle::current());
+    let view = root.plugin(SlowStart(window * 4));
+    let row = settled_row();
+    let pending = || (Some((FiberState::Pending, None)), None);
+    let alone = row_settled(&row, Some((&view, "rt-x")), pending, guard, no_report).await;
+    assert_eq!(
+        alone.unwrap_err().lines().next().unwrap(),
+        format!("row c did not start within {window:?}")
+    );
+    // The runtime first (four windows, under its own guard), then the row in
+    // its one window: the runtime's start is not taken out of the row's.
+    runtime_up(&view, "rt-x", Guard(window * 8), no_report)
+        .await
+        .unwrap();
+    let started = std::time::Instant::now();
+    let runs = || {
+        let up = started.elapsed() >= window / 5;
+        let fiber = if up {
+            FiberState::Active
+        } else {
+            FiberState::Pending
+        };
+        (Some((fiber, None)), up.then_some(RowEventState::Running))
+    };
+    row_settled(&row, Some((&view, "rt-x")), runs, guard, no_report)
+        .await
+        .unwrap();
+}
+
+/// A runtime that fails is the case's failure at once, with what it is and
+/// what it wrote, not a row that quietly waits out its guard (#1003).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_runtime_that_fails_is_named_at_once() {
+    struct Refuses;
+
+    impl DynPlugin for Refuses {
+        fn platform(&self) -> bool {
+            true
+        }
+
+        fn name(&self) -> &str {
+            "a runtime refusing the host"
+        }
+
+        fn apply<'a>(&'a self, _ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
+            Box::pin(async move { Err(Error::from(ErrorKind::PluginFailed("refused".into()))) })
+        }
+    }
+
+    let root = Ctx::root_with(tokio::runtime::Handle::current());
+    let view = root.plugin(Refuses);
+    let guard = Guard(Duration::from_secs(5));
+    let why = runtime_up(&view, "rt-y-swift", guard, no_report)
+        .await
+        .unwrap_err();
+    assert!(why.starts_with("runtime rt-y-swift is Failed"), "{why}");
+    assert!(why.contains("refused"), "{why}");
+}
+
+/// A row that does not start says how far it got and what every runtime is
+/// doing, in lines a log keeps whole: the `(runtimes: …)` of #1003 ended at
+/// `Some((Pending, No`.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_failure_names_every_runtime_and_its_last_words() {
+    let dir = tempfile::tempdir().unwrap();
+    let stderr = dir.path().join("rt-y-swift.stderr");
+    std::fs::write(&stderr, format!("one\ntwo\n{}\n", "x".repeat(300))).unwrap();
+    let root = Ctx::root_with(tokio::runtime::Handle::current());
+    let view = root.plugin(SlowStart(Duration::from_secs(30)));
+    let report = || {
+        runtime_lines(
+            "rt-y-swift",
+            &Snapshot {
+                generation: 0,
+                state: FiberState::Pending,
+                error: Some(std::sync::Arc::new(ErrorKind::PluginFailed(
+                    "the runtime refused: ".repeat(20).into(),
+                ))),
+            },
+            &stderr,
+        )
+    };
+    let mut row = settled_row();
+    row.at = Location::Y;
+    let guard = Guard(Duration::from_millis(50));
+    let why = row_settled(
+        &row,
+        Some((&view, "rt-y-swift")),
+        || (Some((FiberState::Pending, None)), None),
+        guard,
+        report,
+    )
+    .await
+    .unwrap_err();
+    // The row, then what it saw, then every runtime: a line each.
+    assert!(
+        why.starts_with(format!("row c did not start within {:?}\n", guard.limit()).as_str()),
+        "{why}"
+    );
+    assert!(why.contains("\n  its fiber Pending\n"), "{why}");
+    assert!(why.contains("\n  its last rutis/row none\n"), "{why}");
+    assert!(why.contains("\n  rt-y-swift: fiber Pending\n"), "{why}");
+    assert!(
+        why.contains("\n  rt-y-swift: its error the runtime refused"),
+        "{why}"
+    );
+    assert!(why.contains("\n  rt-y-swift: | one\n"), "{why}");
+    assert!(why.contains("\n  rt-y-swift: | two\n"), "{why}");
+    // Every line within what a log keeps (the width of #1003's cut), the
+    // long ones cut with `…`.
+    for line in why.lines() {
+        assert!(line.chars().count() <= 120, "{line}");
+    }
+    assert!(
+        why.lines().filter(|line| line.ends_with('…')).count() == 2,
+        "{why}"
+    );
+}
+
+/// A row that failed for real (not a `fails` row) is the case's failure at
+/// once: the reason, whole, and every runtime, as the deadline's failure
+/// gives them (#1003).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_row_that_failed_says_why_and_what_every_runtime_is_doing() {
+    let dir = tempfile::tempdir().unwrap();
+    let stderr = dir.path().join("rt-x.stderr");
+    std::fs::write(&stderr, "loading t/keeps\n").unwrap();
+    let root = Ctx::root_with(tokio::runtime::Handle::current());
+    let view = root.plugin(SlowStart(Duration::from_secs(30)));
+    let row = settled_row();
+    let report = || {
+        runtime_lines(
+            "rt-x",
+            &Snapshot {
+                generation: 0,
+                state: FiberState::Active,
+                error: None,
+            },
+            &stderr,
+        )
+    };
+    let started = std::time::Instant::now();
+    let why = row_settled(
+        &row,
+        Some((&view, "rt-x")),
+        || {
+            (
+                Some((FiberState::Failed, Some("no such plugin t/keeps".into()))),
+                None,
+            )
+        },
+        Guard(Duration::from_secs(30)),
+        report,
+    )
+    .await
+    .unwrap_err();
+    // Not at the guard: the failure is there and is the case's.
+    assert!(started.elapsed() < Duration::from_secs(5), "{why}");
+    // The row, its reason, then every runtime: a line each.
+    assert_eq!(why.lines().next().unwrap(), "row c failed");
+    assert!(why.contains("\n  its fiber Failed\n"), "{why}");
+    assert!(
+        why.contains("\n  its error: no such plugin t/keeps\n"),
+        "{why}"
+    );
+    assert!(why.contains("\n  its last rutis/row none\n"), "{why}");
+    assert!(why.contains("\n  rt-x: fiber Active\n"), "{why}");
+    assert!(why.contains("\n  rt-x: | loading t/keeps\n"), "{why}");
+}
+
+/// The reason of a failure is whole, however long and however many lines:
+/// it is what went wrong, so it is not cut (`cut` is for the report's lines,
+/// #1003).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_long_reason_over_several_lines_is_not_cut() {
+    let long = "the runtime refused the module: ".repeat(6);
+    assert!(long.chars().count() > WIDTH * 2, "{long}");
+    let reason = format!("first line\n{long}\nlast line");
+    let seen = reason.clone();
+    let why = row_settled(
+        &settled_row(),
+        None,
+        || (Some((FiberState::Failed, Some(seen.clone()))), None),
+        Guard(Duration::from_secs(30)),
+        no_report,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(
+        why,
+        format!(
+            "row c failed\n  its fiber Failed\n  its error: first line\n  its error: {long}\n  its error: last line\n  its last rutis/row none\n"
+        )
+    );
 }
 
 // ── The Rust participant and the node (events-v2 API) ───────────

@@ -303,6 +303,8 @@ CI 慢下来，通常是一项一项加检查加出来的。新增检查（新�
 - `setup-bun` 把 Bun 装进 `~/.bun/bin`，同一台机器上的实例共用这个目录，而 `network-macos` 和 `runtimes-bun` 在完整运行里同时装不同的版本：`runtimes-bun` 在自托管 macOS 上给 `setup-bun` 一个 `runner.temp` 下的 `HOME`，不用缓存；
 - `tools/*.sh` 留在 `/tmp/rutis-*` 的目录超过 12 小时后删除；
 - 几个实例同时编译会把机器压满（10 核上 4 个实例各开 10 个 rustc，负载到过 79）：每个任务的 `CARGO_BUILD_JOBS` 和 `RUST_TEST_THREADS` 设成 CPU 数除以机器上的实例数（`~/actions-runner*/` 里有 `.runner` 的目录数），至少 2，开头会打印选的值和当时的负载。实例不装在 `~/actions-runner*` 下，或要别的值时，设仓库变量 `RUTIS_CI_JOBS`。`sdk-repro-macos` 也照此限制，不影响构建结果。
+- 同样的负载也让测试的防挂死上限放长：每个 "self-hosted runner, start" 步骤按 runner 的操作系统传入仓库变量 `MACOS_TEST_TIME_SCALE`（macOS）或 `LINUX_TEST_TIME_SCALE`（Linux，§11），都没设置时是 `3`，`tools/ci-self-hosted.sh` 把它写进任务的环境 `RUTIS_TEST_TIME_SCALE`。`rutis-test-support` 的所有上限（`HANG_GUARD`、`Guard`、`within`、`eventually` 等，以及测试自己用 `scaled(...)` 的等待）都乘以它；它只放长上限，不改测试等的事件，真挂死仍在有限时间内失败（10 s 的上限变成 30 s）。本地不设就是 1；机器慢时本地也可以设，如 `RUTIS_TEST_TIME_SCALE=2 cargo test`。产品的时限不受它影响。发布门里 macOS 的任务同时排满时，这些上限没有放长，事件一致性用例有过 20 秒内等不到行启动的失败（#1003）。
+- 事件一致性用例（`events_conformance`）自己的等待是另一套：`RUTIS_EVENTS_SETTLE_SCALE` 乘它的 settle 窗口（一条日志期望或 `settles` 的步骤 5 秒，`logLacks` 之后再等 300 ms，见 `crates/rutis-bridge/src/runtime/testing/events.rs`），它不跟 `RUTIS_TEST_TIME_SCALE`，两个上限要一起放。跑这个套件的任务都传入 `2`：Linux 的 `rust`、`runtimes-kotlin`，macOS 的 `runtimes-swift`、`network-macos`，Windows 的 `runtimes-windows`。自托管的机器上这套用例本身也慢（#1003 那次就是 macOS 上等不到行启动），macOS 的步骤从 1 改成和 Linux 一样。
 - Go 的编译缓存 `GOCACHE` 是每个实例自己的（`~/.cache/rutis-ci/<runner 名>/go-build`，Windows 上在 `_work/_rutis-ci/go-build`）；任务失败后，结尾一步删掉这个实例的 Go 缓存：被中途取消的任务可能留下写了一半的缓存文件，之后读到它的构建都会失败（"malformed elf file"，#374）。下一次任务重新编译 Go 的标准库，大约多一分钟。
 
 **加一个实例前，机器上要有**：
@@ -327,7 +329,7 @@ CI 慢下来，通常是一项一项加检查加出来的。新增检查（新�
 - 进程的工作目录从 `/proc` 读（没有 `lsof`）；
 - 容器看得到整台机器的 CPU，看不到别的容器：每个任务的并行数取仓库变量 `LINUX_CI_JOBS`（4 个容器时设 `8`），没设置时是全部 CPU 数；
 - `setup-python` 在自托管的 Linux 上可以用，Python 照旧由它装。
-- 机器负载高（4 个容器同时编译、同时起多个运行时），测试的防挂死上限按 `RUTIS_TEST_TIME_SCALE` 放长：各个 "self-hosted runner, start" 步骤传入仓库变量 `LINUX_TEST_TIME_SCALE`，没设置时是 `3`，`tools/ci-self-hosted.sh` 把它写进任务的环境。`rutis-test-support` 的所有上限（`HANG_GUARD`、`Guard`、`within`、`eventually` 等，以及测试自己用 `scaled(...)` 的等待）都乘以它；它只放长上限，不改测试等的事件，真挂死仍在有限时间内失败（10 s 的上限变成 30 s）。本地不设就是 1；机器慢时本地也可以设，如 `RUTIS_TEST_TIME_SCALE=2 cargo test`。产品的时限不受它影响。
+- 机器负载高（4 个容器同时编译、同时起多个运行时），测试的防挂死上限同样按 `RUTIS_TEST_TIME_SCALE` 放长：各个 "self-hosted runner, start" 步骤传入仓库变量 `LINUX_TEST_TIME_SCALE`，没设置时是 `3`。这和上面的自托管 macOS 是同一套（见 §10）：只放长上限，不改测试等的事件。
 
 `runtimes-windows` 和 `dylib-windows.yml` 同样由仓库变量 `WINDOWS_RUNNER` 决定：没设置时是 `"windows-2025"`，设成 `["self-hosted","Windows"]` 就跑在组织的自托管 Windows runner 上（一台 16 核的机器上 4 个实例，以 `NETWORK SERVICE` 运行；Rust 在 `C:\Rust`，有 VS Build Tools、Git、Node、Go、Python）。步骤用 Git 的 bash：机器的系统 `PATH` 里要有 `C:\Program Files\Git\bin`（改了以后重启 runner 服务）。自托管时，每个实例的编译目录和场景目录在 `_work/_rutis-ci/` 下（`checkout` 会清掉检出目录里的 `target`）；Python 不用 `setup-python`（它的 Windows 安装程序要管理员权限），用机器上的 Python，在 `runner.temp` 里建虚拟环境；并行数是 CPU 数除以 4，仓库变量 `WINDOWS_CI_JOBS` 可以改。`dylib-windows` 和 `runtimes-windows` 用同一个实例的编译目录；它的脚本把临时文件放在 `mktemp -d /tmp/rutis-*` 里，用完不删（可复现检查在里面放两份源码和两份 release 构建）；Git 的 bash 把 `/tmp` 映射到服务账户的临时目录，所有实例共用，设 `TMP`、`TEMP` 也不会改变它。所以和自托管的 Mac 一样，任务开头删掉其中超过 12 小时的 `rutis-*` 目录。`tools/test-dylib-launcher.sh` 的 Job Object 检查按进程名在整台机器上找宿主进程，所以宿主副本每次用不同的名字，别的实例同时跑这个检查不会互相干扰。机器要开长路径：注册表 `LongPathsEnabled` = 1，`git config --system core.longpaths true`。
 
