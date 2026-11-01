@@ -391,6 +391,48 @@ async fn an_unmarked_service_is_named_in_the_diagnostic() {
     root.shutdown().await.unwrap();
 }
 
+/// A handle a plugin of rutis itself provides for its own rows (the loader's
+/// is one) is no service the program meant to serve: the wait for a name it
+/// happens to take says nothing about marking it (#996). The same type
+/// provided by the program is still named.
+#[tokio::test]
+async fn a_handle_of_rutis_own_plugins_is_not_described_as_unmarked() {
+    #[derive(Clone)]
+    struct Handle;
+    #[derive(Clone)]
+    struct Plain;
+
+    struct Provided<T>(T, bool);
+    impl<T: Clone + Send + Sync + 'static> rutis::host::DynPlugin for Provided<T> {
+        fn name(&self) -> &str {
+            "provided"
+        }
+        fn platform(&self) -> bool {
+            self.1
+        }
+        fn apply<'a>(
+            &'a self,
+            ctx: &'a Ctx,
+        ) -> BoxFuture<'a, Result<rutis::host::Effect, RutisError>> {
+            Box::pin(async move {
+                ctx.provide(self.0.clone())?;
+                Ok(rutis::host::Effect::Done)
+            })
+        }
+    }
+
+    let root = Ctx::root().unwrap();
+    root.plugin(Provided(Handle, true)).await.unwrap();
+    assert!(rutis_bridge::exports::unexported(&root, "handle").is_none());
+    root.plugin(Provided(Plain, false)).await.unwrap();
+    let hint = rutis_bridge::exports::unexported(&root, "plain").unwrap();
+    assert!(
+        hint.contains("Plain") && hint.contains("#[rutis::service]"),
+        "{hint}"
+    );
+    root.shutdown().await.unwrap();
+}
+
 /// A marked service provided in this scope but not served (a writable
 /// binding) is not described as out of scope.
 #[tokio::test]

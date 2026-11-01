@@ -13,7 +13,8 @@ use std::any::Any;
 use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, Mutex, Weak};
 
-use rutis::host::{BoxFuture, Effect, InstanceId, Key, TypeKey};
+use rutis::host::diagnostics::RuntimeDiagnostics;
+use rutis::host::{BoxFuture, Effect, InstanceId, Key, PluginId, TypeKey};
 use rutis::host::{CtxHost, ErrorKind};
 use rutis::internal::service::{
     erased_serde, exported_name, Answer, CallError, Encoded, Entry, Exposer, Exposure, Function,
@@ -361,10 +362,28 @@ pub fn unexported(ctx: &Ctx, name: &str) -> Option<String> {
                 "`{name}` is the Rust service {type_name}, provided in {place}, not visible here"
             ));
         }
+        // What is left to say is advice: mark the type. A handle a plugin of
+        // rutis itself provides (the loader's, a transport's) is no service
+        // the program meant to serve (design-rust-service-exposure R1), so a
+        // name one of them happens to take says nothing about marking it
+        // (#996).
+        if provided_by_rutis(&diagnostics, binding.provider) {
+            return None;
+        }
         Some(format!(
             "`{name}` is the Rust service {type_name}, which is not exported: add #[rutis::service] to its impl"
         ))
     })
+}
+
+/// Whether `provider` is a plugin of rutis itself (a transport, a link, a
+/// runtime, the loader) and not the root, which is the program's own:
+/// `PluginDiagnostics::platform` marks both.
+fn provided_by_rutis(diagnostics: &RuntimeDiagnostics, provider: PluginId) -> bool {
+    diagnostics
+        .plugins
+        .iter()
+        .any(|plugin| plugin.id == provider && plugin.platform && plugin.parent.is_some())
 }
 
 /// As `#[rutis::service]` names a type by default.

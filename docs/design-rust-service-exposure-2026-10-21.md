@@ -64,7 +64,7 @@ await calendar.add({ title: 'Standup', startsAt: new Date() })
 | R4 | **能传什么：** 与今天的 `Exports` 完全相同：serde 参数与返回值、`async` 与同步方法（对调用方都是 `Promise`）、按引用的回调、`&Ctx` 调用方行、`Result` 错误抛出（`name` / `code` / `data`）、带标签的值。规则写在 [Rust 宿主指南](guide/rust-host.md#导出服务参考)，不变。 |
 | R5 | **出错在编译期：** 带标注的 `impl` 里有一个公开方法绑定不了（`&mut self`、借用返回值、不支持的参数），是**编译错误**，指到那个方法，提示改法或在方法上加 `#[service(skip)]`。带 `#[cfg]` 的方法只在包含它的构建里检查：宏求不了 cfg，所以它的错误放在同样的 cfg 下生成。今天是构建警告并悄悄跳过。 |
 | R6 | **重名：** 同一作用域里两个类型对外名字相同，后提供的那个 `provide` 失败，错误写明双方的类型。与叶子插件的重名规则一致。 |
-| R7 | **没标注的诊断：** 行按名字依赖 `x`，运行时里没有叫 `x` 的服务，但有一个按默认规则命名为 `x` 的未标注 Rust 服务时，`Loader::waiting_for(&entry)` 列出这一行等的名字，并写明："`x` 是未对外的 Rust 服务 `crate::X`，在它的 `impl` 上加 `#[rutis::service]`"。 |
+| R7 | **没标注的诊断：** 行按名字依赖 `x`，运行时里没有叫 `x` 的服务，但有一个按默认规则命名为 `x` 的未标注 Rust 服务时，`Loader::waiting_for(&entry)` 列出这一行等的名字，并写明："`x` 是未对外的 Rust 服务 `crate::X`，在它的 `impl` 上加 `#[rutis::service]`"。rutis 自己的插件（传输、连接、运行时、加载器）提供的句柄不在其列：那是它们给自家 Rust 行用的，不是谁忘了标注的服务（#996）。 |
 | R8 | **dylib 插件：** dylib 里带标注的类型在加载后同样对外，宿主不需要知道它（插件 crate 只依赖 `rutis-sdk`，对着 sdk-bundle 构建时连依赖都不写；它经 `rutis_sdk::rutis::service` 拿到标注，那样生成的代码经 `rutis_sdk::rutis`）。换代时旧代的对外入口随旧代的服务一起撤销，新代提供时重新对外，消费者按现有规则重载。宿主要链接 `rutis-bridge`。 |
 | R9 | **TypeScript 声明：** `rutis-host types <crate 目录> -o services.d.ts` 从源码里找出全部带标注的类型，写出与今天相同的声明（同一个生成器）。想每次构建自动更新的，`build.rs` 里写一行 `rutis_bridge::build::Exports::new().typescript("services.d.ts").generate()`，不用列类型。调用本身不需要声明。 |
 | R10 | **兼容：** `build.rs` 的 `.service(…)` / `.service_in(…)` 继续可用，用于改不了源码的第三方类型。一个类型既有标注又在清单里，构建报错，提示删掉清单里那一行。手写 `HostDispatch` 继续可用。<br>**已退休（0.17，#647）：** 清单删除；改不了源码的类型包一层自己的类型，标注，逐个转发方法。手写 `HostDispatch` 照旧可用。 |
