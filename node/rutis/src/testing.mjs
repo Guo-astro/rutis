@@ -120,8 +120,8 @@ function starting() {
 // running now has ended — `beforeEach` opens the next one — so that what a
 // test left running when it ended keeps nothing of it alive (#997). What
 // those hooks still do (unload a host, say) stays held meanwhile
-// (`flushing`): node:test cancels the tests after it when the event loop
-// empties while an `after` hook is pending.
+// (`flushing`, under `node --test`): node:test cancels the tests after it
+// when the event loop empties while an `after` hook is pending.
 let ended = false
 let flushing = false
 let testEnded
@@ -144,12 +144,11 @@ if (typeof globalThis.Bun !== 'undefined') {
     try {
       onTestFinished(done => {
         ended = true
-        flushing = true
         const finish = typeof done === 'function' ? done : () => {}
         let result
-        try { result = fn() } catch (error) { flushing = false; finish(error); return }
-        if (result && typeof result.then === 'function') result.then(() => { flushing = false; finish() }, error => { flushing = false; finish(error) })
-        else { flushing = false; finish() }
+        try { result = fn() } catch (error) { finish(error); return }
+        if (result && typeof result.then === 'function') result.then(() => finish(), error => finish(error))
+        else finish()
       })
     } catch {}
   }
