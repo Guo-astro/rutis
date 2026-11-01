@@ -931,7 +931,9 @@ type Ctx struct {
 // `rutis:"name"` tag overrides). The struct may list only the methods it
 // uses, but each field must match a method the service declares. A field
 // is a func with an optional leading context.Context and an error as its
-// last result, after at most one value.
+// last result, after at most one value; a field whose type is exactly the
+// method a provider in this process declares takes that method as it is,
+// with no error needed last.
 func (c *Ctx) Use(name string, target any) error {
 	if !c.uses(name) {
 		return peer.NewCoded("BindingError", "not-declared", map[string]any{"service": name}, "service %s is not available to this plugin, which does not declare it in Inject: add %q to its Inject", name, name)
