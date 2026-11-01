@@ -378,6 +378,44 @@ jobs:
           path: ${{ runner.temp }}/events.txt
           retention-days: 14
 
+  # The CPU baseline of instances (#980): what creating N instances of eight
+  # rows costs, each row with a `FiberStatusChanged` listener (8N listeners on
+  # one name, as a Dim session had on rutis 0.17.1), what closing them at once
+  # costs, and what a host costs while nothing is called and no event is
+  # queued. Release build, where 1000 instances take about a minute; the
+  # thresholds and the measured numbers are in the test
+  # (crates/rutis-loader/tests/close_cpu.rs). Pull requests run the same test
+  # in a debug build in ci.yml's `rust` job, on Linux; Windows skips it
+  # (WINDOWS_SKIP_TESTS_LOADER): the numbers are the process's CPU time.
+  cpu:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.98.1
+      - uses: Swatinem/rust-cache@v2
+      - name: Instances fit the CPU baseline
+        # bash -eo pipefail: a failing test fails the step through tee.
+        shell: bash
+        run: |
+          cargo test -p rutis-loader --release --test close_cpu -- --nocapture 2>&1 \
+            | tee "$RUNNER_TEMP/close-cpu.txt"
+      - name: Queued emits share their listeners
+        shell: bash
+        run: |
+          cargo test -p rutis-loader --release --test queued_emits_memory -- --nocapture 2>&1 \
+            | tee -a "$RUNNER_TEMP/close-cpu.txt"
+      - name: Baseline numbers
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo '### CPU baseline (#980)'
+            echo '```'
+            sed -n '/^instances/,$p' "$RUNNER_TEMP/close-cpu.txt" || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
   soak:
     runs-on: ubuntu-24.04
     steps:

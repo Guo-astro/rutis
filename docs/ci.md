@@ -22,7 +22,7 @@
 | `ci.yml` | 每个 PR；每晚由 `nightly.yml` 调用（`all=true`）；发布门里由 `release.yml` 调用（`all=true`）；手动（任何分支，`all` 默认打开） | 测试和检查（下文） |
 | `nightly.yml` | 每天 UTC 19:00，main 有新提交时；手动（`force`：没有新提交也跑） | 调用 `ci.yml`（`all=true`）和 `stress.yml`；用最新已发布的 Cordis 插件跑一遍 Cordis 检查（`cordis-latest`，只报告）；按改动调用 `install.yml`（五个平台；没改打包路径时只跑 linux-x64，为了每晚的开发者体验场景，#690）、`dylib-windows.yml` 和 `ci.yml` 的 `specs`、`sdk-repro`（每周一全跑）；`netem.yml` 暂停，不再调用（自托管 Linux 可能没有 Docker）；失败时开问题单（下文、§7） |
 | `dylib-windows.yml` | 每晚由 `nightly.yml` 按 dylib 路径或周一调用；发布门里由 `release.yml` 调用（打 `v*` tag 不再单独触发）；手动 | Windows 上的 dylib 测试 |
-| `stress.yml` | 每晚由 `nightly.yml` 调用；手动 | 重复运行内核测试和多进程测试；网络长时间测试；实例的资源基线（#979）；大规模运行内核的 shuttle 模型，以及模糊测试；宿主长时间运行的 S8（三个平台）（下文） |
+| `stress.yml` | 每晚由 `nightly.yml` 调用；手动 | 重复运行内核测试和多进程测试；网络长时间测试；实例的资源基线（#979）与 CPU 基线（#980）；大规模运行内核的 shuttle 模型，以及模糊测试；宿主长时间运行的 S8（三个平台）（下文） |
 | `netem.yml` | 暂停：每晚不再调用；手动 | S5 的容器版（风险 E12，#341）：两个 Docker 容器，非 loopback 地址 + TLS，netem 延迟、丢包、断网（下文） |
 | `ci-stats.yml` | 每周；手动 | 统计 CI 的耗时和失败 |
 | `deps.yml` | 每周；手动 | 依赖漏洞检查：`cargo deny check advisories`（不含示例项目）、`@arcships/rutis-runtime` 的 `npm audit`、Python 包的 `pip-audit`。不在 PR 上跑，不阻止合并；失败时 GitHub 通知维护者 |
@@ -50,7 +50,7 @@
 
 ### 每晚的 `stress.yml`
 
-只偶尔失败的测试，在 PR 上碰巧撞到时会挡住和它无关的人。`stress.yml` 每晚把这类测试重复跑很多轮，让偶发失败先在夜里出现。它不在 PR 上跑，不影响 PR 的时间。需要大量迭代或固定时长的检查也放在这里：内核的 shuttle 模型和模糊测试（#179），宿主长时间运行的场景 S8（#192），实例的资源基线（#979）。七个任务同时运行：
+只偶尔失败的测试，在 PR 上碰巧撞到时会挡住和它无关的人。`stress.yml` 每晚把这类测试重复跑很多轮，让偶发失败先在夜里出现。它不在 PR 上跑，不影响 PR 的时间。需要大量迭代或固定时长的检查也放在这里：内核的 shuttle 模型和模糊测试（#179），宿主长时间运行的场景 S8（#192），实例的资源基线（#979）与 CPU 基线（#980）。八个任务同时运行：
 
 | 任务 | 做什么 |
 | --- | --- |
@@ -58,11 +58,12 @@
 | `multiprocess` | bridge、loader 中会启动进程、打开本地通道、启动运行时进程的测试：除 `ci.yml` 的 `PURE_TESTS_BRIDGE`、`PURE_TESTS_LOADER` 两个列表以外的全部测试文件（§4；新测试文件这里自动跟着跑）。`MACOS_SKIP_TESTS_*`、`WINDOWS_SKIP_TESTS_*` 不影响这里：那些测试仍启动进程，只是 PR 上不在 macOS、Windows 跑。运行时和 `rust` 任务相同（§9）。测试只构建一次，然后重复 `rounds` 轮，每轮换测试线程数、打乱顺序、换种子。某一轮失败也跑完所有轮，最后才让任务失败 |
 | `memory` | 实例的资源基线（#979，`crates/rutis-loader/tests/close_memory.rs`）：一个 8 行的实例活着时占多少、N 个一起关闭的峰值（#977）、关完之后剩下什么（活跃字节、fiber、服务登记、事件监听者、任务）。release 构建，1000 个实例约一分钟；阈值和测得的分布写在测试里，各项数字总在作业摘要里。PR 上同一个测试在 `ci.yml` 的 `rust` 任务里以 debug 构建跑（`PURE_TESTS_LOADER`），每晚这里以 release 构建跑 |
 | `soak` | bridge 的 WebSocket 和本地通道长时间测试，各 `soak_secs` 秒（默认 600） |
+| `cpu` | 实例的 CPU 基线（#980，`crates/rutis-loader/tests/close_cpu.rs`）：创建 N 个 8 行的实例（每行挂一个 `FiberStatusChanged` 监听者，共 8N 个监听者，与 Dim 在 rutis 0.17.1 上的会话一样）用多少 CPU 时间、一起关闭它们用多少，两个阶段都算到这一次排队的**状态变化全部送达**为止，以及宿主在没有调用、没有排队事件时空转多少（进程 CPU 时间，不是墙上时间）。release 构建，1000 个实例创建约 38 秒、关闭约 15 秒，数字总在作业摘要里。阈值：十倍的实例创建不超过 300 倍 CPU（实测 release 192 倍、debug 99 倍；#980 修复前 222 与 108）、关闭不超过 200 倍（实测 120 与 87；修复前 121 与 87）——十倍的实例本来就要约一百倍的监听者调用（每次状态变化送到 8N 个监听者），所以这两条守的是「随 N 的增长不比送达量本身更快」；空的宿主在 1 秒窗口里不超过 5% CPU（实测 0.01%）。同一个任务里还跑 `queued_emits_memory`：一个 emit 的监听者被扣住时循环「登记 + emit」，排队的 N 个 emit 共用的监听者快照要随 N 线性（实测每个约 1.9 KB；每次 emit 各存一份列表时 1024 个要 6.2 MB，平方增长）。PR 上同一个测试在 `ci.yml` 的 `rust` 任务里以 debug 构建跑；量的是进程 CPU 时间（`clock_gettime`），所以只在 unix 上跑，Windows 的 PR 运行按 `WINDOWS_SKIP_TESTS_LOADER` 跳过它。每晚这里以 release 构建跑 |
 | `shuttle` | 内核的 shuttle 模型（`crates/rutis/src/fiber/shuttle_tests.rs`：TransitionTask 唤醒、`post_join` 与驱动退出、并发 dispose 只清理一次），每个模型每种调度器 `shuttle_iterations` 次迭代（默认 1,000,000；PR 上在 `rust` 里跑 1000 次）。失败时打印失败的调度和种子，日志作为 artifact `shuttle-log` 上传，作业摘要里写明怎样重放（`RUTIS_SHUTTLE_REPLAY`） |
 | `fuzz` | `fuzz/` 下的三个模糊测试目标（cargo-fuzz，nightly Rust），矩阵里每个目标一项，各 `fuzz_secs` 秒（默认 1200）：`session_frame`（会话帧和其中的带标签值）、`local_lines`（本地通道的行分帧及其长度上限）、`websocket_upgrade`（监听方读取升级请求）。都从仓库里的语料（`fuzz/corpus/<目标>`）开始，运行中新增的语料不保留。崩溃、卡住（单个输入超过 10 秒）或性质检查失败，该项失败：输入和日志作为 artifact `fuzz-<目标>` 上传，作业摘要里有复现命令。跑在 GitHub 的 Linux runner 上（`LINUX_RUNNER`，§11） |
 | `soak-host` | 端到端场景 S8（`tests/e2e/tests/soak.rs`），Linux、macOS、Windows 矩阵各一项：一个 `rutis-host run`（S3 的多语言配置，加一个经 TCP 代理连接的远程 Python 节点）运行 `host_soak_secs` 秒（默认 3600），期间按种子随机地增删改行并重新加载（SIGUSR1 或 `--watch-config`）、写入会被拒绝的配置、`kill -9` Node 和 Python 运行时（宿主按 `on-failure` 重启）、断开再恢复 link；采样宿主、运行时和节点的进程数、fd（句柄）、线程、内存，后段对前段的增长超过阈值即失败。然后每种结束方式各起一个宿主：Ctrl-C（Windows 上 Ctrl-Break）、SIGTERM（Unix）、`kill -9`（之前加入清理永不返回的行），每次检查宿主的进程在限定时间内全部退出、宿主的输出和做过的事一致；最后做残余检查。失败时作业摘要里有种子和重放命令（`RUTIS_S8_SEED`、`RUTIS_S8_OPS`），场景目录（`logs/` 里有操作序列、资源采样和每个宿主的输出）作为 artifact `soak-s8-<平台>` 上传。runner：Linux 按 `LINUX_RUNNER`（§11），macOS 按 `MACOS_RUNNER`（自托管，§10），Windows 按 `WINDOWS_RUNNER`（§11）；运行时版本同端到端场景（§9）。本地短跑：`cargo test -p rutis-e2e --test soak -- --ignored --nocapture`（默认 150 秒，`RUTIS_S8_SECS` 改时长）。不在 PR 上跑：PR 上的 `e2e` 只跑它的两个单元测试（操作只由种子决定、增长判定） |
 
-整个 workflow 的时间由最慢的任务决定：`soak` 约 21 分钟；`multiprocess` 估计 30–45 分钟（构建约 10 分钟，每轮约 1–1.5 分钟）；`memory` 约 2–3 分钟（构建加约一分钟）；`fuzz` 每项约 25 分钟（安装 cargo-fuzz、构建，再跑 20 分钟）；`shuttle` 几分钟；`soak-host` 最慢，约 75–90 分钟（构建，运行一小时，再加每种结束方式各一个宿主约 5 分钟），任务上限 150 分钟。
+整个 workflow 的时间由最慢的任务决定：`soak` 约 21 分钟；`multiprocess` 估计 30–45 分钟（构建约 10 分钟，每轮约 1–1.5 分钟）；`memory` 约 2–3 分钟（构建加约一分钟）；`cpu` 约 3 分钟（构建加约一分钟的测量）；`fuzz` 每项约 25 分钟（安装 cargo-fuzz、构建，再跑 20 分钟）；`shuttle` 几分钟；`soak-host` 最慢，约 75–90 分钟（构建，运行一小时，再加每种结束方式各一个宿主约 5 分钟），任务上限 150 分钟。
 
 - 失败不重试（规范 Q7.3）。
 - 每轮在日志里打印线程数和种子。作业摘要里有每一轮的结果表、失败的测试名和它失败的轮次，以及重放命令：用同样的种子、线程数和顺序重跑那个测试文件。

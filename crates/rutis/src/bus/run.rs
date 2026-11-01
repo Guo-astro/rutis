@@ -623,6 +623,18 @@ pub(crate) async fn emit_call(
     }
 }
 
+/// [`call_async`] for a synchronous listener, without the future an `emit`
+/// would poll to completion at once: one boxing per call was a large part of
+/// what a status change to many listeners cost (#980).
+pub(crate) fn call_sync_listener(
+    entry: &Entry,
+    listener: &dyn crate::events::ErasedSync,
+    inv: &Inv<'_>,
+) -> Result<Option<Value>, Error> {
+    catch_unwind(AssertUnwindSafe(|| listener.call(&entry.ctx, inv, None)))
+        .unwrap_or_else(|panic| Err(panic_error(panic)))
+}
+
 pub(crate) fn report_listener(ctx: &Ctx, name: &str, entry: &Entry, error: Error) {
     let report = ErrorKind::ListenerFailed {
         name: name.to_owned(),
