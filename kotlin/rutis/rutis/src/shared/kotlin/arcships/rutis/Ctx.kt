@@ -77,7 +77,12 @@ class Ctx internal constructor(private val rt: RuntimeState, internal val row: R
         val factory = Tables.clientFactory(type)
             ?: throw IllegalArgumentException("${type.name} has no proxy: annotate it @RutisClient and apply the rutis-ksp processor")
         val id = row.id(name)
-        val (local, host) = synchronized(rt.lock) { rt.services[id] to rt.hosts[id] }
+        // One whose row is unloading is that row's still, and no other's: as
+        // Rust's read_binding_as, where a provider out of Active hides what
+        // it provides from every reader but its own subtree.
+        val (local, host) = synchronized(rt.lock) {
+            rt.services[id]?.takeIf { !it.unloading || it.row == row.key } to rt.hosts[id]
+        }
         val remote = synchronized(rt.lock) { rt.far[id] }?.takeIf { it.methods != null }
         val handle: ServiceHandle = when {
             local != null -> {

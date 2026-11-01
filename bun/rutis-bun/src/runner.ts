@@ -116,7 +116,10 @@ interface Row {
   config: unknown
   exports: Record<string, Record<string, Kind>>
   isolate: Map<string, string>
-  cleanups: Array<() => unknown>
+  // The unload stack: cleanups and the withdrawals of the services the row
+  // provides, in the order they were registered, run in reverse when the
+  // row unloads (as Rust's effects: a withdrawal is an effect too).
+  steps: Array<() => unknown>
   // Its scope chain, and the signal its unload aborts.
   chain: Scope[]
   abort: AbortController
@@ -131,6 +134,10 @@ interface Row {
 const idIn = (row: Row, name: string) => scopedId(name, row.isolate.get(name))
 
 interface Slot { row: string, methods: Set<string>, object: unknown, handle: string | null, generation: number, announced?: boolean }
+// A service a row of this process provides. `unloading`: its row is
+// unloading, so no other row sees it any more, its own row still does until
+// the withdrawal on its unload stack runs.
+interface Provided { row: string, value: unknown, unloading: boolean }
 interface Handle { name: string, object: any, methods: Set<string>, current: boolean, released: boolean, gone?: boolean }
 type Listener = (...args: any[]) => unknown
 
@@ -157,7 +164,7 @@ export class Runtime {
   #project: string
   #modules = new Modules()
   #rows = new Map<string, Row>()
-  #services = new Map<string, { row: string, value: unknown }>()
+  #services = new Map<string, Provided>()
   #hosts = new Map<string, unknown>()
   #slots = new Map<string, Slot>()
   #handles = new Map<string, Handle>()
@@ -204,16 +211,19 @@ export class Runtime {
 
   // ── Services ──────────────────────────────────────────────────
 
-  lookup(id: string): unknown {
-    const found = this.#find(id)
+  lookup(id: string, reader?: string): unknown {
+    const found = this.#find(id, reader)
     if (found !== undefined) return found
     throw unavailable(serviceName(id))
   }
 
-  // The service `id` now: a row's here, else the host's; else undefined.
-  #find(id: string): unknown {
+  // The service `id` now, as the row `reader` sees it: a row's here, else
+  // the host's; else undefined. One whose row is unloading is that row's
+  // still, and no other's: as Rust's read_binding_as, where a provider out
+  // of Active hides what it provides from every reader but its own subtree.
+  #find(id: string, reader?: string): unknown {
     const provided = this.#services.get(id)
-    if (provided) return provided.value
+    if (provided && (!provided.unloading || provided.row === reader)) return provided.value
     return this.#hosts.get(id)
   }
 
@@ -222,7 +232,8 @@ export class Runtime {
     const current = this.#services.get(id)
     // `forecast is already provided by a` (§8.1 row 13): the row's name.
     if (current) throw new Error(`${name} is already provided by ${this.#bus.rowId(current.row)}`)
-    this.#services.set(id, { row: row.key, value })
+    const entry: Provided = { row: row.key, value, unloading: false }
+    this.#services.set(id, entry)
     row.provided.push(id)
     // Not declared: announced, with the methods it has.
     if (!this.#slots.has(id) && !name.includes('#')) {
@@ -230,12 +241,20 @@ export class Runtime {
       row.announced.push(id)
     }
     this.#refresh(id)
-    return () => {
-      if (this.#services.get(id)?.value !== value) return
+    // Whichever comes first, the returned function or the registration's own
+    // entry on the unload stack, withdraws it; the other finds it gone (or the
+    // name provided again, which it leaves alone: the entry is this one).
+    const withdraw = () => {
+      if (this.#services.get(id) !== entry) return
       this.#services.delete(id)
       row.provided = row.provided.filter(provided => provided !== id)
       this.#refresh(id)
     }
+    // The withdrawal is an entry of the unload stack, as an effect is: a
+    // cleanup registered after this one runs before it and still reads the
+    // service; one registered before runs after it and does not.
+    row.steps.push(withdraw)
+    return withdraw
   }
 
   // Report the object now in an exported slot, under a new handle.
@@ -243,7 +262,7 @@ export class Runtime {
     const slot = this.#slots.get(id)
     if (!slot) return
     const provided = this.#services.get(id)
-    const current = provided && provided.row === slot.row ? provided.value : undefined
+    const current = provided && provided.row === slot.row && !provided.unloading ? provided.value : undefined
     if (current === slot.object) return
     if (slot.handle !== null) this.#retire(slot.handle)
     slot.object = current
@@ -324,7 +343,7 @@ export class Runtime {
     if (this.#rows.has(key)) throw new Error(`row ${key} is already loaded`)
     // Descriptors and reported lines call the row by its id (protocol §4.2).
     this.#bus.nameRow(key, id)
-    const row: Row = { key, entry, config, exports: exports ?? {}, isolate: new Map(), cleanups: [], chain: chainOf(scope), abort: new AbortController(), provided: [], announced: [], pending: [], inject: inject ?? null }
+    const row: Row = { key, entry, config, exports: exports ?? {}, isolate: new Map(), steps: [], chain: chainOf(scope), abort: new AbortController(), provided: [], announced: [], pending: [], inject: inject ?? null }
     for (const [name, label] of isolate ?? []) { scopedId(name, label); row.isolate.set(name, label) }
     for (const name of Object.keys(row.exports)) {
       if (name.includes('#')) throw new Error(`service name ${name} cannot be projected`)
@@ -348,17 +367,23 @@ export class Runtime {
         // `get`): say what to declare, not that it is missing (#676),
         // whether or not another row here provides it.
         if (!mayUse(name)) throw notDeclared(name)
-        return this.lookup(idIn(row, name))
+        return this.lookup(idIn(row, name), row.key)
       },
       // An optional service: the service when there, else undefined.
       get: (name: string) => {
         if (!mayGet(name)) throw notDeclaredOptional(name)
-        return this.#find(idIn(row, name))
+        return this.#find(idIn(row, name), row.key)
       },
       provide: (name: string, value: unknown) => this.provide(row, name, value),
       effect: (cleanup: () => unknown) => {
         if (typeof cleanup !== 'function') throw new TypeError('effect needs a cleanup function')
-        row.cleanups.push(cleanup)
+        // As Rust's InactiveEffect: once the row is unloading, the stack it
+        // would join is the one the unload took, so it would never run.
+        if (this.#rows.get(row.key) !== row) {
+          process.stderr.write(`rutis: row ${this.#bus.rowId(row.key) ?? row.key} is not active: cleanup is not registered\n`)
+          return
+        }
+        row.steps.push(cleanup)
       },
       // Aborted when the row unloads, while its listeners are waited for.
       get signal() { return row.abort.signal },
@@ -384,7 +409,7 @@ export class Runtime {
       const cleanup = await this.within(key, () => plugin.apply(ctx, config))
       if (cleanup !== undefined && cleanup !== null) {
         if (typeof cleanup !== 'function') throw new TypeError('apply must return a cleanup function or nothing')
-        row.cleanups.push(cleanup as () => unknown)
+        row.steps.push(cleanup as () => unknown)
       }
       for (const name of Object.keys(row.exports)) this.#refresh(idIn(row, name))
       // rutis has published the announced services (or refused one, which
@@ -406,11 +431,14 @@ export class Runtime {
     this.#rows.delete(key)
     // Its listeners are off the bus at once (protocol §7.1).
     this.#bus.withdraw(key)
-    // Withdrawals first: rutis hears them before the plugin goes away.
+    // From here on no other row sees what this one provides; it still does,
+    // until each withdrawal's place on the unload stack comes (as Rust's
+    // read_binding_as). The host hears the withdrawals now, before the row
+    // is gone from it.
     for (const id of row.provided) {
-      if (this.#services.get(id)?.row === key) { this.#services.delete(id); this.#refresh(id) }
+      const provided = this.#services.get(id)
+      if (provided?.row === key) { provided.unloading = true; this.#refresh(id) }
     }
-    row.provided = []
     for (const id of [...Object.keys(row.exports).map(name => idIn(row, name)), ...row.announced]) {
       const slot = this.#slots.get(id)
       if (slot?.row !== key) continue
@@ -419,14 +447,15 @@ export class Runtime {
     }
     row.announced = []
     // Its running listeners are signalled and waited for, at most the
-    // shutdown deadline; then its cleanups run.
+    // shutdown deadline; then its unload stack runs.
     row.abort.abort(new DOMException('the row is unloading', 'AbortError'))
     await this.#bus.settle(key, this.#deadline)
     this.#bus.forgetRow(key)
     const errors: unknown[] = []
-    for (const cleanup of row.cleanups.splice(0).reverse()) {
-      try { await this.within(key, cleanup) } catch (error) { errors.push(error) }
+    for (const step of row.steps.splice(0).reverse()) {
+      try { await this.within(key, step) } catch (error) { errors.push(error) }
     }
+    row.provided = []
     if (errors.length) throw errors[0]
     return null
   }

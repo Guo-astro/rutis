@@ -87,7 +87,15 @@ internal class Shared(val row: String, val plugin: String, val value: Any, val t
 /** A service rutis announced to this side; withdrawn when `methods` is null. */
 internal class FarService(val version: Long, val methods: Map<String, String>?, val functions: Map<String, arcships.rutis.advanced.RemoteFunction>)
 
-internal class Provided(val row: String, val value: Any, val shape: ServiceShape?, val table: ServiceTable<Any>)
+internal class Provided(val row: String, val value: Any, val shape: ServiceShape?, val table: ServiceTable<Any>) {
+    /**
+     * Its row is unloading: no other row sees it any more, its own row still
+     * does until the withdrawal on its unload stack runs. The instance is the
+     * registration's identity: a withdrawal removes the entry only while it
+     * is still this one.
+     */
+    var unloading = false
+}
 
 internal class Slot(val row: String, val name: String, var methods: Set<String>?, val announced: Boolean = false) {
     var obj: Any? = null
@@ -122,7 +130,12 @@ internal class Row(
     val own: Boolean = false,
 ) {
     val job: CompletableJob = SupervisorJob()
-    val cleanups = ArrayList<suspend () -> Unit>()
+    /**
+     * The unload stack: cleanups and the withdrawals of the services the row
+     * provides, in the order they were registered, run in reverse when the
+     * row unloads (as Rust's effects: a withdrawal is an effect too).
+     */
+    val steps = ArrayList<suspend () -> Unit>()
     val provided = ArrayList<String>()
     val announced = ArrayList<String>()
     val listening = Counter()
@@ -242,7 +255,7 @@ class RuntimeState(plugins: List<Plugin>, private val open: Boolean = false) {
             reconcile()
         }
         val slot = slots[id] ?: return
-        val provided = services[id]?.takeIf { it.row == slot.row }
+        val provided = services[id]?.takeIf { it.row == slot.row && !it.unloading }
         val present = provided != null
         val current = provided?.value
         if (present == slot.present && current === slot.obj) return
@@ -308,6 +321,7 @@ class RuntimeState(plugins: List<Plugin>, private val open: Boolean = false) {
         }
         val id = row.id(name)
         var inactive = false
+        var entry: Provided? = null
         synchronized(lock) {
             if (rows[row.key] !== row) {
                 // A task of an unloaded row providing: refused, or the
@@ -317,7 +331,8 @@ class RuntimeState(plugins: List<Plugin>, private val open: Boolean = false) {
             } else {
                 services[id]?.let { throw IllegalStateException("$name is already provided by ${rows[it.row]?.name ?: it.row}") }
                 if (row.own && far[id]?.methods != null) throw IllegalStateException("$name is already provided by rutis")
-                services[id] = Provided(row.key, value, shape, table)
+                entry = Provided(row.key, value, shape, table)
+                services[id] = entry
                 row.provided.add(id)
                 if (row.own) {
                     share(row, id, value, table, shape)
@@ -333,16 +348,26 @@ class RuntimeState(plugins: List<Plugin>, private val open: Boolean = false) {
             Report.line("rutis: row ${row.name} is not active: service $name is not provided")
             return {}
         }
-        return {
+        val registered = entry!!
+        // Whichever comes first, the returned function or the registration's
+        // own entry on the unload stack, withdraws it; the other finds it gone
+        // (or the name provided again, which it leaves alone).
+        val withdraw: () -> Unit = {
             synchronized(lock) {
-                val existing = services[id]
-                if (existing != null && existing.row == row.key && existing.value === value) {
+                if (services[id] === registered) {
                     services.remove(id)
                     row.provided.remove(id)
                     refresh(id)
                 }
             }
         }
+        // The withdrawal is an entry of the unload stack, as an effect is: a
+        // cleanup registered after this one runs before it and still reads
+        // the service; one registered before runs after it and does not.
+        synchronized(lock) {
+            if (rows[row.key] === row) row.steps.add { withdraw() }
+        }
+        return withdraw
     }
 
     /** Shares the service `id` an application's own plugin provides: announced once rutis offers `services`; `lock` is held. */
@@ -644,15 +669,17 @@ class RuntimeState(plugins: List<Plugin>, private val open: Boolean = false) {
         val row = synchronized(lock) {
             val row = rows.remove(key) ?: return Unloaded(true, null)
             EventsRuntime.forgetListeners(this, row)
-            // Withdrawals first: rutis hears them before the plugin goes away.
+            // From here on no other row sees what this one provides; it still
+            // does, until each withdrawal's place on the unload stack comes
+            // (as Rust's read_binding_as). rutis hears the withdrawals now,
+            // before the row is gone from it.
             for (id in row.provided.toList()) {
                 val existing = services[id]
                 if (existing != null && existing.row == key) {
-                    services.remove(id)
+                    existing.unloading = true
                     refresh(id)
                 }
             }
-            row.provided.clear()
             val ids = row.announced.toMutableList()
             for (service in row.exports.keys) ids.add(row.id(service))
             for (id in ids) {
@@ -695,7 +722,8 @@ class RuntimeState(plugins: List<Plugin>, private val open: Boolean = false) {
         val joinBudget = leftMillis() ?: budget
         if (joinBudget > 0) withTimeoutOrNull(joinBudget) { row.job.cancelAndJoin() }
         var failure: Throwable? = null
-        for (cleanup in row.cleanups.asReversed()) {
+        val steps = synchronized(lock) { ArrayList(row.steps).also { row.steps.clear() } }
+        for (cleanup in steps.asReversed()) {
             val left = leftMillis()
             if (deadlineNanos != null && left == 0L) {
                 Report.line("rutis: gave up the cleanups of row ${row.name}")
@@ -733,7 +761,7 @@ class RuntimeState(plugins: List<Plugin>, private val open: Boolean = false) {
     /** Registers a cleanup if `row` is still the loaded row with `key`. */
     internal fun addCleanup(row: Row, cleanup: suspend () -> Unit): Boolean = synchronized(lock) {
         if (rows[row.key] !== row) return false
-        row.cleanups.add(cleanup)
+        row.steps.add(cleanup)
         true
     }
 

@@ -44,7 +44,7 @@ Issue：尚无，随本稿开。相关：[#676](https://github.com/arcships/ruti
 3. `use` 与 `get` 都是：① 查声明，不在就报（`use` 用原句，`get` 用可选那句，码都是 `not-declared`，`data` `{service}`）；② 查表：本进程的对象、租借进来的代理、否则 `use` 报 `unavailable`、`get` 返回空值。
 4. 行 `inject` 与插件 `optional` 同名的失败不变（[可选依赖](design-optional-deps-2026-10-28.md) §五 第 4b 条）。
 5. 与 Rust 对照：D1 的声明集合、D2、D4 与 Rust 内核相同（行 `inject` 经 `combined_injects` 进 fiber 的 `declared_injects`；`require_inner` 先判 `Undeclared` 再看服务状态）。Rust 还按同一份 `combined_injects` 门控这一行，SDK 行缺的这一半见 §七（已由[运行时行的行 inject](design-row-inject-gate-2026-10-31.md)补上）。唯一不同是 `get` 一个未声明的名字：Rust 的 `ctx.get` 不查声明，因为它读的是整个宿主的服务表，没声明也找得到，未声明的读取另记进诊断；SDK 进程里只有声明过的名字会被租借进来，没声明时返回空值会把宿主上存在的服务说成不在，而 SDK 没有诊断通道，所以仍报 `not-declared`。
-6. 卸载时的清理（`effect`）能不能读自己提供的服务，有三种情况。Rust 把提供的撤回与清理放在同一个栈里，逆序逐个运行（`crates/rutis/src/fiber.rs` 的 `drain_effects`；`crates/rutis/src/ctx.rs` 里 `provide_inner` 的注释）：在 `provide` 之后登记的清理先于撤回运行，读得到，之前登记的读不到。Node 的适配层只在插件调用撤回函数时删去自己记下的条目（D4），卸载时 Cordis 直接撤回（`@deepseek-ai/cordis` 的 `src/fiber.ts` 里 `Fiber._unload`，`Promise.all` 同时开始全部处置），不经这个函数：清理里读自己提供的服务，不论登记在 `provide` 之前还是之后、同步还是先 `await`，一律读得到。Bun、Python、Go、Swift、Kotlin 先撤回这一行提供的全部服务再跑清理，清理里读它一律报 `not-declared`。本稿不改卸载顺序（§七）。
+6. 卸载时的清理（`effect`）能不能读自己提供的服务：六家都是 Rust 的做法（[卸载顺序](design-unload-order-2026-11-01.md)）——提供的撤回与清理在同一个栈里，逆序逐个运行，撤回在自己的位置上（`crates/rutis/src/fiber.rs` 的 `drain_effects`）。在 `provide` 之后登记的清理先于撤回运行，读得到；之前登记的读不到，报 `not-declared`。与此同时，卸载一开始别的行就读不到这一行提供的服务（`unavailable`），不看撤回排在哪里（同上 D2）。本稿之前是三种结果：Node 一律读得到，Bun、Python、Go、Swift、Kotlin 一律报 `not-declared`。
 
 ## 四、开发者看到什么
 
@@ -104,4 +104,4 @@ Go、Swift、Kotlin 现在也拿到（D1）。提供方在宿主或另一个进�
 
 运行时行的行 `inject`，rutis 一侧还没接上：`crates/rutis-loader/src/loader/desired.rs` 的 `foreign_scope` 给运行时行的 `BoundScope` 里 `inject` 是空的，`crates/rutis-loader/src/runtime.rs` 的 `JsRow::start` 只租借插件自己声明的 `gated`。所以行 `inject` 里由宿主或另一个进程提供的服务，rutis 不等它，也不为这一行把它租借进进程（别的行为自己租借进来的，这一行也读得到）。Rust 行没有这个缺口：`crates/rutis-loader/src/loader/reconcile.rs` 的 `combined_injects` 把行 `inject` 并进 fiber 的 injects，fiber 等齐才启动。下一个 PR 让运行时行与之一致：rutis 为行 `inject` 门控、启动时租借。之后 §四 第 1 条只剩"哪里都没有"一种情况，`loader/rows-gate-on-services` 对运行时行也成立。（[运行时行的行 inject](design-row-inject-gate-2026-10-31.md)已做；本段写的是那之前的代码。实际落地后，共享的名字"哪里都没有"时行停在 `waiting for <名字>`，不再走到 §四 第 1 条；走到第 1 条的只有服务目录不共享的名字。）
 
-另一处后续是卸载顺序（§三 第 6 条）：六家都改成 Rust 那样逆序逐个运行撤回与清理。它改的是各运行时的卸载，与声明集合无关，单独做。
+卸载顺序（§三 第 6 条）已由[卸载顺序](design-unload-order-2026-11-01.md)补上：六家都改成 Rust 那样逆序逐个运行撤回与清理。

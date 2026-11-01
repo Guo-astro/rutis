@@ -211,3 +211,53 @@ test('a leaf plugin may use and get a service it provides itself', async () => {
   assert.equal(seen.again, 2)
   await plugin.dispose()
 })
+
+// Unloading runs one stack in reverse, one entry at a time: cleanups and the
+// withdrawals of what the plugin provides, in the order they were registered
+// (Rust's drain_effects; docs/design-unload-order-2026-11-01.md).
+test('a cleanup registered after provide reads it; one before does not', async () => {
+  const root = new Context()
+  const log = []
+  const read = ctx => {
+    try { return `count ${ctx.use('tally').count()}` } catch (error) { return `error ${error.code ?? error.name}` }
+  }
+  const spec = definePlugin({
+    apply(ctx) {
+      ctx.effect(() => { log.push(`before: ${read(ctx)}`) })
+      ctx.provide('tally', { count: () => 7 })
+      ctx.effect(async () => {
+        // Not concurrent: the next entry waits for this one.
+        await new Promise(resolve => setTimeout(resolve, 10))
+        log.push(`after: ${read(ctx)}`)
+      })
+      return () => { log.push(`returned: ${read(ctx)}`) }
+    },
+  })
+  const plugin = root.plugin(toCordis(supported(spec, 'order')))
+  await plugin.await()
+  await plugin.dispose()
+  assert.deepEqual(log, ['returned: count 7', 'after: count 7', 'before: error not-declared'])
+})
+
+test('a cleanup registering one is refused and the new one does not run', async () => {
+  const root = new Context()
+  let ran = false
+  const reported = []
+  const original = process.stderr.write
+  process.stderr.write = chunk => { reported.push(String(chunk)); return true }
+  try {
+    const spec = definePlugin({
+      name: 'nested',
+      apply(ctx) {
+        ctx.effect(() => { ctx.effect(() => { ran = true }) })
+      },
+    })
+    const plugin = root.plugin(toCordis(supported(spec, 'nested')))
+    await plugin.await()
+    await plugin.dispose()
+  } finally {
+    process.stderr.write = original
+  }
+  assert.equal(ran, false)
+  assert.deepEqual(reported, ['rutis: plugin nested is not active: cleanup is not registered\n'])
+})

@@ -411,7 +411,7 @@ class Loaded:
             raise PluginTestError(f"the plugin does not provide {name} (now)")
         shape = self._plugin.provides.get(name)
         if shape is None:
-            shape = {method: "async" for method in sorted(sdk.methods_of(provided[1]))}
+            shape = {method: "async" for method in sorted(sdk.methods_of(provided.value))}
         return dict(shape)
 
     def provided(self) -> list[str]:

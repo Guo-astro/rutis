@@ -96,6 +96,25 @@ export function toCordis(spec, rowInject = [], providerOf) {
       const mayUse = name => uses(name) || provided.has(name)
       const mayGet = name => mayUse(name) || (spec.optional ?? []).includes(name)
       const read = name => provided.has(name) ? provided.get(name).value : context.get(name)
+      // The unload stack: cleanups and the withdrawals of what it provides,
+      // in the order they were registered, run in reverse when the plugin
+      // goes (as Rust's effects: a withdrawal is an effect too). Cordis's own
+      // `_unload` starts every disposal at once (`Promise.all`), so the one
+      // Cordis effect below drains this stack instead: one entry at a time,
+      // latest first, which is the order every other runtime gives.
+      const steps = []
+      let draining = false
+      const drain = async () => {
+        draining = true
+        // One at a time, latest first; a failing step goes where Cordis sends
+        // a failing disposal (its logger), and the rest still run.
+        for (const step of steps.splice(0).reverse()) {
+          try { await step() } catch (error) { context.logger.error(error) }
+        }
+      }
+      // Registered first, drained last: an effect of the fiber, run among the
+      // disposals Cordis starts together.
+      context.effect(() => drain)
       const ctx = {
         use(name) {
           // One neither the plugin nor its row injects (an optional one is
@@ -122,13 +141,30 @@ export function toCordis(spec, rowInject = [], providerOf) {
           }
           const entry = { value }
           provided.set(name, entry)
-          return () => {
+          // Whichever comes first, the returned function or the registration's
+          // own entry on the unload stack, withdraws it; the other finds it
+          // gone (or the name provided again, which it leaves alone).
+          const remove = async () => {
             // Only this provide's entry: the name may be provided again.
-            if (provided.get(name) === entry) provided.delete(name)
-            return withdraw()
+            if (provided.get(name) !== entry) return
+            provided.delete(name)
+            await withdraw()
           }
+          // The withdrawal is an entry of the unload stack, as a cleanup is:
+          // one registered after this provide runs before it and still reads
+          // the service; one registered before runs after it and does not.
+          steps.push(remove)
+          return () => remove()
         },
-        effect: cleanup => { context.effect(() => cleanup) },
+        effect: cleanup => {
+          // As Rust's InactiveEffect: once the stack is being drained, what
+          // is registered now would never run.
+          if (draining) {
+            process.stderr.write(`rutis: plugin ${spec.name ?? 'leaf'} is not active: cleanup is not registered\n`)
+            return
+          }
+          steps.push(cleanup)
+        },
         // The listener leaves with the plugin, or when the returned function
         // is called. `prepend` and `global` as Cordis's. Descriptors name the
         // plugin by its declared name, else by its row's id.
@@ -150,7 +186,7 @@ export function toCordis(spec, rowInject = [], providerOf) {
       const cleanup = await spec.apply(ctx, config)
       if (cleanup !== undefined && cleanup !== null) {
         if (typeof cleanup !== 'function') throw new TypeError('apply must return a cleanup function or nothing')
-        context.effect(() => cleanup)
+        steps.push(cleanup)
       }
     },
   }
