@@ -123,40 +123,70 @@ impl Drop for CallFlight {
 /// The entries an `emit` of one name dispatches over, shared by the emits
 /// queued on that name (#977), and the entries registered since the list was
 /// built (#980).
+///
+/// The chains are held as they are, not turned into lists: the emits of a name
+/// are queued one after another, and a copy made when each of them is queued
+/// holds one more entry than the one before, so N queued emits would hold the
+/// list N times over (#980).
 pub(crate) struct Selected {
     /// The list built when the name was last selected, in call order.
     base: Arc<[Arc<Entry>]>,
-    /// Prepends registered after `base` was built, in call order: the last
-    /// one first, its position being the smallest.
-    before: Vec<Arc<Entry>>,
-    /// Appends registered after `base` was built, in call order.
-    after: Vec<Arc<Entry>>,
+    /// Prepends registered after `base` was built, the newest first: their
+    /// call order, its position being the smallest.
+    before: Option<Arc<Added>>,
+    /// Appends registered after `base` was built, the newest last.
+    after: Option<Arc<Added>>,
 }
 
 impl Selected {
     pub fn from_vec(entries: Vec<Arc<Entry>>) -> Self {
         Self {
             base: entries.into(),
-            before: Vec::new(),
-            after: Vec::new(),
+            before: None,
+            after: None,
         }
+    }
+
+    /// The list the snapshot was built from; what every emit dispatches over
+    /// after the chains.
+    pub fn base(&self) -> &[Arc<Entry>] {
+        &self.base
+    }
+
+    /// The chains of what was registered since, in call order: prepends first,
+    /// then appends. Built when the dispatch starts, not when the emit is
+    /// queued.
+    pub fn chains(&self) -> (Vec<Arc<Entry>>, Vec<Arc<Entry>>) {
+        (
+            Added::entries(self.before.as_ref(), true),
+            Added::entries(self.after.as_ref(), false),
+        )
     }
 
     /// Every entry, in call order: registration order by position, prepends
     /// before the list they were prepended to.
-    pub fn iter(&self) -> impl Iterator<Item = &Arc<Entry>> {
-        self.before
-            .iter()
-            .chain(self.base.iter())
-            .chain(self.after.iter())
-    }
-
     pub fn to_vec(&self) -> Vec<Arc<Entry>> {
-        self.iter().cloned().collect()
+        let (before, after) = self.chains();
+        before
+            .into_iter()
+            .chain(self.base.iter().cloned())
+            .chain(after)
+            .collect()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.base.is_empty() && self.before.is_empty() && self.after.is_empty()
+        self.base.is_empty() && self.before.is_none() && self.after.is_none()
+    }
+
+    /// Nothing was registered since the list was built.
+    fn only_base(&self) -> bool {
+        self.before.is_none() && self.after.is_none()
+    }
+
+    /// Whether the list holds a live entry: one check when its first entry is
+    /// live. The appends are asked as they are called.
+    fn any_live(&self) -> bool {
+        self.base.iter().any(|entry| live_for_selection(entry))
     }
 }
 
@@ -165,6 +195,23 @@ impl Selected {
 struct Added {
     entry: Arc<Entry>,
     prev: Option<Arc<Added>>,
+}
+
+impl Added {
+    /// The entries of the chain `head` starts, in call order: newest first (as
+    /// prepends are called) or oldest first.
+    fn entries(head: Option<&Arc<Added>>, newest_first: bool) -> Vec<Arc<Entry>> {
+        let mut entries = Vec::new();
+        let mut node = head;
+        while let Some(current) = node {
+            entries.push(current.entry.clone());
+            node = current.prev.as_ref();
+        }
+        if !newest_first {
+            entries.reverse();
+        }
+        entries
+    }
 }
 
 /// The entries an `emit` of one name dispatches over, as kept between the
@@ -209,21 +256,6 @@ impl Shared {
         } else {
             self.after = Some(node);
         }
-    }
-
-    /// The entries of the chain `head` starts, in call order: newest first (as
-    /// prepends are called) or oldest first.
-    fn chain(head: Option<&Arc<Added>>, newest_first: bool) -> Vec<Arc<Entry>> {
-        let mut entries = Vec::new();
-        let mut node = head;
-        while let Some(current) = node {
-            entries.push(current.entry.clone());
-            node = current.prev.as_ref();
-        }
-        if !newest_first {
-            entries.reverse();
-        }
-        entries
     }
 
     /// Half of what it holds is not in the table any more, or an entry of the
@@ -382,9 +414,7 @@ impl Table {
     pub fn shared(&mut self, name: &Arc<str>) -> Option<Selected> {
         let cached = self.shared.get(name).and_then(|s| {
             let base = s.list.upgrade()?;
-            let before = Shared::chain(s.before.as_ref(), true);
-            let after = Shared::chain(s.after.as_ref(), false);
-            Some((base, before, after))
+            Some((base, s.before.clone(), s.after.clone()))
         });
         let (base, before, after) = match cached {
             Some(parts) => parts,
@@ -425,8 +455,8 @@ impl Table {
                 );
                 return Some(Selected {
                     base: list,
-                    before: Vec::new(),
-                    after: Vec::new(),
+                    before: None,
+                    after: None,
                 });
             }
         };
@@ -435,7 +465,11 @@ impl Table {
             before,
             after,
         };
-        if selected.is_empty() || !selected.iter().any(|e| live_for_selection(e)) {
+        // An entry that is not live never is again, and a dispatch skips it
+        // (`Entry::start`): with nothing registered since, the list is asked
+        // whether any listener is left, which is one check when the first entry
+        // is live; the appends are checked as they are called.
+        if selected.is_empty() || (!selected.any_live() && selected.only_base()) {
             return None;
         }
         Some(selected)

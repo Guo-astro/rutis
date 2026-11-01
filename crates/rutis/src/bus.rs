@@ -696,7 +696,11 @@ impl EventBus {
             } else {
                 entries
             };
-            for entry in entries.iter() {
+            // The chains are turned into lists here, when the dispatch starts:
+            // a copy made when the emit was queued would hold the listeners of
+            // that moment, and N queued emits would hold them N times over.
+            let (before, after) = entries.chains();
+            for entry in before.iter().chain(entries.base()).chain(after.iter()) {
                 let Some(flight) = owned.bus.start(entry) else {
                     continue;
                 };

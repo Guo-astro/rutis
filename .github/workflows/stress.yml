@@ -400,6 +400,11 @@ jobs:
         run: |
           cargo test -p rutis-loader --release --test close_cpu -- --nocapture 2>&1 \
             | tee "$RUNNER_TEMP/close-cpu.txt"
+      - name: Queued emits share their listeners
+        shell: bash
+        run: |
+          cargo test -p rutis-loader --release --test queued_emits_memory -- --nocapture 2>&1 \
+            | tee -a "$RUNNER_TEMP/close-cpu.txt"
       - name: Baseline numbers
         if: always()
         shell: bash
