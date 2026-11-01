@@ -686,6 +686,63 @@ async fn a_session_limit_the_host_turns_on_ends_a_far_end_that_never_reads() {
     halt.go();
 }
 
+/// #1005: the edges of a limit: an empty queue takes one frame whatever
+/// the limit, `0` included, and the frame the writer already holds waits
+/// outside the count, so only the queue behind it is bounded.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_limit_of_zero_still_takes_one_frame_at_a_time() {
+    /// The frame the `n`th call of this test is written as.
+    fn frame(n: u64) -> Frame {
+        Frame::Invoke {
+            id: format!("rust:{n}"),
+            path: vec![],
+            target: "".into(),
+            method: "echo".into(),
+            args: WireValue::List(Vec::new()),
+            sync: false,
+        }
+    }
+    let size = serde_json::to_vec(&frame(1)).unwrap().len();
+    let (local, mut remote) = far_pair();
+    let (local, halt) = holding(local);
+    let peer = Connection::open_with(
+        local,
+        Arc::new(NoExports),
+        rust(),
+        SessionOptions {
+            outbound_limit: Some(0),
+        },
+    )
+    .unwrap();
+    send(&mut remote, hello(ENDPOINT_PROTOCOL));
+    peer.ready().await.unwrap();
+    assert!(
+        matches!(read(&mut remote), Frame::Hello { .. }),
+        "the greeting"
+    );
+    halt.hold();
+    // The writer takes the first frame and waits on the far end with it.
+    let first = peer
+        .invoke_started("", "echo", Value::List(Vec::new()))
+        .expect("an empty queue takes one frame, whatever the limit");
+    halt.held();
+    // The queue is empty again (the writer holds that frame), so a second
+    // one is taken too: what is bounded is what waits behind it.
+    let second = peer
+        .invoke_started("", "echo", Value::List(Vec::new()))
+        .expect("the frame the writer holds is not counted");
+    let error = match peer.invoke_started("", "echo", Value::List(Vec::new())) {
+        Ok(_) => panic!("over the limit of 0"),
+        Err(error) => error,
+    };
+    assert_eq!(
+        error.to_string(),
+        format!("the far end is not reading: 1 messages, {size} bytes waited for it")
+    );
+    drop((first, second));
+    halt.go();
+}
+
 /// A channel whose sending side waits on the test once [`Halt::hold`] is
 /// called: a far end that reads nothing, with the session's queue
 /// countable.

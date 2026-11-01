@@ -1188,20 +1188,28 @@ impl Endpoint {
 /// default.
 ///
 /// Sending never waits for the far end whatever this says (#1005): a peer
-/// that stopped reading (a suspended process, a slow link) holds neither
-/// the thread that made the frame nor the other sessions of the process.
-/// What it does not read waits for it, in the session's queue.
+/// that has not taken what was sent (a suspended process, a slow link)
+/// holds neither the thread that made the frame nor the other sessions of
+/// the process. What it has not taken yet waits for it, in the session's
+/// queue, in this process's memory.
 #[derive(Clone, Debug, Default)]
 pub struct SessionOptions {
     /// The most a far end may fall behind before its session ends: bytes of
-    /// frames made for it and not yet written. `None`, the default, is no
-    /// bound: what waits for a far end that stopped reading is written when
-    /// it reads again, or goes with the session when the far end is gone.
-    /// A host that would rather not keep that backlog ends such a session
-    /// at `Some(bytes)`: it closes with `the far end is not reading: <n>
-    /// messages, <bytes> bytes waited for it` (a
+    /// frames made for it, queued for the session's writer thread and not
+    /// yet written. `None`, the default, is no bound: what waits for a far
+    /// end that stopped reading is written when it reads again, or goes
+    /// with the session when the far end is gone. A host that would rather
+    /// not keep that backlog ends such a session at `Some(bytes)`: it
+    /// closes with `the far end is not reading: <n> messages, <bytes> bytes
+    /// waited for it` (a
     /// [`Error::Transport`](crate::session::Error::Transport), code
     /// `peer-gone`), and what is queued goes with it.
+    ///
+    /// Two edges: an empty queue takes one frame whatever the limit, `0`
+    /// included (a frame may be as large as the channel takes), and the
+    /// frame the writer thread already holds, waiting in a `send` the far
+    /// end does not read, is not counted. What is bounded is the queue
+    /// behind that one.
     pub outbound_limit: Option<usize>,
 }
 

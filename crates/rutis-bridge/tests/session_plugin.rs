@@ -457,16 +457,7 @@ const LISTENERS: usize = 200;
 #[tokio::test(flavor = "multi_thread")]
 async fn a_peer_that_stopped_reading_holds_no_listener_registered_here() {
     let (a, b) = (kernel("a"), kernel("b"));
-    let (near, far) = rutis_bridge::memory::pair();
-    let stalled = Arc::new(Stalled::default());
-    let near = Channel {
-        sender: Box::new(StalledSender {
-            inner: near.sender,
-            stalled: stalled.clone(),
-        }),
-        receiver: near.receiver,
-        closer: near.closer,
-    };
+    let (near, far, stalled) = stalled_pair();
     a.plugin(Session::new(near));
     b.plugin(Session::new(far));
     a.listen::<Args>()
@@ -518,16 +509,7 @@ async fn a_peer_that_stopped_reading_holds_no_listener_registered_here() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_session_limit_the_host_turns_on_ends_a_peer_that_stopped_reading() {
     let (a, b) = (kernel("a"), kernel("b"));
-    let (near, far) = rutis_bridge::memory::pair();
-    let stalled = Arc::new(Stalled::default());
-    let near = Channel {
-        sender: Box::new(StalledSender {
-            inner: near.sender,
-            stalled: stalled.clone(),
-        }),
-        receiver: near.receiver,
-        closer: near.closer,
-    };
+    let (near, far, stalled) = stalled_pair();
     a.plugin(Session::new(near).options(SessionOptions {
         outbound_limit: Some(2048),
     }));
@@ -549,24 +531,82 @@ async fn a_session_limit_the_host_turns_on_ends_a_peer_that_stopped_reading() {
             .unwrap();
     }
     disposed(&at_b).await;
+    // The send the writer waited in ended with the channel, as a channel's
+    // close wakes one: no thread is left waiting on this far end.
+    assert!(
+        stalled.returned(Duration::from_secs(20)),
+        "the writer's send ended with the channel"
+    );
 }
 
-/// Whether sends go out: a far end whose process is stopped reads nothing,
-/// and a send waits for it to read again.
+/// A memory pair whose first end stops sending when told to, as a far end
+/// whose process is suspended reads nothing: a send waits for it to read
+/// again, or returns when the channel closes (its closer wakes it, as a
+/// channel's `close` does).
+fn stalled_pair() -> (Channel, Channel, Arc<Stalled>) {
+    let (near, far) = rutis_bridge::memory::pair();
+    let stalled = Arc::new(Stalled::default());
+    let near = Channel {
+        sender: Box::new(StalledSender {
+            inner: near.sender,
+            stalled: stalled.clone(),
+        }),
+        receiver: near.receiver,
+        closer: Arc::new(StalledCloser {
+            inner: near.closer,
+            stalled: stalled.clone(),
+        }),
+    };
+    (near, far, stalled)
+}
+
+/// Whether sends go out, and the test's side of it.
 #[derive(Default)]
 struct Stalled {
-    stopped: std::sync::Mutex<bool>,
+    state: std::sync::Mutex<State>,
     changed: std::sync::Condvar,
 }
 
+#[derive(Default)]
+struct State {
+    stopped: bool,
+    /// The channel closed: what waits returns instead.
+    closed: bool,
+    /// Sends that waited and then left the wait.
+    returned: usize,
+}
+
 impl Stalled {
+    /// From now on, sends wait.
     fn stop(&self) {
-        *self.stopped.lock().unwrap() = true;
+        self.state.lock().unwrap().stopped = true;
     }
 
+    /// Sends go again.
     fn go(&self) {
-        *self.stopped.lock().unwrap() = false;
+        self.state.lock().unwrap().stopped = false;
         self.changed.notify_all();
+    }
+
+    /// The channel closed: what waits returns.
+    fn close(&self) {
+        self.state.lock().unwrap().closed = true;
+        self.changed.notify_all();
+    }
+
+    /// Wait `timeout` for a send that stopped waiting to return.
+    fn returned(&self, timeout: Duration) -> bool {
+        let deadline = std::time::Instant::now() + timeout;
+        let mut state = self.state.lock().unwrap();
+        while state.returned == 0 {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            if left.is_zero() {
+                return false;
+            }
+            let (next, _) = self.changed.wait_timeout(state, left).unwrap();
+            state = next;
+        }
+        true
     }
 }
 
@@ -578,16 +618,39 @@ struct StalledSender {
 
 impl rutis_bridge::channel::Sender for StalledSender {
     fn send(&mut self, message: &[u8]) -> Result<(), ChannelError> {
-        let mut stopped = self.stalled.stopped.lock().unwrap();
-        while *stopped {
-            stopped = self.stalled.changed.wait(stopped).unwrap();
+        let mut state = self.stalled.state.lock().unwrap();
+        if state.stopped {
+            while state.stopped && !state.closed {
+                state = self.stalled.changed.wait(state).unwrap();
+            }
+            state.returned += 1;
+            if state.closed {
+                drop(state);
+                return Err(ChannelError::Closed {
+                    reason: "the far end was stopped until its channel closed".into(),
+                });
+            }
         }
-        drop(stopped);
+        drop(state);
         self.inner.send(message)
     }
 
     fn max_message(&self) -> Option<usize> {
         self.inner.max_message()
+    }
+}
+
+/// The closer of a [`StalledSender`]: closing the channel wakes the send it
+/// waits in, as [`crate::channel::Closer`] promises.
+struct StalledCloser {
+    inner: Arc<dyn rutis_bridge::channel::Closer>,
+    stalled: Arc<Stalled>,
+}
+
+impl rutis_bridge::channel::Closer for StalledCloser {
+    fn close(&self, why: rutis_bridge::channel::Close) {
+        self.stalled.close();
+        self.inner.close(why);
     }
 }
 
