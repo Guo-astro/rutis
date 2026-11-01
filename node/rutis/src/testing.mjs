@@ -87,7 +87,27 @@ if (typeof globalThis.Bun !== 'undefined') {
   const { onTestFinished } = await import('bun:test')
   // Outside a test (a file's top level, `beforeAll`), Bun has no test to
   // end: nothing runs.
-  testEnded = fn => { try { onTestFinished(fn) } catch {} }
+  //
+  // The hook takes `done` and always calls it (#994). Bun reads whether a
+  // hook takes `done` from the function it wraps for the async context
+  // running now (Bun issue #44552): a hook that takes nothing, registered
+  // while an `AsyncLocalStorage` store is active — this tool's session
+  // keeps one, and a test's own tracing may — is taken for a
+  // done-callback hook. It runs, the runner waits for a `done` that never
+  // comes, and the test fails at its timeout with "a beforeEach/afterEach
+  // hook timed out". Declaring the parameter and calling it is what Bun
+  // waits for either way.
+  testEnded = fn => {
+    try {
+      onTestFinished(done => {
+        const finish = typeof done === 'function' ? done : () => {}
+        let result
+        try { result = fn() } catch (error) { finish(error); return }
+        if (result && typeof result.then === 'function') result.then(() => finish(), error => finish(error))
+        else finish()
+      })
+    } catch {}
+  }
 } else if (process.env.NODE_TEST_CONTEXT || process.execArgv.includes('--test')) {
   ({ after: testEnded } = await import('node:test'))
 }
