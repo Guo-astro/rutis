@@ -31,14 +31,20 @@ async fn a_runtime_that_never_greets_fails_the_mount_at_its_limit() {
     // itself is the mount's own limit, which the test measures.
     let limit = scaled(Duration::from_millis(300));
     let started = std::time::Instant::now();
-    let error = Process::mount(
-        dir.path(),
-        Mount {
-            anchor: Some(dir.path()),
-            launcher: Some(&launcher),
-            greeting: Some(limit),
-            ..Mount::default()
-        },
+    // The mount's own limit ends it well within this test's guard (ten
+    // seconds, scaled), which only catches a mount that never returns: the
+    // behaviour before #985.
+    let error = within(
+        "the mount of a runtime that never greets to fail at its limit",
+        Process::mount(
+            dir.path(),
+            Mount {
+                anchor: Some(dir.path()),
+                launcher: Some(&launcher),
+                greeting: Some(limit),
+                ..Mount::default()
+            },
+        ),
     )
     .await
     .map(|mounted| {

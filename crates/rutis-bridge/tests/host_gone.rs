@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use rutis_bridge::runtime::{Mount, Process};
+use rutis_bridge::runtime::{Mount, Process, GREETING};
 use rutis_bridge::session::Error;
 use rutis_test_support::{eventually_with, scaled, HANG_GUARD};
 use serde_json::json;
@@ -25,12 +25,6 @@ use rutis_test_support::runtimes;
 fn repo() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
-
-/// How long a runtime's process may take to start and greet: rutis-host's
-/// own greeting limit (`rutis-host/src/connect/spawn.rs`), scaled on a
-/// loaded machine like every hang guard here. A wait that only guards
-/// against a hang: the greeting itself is what the test waits for.
-const GREETING: Duration = Duration::from_secs(30);
 
 /// `wait`, unless it outlasts `guard` (scaled): then the test fails, naming
 /// `what` and saying what the runtime was doing (`describe`), instead of
@@ -46,6 +40,22 @@ async fn answered<T>(
         Ok(value) => value,
         Err(_) => panic!("timed out ({limit:?}): {what}\nstate: {}", describe()),
     }
+}
+
+/// What a mount that has not returned leaves to see, when this test's own
+/// guard gives up on it: the processes this test binary started that still
+/// run (one that could not start leaves none), and what it was waited for.
+/// Its output went to this test's stderr, inherited, if it wrote any.
+fn starting(runtime: Runtime, greeting: Duration) -> String {
+    let running = rutis_bridge::pipe::running_processes();
+    let processes = match running.is_empty() {
+        true => "no process of this test binary runs".to_owned(),
+        false => format!("processes of this test binary that still run: {running:?}"),
+    };
+    format!(
+        "{runtime:?}: its mount has not returned; it was given {greeting:?} to start and greet; \
+         {processes}; what it wrote went to this test's stderr"
+    )
 }
 
 /// What the runtime's process was doing, for a wait that did not end: it
@@ -174,21 +184,27 @@ async fn start(runtime: Runtime, dir: &Path, deadline: &str) -> (Arc<Process>, P
         }
     };
     let launcher = launcher.env("RUTIS_SHUTDOWN_TIMEOUT", deadline);
+    // The mount's own greeting limit, scaled as this machine is, and this
+    // test's guard well above it: what the product reports — a process that
+    // did not start, or one that started and did not greet — comes first,
+    // and the guard only catches a mount that returns neither (#985).
+    let greeting = scaled(GREETING);
     let process = answered(
-        GREETING,
-        &format!("{runtime:?} starts and greets"),
+        GREETING.mul_f64(1.5) + Duration::from_secs(5),
+        &format!("{runtime:?} starts and greets, given {greeting:?} to do it"),
         Process::mount(
             &package,
             Mount {
                 anchor: Some(&anchor),
                 launcher: Some(&launcher),
+                greeting: Some(greeting),
                 ..Mount::default()
             },
         ),
-        || "it did not greet: its process was started, and said nothing".to_owned(),
+        || starting(runtime, greeting),
     )
     .await
-    .unwrap_or_else(|error| panic!("{runtime:?} failed to start: {error}"));
+    .unwrap_or_else(|error| panic!("{runtime:?} did not mount: {error}"));
     (process, entry)
 }
 
