@@ -86,10 +86,10 @@ const IDLE_SHARE: f64 = 0.05;
 /// row means one instance's status changes cost 8N calls, so ten times the
 /// instances is a hundred times the calls. Measured (Linux, 32 cores,
 /// 2026-11-02, `cpu` of the process, the phase taken until the events it
-/// queued are delivered): creating 100 → 1000 instances took 222 times
-/// (release) and 108 times (debug) before #980, 192 and 99 after it; closing
-/// 121 and 87 before, 120 and 87 after. The thresholds are the measured ratios
-/// with room for a machine that caches differently.
+/// queued are delivered, on top of #979): creating 100 → 1000 instances took
+/// 150 times (release) and 124 times (debug) before #980, 142 and 92 after it;
+/// closing 100 and 84 before, 104 and 81 after. The thresholds are the measured
+/// ratios with room for a machine that caches differently.
 const CREATE_RATIO: f64 = if cfg!(debug_assertions) { 180.0 } else { 300.0 };
 const CLOSE_RATIO: f64 = if cfg!(debug_assertions) { 160.0 } else { 200.0 };
 
