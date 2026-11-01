@@ -136,7 +136,7 @@ var Plugin = rutis.Define(rutis.Plugin[Config]{
 
 - `Inject` 写出用到的服务。这些服务都就绪了插件才启动，其中一个撤销时插件停下。
 - 没有也能运行的服务写进 `Optional: []string{"llm"}` 而不是 `Inject`：rutis 不等它；`ok, err := ctx.Get("llm", &llm)` 像 `Use` 一样绑定，插件启动时它不在则返回 `false, nil`（见[插件 API：可选服务](plugin-api.md#可选服务)；要 rutis-host 0.20 或以后）。
-- `ctx.Use("translate", &translate)` 把服务填进函数字段的结构体：字段名是方法名，首字母小写后就是线上的名字。
+- `ctx.Use("translate", &translate)` 把服务填进函数字段的结构体：字段名是方法名，首字母小写后就是线上的名字。提供方就在这个进程里时还能写成别的：目标是接口、提供方的对象实现了它，拿到的是对象本身，方法是普通的 Go 调用（方法带函数参数、返回两个值都行）；目标是 `any`，同上；目标是一个字段类型与提供方的方法相同，字段直接是那个方法，不求以 error 结尾。提供方在别的进程时，目标是 `any` 拿到的是 `*advanced.Service`（代理，调用走跨进程）；目标是非空接口不行（报 `use <名字>: <接口> is an interface, which only a service provided in this process fills: for one of another process, use a struct of function fields or *advanced.Service`），这时用函数字段的结构体或 `*advanced.Service`（先 `var svc advanced.Service`，再 `ctx.Use(name, &svc)`；`Local()` 说提供方在不在本进程）。
 - 方法收到的 `ctx`，调用别的服务时传下去，不要换成 `context.Background()`（原因见 [Go 的规则](#go-的规则) 的「调用链」）。
 
 模板的测试这时不再通过（它没有给 `translate`），第 6 步换掉它。
