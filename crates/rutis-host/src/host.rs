@@ -453,7 +453,7 @@ impl Host {
     }
 
     /// Wait until every runtime runs and its rows may start, or say which
-    /// one could not start.
+    /// one did not start, or ran and then ended, and how (#1023).
     pub async fn runtimes_ready(&self) -> Result<(), Error> {
         for (name, handle) in &self.runtimes {
             self.runtime_ready(name, handle).await?;
@@ -513,7 +513,7 @@ impl Host {
             .wait_for(|state| matches!(state, RuntimeState::Ready(_) | RuntimeState::Down(_)))
             .await;
         if let RuntimeState::Down(reason) = state {
-            return Err(format!("the {name} runtime did not start: {reason}"));
+            return Err(not_running(name, handle, &reason));
         }
         // A running runtime releases its rows ([`SessionRows`]) once it
         // has resolved again those resolved before it ran. Rows loaded
@@ -540,7 +540,8 @@ impl Host {
                 // Only a plugin that never applied drops its sender.
                 format!("the {name} runtime did not start: its rows were never released")
             }),
-            reason = down => Err(format!("the {name} runtime did not start: {reason}")),
+            // It ran: this is its end, not a start that failed (#1023).
+            reason = down => Err(not_running(name, handle, &reason)),
         };
         if let Some(waiter) = waiter.0.take() {
             let _ = waiter.dispose().await;
@@ -1152,6 +1153,18 @@ pub(crate) fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     a.iter().zip(b).fold(0u8, |diff, (x, y)| diff | (x ^ y)) == 0
 }
 
+/// Why the runtime `name` is not running, in its state's words: one that ran
+/// and then ended says it ended, with how its process ended; one that never
+/// ran did not start (#1023). A runtime found `Down` may have run before:
+/// another runtime's long start came first ([`Host::runtimes_ready`]).
+fn not_running(name: &str, handle: &RuntimeHandle, reason: &str) -> Error {
+    let how = crate::status::how_it_ended(reason);
+    match handle.was_ready() {
+        true => format!("the {name} runtime ended: {how}"),
+        false => format!("the {name} runtime did not start: {how}"),
+    }
+}
+
 /// Says once a runtime's rows may start: it injects what they wait for.
 /// Temporary: [`Host::runtimes_ready`] mounts it while it waits, and
 /// disposes it once the wait ends.
@@ -1370,6 +1383,182 @@ mod tests {
             .find(|entry| entry.id == "plain")
             .unwrap();
         assert_eq!(crate::status::describe(&entry.status), "running");
+    }
+
+    /// A FIFO at `path`: a process that reads it waits until another opens
+    /// it for writing, so a test says exactly when it goes on, with no
+    /// sleep to race.
+    #[cfg(unix)]
+    fn fifo(path: &Path) {
+        use std::os::unix::ffi::OsStrExt;
+        let path = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+        // SAFETY: plain mkfifo(2), the mode owner-only.
+        assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0, "mkfifo");
+    }
+
+    /// Lets go of what waits on the FIFO `gate`: opens it for writing, which
+    /// the reader waits for, and writes a line.
+    #[cfg(unix)]
+    fn release(gate: &Path) {
+        use std::io::Write;
+        let mut writer = std::fs::OpenOptions::new().write(true).open(gate).unwrap();
+        writer.write_all(b"go\n").unwrap();
+    }
+
+    /// An interpreter for a Python runtime that the test holds at its start
+    /// and then lets go ([`release`]): it answers the host's look for the
+    /// `rutis` package (`-c`) at once and waits on `gate` before running the
+    /// runtime. Its process is the real one ([`rutis_test_support`]'s
+    /// interpreter) from then on.
+    #[cfg(unix)]
+    fn held_python(dir: &Path, gate: &Path) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let python = rutis_test_support::runtimes::python();
+        let script = dir.join("held-python");
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\n\
+                 case \"$1\" in -c) exec \"{}\" \"$@\" ;; esac\n\
+                 read line < \"{}\" || exit 1\n\
+                 exec \"{}\" \"$@\"\n",
+                python.display(),
+                gate.display(),
+                python.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        script
+    }
+
+    /// A runtime that ran and then ended while the host waited for another
+    /// one is not one that did not start: the host says it ended, in the
+    /// words of how its process ended (#1023). The rows of the runtime that
+    /// ended load as the others do (the Python one is still starting), so
+    /// its plugin runs and makes the process exit.
+    /// guarantee: host/runtime-ran-and-ended
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_runtime_that_ran_and_then_ended_is_said_to_have_ended() {
+        if !rutis_test_support::runtimes::all_enabled(&["python", "node"]) {
+            return;
+        }
+        // The repository's rutis package, for an interpreter without it.
+        std::env::set_var("RUTIS_PYTHON_PATH", repo().join("python/rutis"));
+        let dir = tempfile::tempdir().unwrap();
+        // The Python runtime is the first awaited, and does not start until
+        // the test lets it go: the Node runtime runs, and ends, first.
+        let gate = dir.path().join("gate");
+        fifo(&gate);
+        let python = held_python(dir.path(), &gate);
+        let sdk = repo()
+            .join("node/rutis/src/index.mjs")
+            .canonicalize()
+            .unwrap();
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{ "name": "ended", "type": "module" }"#,
+        )
+        .unwrap();
+        let quitter = dir.path().join("quitter.mjs");
+        std::fs::write(
+            &quitter,
+            format!(
+                "import {{ definePlugin }} from '{}'\n\
+                 export default definePlugin({{ apply() {{ process.exit(7) }} }})\n",
+                crate::config::file_url(&sdk)
+            ),
+        )
+        .unwrap();
+        let config = parsed(json!({
+            "id": "test",
+            "runtimes": {
+                "py": { "project": dir.path(), "python": python },
+                "node": { "project": dir.path(), "runtime": repo().join("node/rutis-runtime") }
+            },
+            "rows": [{ "id": "quitter", "name": crate::config::file_url(&quitter) }]
+        }));
+        let host = Host::start(&config).await.unwrap();
+        let node = host
+            .runtimes
+            .iter()
+            .find(|(name, _)| name == "node")
+            .map(|(_, handle)| handle.clone())
+            .expect("a node runtime");
+        // Both at once: the rows load as the runtimes start, and the Node
+        // row ends its runtime while the host waits for the Python one.
+        let ending = async {
+            RUNTIME_START
+                .within(
+                    "the Node runtime running",
+                    node.wait_for(|state| matches!(state, RuntimeState::Ready(_))),
+                )
+                .await;
+            RUNTIME_START
+                .within(
+                    "the Node runtime down",
+                    node.wait_for(|state| matches!(state, RuntimeState::Down(_))),
+                )
+                .await;
+            release(&gate);
+        };
+        let (started, ()) = RUNTIME_START
+            .within("the runtimes ready", async {
+                tokio::join!(host.start_rows(config.rows()), ending)
+            })
+            .await;
+        assert_eq!(
+            started.expect_err("a runtime ended"),
+            "the node runtime ended: exited with exit status: 7"
+        );
+        host.root.shutdown().await.unwrap();
+    }
+
+    /// A runtime that never ran is one that did not start (#1023): its
+    /// process ended before it greeted.
+    /// guarantee: host/runtime-ran-and-ended
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_runtime_that_never_ran_did_not_start() {
+        if !rutis_test_support::runtimes::enabled("python") {
+            return;
+        }
+        // The repository's rutis package, for an interpreter without it.
+        std::env::set_var("RUTIS_PYTHON_PATH", repo().join("python/rutis"));
+        let dir = tempfile::tempdir().unwrap();
+        // Answers the host's look for the `rutis` package, and ends before
+        // greeting as the runtime.
+        let python = dir.path().join("ending-python");
+        std::fs::write(
+            &python,
+            format!(
+                "#!/bin/sh\n\
+                 case \"$1\" in -c) exec \"{}\" \"$@\" ;; esac\n\
+                 exit 3\n",
+                rutis_test_support::runtimes::python().display()
+            ),
+        )
+        .unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&python, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let config = parsed(json!({
+            "id": "test",
+            "runtimes": { "py": { "project": dir.path(), "python": python } }
+        }));
+        let host = Host::start(&config).await.unwrap();
+        let error = RUNTIME_START
+            .within("the runtime", host.runtimes_ready())
+            .await
+            .expect_err("a runtime that did not start");
+        assert_eq!(
+            error,
+            "the py runtime did not start: the runtime ended before it greeted: \
+             the process exited with exit status: 3"
+        );
+        host.root.shutdown().await.unwrap();
     }
 
     /// Bun on Windows is not tested yet.
