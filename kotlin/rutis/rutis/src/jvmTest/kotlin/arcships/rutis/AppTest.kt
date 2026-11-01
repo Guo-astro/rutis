@@ -264,7 +264,9 @@ class AppTest {
         host.offer(1)
         until("gift announced: $told") { told.of("services.announce").any { it.text("name") == "gift" } }
         app.stop()
-        until("the withdrawal: $order") { "withdrawn" in order }
+        // Both arrive on threads of their own: wait for the two before
+        // comparing, or the cleanup may simply not have run yet.
+        until("the withdrawal and the cleanup: $order") { order.size == 2 }
         assertEquals(listOf("withdrawn", "its cleanup"), order.toList(), "the withdrawal comes after the cleanup")
     }
 
