@@ -978,8 +978,8 @@ async fn runtime_up(
 /// its name) the runtime it waits on.
 ///
 /// A runtime that fails loads nothing: the case hears of it at once, not at
-/// the deadline. At the deadline the failure says how far the row got and
-/// what every runtime is doing, from `report` (#1003).
+/// the deadline. Both failures, and the deadline, say how far the row got
+/// and what every runtime is doing, from `report` ([`row_failure`], #1003).
 async fn row_settled(
     row: &Row,
     runtime: Option<(&FiberView, &str)>,
@@ -1001,8 +1001,10 @@ async fn row_settled(
             }
             // Failed as it should, its `failed` not out yet: wait.
             Some((FiberState::Failed, _)) if fails => {}
-            Some((FiberState::Failed, error)) => {
-                return Err(format!("row {} failed: {error:?}", row.label))
+            // The row's own failure: the reason, and the runtimes, as the
+            // deadline's failure gives them.
+            Some((FiberState::Failed, _)) => {
+                return Err(row_failure(row, "failed", &state, said, &report()))
             }
             _ => {}
         }
@@ -1017,27 +1019,47 @@ async fn row_settled(
             }
         }
         if tokio::time::Instant::now() > deadline {
-            let fiber = match &state {
-                Some((state, error)) => match error {
-                    Some(error) => cut(&format!("{state:?}, {error}")),
-                    None => format!("{state:?}"),
-                },
-                None => "none".to_owned(),
-            };
-            let said = match said {
-                Some(said) => format!("{said:?}"),
-                None => "none".to_owned(),
-            };
-            return Err(format!(
-                "row {} did not start within {limit:?}\n  its fiber {}\n  its last rutis/row {}\n{}",
-                row.label,
-                cut(&fiber),
-                cut(&said),
-                report()
+            return Err(row_failure(
+                row,
+                &format!("did not start within {limit:?}"),
+                &state,
+                said,
+                &report(),
             ));
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
+}
+
+/// Why `row` is not settled, `reason` after its label, in the shape a log
+/// keeps (#1003): what it walks to, its error whole (it is the reason, so
+/// not [`cut`]: a long one over several lines is still all there), its last
+/// `rutis/row`, and then every runtime, a line each.
+fn row_failure(
+    row: &Row,
+    reason: &str,
+    state: &Option<(FiberState, Option<String>)>,
+    said: Option<RowEventState>,
+    report: &str,
+) -> String {
+    let mut out = format!("row {} {reason}\n", row.label);
+    let (fiber, error) = match state {
+        Some((state, error)) => (format!("{state:?}"), error.as_deref()),
+        None => ("none".to_owned(), None),
+    };
+    out.push_str(&format!("  its fiber {fiber}\n"));
+    if let Some(error) = error {
+        for line in error.lines() {
+            out.push_str(&format!("  its error: {line}\n"));
+        }
+    }
+    let said = match said {
+        Some(said) => format!("{said:?}"),
+        None => "none".to_owned(),
+    };
+    out.push_str(&format!("  its last rutis/row {said}\n"));
+    out.push_str(report);
+    out
 }
 
 /// At most how long a line of a failure may be. A log keeps a failure's
@@ -1646,6 +1668,83 @@ async fn the_failure_names_every_runtime_and_its_last_words() {
     assert!(
         why.lines().filter(|line| line.ends_with('…')).count() == 2,
         "{why}"
+    );
+}
+
+/// A row that failed for real (not a `fails` row) is the case's failure at
+/// once: the reason, whole, and every runtime, as the deadline's failure
+/// gives them (#1003).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_row_that_failed_says_why_and_what_every_runtime_is_doing() {
+    let dir = tempfile::tempdir().unwrap();
+    let stderr = dir.path().join("rt-x.stderr");
+    std::fs::write(&stderr, "loading t/keeps\n").unwrap();
+    let root = Ctx::root_with(tokio::runtime::Handle::current());
+    let view = root.plugin(SlowStart(Duration::from_secs(30)));
+    let row = settled_row();
+    let report = || {
+        runtime_lines(
+            "rt-x",
+            &Snapshot {
+                generation: 0,
+                state: FiberState::Active,
+                error: None,
+            },
+            &stderr,
+        )
+    };
+    let started = std::time::Instant::now();
+    let why = row_settled(
+        &row,
+        Some((&view, "rt-x")),
+        || {
+            (
+                Some((FiberState::Failed, Some("no such plugin t/keeps".into()))),
+                None,
+            )
+        },
+        Guard(Duration::from_secs(30)),
+        report,
+    )
+    .await
+    .unwrap_err();
+    // Not at the guard: the failure is there and is the case's.
+    assert!(started.elapsed() < Duration::from_secs(5), "{why}");
+    // The row, its reason, then every runtime: a line each.
+    assert_eq!(why.lines().next().unwrap(), "row c failed");
+    assert!(why.contains("\n  its fiber Failed\n"), "{why}");
+    assert!(
+        why.contains("\n  its error: no such plugin t/keeps\n"),
+        "{why}"
+    );
+    assert!(why.contains("\n  its last rutis/row none\n"), "{why}");
+    assert!(why.contains("\n  rt-x: fiber Active\n"), "{why}");
+    assert!(why.contains("\n  rt-x: | loading t/keeps\n"), "{why}");
+}
+
+/// The reason of a failure is whole, however long and however many lines:
+/// it is what went wrong, so it is not cut (`cut` is for the report's lines,
+/// #1003).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_long_reason_over_several_lines_is_not_cut() {
+    let long = "the runtime refused the module: ".repeat(6);
+    assert!(long.chars().count() > WIDTH * 2, "{long}");
+    let reason = format!("first line\n{long}\nlast line");
+    let seen = reason.clone();
+    let why = row_settled(
+        &settled_row(),
+        None,
+        || (Some((FiberState::Failed, Some(seen.clone()))), None),
+        Guard(Duration::from_secs(30)),
+        no_report,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(
+        why,
+        format!(
+            "row c failed\n  its fiber Failed\n  its error: first line\n  its error: {long}\n  its error: last line\n  its last rutis/row none\n"
+        )
     );
 }
 
