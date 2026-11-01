@@ -174,27 +174,39 @@ _given_up = False
 
 def give_up_after(seconds: float) -> None:
     """End the process in `seconds` unless it ended before (main exits it
-    once the cleanups ran). Once: a later call leaves the first deadline."""
-    global _given_up
-    with _giving_up:
-        if _given_up:
-            return
-        _given_up = True
+    once the cleanups ran). Once: a later call leaves the first deadline.
 
-    def give_up() -> None:
+    The deadline is a thread of its own (`threading.Timer`). One that
+    cannot be started — the process is out of threads, say — is no
+    deadline at all: the process ends at once instead, saying why, as one
+    that ran out of time does. It must not outlive its host because the
+    timer did not run (#985)."""
+    global _given_up
+
+    def give_up(why: str = "") -> None:
         try:
-            say(
-                f"rutis: cleanups did not finish within {seconds:g} s after the session ended "
-                "(or a plugin keeps the runtime busy); exiting"
-            )
+            if why:
+                say(f"rutis: the deadline that would end this process is not running ({why}); exiting")
+            else:
+                say(
+                    f"rutis: cleanups did not finish within {seconds:g} s after the session ended "
+                    "(or a plugin keeps the runtime busy); exiting"
+                )
         finally:
             # Also when the line cannot be written: stderr is a pipe to a
             # host that was killed, and the write fails (BrokenPipeError).
             os._exit(1)
 
-    timer = threading.Timer(seconds, give_up)
-    timer.daemon = True
-    timer.start()
+    with _giving_up:
+        if _given_up:
+            return
+        _given_up = True
+        timer = threading.Timer(seconds, give_up)
+        timer.daemon = True
+        try:
+            timer.start()
+        except RuntimeError as error:
+            give_up(f"its timer cannot start: {error}")
 
 
 async def serve(spec: str, endpoint: dict) -> None:
@@ -382,4 +394,7 @@ def main() -> None:
         os._exit(code)
 
 
-main()
+# `python3 -m rutis`: this file is the program. Imported (a test of the
+# deadline above, say), it is a module and nothing runs.
+if __name__ == "__main__":
+    main()

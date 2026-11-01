@@ -22,13 +22,10 @@ use rutis::internal::CtxInternal;
 use rutis::{Ctx, Error};
 use rutis_bridge::pipe::Processes;
 use rutis_bridge::runtime::{
-    ended_status, Launcher, RuntimeHandle, RuntimeState, RuntimeStates, Stdio,
+    ended_status, Launcher, RuntimeHandle, RuntimeState, RuntimeStates, Stdio, GREETING,
 };
 use rutis_bridge::session::SessionOptions;
 use rutis_bridge::{session_key, PeerId, Session};
-
-/// How long a runtime's process may take to greet, by default.
-const GREETING: Duration = Duration::from_secs(30);
 
 /// One local runtime: what starts its process, and its state.
 pub struct SpawnPlugin {
@@ -70,10 +67,11 @@ impl SpawnPlugin {
         }
     }
 
-    /// How long its process may take to greet once started: 30 s by
-    /// default; [`Duration::MAX`] waits for as long as it takes, for a
-    /// process stopped at its first line for a debugger (`--inspect-brk`),
-    /// which stays starting meanwhile.
+    /// How long its process may take to greet once started:
+    /// [`rutis_bridge::runtime::GREETING`] (30 s) by default, as
+    /// [`rutis_bridge::runtime::Process::mount`] gives one; [`Duration::MAX`]
+    /// waits for as long as it takes, for a process stopped at its first
+    /// line for a debugger (`--inspect-brk`), which stays starting meanwhile.
     pub fn greeting(mut self, limit: Duration) -> Self {
         self.greeting = limit;
         self
