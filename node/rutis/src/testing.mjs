@@ -184,7 +184,10 @@ function hold() {
     holding = false
     if (--out === 0) held?.unref()
   }
-  testEnded?.(release)
+  // From inside the hooks that end the test (unload a host, say), the reply
+  // releases it: a hook registered here would not run (the test is over),
+  // and Bun should not take hooks from inside a hook.
+  if (!ended) testEnded?.(release)
   return release
 }
 // `target`: the driver itself (''), or a service by its name.
