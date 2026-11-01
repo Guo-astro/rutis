@@ -65,7 +65,19 @@ function fromProject(specifier) {
 // The host and runtime of this process, started at the first `load`.
 let started
 function runtime() {
-  started ??= (async () => {
+  started ??= starting()
+  return started
+}
+function starting() {
+  // The test that asks for the host may end before it is up (it timed out
+  // while `load` was still starting it, #997): the start is given up then,
+  // through `signal`, so the host stops and nothing keeps the process
+  // running. That load stays unfinished, as a call that never returns does;
+  // the next `load` starts a host of its own.
+  const controller = new AbortController()
+  let settled = false
+  let givenUp = false
+  const promise = (async () => {
     const bun = typeof globalThis.Bun !== 'undefined'
     const name = bun ? '@arcships/rutis-bun' : '@arcships/rutis-runtime'
     // The project's runtime (a dev dependency of the project, not of this
@@ -77,21 +89,45 @@ function runtime() {
       if (error?.code !== 'ERR_MODULE_NOT_FOUND' && error?.code !== 'MODULE_NOT_FOUND' && !/Cannot find (module|package)/.test(error?.message)) throw error
       throw new PluginTestError(`the test tool runs plugins in ${name}: add it as a dev dependency`)
     }
-    const harness = await start({ dispatch, outgoing: hold })
-    harness.control.unref()
-    held = harness.control
-    return harness.control
+    try {
+      const harness = await start({ dispatch, outgoing: hold, signal: controller.signal })
+      harness.control.unref()
+      held = harness.control
+      return harness.control
+    } catch (error) {
+      // Given up (the test that asked for the host ended): the load stays
+      // unfinished, as a call that never returns does, and nothing is said
+      // to a test that is over.
+      if (givenUp) return new Promise(() => {})
+      throw error
+    }
   })()
-  return started
+  const settle = () => { settled = true }
+  promise.then(settle, settle)
+  testEnded?.(() => {
+    if (settled) return
+    givenUp = true
+    controller.abort()
+    if (started === promise) started = undefined
+  })
+  return promise
 }
 
 // `testEnded(fn)`: `fn` runs when the test running now ends, passed or
 // failed (a timeout too): node:test's `after`, under `node --test`, or
 // Bun's `onTestFinished`, under `bun test`. For the calls of a test
-// (hold) and the hosts it makes (host).
+// (hold) and the hosts it makes (host). `ended` says whether the test
+// running now has ended — `beforeEach` opens the next one — so that what a
+// test left running when it ended keeps nothing of it alive (#997). What
+// those hooks still do (unload a host, say) stays held meanwhile
+// (`flushing`, under `node --test`): node:test cancels the tests after it
+// when the event loop empties while an `after` hook is pending.
+let ended = false
+let flushing = false
 let testEnded
 if (typeof globalThis.Bun !== 'undefined') {
-  const { onTestFinished } = await import('bun:test')
+  const { onTestFinished, beforeEach } = await import('bun:test')
+  beforeEach(() => { ended = false })
   // Outside a test (a file's top level, `beforeAll`), Bun has no test to
   // end: nothing runs.
   //
@@ -107,6 +143,7 @@ if (typeof globalThis.Bun !== 'undefined') {
   testEnded = fn => {
     try {
       onTestFinished(done => {
+        ended = true
         const finish = typeof done === 'function' ? done : () => {}
         let result
         try { result = fn() } catch (error) { finish(error); return }
@@ -116,7 +153,13 @@ if (typeof globalThis.Bun !== 'undefined') {
     } catch {}
   }
 } else if (process.env.NODE_TEST_CONTEXT || process.execArgv.includes('--test')) {
-  ({ after: testEnded } = await import('node:test'))
+  const { after, beforeEach } = await import('node:test')
+  beforeEach(() => { ended = false })
+  testEnded = fn => after(async () => {
+    ended = true
+    flushing = true
+    try { return await fn() } finally { flushing = false }
+  })
 }
 
 // The driver, synchronously (the test waits) or not.
@@ -129,6 +172,10 @@ let control
 let held
 let out = 0
 function hold() {
+  // The test that made this call is over (it failed at its timeout, say):
+  // the call keeps nothing running, and its `after` hooks ran already, so
+  // nothing would release it (#997).
+  if (ended && !flushing) return () => {}
   let holding = true
   if (out++ === 0) held?.ref()
   const release = () => {
@@ -136,7 +183,10 @@ function hold() {
     holding = false
     if (--out === 0) held?.unref()
   }
-  testEnded?.(release)
+  // From inside the hooks that end the test (unload a host, say), the reply
+  // releases it: a hook registered here would not run (the test is over),
+  // and Bun should not take hooks from inside a hook.
+  if (!ended) testEnded?.(release)
   return release
 }
 // `target`: the driver itself (''), or a service by its name.
@@ -255,10 +305,24 @@ export function host({ services = {} } = {}) {
       if (!received && plugin.api > PLUGIN_API) {
         throw new PluginTestError(`the plugin needs plugin API ${plugin.api}; this SDK supports ${PLUGIN_API}`)
       }
+      // The test that asked for this row may end while it is loading (it
+      // failed at its timeout, say): the host unloads then (testEnded, at
+      // the end of `host`), and the load gives up, taking what it made here
+      // with it, rather than leave it to the next test (#997).
+      const unloaded = async undo => {
+        if (!closed) return
+        await undo?.()
+        await self.unload()
+        throw new PluginTestError('the host is unloaded')
+      }
       const file = received ? undefined : await fileOf(plugin)
+      await unloaded()
       control = await runtime()
+      await unloaded()
       withdrawShared ??= await provide(services)
+      await unloaded()
       const withdrawOwn = await provide(own)
+      await unloaded(withdrawOwn)
       const options = { ...(rowId === undefined ? {} : { id: rowId }), ...(isolate === undefined ? {} : { isolate }) }
       let id, provides
       try {
@@ -273,6 +337,7 @@ export function host({ services = {} } = {}) {
       }
       const row = loaded(id, received ? { provides } : plugin, withdrawOwn, received)
       rows.push(row)
+      await unloaded()
       return row.api
     },
     /** Unload every row, latest first. */

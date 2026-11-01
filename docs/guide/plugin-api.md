@@ -1232,7 +1232,7 @@ fn mount(at: &Ctx, definition: &Definition) -> Result {
 
 ### TypeScript 与 Bun 的测试工具
 
-`@arcships/rutis/testing`，Bun 里同一个。插件运行在真实的运行时里（`@arcships/rutis-runtime`，Bun 下 `@arcships/rutis-bun`），由真实的宿主管理（`rutis-host test`，见 [rutis-host](rutis-host.md)）：宿主检查配置并补上默认值、按注入的服务门控、分发事件，插件与测试之间的值按跨进程的规则传递。每个测试进程第一次 `load` 时起一个宿主和运行时，之后的用例共用它们，用例之间只卸载行。测试的 `on` 和发出，是同一个运行时里插件旁边的一个测试插件的；测试的每个服务是那里单独的一行 `rutis-test/<名字>`。测试给的服务 rutis 里已经有了（例如宿主提供的），只让给它的那次 `load` 失败，文字是那一行的状态，如 `rutis-test/llm: llm is already provided by the host`；宿主照常服务之后的测试。需要：
+`@arcships/rutis/testing`，Bun 里同一个。插件运行在真实的运行时里（`@arcships/rutis-runtime`，Bun 下 `@arcships/rutis-bun`），由真实的宿主管理（`rutis-host test`，见 [rutis-host](rutis-host.md)）：宿主检查配置并补上默认值、按注入的服务门控、分发事件，插件与测试之间的值按跨进程的规则传递。每个测试进程第一次 `load` 时起一个宿主和运行时，之后的用例共用它们，用例之间只卸载行；那个测试如果在这之前就结束了（超时了），这次启动放弃，宿主停下，下一次 `load` 重新起一个。测试的 `on` 和发出，是同一个运行时里插件旁边的一个测试插件的；测试的每个服务是那里单独的一行 `rutis-test/<名字>`。测试给的服务 rutis 里已经有了（例如宿主提供的），只让给它的那次 `load` 失败，文字是那一行的状态，如 `rutis-test/llm: llm is already provided by the host`；宿主照常服务之后的测试。需要：
 
 - `@arcships/rutis-runtime`（Bun 下 `@arcships/rutis-bun`）与 `@arcships/rutis-host` 作为开发依赖（`rutis-host new` 生成的项目已经有），或 `RUTIS_HOST` 指向一个 `rutis-host`；
 - 插件是它那个模块的默认导出：测试工具让运行时按文件加载它。在测试文件里直接 `definePlugin` 的插件不能加载，报 `load needs a plugin that its module exports as default`。测试的替身收到的插件定义是例外，见下。
