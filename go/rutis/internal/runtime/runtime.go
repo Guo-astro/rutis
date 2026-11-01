@@ -1092,6 +1092,33 @@ func (s *Service) Call(ctx context.Context, method string, result any, args ...a
 	return convert.Decode(value, result)
 }
 
+// lacking says why `object` does not implement the interface `want`, in the
+// words the Go compiler uses for it: the first method it has not, or the
+// first whose type differs.
+func lacking(object reflect.Value, want reflect.Type) string {
+	for i := 0; i < want.NumMethod(); i++ {
+		method := want.Method(i)
+		have, ok := object.Type().MethodByName(method.Name)
+		if !ok {
+			return "missing method " + method.Name
+		}
+		// A concrete method's type starts with its receiver, an interface
+		// method's does not.
+		in := make([]reflect.Type, 0, have.Type.NumIn()-1)
+		for j := 1; j < have.Type.NumIn(); j++ {
+			in = append(in, have.Type.In(j))
+		}
+		out := make([]reflect.Type, 0, have.Type.NumOut())
+		for j := 0; j < have.Type.NumOut(); j++ {
+			out = append(out, have.Type.Out(j))
+		}
+		if reflect.FuncOf(in, out, have.Type.IsVariadic()) != method.Type {
+			return "wrong type for method " + method.Name
+		}
+	}
+	return "missing method"
+}
+
 func localService(name string, local providedService) *Service {
 	value := reflect.ValueOf(local.value)
 	methods := map[string]string{}
@@ -1178,6 +1205,30 @@ func (s *Service) bind(target any) error {
 		value.Set(reflect.ValueOf(s))
 		return nil
 	}
+	// In this process, the provider's object itself when the target can
+	// hold it (an interface it implements, its own type, any): as every
+	// other language gives it, and as Rust's `require` gives its Arc.
+	if s.local != nil {
+		object := reflect.ValueOf(s.local.value)
+		if object.Type().AssignableTo(value.Type()) {
+			value.Set(object)
+			return nil
+		}
+	}
+	if value.Kind() == reflect.Interface {
+		// any: what is not in this process is this proxy, as an object of
+		// another process received as any is.
+		if value.NumMethod() == 0 {
+			value.Set(reflect.ValueOf(s))
+			return nil
+		}
+		if s.local != nil {
+			return fmt.Errorf("use %s: %s does not implement %s (%s)", s.name, reflect.TypeOf(s.local.value), value.Type(), lacking(reflect.ValueOf(s.local.value), value.Type()))
+		}
+		// A service of another process has methods, not a Go type: nothing
+		// can implement the interface for it.
+		return fmt.Errorf("use %s: %s is an interface, which only a service provided in this process fills: for one of another process, use a struct of function fields or *advanced.Service", s.name, value.Type())
+	}
 	if value.Kind() != reflect.Struct {
 		return fmt.Errorf("use %s: the target must point to a struct of function fields or a *advanced.Service, not %s", s.name, value.Type())
 	}
@@ -1192,17 +1243,20 @@ func (s *Service) bind(target any) error {
 		if tag, ok := field.Tag.Lookup("rutis"); ok && tag != "" {
 			wire = tag
 		}
-		if _, declared := s.methods[wire]; !declared {
-			return fmt.Errorf("use %s: field %s calls %s, which the service does not declare", s.name, field.Name, wire)
-		}
-		if err := convert.CheckSignature(field.Type, true); err != nil {
-			return fmt.Errorf("use %s: field %s: %w", s.name, field.Name, err)
-		}
+		// The provider's own method, in this process: called as it is, so
+		// the rules for crossing (an error last, arguments that encode) do
+		// not apply to it.
 		if s.local != nil {
 			if fn, ok := s.local.shape.method(reflect.ValueOf(s.local.value), wire); ok && fn.Type() == field.Type {
 				value.FieldByIndex(field.Index).Set(fn)
 				continue
 			}
+		}
+		if _, declared := s.methods[wire]; !declared {
+			return fmt.Errorf("use %s: field %s calls %s, which the service does not declare", s.name, field.Name, wire)
+		}
+		if err := convert.CheckSignature(field.Type, true); err != nil {
+			return fmt.Errorf("use %s: field %s: %w", s.name, field.Name, err)
 		}
 		method := wire
 		value.FieldByIndex(field.Index).Set(convert.MakeFunc(field.Type, func(ctx context.Context, args []any) (any, error) {

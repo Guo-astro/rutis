@@ -38,7 +38,7 @@ An error that crossed a session and is thrown on crosses again with its whole er
 
 Cleanups run in reverse registration order: the function returned by `apply` runs first, followed by functions registered with `ctx.effect`. On the Node runtime Cordis starts them all at once in that order, an async cleanup not waiting for the one before.
 
-In Go: `ctx.Use(name, &target)` binds the service to a struct of function fields (or a `*advanced.Service`); `ctx.Provide(name, value)`; `ctx.Effect(func(context.Context) error)`; `ctx.Go(task)` runs a goroutine stopped at unload. `*rutis.Ctx` is a `context.Context` cancelled when the plugin unloads.
+In Go: `ctx.Use(name, &target)` binds the service to a struct of function fields, an interface (the provider in this process, given as the object itself when it implements it), `any` (the same) or a `*advanced.Service`; `ctx.Provide(name, value)`; `ctx.Effect(func(context.Context) error)`; `ctx.Go(task)` runs a goroutine stopped at unload. `*rutis.Ctx` is a `context.Context` cancelled when the plugin unloads.
 
 In Kotlin: `ctx.use<I>(name)` uses the service through the `@RutisClient` interface `I` (the provider's own object when one in this process implements `I`); `ctx.provide(name, obj)` takes an instance of a `@RutisService` class, whose method table the KSP processor generates at compile time; `ctx.effect { }`; `ctx` is a coroutine scope cancelled when the plugin unloads, and coroutines started with `ctx.launch { }` are cancelled and waited for then. A received error is a `RutisException`, matched by `name`.
 
