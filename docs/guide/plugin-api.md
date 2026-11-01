@@ -1267,12 +1267,12 @@ fn mount(at: &Ctx, definition: &Definition) -> Result {
 
 `rutis.testing`：
 
-`load` 起一个 `rutis-host test`（`RUTIS_HOST` 指定的文件，没有时用 `PATH` 上的 `rutis-host`；插件项目的开发依赖 `rutis-host` 装的就是它），把测试进程里的 Python 运行时接上去，在测试的事件循环里运行。插件是这个宿主的一行，和在别的宿主上一样运行：配置由宿主的 loader 校验并补上默认值，事件全部经宿主，卸载也由宿主做。测试给的服务（`services`）和测试自己的监听器（`t.on`）属于同一个运行时里测试的插件 `tester`。
+`load` 起一个 `rutis-host test`（`RUTIS_HOST` 指定的文件，没有时用 `PATH` 上的 `rutis-host`；插件项目的开发依赖 `rutis-host` 装的就是它），把测试进程里的 Python 运行时接上去，在测试的事件循环里运行。插件是这个宿主的一行，和在别的宿主上一样运行：配置由宿主的 loader 校验并补上默认值，事件全部经宿主，卸载也由宿主做。测试自己的监听器（`t.on`）属于同一个运行时里测试的插件 `tester`；测试的每个服务是那里单独的一行 `rutis-test/<名字>`。测试给的服务 rutis 里已经有了（例如宿主提供的 `rutis/sessions`），只让给它的那次 `load` 失败，文字是那一行的状态，如 `rutis-test/rutis/sessions: rutis/sessions is already provided by the host`；宿主照常服务之后的测试。
 
 | `load(plugin, *, …)` 的参数 | 作用 |
 | --- | --- |
 | `config` | 插件的配置；宿主的 loader 按插件的 `config` 声明补默认值并校验，不合格时 `load` 以这一行的状态行失败（`weather: config: city is required`） |
-| `services` | 插件 `inject` 的服务，按名字给 |
+| `services` | 插件 `inject` 的服务，按名字给；每个是单独的一行 `rutis-test/<名字>` |
 | `bus` | 与同一个 `Bus` 上的插件共用一个宿主（默认自己一个） |
 | `id` | 行 id；没有时用插件声明的名字，否则模块名，已有同名的行时加 `-2`、`-3`……；给了的 id 已有行时 `load` 以宿主的话失败 |
 | `isolate` | 这一行的 `isolate`，与 `rutis.json` 里的相同（`{"notes": True}`，或给一个服务一个标签） |

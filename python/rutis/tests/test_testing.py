@@ -115,9 +115,39 @@ class Testing(background.TestCase):
             with self.assertRaises(PluginTestError) as raised:
                 async with load(wordcount, services={"notes": Notes()}):
                     pass
-            self.assertIn("notes is already provided by tester", str(raised.exception))
+            self.assertIn("notes is already provided by rutis-test/notes", str(raised.exception))
             async with load(wordcount) as t:
                 self.assertIsNone(await t.service("notes").get("k"))
+
+        run(go())
+
+    def test_a_service_rutis_already_has_fails_that_load_only(self):
+        # #995: the test's services were provided by `tester`; a name rutis
+        # refused failed `tester`, and every test after it with the host.
+        # Each service is a row of its own now.
+        plugin, _ = weather_plugin()
+
+        async def go():
+            # `rutis/sessions` is the host's own: the runtime does not know
+            # it, so the host refuses the row that provides it, not the
+            # runtime of the row.
+            bus = Bus()
+            async with load(define_plugin(lambda ctx, config: None), bus=bus):
+                with self.assertRaises(PluginTestError) as refused:
+                    async with load(plugin, services={"rutis/sessions": Llm()}, bus=bus):
+                        pass
+                self.assertEqual(
+                    str(refused.exception),
+                    "rutis-test/rutis/sessions: rutis/sessions is already provided by the host",
+                )
+                # The host serves the tests after it: a service of the
+                # test's, its listener, and unloading.
+                heard = []
+                async with load(plugin, services={"llm": Llm()}, bus=bus) as t:
+                    self.assertEqual(await t.service("weather").today(), "sunny in Oslo")
+                    t.on("t/ping", lambda value: heard.append(value))
+                    await t.parallel("t/ping", 1)
+                self.assertEqual(heard, [1])
 
         run(go())
 

@@ -1267,12 +1267,12 @@ The test and the plugin may call each other at the same time: the test calling a
 
 `rutis.testing`:
 
-`load` starts `rutis-host test` (the file `RUTIS_HOST` names, else `rutis-host` on `PATH`; the plugin project's dev dependency `rutis-host` installs it) and connects the Python runtime in the test's process to it, in the test's event loop. The plugin is a row of that host and runs as it does on any host: the host's loader checks its config and fills in the defaults, every event goes through the host, and the host unloads it. The services the test gives (`services`) and the test's own listeners (`t.on`) belong to the test's plugin `tester`, in the same runtime.
+`load` starts `rutis-host test` (the file `RUTIS_HOST` names, else `rutis-host` on `PATH`; the plugin project's dev dependency `rutis-host` installs it) and connects the Python runtime in the test's process to it, in the test's event loop. The plugin is a row of that host and runs as it does on any host: the host's loader checks its config and fills in the defaults, every event goes through the host, and the host unloads it. The test's own listeners (`t.on`) belong to the test's plugin `tester`, in the same runtime; each service the test gives is a row of its own there, `rutis-test/<name>`. A service the test gives that rutis has already (one the host provides, such as `rutis/sessions`) fails only the `load` that gives it, with that row's state line, such as `rutis-test/rutis/sessions: rutis/sessions is already provided by the host`; the host stays, for the tests after it.
 
 | Parameter of `load(plugin, *, …)` | What it does |
 | --- | --- |
 | `config` | The plugin's config; the host's loader fills in the defaults of the plugin's `config` declaration and checks it, and a config that does not match fails `load` with the row's state line (`weather: config: city is required`) |
-| `services` | The services the plugin `inject`s, by name |
+| `services` | The services the plugin `inject`s, by name; each is a row of its own, `rutis-test/<name>` |
 | `bus` | Share one host with the plugins on the same `Bus` (default: one of its own) |
 | `id` | Its row's id; without one, the plugin's declared name, else its module's, with `-2`, `-3`… added while taken; an id given that is taken fails `load` in the host's words |
 | `isolate` | The row's `isolate`, as in `rutis.json` (`{"notes": True}`, or a label for a service) |

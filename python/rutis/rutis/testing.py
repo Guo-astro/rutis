@@ -11,10 +11,10 @@
 the test's event loop. The plugin is a row of that host, run by the
 runtime as every row is: the host's loader checks its config and fills in
 the defaults, every event goes through the host, and unloading is the
-host's. The services the test gives (`services`) and the test's own
-listeners (`on`) belong to a plugin of the test, `tester`, in the same
-runtime. Plugins loaded with one `Bus` share its host; one loaded without
-gets a host of its own.
+host's. The test's own listeners (`on`) belong to a plugin of the test,
+`tester`, in the same runtime; each service the test gives (`services`) is
+a row of its own there, `rutis-test/<name>`. Plugins loaded with one `Bus`
+share its host; one loaded without gets a host of its own.
 
 A failing `emit` listener is reported by the host (printed, and in
 `await t.reported()`), never raised.
@@ -40,9 +40,13 @@ from .events import Emitter
 from .peer import Peer, host_gone
 from .runner import Runtime, no_method
 
-# The test's own plugin, as the host knows it: the row that provides the
-# test's services and holds its listeners.
+# The test's own plugin, as the host knows it: the row that holds the
+# test's listeners.
 TESTER = "tester"
+# The plugin each service of the test is a row of, `rutis-test/<name>`: a
+# name rutis already has fails that row's load only, not `tester`'s, and so
+# not the test's host with it (#995).
+SERVICE = "rutis-test-service"
 # This runtime's endpoint on the session with `rutis-host test`, which
 # calls the runtime it tests `test`.
 ENDPOINT = {"local": "test", "declare": ["runtime"]}
@@ -443,6 +447,24 @@ class Loaded:
                 stop()
 
 
+async def _provide(host: "_Host", name: str, value: Any) -> tuple[str, str]:
+    """Provide `value` as the test's service `name`: a row of its own,
+    `rutis-test/<name>`, that a runtime of the host applies. A name rutis
+    already has fails this row's load, as it fails any later provider, and
+    with it only the `load` that gave the name: provided by `tester`, it
+    failed `tester`, and the host stopped serving the tests after it
+    (#995). Returns the module the runtime finds it under, and its row."""
+    entry = f"rutis-testing/{next(_ENTRIES)}/service"
+    sys.modules[entry] = holder = ModuleType(entry)
+    holder.plugin = sdk.define_plugin(lambda ctx, config: ctx.provide(name, value), name=SERVICE)
+    try:
+        row = await host.harness.load(entry, None, {"id": f"rutis-test/{name}"})
+    except Exception as error:  # noqa: BLE001 - the host's words
+        sys.modules.pop(entry, None)
+        raise PluginTestError(_said(error)) from None
+    return entry, row
+
+
 @asynccontextmanager
 async def load(
     plugin: sdk.Plugin | ModuleType,
@@ -474,14 +496,15 @@ async def load(
     if not isinstance(bus, Bus):
         raise PluginTestError("bus must be a rutis.testing.Bus")
     host = await bus._enter()
-    withdraws: list[Callable[[], None]] = []
+    # The test's services, as (module, row): each a row of its own.
+    withdraws: list[tuple[str, str]] = []
     # The runtime finds the plugin under this name; the host calls its row
     # after the last part.
     entry = f"rutis-testing/{next(_ENTRIES)}/{name}"
     entered = None
     try:
         for given, service in (services or {}).items():
-            withdraws.append(host.tester.provide(given, service))
+            withdraws.append(await _provide(host, given, service))
         sys.modules[entry] = holder = ModuleType(entry)
         holder.plugin = plugin
         try:
@@ -504,8 +527,11 @@ async def load(
             if entered is not None:
                 await entered.unload()
         finally:
-            for withdraw in reversed(withdraws):
-                withdraw()
+            for module, row in reversed(withdraws):
+                try:
+                    await host.harness.unload(row)
+                finally:
+                    sys.modules.pop(module, None)
             await bus._leave()
 
 
