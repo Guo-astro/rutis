@@ -34,6 +34,13 @@ export class PluginTestError extends Error {
 }
 
 const FILE = Symbol.for('rutis.plugin-file')
+// A plugin definition a test double received (`@arcships/rutis/testing`):
+// the runtime hands it over as this handle, and `load` hands it straight
+// back, which mounts it in the runtime that made it
+// (docs/design-test-tool-definition-load-2026-11-01.md). The marker only
+// routes `load`; whether it is a real handle is the session's to know.
+const RECEIVED = Symbol.for('rutis.plugin-definition')
+const isReceived = value => value?.[RECEIVED] === true
 
 // What the test serves the driver: its services' methods, by the
 // service's name, and its listeners, by `listener:<id>`.
@@ -219,23 +226,32 @@ export function host({ services = {} } = {}) {
      */
     async load(plugin, { config, services: own = {}, id: rowId, isolate } = {}) {
       if (closed) throw new PluginTestError('the host is unloaded')
-      plugin = isPlugin(plugin) ? plugin : plugin?.default
-      if (!isPlugin(plugin)) throw new PluginTestError('load needs a plugin made with definePlugin')
-      if (plugin.api > PLUGIN_API) {
+      // A definition a test double received: mounted as a row of the runtime
+      // that made it, the same way a plugin module is. Anything else goes
+      // through the checks a `definePlugin` result does.
+      const received = isReceived(plugin)
+      plugin = isPlugin(plugin) ? plugin : received ? plugin : plugin?.default
+      if (!isPlugin(plugin) && !received) throw new PluginTestError('load needs a plugin made with definePlugin')
+      if (!received && plugin.api > PLUGIN_API) {
         throw new PluginTestError(`the plugin needs plugin API ${plugin.api}; this SDK supports ${PLUGIN_API}`)
       }
-      const file = await fileOf(plugin)
+      const file = received ? undefined : await fileOf(plugin)
       control = await runtime()
       withdrawShared ??= await provide(services)
       const withdrawOwn = await provide(own)
-      let id
+      const options = { ...(rowId === undefined ? {} : { id: rowId }), ...(isolate === undefined ? {} : { isolate }) }
+      let id, provides
       try {
-        id = await ask('load', file, config ?? null, { ...(rowId === undefined ? {} : { id: rowId }), ...(isolate === undefined ? {} : { isolate }) })
+        if (received) {
+          ({ id, provides } = await ask('loadDefinition', plugin, config ?? null, options))
+        } else {
+          id = await ask('load', file, config ?? null, options)
+        }
       } catch (error) {
         await withdrawOwn()
         throw new PluginTestError(error?.message ?? String(error))
       }
-      const row = loaded(id, plugin, withdrawOwn)
+      const row = loaded(id, received ? { provides } : plugin, withdrawOwn, received)
       rows.push(row)
       return row.api
     },
@@ -250,7 +266,7 @@ export function host({ services = {} } = {}) {
   }
   testEnded?.(() => self.unload())
 
-  function loaded(id, plugin, withdrawOwn) {
+  function loaded(id, plugin, withdrawOwn, received = false) {
     // This row's test listeners: withdrawn when it unloads.
     const mine = new Set()
     let unloaded = false
@@ -264,7 +280,7 @@ export function host({ services = {} } = {}) {
       if (unloaded) return
       unloaded = true
       rows.splice(rows.indexOf(record), 1)
-      await ask('unload', id)
+      await ask(received ? 'unloadDefinition' : 'unload', id)
       for (const off of [...mine]) off()
       await withdrawOwn()
     }
@@ -334,13 +350,14 @@ export function host({ services = {} } = {}) {
 }
 
 /**
- * Load `plugin` (what definePlugin returns, or a module whose default export
- * it is) with `config` and the services in `services`, on a `host()` of its
- * own.
+ * Load `plugin` (what definePlugin returns, a module whose default export it
+ * is, or a plugin definition a test double received) with `config` and the
+ * services in `services`, on a `host()` of its own; `id` and `isolate`, as a
+ * row's (as `host().load` takes them).
  */
-export async function load(plugin, { config, services = {} } = {}) {
+export async function load(plugin, { config, services = {}, id, isolate } = {}) {
   const h = host({ services })
-  const t = await h.load(plugin, { config }).catch(async error => {
+  const t = await h.load(plugin, { config, id, isolate }).catch(async error => {
     await h.unload()
     throw error
   })

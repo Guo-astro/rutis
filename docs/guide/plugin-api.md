@@ -1235,11 +1235,11 @@ fn mount(at: &Ctx, definition: &Definition) -> Result {
 `@arcships/rutis/testing`，Bun 里同一个。插件运行在真实的运行时里（`@arcships/rutis-runtime`，Bun 下 `@arcships/rutis-bun`），由真实的宿主管理（`rutis-host test`，见 [rutis-host](rutis-host.md)）：宿主检查配置并补上默认值、按注入的服务门控、分发事件，插件与测试之间的值按跨进程的规则传递。每个测试进程第一次 `load` 时起一个宿主和运行时，之后的用例共用它们，用例之间只卸载行。测试的 `on` 和发出，是同一个运行时里插件旁边的一个测试插件的；测试的每个服务是那里单独的一行 `rutis-test/<名字>`。测试给的服务 rutis 里已经有了（例如宿主提供的），只让给它的那次 `load` 失败，文字是那一行的状态，如 `rutis-test/llm: llm is already provided by the host`；宿主照常服务之后的测试。需要：
 
 - `@arcships/rutis-runtime`（Bun 下 `@arcships/rutis-bun`）与 `@arcships/rutis-host` 作为开发依赖（`rutis-host new` 生成的项目已经有），或 `RUTIS_HOST` 指向一个 `rutis-host`；
-- 插件是它那个模块的默认导出：测试工具让运行时按文件加载它。在测试文件里直接 `definePlugin` 的插件不能加载，报 `load needs a plugin that its module exports as default`。
+- 插件是它那个模块的默认导出：测试工具让运行时按文件加载它。在测试文件里直接 `definePlugin` 的插件不能加载，报 `load needs a plugin that its module exports as default`。测试的替身收到的插件定义是例外，见下。
 
 | 名字 | 作用 |
 | --- | --- |
-| `load(plugin, { config, services })` | 装载一个插件，它是自己那个 `host()` 的唯一一行；卸载它也卸掉这个 `host()` |
+| `load(plugin, { config, services, id, isolate })` | 装载一个插件（或测试的替身收到的插件定义，见下），它是自己那个 `host()` 的唯一一行；卸载它也卸掉这个 `host()`。`id`、`isolate` 与 `h.load` 的相同 |
 | `host({ services })` | 宿主上的几个插件，共用它的总线。`services` 是测试的服务，给每个 `inject` 了它的行。在一个测试里建的、没卸载的，这个测试结束时（通过或失败，`node:test` 的 `after`、Bun 的 `onTestFinished`）自动卸载：它的行和测试的服务都撤下，下一个测试碰不到。`load` 也一样，它自己建一个 `host()` |
 | `h.load(plugin, { config, services, id, isolate })` | 在 `host()` 上再装载一行；`services` 只给这一行；`id` 是行 id（默认模块的文件名）；`isolate` 与 `rutis.json` 里一行的相同（`{ forecast: true }`，或一个标签） |
 | `h.emit` 等五个方法、`h.filter`、`await h.reported()`、`h.unload()` | 从测试的插件发出；宿主报告的这些行的失败；倒序卸载每一行，再撤下测试的服务 |
@@ -1260,6 +1260,8 @@ fn mount(at: &Ctx, definition: &Definition) -> Result {
 | `t.row`、`t.host` | 行在宿主上的 id（模块的文件名，被占用时加 `-2`、`-3`……）；它所在的 `host()` |
 
 `PluginTestError`：测试工具拒绝的事：装载失败（文字是这一行的状态，与宿主打印的相同，如 `weather: config: city is required`）、不能装载的插件。
+
+测试的替身收到的插件定义可以直接交给 `load`：插件把它在 `apply` 里造的 `definePlugin` 结果交给测试的服务，测试再把它交给 `load`，它就在**定义它的运行时**里作为一行装载——配置按它声明的 schema 校验并补默认值、`inject` 的服务都在了才启动、事件经宿主、`service()` 和 `t.row` 与 `load` 一个插件模块相同。三处与插件代码里 `ctx.plugin(def.at(..))` 挂出的副本不同（理由见[插件定义](#插件定义)与[设计](../design-test-tool-definition-load-2026-11-01.md) §四）：来源行卸载不带走这一行（测试自己卸）、同一个定义 `load` 两次是两行、`ended()` 与"只能挂在来源实例里或更里面"不适用。
 
 测试与插件可以同时调用对方：测试调用插件交给它的函数（回调）的同时，插件调用测试提供的服务。等着对方的一边在等待时执行对方的调用，Node 与 Bun 下都一样，两边都返回。所以测试还在插件的一次调用里时，测试提供的服务也可能被调用：不要在这样的调用期间持有测试自己的锁。
 

@@ -33,6 +33,7 @@ import { AsyncLocalStorage } from 'node:async_hooks'
 import type { Client } from './client.ts'
 import { Bus, refuseReserved } from './events.mjs'
 import { definition, locate, Modules, versionOf, type Kind } from './plugin.ts'
+import { registeredDefinition } from './testing/definitions.ts'
 import { MANIFEST } from './session.ts'
 import { UNDECLARED, noMethod, notDeclared, notDeclaredOptional, serviceName, unavailable } from './errors.ts'
 import { prefixOutput, say, watchBlocking } from './output.mjs'
@@ -196,7 +197,7 @@ export class Runtime {
    * paths), which names the row calling process.exit (#688). */
   rowOfFiles(files: Set<string>): string | undefined {
     const found = [...this.#rows.values()].filter(row => {
-      if (typeof row.entry !== 'string') return false
+      if (typeof row.entry !== 'string' || registeredDefinition(row.entry) !== undefined) return false
       try { return files.has(realpathSync(locate(row.entry, this.#project))) } catch { return false }
     })
     return found.length === 1 ? this.#bus.rowId(found[0].key) ?? undefined : undefined
@@ -442,6 +443,11 @@ export class Runtime {
 
   async #plugin(entry: unknown) {
     if (typeof entry !== 'string') return definition(entry)
+    // A definition a test handed over, registered by the test driver: loaded
+    // as a row of this process, not imported from a file
+    // (docs/design-test-tool-definition-load-2026-11-01.md).
+    const registered = registeredDefinition(entry)
+    if (registered !== undefined) return definition(registered)
     return this.#modules.described(locate(entry, this.#project), entry)
   }
 
@@ -452,6 +458,11 @@ export class Runtime {
   }
 
   async describe(entry: string) {
+    const registered = registeredDefinition(entry)
+    if (registered !== undefined) {
+      const plugin = definition(registered)
+      return { config: plugin.config, inject: plugin.inject, optional: plugin.optional, provides: plugin.provides, announces: plugin.announces, version: null }
+    }
     const file = locate(entry, this.#project)
     const plugin = await this.#modules.plugin(file, entry)
     return { config: plugin.config, inject: plugin.inject, optional: plugin.optional, provides: plugin.provides, announces: plugin.announces, version: versionOf(entry, file) }

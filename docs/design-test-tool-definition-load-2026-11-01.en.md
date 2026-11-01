@@ -2,9 +2,9 @@
 
 [中文](design-test-tool-definition-load-2026-11-01.md)
 
-Status: draft, not implemented. Date: 2026-11-01 (third revision the same day: route C1 — mount the definition as a row of the host, the same route the Python/Go/Swift/Kotlin testing tools take; the origin binding, `PluginRef`, `OriginResolver`, the rutis-loader copy rows and `reconcile` rules, and the new `Owner` variant are gone. This revision fixes the four review points: the registered name and the default row id follow `crates/rutis-host/src/test.rs`'s actual algorithm; an old runtime, an old SDK and an old host fail in different stages, each with its output word for word; the identity check is the session's own reference tables, and the public Symbol only routes the SDK; the acceptance covers config defaults, gating, listener cleanup, release on a failed load, two independent unloads, and the origin unloading first. This document touches no Rust and has no incompatible change.)
+Status: final, implemented (the pull request for #1004, §7). Date: 2026-11-01 (third revision the same day: route C1 — mount the definition as a row of the host, the same route the Python/Go/Swift/Kotlin testing tools take; the origin binding, `PluginRef`, `OriginResolver`, the rutis-loader copy rows and `reconcile` rules, and the new `Owner` variant are gone. This revision fixes the four review points: the registered name and the default row id follow `crates/rutis-host/src/test.rs`'s actual algorithm; an old runtime, an old SDK and an old host fail in different stages, each with its output word for word; the identity check is the session's own reference tables, and the public Symbol only routes the SDK; the acceptance covers config defaults, gating, listener cleanup, release on a failed load, two independent unloads, and the origin unloading first. This document touches no Rust and has no incompatible change. Revised again during implementation the same day: §5.1's rule 4 now says what a `definePlugin` result made in this process meets when it is handed to a **plugin's service** — the sending side reports that the far end declared no `plugins`, and `load`ing that result still goes by its module, as before, which is not an error; and §7 is one pull request.)
 
-Issue: [#1004](https://github.com/arcships/rutis/issues/1004) (the TypeScript testing tool: the test process never receives plugin definitions). Its PR1 and PR2 (§7) implement this document. The rules it builds on are R10 and §5.5 of [a plugin is a value](design-plugin-values-2026-10-25.en.md); §4 here states the differences from a real host, and R10 gained a sentence pointing to it.
+Issue: [#1004](https://github.com/arcships/rutis/issues/1004) (the TypeScript testing tool: the test process never receives plugin definitions). The pull request for #1004 implements this document (§7). The rules it builds on are R10 and §5.5 of [a plugin is a value](design-plugin-values-2026-10-25.en.md); §4 here states the differences from a real host, and R10 gained a sentence pointing to it.
 
 ## 1. Where things stand
 
@@ -91,14 +91,14 @@ A passing test prints nothing. `parts[0]` is the definition the plugin made in i
 | An old runtime package (`@arcships/rutis-runtime` / `@arcships/rutis-bun` 0.19): the test-side session never declared `plugins` | `registrar: TypeError: parts.register: argument 1 cannot be sent: cannot send a plugin definition: the far end does not accept plugin definitions (it did not declare the capability plugins)` | the plugin's call that hands the definition over (it never reaches `load`) | bring the runtime package to the SDK's version |
 | An old SDK (`@arcships/rutis` 0.19) with a new runtime: the handle exists, the old `load` does not know it | `PluginTestError: load needs a plugin made with definePlugin` | thrown by `load` | bring `@arcships/rutis` to the same version |
 | A host older than 0.19 (no `rutis-host test`): it cannot start | `<host> exited (<code>) before the test could start` (or, when the host is missing, `<host> not found: install @arcships/rutis-host (a dev dependency) or set RUTIS_HOST to a rutis-host`) | the first `load` that needs the host (`start.mjs:94–101`) | use `rutis-host` 0.19 or later; a 0.19 host has `test` and works with the new testing tool |
-| `load` is given something that is not a handle a double received: a `definePlugin` result made in this process | `PluginTestError: received a plugin definition made in another process, which cannot be used here; pass plain data or a function instead` | thrown by `load` | use the handle a double received and handed back as it came |
+| A `definePlugin` result made in this process handed to a **plugin's service** (not to `load`) | `sink.register: argument 1 cannot be sent: cannot send a plugin definition: the far end does not accept plugin definitions (it did not declare the capability plugins)` | that service call | use the handle a double received and handed back as it came |
 | `load` is given something that is not a handle a double received: a forged marker (a plain object or function carrying `Symbol.for('rutis.plugin-definition')`) | `PluginTestError: load needs a plugin definition a test double received` | thrown by `load` | as above |
 | The config the definition's schema declares refuses this one | `PluginTestError: SchedulerSession: config: depth should be a number, got "deep"` | thrown by `load` | fix the config as the definition's schema says |
 | An explicit `id` that a row already has | `PluginTestError: a row SchedulerSession is loaded already` | thrown by `load` | use another id, or leave it out and let it suffix |
 | A row the test did not unload when the test ends | nothing is printed: the testing tool unloads it (`testEnded`) | — | unload it in the test to control when |
 | Using the row object after unloading it | `PluginTestError: the plugin is unloaded` | thrown by that call | `load` it again |
 
-`the test driver has no method loadDefinition` appears only when the runtime package is half updated (a new test-side session, an old driver), which a normal install does not produce; `start.mjs:70` starts the host with `DRIVER`/`RUNNER` from the local runtime package, so the host's version does not decide whether that method exists.
+`load`ing a `definePlugin` result made in this process goes by its module, as before; that is not an error. `the test driver has no method loadDefinition` appears only when the runtime package is half updated (a new test-side session, an old driver), which a normal install does not produce; `start.mjs:70` starts the host with `DRIVER`/`RUNNER` from the local runtime package, so the host's version does not decide whether that method exists.
 
 A handle a test holds never expires: the value lives in the test process, and the runtime cannot release it (it releases only once the value is collected), so there is no "the definition has ended" line.
 
@@ -124,12 +124,14 @@ Nothing changes: no new frames, no new field in `rutis.json`.
 
 ## 7. Implementation
 
-**PR1: the test side takes the definition, and `load` takes the handle (D1, D2).**
-`node/rutis-runtime/src/testing/start.mjs` (the `host` option), `src/session.mjs` (taking it and handing it back); `node/rutis/src/testing.mjs` (`load` knowing the marker, calling `loadDefinition`, and `unloadDefinition`); Bun's `src/testing/start.ts` and `src/session.ts`.
-Done means: a service the test provides receives `register(definition)`, and when the double hands it straight back the plugin gets its own definition; the two refusals for a forged or locally made value match §5.1's rules 4 and 5 word for word; one test each in `node/rutis/test` and `bun/rutis-bun/test`. **PR1 does not close #1004** (`loadDefinition` reaches the driver only in PR2, so in the meantime `load(handle)` reports `the test driver has no method loadDefinition`, as §5.1 says). If PR1's review finds that intermediate state not worth it, PR1 and PR2 merge into one.
+**One pull request (`Closes #1004` when it merges).** The intermediate state (taking the definition but not mounting it) is worth nothing to a user, so it is not split.
 
-**PR2: the runtime's registry and the driver's two methods (D3–D5, `Closes #1004` when it merges).**
-`node/rutis-runtime/src/testing/definitions.mjs` (new), `src/runner.mjs` (`located`/`pluginOf`/`declaredOf`/`describe`), `src/unhandled.mjs` (`realFile`), `src/testing/rutis-test.mjs` (`loadDefinition`/`unloadDefinition`); Bun's copies (`src/testing/definitions.ts`, `locate` in `src/plugin.ts`, `describe` in `src/runner.ts`, `src/testing/rutis-test.ts`).
+What changes:
+
+- the test side: `node/rutis-runtime/src/testing/start.mjs` (the `host` option), `src/session.mjs` (declaring `plugins`; keeping a `plugin` reference as a handle; handing it back with `home: true`); Bun's `src/testing/start.ts` and `src/session.ts`;
+- the runtime: new `node/rutis-runtime/src/testing/definitions.mjs` (the registry); `src/runner.mjs` (`located`/`pluginOf`/`declaredOf`/`describe`) and `src/unhandled.mjs` (`realFile`) consult it first; Bun's copies (new `src/testing/definitions.ts`, `locate` in `src/plugin.ts`, `#plugin`/`describe`/`rowOfFiles` in `src/runner.ts`);
+- the driver: `loadDefinition`/`unloadDefinition` in `node/rutis-runtime/src/testing/rutis-test.mjs`, and Bun's `src/testing/rutis-test.ts`;
+- the SDK: `node/rutis/src/testing.mjs` (`load` taking the handle, its method table from the declaration the driver returns, `unload` going through `unloadDefinition`; `load()` taking `id`/`isolate` too).
 
 What Bun and Node share, and what is written twice:
 

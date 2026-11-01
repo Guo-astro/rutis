@@ -2,9 +2,9 @@
 
 [English](design-test-tool-definition-load-2026-11-01.en.md)
 
-状态：草稿，未实现。日期：2026-11-01（同日第三稿：路线 C1——把定义装成宿主上的一行，和 Python/Go/Swift/Kotlin 的测试工具同一条路；删去来源绑定、`PluginRef`、`OriginResolver`、loader 的副本行与 `reconcile` 规则、`Owner` 新变体。本轮按复审四条改准：注册名与默认行 id 按 `crates/rutis-host/src/test.rs` 的实际算法写；旧运行时/旧 SDK/旧宿主分阶段给出逐字错误；身份校验写明是会话自己的引用表，公开 Symbol 只作 SDK 的路由标记；验收补齐配置默认值、门控、监听者清理、失败时释放、两次各自卸载、来源先卸的那一条。本稿不碰 Rust，无不兼容改动。）
+状态：定稿，已实现（#1004 的实现 PR，§七）。日期：2026-11-01（同日第三稿：路线 C1——把定义装成宿主上的一行，和 Python/Go/Swift/Kotlin 的测试工具同一条路；删去来源绑定、`PluginRef`、`OriginResolver`、loader 的副本行与 `reconcile` 规则、`Owner` 新变体。本轮按复审四条改准：注册名与默认行 id 按 `crates/rutis-host/src/test.rs` 的实际算法写；旧运行时/旧 SDK/旧宿主分阶段给出逐字错误；身份校验写明是会话自己的引用表，公开 Symbol 只作 SDK 的路由标记；验收补齐配置默认值、门控、监听者清理、失败时释放、两次各自卸载、来源先卸的那一条。本稿不碰 Rust，无不兼容改动。实现时同日再修订：§5.1 第 4 条按实测改——本进程造的 `definePlugin` 结果交给**插件的服务**时，是发出那一侧报"对端没有声明 `plugins`"，`load` 收到它时仍按它所在的模块装载（和以前一样，不是错误）；§七 改成一个 PR。）
 
-Issue：[#1004](https://github.com/arcships/rutis/issues/1004)（TypeScript 测试工具：测试进程收不到插件定义）。按本稿实施的是它的 PR1、PR2（§七）。上游规则见[插件是一个值](design-plugin-values-2026-10-25.md)的 R10 与 §五.5；本文 §四 写明与真实宿主的差异，R10 处加了指向本节的一句。
+Issue：[#1004](https://github.com/arcships/rutis/issues/1004)（TypeScript 测试工具：测试进程收不到插件定义）。按本稿实施的是 #1004 的实现 PR（一个 PR，§七）。上游规则见[插件是一个值](design-plugin-values-2026-10-25.md)的 R10 与 §五.5；本文 §四 写明与真实宿主的差异，R10 处加了指向本节的一句。
 
 ## 一、现在怎样
 
@@ -91,14 +91,14 @@ await owner.unload()
 | 旧的运行时包（`@arcships/rutis-runtime` / `@arcships/rutis-bun` 0.19）：测试侧的会话没声明 `plugins` | `registrar: TypeError: parts.register: argument 1 cannot be sent: cannot send a plugin definition: the far end does not accept plugin definitions (it did not declare the capability plugins)` | 插件交出定义的那次调用（到不了 `load`） | 把运行时包升到与 SDK 同版本 |
 | 旧的 SDK（`@arcships/rutis` 0.19）配新运行时：句柄有了，旧 `load` 不认 | `PluginTestError: load needs a plugin made with definePlugin` | `load` 抛出的错误 | 把 `@arcships/rutis` 升到同版本 |
 | 宿主比 0.19 还旧（没有 `rutis-host test`）：起不来 | `<host> exited (<code>) before the test could start`（或找不到宿主时 `<host> not found: install @arcships/rutis-host (a dev dependency) or set RUTIS_HOST to a rutis-host`） | `load` 第一次用到宿主时（`start.mjs:94–101`） | 换 0.19 或更新的 `rutis-host`。0.19 的宿主有 `test`，与新测试工具兼容 |
-| 交给 `load` 的不是替身收到的句柄：本进程造的 `definePlugin` 结果 | `PluginTestError: received a plugin definition made in another process, which cannot be used here; pass plain data or a function instead` | `load` 抛出的错误 | 用替身收到、原样交回的那个句柄 |
+| 把一个本进程造的 `definePlugin` 结果交给**插件的服务**（不是交给 `load`） | `sink.register: argument 1 cannot be sent: cannot send a plugin definition: the far end does not accept plugin definitions (it did not declare the capability plugins)` | 那次服务调用 | 用替身收到、原样交回的那个句柄 |
 | 交给 `load` 的不是替身收到的句柄：伪造的标记（带 `Symbol.for('rutis.plugin-definition')` 的普通对象、函数） | `PluginTestError: load needs a plugin definition a test double received` | `load` 抛出的错误 | 同上 |
 | 定义声明的配置 schema 不接受这份配置 | `PluginTestError: SchedulerSession: config: depth should be a number, got "deep"` | `load` 抛出的错误 | 按定义声明的 schema 改配置 |
 | 显式给的 `id` 已经有一行 | `PluginTestError: a row SchedulerSession is loaded already` | `load` 抛出的错误 | 换一个 id，或不给 id 让它加后缀 |
 | 测试结束时没卸的行 | 没有输出：测试工具把它卸掉（`testEnded`） | — | 想自己控制就在测试里 `unload()` |
 | 卸下之后再用这个行对象 | `PluginTestError: the plugin is unloaded` | 该调用抛出的错误 | 重新 `load` |
 
-`the test driver has no method loadDefinition` 只在运行时包半新半旧（测试侧会话新、驱动旧）时出现，正常安装不会碰到；`start.mjs:70` 用本地运行时包里的 `DRIVER`/`RUNNER` 启动，宿主的版本不决定这个方法在不在。
+`load` 收到本进程造的 `definePlugin` 结果时按它所在的模块装载，和以前一样；那不是错误。`the test driver has no method loadDefinition` 只在运行时包半新半旧（测试侧会话新、驱动旧）时出现，正常安装不会碰到；`start.mjs:70` 用本地运行时包里的 `DRIVER`/`RUNNER` 启动，宿主的版本不决定这个方法在不在。
 
 测试手里的句柄不会失效：值在测试进程里，运行时不能释放它（只有值被回收时才释放），所以没有"定义已失效"这一条。
 
@@ -124,12 +124,14 @@ await owner.unload()
 
 ## 七、实施
 
-**PR1：测试侧收下定义，`load` 认句柄（D1、D2）。**
-`node/rutis-runtime/src/testing/start.mjs`（`host` 选项）、`src/session.mjs`（收下、交回）；`node/rutis/src/testing.mjs`（`load` 认标记、走 `loadDefinition`、`unloadDefinition`）；Bun 的 `src/testing/start.ts`、`src/session.ts`。
-完成条件：测试给的服务收到 `register(定义)`，替身把它原样交回时插件拿到的是它自己那个定义；伪造与本进程造的值的两条错误逐字对上（§5.1 第 4、5 条）；`node/rutis/test` 与 `bun/rutis-bun/test` 各一个用例。**PR1 不关闭 #1004**（`loadDefinition` 在 PR2 才落到驱动上，中间状态下 `load(句柄)` 会报 `the test driver has no method loadDefinition`，§5.1 已写明）。如果 PR1 评审认为这个中间状态不值得，PR1 与 PR2 并成一个 PR。
+**一个 PR（合并时 `Closes #1004`）。** 中间状态（能收下但装不上）对使用者没有价值，所以不拆。
 
-**PR2：运行时注册表 + 驱动的两个方法（D3–D5，合并时 `Closes #1004`）。**
-`node/rutis-runtime/src/testing/definitions.mjs`（新）、`src/runner.mjs`（`located`/`pluginOf`/`declaredOf`/`describe`）、`src/unhandled.mjs`（`realFile`）、`src/testing/rutis-test.mjs`（`loadDefinition`/`unloadDefinition`）；Bun 的同一份（`src/testing/definitions.ts`、`src/plugin.ts` 的 `locate`、`src/runner.ts` 的 `describe`、`src/testing/rutis-test.ts`）。
+改动：
+
+- 测试侧：`node/rutis-runtime/src/testing/start.mjs`（`host` 选项）、`src/session.mjs`（声明 `plugins`；收下 `plugin` 引用成一个句柄；交回时按 `home: true`）；Bun 的 `src/testing/start.ts`、`src/session.ts`。
+- 运行时：新增 `node/rutis-runtime/src/testing/definitions.mjs`（注册表）；`src/runner.mjs`（`located`/`pluginOf`/`declaredOf`/`describe`）、`src/unhandled.mjs`（`realFile`）先查注册表；Bun 的同一份（新增 `src/testing/definitions.ts`、`src/plugin.ts` 的 `locate`、`src/runner.ts` 的 `#plugin`/`describe`/`rowOfFiles`）。
+- 驱动：`node/rutis-runtime/src/testing/rutis-test.mjs` 的 `loadDefinition`/`unloadDefinition`；Bun 的 `src/testing/rutis-test.ts`。
+- SDK：`node/rutis/src/testing.mjs`（`load` 认句柄、方法表用驱动交回的定义声明、`unload` 走 `unloadDefinition`；`load()` 也接受 `id`/`isolate`）。
 
 Bun 与 Node 共用与各写一份：
 

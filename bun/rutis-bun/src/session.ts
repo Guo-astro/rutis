@@ -20,6 +20,14 @@ const isPluginDefinition = (value: any) => value !== null && typeof value === 'o
 // What a call is told that hands this side a plugin definition made in
 // another process: only this side's own come back to it (§4.5).
 export const PLUGIN_FROM_ELSEWHERE = 'received a plugin definition made in another process, which cannot be used here; pass plain data or a function instead'
+// What a test host (the testing tool's `host` endpoint) gets for a plugin
+// definition the far end hands over: a handle it hands straight back, never a
+// value it could call or read. The marker only tells
+// `@arcships/rutis/testing`'s `load` where to route it; what makes it a real
+// handle is this session's own tables — the id is one this session was given,
+// and handing it back sends it home (docs/design-test-tool-definition-load-*.md).
+export const PLUGIN_HANDLE = Symbol.for('rutis.plugin-definition')
+const pluginHandle = () => Object.freeze(Object.defineProperty({}, PLUGIN_HANDLE, { value: true }))
 // The proxies of objects received from another process (#687): references,
 // whatever their shape.
 const REMOTE_OBJECTS = new WeakSet()
@@ -255,7 +263,7 @@ export class Session {
     this.#finalizer = new FinalizationRegistry(record => this.#release(record))
   }
   start() {
-    this.#send(encode({ op: 'hello', version: ENDPOINT_PROTOCOL, endpoint: this.#endpoint.local, implementation: { name: MANIFEST.name, version: MANIFEST.version }, capabilities: [...CAPABILITIES, ...(this.#endpoint.declare ?? [])] }))
+    this.#send(encode({ op: 'hello', version: ENDPOINT_PROTOCOL, endpoint: this.#endpoint.local, implementation: { name: MANIFEST.name, version: MANIFEST.version }, capabilities: [...CAPABILITIES, ...(this.#endpoint.host === true ? ['plugins'] : []), ...(this.#endpoint.declare ?? [])] }))
   }
   // What the far end declared, once it greeted.
   #declared: string[] = []
@@ -440,10 +448,12 @@ export class Session {
         const { id, home, kind, origin } = wire.value
         if (!Number.isSafeInteger(id) || id <= 0 || !['function', 'future', 'object', 'plugin'].includes(kind) || typeof home !== 'boolean' || !Array.isArray(origin) || origin.some(id => !this.#callId(id))) throw new Error('invalid reference')
         if (home) return this.#export(id, kind).value
-        // A plugin definition made in another process cannot be used here:
-        // only the call it came in fails (an older host may send one,
-        // #675), and it is released.
-        if (kind === 'plugin') {
+        // A test host (the testing tool) keeps the definition to hand it
+        // back, which is how its `load` mounts it in the runtime that made
+        // it. Every other session is told it cannot be used here: only the
+        // call it came in fails (an older host may send one, #675), and it
+        // is released.
+        if (kind === 'plugin' && this.#endpoint.host !== true) {
           this.#decoding?.imported.push({ id, kind, grants: 1, released: false })
           return this.#refuse(new ValueError(PLUGIN_FROM_ELSEWHERE))
         }
@@ -458,7 +468,8 @@ export class Session {
         proxy = kind === 'function'
           ? (...args) => { check(); return this.#requestSync('call', { reference: id }, args) }
           : kind === 'object' ? this.#remoteObject(id, check)
-            : new RemotePromise(() => { check(); return this.#requestAsync('await', { reference: id }, undefined, origin) })
+            : kind === 'plugin' ? pluginHandle()
+              : new RemotePromise(() => { check(); return this.#requestAsync('await', { reference: id }, undefined, origin) })
         record.weak = new WeakRef(proxy)
         this.#imports.set(id, record.weak); this.#proxies.set(proxy, record)
         this.#decoding?.imported.push(record)

@@ -11,8 +11,9 @@
 import { Client } from '../client.ts'
 import { rmSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { PLUGIN_API, USES_ANY } from '../plugin.ts'
+import { PLUGIN_API, USES_ANY, definition } from '../plugin.ts'
 import { CONTROL } from './service.ts'
+import { registerDefinition, releaseDefinition } from './definitions.ts'
 
 // The plugin a service of the test is a row of (./service.ts).
 const SERVICE = fileURLToPath(new URL('./service.ts', import.meta.url))
@@ -71,9 +72,47 @@ export default Object.freeze({
         }
       }
     }
+    // The definitions the test handed back, registered so the host can load
+    // them as rows: row id -> the name they are registered under.
+    const definitions = new Map()
+    let nextDefinition = 0
     const methods = {
       ...emitting,
       load: (file, config, options) => harness.load(file, config ?? null, options ?? null),
+      // A plugin definition the test handed back (`@arcships/rutis/testing`'s
+      // `load`): the runtime resolves the registered name to the definition it
+      // made, and the host loads it as a row, as `load` of a file is
+      // (docs/design-test-tool-definition-load-2026-11-01.md).
+      loadDefinition: async (given, config, options) => {
+        // A value that is not an SDK plugin (a forged handle, say) is refused
+        // here; whether it is one this runtime handed over is the session's
+        // to know, before it reaches this method.
+        if (given === null || typeof given !== 'object' || given[Symbol.for('rutis.leaf-plugin')] !== true) throw new Error('load needs a plugin definition a test double received')
+        const plugin = definition(given)
+        // The name's last segment is the definition's name, so the host's row
+        // id is that name (`-2`, `-3`… while taken): it plays the part a
+        // file's name plays for `load` of a file.
+        const name = `rutis-test/definition-${++nextDefinition}/${plugin.name ?? 'plugin'}`
+        registerDefinition(name, given)
+        let id
+        try {
+          id = await harness.load(name, config ?? null, options ?? null)
+        } catch (error) {
+          releaseDefinition(name)
+          throw error
+        }
+        definitions.set(id, name)
+        return { id, provides: plugin.provides }
+      },
+      unloadDefinition: async id => {
+        try {
+          await harness.unload(id)
+        } finally {
+          const name = definitions.get(id)
+          definitions.delete(id)
+          if (name !== undefined) releaseDefinition(name)
+        }
+      },
       update: (id, config) => harness.update(id, config),
       unload: id => harness.unload(id),
       reported: id => harness.reported(id),
