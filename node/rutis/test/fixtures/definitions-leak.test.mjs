@@ -4,20 +4,20 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { load } from '../../src/testing.mjs'
-import registrar from './registrar.mjs'
+import handover from './handover.mjs'
 
-const handed = []
-const parts = { async register(definition) { handed.push(definition); return definition } }
+const handed = new Map()
+const parts = { async register(name, definition) { handed.set(name, definition); return definition } }
 
 test('leaves its definition row loaded', async () => {
-  await load(registrar, { services: { parts } })
-  const t = await load(handed.at(-1))
+  await load(handover, { services: { parts } })
+  const t = await load(handed.get('part'))
   assert.equal(t.service('echo').say(), 'part')
   throw new Error('failed before unload')
 })
 
 test('loads the same definition again', async () => {
-  const t = await load(handed.at(-1))
+  const t = await load(handed.get('part'))
   assert.equal(t.service('echo').say(), 'part')
   await t.unload()
 })

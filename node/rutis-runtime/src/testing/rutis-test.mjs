@@ -12,7 +12,7 @@ import { rmSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { PLUGIN_API, USES_ANY, isLeaf, supported } from '../leaf.mjs'
 import { CONTROL } from './service.mjs'
-import { registerDefinition, releaseDefinition } from '../definitions.mjs'
+import { Definitions } from '../definitions.mjs'
 
 // The plugin a service of the test is a row of (./service.mjs).
 const SERVICE = fileURLToPath(new URL('./service.mjs', import.meta.url))
@@ -74,9 +74,8 @@ export default Object.freeze({
       }
     }
     // The definitions the test handed back, registered so the host can load
-    // them as rows: row id -> the name they are registered under.
-    const definitions = new Map()
-    let nextDefinition = 0
+    // them as rows (../definitions.mjs).
+    const definitions = new Definitions()
     const methods = {
       ...emitting,
       load: (file, config, options) => harness.load(file, config ?? null, options ?? null),
@@ -90,25 +89,22 @@ export default Object.freeze({
         // The name's last segment is the definition's name, so the host's
         // row id is that name (`-2`, `-3`… while taken): it plays the part a
         // file's name plays for `load` of a file.
-        const name = `rutis-test/definition-${++nextDefinition}/${definition.name ?? 'plugin'}`
-        registerDefinition(name, definition)
+        const name = definitions.add(definition)
         let id
         try {
           id = await harness.load(name, config ?? null, options ?? null)
         } catch (error) {
-          releaseDefinition(name)
+          definitions.failed(name)
           throw error
         }
-        definitions.set(id, name)
+        definitions.loaded(id, name)
         return { id, provides: definition.provides ?? {} }
       },
       unloadDefinition: async id => {
         try {
           await harness.unload(id)
         } finally {
-          const name = definitions.get(id)
-          definitions.delete(id)
-          if (name !== undefined) releaseDefinition(name)
+          definitions.released(id)
         }
       },
       update: (id, config) => harness.update(id, config),
