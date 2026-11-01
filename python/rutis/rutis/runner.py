@@ -6,7 +6,7 @@ restarts and configuration. This process only runs what it is told:
 - `rows.load` imports a plugin module and runs its `apply(ctx, config)`;
   `rows.unload` withdraws what the row provided and runs its cleanup;
 - `rows.schema` reports what a module declares (config schema, injected
-  services, provided services and their method kinds);
+  and optional services, provided services and their method kinds);
 - a plugin definition (`define_plugin`) handed to rutis crosses as a
   `plugin` reference; back home, `plugins.read` describes it and
   `rows.load` takes it as the row's entry instead of a module name
@@ -17,8 +17,9 @@ restarts and configuration. This process only runs what it is told:
   provides without declaring it is announced to a host that asks, with the
   methods its object has (`rows.announce`).
 
-Within the process, `ctx.use(name)` returns the object itself when another
-row here provides it, so those calls never leave the process.
+Within the process, `ctx.use(name)` (and `ctx.get(name)`, for an optional
+service) returns the object itself when another row here provides it, so
+those calls never leave the process.
 
 A row's `isolate` gives some names a scope label: rows isolating a name with
 the same label share it, and the same name under another label (another
@@ -105,10 +106,20 @@ def undeclared_use(name: str) -> str:
     )
 
 
-def not_declared(cls: type, name: str) -> BaseException:
+def undeclared_get(name: str) -> str:
+    """The same for `ctx.get`, which reads an optional service: declare it
+    there."""
+    return (
+        f"service {name} is not available to this plugin, which does not declare it: "
+        f"add '{name}' to its optional (or to its inject, if it cannot run without it)"
+    )
+
+
+def not_declared(cls: type, name: str, text: Callable[[str], str] = undeclared_use) -> BaseException:
     """The error of a plugin using `name` without declaring it (#676), of
-    class `cls`, with the code `not-declared` and `{service}`."""
-    error = cls(undeclared_use(name))
+    class `cls`, with the code `not-declared` and `{service}`; `text`: what
+    it says (`undeclared_get` for `ctx.get`)."""
+    error = cls(text(name))
     error.code = "not-declared"
     error.data = {"service": name}
     return error
@@ -235,8 +246,12 @@ class Row:
     provided: list = field(default_factory=list)
     # Ids of the slots of services it announced.
     announced: list = field(default_factory=list)
-    # The names it declares it uses: its plugin's `inject`, and its row's.
+    # The names it may `get`: its plugin's `inject` and `optional`, and its
+    # row's `inject`.
     inject: set = field(default_factory=set)
+    # The names it may `use`: the same but `optional` (as Rust's `require`
+    # reads only the injects).
+    uses: set = field(default_factory=set)
     # The row's own `inject` (extra names it waits for).
     row_inject: list = field(default_factory=list)
     # Announcements and registrations the host has yet to answer, while
@@ -273,13 +288,26 @@ class Context(sdk.Context):
         self._emitter = Emitter(lambda *request: runtime.send(row, *request))
 
     def use(self, name: str) -> Any:
+        # Not injected by it or its row (an optional one is read with
+        # `get`, as Rust's `require` reads only the injects): say what to
+        # declare, not that it is missing (#676), whether or not another
+        # row here provides it.
+        if name not in self._row.uses and self._row.id(name) not in self._row.provided:
+            raise not_declared(LookupError, name)
         try:
             return self._runtime.lookup(self._row.id(name))
         except LookupError:
-            # Not given to it, though it may run: say so (#676).
-            if name not in self._row.inject:
-                raise not_declared(LookupError, name) from None
             raise unavailable(name) from None
+
+    def get(self, name: str) -> Any | None:
+        if name not in self._row.inject and self._row.id(name) not in self._row.provided:
+            raise not_declared(LookupError, name, undeclared_get)
+        # None: an optional service rutis did not have when the row
+        # started, or one no row here provides now.
+        try:
+            return self._runtime.lookup(self._row.id(name))
+        except LookupError:
+            return None
 
     def provide(self, name: str, value: Any) -> Callable[[], None]:
         return self._runtime.provide(self._row, name, value)
@@ -319,6 +347,10 @@ class Runtime:
         self.hosts: dict[str, HostProxy] = {}  # id -> proxy
         self.slots: dict[str, Slot] = {}  # id -> slot
         self.handles: dict[str, dict] = {}
+        # The last generation each id's handles reached, kept as its slots
+        # go and come again (a row restarting): a handle is never given to
+        # two objects, so one held for a retired object stays retired.
+        self.generations: dict[str, int] = {}
         self.version = 0
         self.closing = False
         # This process's listeners; a failure nobody receives (an `emit`
@@ -387,11 +419,20 @@ class Runtime:
         slot.object = current
         slot.handle = None
         if current is not None:
-            slot.generation += 1
+            slot.generation = self.generations.get(id, 0) + 1
+            self.generations[id] = slot.generation
             slot.handle = handle_of(id, slot.generation)
-            self.handles[slot.handle] = {"name": id, "object": current, "current": True, "released": False}
             if slot.announced:
                 slot.methods = sdk.methods_of(current)
+            # A handle answers with its object's methods: one its row
+            # replaced keeps the old object's, as the old object.
+            self.handles[slot.handle] = {
+                "name": id,
+                "object": current,
+                "methods": slot.methods,
+                "current": True,
+                "released": False,
+            }
         self.version += 1
         if self.peer is None or self.closing:
             return
@@ -430,6 +471,20 @@ class Runtime:
         if entry["released"]:
             del self.handles[handle]
 
+    def _gone(self, id: str) -> None:
+        """The row of slot `id` unloaded: every handle on its objects, the
+        current one and those it replaced, says the service is gone (to a
+        row holding it, an optional service leased at start); the released
+        ones are forgotten. A handle its row replaced while running keeps
+        its object until then, as a snapshot of a service does in Rust."""
+        for handle, entry in list(self.handles.items()):
+            if entry["name"] != id:
+                continue
+            entry["current"] = False
+            entry["gone"] = True
+            if entry["released"]:
+                del self.handles[handle]
+
     # ── Rows ─────────────────────────────────────────────────────
 
     async def load(
@@ -463,7 +518,8 @@ class Runtime:
         plugin = self._plugin(module)
         row.plugin = plugin.name
         row.row_inject = [name for name in inject or [] if isinstance(name, str)]
-        row.inject = set(plugin.inject) | set(row.row_inject)
+        row.uses = set(plugin.inject) | set(row.row_inject)
+        row.inject = row.uses | set(plugin.optional)
         self.rows[key] = row
         for name, methods in exports.items():
             self.slots[row.id(name)] = Slot(key, set(methods), name)
@@ -652,8 +708,7 @@ class Runtime:
             if slot is None or slot.row != key:
                 continue
             del self.slots[id]
-            if slot.handle is not None:
-                self._retire(slot.handle)
+            self._gone(id)
         row.announced.clear()
         # Its running listeners are cancelled and waited for, at most the
         # shutdown deadline (§7.1 step 4), before its cleanups run.
@@ -762,6 +817,7 @@ class Runtime:
             "name": plugin.name,
             "config": plugin.config,
             "inject": plugin.inject,
+            "optional": plugin.optional,
             "provides": plugin.provides,
             "announces": plugin.announces,
             "version": None,
@@ -773,6 +829,7 @@ class Runtime:
         return {
             "config": plugin.config,
             "inject": plugin.inject,
+            "optional": plugin.optional,
             "provides": plugin.provides,
             "announces": plugin.announces,
             "version": _entry_point(module)[1],
@@ -1011,8 +1068,12 @@ class Runtime:
             # A handle is the service's id, maybe with `#<generation>`.
             raise _binding(unavailable(target.split("\0", 1)[0].split("#", 1)[0], "withdrawn"))
         service = entry["name"].split("\0", 1)[0]
+        # Its row unloaded: a caller still holding it (an optional service,
+        # leased at start) is told it is gone.
+        if entry.get("gone"):
+            raise _binding(unavailable(service))
         slot = self.slots.get(entry["name"])
-        methods = slot.methods if slot is not None else sdk.methods_of(entry["object"])
+        methods = entry["methods"]
         if method not in methods:
             raise no_method(BindingError, service, method, methods)
         function = getattr(entry["object"], method)
@@ -1097,6 +1158,8 @@ class Runtime:
             entry = self.handles.get(handle)
             if entry is None:
                 raise LookupError(f"unknown or released service object {handle}")
+            if entry.get("gone"):
+                raise _binding(unavailable(entry["name"].split("\0", 1)[0]))
             return getattr(entry["object"], prop)
         raise ValueError(f"unknown control method {method}")
 

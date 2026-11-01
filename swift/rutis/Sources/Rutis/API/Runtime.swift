@@ -95,6 +95,8 @@ final class HandleEntry {
     let methods: Set<String>?
     var current = true
     var released = false
+    /// Its row unloaded (see `gone`).
+    var gone = false
     init(id: String, name: String, object: RutisExportable, methods: Set<String>?) {
         self.id = id
         self.name = name
@@ -114,6 +116,8 @@ final class Row: @unchecked Sendable {
     let config: Value
     let exports: [String: [String: String]]
     let isolate: [String: String]
+    /// The row's own `inject` (rows.load): names its plugin may use too.
+    let inject: [String]
     let scope: [Rutis.Advanced.Scope]
     /// An app's own plugin, installed by the app (`install`), not by a row
     /// of rutis's: its services are announced with `services.announce`.
@@ -144,8 +148,8 @@ final class Row: @unchecked Sendable {
     private var cancelled = false
 
     init(key: String, name: String, entry: String, definition: Rutis.Definition, config: Value,
-         exports: [String: [String: String]], isolate: [String: String], scope: [Rutis.Advanced.Scope],
-         own: Bool = false, settings: Events.Settings = Events.Settings())
+         exports: [String: [String: String]], isolate: [String: String], inject: [String] = [],
+         scope: [Rutis.Advanced.Scope], own: Bool = false, settings: Events.Settings = Events.Settings())
     {
         self.own = own
         self.settings = settings
@@ -156,6 +160,7 @@ final class Row: @unchecked Sendable {
         self.config = config
         self.exports = exports
         self.isolate = isolate
+        self.inject = inject
         self.scope = scope
     }
 
@@ -312,6 +317,10 @@ final class Runtime: @unchecked Sendable {
     var hosts: [String: [String: String]] = [:]
     var slots: [String: Slot] = [:]
     var handles: [String: HandleEntry] = [:]
+    /// The last generation each id's handles reached, kept as its slots go
+    /// and come again (a row restarting): a handle is never given to two
+    /// objects, so one held for a retired object stays retired.
+    var generations: [String: Int] = [:]
     var version = 0
     var loaded = 0
     var closing = false
@@ -432,7 +441,8 @@ final class Runtime: @unchecked Sendable {
         slot.present = present
         slot.handle = nil
         if present, let current {
-            slot.generation += 1
+            slot.generation = (generations[id] ?? 0) + 1
+            generations[id] = slot.generation
             let handle = handleOf(id, slot.generation)
             slot.handle = handle
             if slot.announced { slot.methods = Set(current.rutisMethods().keys) }
@@ -475,6 +485,20 @@ final class Runtime: @unchecked Sendable {
         guard let entry = handles[handle] else { return }
         entry.current = false
         if entry.released { handles[handle] = nil }
+    }
+
+    /// The row of slot `id` unloaded: every handle on its objects, the
+    /// current one and those it replaced, says the service is gone (to a
+    /// row holding it, an optional service leased at start); the released
+    /// ones are forgotten. A handle its row replaced while running keeps its
+    /// object until then, as a snapshot of a service does in Rust. `lock`
+    /// is held.
+    func gone(_ id: String) {
+        for (handle, entry) in handles where entry.id == id {
+            entry.current = false
+            entry.gone = true
+            if entry.released { handles[handle] = nil }
+        }
     }
 
     /// Provides `value` as the service `name` of `row` until the returned
@@ -703,22 +727,22 @@ final class Runtime: @unchecked Sendable {
 
     /// Loads the row `key` running the plugin `entry` names in this binary.
     func load(key: String, name: String?, entry: String, config: Value, exports: [String: [String: String]],
-              isolate: [String: String], scope: [Rutis.Advanced.Scope]) async throws
+              isolate: [String: String], inject: [String] = [], scope: [Rutis.Advanced.Scope]) async throws
     {
         try await load(key: key, name: name, entry: entry, definition: try definition(entry), config: config,
-                       exports: exports, isolate: isolate, scope: scope)
+                       exports: exports, isolate: isolate, inject: inject, scope: scope)
     }
 
     /// Loads the row `key` running `definition`: the plugin `entry` names in
     /// this binary, or a plugin definition this runtime handed over (a
     /// copy, `entry` its name).
     func load(key: String, name: String?, entry: String, definition: Rutis.Definition, config: Value,
-              exports: [String: [String: String]], isolate: [String: String], scope: [Rutis.Advanced.Scope],
-              own: Bool = false) async throws
+              exports: [String: [String: String]], isolate: [String: String], inject: [String] = [],
+              scope: [Rutis.Advanced.Scope], own: Bool = false) async throws
     {
         let name = (name?.isEmpty ?? true) ? key : name!
         let row = Row(key: key, name: name, entry: entry, definition: definition, config: config, exports: exports,
-                      isolate: isolate, scope: scope, own: own, settings: settings)
+                      isolate: isolate, inject: inject, scope: scope, own: own, settings: settings)
         try lock.withLock {
             if closing { throw RutisError(name: "Error", message: "runtime is closing") }
             if rows[key] != nil { throw RutisError(name: "Error", message: "row \(key) is already loaded") }
@@ -782,7 +806,7 @@ final class Runtime: @unchecked Sendable {
             for id in row.announced + row.exports.keys.map(row.id) {
                 if let slot = slots[id], slot.row == key {
                     slots[id] = nil
-                    if let handle = slot.handle { retire(handle) }
+                    gone(id)
                 }
             }
             row.announced = []
@@ -817,7 +841,7 @@ final class Runtime: @unchecked Sendable {
         // Leaf plugins have no volatile fields: a new config restarts the row.
         try await unload(key)
         try await load(key: key, name: row.name, entry: row.entry, definition: row.definition, config: config, exports: row.exports,
-                       isolate: row.isolate, scope: row.scope)
+                       isolate: row.isolate, inject: row.inject, scope: row.scope)
     }
 
     /// Unloads every row, latest first. Whether every cleanup finished
@@ -848,9 +872,12 @@ final class Runtime: @unchecked Sendable {
     func dispatch(_ target: String, _ method: String, _ args: [Value]) async throws -> Value {
         if lock.withLock({ closing }) { throw RutisError(name: "Error", message: "runtime is closing") }
         if target.isEmpty { return try await control(method, args) }
-        guard let entry = lock.withLock({ handles[target] }) else {
+        guard case let (entry, gone)? = lock.withLock({ handles[target].map { ($0, $0.gone) } }) else {
             throw RutisError(name: "Error", message: "unknown or released service object \(printable(target))")
         }
+        // Its row unloaded: a caller still holding it (an optional service,
+        // leased at start) is told it is gone.
+        if gone { throw RutisError.unavailable(entry.name) }
         let callee = Refusal.Callee(service: entry.name, method: method)
         let table = entry.object.rutisMethods()
         guard let body = table[method], entry.methods?.contains(method) ?? true else {
@@ -912,8 +939,10 @@ final class Runtime: @unchecked Sendable {
                 plugin = try definition(entry)
             }
             let config = args.count > 2 ? args[2] : .undefined
-            // args[4], the row's `inject`, names services a Cordis row waits
-            // for in Cordis; a leaf runtime's rows wait in rutis.
+            // args[4], the row's own `inject`: services its plugin may use
+            // too. A Cordis row waits for them in Cordis; rutis gates a leaf
+            // row on its plugin's own list.
+            let inject: [String] = (try? argument(args, 4, [String]?.self)) ?? []
             let pairs: [[String]] = (try? argument(args, 3, [[String]]?.self)) ?? []
             var isolate: [String: String] = [:]
             for pair in pairs where pair.count == 2 { isolate[pair[0]] = pair[1] }
@@ -925,7 +954,7 @@ final class Runtime: @unchecked Sendable {
             }
             let placed = (try argument(args, 6, Placed?.self)) ?? Placed()
             try await load(key: key, name: placed.id, entry: entry, definition: plugin, config: config, exports: exports, isolate: isolate,
-                           scope: placed.scope ?? [])
+                           inject: inject, scope: placed.scope ?? [])
             return .undefined
         case "rows.update":
             let key: String = try argument(args, 0)
@@ -972,9 +1001,10 @@ final class Runtime: @unchecked Sendable {
         case "get":
             let handle: String = try argument(args, 0)
             let property: String = try argument(args, 1)
-            guard let entry = lock.withLock({ handles[handle] }) else {
+            guard case let (entry, gone)? = lock.withLock({ handles[handle].map { ($0, $0.gone) } }) else {
                 throw RutisError(name: "Error", message: "unknown or released service object \(printable(handle))")
             }
+            if gone { throw RutisError.unavailable(entry.name) }
             return try readProperty(of: entry.object, property)
         default:
             throw RutisError(name: "Error", message: "unknown control method \(method)")
@@ -983,13 +1013,50 @@ final class Runtime: @unchecked Sendable {
 
     // ── Using services ───────────────────────────────────────────────
 
-    /// The service `name` as `row` uses it: by its own id.
+    /// Whether `row`'s plugin may `use` `name`: it or its row injects it
+    /// (`inject`, its row's `inject`), or it provides it now (a plugin reads
+    /// what it provides). Not `optional`, as Rust's `require`.
+    func uses(_ row: Row, _ name: String) -> Bool {
+        if row.definition.inject.contains(name) || row.inject.contains(name) {
+            return true
+        }
+        // What the row provides changes as it provides, withdraws and
+        // unloads, under the lock.
+        let id = row.id(name)
+        return lock.withLock { row.provided.contains(id) }
+    }
+
+    /// Whether `row`'s plugin may `get` `name`: what it may `use`, and
+    /// `optional`.
+    func declares(_ row: Row, _ name: String) -> Bool {
+        row.definition.optional.contains(name) || uses(row, name)
+    }
+
+    /// The service `name` as `row` uses it (`ctx.use`): by its own id.
     func client(_ row: Row, _ name: String) throws -> (Rutis.Advanced.Client, RutisExportable?) {
-        guard row.definition.inject.contains(name) else {
+        guard uses(row, name) else {
             throw RutisError(name: RutisError.Name.bindingError,
                              message: "service \(name) is not available to this plugin, which does not declare it in inject: add '\(name)' to its inject",
                              code: "not-declared", data: ["service": name])
         }
+        guard let found = lookup(row, name) else { throw RutisError.unavailable(name) }
+        return found
+    }
+
+    /// The optional service `name` as `row` reads it (`ctx.get`): nil when
+    /// this process has none.
+    func optionalClient(_ row: Row, _ name: String) throws -> (Rutis.Advanced.Client, RutisExportable?)? {
+        guard declares(row, name) else {
+            throw RutisError(name: RutisError.Name.bindingError,
+                             message: "service \(name) is not available to this plugin, which does not declare it: add '\(name)' to its optional (or to its inject, if it cannot run without it)",
+                             code: "not-declared", data: ["service": name])
+        }
+        return lookup(row, name)
+    }
+
+    /// The service `name` in this process, by `row`'s id for it: a provider
+    /// here gives its object too; nil when there is none.
+    func lookup(_ row: Row, _ name: String) -> (Rutis.Advanced.Client, RutisExportable?)? {
         let id = row.id(name)
         let (local, host, remote) = lock.withLock { (services[id], hosts[id], far[id]) }
         if let local {
@@ -1025,8 +1092,7 @@ final class Runtime: @unchecked Sendable {
             }
             return (client, nil)
         }
-        throw RutisError(name: RutisError.Name.bindingError, message: "service \(name) is not available",
-                         code: "unavailable", data: ["service": name])
+        return nil
     }
 }
 

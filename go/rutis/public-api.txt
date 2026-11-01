@@ -9,6 +9,7 @@ func (c *Ctx) Bail(ctx context.Context, name string, args ...any) (any, error)
 func (c *Ctx) Effect(cleanup func(context.Context) error)
 func (c *Ctx) Emit(ctx context.Context, name string, args ...any) error
 func (c *Ctx) Filter(keep func(Listener) (bool, error)) *Emitter
+func (c *Ctx) Get(name string, target any) (bool, error)
 func (c *Ctx) Go(task func(context.Context) error)
 func (c *Ctx) On(name string, fn func(ctx context.Context, args ...any) (any, error), options ...ListenOption) func()
 func (c *Ctx) Parallel(ctx context.Context, name string, args ...any) error
@@ -35,6 +36,7 @@ type NoConfig struct {
 type Plugin[C any] struct {
     Name     string
     Inject   []string
+    Optional []string
     Provides Provides
     Schema   map[string]any
     Apply    func(ctx *Ctx, config C) error

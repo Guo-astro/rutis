@@ -135,6 +135,7 @@ var Plugin = rutis.Define(rutis.Plugin[Config]{
 ```
 
 - `Inject` 写出用到的服务。这些服务都就绪了插件才启动，其中一个撤销时插件停下。
+- 没有也能运行的服务写进 `Optional: []string{"llm"}` 而不是 `Inject`：rutis 不等它；`ok, err := ctx.Get("llm", &llm)` 像 `Use` 一样绑定，插件启动时它不在则返回 `false, nil`（见[插件 API：可选服务](plugin-api.md#可选服务)；要 rutis-host 0.20 或以后）。
 - `ctx.Use("translate", &translate)` 把服务填进函数字段的结构体：字段名是方法名，首字母小写后就是线上的名字。
 - 方法收到的 `ctx`，调用别的服务时传下去，不要换成 `context.Background()`（原因见 [Go 的规则](#go-的规则) 的「调用链」）。
 

@@ -135,16 +135,27 @@ internal object Refusals {
 }
 
 /**
- * A service a plugin uses without declaring it in `inject` (#704): code
+ * A service a plugin uses without declaring it in `inject` (#704), or reads
+ * with `get` without declaring it in `optional` or `inject`: code
  * not-declared with `{service}`. Still an IllegalArgumentException.
  */
-class NotDeclaredException internal constructor(service: String) :
-    IllegalArgumentException("service $service is not available to this plugin, which does not declare it in inject: add '$service' to its inject") {
+class NotDeclaredException private constructor(service: String, message: String) : IllegalArgumentException(message) {
+    internal constructor(service: String) :
+        this(service, "service $service is not available to this plugin, which does not declare it in inject: add '$service' to its inject")
+
     /** `not-declared`. */
     val code: String = "not-declared"
 
     /** `{service}`. */
     val data: Map<String, Any?> = mapOf("service" to service)
+
+    internal companion object {
+        /** `get` of a service the plugin declares nowhere: declare it in `optional`. */
+        fun optional(service: String) = NotDeclaredException(
+            service,
+            "service $service is not available to this plugin, which does not declare it: add '$service' to its optional (or to its inject, if it cannot run without it)",
+        )
+    }
 }
 
 /** A declared service nothing provides now: code unavailable with `{service}`. Still an IllegalStateException. */

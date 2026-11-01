@@ -11,6 +11,7 @@ import (
 
 	"github.com/arcships/rutis/go/rutis/internal/convert"
 	"github.com/arcships/rutis/go/rutis/internal/peer"
+	"github.com/arcships/rutis/go/rutis/internal/testwait"
 )
 
 type textForecast struct {
@@ -189,4 +190,240 @@ func TestADuplicateProviderIsNamedByItsRow(t *testing.T) {
 		}
 	}()
 	rt.provide(b, "forecast", textWeather{})
+}
+
+// guarantee: sdk/optional-deps (Get reads a service in Optional: bound and
+// true when there, false when not; Use counts Optional as declared, so an
+// absent one is unavailable; Get of a name declared nowhere is
+// not-declared, saying to add it to Optional)
+func TestGetReadsAnOptionalService(t *testing.T) {
+	rt := newRuntime(nil)
+	rt.hosts["llm"] = map[string]string{"ask": "async"}
+	r := &row{key: "chat", name: "chat", def: &Definition{inject: []string{"notes"}, optional: []string{"llm", "search"}}}
+	c := &Ctx{Context: context.Background(), rt: rt, row: r}
+	var llm struct {
+		Ask func(ctx context.Context, question string) (string, error)
+	}
+
+	if ok, err := c.Get("llm", &llm); !ok || err != nil || llm.Ask == nil {
+		t.Fatalf("present: %v %v", ok, err)
+	}
+	// Use reads only what Inject lists, as Rust's `require`: an Optional
+	// one is told to go there, present or not.
+	notInject := `service llm is not available to this plugin, which does not declare it in Inject: add "llm" to its Inject`
+	if err := c.Use("llm", &llm); err == nil || err.Error() != notInject {
+		t.Fatalf("use present: %v", err)
+	}
+	var search struct{}
+	if ok, err := c.Get("search", &search); ok || err != nil {
+		t.Fatalf("absent: %v %v", ok, err)
+	}
+	// A required one is declared too: Get reads it as Use would.
+	if ok, err := c.Get("notes", &search); ok || err != nil {
+		t.Fatalf("absent required: %v %v", ok, err)
+	}
+
+	err := c.Use("search", &search)
+	if err.Error() != `service search is not available to this plugin, which does not declare it in Inject: add "search" to its Inject` {
+		t.Fatal(err)
+	}
+	sameData(t, coded(t, err, "BindingError", "not-declared"), map[string]any{"service": "search"})
+
+	ok, err := c.Get("other", &search)
+	if ok || err.Error() != `service other is not available to this plugin, which does not declare it: add "other" to its Optional (or to its Inject, if it cannot run without it)` {
+		t.Fatal(ok, err)
+	}
+	sameData(t, coded(t, err, "BindingError", "not-declared"), map[string]any{"service": "other"})
+	// Use keeps its own line for a name declared nowhere.
+	if err := c.Use("other", &search); err.Error() != `service other is not available to this plugin, which does not declare it in Inject: add "other" to its Inject` {
+		t.Fatal(err)
+	}
+}
+
+// guarantee: sdk/optional-deps (a service whose row unloaded, called or
+// read through a handle a caller still holds, is unavailable; one its row
+// replaced while running keeps its object until then, as a snapshot of a
+// service does in Rust)
+func TestAServiceWhoseRowUnloadedIsNotAvailable(t *testing.T) {
+	rt := newRuntime(nil)
+	rt.handles["weather"] = &handleEntry{id: "weather", name: "weather", object: textWeather{}, current: true}
+	ctx := context.Background()
+	if _, err := rt.dispatch(ctx, "weather", "today", nil); err != nil {
+		t.Fatal(err)
+	}
+	// Replaced: the handle still reaches its object.
+	rt.retire("weather")
+	if _, err := rt.dispatch(ctx, "weather", "today", nil); err != nil {
+		t.Fatal(err)
+	}
+	rt.gone("weather")
+	for _, call := range []func() error{
+		func() error { _, err := rt.dispatch(ctx, "weather", "today", nil); return err },
+		func() error {
+			_, err := rt.dispatch(ctx, "", "get", []any{json.RawMessage(`"weather"`), json.RawMessage(`"today"`)})
+			return err
+		},
+	} {
+		err := call()
+		if err == nil || err.Error() != "service weather is not available" {
+			t.Fatal(err)
+		}
+		sameData(t, coded(t, err, "BindingError", "unavailable"), map[string]any{"service": "weather"})
+	}
+}
+
+// guarantee: sdk/optional-deps (a row loaded again gives its service a
+// handle of its own: one a caller still holds for the object before stays
+// retired, rather than reaching the new one)
+func TestAServiceOfARowLoadedAgainHasANewHandle(t *testing.T) {
+	weather := Define(Plugin[NoConfig]{Name: "weather", Apply: func(c *Ctx, _ NoConfig) error {
+		c.Provide("weather", textWeather{})
+		return nil
+	}})
+	h := startFakeHost(t, nil, weather)
+	handle := func(what string, ok func(string) bool) string {
+		var got string
+		testwait.Eventually(t, what, func() bool {
+			h.mu.Lock()
+			defer h.mu.Unlock()
+			got = h.handles["weather"]
+			return ok(got)
+		}, nil)
+		return got
+	}
+	if err := h.load("w", "weather"); err != nil {
+		t.Fatal(err)
+	}
+	old := handle("the weather", func(got string) bool { return got != "" })
+	if err := h.call("rows.unload", "w"); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.load("w", "weather"); err != nil {
+		t.Fatal(err)
+	}
+	now := handle("the new weather", func(got string) bool { return got != "" && got != old })
+	ctx, cancel := context.WithTimeout(context.Background(), testwait.HangGuard)
+	defer cancel()
+	if _, err := h.host.Call(ctx, now, "today", []any{}, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.host.Call(ctx, old, "today", []any{}, false); err == nil || !strings.Contains(err.Error(), "service weather is not available") {
+		t.Fatal(err)
+	}
+}
+
+// guarantee: sdk/optional-deps (a row's own `inject` counts as declared:
+// the plugin uses it without listing it, and it is unavailable rather than
+// not-declared when nothing provides it)
+func TestARowsInjectCountsAsDeclared(t *testing.T) {
+	rt := newRuntime(nil)
+	rt.hosts["llm"] = map[string]string{"ask": "async"}
+	r := &row{key: "chat", name: "chat", def: &Definition{}, inject: []string{"llm", "search"}}
+	c := &Ctx{Context: context.Background(), rt: rt, row: r}
+	var llm struct {
+		Ask func(ctx context.Context, question string) (string, error)
+	}
+	if err := c.Use("llm", &llm); err != nil || llm.Ask == nil {
+		t.Fatalf("use from the row's inject: %v", err)
+	}
+	if ok, err := c.Get("llm", &llm); !ok || err != nil {
+		t.Fatalf("get from the row's inject: %v %v", ok, err)
+	}
+	var search struct{}
+	err := c.Use("search", &search)
+	if err == nil || err.Error() != "service search is not available" {
+		t.Fatal(err)
+	}
+	sameData(t, coded(t, err, "BindingError", "unavailable"), map[string]any{"service": "search"})
+	// Nothing declares `other`: use says so, whether or not this process
+	// has one.
+	if err := c.Use("other", &search); err == nil || err.Error() != `service other is not available to this plugin, which does not declare it in Inject: add "other" to its Inject` {
+		t.Fatal(err)
+	}
+}
+
+// guarantee: sdk/optional-deps (the row's `inject` is rows.load's fifth
+// argument, as rutis sends it, and a restarted row keeps it)
+func TestARowsInjectArrivesWithRowsLoad(t *testing.T) {
+	type seen struct {
+		use, get, absent, undeclared error
+		there                        bool
+	}
+	applied := make(chan seen, 2)
+	reader := Define(Plugin[NoConfig]{Name: "reader", Apply: func(c *Ctx, _ NoConfig) error {
+		var llm struct {
+			Ask func(ctx context.Context) (string, error)
+		}
+		var none struct{}
+		s := seen{use: c.Use("llm", &llm), absent: c.Use("search", &none), undeclared: c.Use("other", &none)}
+		s.there, s.get = c.Get("llm", &llm)
+		applied <- s
+		return nil
+	}})
+	h := startFakeHost(t, nil, reader)
+	if err := h.call("hosts.provide", "llm", map[string]string{"ask": "async"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	check := func(when string) {
+		t.Helper()
+		got := testwait.Within(t, "the row applies "+when, applied)
+		if got.use != nil {
+			t.Fatalf("%s: use of a name in the row's inject: %v", when, got.use)
+		}
+		if !got.there || got.get != nil {
+			t.Fatalf("%s: get of a name in the row's inject: %v %v", when, got.there, got.get)
+		}
+		if got.absent == nil || got.absent.Error() != "service search is not available" {
+			t.Fatalf("%s: %v", when, got.absent)
+		}
+		if got.undeclared == nil || got.undeclared.Error() != `service other is not available to this plugin, which does not declare it in Inject: add "other" to its Inject` {
+			t.Fatalf("%s: %v", when, got.undeclared)
+		}
+	}
+	if err := h.call("rows.load", "reader", "reader", json.RawMessage("null"), []any{}, []any{"llm", "search"}, map[string]any{}, map[string]any{"scope": []any{}, "id": "reader"}); err != nil {
+		t.Fatal(err)
+	}
+	check("loaded")
+	if err := h.call("rows.update", "reader", json.RawMessage("null")); err != nil {
+		t.Fatal(err)
+	}
+	check("updated")
+}
+
+// guarantee: sdk/optional-deps (a name the plugin provides itself counts as
+// declared while it provides it; withdrawn, it is like an undeclared one,
+// as for a Rust plugin's strict read)
+func TestAPluginReadsWhatItProvidesWhileItProvidesIt(t *testing.T) {
+	type seen struct {
+		use, get, useWithdrawn, getWithdrawn error
+		there                                bool
+	}
+	applied := make(chan seen, 1)
+	local := Define(Plugin[NoConfig]{Name: "local", Apply: func(c *Ctx, _ NoConfig) error {
+		var weather struct {
+			Today func(ctx context.Context) (string, error)
+		}
+		withdraw := c.Provide("local", textWeather{})
+		s := seen{use: c.Use("local", &weather)}
+		s.there, s.get = c.Get("local", &weather)
+		withdraw()
+		s.useWithdrawn = c.Use("local", &weather)
+		_, s.getWithdrawn = c.Get("local", &weather)
+		applied <- s
+		return nil
+	}})
+	h := startFakeHost(t, nil, local)
+	if err := h.load("local", "local"); err != nil {
+		t.Fatal(err)
+	}
+	got := testwait.Within(t, "the row applies", applied)
+	if got.use != nil || !got.there || got.get != nil {
+		t.Fatalf("while provided: use %v, get %v %v", got.use, got.there, got.get)
+	}
+	if got.useWithdrawn == nil || got.useWithdrawn.Error() != `service local is not available to this plugin, which does not declare it in Inject: add "local" to its Inject` {
+		t.Fatal(got.useWithdrawn)
+	}
+	if got.getWithdrawn == nil || got.getWithdrawn.Error() != `service local is not available to this plugin, which does not declare it: add "local" to its Optional (or to its Inject, if it cannot run without it)` {
+		t.Fatal(got.getWithdrawn)
+	}
 }

@@ -1021,6 +1021,7 @@ pub trait rutis::host::PluginFactory<C: core::marker::Send + core::marker::Sync 
 pub fn rutis::host::PluginFactory::build(&self, &C) -> core::result::Result<alloc::boxed::Box<dyn rutis::host::DynPlugin>, rutis::Error>
 pub fn rutis::host::PluginFactory::injects(&self) -> alloc::vec::Vec<rutis::host::TypeKey>
 pub fn rutis::host::PluginFactory::name(&self) -> &str
+pub fn rutis::host::PluginFactory::optional_injects(&self) -> alloc::vec::Vec<rutis::host::TypeKey>
 pub fn rutis::host::PluginFactory::validate_config(&self, &C) -> core::result::Result<(), rutis::Error>
 pub fn rutis::host::default_sink() -> rutis::host::ErrorSink
 pub fn rutis::host::shutdown_deadline() -> core::time::Duration

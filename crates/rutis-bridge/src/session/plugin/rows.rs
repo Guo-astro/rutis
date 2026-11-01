@@ -258,6 +258,10 @@ impl PluginFactory<Json> for Hosted {
         self.factory.injects()
     }
 
+    fn optional_injects(&self) -> Vec<TypeKey> {
+        self.factory.optional_injects()
+    }
+
     fn validate_config(&self, config: &Json) -> Result<(), RutisError> {
         self.factory.validate_config(config)
     }

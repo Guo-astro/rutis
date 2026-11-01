@@ -423,6 +423,10 @@ where
         self.inner.injects()
     }
 
+    fn optional_injects(&self) -> Vec<TypeKey> {
+        self.inner.optional_injects()
+    }
+
     fn validate_config(&self, config: &Value) -> Result<(), Error> {
         self.inner
             .validate_config(&decode::<C>(config, self.schema)?)
@@ -467,6 +471,10 @@ where
 
     fn injects(&self) -> Vec<TypeKey> {
         self.factory.injects()
+    }
+
+    fn optional_injects(&self) -> Vec<TypeKey> {
+        self.factory.optional_injects()
     }
 
     fn validate_config(&self, config: &C) -> Result<(), Error> {

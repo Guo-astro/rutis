@@ -12,6 +12,8 @@ A Cordis plugin runs as a row in rutis-loader: name its package in a row of `rut
 - When a service of the same name already has another provider (a row of another runtime, a Rust plugin, a connected node's plugin), the row providing it later fails, also when it provides it after loading, and the error names both, for example `service storage is already provided by row prompts: row storage cannot provide it too`.
 - `rutis-host check` runs no plugin, so it does not see undeclared services: a service a row depends on that only such rows may provide is a warning, `nothing declares <service>; it may be provided at runtime by …`, not a failure (with `check --strict`, one).
 
+- A Cordis plugin reads a service it can do without with Cordis's own `ctx.get('llm')`. When another runtime or the host provides it, write `optional = ['llm']` beside `inject` (on the plugin object, function or class; Cordis ignores the field): rutis then leases it into this process for the row when it is there as the row starts, without waiting for it. Without `optional`, `ctx.get` sees only services of this process (`undefined` otherwise). See [plugin API: optional services](plugin-api.en.md#optional-services).
+
 ## Events
 
 A Cordis plugin uses Cordis's own event API as before, and it is rutis's event API: `ctx.on`, `ctx.emit`, `ctx.parallel`, `ctx.serial`, `ctx.waterfall`, `ctx.bail`. Cordis listeners register themselves on the host's logical bus, so whether a Cordis plugin runs as a row of rutis.json or mounted in a Rust application, its events reach listeners in any language, process and connected node by the same rules (one flat bus, by name), and events emitted elsewhere reach its listeners. The rules are in [plugin API: events](plugin-api.en.md#events).

@@ -688,10 +688,33 @@ async fn run_needs_a_mounted_session() {
 // ── a language runtime ──────────────────────────────────────────
 
 /// A runtime `rt` with the plugin `contacts`, which provides `contacts`
-/// whose `whoami()` answers `rt`, speaking the row contract in-process.
+/// whose `whoami()` answers `rt`, speaking the row contract in-process;
+/// `reader` uses `llm` when there, and `both` declares `llm` both
+/// required and optional.
+#[derive(Default)]
 struct Runtime {
-    tokio: tokio::runtime::Handle,
+    tokio: Option<tokio::runtime::Handle>,
     version: std::sync::atomic::AtomicU64,
+    /// The host services lent to it (`hosts.provide`), by name.
+    hosts: std::sync::Mutex<Vec<String>>,
+    /// The labels of those lent under one (`hosts.provide`'s third argument).
+    labels: std::sync::Mutex<Vec<String>>,
+    /// Each row loaded (`rows.load`): its plugin and the names it isolates.
+    isolates: std::sync::Mutex<Vec<(String, Json)>>,
+}
+
+impl Runtime {
+    fn hosts(&self) -> Vec<String> {
+        self.hosts.lock().unwrap().clone()
+    }
+
+    fn labels(&self) -> Vec<String> {
+        self.labels.lock().unwrap().clone()
+    }
+
+    fn isolates(&self) -> Vec<(String, Json)> {
+        self.isolates.lock().unwrap().clone()
+    }
 }
 
 impl Dispatch for Runtime {
@@ -704,13 +727,31 @@ impl Dispatch for Runtime {
     ) -> Reply {
         let args = args.json().unwrap_or(Json::Null);
         let schema = json!({ "inject": [], "provides": { "contacts": { "whoami": "async" } } });
+        let reader = json!({ "inject": [], "optional": ["llm"], "provides": {} });
+        let both = json!({ "inject": ["llm"], "optional": ["llm"], "provides": {} });
         match (target, method) {
             ("", "mount") => Ok(json!({
                 "services": {},
                 "features": ["rows.v2", "hosts", "leaf"],
-                "plugins": { "contacts": schema },
+                "plugins": { "contacts": schema, "reader": reader, "both": both },
             })
             .into()),
+            ("", "hosts.provide") => {
+                let name = args[0].as_str().unwrap_or_default().to_owned();
+                self.hosts.lock().unwrap().push(name);
+                if let Some(label) = args[2].as_str() {
+                    self.labels.lock().unwrap().push(label.to_owned());
+                }
+                Ok(Value::Undefined)
+            }
+            ("", "rows.load") if args[1] != "contacts" => {
+                let plugin = args[1].as_str().unwrap_or_default().to_owned();
+                self.isolates
+                    .lock()
+                    .unwrap()
+                    .push((plugin, args[3].clone()));
+                Ok(Value::Undefined)
+            }
             ("", "rows.load") => {
                 let key = args[0].as_str().unwrap().to_owned();
                 let version = self
@@ -721,7 +762,7 @@ impl Dispatch for Runtime {
                     peer.clone(),
                     json!(["contacts", format!("contacts@{key}"), version]),
                 );
-                self.tokio.spawn(async move {
+                self.tokio.as_ref().unwrap().spawn(async move {
                     let _ = peer.invoke_async("", "service", args.into()).await;
                 });
                 Ok(Value::Undefined)
@@ -733,24 +774,25 @@ impl Dispatch for Runtime {
     }
 }
 
-/// A language runtime runs a plugin through the row contract: its
-/// services are the plugin `rt:contacts`'s here.
-#[tokio::test(flavor = "multi_thread")]
-async fn run_on_a_language_runtime() {
-    let main = kernel("main");
+/// A session of `main` with the runtime `rt` ([`Runtime`]), mounted; the
+/// connection lasts as long as the last value.
+async fn on_a_runtime(
+    main: &Ctx,
+) -> (
+    Arc<Runtime>,
+    rutis_bridge::SessionHandle,
+    rutis_bridge::session::Connection,
+) {
     let (ours, theirs) = rutis_bridge::memory::pair();
     let mut endpoint = Endpoint::rust(id("rt"));
     endpoint.capabilities.push("runtime".into());
-    let _runtime = rutis_bridge::session::Connection::open(
-        theirs,
-        Arc::new(Runtime {
-            tokio: tokio::runtime::Handle::current(),
-            version: Default::default(),
-        }),
-        endpoint,
-    )
-    .unwrap();
-    let greeted = within("the handshake", Session::handshake(&main, ours))
+    let runtime = Arc::new(Runtime {
+        tokio: Some(tokio::runtime::Handle::current()),
+        ..Runtime::default()
+    });
+    let connection =
+        rutis_bridge::session::Connection::open(theirs, runtime.clone(), endpoint).unwrap();
+    let greeted = within("the handshake", Session::handshake(main, ours))
         .await
         .unwrap();
     let handle = greeted.handle();
@@ -759,6 +801,15 @@ async fn run_on_a_language_runtime() {
     })
     .await;
     assert!(handle.process().is_some(), "mounted with its process");
+    (runtime, handle, connection)
+}
+
+/// A language runtime runs a plugin through the row contract: its
+/// services are the plugin `rt:contacts`'s here.
+#[tokio::test(flavor = "multi_thread")]
+async fn run_on_a_language_runtime() {
+    let main = kernel("main");
+    let (_runtime, handle, _connection) = on_a_runtime(&main).await;
     let row = handle.run("contacts", json!({})).unwrap();
     within("the load", row.loaded()).await.unwrap();
     assert_eq!(
@@ -783,6 +834,51 @@ async fn run_on_a_language_runtime() {
     .to_string();
     assert!(
         error.contains("runtime rt: this connection does not contain plugin missing"),
+        "{error}"
+    );
+}
+
+/// A plugin run on a language runtime is lent what it uses when there if
+/// it is here as the plugin starts, and never waits for it, reading it from
+/// its own lease (isolated under the lease's label, as a loader row is) and
+/// not from the registration rows share, which follows whichever row leased
+/// the name last; a name both in its inject and its optional fails its load.
+/// guarantee: loader/optional-deps
+#[tokio::test(flavor = "multi_thread")]
+async fn run_lends_optional_services_there_at_start() {
+    let main = kernel("main");
+    let (runtime, handle, _connection) = on_a_runtime(&main).await;
+    // Not here: it loads all the same, with nothing lent.
+    let row = handle.run("reader", json!({})).unwrap();
+    within("the load", row.loaded()).await.unwrap();
+    assert_eq!(runtime.hosts(), Vec::<String>::new());
+    drop(row);
+
+    // Here as it starts: lent.
+    let _llm = main
+        .provide_at(host_key("llm"), Arc::new(Answer("42")))
+        .unwrap();
+    let row = handle.run("reader", json!({})).unwrap();
+    within("the load", row.loaded()).await.unwrap();
+    let hosts = runtime.hosts();
+    assert!(
+        !hosts.is_empty() && hosts.iter().all(|name| name == "llm"),
+        "{hosts:?}"
+    );
+    let (labels, isolates) = (runtime.labels(), runtime.isolates());
+    let (_, isolate) = isolates.last().unwrap();
+    assert_eq!(labels.len(), 1, "{labels:?}");
+    assert_eq!(isolate, &json!([["llm", labels[0]]]), "{isolates:?}");
+
+    let error = within(
+        "a plugin in both lists",
+        handle.run("both", json!({})).unwrap().loaded(),
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+    assert!(
+        error.contains("llm is in both inject and optional; keep it in one"),
         "{error}"
     );
 }

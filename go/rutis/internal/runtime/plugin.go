@@ -23,6 +23,11 @@ type Plugin[C any] struct {
 	Name string
 	// Inject lists the services it uses: it runs only while all are there.
 	Inject []string
+	// Optional lists the services it uses when they are there: rutis does
+	// not wait for them, and leases in those it has when the plugin starts,
+	// kept until it stops (Ctx.Get). One that comes later is sure to be seen
+	// only once the plugin restarts. A name is in Inject or here, not both.
+	Optional []string
 	// Provides declares the services it provides and their methods
 	// (optional). What Ctx.Provide provides reaches rutis without it, its
 	// methods the value's exported ones, all asynchronous; Provides marks
@@ -50,6 +55,7 @@ type Provides map[string]*Shape
 type Definition struct {
 	name     string
 	inject   []string
+	optional []string
 	provides map[string]*Shape
 	schema   any
 	api      int
@@ -129,6 +135,7 @@ func define[C any](p Plugin[C], frames int) *Definition {
 	return &Definition{
 		name:     p.Name,
 		inject:   append([]string{}, p.Inject...),
+		optional: append([]string{}, p.Optional...),
 		provides: p.Provides,
 		schema:   schema,
 		api:      PluginAPI,
@@ -178,6 +185,10 @@ func (d *Definition) describe() map[string]any {
 	if inject == nil {
 		inject = []string{}
 	}
+	optional := d.optional
+	if optional == nil {
+		optional = []string{}
+	}
 	var version any
 	if v := moduleVersion(d.pkg); v != "" {
 		version = v
@@ -185,6 +196,7 @@ func (d *Definition) describe() map[string]any {
 	return map[string]any{
 		"config":   d.schema,
 		"inject":   inject,
+		"optional": optional,
 		"provides": provides,
 		"version":  version,
 		// Every plugin of this SDK may provide services Provides does not

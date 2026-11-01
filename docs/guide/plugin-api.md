@@ -7,6 +7,7 @@ TypeScript / JavaScript 插件（`@arcships/rutis`）、Python 插件（`rutis`�
 | 声明 | TypeScript（`definePlugin({...})`） | Python（`define_plugin(apply, ...)` 或模块变量） | Go（`rutis.Define(rutis.Plugin[C]{...})`） | Swift（`Rutis.define(Plugin(...))`） | Kotlin（`Rutis.define<C>(...) { ctx, config -> }`） | 含义 |
 | --- | --- | --- | --- | --- | --- | --- |
 | 用到的服务 | `inject: ['llm']` | `inject=["llm"]` | `Inject: []string{"llm"}` | `inject: ["llm"]` | `inject = listOf("llm")` | 都就绪才启动；任何一个撤销，插件停下，等它回来再启动 |
+| 有就用的服务 | `optional: ['llm']` | `optional=["llm"]` | `Optional: []string{"llm"}` | `optional: ["llm"]` | `optional = listOf("llm")` | 不等：插件启动时在的，租借进来，用 `ctx.get` 读（见[可选服务](#可选服务)）。一个名字写在 `inject` 或 `optional` 里，不能两处都写。要 rutis-host 0.20 或以后 |
 | 提供的服务（可选） | `provides: { weather: { today: 'sync' } }` | `provides={"weather": Weather}` 或 `{"weather": {"today": "sync"}}` | `Provides: rutis.Provides{"weather": rutis.MethodsOf[*Weather](rutis.Sync("Unit"))}`（导出方法，除 `Sync` 列出的外都是 `async`） | `provides: ["weather": .of(Weather.self, sync: ["unit"])]`（`@RutisService` 类型的方法，除 `sync` 列出的外都是 `async`） | `provides = mapOf("weather" to service<Weather>(sync = setOf("unit")))`（`@RutisService` 类的 public 成员函数，除 `sync` 列出的外都是 `async`） | 不写也行：`ctx.provide` 提供的服务自动对外（见下）。写了就按声明：把方法标成 `sync`，并让 `rutis-host check` 在运行前就知道谁提供什么；声明过的服务只能调用声明过的方法 |
 | 配置 | `config: { type: 'object', ... }` | `config={...}`（模块变量写 `Config`） | 类型 `C`（Schema 由它生成），或 `Schema` | `config:` 的 `Decodable` 类型（Schema 由 `@RutisConfig` 生成，或 `static let rutisSchema`） | `@Serializable` 类型 `C`（Schema 由它的 `SerialDescriptor` 推出），或 `schema` | JSON Schema：`apply` 之前按它补默认值并校验配置（见[配置](#配置)）；`rutis-host check` 也一样 |
 | 启动 | `apply(ctx, config)` | `apply(ctx, config)` | `Apply: func(ctx *rutis.Ctx, config C) error` | `apply: { ctx, config in ... }`（`async throws`） | `{ ctx, config -> }`，可以挂起；抛异常即装载失败 | 可以是 async；返回清理函数或不返回（Go：返回错误即装载失败） |
@@ -25,7 +26,8 @@ TypeScript / JavaScript 插件（`@arcships/rutis`）、Python 插件（`rutis`�
 
 | 方法 | 作用 |
 | --- | --- |
-| `ctx.use(name)` | `inject` 里声明的服务。同一个运行时进程里的插件提供的，是对象本身；其他进程、其他语言、其他机器提供的，是代理。插件和它的行都没在 `inject` 里声明的服务拿不到时，报 `service <name> is not available to this plugin, which does not declare it in inject: add '<name>' to its inject`（只有声明了的服务才一定给它）；调用需要调用方的行的宿主服务方法（例如带 `&Ctx` 参数的 Rust 方法）时，也提示把服务写进 `inject` |
+| `ctx.use(name)` | `inject` 里声明的服务、行 `inject` 里声明的，或插件自己正提供着的；只写在 `optional` 里的不算（与 Rust 的 `ctx.require` 相同），用 `ctx.get` 读。只写在行 `inject` 里的名字，目前只在进程里已经有它时拿得到（同一进程的行提供的，或别的行为自己租借进来的；rutis 还不为运行时的行租借它）。同一个运行时进程里的插件提供的，是对象本身；其他进程、其他语言、其他机器提供的，是代理。哪里都没声明的名字，不管有没有人提供，都报 `service <name> is not available to this plugin, which does not declare it in inject: add '<name>' to its inject`（Go：`… in Inject: add "<name>" to its Inject`；只有声明了的服务才一定给它）；调用需要调用方的行的宿主服务方法（例如带 `&Ctx` 参数的 Rust 方法）时，也提示把服务写进 `inject` |
+| `ctx.get(name)` | 读 `optional` 里声明的服务，`ctx.use` 认的名字也认：`ctx.use` 会给的那个；插件启动时它不在，则是空值（`undefined`、`None`；Go 的 `ctx.Get(name, &target)` 返回 `false, nil`；Swift `nil`，Kotlin `null`）。哪里都没声明的名字，不管有没有人提供，都报 `service <name> is not available to this plugin, which does not declare it: add '<name>' to its optional (or to its inject, if it cannot run without it)`（Go：`add "<name>" to its Optional (or to its Inject, …)`） |
 | `ctx.provide(name, value)` | 提供服务，直到插件卸载，或调用返回的函数。服务自动对外，别的语言、别的进程按名字使用；`provides` 没有声明它时，方法取 `value` 上的公开方法（JavaScript：自身和原型链上的函数，不含 `constructor`；Python：不以 `_` 开头的可调用属性；Go：导出方法），都按 `async` 调用，字段不算方法。推断按各语言自己的规则，同一个服务用两种语言写时方法可能不同：继承 `EventEmitter` 的 JavaScript 类也会带上 `on`、`emit` 等方法；只想对外其中几个时在 `provides` 里列出它们 |
 | `ctx.effect(cleanup)` | 插件卸载时运行 `cleanup`（可以是 async） |
 | `ctx.on(name, listener, options?)` | 监听事件：不论在哪里发出（另一个插件、另一个运行时、宿主、相连的节点），只要是这个 root 总线上的同名事件，就送到 `listener`。随插件卸载注销；返回的函数立即注销。见下面的[事件](#事件) |
@@ -34,11 +36,37 @@ TypeScript / JavaScript 插件（`@arcships/rutis`）、Python 插件（`rutis`�
 
 一个跨过会话的错误被再次抛出时，Node、Bun、Python 和 Go 都带着它完整的错误图（cause、`AggregateError` 的子错误）再跨一次，不限于聚合的情形：Node 解码出的是真正的 `Error` 对象，重新编码时自然带上整个图，Python 和 Go 的 `encode_error` / `encodeError` 把 `RemoteError` 的图拼进去（节点追加、引用偏移）以保持一致。
 
-清理按注册的相反顺序运行：`apply` 返回的清理函数最先，然后是 `ctx.effect` 注册的。
+清理按注册的相反顺序运行：`apply` 返回的清理函数最先，然后是 `ctx.effect` 注册的。Node 运行时上，Cordis 按这个顺序同时开始它们，异步的清理不等前一个完成。
 
 Go 里：`ctx.Use(name, &target)` 把服务绑定到函数字段的结构体（或 `*advanced.Service`）；`ctx.Provide(name, value)`；`ctx.Effect(func(context.Context) error)`；`ctx.Go(task)` 起一个卸载时停下的 goroutine。`*rutis.Ctx` 是插件卸载时取消的 `context.Context`。
 
 Kotlin 里：`ctx.use<I>(name)` 经 `@RutisClient` 接口 `I` 使用服务（同进程提供者实现了 `I` 时就是对象本身）；`ctx.provide(name, obj)` 的 `obj` 是 `@RutisService` 类的实例，方法表由 KSP 处理器在编译期生成；`ctx.effect { }`；`ctx` 是插件卸载时取消的协程作用域，`ctx.launch { }` 起的协程卸载时取消并等待。收到的错误是 `RutisException`，按 `name` 匹配。
+
+### 可选服务
+
+没有某个服务也能运行的插件，把它写进 `optional`，用 `ctx.get` 读：
+
+```ts
+export default definePlugin({
+  inject: ['notes'],      // 必需：到齐才启动，撤销就停
+  optional: ['llm'],      // 有就用：不等
+  apply(ctx) {
+    ctx.provide('summary', {
+      async of(text: string) {
+        const llm = ctx.get<Llm>('llm')
+        return llm ? await llm.ask(`summarize: ${text}`) : text.slice(0, 200)
+      },
+    })
+  },
+})
+```
+
+与 Rust 的 `Option<Arc<T>>` 相同，宿主服务以启动时租借的为准，一直到插件停止；本进程里别的行提供的服务随时可见（与 Cordis 的 `ctx.get` 相同）：
+
+- 插件启动时在：租借进来，直到插件停止。
+- 那时不在：插件照常运行（`rutis-host status` 不把它列为等待）。之后才出现的，rutis 不为这一行租借，这一行重启后（改配置、`rutis-host` 重载这一行）才一定看得到；在那之前，进程里已经有的（同一进程的行提供的，或别的行为自己租借进来的），`get` 也读得到，与 Rust 的 `ctx.get` 一样读进程里此刻的服务表。
+- 运行中提供方走了：插件不停，`ctx.get` 仍给原来拿到的服务；调用它报 `service <name> is not available`（码 `unavailable`），或提供方进程已结束（`peer-gone`）。手写的 Rust `HostDispatch` 一直应答到这一行重启。
+- `ctx.use` 不认 `optional`（与 Rust 的 `ctx.require` 相同：`Option<Arc<T>>` 不算 `inject`）：一个只写在 `optional` 里的名字，`ctx.use` 把它当作没声明的（见上表 `ctx.use` 一行），报 `service <name> is not available to this plugin, which does not declare it in inject: add '<name>' to its inject`（Go：`… which does not declare it in Inject: add "<name>" to its Inject`）。可选的服务用 `ctx.get` 读。
 
 宿主里的 Rust 插件（编进宿主的和 dylib 插件）：服务类型的 `impl` 块上加 `#[rutis::service]`，`ctx.provide(value)` 之后它就按名字自动对外（名字默认是类型名、第一个词小写），各语言的行用 `ctx.use(name)` 调用它；没标注的 Rust 类型不对外。见 [Rust 宿主](rust-host.md#在类型上标注-rutisservice)。插件本身的写法见 [写一个 Rust 插件](rust-plugin.md)。
 

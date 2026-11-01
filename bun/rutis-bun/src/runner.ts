@@ -6,15 +6,17 @@
 // - `rows.load` imports a plugin module and runs its `apply(ctx, config)`;
 //   `rows.unload` withdraws what the row provided and runs its cleanups;
 // - `rows.schema` reports what a module declares (config schema, injected
-//   services, provided services and their method kinds, package version);
+//   and optional services, provided services and their method kinds,
+//   package version);
 // - `hosts.provide` / `hosts.withdraw` register rutis services by name;
 // - the services a row exports are reported with `service(id, handle,
 //   version)` notifications, and calls to a handle reach the object; one it
 //   provides without declaring it is announced to a host that asks, with
 //   the methods its object has (`rows.announce`).
 //
-// Within the process, `ctx.use(name)` returns the object itself when another
-// row here provides it, so those calls never leave the process.
+// Within the process, `ctx.use(name)` (and `ctx.get(name)`, for an optional
+// service) returns the object itself when another row here provides it, so
+// those calls never leave the process.
 // Events (#464, ./events.mjs, the same file as the Node runtime's): every
 // listener a row registers is on the host's logical bus, and every
 // emission goes through the host, which dispatches it with the five modes,
@@ -32,7 +34,7 @@ import type { Client } from './client.ts'
 import { Bus, refuseReserved } from './events.mjs'
 import { definition, locate, Modules, versionOf, type Kind } from './plugin.ts'
 import { MANIFEST } from './session.ts'
-import { UNDECLARED, noMethod, notDeclared, serviceName, unavailable } from './errors.ts'
+import { UNDECLARED, noMethod, notDeclared, notDeclaredOptional, serviceName, unavailable } from './errors.ts'
 import { prefixOutput, say, watchBlocking } from './output.mjs'
 
 // internal/* names Cordis's own events on Node; no leaf plugin listens to or
@@ -91,8 +93,9 @@ export function methodsOf(object: unknown): Set<string> {
 // contain NUL and a label may not be empty, so no two pairs share an id.
 
 // What a plugin using `name`, which neither its `inject` nor its row's
-// declares, is told when the service is not there for it: what to declare,
-// not that it is missing (#676). The same in every runtime and testing tool.
+// `inject` declares and which it does not provide itself (one only in its
+// `optional` is read with `get`), is told whether or not the service is
+// there: what to declare, not that it is missing (#676). The same in every runtime and testing tool.
 export const undeclaredUse = UNDECLARED
 
 export function scopedId(name: string, label?: string | null): string {
@@ -128,7 +131,7 @@ interface Row {
 const idIn = (row: Row, name: string) => scopedId(name, row.isolate.get(name))
 
 interface Slot { row: string, methods: Set<string>, object: unknown, handle: string | null, generation: number, announced?: boolean }
-interface Handle { name: string, object: any, current: boolean, released: boolean }
+interface Handle { name: string, object: any, methods: Set<string>, current: boolean, released: boolean, gone?: boolean }
 type Listener = (...args: any[]) => unknown
 
 export class Runtime {
@@ -158,6 +161,10 @@ export class Runtime {
   #hosts = new Map<string, unknown>()
   #slots = new Map<string, Slot>()
   #handles = new Map<string, Handle>()
+  // The last generation each id's handles reached, kept as its slots go and
+  // come again (a row restarting): a handle is never given to two objects,
+  // so one held for a retired object stays retired.
+  #generations = new Map<string, number>()
   #version = 0
 
   constructor(project: string) {
@@ -198,10 +205,16 @@ export class Runtime {
   // ── Services ──────────────────────────────────────────────────
 
   lookup(id: string): unknown {
+    const found = this.#find(id)
+    if (found !== undefined) return found
+    throw unavailable(serviceName(id))
+  }
+
+  // The service `id` now: a row's here, else the host's; else undefined.
+  #find(id: string): unknown {
     const provided = this.#services.get(id)
     if (provided) return provided.value
-    if (this.#hosts.has(id)) return this.#hosts.get(id)
-    throw unavailable(serviceName(id))
+    return this.#hosts.get(id)
   }
 
   provide(row: Row, name: string, value: unknown): () => void {
@@ -236,10 +249,13 @@ export class Runtime {
     slot.object = current
     slot.handle = null
     if (current !== undefined) {
-      slot.generation++
+      slot.generation = (this.#generations.get(id) ?? 0) + 1
+      this.#generations.set(id, slot.generation)
       slot.handle = handleOf(id, slot.generation)
-      this.#handles.set(slot.handle, { name: id, object: current, current: true, released: false })
       if (slot.announced) slot.methods = methodsOf(current)
+      // A handle answers with its object's methods: one its row replaced
+      // keeps the old object's, as the old object.
+      this.#handles.set(slot.handle, { name: id, object: current, methods: slot.methods, current: true, released: false })
     }
     this.#version++
     // A notification: sent before this returns, so it goes out ahead of the
@@ -259,6 +275,20 @@ export class Runtime {
     if (!entry) return
     entry.current = false
     if (entry.released) this.#handles.delete(handle)
+  }
+
+  // The row of slot `id` unloaded: every handle on its objects, the current
+  // one and those it replaced, says the service is gone (to a row holding
+  // it, an optional service leased at start); the released ones are
+  // forgotten. A handle its row replaced while running keeps its object
+  // until then, as a snapshot of a service does in Rust.
+  #gone(id: string) {
+    for (const [handle, entry] of this.#handles) {
+      if (entry.name !== id) continue
+      entry.current = false
+      entry.gone = true
+      if (entry.released) this.#handles.delete(handle)
+    }
   }
 
   // ── Events ────────────────────────────────────────────────────
@@ -306,17 +336,24 @@ export class Runtime {
     for (const [name, methods] of Object.entries(row.exports)) {
       this.#slots.set(idIn(row, name), { row: key, methods: new Set(Object.keys(methods ?? {})), object: undefined, handle: null, generation: 0 })
     }
-    // What it declares it uses: its plugin's `inject`, and its row's.
-    const declares = new Set([...plugin.inject, ...(inject ?? [])])
+    // What it may `use`: what it or its row injects (as Rust's `require`
+    // reads only the injects), and what it provides; the test driver,
+    // anything. What it may `get`: that and its plugin's `optional`.
+    const uses = new Set([...plugin.inject, ...(inject ?? [])])
+    const mayUse = (name: string) => plugin.usesAny || uses.has(name) || row.provided.includes(idIn(row, name))
+    const mayGet = (name: string) => mayUse(name) || plugin.optional.includes(name)
     const ctx = {
       use: (name: string) => {
-        try {
-          return this.lookup(idIn(row, name))
-        } catch (error) {
-          // Not given to it, though it may run: say so (#676).
-          if (!declares.has(name)) throw notDeclared(name)
-          throw error
-        }
+        // Not injected by it or its row (an optional one is read with
+        // `get`): say what to declare, not that it is missing (#676),
+        // whether or not another row here provides it.
+        if (!mayUse(name)) throw notDeclared(name)
+        return this.lookup(idIn(row, name))
+      },
+      // An optional service: the service when there, else undefined.
+      get: (name: string) => {
+        if (!mayGet(name)) throw notDeclaredOptional(name)
+        return this.#find(idIn(row, name))
       },
       provide: (name: string, value: unknown) => this.provide(row, name, value),
       effect: (cleanup: () => unknown) => {
@@ -378,7 +415,7 @@ export class Runtime {
       const slot = this.#slots.get(id)
       if (slot?.row !== key) continue
       this.#slots.delete(id)
-      if (slot.handle) this.#retire(slot.handle)
+      this.#gone(id)
     }
     row.announced = []
     // Its running listeners are signalled and waited for, at most the
@@ -411,13 +448,13 @@ export class Runtime {
   // What a plugin definition declares (`plugins.read`), answered at once.
   describeDefinition(value: unknown) {
     const plugin = definition(value)
-    return { name: plugin.name, config: plugin.config, inject: plugin.inject, provides: plugin.provides, announces: plugin.announces, version: null }
+    return { name: plugin.name, config: plugin.config, inject: plugin.inject, optional: plugin.optional, provides: plugin.provides, announces: plugin.announces, version: null }
   }
 
   async describe(entry: string) {
     const file = locate(entry, this.#project)
     const plugin = await this.#modules.plugin(file, entry)
-    return { config: plugin.config, inject: plugin.inject, provides: plugin.provides, announces: plugin.announces, version: versionOf(entry, file) }
+    return { config: plugin.config, inject: plugin.inject, optional: plugin.optional, provides: plugin.provides, announces: plugin.announces, version: versionOf(entry, file) }
   }
 
   async dispose() {
@@ -433,11 +470,14 @@ export class Runtime {
     if (target === '') return this.#control(method, args ?? [])
     const entry = this.#handles.get(target)
     if (!entry) throw new Error(`unknown or released service object ${target}`)
+    // Its row unloaded (`gone`): a caller still holding it (an optional
+    // service, leased at start) is told it is gone.
+    if (entry.gone) throw unavailable(serviceName(entry.name))
     const slot = this.#slots.get(entry.name)
-    if (slot && !slot.methods.has(method)) throw noMethod(serviceName(entry.name), method, slot.methods)
+    if (!entry.methods.has(method)) throw noMethod(serviceName(entry.name), method, entry.methods)
     if (!Array.isArray(args)) throw new TypeError('method arguments must be an array')
     const operation = entry.object[method]
-    if (typeof operation !== 'function') throw noMethod(serviceName(entry.name), method, slot ? slot.methods : methodsOf(entry.object))
+    if (typeof operation !== 'function') throw noMethod(serviceName(entry.name), method, entry.methods)
     const row = slot?.row ?? this.#services.get(entry.name)?.row
     const shown = row === undefined ? this.name : this.#bus.rowId(row) ?? row
     return this.within(row, () => this.#blocking.held(shown, `${serviceName(entry.name)}.${method}`, () => Reflect.apply(operation, entry.object, args)))
@@ -488,6 +528,7 @@ export class Runtime {
         const [handle, property] = args
         const entry = this.#handles.get(handle)
         if (!entry) throw new Error(`unknown or released service object ${handle}`)
+        if (entry.gone) throw unavailable(serviceName(entry.name))
         return entry.object[property]
       }
       default: throw new Error(`unknown control method ${method}`)

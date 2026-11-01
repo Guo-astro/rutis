@@ -99,6 +99,8 @@ internal class Slot(val row: String, val name: String, var methods: Set<String>?
 internal class HandleEntry(val id: String, val name: String, val obj: Any, val table: ServiceTable<Any>, val methods: Set<String>?) {
     var current = true
     var released = false
+    /** Its row unloaded (see `gone`). */
+    var gone = false
 }
 
 internal class Row(
@@ -110,6 +112,8 @@ internal class Row(
     val config: Any?,
     val exports: Map<String, Map<String, String>>,
     val isolate: Map<String, String>,
+    /** The row's own `inject` (rows.load): names its plugin may use too. */
+    val inject: List<String> = emptyList(),
     /** Its scope chain, outermost first. */
     val scope: List<Scope>,
     /** The chain of the call that loaded it, which its own code keeps. */
@@ -171,6 +175,12 @@ class RuntimeState(plugins: List<Plugin>, private val open: Boolean = false) {
     internal val hosts = HashMap<String, Map<String, String>>()
     internal val slots = HashMap<String, Slot>()
     internal val handles = HashMap<String, HandleEntry>()
+
+    /**
+     * The last generation each id's handles reached, kept as its slots go and come again (a row
+     * restarting): a handle is never given to two objects, so one held for a retired object stays retired.
+     */
+    private val generations = HashMap<String, Int>()
     private var version = 0L
     private var loaded = 0L
 
@@ -241,7 +251,8 @@ class RuntimeState(plugins: List<Plugin>, private val open: Boolean = false) {
         slot.present = present
         slot.handle = null
         if (provided != null) {
-            slot.generation++
+            slot.generation = (generations[id] ?: 0) + 1
+            generations[id] = slot.generation
             val handle = handleOf(id, slot.generation)
             slot.handle = handle
             if (slot.announced) slot.methods = provided.table.methods.toSet()
@@ -268,6 +279,23 @@ class RuntimeState(plugins: List<Plugin>, private val open: Boolean = false) {
         val entry = handles[handle] ?: return
         entry.current = false
         if (entry.released) handles.remove(handle)
+    }
+
+    /**
+     * The row of slot [id] unloaded: every handle on its objects, the current one and those it
+     * replaced, says the service is gone (to a row holding it, an optional service leased at
+     * start); the released ones are forgotten. A handle its row replaced while running keeps its
+     * object until then, as a snapshot of a service does in Rust. `lock` is held.
+     */
+    internal fun gone(id: String) {
+        val each = handles.entries.iterator()
+        while (each.hasNext()) {
+            val entry = each.next().value
+            if (entry.id != id) continue
+            entry.current = false
+            entry.gone = true
+            if (entry.released) each.remove()
+        }
     }
 
     internal fun provide(row: Row, name: String, value: Any): () -> Unit {
@@ -475,7 +503,7 @@ class RuntimeState(plugins: List<Plugin>, private val open: Boolean = false) {
             val name = plugin.name
             if (loading) {
                 try {
-                    load(name, name, name, config, emptyMap(), emptyMap(), emptyList(), supported(plugin), own = true)
+                    load(name, name, name, config, emptyMap(), emptyMap(), emptyList(), plugin = supported(plugin), own = true)
                     synchronized(lock) { ownStates[name] = OwnState.Loaded }
                 } catch (e: Throwable) {
                     synchronized(lock) { ownStates[name] = OwnState.Failed }
@@ -504,10 +532,11 @@ class RuntimeState(plugins: List<Plugin>, private val open: Boolean = false) {
         exports: Map<String, Map<String, String>>,
         isolate: Map<String, String>,
         scope: List<Scope>,
+        inject: List<String> = emptyList(),
         plugin: Plugin = definition(entry),
         own: Boolean = false,
     ) {
-        val row = Row(key, name.ifEmpty { key }, entry, plugin, config, exports, isolate, scope, CallChain.current(), own)
+        val row = Row(key, name.ifEmpty { key }, entry, plugin, config, exports, isolate, inject, scope, CallChain.current(), own)
         synchronized(lock) {
             if (closing) throw IllegalStateException("runtime is closing")
             if (rows.containsKey(key)) throw IllegalStateException("row $key is already loaded")
@@ -630,7 +659,7 @@ class RuntimeState(plugins: List<Plugin>, private val open: Boolean = false) {
                 val slot = slots[id]
                 if (slot != null && slot.row == key) {
                     slots.remove(id)
-                    slot.handle?.let(::retire)
+                    gone(id)
                 }
             }
             row.announced.clear()
@@ -698,7 +727,7 @@ class RuntimeState(plugins: List<Plugin>, private val open: Boolean = false) {
         val row = synchronized(lock) { rows[key] } ?: throw IllegalStateException("row $key is not loaded")
         // Leaf plugins have no volatile fields: a new config restarts the row.
         unload(key)
-        load(key, row.name, row.entry, config, row.exports, row.isolate, row.scope, row.plugin)
+        load(key, row.name, row.entry, config, row.exports, row.isolate, row.scope, row.inject, row.plugin)
     }
 
     /** Registers a cleanup if `row` is still the loaded row with `key`. */
@@ -752,12 +781,24 @@ class RuntimeState(plugins: List<Plugin>, private val open: Boolean = false) {
     suspend fun dispatch(target: String, method: String, args: List<Any?>): Any? {
         if (closing) throw IllegalStateException("runtime is closing")
         if (target.isEmpty()) return Control.control(this, method, args)
-        val entry = synchronized(lock) { handles[target] } ?: throw IllegalArgumentException("unknown or released service object ${printable(target)}")
+        val entry = synchronized(lock) { handles[target]?.also(::current) } ?: throw IllegalArgumentException("unknown or released service object ${printable(target)}")
         val methods = entry.methods
         if ((methods != null && method !in methods) || method !in entry.table.methods) {
             throw noMethod(entry.name, method, methods ?: entry.table.methods)
         }
         return entry.table.serve(entry.obj, method, args, entry.name)
+    }
+
+    /**
+     * Refuses a handle whose row unloaded ([gone]), kept until rutis releases
+     * it: a caller still holding it (an optional service, leased at start) is
+     * told the service is gone. One its row replaced while running keeps its
+     * object. `lock` is held.
+     */
+    private fun current(entry: HandleEntry) {
+        if (entry.gone) {
+            throw RutisException(RutisException.BINDING_ERROR, "service ${entry.name} is not available", "unavailable", mapOf("service" to entry.name))
+        }
     }
 
     internal fun released(handle: String) = synchronized(lock) {
@@ -767,7 +808,7 @@ class RuntimeState(plugins: List<Plugin>, private val open: Boolean = false) {
     }
 
     internal fun property(handle: String, property: String): Any? {
-        val entry = synchronized(lock) { handles[handle] } ?: throw IllegalArgumentException("unknown or released service object ${printable(handle)}")
+        val entry = synchronized(lock) { handles[handle]?.also(::current) } ?: throw IllegalArgumentException("unknown or released service object ${printable(handle)}")
         throw IllegalArgumentException("no property $property of ${printable(entry.id)}: a service's methods cross, not its fields")
     }
 
@@ -781,6 +822,7 @@ class RuntimeState(plugins: List<Plugin>, private val open: Boolean = false) {
     internal fun describe(plugin: Plugin): Map<String, Any?> = linkedMapOf(
         "config" to (plugin.schema ?: kotlinx.serialization.json.JsonNull),
         "inject" to plugin.inject,
+        "optional" to plugin.optional,
         "provides" to LinkedHashMap<String, Any?>().apply { for ((name, shape) in plugin.provides) put(name, LinkedHashMap<String, Any?>(shape.kinds)) },
         "version" to null,
         // Every plugin of this SDK may provide services `provides` does not

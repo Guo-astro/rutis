@@ -87,6 +87,8 @@ type handleEntry struct {
 	methods  map[string]bool
 	current  bool
 	released bool
+	// gone: its row unloaded (see gone).
+	gone bool
 }
 
 type row struct {
@@ -96,11 +98,13 @@ type row struct {
 	name string
 	// A plugin's name in this binary, or a plugin definition this runtime
 	// handed over (a *Definition back home).
-	entry    any
-	def      *Definition
-	config   any
-	exports  map[string]map[string]string
-	isolate  map[string]string
+	entry   any
+	def     *Definition
+	config  any
+	exports map[string]map[string]string
+	isolate map[string]string
+	// The row's own `inject` (rows.load): names its plugin may use too.
+	inject   []string
 	ctx      context.Context
 	cancel   context.CancelFunc
 	cleanups []func(context.Context) error
@@ -164,6 +168,10 @@ type runtimeState struct {
 	first, last int64
 	// What the host calls this runtime (mount `runtime`), for descriptors.
 	runtimeName string
+	// The last generation each id's handles reached, kept as its slots go
+	// and come again (a row restarting): a handle is never given to two
+	// objects, so one held for a retired object stays retired.
+	generations map[string]int
 
 	// Frames for the host, queued under mu in the order they are taken and
 	// sent by flush once mu is released: a write blocked by a far end that
@@ -227,6 +235,8 @@ func newRuntime(defs []*Definition) *runtimeState {
 
 		listeners: map[string][]*listener{},
 		byID:      map[string]*listener{},
+
+		generations: map[string]int{},
 	}
 }
 
@@ -308,7 +318,8 @@ func (rt *runtimeState) refresh(id string) {
 	}
 	s.object, s.present, s.handle = current, present, ""
 	if present {
-		s.generation++
+		rt.generations[id]++
+		s.generation = rt.generations[id]
 		s.handle = handleOf(id, s.generation)
 		var shape *Shape
 		if r := rt.rows[s.row]; r != nil {
@@ -358,6 +369,25 @@ func (rt *runtimeState) retire(handle string) {
 	entry.current = false
 	if entry.released {
 		delete(rt.handles, handle)
+	}
+}
+
+// gone marks every handle on the objects of slot id, the current one and
+// those it replaced, as gone: its row unloaded, and a caller still holding
+// one (an optional service, leased at start) is told the service is not
+// available. The released ones are forgotten. A handle its row replaced
+// while running keeps its object until then, as a snapshot of a service
+// does in Rust. mu is held.
+func (rt *runtimeState) gone(id string) {
+	for handle, entry := range rt.handles {
+		if entry.id != id {
+			continue
+		}
+		entry.current = false
+		entry.gone = true
+		if entry.released {
+			delete(rt.handles, handle)
+		}
 	}
 }
 
@@ -426,13 +456,13 @@ func printable(id string) string { return strings.ReplaceAll(id, "\x00", "@") }
 // ── Rows ─────────────────────────────────────────────────────────
 
 func (rt *runtimeState) load(ctx context.Context, key, entry string, config any, exports map[string]map[string]string, isolate map[string]string, scope []Scope) error {
-	return rt.loadNamed(ctx, key, key, entry, config, exports, isolate, scope)
+	return rt.loadNamed(ctx, key, key, entry, config, exports, isolate, nil, scope)
 }
 
 // loadNamed loads row key, whose id in the configuration is name.
 // entry is a plugin's name in this binary, or a plugin definition this
 // runtime handed over.
-func (rt *runtimeState) loadNamed(ctx context.Context, key, name string, entry any, config any, exports map[string]map[string]string, isolate map[string]string, scope []Scope) error {
+func (rt *runtimeState) loadNamed(ctx context.Context, key, name string, entry any, config any, exports map[string]map[string]string, isolate map[string]string, inject []string, scope []Scope) error {
 	def, err := rt.entryDefinition(entry)
 	if err != nil {
 		return err
@@ -440,7 +470,7 @@ func (rt *runtimeState) loadNamed(ctx context.Context, key, name string, entry a
 	if name == "" {
 		name = key
 	}
-	r := &row{key: key, name: name, entry: entry, def: def, config: config, exports: exports, isolate: isolate, scope: scope, loading: true}
+	r := &row{key: key, name: name, entry: entry, def: def, config: config, exports: exports, isolate: isolate, inject: inject, scope: scope, loading: true}
 	rt.mu.Lock()
 	if _, loaded := rt.rows[key]; loaded {
 		rt.mu.Unlock()
@@ -535,9 +565,7 @@ func (rt *runtimeState) unload(ctx context.Context, key string) error {
 	for _, id := range ids {
 		if s := rt.slots[id]; s != nil && s.row == key {
 			delete(rt.slots, id)
-			if s.handle != "" {
-				rt.retire(s.handle)
-			}
+			rt.gone(id)
 		}
 	}
 	r.announced = nil
@@ -567,7 +595,7 @@ func (rt *runtimeState) update(ctx context.Context, key string, config any) erro
 	if err := rt.unload(ctx, key); err != nil {
 		return err
 	}
-	return rt.loadNamed(ctx, key, r.name, r.entry, config, r.exports, r.isolate, r.scope)
+	return rt.loadNamed(ctx, key, r.name, r.entry, config, r.exports, r.isolate, r.inject, r.scope)
 }
 
 // waitListeners waits for the row's running listeners, cancelled, at most
@@ -625,9 +653,15 @@ func (rt *runtimeState) dispatch(ctx context.Context, target, method string, arg
 	}
 	rt.mu.Lock()
 	entry := rt.handles[target]
+	gone := entry != nil && entry.gone
 	rt.mu.Unlock()
 	if entry == nil {
 		return nil, fmt.Errorf("unknown or released service object %s", printable(target))
+	}
+	// Its row unloaded: a caller still holding it (an optional service,
+	// leased at start) is told it is gone.
+	if gone {
+		return nil, unavailable(entry.name)
 	}
 	object := reflect.ValueOf(entry.object)
 	callee := convert.Callee{Service: entry.name, Method: method}
@@ -714,9 +748,6 @@ func (rt *runtimeState) control(ctx context.Context, method string, args []any) 
 		if len(args) > 2 {
 			config = args[2]
 		}
-		// args[4], the row's own `inject`, names services a Cordis row waits
-		// for in Cordis; a leaf runtime's rows wait in rutis, which gates
-		// every name its plugin injects (as in the Python runtime).
 		pairs, err := argument[[][2]string](args, 3)
 		if err != nil {
 			return nil, fmt.Errorf("isolate: %w", err)
@@ -729,6 +760,15 @@ func (rt *runtimeState) control(ctx context.Context, method string, args []any) 
 		if err != nil {
 			return nil, fmt.Errorf("exports: %w", err)
 		}
+		// args[4], the row's own `inject`: services its plugin may use too,
+		// as in the Python runtime. A Cordis row waits for them in Cordis;
+		// rutis gates a leaf row on its plugin's own list.
+		var inject []string
+		if len(args) > 4 && args[4] != nil {
+			if inject, err = argument[[]string](args, 4); err != nil {
+				return nil, fmt.Errorf("inject: %w", err)
+			}
+		}
 		// The seventh, from rutis 0.13: the row's scope chain and its id.
 		placed, err := argument[struct {
 			Scope []Scope
@@ -737,7 +777,7 @@ func (rt *runtimeState) control(ctx context.Context, method string, args []any) 
 		if err != nil {
 			return nil, fmt.Errorf("scope: %w", err)
 		}
-		return nil, rt.loadNamed(ctx, key, placed.ID, entry, config, exports, isolate, placed.Scope)
+		return nil, rt.loadNamed(ctx, key, placed.ID, entry, config, exports, isolate, inject, placed.Scope)
 	case "rows.update":
 		key, err := argument[string](args, 0)
 		if err != nil {
@@ -847,9 +887,13 @@ func (rt *runtimeState) control(ctx context.Context, method string, args []any) 
 		}
 		rt.mu.Lock()
 		entry := rt.handles[handle]
+		gone := entry != nil && entry.gone
 		rt.mu.Unlock()
 		if entry == nil {
 			return nil, fmt.Errorf("unknown or released service object %s", printable(handle))
+		}
+		if gone {
+			return nil, unavailable(entry.name)
 		}
 		return convert.Property(reflect.ValueOf(entry.object), property)
 	}
@@ -873,8 +917,11 @@ type Ctx struct {
 	row *row
 }
 
-// Use binds the service `name`, which Inject must list, to `target`: a
-// pointer to a struct of function fields, or to a *Service.
+// Use binds the service `name`, which the plugin or its row injects (in
+// Inject, in its row's `inject`, or by providing it now), to `target`: a
+// pointer to a struct of function fields, or to a *Service. A required
+// service that went is an error; an Optional one is read with Get (as
+// Rust's `require` reads only the injects).
 //
 // A field calls the service method its name maps to (Ask -> ask; a
 // `rutis:"name"` tag overrides). The struct may list only the methods it
@@ -882,24 +929,77 @@ type Ctx struct {
 // is a func with an optional leading context.Context and an error as its
 // last result, after at most one value.
 func (c *Ctx) Use(name string, target any) error {
-	if !contains(c.row.def.inject, name) {
+	if !c.uses(name) {
 		return peer.NewCoded("BindingError", "not-declared", map[string]any{"service": name}, "service %s is not available to this plugin, which does not declare it in Inject: add %q to its Inject", name, name)
 	}
+	service := c.service(name)
+	if service == nil {
+		return unavailable(name)
+	}
+	return service.bind(target)
+}
+
+// Get binds the optional service `name`, in Optional or declared as for
+// Use, to `target` as Use does, and reports whether it is there: false,
+// with `target` untouched, when it is not. A host service is leased in if
+// rutis had it when the plugin started: one that comes later is sure to be
+// seen only once the plugin restarts (until then, one this process already
+// has is read too), and one whose provider went says it is not available
+// when called.
+func (c *Ctx) Get(name string, target any) (bool, error) {
+	// Not declared, it is never leased in: say what to declare rather
+	// than report it absent forever.
+	if !c.declares(name) {
+		return false, peer.NewCoded("BindingError", "not-declared", map[string]any{"service": name}, "service %s is not available to this plugin, which does not declare it: add %q to its Optional (or to its Inject, if it cannot run without it)", name, name)
+	}
+	service := c.service(name)
+	if service == nil {
+		return false, nil
+	}
+	return true, service.bind(target)
+}
+
+// uses says whether the plugin may Use `name`: it or its row injects it
+// (Inject, its row's `inject`), or it provides it now (a plugin reads what
+// it provides). Not Optional, as Rust's `require`.
+func (c *Ctx) uses(name string) bool {
+	if contains(c.row.def.inject, name) || contains(c.row.inject, name) {
+		return true
+	}
+	// What the row provides changes as it provides, withdraws and unloads,
+	// under the runtime's lock.
+	id := c.row.id(name)
+	c.rt.mu.Lock()
+	defer c.rt.mu.Unlock()
+	return contains(c.row.provided, id)
+}
+
+// declares says whether the plugin may Get `name`: what it may Use, and
+// Optional.
+func (c *Ctx) declares(name string) bool {
+	return contains(c.row.def.optional, name) || c.uses(name)
+}
+
+// service is the service `name` as the row sees it now: one a row in this
+// process provides, else one the host leased in; nil when neither.
+func (c *Ctx) service(name string) *Service {
 	id := c.row.id(name)
 	c.rt.mu.Lock()
 	local, isLocal := c.rt.services[id]
 	methods, isHost := c.rt.hosts[id]
 	c.rt.mu.Unlock()
-	var service *Service
 	switch {
 	case isLocal:
-		service = localService(name, local)
+		return localService(name, local)
 	case isHost:
-		service = c.rt.hostService(name, id, methods)
-	default:
-		return peer.NewCoded("BindingError", "unavailable", map[string]any{"service": name}, "service %s is not available", name)
+		return c.rt.hostService(name, id, methods)
 	}
-	return service.bind(target)
+	return nil
+}
+
+// unavailable is the error for a declared service that is not there (now).
+func unavailable(name string) error {
+	return peer.NewCoded("BindingError", "unavailable", map[string]any{"service": name}, "service %s is not available", name)
 }
 
 // Provide provides `value` as the service `name` until the plugin unloads,

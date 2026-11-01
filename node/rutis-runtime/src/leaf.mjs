@@ -2,14 +2,14 @@
 // TypeScript plugin that needs no Cordis. The runtime loads it into its
 // Cordis Context like any plugin, so it shares services — and the logical
 // event bus (./cordis-events.mjs) — with Cordis plugins in the same
-// process; the plugin itself only sees `ctx.use`, `ctx.provide`,
+// process; the plugin itself only sees `ctx.use`, `ctx.get`, `ctx.provide`,
 // `ctx.effect`, `ctx.signal`, `ctx.on` and the five ways to emit (`emit`,
 // `parallel`, `serial`, `waterfall`, `bail`), with `ctx.filter`.
 // The runtime does not import the SDK: it recognises its plugins by the
 // symbol the SDK marks them with.
 import { KEEP, LEAF_FIBERS, LEAF_NAME } from './cordis-events.mjs'
 import { refuseReserved } from './events.mjs'
-import { UNDECLARED, notDeclared, unavailable } from './errors.mjs'
+import { UNDECLARED, notDeclared, notDeclaredOptional, unavailable } from './errors.mjs'
 
 // The plugin API this runtime runs: a plugin written against a newer one
 // is refused, naming both. 3: the unified events of rutis 0.13 (#464).
@@ -53,8 +53,9 @@ function emittable(name) {
 }
 
 // What a leaf plugin using a service that neither its `inject` nor its
-// row's declares is told when the service is not there for it: not that
-// it is missing, but what to declare (#676). The same in every runtime
+// row's declares, and that it does not provide itself, is told whether or
+// not the service is there: not that it is missing, but what to declare
+// (#676). The same in every runtime
 // and testing tool (./errors.mjs).
 export { UNDECLARED }
 
@@ -62,35 +63,69 @@ export { UNDECLARED }
 // told: `forecast is already provided by a` (§8.1 row 13).
 export const ALREADY_PROVIDED = (name, provider) => `${name} is already provided by ${provider}`
 
+// Marks the test driver (./testing/rutis-test.mjs): it is the test, not a
+// plugin under the rules, and uses whatever service the test names,
+// declared or not, as Python's test tool reads the runtime's services.
+// Not Symbol.for: no plugin outside this package can set it.
+export const USES_ANY = Symbol('rutis.uses-any')
+
 // The Cordis plugin that runs a leaf plugin. Events are the Context's:
 // `context.on` owns listener cleanup through the plugin's fiber.
 // `rowInject`: the names its row's own `inject` adds.
 // `providerOf(context, name)`: who already provides `name` there (a row's
 // name, or `the host`), to say so when the plugin provides it too.
 export function toCordis(spec, rowInject = [], providerOf) {
+  // What the plugin may `use`: its `inject` and its row's `inject` (as
+  // Rust's `require` reads only the injects); the test driver, anything.
+  // It may `get` its `optional` too.
+  const usesAny = spec[USES_ANY] === true
+  const uses = name => usesAny || (spec.inject ?? []).includes(name) || rowInject.includes(name)
   return {
     name: spec.name ?? 'leaf',
     inject: spec.inject,
     async apply(context, config) {
       LEAF_FIBERS.add(context.fiber)
+      // What it provides itself is declared too, while it provides it: a
+      // plugin reads what it provides (as in every other runtime). Kept
+      // here, each entry until the function its provide returned is called:
+      // Cordis's get does not see what a loading fiber provides, and its
+      // fiber store drops a withdrawn name only some microtasks later, after
+      // the plugin may have provided it again. (`context[name]` is no way
+      // either: Cordis answers names such as `fiber`, `then` or `_u` itself.)
+      const provided = new Map()
+      const mayUse = name => uses(name) || provided.has(name)
+      const mayGet = name => mayUse(name) || (spec.optional ?? []).includes(name)
+      const read = name => provided.has(name) ? provided.get(name).value : context.get(name)
       const ctx = {
         use(name) {
-          const value = context.get(name)
-          if (value === undefined) {
-            // One neither the plugin nor its row declares: say what to
-            // declare, not that it is missing (#676).
-            if (!(spec.inject ?? []).includes(name) && !rowInject.includes(name)) throw notDeclared(name)
-            throw unavailable(name)
-          }
+          // One neither the plugin nor its row injects (an optional one is
+          // read with `get`): say what to declare, not that it is missing
+          // (#676), whether or not another row here happens to provide it.
+          if (!mayUse(name)) throw notDeclared(name)
+          const value = read(name)
+          if (value === undefined) throw unavailable(name)
           return value
         },
+        // An optional service: the service when there, else undefined.
+        get(name) {
+          if (!mayGet(name)) throw notDeclaredOptional(name)
+          return read(name)
+        },
         provide: (name, value) => {
+          let withdraw
           try {
-            return context.provide(name, value)
+            withdraw = context.provide(name, value)
           } catch (error) {
             // Cordis's words name its internal fibers (`<root>`): say who.
             if (providerOf && /^service ".*" has been registered at <.*>$/.test(error?.message)) throw new Error(ALREADY_PROVIDED(name, providerOf(context, name)))
             throw error
+          }
+          const entry = { value }
+          provided.set(name, entry)
+          return () => {
+            // Only this provide's entry: the name may be provided again.
+            if (provided.get(name) === entry) provided.delete(name)
+            return withdraw()
           }
         },
         effect: cleanup => { context.effect(() => cleanup) },

@@ -29,7 +29,7 @@ class Ctx internal constructor(private val rt: RuntimeState, internal val row: R
     /** This row's scope chain, outermost first; empty at the root. */
     val scope: List<Scope> get() = row.scope.toList()
 
-    /** The service `name` (which `inject` lists) through the `@RutisClient` interface `I`. */
+    /** The service `name` (which it or its row injects, or it provides now; an `optional` one is read with [get]) through the `@RutisClient` interface `I`. */
     inline fun <reified I : Any> use(name: String): I = use(name, I::class.java)
 
     /**
@@ -40,7 +40,40 @@ class Ctx internal constructor(private val rt: RuntimeState, internal val row: R
      * service has.
      */
     fun <I : Any> use(name: String, type: Class<I>): I {
-        if (name !in row.plugin.inject) throw NotDeclaredException(name)
+        if (!uses(name)) throw NotDeclaredException(name)
+        return client(name, type, "use") ?: throw UnavailableException(name)
+    }
+
+    /** The optional service `name` (in `optional`, or declared as for [use]) through the `@RutisClient` interface `I`, or null. */
+    inline fun <reified I : Any> get(name: String): I? = get(name, I::class.java)
+
+    /**
+     * The optional service `name` through the `@RutisClient` interface
+     * `type`, as [use] gives it, or null when there is none. Never waited
+     * for: a host service is leased in if rutis had it when the row started;
+     * one that comes later is sure to be seen only once the row restarts
+     * (until then, one this process already has is read too).
+     */
+    fun <I : Any> get(name: String, type: Class<I>): I? {
+        if (!declares(name)) throw NotDeclaredException.optional(name)
+        return client(name, type, "get")
+    }
+
+    /**
+     * What the plugin may [use]: what it or its row injects, and what it provides now (which changes as it
+     * provides, withdraws and unloads, under the runtime's lock). Not `optional`, as Rust's `require`.
+     */
+    private fun uses(name: String): Boolean {
+        if (name in row.plugin.inject || name in row.inject) return true
+        val id = row.id(name)
+        return synchronized(rt.lock) { id in row.provided }
+    }
+
+    /** What the plugin may [get]: what it may [use], and its `optional`. */
+    private fun declares(name: String): Boolean = name in row.plugin.optional || uses(name)
+
+    /** The service `name` through `type`, or null when nothing provides it now; `verb` names the caller in errors. */
+    private fun <I : Any> client(name: String, type: Class<I>, verb: String): I? {
         val id = row.id(name)
         val (local, host) = synchronized(rt.lock) { rt.services[id] to rt.hosts[id] }
         // One this process provides is the object itself, whether or not it
@@ -53,10 +86,10 @@ class Ctx internal constructor(private val rt: RuntimeState, internal val row: R
             local != null -> LocalHandle(name, local.value, local.table, local.shape?.kinds ?: local.table.methods.associateWith { "async" })
             remote != null -> FarHandle(rt, name, remote.methods!!, remote.functions)
             host != null -> HostHandle(rt, name, "host:$id", host)
-            else -> throw UnavailableException(name)
+            else -> return null
         }
         val missing = factory.methods.filter { it !in handle.kinds }
-        if (missing.isNotEmpty()) throw IllegalArgumentException("use $name: ${type.simpleName} calls ${missing.joinToString()}, which the service does not have")
+        if (missing.isNotEmpty()) throw IllegalArgumentException("$verb $name: ${type.simpleName} calls ${missing.joinToString()}, which the service does not have")
         return factory.create(handle)
     }
 

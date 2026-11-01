@@ -3,6 +3,7 @@ class BindingError(rutis.peer._Named)(message: str, graph: Any = None)
     NAME = 'BindingError'
 class Context(object)()
     def use(self, name: str) -> Any
+    def get(self, name: str) -> Any | None
     def provide(self, name: str, value: Any) -> Callable[[], None]
     def effect(self, cleanup: Callable) -> None
     def on(self, name: str, listener: Callable, *, prepend: bool = False, global_: bool = False) -> Callable[[], None]
@@ -12,7 +13,7 @@ class Context(object)()
     def waterfall(self, name: str, *args: Any, terminal: Callable | None = None) -> Awaitable[Any]
     def bail(self, name: str, *args: Any) -> Any
     def filter(self, predicate: Callable[[dict], Any]) -> Any
-class Plugin(object)(apply: Callable, inject: list = <factory>, provides: dict = <factory>, config: dict | None = None, api: int = 3, announces: bool = True, name: str | None = None) -> None
+class Plugin(object)(apply: Callable, inject: list = <factory>, provides: dict = <factory>, config: dict | None = None, api: int = 3, announces: bool = True, name: str | None = None, optional: list = <factory>) -> None
     apply: Callable
     inject: list
     provides: dict
@@ -20,8 +21,9 @@ class Plugin(object)(apply: Callable, inject: list = <factory>, provides: dict =
     api: int
     announces: bool
     name: str | None
+    optional: list
 class RemoteError(Exception)(name: str, message: str, graph: Any = None)
-def define_plugin(apply: Callable, *, inject: list | tuple = (), provides: dict | None = None, config: dict | None = None, name: str | None = None) -> Plugin
+def define_plugin(apply: Callable, *, inject: list | tuple = (), provides: dict | None = None, config: dict | None = None, name: str | None = None, optional: list | tuple = ()) -> Plugin
 
 ## rutis.advanced
 class AggregateError(Exception)(errors, message: str = '')

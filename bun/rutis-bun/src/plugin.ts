@@ -2,8 +2,8 @@
 //
 // A plugin module either exports the plugin `definePlugin` (from
 // `@arcships/rutis`) made as its default export, or declares one with its own
-// exports: `apply(ctx, config)`, and optionally `inject`, `provides` and
-// `config` (a JSON Schema). `provides` is optional and gives each method's
+// exports: `apply(ctx, config)`, and optionally `inject`, `optional`,
+// `provides` and `config` (a JSON Schema). `provides` is optional and gives each method's
 // kind: `{ weather: { today: 'sync', later: 'async' } }`; what a plugin
 // provides without declaring it reaches rutis all the same (`announces`).
 import { realpathSync, readFileSync, statSync } from 'node:fs'
@@ -28,13 +28,23 @@ export interface Plugin {
   name: string | null
   apply(ctx: unknown, config: unknown): unknown
   inject: string[]
+  // Used when there at start (`ctx.get`), never waited for.
+  optional: string[]
   provides: Record<string, Record<string, Kind>>
   // What it provides beyond `provides` reaches rutis by itself, known once
   // it runs: every plugin of a 0.12 SDK, and every module.
   announces: boolean
   config: unknown
   api: number
+  // The test driver (./testing/rutis-test.ts): it uses any service.
+  usesAny: boolean
 }
+
+// Marks the test driver: it is the test, not a plugin under the rules, and
+// uses whatever service the test names, declared or not, as Python's test
+// tool reads the runtime's services. Not Symbol.for: no plugin outside
+// this package can set it.
+export const USES_ANY = Symbol('rutis.uses-any')
 
 function notFound(entry: string): Error {
   return Object.assign(new Error(`no plugin ${entry} here`), { name: 'NotFound' })
@@ -77,6 +87,8 @@ function check(plugin: any, entry: string): Plugin {
   if (typeof plugin?.apply !== 'function') throw new TypeError(`${entry} is not a plugin: it has no apply(ctx, config)`)
   const inject = plugin.inject ?? []
   if (!Array.isArray(inject) || inject.some((name: unknown) => typeof name !== 'string')) throw new TypeError(`${entry}: inject must be a list of service names`)
+  const optional = plugin.optional ?? []
+  if (!Array.isArray(optional) || optional.some((name: unknown) => typeof name !== 'string')) throw new TypeError(`${entry}: optional must be a list of service names`)
   const provides = plugin.provides ?? {}
   for (const [name, methods] of Object.entries(provides)) {
     for (const [method, kind] of Object.entries(methods ?? {})) {
@@ -90,7 +102,7 @@ function check(plugin: any, entry: string): Plugin {
   // An SDK's plugin says (0.12 on); a module's own exports may always
   // provide more than they declare.
   const announces = typeof plugin.announces === 'boolean' ? plugin.announces : true
-  return { name: typeof plugin.name === 'string' ? plugin.name : null, apply: plugin.apply, inject: [...inject], provides, announces, config: plugin.config ?? null, api }
+  return { name: typeof plugin.name === 'string' ? plugin.name : null, apply: plugin.apply, inject: [...inject], optional: [...optional], provides, announces, config: plugin.config ?? null, api, usesAny: plugin[USES_ANY] === true }
 }
 
 // A plugin definition this runtime handed over, back to be described or

@@ -135,6 +135,101 @@ async fn check_passes_what_can_run() {
     assert_eq!(checked.status, 0);
 }
 
+/// A plugin's optional services print on a line of their own, after
+/// `inject` (a plugin without them prints none, as above); one nothing
+/// provides does not fail the check.
+/// guarantee: loader/optional-deps
+#[tokio::test(flavor = "multi_thread")]
+async fn check_prints_optional_services() {
+    let dir = tempfile::tempdir().unwrap();
+    write(
+        dir.path(),
+        &[
+            ("package.json", r#"{ "name": "app", "type": "module" }"#),
+            (
+                "plugins/summary.mjs",
+                &format!(
+                    "import {{ definePlugin }} from '{}'\n\
+                     export default definePlugin({{ optional: ['llm'], apply() {{}} }})\n",
+                    sdk()
+                ),
+            ),
+            (
+                "rutis.json",
+                &configuration(serde_json::json!([
+                    { "id": "summary", "name": "./plugins/summary.mjs" }
+                ])),
+            ),
+        ],
+    );
+    let python = repo().join("python/rutis");
+    let checked = check(
+        dir.path(),
+        &["rutis.json"],
+        &[("RUTIS_PYTHON_PATH", &python)],
+    )
+    .await;
+    assert_eq!(checked.stderr, "");
+    assert_eq!(
+        checked.stdout,
+        "summary (file://<dir>/plugins/summary.mjs): ok\n  \
+         inject: []\n  \
+         optional: [\"llm\"]\n  \
+         provides: {}\n"
+    );
+    assert_eq!(checked.status, 0);
+}
+
+/// A Cordis plugin declares its optional services as an export beside
+/// `inject`: they print as a leaf plugin's do, and one that is not a list
+/// of names cannot load.
+/// guarantee: loader/optional-deps
+#[tokio::test(flavor = "multi_thread")]
+async fn check_reads_a_cordis_plugins_optional_services() {
+    let dir = tempfile::tempdir().unwrap();
+    write(
+        dir.path(),
+        &[
+            ("package.json", r#"{ "name": "app", "type": "module" }"#),
+            (
+                "summary.mjs",
+                "export const name = 'summary'\nexport const optional = ['llm']\nexport function apply() {}\n",
+            ),
+            (
+                "wrong.mjs",
+                "export const name = 'wrong'\nexport const optional = ['llm', 1]\nexport function apply() {}\n",
+            ),
+            (
+                "rutis.json",
+                &configuration(serde_json::json!([
+                    { "id": "summary", "name": "./summary.mjs" },
+                    { "id": "wrong", "name": "./wrong.mjs" }
+                ])),
+            ),
+        ],
+    );
+    let python = repo().join("python/rutis");
+    let checked = check(
+        dir.path(),
+        &["rutis.json"],
+        &[("RUTIS_PYTHON_PATH", &python)],
+    )
+    .await;
+    assert_eq!(
+        checked.stdout,
+        "summary (file://<dir>/summary.mjs): ok\n  \
+         inject: []\n  \
+         optional: [\"llm\"]\n  \
+         provides: {}\n\
+         wrong (file://<dir>/wrong.mjs): cannot load \"file://<dir>/wrong.mjs\": TypeError: optional must be a list of service names\n"
+    );
+    assert_eq!(
+        checked.stderr,
+        "rutis-host: 1 row(s) or binaries cannot run\n"
+    );
+    assert_eq!(checked.status, 1);
+}
+
 /// What cannot run fails, each row saying why; what can still passes.
 /// risk: A6, A7
 /// guarantee: host/exit-codes, host/check

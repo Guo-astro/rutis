@@ -132,9 +132,9 @@ async def apply(ctx, config):
         probe.record(f"py calendar: {entry['title']} / {error.code} {error.data['Missing']['day']}")
 "#;
 
-/// Uses `calendar` without declaring it: found only through the
-/// registration rows share once another row leases it, whose calls carry
-/// no row; and `notes`, which nothing gives it.
+/// Uses `notes`, which it does not declare: refused before the lookup.
+/// (An SDK plugin never reaches a service through the registration rows
+/// share without declaring it; the Cordis-row test below does.)
 const JS_SNEAK: &str = r#"
 import { definePlugin } from 'PLUGIN'
 export default definePlugin({
@@ -142,16 +142,26 @@ export default definePlugin({
   async apply(ctx) {
     const probe = ctx.use('probe')
     try { ctx.use('notes') } catch (error) { probe.record(`sneak notes: ${error.message}`) }
-    let calendar
-    for (let tries = 0; calendar === undefined; tries++) {
-      try { calendar = ctx.use('calendar') } catch (error) {
-        if (tries > 400) throw error
-        await new Promise(resolve => setTimeout(resolve, 25))
-      }
-    }
-    try { await calendar.caller() } catch (error) { probe.record(`sneak caller: ${error.message}`) }
   },
 })
+"#;
+
+/// A Cordis-style row: no SDK, so no declaration check. It reads `calendar`
+/// with `ctx.get` from the registration rows share, once `jc` leases it, and
+/// calls a method that needs the calling row: the call carries no row.
+const JS_PEEK: &str = r#"
+export const name = 'peek'
+export async function apply(ctx) {
+  let calendar, probe
+  for (let tries = 0; !(calendar && probe); tries++) {
+    calendar = ctx.get('calendar', false)
+    probe = ctx.get('probe', false)
+    if (calendar && probe) break
+    if (tries > 400) throw new Error('calendar or probe never appeared')
+    await new Promise(resolve => setTimeout(resolve, 25))
+  }
+  try { await calendar.caller() } catch (error) { probe.record(`peek caller: ${error.code}: ${error.message}`) }
+}
 "#;
 
 const JS_HIDDEN: &str = r#"
@@ -230,6 +240,7 @@ async fn fixture() -> Fixture {
         ("js_notes", JS_NOTES),
         ("js_hidden", JS_HIDDEN),
         ("js_sneak", JS_SNEAK),
+        ("js_peek", JS_PEEK),
     ] {
         std::fs::write(
             js.join(format!("{file}.mjs")),
@@ -388,9 +399,7 @@ async fn a_marked_service_provided_in_an_instance_is_that_instances() {
 }
 
 /// A plugin using a service it does not declare in `inject` is told to
-/// declare it: `use` of one nothing gives it, and a method taking `&Ctx`
-/// of one it found through the registration rows share, whose calls carry
-/// no row (#676).
+/// declare it (#676).
 /// guarantee: sdk/undeclared-use
 #[tokio::test(flavor = "multi_thread")]
 async fn a_plugin_using_a_service_it_does_not_inject_is_told_to_declare_it() {
@@ -398,34 +407,33 @@ async fn a_plugin_using_a_service_it_does_not_inject_is_told_to_declare_it() {
         return;
     }
     let fixture = fixture().await;
-    let rows = vec![
-        fixture.js("jc", "js_calendar"),
-        fixture.js("sneak", "js_sneak"),
-    ];
+    let rows = vec![fixture.js("sneak", "js_sneak")];
     fixture.loader.reconcile(layer(rows), None).await.unwrap();
     fixture
         .expect("sneak notes: service notes is not available to this plugin, which does not declare it in inject: add 'notes' to its inject")
         .await;
-    let said = Guard(HANG_GUARD * 3)
-        .eventually_with(
-            || {
-                fixture
-                    .probe
-                    .lines()
-                    .into_iter()
-                    .find(|line| line.starts_with("sneak caller: "))
-            },
-            "the undeclared call to fail",
-            || format!("{:?}", fixture.probe.lines()),
-        )
+    fixture.root.shutdown().await.unwrap();
+}
+
+/// A Cordis-style row reading `calendar` through the registration rows share
+/// (another row leased it for itself) and calling a method that needs the
+/// calling row: the call names no row, and the error says to declare the
+/// service in `inject`, with the code `not-declared` (#676).
+/// guarantee: sdk/undeclared-use
+#[tokio::test(flavor = "multi_thread")]
+async fn a_cordis_row_calling_through_the_shared_registration_is_told_to_declare_it() {
+    if !rutis_test_support::runtimes::all_enabled(&["node", "python", "go"]) {
+        return;
+    }
+    let fixture = fixture().await;
+    let rows = vec![
+        fixture.js("jc", "js_calendar"),
+        fixture.js("peek", "js_peek"),
+    ];
+    fixture.loader.reconcile(layer(rows), None).await.unwrap();
+    fixture
+        .expect("peek caller: not-declared: caller needs the calling row's context, which a call carries only when the calling plugin declares calendar in its inject: add 'calendar' to its inject")
         .await;
-    assert!(
-        said.ends_with(
-            "caller needs the calling row's context, which a call carries only when the \
-             calling plugin declares calendar in its inject: add 'calendar' to its inject"
-        ),
-        "{said}"
-    );
     fixture.root.shutdown().await.unwrap();
 }
 

@@ -1,5 +1,5 @@
 // Write a rutis plugin in JavaScript or TypeScript. A plugin declares the
-// services it uses (`inject`), and `apply(ctx, config)` uses and provides
+// services it uses (`inject`, and `optional` for those it can do without), and `apply(ctx, config)` uses and provides
 // them through `ctx`; rutis decides when it starts, stops and restarts. The
 // runtime that runs it is installed by the host (`@arcships/rutis-runtime`
 // in Node, `@arcships/rutis-bun` in Bun), not by the plugin.
@@ -60,6 +60,9 @@ export function definePlugin(spec) {
   checkSchema(spec.config)
   const inject = spec.inject ?? []
   if (!Array.isArray(inject) || inject.some(name => typeof name !== 'string')) throw new TypeError('inject must be a list of service names')
+  // `optional`: used when there at start (`ctx.get`), never waited for.
+  const optional = spec.optional ?? []
+  if (!Array.isArray(optional) || optional.some(name => typeof name !== 'string')) throw new TypeError('optional must be a list of service names')
   for (const [name, methods] of Object.entries(spec.provides ?? {})) {
     for (const [method, kind] of Object.entries(methods ?? {})) {
       if (kind !== 'sync' && kind !== 'async') throw new TypeError(`${name}.${method}: kind must be 'sync' or 'async'`)
@@ -67,5 +70,5 @@ export function definePlugin(spec) {
   }
   // `announces`: what it provides beyond `provides` (all of it, without
   // one) reaches rutis by itself, and is known once it runs.
-  return Object.freeze({ ...spec, inject, provides: spec.provides ?? {}, announces: true, api: PLUGIN_API, [PLUGIN]: true, [FILE]: definedIn() })
+  return Object.freeze({ ...spec, inject, optional, provides: spec.provides ?? {}, announces: true, api: PLUGIN_API, [PLUGIN]: true, [FILE]: definedIn() })
 }

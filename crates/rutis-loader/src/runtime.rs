@@ -145,14 +145,40 @@ impl PluginFactory<Value> for UnavailableFactory {
     }
 }
 
+/// Split a plugin's `inject` and `optional` declarations into the required
+/// (`gated`) and optional names that rutis leases for the row (all of them in
+/// a leaf runtime; in Cordis only the names the catalog shares), checking
+/// first that no name is in both lists.
+pub(crate) fn split_dependencies(
+    described: &rutis_bridge::runtime::RowSchema,
+    leaf: bool,
+    catalog: &ServiceCatalog,
+) -> Result<(Vec<String>, Vec<String>), String> {
+    if let Some(both) = described
+        .inject
+        .iter()
+        .find(|name| described.optional.contains(name))
+    {
+        return Err(format!(
+            "{both} is in both inject and optional; keep it in one"
+        ));
+    }
+    let keep = |name: &&String| leaf || catalog.is_shared(name);
+    let gated = described.inject.iter().filter(keep).cloned().collect();
+    let optional = described.optional.iter().filter(keep).cloned().collect();
+    Ok((gated, optional))
+}
+
 /// The resolution of a row `name` whose plugin `entry` runs on `runtime`
 /// and declares `described`; `gated` are the injected names rutis gates it
-/// on.
+/// on, `optional` the optional ones it leases when there.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn leaf_resolved_on(
     name: &str,
     runtime: RowRuntime,
     entry: PathBuf,
     gated: Vec<String>,
+    optional: Vec<String>,
     described: &rutis_bridge::runtime::RowSchema,
     catalog: &ServiceCatalog,
     meta: Value,
@@ -167,17 +193,23 @@ pub(crate) fn leaf_resolved_on(
         runtime: runtime.clone(),
         entry: entry.clone(),
         gated: gated.clone(),
+        optional: optional.clone(),
+        declared_optional: described.optional.clone(),
         provides: described.provides.clone(),
         catalog: catalog.clone(),
     };
     Resolved {
-        factory: Arc::new(JsFactory::on(
-            name,
-            runtime,
-            entry,
-            gated,
-            described.provides.clone(),
-        )),
+        factory: Arc::new(
+            JsFactory::on(
+                name,
+                runtime,
+                entry,
+                gated,
+                optional,
+                described.provides.clone(),
+            )
+            .declaring_optional(described.optional.clone()),
+        ),
         schema: described.config.clone(),
         meta,
         foreign_scope: true,
@@ -195,6 +227,10 @@ pub(crate) struct JsModule {
     pub(crate) entry: PathBuf,
     /// The injected services that gate the row in rutis.
     pub(crate) gated: Vec<String>,
+    /// The optional services the row leases when there at start.
+    pub(crate) optional: Vec<String>,
+    /// Every optional name declared, before the catalog filter.
+    pub(crate) declared_optional: Vec<String>,
     pub(crate) provides: Map<String, Value>,
     pub(crate) catalog: ServiceCatalog,
 }
@@ -243,11 +279,13 @@ impl JsModule {
             self.runtime.clone(),
             RowEntry::Module(self.entry.clone()),
             keyed(&mut self.gated.iter())?,
+            keyed(&mut self.optional.iter())?,
             self.provides.clone(),
             keyed(&mut self.provides.keys())?,
             scopes,
         )
-        .announcing(announced))
+        .announcing(announced)
+        .declaring_optional(self.declared_optional.clone()))
     }
 }
 
@@ -282,6 +320,12 @@ struct JsFactory {
     id: Option<String>,
     /// The injected services that gate the row in rutis, with their keys.
     gated: Vec<(String, Key<dyn HostDispatch>)>,
+    /// The optional services the row leases when there at start, with their
+    /// keys.
+    optional: Vec<(String, Key<dyn HostDispatch>)>,
+    /// Every name its plugin declares optional, before the catalog filter:
+    /// what a row `inject` is checked against.
+    declared_optional: Vec<String>,
     provides: Map<String, Value>,
     /// The key each provided service is published under.
     provided: Vec<(String, Key<dyn HostDispatch>)>,
@@ -349,6 +393,7 @@ impl JsFactory {
         runtime: RowRuntime,
         entry: PathBuf,
         gated: Vec<String>,
+        optional: Vec<String>,
         provides: Map<String, Value>,
     ) -> Self {
         let entry = RowEntry::Module(entry);
@@ -359,18 +404,36 @@ impl JsFactory {
                 (name, key)
             })
             .collect();
+        let optional = optional
+            .into_iter()
+            .map(|name| {
+                let key = host_key(&name);
+                (name, key)
+            })
+            .collect();
         let provided = provides
             .keys()
             .map(|name| (name.clone(), host_key(name)))
             .collect();
-        Self::with_keys(name, runtime, entry, gated, provides, provided, Vec::new())
+        Self::with_keys(
+            name,
+            runtime,
+            entry,
+            gated,
+            optional,
+            provides,
+            provided,
+            Vec::new(),
+        )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn with_keys(
         name: &str,
         runtime: RowRuntime,
         entry: RowEntry,
         gated: Vec<(String, Key<dyn HostDispatch>)>,
+        optional: Vec<(String, Key<dyn HostDispatch>)>,
         provides: Map<String, Value>,
         provided: Vec<(String, Key<dyn HostDispatch>)>,
         scopes: Vec<(String, String)>,
@@ -389,6 +452,8 @@ impl JsFactory {
             entry,
             id: None,
             gated,
+            optional,
+            declared_optional: Vec::new(),
             provides,
             provided,
             scopes,
@@ -401,6 +466,12 @@ impl JsFactory {
     /// Publish the services a row announces under `key(name)`.
     pub(crate) fn announcing(mut self, key: KeyOf) -> Self {
         self.announced = key;
+        self
+    }
+
+    /// Every name the plugin declares optional, filtered or not.
+    pub(crate) fn declaring_optional(mut self, names: Vec<String>) -> Self {
+        self.declared_optional = names;
         self
     }
 
@@ -420,6 +491,13 @@ impl PluginFactory<Value> for JsFactory {
         self.injects.to_vec()
     }
 
+    fn optional_injects(&self) -> Vec<TypeKey> {
+        self.declared_optional
+            .iter()
+            .map(|name| host_key(name).erase())
+            .collect()
+    }
+
     fn build(&self, config: &Value) -> Result<Box<dyn DynPlugin>, Error> {
         Ok(Box::new(JsRow {
             name: self.name.clone(),
@@ -428,6 +506,7 @@ impl PluginFactory<Value> for JsFactory {
             id: self.id.clone(),
             config: config.clone(),
             gated: self.gated.clone(),
+            optional: self.optional.clone(),
             provides: self.provides.clone(),
             provided: self.provided.clone(),
             scopes: self.scopes.clone(),
@@ -446,6 +525,7 @@ struct JsRow {
     id: Option<String>,
     config: Value,
     gated: Vec<(String, Key<dyn HostDispatch>)>,
+    optional: Vec<(String, Key<dyn HostDispatch>)>,
     provides: Map<String, Value>,
     provided: Vec<(String, Key<dyn HostDispatch>)>,
     scopes: Vec<(String, String)>,
@@ -641,6 +721,30 @@ impl JsRow {
             }
             leases.push(lease);
         }
+        // Optional services: leased in when visible at start, kept until the
+        // row unloads; not waited for, and one served by a row of this same
+        // process is already there natively.
+        for (name, key) in &self.optional {
+            let Some(dispatch) = ctx.get_at(key) else {
+                continue;
+            };
+            if dispatch
+                .origin()
+                .is_some_and(|origin| origin == process.connection().tag())
+            {
+                continue;
+            }
+            let label = label_of(&isolate, name);
+            let lease = process
+                .lease_host_for(name, label.as_deref(), &caller, dispatch, None)
+                .await
+                .map_err(failed)?;
+            if let Some(own) = lease.label().filter(|own| Some(*own) != label.as_deref()) {
+                isolate.retain(|(isolated, _)| isolated != name);
+                isolate.push((name.clone(), own.to_owned()));
+            }
+            leases.push(lease);
+        }
         // The row's services are published from this fiber, so they go when
         // it does: the declared ones, and those it announces. A name the row
         // isolates is published in its isolate (the loader runs the fiber
@@ -804,16 +908,20 @@ impl PluginMounter for DefinitionMounter {
         // As for a row of that runtime: a leaf runtime gates everything a
         // plugin injects in rutis; in Cordis only the shared names.
         let leaf = process.supports("leaf");
+        let (gated_names, optional_names) =
+            split_dependencies(schema, leaf, &catalog).map_err(failed)?;
         let key = |name: &str| -> Result<Key<dyn HostDispatch>, Error> {
             match catalog.is_shared(name) {
                 true => catalog.shared_key_in(name, &build).map_err(failed),
                 false => Ok(host_key(name)),
             }
         };
-        let gated = schema
-            .inject
+        let gated = gated_names
             .iter()
-            .filter(|name| leaf || catalog.is_shared(name))
+            .map(|name| Ok((name.clone(), key(name)?)))
+            .collect::<Result<Vec<_>, Error>>()?;
+        let optional = optional_names
+            .iter()
             .map(|name| Ok((name.clone(), key(name)?)))
             .collect::<Result<Vec<_>, Error>>()?;
         let provided = schema
@@ -839,11 +947,13 @@ impl PluginMounter for DefinitionMounter {
             RowRuntime::Connection(process.clone()),
             RowEntry::Definition(plugin.reference().clone()),
             gated,
+            optional,
             schema.provides.clone(),
             provided,
             scopes,
         )
         .announcing(announced)
+        .declaring_optional(schema.optional.clone())
         .named(id.or_else(|| Some(plugin.name().to_owned())))
         .build(&config)
     }

@@ -108,6 +108,7 @@ class RuntimeTests(background.TestCase):
                 "name": "part",
                 "config": {"type": "object"},
                 "inject": ["tools"],
+                "optional": [],
                 "provides": {"echo": {"say": "sync"}},
                 "announces": True,
                 "version": None,
