@@ -261,7 +261,10 @@ class RuntimeState(plugins: List<Plugin>, private val open: Boolean = false) {
     /** Reports the object now in an exported slot under a new handle; `lock` is held. */
     internal fun refresh(id: String) {
         val gone = shared[id]
-        if (gone != null && services[id]?.row != gone.row) {
+        // Gone for rutis once its row starts unloading, as for every other
+        // reader: the withdrawal goes now, not when its place on the stack
+        // comes.
+        if (gone != null && services[id]?.takeUnless { it.unloading }?.row != gone.row) {
             shared.remove(id)
             announcements++
             // Also while closing: rutis hears it before the plugin cleans up.
@@ -488,7 +491,8 @@ class RuntimeState(plugins: List<Plugin>, private val open: Boolean = false) {
     }
 
     /** Whether the service `name` is there for an application's own plugin; `lock` is held. */
-    private fun available(name: String): Boolean = services.containsKey(name) || far[name]?.methods != null || hosts.containsKey(name)
+    private fun available(name: String): Boolean =
+        services[name]?.takeUnless { it.unloading } != null || far[name]?.methods != null || hosts.containsKey(name)
 
     /**
      * Installs an application's own plugins once rutis greeted: offers

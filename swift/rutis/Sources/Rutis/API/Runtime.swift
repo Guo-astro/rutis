@@ -422,7 +422,10 @@ final class Runtime: @unchecked Sendable {
     /// Reports the object now in an exported slot under a new handle;
     /// `lock` is held, the report queued.
     func refresh(_ id: String) {
-        if let gone = shared[id], services[id]?.row != gone.row {
+        // Gone for rutis once its row starts unloading, as for every other
+        // reader: the withdrawal goes now, not when its place on the stack
+        // comes.
+        if let gone = shared[id], services[id].flatMap({ $0.unloading ? nil : $0.row }) != gone.row {
             shared[id] = nil
             announcements += 1
             // Also while closing: rutis hears it before the plugin cleans up.
@@ -654,7 +657,7 @@ final class Runtime: @unchecked Sendable {
 
     /// Whether the service `name` is there for an app's own plugin.
     private func available(_ name: String) -> Bool {
-        services[name] != nil || far[name]?.methods != nil || hosts[name] != nil
+        services[name].map { !$0.unloading } == true || far[name]?.methods != nil || hosts[name] != nil
     }
 
     /// Installs an app's own plugins once rutis greeted: offers `services`

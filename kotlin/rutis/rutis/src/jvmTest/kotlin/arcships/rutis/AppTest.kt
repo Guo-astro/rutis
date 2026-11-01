@@ -235,6 +235,42 @@ class AppTest {
     }
 
     /**
+     * An application's own plugin's service leaves rutis's view when its row
+     * starts unloading, not when its place on the unload stack comes: the
+     * withdrawal reaches the host before the row's cleanups run. A cleanup
+     * registered before the withdrawal still reads the object itself.
+     *
+     * guarantee: sdk/unload-order
+     */
+    @Test
+    fun aSharedServiceIsWithdrawnBeforeItsRowCleansUp() {
+        val server = server()
+        val app = RutisApp(
+            plugins = listOf(
+                Rutis.define<Rutis.NoConfig>(name = "giver") { ctx, _ ->
+                    ctx.provide("gift", AppGreeting("ribbon"))
+                    ctx.effect { order.add("its cleanup") }
+                },
+            ),
+            connect = server.address, id = "pad", token = "secret", peer = "test", log = {},
+        )
+        closing.add(AutoCloseable { app.stop() })
+        app.start()
+        val told = Collections.synchronizedList(ArrayList<Pair<String, Map<*, *>>>())
+        val host = host(server, "pad", told) { method, fields ->
+            if (method == "services.withdraw" && fields.text("name") == "gift") order.add("withdrawn")
+        }
+        until("the app's offer: $told") { told.of("link.offers").isNotEmpty() }
+        host.offer(1)
+        until("gift announced: $told") { told.of("services.announce").any { it.text("name") == "gift" } }
+        app.stop()
+        until("the withdrawal: $order") { "withdrawn" in order }
+        assertEquals(listOf("withdrawn", "its cleanup"), order.toList(), "the withdrawal comes after the cleanup")
+    }
+
+    private val order = Collections.synchronizedList(ArrayList<String>())
+
+    /**
      * Two applications provide `health`: rutis refuses the later one's
      * announcement (the host's kernel rule; here the host refuses as rutis
      * does), and that application says why. The first one's stays.
