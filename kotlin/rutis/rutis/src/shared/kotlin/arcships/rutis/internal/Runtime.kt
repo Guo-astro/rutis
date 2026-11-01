@@ -111,6 +111,19 @@ internal class HandleEntry(val id: String, val name: String, val obj: Any, val t
     var gone = false
 }
 
+/**
+ * An entry of the unload stack: a plugin's cleanup, or the withdrawal of a
+ * service the row provides ([withdrawal]).
+ *
+ * A withdrawal only takes the lock and tells rutis, so it never suspends,
+ * and the deadline does not apply to it: one skipped would leave the
+ * service registered, and the next load of the row would find the name
+ * taken (`dispose` gives up whole rows rather than leave one like that). So
+ * a row whose cleanups ran out of time still withdraws what it provided
+ * before its unload ends.
+ */
+internal class Step(val run: suspend () -> Unit, val withdrawal: Boolean = false)
+
 internal class Row(
     val key: String,
     /** The row's id in the configuration (rows.load's `id`; the key when not given). */
@@ -135,7 +148,7 @@ internal class Row(
      * provides, in the order they were registered, run in reverse when the
      * row unloads (as Rust's effects: a withdrawal is an effect too).
      */
-    val steps = ArrayList<suspend () -> Unit>()
+    val steps = ArrayList<Step>()
     val provided = ArrayList<String>()
     val announced = ArrayList<String>()
     val listening = Counter()
@@ -320,18 +333,37 @@ class RuntimeState(plugins: List<Plugin>, private val open: Boolean = false) {
             throw IllegalArgumentException("rutis: provide $name: ${value.javaClass.name} is not the ${type.name} provides declares")
         }
         val id = row.id(name)
-        var inactive = false
-        var entry: Provided? = null
+        // The registration and its place on the unload stack are taken under
+        // one lock, so an unload cannot come between them: either it starts
+        // after both (its stack has the withdrawal, which runs at its place)
+        // or it started before them (this row is no longer the loaded one, so
+        // nothing is registered at all). Under two locks, an unload in
+        // between takes a stack without this withdrawal: the registration
+        // stays for good, hidden from every reader but still holding the name
+        // against the next load of the row.
+        var registered: Provided? = null
+        // Whichever comes first, the returned function or the registration's
+        // own entry on the unload stack, withdraws it; the other finds it gone
+        // (or the name provided again, which it leaves alone).
+        val withdraw: () -> Unit = {
+            synchronized(lock) {
+                if (registered != null && services[id] === registered) {
+                    services.remove(id)
+                    row.provided.remove(id)
+                    refresh(id)
+                }
+            }
+        }
         synchronized(lock) {
             if (rows[row.key] !== row) {
                 // A task of an unloaded row providing: refused, or the
                 // service would outlive its row and the next load find it
                 // taken.
-                inactive = true
             } else {
                 services[id]?.let { throw IllegalStateException("$name is already provided by ${rows[it.row]?.name ?: it.row}") }
                 if (row.own && far[id]?.methods != null) throw IllegalStateException("$name is already provided by rutis")
-                entry = Provided(row.key, value, shape, table)
+                val entry = Provided(row.key, value, shape, table)
+                registered = entry
                 services[id] = entry
                 row.provided.add(id)
                 if (row.own) {
@@ -341,31 +373,17 @@ class RuntimeState(plugins: List<Plugin>, private val open: Boolean = false) {
                     slots[id] = Slot(row.key, name, null, announced = true)
                     row.announced.add(id)
                 }
+                // The withdrawal is an entry of the unload stack, as an effect is:
+                // a cleanup registered after this one runs before it and still
+                // reads the service; one registered before runs after it and
+                // does not. Never skipped by the deadline ([Step]).
+                row.steps.add(Step({ withdraw() }, withdrawal = true))
                 refresh(id)
             }
         }
-        if (inactive) {
+        if (registered == null) {
             Report.line("rutis: row ${row.name} is not active: service $name is not provided")
             return {}
-        }
-        val registered = entry!!
-        // Whichever comes first, the returned function or the registration's
-        // own entry on the unload stack, withdraws it; the other finds it gone
-        // (or the name provided again, which it leaves alone).
-        val withdraw: () -> Unit = {
-            synchronized(lock) {
-                if (services[id] === registered) {
-                    services.remove(id)
-                    row.provided.remove(id)
-                    refresh(id)
-                }
-            }
-        }
-        // The withdrawal is an entry of the unload stack, as an effect is: a
-        // cleanup registered after this one runs before it and still reads
-        // the service; one registered before runs after it and does not.
-        synchronized(lock) {
-            if (rows[row.key] === row) row.steps.add { withdraw() }
         }
         return withdraw
     }
@@ -723,27 +741,42 @@ class RuntimeState(plugins: List<Plugin>, private val open: Boolean = false) {
         if (joinBudget > 0) withTimeoutOrNull(joinBudget) { row.job.cancelAndJoin() }
         var failure: Throwable? = null
         val steps = synchronized(lock) { ArrayList(row.steps).also { row.steps.clear() } }
-        for (cleanup in steps.asReversed()) {
+        var gaveUpCleanups = false
+        fun noteGaveUp() {
+            if (!gaveUpCleanups) {
+                Report.line("rutis: gave up the cleanups of row ${row.name}")
+                gaveUpCleanups = true
+            }
+            gaveUp = true
+        }
+        for (step in steps.asReversed()) {
+            if (step.withdrawal) {
+                // No deadline applies: a withdrawal does not suspend, and
+                // skipping it would leave the service registered and its name
+                // taken (see Step). Run even when the cleanups ran out of
+                // time, at its place in the stack.
+                try {
+                    step.run()
+                } catch (e: Throwable) {
+                    if (failure == null) failure = e else failure.addSuppressed(e)
+                }
+                continue
+            }
             val left = leftMillis()
             if (deadlineNanos != null && left == 0L) {
-                Report.line("rutis: gave up the cleanups of row ${row.name}")
-                gaveUp = true
-                break
+                noteGaveUp()
+                continue
             }
             try {
                 val done = if (deadlineNanos == null) {
-                    withContext(CallChain.element(row.chain)) { cleanup() }
+                    withContext(CallChain.element(row.chain)) { step.run() }
                     true
                 } else {
                     withTimeoutOrNull(left!!) {
-                        withContext(CallChain.element(row.chain)) { cleanup() }
+                        withContext(CallChain.element(row.chain)) { step.run() }
                     } != null
                 }
-                if (!done) {
-                    Report.line("rutis: gave up the cleanups of row ${row.name}")
-                    gaveUp = true
-                    break
-                }
+                if (!done) noteGaveUp()
             } catch (e: Throwable) {
                 if (failure == null) failure = e else failure.addSuppressed(e)
             }
@@ -761,7 +794,7 @@ class RuntimeState(plugins: List<Plugin>, private val open: Boolean = false) {
     /** Registers a cleanup if `row` is still the loaded row with `key`. */
     internal fun addCleanup(row: Row, cleanup: suspend () -> Unit): Boolean = synchronized(lock) {
         if (rows[row.key] !== row) return false
-        row.steps.add(cleanup)
+        row.steps.add(Step(cleanup))
         true
     }
 

@@ -2,11 +2,13 @@ package arcships.rutis
 
 import arcships.rutis.internal.Report
 import arcships.rutis.internal.RuntimeState
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.runBlocking
 import java.util.Collections
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
 /**
  * Unloading runs one stack in reverse: cleanups and the withdrawals of the
@@ -98,4 +100,37 @@ class UnloadOrderTest {
         rt.unload("a")
         assertEquals(listOf("during: greet hi Kim", "cleanup: greet hi Kim"), log)
     }
+
+    /**
+     * The deadline bounds the cleanups, not the withdrawals: a cleanup that
+     * runs out of time does not stop the withdrawal behind it, which leaves
+     * no registration and frees the name for the next load.
+     */
+    @Test
+    fun theDeadlineGivesUpCleanupsButStillWithdrawsTheServices() = runBlocking<Unit> {
+        val lines = Collections.synchronizedList(ArrayList<String>())
+        val hang = CompletableDeferred<Unit>()
+        val slow = Rutis.define<Rutis.NoConfig>(name = "slow") { ctx, _ ->
+            ctx.provide("hello", Hello("hi"))
+            // Registered after the provide: it runs first, and is the one the
+            // deadline reaches.
+            ctx.effect { hang.await() }
+        }
+        val again = Rutis.define<Rutis.NoConfig>(name = "again") { ctx, _ -> ctx.provide("hello", Hello("again")) }
+        val rt = RuntimeState(listOf(slow, again))
+        load(rt, "slow", slow)
+        val previous = Report.replace { lines.add(it) }
+        try {
+            assertFalse(rt.dispose(200), "the cleanups finished in time")
+            assertTrue("rutis: gave up the cleanups of row slow" in lines, "the first cleanup did not run out of time: $lines")
+            assertFalse("hello" in rt.services, "the withdrawal behind the cleanup that timed out did not run")
+            // The name is free: the row loaded again provides it.
+            load(rt, "slow", slow)
+            assertTrue("hello" in rt.services)
+        } finally {
+            Report.replace(previous)
+            hang.complete(Unit)
+        }
+    }
 }
+
