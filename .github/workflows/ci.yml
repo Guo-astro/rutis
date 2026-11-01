@@ -1212,11 +1212,14 @@ jobs:
           cargo test -p rutis-host --test swift --test swift_app
           cargo test -p rutis-e2e --test dev_loop the_swift_plugin_development_loop
       # The events conformance with X a Swift plugin, in the placements a
-      # pull request runs (written; full runs sample more).
+      # pull request runs (written; full runs sample more). Its own settle
+      # windows are lengthened as in `rust`: this runner is loaded too, and
+      # the suite waits longer than a quiet machine needs (#1003).
       - name: cargo test (events conformance, X Swift)
         env:
           RUTIS_TEST_RUNTIMES: node,python,swift
           RUTIS_EVENTS_PLACEMENTS: ${{ needs.changes.outputs.all == 'true' && 'sampled' || 'written' }}
+          RUTIS_EVENTS_SETTLE_SCALE: '2'
         run: cargo test -p rutis-loader --all-features --test events_conformance events_with_x_a_swift_plugin
       - name: self-hosted runner, end
         if: always() && runner.environment == 'self-hosted'
@@ -1427,12 +1430,14 @@ jobs:
           done
           echo "RUTIS_KOTLIN_JAR=$PWD/rutis-conformance/build/libs/rutis-conformance-all.jar" >> "$GITHUB_ENV"
       # events_conformance: the written placements on pull requests, the
-      # sampled ones in full runs (as in `rust`).
+      # sampled ones in full runs (as in `rust`), with its own settle
+      # windows lengthened too (#1003).
       - name: cargo test (network stack, runtimes, host)
         env:
           RUTIS_TEST_RUNTIMES: bun,go,node,python
           ALL: ${{ needs.changes.outputs.all }}
           RUTIS_EVENTS_PLACEMENTS: ${{ needs.changes.outputs.all == 'true' && 'sampled' || 'written' }}
+          RUTIS_EVENTS_SETTLE_SCALE: '2'
         run: |
           BRIDGE_TESTS= LOADER_TESTS=
           if [ "$ALL" != true ]; then

@@ -303,6 +303,7 @@ CI 慢下来，通常是一项一项加检查加出来的。新增检查（新�
 - `tools/*.sh` 留在 `/tmp/rutis-*` 的目录超过 12 小时后删除；
 - 几个实例同时编译会把机器压满（10 核上 4 个实例各开 10 个 rustc，负载到过 79）：每个任务的 `CARGO_BUILD_JOBS` 和 `RUST_TEST_THREADS` 设成 CPU 数除以机器上的实例数（`~/actions-runner*/` 里有 `.runner` 的目录数），至少 2，开头会打印选的值和当时的负载。实例不装在 `~/actions-runner*` 下，或要别的值时，设仓库变量 `RUTIS_CI_JOBS`。`sdk-repro-macos` 也照此限制，不影响构建结果。
 - 同样的负载也让测试的防挂死上限放长：每个 "self-hosted runner, start" 步骤按 runner 的操作系统传入仓库变量 `MACOS_TEST_TIME_SCALE`（macOS）或 `LINUX_TEST_TIME_SCALE`（Linux，§11），都没设置时是 `3`，`tools/ci-self-hosted.sh` 把它写进任务的环境 `RUTIS_TEST_TIME_SCALE`。`rutis-test-support` 的所有上限（`HANG_GUARD`、`Guard`、`within`、`eventually` 等，以及测试自己用 `scaled(...)` 的等待）都乘以它；它只放长上限，不改测试等的事件，真挂死仍在有限时间内失败（10 s 的上限变成 30 s）。本地不设就是 1；机器慢时本地也可以设，如 `RUTIS_TEST_TIME_SCALE=2 cargo test`。产品的时限不受它影响。发布门里 macOS 的任务同时排满时，这些上限没有放长，事件一致性用例有过 20 秒内等不到行启动的失败（#1003）。
+- 事件一致性用例（`events_conformance`）自己的等待是另一套：`RUTIS_EVENTS_SETTLE_SCALE` 乘它的 settle 窗口（一条日志期望或 `settles` 的步骤 5 秒，`logLacks` 之后再等 300 ms，见 `crates/rutis-bridge/src/runtime/testing/events.rs`），它不跟 `RUTIS_TEST_TIME_SCALE`，两个上限要一起放。跑这个套件的任务都传入 `2`：Linux 的 `rust`、`runtimes-kotlin`，macOS 的 `runtimes-swift`、`network-macos`，Windows 的 `runtimes-windows`。自托管的机器上这套用例本身也慢（#1003 那次就是 macOS 上等不到行启动），macOS 的步骤从 1 改成和 Linux 一样。
 - Go 的编译缓存 `GOCACHE` 是每个实例自己的（`~/.cache/rutis-ci/<runner 名>/go-build`，Windows 上在 `_work/_rutis-ci/go-build`）；任务失败后，结尾一步删掉这个实例的 Go 缓存：被中途取消的任务可能留下写了一半的缓存文件，之后读到它的构建都会失败（"malformed elf file"，#374）。下一次任务重新编译 Go 的标准库，大约多一分钟。
 
 **加一个实例前，机器上要有**：
