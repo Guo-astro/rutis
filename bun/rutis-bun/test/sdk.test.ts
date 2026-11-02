@@ -13,6 +13,8 @@ import crossingLater from '../../../node/rutis/test/fixtures/crossing-later.mjs'
 import summary from './fixtures/sdk/summary.ts'
 import both from './fixtures/sdk/both.ts'
 import callingBack from './fixtures/sdk/calling-back.ts'
+import withdrawer from '../../../node/rutis/test/fixtures/withdrawer.mjs'
+import taker from '../../../node/rutis/test/fixtures/taker.mjs'
 
 test('a plugin runs with the SDK test tool', async () => {
   const t = await load(greeter, { config: { greeting: 'Hi' }, services: { clock: { now: () => 7 } } })
@@ -26,6 +28,29 @@ test('the host fills the config defaults and refuses a wrong config', async () =
   await t.unload()
   const refused = await load(greeter, { config: { greeting: 5 }, services: { clock: { now: () => 1 } } }).then(() => 'loaded', (error: Error) => error.message)
   expect(refused).toBe('greeter: config: greeting should be a string, got 5')
+})
+
+// #1030: `provided()` is what the row provides now, not what it provided
+// once. A name one row withdraws and another provides afterwards is the
+// other's, though both declared it.
+test('a service another row provides after this one withdrew it is that row\'s', async () => {
+  const h = host()
+  const first = await h.load(withdrawer)
+  expect(first.provided()).toEqual(['control', 'echo'])
+  expect(first.service('echo').say()).toBe('A')
+  first.service('control').withdraw()
+  // Between the withdrawal and the next provider the name is no one's.
+  expect(first.provided()).toEqual(['control'])
+  expect(() => first.service('echo')).toThrow('the plugin does not provide echo (now)')
+  const second = await h.load(taker)
+  expect(second.provided()).toEqual(['echo'])
+  // Announced, so its methods are async.
+  expect(await second.service('echo').say()).toBe('B')
+  expect(first.provided()).toEqual(['control'])
+  expect(() => first.service('echo')).toThrow('the plugin does not provide echo (now)')
+  await second.unload()
+  await first.unload()
+  await h.unload()
 })
 
 // The test tool's events (#464) under Bun too: the host's bus, the modes.

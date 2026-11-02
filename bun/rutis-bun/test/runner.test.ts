@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { FEATURES, handleOf, methodsOf, Runtime, scopedId, undeclaredUse } from '../src/runner.ts'
+import { providedBy } from '../src/rows.ts'
 import type { Context } from '../../../node/rutis/src/index.d.ts'
 import { fakeHost } from './fixtures/fake-host.ts'
 
@@ -550,4 +551,19 @@ test('an apply failure crosses with the plugin\'s frames only (#677)', async () 
   const stack = encodeError(failed).graph.nodes[0].stack
   expect(stack).toMatch(/^Error: no region\n\s+at .*weather\.ts:2/)
   expect(stack).not.toMatch(/rutis-bun[\\/]src|runner\.ts/)
+})
+
+// guarantee: loader/announced-services
+// A row's services are what rutis published before it heard that the row
+// loaded; the test tool's `provided()` reads them here (`../src/rows.ts`),
+// not the `rutis/service` events, which cross the session afterwards (#1030).
+// This host sends none of those events, so what answers can only be the row.
+test('a row provides what it declares as soon as it loads, without its events', async () => {
+  const dir = project({ 'part.ts': "export const provides = { echo: { say: 'sync' } }\nexport function apply(ctx) { ctx.provide('echo', { say: () => 'part' }) }\n" })
+  const runtime = new Runtime(dir)
+  runtime.dispatch('', 'mount', {})
+  await Promise.resolve().then(() => runtime.dispatch('', 'rows.load', ['part', './part.ts', {}, [], [], { id: 'part' }]))
+  expect(providedBy('part')).toEqual(['echo'])
+  await Promise.resolve().then(() => runtime.dispatch('', 'rows.unload', ['part']))
+  expect(providedBy('part')).toEqual([])
 })

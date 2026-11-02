@@ -14,6 +14,7 @@ import { fileURLToPath } from 'node:url'
 import { PLUGIN_API, USES_ANY, definition } from '../plugin.ts'
 import { CONTROL } from './service.ts'
 import { Definitions } from '../definitions.ts'
+import { providedBy } from '../rows.ts'
 
 // The plugin a service of the test is a row of (./service.ts).
 const SERVICE = fileURLToPath(new URL('./service.ts', import.meta.url))
@@ -47,12 +48,6 @@ export default Object.freeze({
   api: PLUGIN_API,
   async apply(ctx) {
     const harness = ctx.use('rutis-host/test')
-    // Who provides each service now, as the host says (`rutis/service`).
-    const providers = new Map()
-    ctx.on('rutis/service', event => {
-      if (event?.available) providers.set(event.name, event.row)
-      else providers.delete(event?.name)
-    })
     // The test's services, name → its row, and its listeners here, id →
     // withdrawal.
     const services = new Map()
@@ -112,7 +107,7 @@ export default Object.freeze({
       update: (id, config) => harness.update(id, config),
       unload: id => harness.unload(id),
       reported: id => harness.reported(id),
-      provided: id => [...providers].filter(([, row]) => row === id).map(([name]) => name).sort(),
+      provided: id => providedBy(id),
       methods: name => inferred(ctx.use(name)),
       // A service of the test, as a row of its own (./service.ts): a
       // name rutis has already fails that row's load only. Provided here,
