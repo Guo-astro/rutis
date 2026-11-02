@@ -1760,10 +1760,11 @@ jobs:
           mkdir -p "$dir/target" "$dir/e2e"
           # Cargo leaves previous build units in a kept target; without a
           # limit it grows without bound (over 100 GB on these runners).
-          # Drop the old ones, then empty the target only if it is still over
-          # the limit (RUTIS_CI_TARGET_MAX_GB, Windows default 60 GB: a kept
-          # target here is 40-50 GB even after pruning).
-          find "$dir/target" -type f -mtime +3 -delete 2>/dev/null || true
+          # Empty it when it is over the limit (RUTIS_CI_TARGET_MAX_GB,
+          # Windows default 60 GB: a kept target here is 40-50 GB). It is
+          # emptied whole rather than by age: deleting old files leaves
+          # build-script outputs cargo believes are still there (tree-sitter's
+          # stdlib-symbols.txt, release gate run 41385356836).
           used=$(du -sk "$dir/target" 2>/dev/null | cut -f 1 || true)
           max=${RUTIS_CI_TARGET_MAX_GB:-60}
           if [ -n "$used" ] && [ "$used" -gt $((max * 1024 * 1024)) ]; then
