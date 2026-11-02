@@ -1759,16 +1759,17 @@ jobs:
           rm -rf "$dir/e2e"
           mkdir -p "$dir/target" "$dir/e2e"
           # Cargo leaves previous build units in a kept target; without a
-          # limit it grows without bound (over 100 GB on these runners), so
-          # the whole directory goes once it is over the limit
-          # (RUTIS_CI_TARGET_MAX_GB, Windows default 60 GB: a kept target here
-          # is 40-50 GB). Nothing inside it is deleted file by file: cargo
-          # still trusts the outputs of a build script whose inputs did not
-          # change, and a kept target with them deleted fails later builds
-          # ("couldn't read .../out/stdlib-symbols.txt", the mtime prune of
-          # #1029). A change that makes kept builds unusable for another
-          # reason raises `generation`: the target of an older one is emptied
-          # once, then kept as before.
+          # limit it grows without bound (over 100 GB on these runners).
+          # Empty it when it is over the limit (RUTIS_CI_TARGET_MAX_GB,
+          # Windows default 60 GB: a kept target here is 40-50 GB). It is
+          # emptied whole rather than by age: deleting old files leaves
+          # build-script outputs cargo believes are still there (tree-sitter's
+          # stdlib-symbols.txt, release gate run 41385356836).
+          #
+          # The generation is the other way this directory goes: raise it when
+          # a change leaves builds cargo still trusts broken some other way
+          # (0.20's prune above), and the target of an older generation is
+          # emptied once, at the next job's start, then kept as before.
           generation=2
           if [ "$(cat "$dir/target/.generation" 2>/dev/null)" != "$generation" ]; then
             echo "target directory of generation $(cat "$dir/target/.generation" 2>/dev/null || echo none): emptying it"

@@ -519,10 +519,8 @@ jobs:
           rm -rf "$dir/e2e"
           mkdir -p "$dir/target" "$dir/e2e"
           # As ci.yml's runtimes-windows: keep this instance's kept target
-          # under RUTIS_CI_TARGET_MAX_GB by emptying the whole directory, and
-          # nothing file by file (cargo trusts the outputs of a build script
-          # whose inputs did not change, #1029); a target of another
-          # generation goes once.
+          # under RUTIS_CI_TARGET_MAX_GB (default 60 GB), emptied whole rather
+          # than by age (see there); a target of another generation goes once.
           generation=2
           if [ "$(cat "$dir/target/.generation" 2>/dev/null)" != "$generation" ]; then
             echo "target directory of generation $(cat "$dir/target/.generation" 2>/dev/null || echo none): emptying it"
