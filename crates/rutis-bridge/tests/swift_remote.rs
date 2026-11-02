@@ -295,8 +295,9 @@ impl Client {
     /// The runtime's greeting: the text frame whose `op` is `hello`. A ping
     /// may come before it — the heartbeat's own timer writes one
     /// (`swift/rutis/Sources/Rutis/Remote/WebSocket.swift`, #1044) — so the
-    /// frames before the greeting are read and said, not taken for it; a
-    /// close before it fails with its code.
+    /// control frames before the greeting are read and said, not taken for
+    /// it; a text frame that is not the greeting, or a close, fails with
+    /// what it was.
     async fn greeting(&mut self, who: &str) -> Vec<u8> {
         let mut before: Vec<String> = Vec::new();
         loop {
@@ -311,6 +312,10 @@ impl Client {
                     println!("{who} greeted after {} frame(s): {before:?}", before.len());
                     return payload;
                 }
+                0x1 => panic!(
+                    "{who} was sent a text frame that is not the greeting, after {before:?}: {}",
+                    String::from_utf8_lossy(&payload)
+                ),
                 0x8 => panic!(
                     "{who} was closed with {} before greeting it; before that: {before:?}",
                     u16::from_be_bytes([payload[0], payload[1]])
@@ -385,7 +390,11 @@ async fn the_greeting_arrives_after_a_ping() {
     }
     let (_runtime, address) = Runtime::listening(
         "listen:ws://127.0.0.1:0/rutis",
-        &[("RUTIS_TOKEN", TOKEN), ("RUTIS_HEARTBEAT", "1,1000")],
+        // A ping every millisecond, and a silent controller kept long enough
+        // that a loaded machine still has its greeting: a timeout of a
+        // second would close it (1001) before the greeting arrives, which is
+        // another test's event.
+        &[("RUTIS_TOKEN", TOKEN), ("RUTIS_HEARTBEAT", "1,30000")],
     )
     .await;
     let mut client = Client::connect(&address).await;

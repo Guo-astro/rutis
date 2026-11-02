@@ -337,7 +337,7 @@ impl Project {
                 // it can go.
                 self.stale.push(project.binary(self.build - 1));
                 remove_builds(&mut self.stale);
-                let after = Rows::at_rest(host).await;
+                let after = Rows::after_settling(host).await;
                 let own = |id: &str| row_name(host, id).is_some_and(|name| owns(key, &name));
                 // Its rows restarted with it: a row using one says so.
                 let said = format!("{} restarted", project.runtime());
@@ -396,7 +396,7 @@ impl Project {
             let before = Rows::of(host);
             match host.loader.reload(id).await {
                 Ok(_) => {
-                    let after = Rows::at_rest(host).await;
+                    let after = Rows::after_settling(host).await;
                     // Before it is said: `status` agrees from then on.
                     self.previous.running(id, false);
                     errln!("{id}: reloaded ({} changed)", self.files(files));
@@ -525,7 +525,7 @@ impl Project {
                         }
                     }
                 }
-                let after = Rows::at_rest(host).await;
+                let after = Rows::after_settling(host).await;
                 let causes: Vec<(String, String)> = changes
                     .iter()
                     .map(|(id, change)| {
@@ -785,23 +785,36 @@ impl Rows {
             .is_some_and(|(_, _, state)| *state == FiberState::Active)
     }
 
-    /// The rows as they are once none of them is moving any more: `settled`
-    /// waits for what is queued for each row, then a round more while a row
-    /// is still on its way (`Pending`, `Loading`, `Unloading`) and the round
-    /// moved it — a row a change restarts comes back after the reload that
-    /// restarted it has returned (#789), and one waiting for the service it
-    /// uses is `Pending`, which awaiting a row does not wait for (#1044).
-    /// A round that moves nothing is what the rows came to: one that stays
-    /// `Pending` has lost what it uses, and saying so beats waiting forever.
-    async fn at_rest(host: &Host) -> Self {
-        let mut rows = Self::of(host);
+    /// How many rounds of waiting [`Rows::after_settling`] takes before it
+    /// takes the rows as they are: a row that keeps going back and forth
+    /// between two states (a plugin that fails and starts again) must not
+    /// hold `dev` up.
+    const ROUNDS: u8 = 8;
+
+    /// The rows as they are once a change has set nothing more going.
+    ///
+    /// `settled` waits for what is queued for each row: a row a change
+    /// restarts comes back after the reload that restarted it has returned
+    /// (#789). It does not wait for a row that is `Pending`, though —
+    /// awaiting a row answers as soon as what is queued for it is handled,
+    /// and a row waiting for a service has nothing queued — while that is
+    /// exactly what a row using the reloaded row's service is until the
+    /// change reaches it (#1044: a snapshot taken then said `stopped`, and
+    /// no line ever said the row came back). So a round more is waited
+    /// while a row is between states, up to [`Rows::ROUNDS`] of them: each
+    /// round ends with `settled` and yields, which is what lets the change's
+    /// own work reach the row. A row that is still `Pending` after that has
+    /// not come back yet, and says so itself (`caller: waiting for weather
+    /// (row weather has not provided it)`).
+    async fn after_settling(host: &Host) -> Self {
+        let mut rounds = 0;
         loop {
             host.loader.settled().await;
-            let now = Self::of(host);
-            if !now.moving() || now.states == rows.states {
-                return now;
+            let rows = Self::of(host);
+            if (!rows.moving() && !rows.any_on_its_way_back()) || rounds == Self::ROUNDS {
+                return rows;
             }
-            rows = now;
+            rounds += 1;
         }
     }
 
@@ -812,12 +825,39 @@ impl Rows {
 
     /// Whether the row `id` is between two states ([`Rows::moving`]).
     fn moving_one(&self, id: &str) -> bool {
-        self.states.get(id).is_some_and(|(_, _, state)| {
+        self.state(id).is_some_and(|state| {
             matches!(
                 state,
                 FiberState::Pending | FiberState::Loading | FiberState::Unloading
             )
         })
+    }
+
+    /// Whether the row `id` is on its way back: loading its new version, or
+    /// waiting for the service it uses (`Pending`) while a row it uses is
+    /// still moving — what it waits for is coming, so it is not stopped
+    /// (#1044). A row that is `Unloading` is leaving its old version, so it
+    /// is back only after that; a `Pending` row whose rows have all settled
+    /// waits for a service nobody provides any more.
+    fn on_its_way_back(&self, id: &str) -> bool {
+        match self.state(id) {
+            Some(FiberState::Loading) => true,
+            Some(FiberState::Pending) => self
+                .uses
+                .get(id)
+                .is_some_and(|used| used.iter().any(|row| row != id && self.moving_one(row))),
+            _ => false,
+        }
+    }
+
+    /// The state of the row `id`, for a row whose fiber exists.
+    fn state(&self, id: &str) -> Option<FiberState> {
+        self.states.get(id).map(|(_, _, state)| *state)
+    }
+
+    /// Whether a row is on its way back ([`Rows::on_its_way_back`]).
+    fn any_on_its_way_back(&self) -> bool {
+        self.states.keys().any(|id| self.on_its_way_back(id))
     }
 
     /// The rows that restarted, started or stopped since `before`, but
@@ -858,15 +898,17 @@ impl Affected {
             let restarted = now.is_some_and(|(p, g, _)| (p, g) != (plugin, generation));
             let active = now.is_some_and(|(_, _, s)| *s == FiberState::Active);
             let was_active = *state == FiberState::Active;
-            let what = match (restarted, was_active, active) {
-                (true, true, true) => "restarted",
-                (true, false, true) => "started",
-                // Restarted, and not back yet: a row waiting for the service
-                // it uses is `Pending` while the change reaches it (#1044,
-                // said `stopped` while it was on its way back), so what it
-                // is between is no answer; one that is `Failed` or gone is.
-                (true, true, false) if after.moving_one(id) => "restarted",
-                (_, true, false) => "stopped",
+            let what = match (was_active, active) {
+                (true, true) if restarted => "restarted",
+                (false, true) if restarted => "started",
+                // Not back yet: a row still loading its new version, or
+                // waiting for the service of a row that is still on its way,
+                // is being restarted by this change — calling it stopped
+                // would answer a question this snapshot cannot ask yet
+                // (#1044). `Failed`, gone, or `Pending` with nothing left to
+                // wait for, is what stopped means.
+                (true, false) if after.on_its_way_back(id) => "restarted",
+                (true, false) => "stopped",
                 _ => continue,
             };
             noted.push((id, what));
@@ -1081,18 +1123,23 @@ mod tests {
             ]
         );
 
-        // The change reaching a row in flight: one that restarted and waits
-        // for the service it uses (`Pending`), or is still loading its new
-        // version, is on its way back, not stopped (#1044: a snapshot taken
-        // while `caller` waited for `weather` said "stopped", and no line
-        // ever said it came back). What lost what it uses is stopped all the
-        // same.
-        for in_flight in [FiberState::Pending, FiberState::Loading] {
+        // The change reaching a row that is not back yet (#1044: a snapshot
+        // taken while `caller` waited for `weather` said "stopped", and no
+        // line ever said it came back). One loading its new version is on
+        // its way back, and so is one waiting for a row it uses that is
+        // still on its way — before or after its own restart.
+        for (generation, in_flight) in [
+            // Loading its new version.
+            (2, FiberState::Loading),
+            // Waiting for `greeter`, which is still loading its own.
+            (2, FiberState::Pending),
+            (1, FiberState::Pending),
+        ] {
             let after = rows(
                 &[
-                    ("greeter", 2, FiberState::Active),
+                    ("greeter", 2, FiberState::Loading),
                     ("llm", 2, FiberState::Active),
-                    ("caller", 2, in_flight),
+                    ("caller", generation, in_flight),
                     ("audit", 1, FiberState::Pending),
                     ("idle", 1, FiberState::Active),
                     ("loose", 2, FiberState::Active),
@@ -1109,9 +1156,64 @@ mod tests {
                     "greeter: restarted (llm reloaded)",
                     "loose: restarted",
                 ],
-                "{in_flight:?}"
+                "{in_flight:?} at generation {generation}"
             );
         }
+
+        // What the snapshot still cannot tell: a row waiting for a row that
+        // has come back and provides nothing it needs. It has not restarted,
+        // and nothing it uses is on its way, so it is stopped — the line
+        // `dev` prints for it until then says what it waits for (`caller:
+        // waiting for greeter (row greeter has not provided it)`). Waiting
+        // for one of these to come back is what `Rows::after_settling` does,
+        // a round at a time and bounded, so that it is the exception.
+        let after = rows(
+            &[
+                ("greeter", 2, FiberState::Active),
+                ("llm", 2, FiberState::Active),
+                ("caller", 1, FiberState::Pending),
+                ("audit", 1, FiberState::Pending),
+                ("idle", 1, FiberState::Active),
+                ("loose", 2, FiberState::Active),
+            ],
+            &uses[..2],
+        );
+        let mut affected = Affected::default();
+        affected.add(&before, &after, &[("llm".into(), "llm reloaded".into())]);
+        assert_eq!(
+            affected.lines(&|id| id == "llm"),
+            [
+                "audit: stopped (greeter restarted)",
+                "caller: stopped (greeter restarted)",
+                "greeter: restarted (llm reloaded)",
+                "loose: restarted",
+            ]
+        );
+
+        // A row that is unloading its old version is leaving it: it is back
+        // only after that, so it is not on its way back.
+        let after = rows(
+            &[
+                ("greeter", 2, FiberState::Active),
+                ("llm", 2, FiberState::Active),
+                ("caller", 2, FiberState::Unloading),
+                ("audit", 1, FiberState::Pending),
+                ("idle", 1, FiberState::Active),
+                ("loose", 2, FiberState::Active),
+            ],
+            &uses[..2],
+        );
+        let mut affected = Affected::default();
+        affected.add(&before, &after, &[("llm".into(), "llm reloaded".into())]);
+        assert_eq!(
+            affected.lines(&|id| id == "llm"),
+            [
+                "audit: stopped (greeter restarted)",
+                "caller: stopped (greeter restarted)",
+                "greeter: restarted (llm reloaded)",
+                "loose: restarted",
+            ]
+        );
 
         // Two changes, one after the other, both used: both named, once.
         let uses: &[(&str, &[&str])] = &[("caller", &["weather", "llm"])];

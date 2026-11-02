@@ -297,7 +297,9 @@ impl Host {
     }
 
     /// What the wait that follows is waiting for, in the failure message if
-    /// it times out: the lines still to read, not only "a line" (#1044).
+    /// it times out: the lines still to read, not only "a line" (#1044). It
+    /// is cleared when a wait finds what it wanted, so a later failure does
+    /// not name a wait that is over.
     pub fn waiting(&mut self, what: impl Into<String>) {
         self.waiting = Some(what.into());
     }
@@ -314,6 +316,7 @@ impl Host {
                     }
                     self.seen.push(line);
                     if let Some(found) = found {
+                        self.waiting = None;
                         return found;
                     }
                 }
@@ -325,10 +328,11 @@ impl Host {
     /// Read lines until each of `lines` was read, in any order: the state
     /// lines are printed every 200 ms, apart from what a reload or a stop
     /// prints, so a row's change and the reload that made it come either
-    /// way round.
+    /// way round. A wait that times out says the lines it had not read.
     pub fn wait_lines(&mut self, lines: &[&str]) {
         let mut missing: Vec<&str> = lines.to_vec();
         while !missing.is_empty() {
+            self.waiting(format!("{missing:?}"));
             let index = self.wait_line(|line| missing.iter().position(|want| *want == line));
             missing.remove(index);
         }
