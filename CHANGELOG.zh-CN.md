@@ -6,7 +6,7 @@ rutis 的所有包用同一个版本号。每个版本的完整说明在 [docs/r
 
 | 版本 | 日期 | 变化 | 说明 |
 | --- | --- | --- | --- |
-| 0.20.0 | 待发布 | 插件可以写可选依赖（`optional` 与 `ctx.get`）；行的 `inject` 算这一行已声明，运行时的行由 rutis 门控并租借；同一进程里的服务在 Go、Kotlin 也拿到对象本身；测试工具装上替身收到的插件定义；卸载时清理与服务撤回走同一个逆序栈；每个实例的常驻占用更小。**不兼容** | [中文](docs/releases/0.20.0.md) · [English](docs/releases/0.20.0.en.md) |
+| 0.20.0 | 2026-11-02 | 插件可以写可选依赖（`optional` 与 `ctx.get`）；行的 `inject` 算这一行已声明，运行时的行由 rutis 门控并租借；同一进程里的服务在 Go、Kotlin 也拿到对象本身；测试工具装上替身收到的插件定义；卸载时清理与服务撤回走同一个逆序栈；每个实例的常驻占用更小。**不兼容** | [中文](docs/releases/0.20.0.md) · [English](docs/releases/0.20.0.en.md) |
 | 0.19.3 | 2026-10-31 | 修 TypeScript 测试工具与插件 API 事件例子的 bug；`loader`、`sessions` 改名 `rutis/loader`、`rutis/sessions`。**不兼容** | [中文](docs/releases/0.19.3.md) · [English](docs/releases/0.19.3.en.md) |
 | 0.19.2 | 2026-10-30 | 修复 bug：大量实例关闭时的内存峰值（#977）；提前取消的装载回到 Pending（#968）；放弃的 `reconcile` 不再挡住后来的操作；`dev` 与测试工具的 bug；写错的运行时路径报错 | [中文](docs/releases/0.19.2.md) · [English](docs/releases/0.19.2.en.md) |
 | 0.19.1 | 2026-10-30 | 修复文档写明却做不到的几处（`ready()` 加 `reconcile` 后行已装载、`run` 启动时校验配置、uv 项目里的 `rutis-host add`、TypeScript 测试超时后退出）；同步 waterfall 补回为 `waterfall(event).sync(terminal)`；`Loader::instance_rows`；别的语言的插件定义在宿主自己的实例里挂副本 | [中文](docs/releases/0.19.1.md) · [English](docs/releases/0.19.1.en.md) |
