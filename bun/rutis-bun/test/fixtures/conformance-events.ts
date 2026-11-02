@@ -78,6 +78,8 @@ export function apply(ctx: any, participant: any) {
   }
   const listener = kind === 'async' ? async (...args: any[]) => body(args) : (...args: any[]) => body(args)
   ctx.on(name, listener, options)
+  // What it emits while it unloads (§7.1): a cleanup on its stack.
+  if (participant?.onUnload) ctx.effect(() => emit(ctx, log, participant.onUnload.emits))
 }
 
 const isThenable = (item: any) => item !== null && typeof item?.then === 'function'

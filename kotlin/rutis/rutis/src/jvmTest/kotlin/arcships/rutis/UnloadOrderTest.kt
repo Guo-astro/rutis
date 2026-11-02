@@ -10,6 +10,7 @@ import kotlinx.coroutines.runBlocking
 import java.util.Collections
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
@@ -65,6 +66,16 @@ class UnloadOrderTest {
         rt.unload("p")
         assertEquals(listOf("own: greet hi Kim", "other: error unavailable"), log)
         assertEquals("error unavailable", read(user!!))
+    }
+
+    @Test
+    fun updatingARowThatIsUnloadingSaysItIsNotLoaded() = runBlocking<Unit> {
+        val plugin = Rutis.define<Rutis.NoConfig>(name = "updating") { _, _ -> }
+        val rt = RuntimeState(listOf(plugin))
+        load(rt, "u", plugin)
+        rt.rows["u"]!!.unloading = true
+        val error = assertFailsWith<IllegalStateException> { rt.update("u", null) }
+        assertEquals("row u is not loaded", error.message)
     }
 
     @Test

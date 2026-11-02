@@ -1258,6 +1258,8 @@ impl std::task::Wake for Unpark {
 
 #[cfg(test)]
 mod tests {
+    // MARKER
+
     use std::cell::RefCell;
     use std::sync::atomic::AtomicBool;
     use std::time::Duration;
@@ -1343,7 +1345,9 @@ mod tests {
             move || {
                 let (session, done) = (session.clone(), ended.clone());
                 let unload = std::thread::spawn(move || {
-                    session.row_ended("chat");
+                    // The host's side of `rows.unload`: the row stays loaded
+                    // for its own cleanups, with no listeners (§7.1).
+                    session.row_unloading("chat");
                     done.store(true, Ordering::SeqCst);
                 });
                 // Before the fix the unload ran to its end here, before the
@@ -1395,6 +1399,40 @@ mod tests {
                 .iter()
                 .all(|entry| !entry.remote),
             "no remote entry is left on the bus"
+        );
+        drop((far, near));
+    }
+
+    /// guarantee: events/hub-lifecycle
+    /// A listener a row registers once its unload started is not kept: the
+    /// host answers `events.on` as usual and takes nothing in, so it hears
+    /// no event (events protocol §7.1).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_listener_registered_while_the_row_unloads_is_not_kept() {
+        let root = Ctx::root().unwrap();
+        let (near, far) = crate::memory::pair();
+        let near = Connection::open(near, Arc::new(Quiet), rust()).unwrap();
+        let session =
+            SessionEvents::join(Some(&root), near.clone(), "rt".into(), Vec::new()).unwrap();
+        session.row_loading("chat", Vec::new(), "chat".into());
+        session.row_unloading("chat");
+        let out = session.on(Value::Data(json!({
+            "id": "1", "name": "t/x", "row": "chat", "plugin": "p", "kind": "any",
+        })));
+        assert!(
+            out.is_ok(),
+            "its registration is answered as usual: {out:?}"
+        );
+        assert!(
+            session.entries.lock().unwrap().is_empty(),
+            "the entry was kept"
+        );
+        assert!(
+            root.events()
+                .subscriptions()
+                .iter()
+                .all(|entry| !entry.remote),
+            "the entry reached the bus"
         );
         drop((far, near));
     }

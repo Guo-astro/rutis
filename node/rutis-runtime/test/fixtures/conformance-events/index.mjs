@@ -160,6 +160,8 @@ export function apply(ctx, config) {
       dispatch_sync(spec) { return dispatch(ctx, log, spec) },
     })
   }
+  // What it emits while it unloads (§7.1): a cleanup of its fiber.
+  if (config.onUnload) ctx.effect(() => () => dispatch(ctx, log, config.onUnload.emits))
   if (!config.name) return
   // Cordis's diagnostics hook, fired once per dispatch before any listener.
   if (config.observesDispatch) {

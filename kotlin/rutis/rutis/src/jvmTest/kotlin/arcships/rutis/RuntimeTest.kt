@@ -294,26 +294,38 @@ class RuntimeTest {
     }
 
     /**
-     * A row's unload stack still emits (events protocol §7.1): the other
-     * listeners hear it, while the row's own are gone; once rutis answered
+     * A row's unload stack still emits (events protocol §7.1): another row
+     * hears it, while its own listeners are gone; once rutis answered
      * `rows.unload`, a context kept past the row emits nothing (§3).
      */
     @Test
     fun aRowsCleanupStillEmits() = runBlocking<Unit> {
+        val heard = Collections.synchronizedList(ArrayList<String>())
+        val announcing = CompletableDeferred<String>()
         var late: Ctx? = null
-        val plugin = Rutis.define<Rutis.NoConfig>(name = "closing") { ctx, _ ->
-            late = ctx
-            ctx.effect { ctx.emit("t/bye", "bye") }
+        // Two rows of one plugin: one listens, the other emits on its way out
+        // (its own listener of the name is gone by then, so it logs nothing).
+        val plugin = Rutis.define<String>(name = "closing") { ctx, role ->
+            ctx.on("t/bye") { args ->
+                heard.add("$role:${args[0]}")
+                if (role == "listening") announcing.complete("$role:${args[0]}")
+                null
+            }
+            if (role == "closing") {
+                late = ctx
+                ctx.effect { ctx.emit("t/bye", "bye") }
+            }
         }
-        RutisTest.load(plugin).use { loaded ->
-            val heard = CompletableDeferred<Any?>()
-            loaded.on("t/bye") { args -> heard.complete(args[0]); null }
-            // Its emission does not fail the unload, and reaches this listener.
-            loaded.unload()
-            assertEquals("bye", withTimeout(5_000) { heard.await() })
+        RutisTest.load(plugin, "listening").use { listening ->
+            listening.load(config = "closing").use { closing ->
+                // Its emission does not fail the unload, and reaches the other row.
+                closing.unload()
+                assertEquals("listening:bye", withTimeout(5_000) { announcing.await() })
+            }
+            assertEquals(listOf("listening:bye"), heard)
             val error = assertFailsWith<RutisException> { late!!.emit("t/bye", "late") }
             assertEquals("BindingError", error.name)
-            assertEquals("row closing is not loaded in this runtime", error.message)
+            assertEquals("row ${late!!.row.name} is not loaded in this runtime", error.message)
         }
     }
 }

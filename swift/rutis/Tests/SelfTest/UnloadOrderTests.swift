@@ -125,29 +125,33 @@ struct UnloadOrderTests {
         XCTAssertEqual(lines.all, ["during: count 5"])
     }
 
-    /// A row's unload stack still emits (events protocol §7.1): the other
-    /// listeners hear it, while the row's own left when the unload started.
+    /// A row's unload stack still emits (events protocol §7.1): another row
+    /// hears it, while the row's own listeners left when the unload started.
     /// Once rutis answered `rows.unload`, a context kept past the row emits
     /// nothing (§3).
     func aRowsCleanupStillEmits() async throws {
+        let heard = Lines()
         let late = Cell<Rutis.Ctx>()
-        let plugin = Rutis.define(Plugin(name: "closing") { ctx in
-            late.value = ctx
-            ctx.effect { try ctx.emit("t/bye", "bye") }
+        // Two rows of one plugin: one listens, the other emits on its way out
+        // (its own listener of the name is gone by then, so it logs nothing).
+        let plugin = Rutis.define(Plugin(name: "closing", config: String.self) { ctx, role in
+            ctx.on("t/bye") { (value: Any?) in heard.add("\(role):\(value ?? "nil")") }
+            if role == "closing" {
+                late.value = ctx
+                ctx.effect { try ctx.emit("t/bye", "bye") }
+            }
         })
-        let loaded = try await RutisTest.load(plugin)
-        defer { Task { await loaded.close() } }
-        let heard = Cell<Any?>()
-        await loaded.on("t/bye") { (value: Any?) in
-            heard.value = value
-        }
-        try await loaded.unload()
-        for _ in 0..<100 where heard.value == nil {
+        let listening = try await RutisTest.load(plugin, config: "listening")
+        let closing = try await listening.load(config: "closing")
+        try await closing.unload()
+        for _ in 0..<100 where !heard.all.contains("listening:bye") {
             try await Task.sleep(nanoseconds: 50_000_000)
         }
-        XCTAssertEqual(heard.value as? String, "bye")
+        XCTAssertEqual(heard.all, ["listening:bye"])
         let error = Self.failure { try late.value?.emit("t/bye", "late") }
-        XCTAssertEqual(error, "BindingError: row closing is not loaded in this runtime")
+        XCTAssertTrue(error.hasPrefix("BindingError: row closing"), error)
+        XCTAssertTrue(error.hasSuffix(" is not loaded in this runtime"), error)
+        await listening.close()
     }
 
     /// What `body` fails with, as `name: message`, or "no error".

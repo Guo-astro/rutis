@@ -286,6 +286,10 @@ class Row:
     # Its unload stack is running: it registers no listener or cleanup any
     # more, while the emissions its cleanups make still reach the other rows
     # (§7.1). It leaves `rows` when the stack ends.
+    #
+    # Not `Provided.unloading`, which says a service of this row is already
+    # invisible to other rows (that starts with the same unload, but the
+    # withdrawal on the stack runs later).
     unloading: bool = False
     # Guards `pending`, which other threads add to.
     lock: Any = field(default_factory=threading.Lock)
@@ -686,6 +690,15 @@ class Runtime:
             say(f"runtime {name}: an unhandled error from an unknown row: {report_text(error)}")
             return
         why = failure_text(kind, error)
+        # A row on its unload stack: rutis fails nothing for it (the restart
+        # was cancelled with the unload, and the host would answer that it
+        # fails no such row), so the error is written here, once and with the
+        # row's name, rather than disappearing (#1041).
+        if row.unloading:
+            if not row.failed:
+                row.failed = True
+                say(f"runtime {name}: row {row.named or row.key}: {why}")
+            return
         if row.failing is not None:
             if not row.failing.done():
                 row.failing.set_exception(unhandled_error(kind, error))
@@ -779,7 +792,9 @@ class Runtime:
     async def update(self, key: str, config: Any) -> None:
         # Leaf plugins have no volatile fields: a new config restarts the row.
         row = self.rows.get(key)
-        if row is None:
+        # A row on its unload stack is on its way out: as for one already
+        # gone, `rows.update` says it is not loaded.
+        if row is None or row.unloading:
             raise ValueError(f"row {key} is not loaded")
         id = self.bus.row_id(key)
         await self.unload(key)

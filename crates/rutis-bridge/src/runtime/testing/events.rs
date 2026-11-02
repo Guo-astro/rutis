@@ -1881,7 +1881,7 @@ const DOES: [&str; 11] = [
     "emits",
 ];
 
-const PARTICIPANT: [&str; 14] = [
+const PARTICIPANT: [&str; 15] = [
     "label",
     "at",
     "scope",
@@ -1896,6 +1896,7 @@ const PARTICIPANT: [&str; 14] = [
     "provides",
     "observesDispatch",
     "why",
+    "onUnload",
 ];
 
 fn check_does(does: &Json) -> Result<(), String> {
@@ -1941,6 +1942,23 @@ fn check_participant(expected: &Expected, participant: &Participant) -> Result<(
         if !matches!(kind.as_str(), Some("sync" | "async" | "any")) {
             return Err(format!("{}: unknown kind {kind}", participant.label));
         }
+    }
+    if let Some(on_unload) = participant.raw.get("onUnload") {
+        unknown_keys(
+            &format!("{}: onUnload", participant.label),
+            on_unload,
+            &["emits"],
+        )?;
+        let emits = on_unload
+            .get("emits")
+            .ok_or_else(|| format!("{}: onUnload needs its emits", participant.label))?;
+        // The row emits it, so it names no `from` (2026-11-02): a copy with
+        // one is checked as any spec is.
+        let mut spec = emits.clone();
+        if let Some(fields) = spec.as_object_mut() {
+            fields.entry("from").or_insert_with(|| json!("X"));
+        }
+        Spec::parse(&spec)?;
     }
     if let Some(options) = participant.raw.get("options") {
         unknown_keys("options", options, &["prepend", "global"])?;

@@ -163,6 +163,10 @@ internal class Row(
      * Its unload stack is running: it registers no listener, cleanup or
      * service any more, while the emissions its cleanups make still reach the
      * other rows (§7.1). It leaves `RuntimeState.rows` when the stack ends.
+     *
+     * Not [`Provided.unloading`], which says a service of this row is already
+     * invisible to other rows (that starts with the same unload, but the
+     * withdrawal on the stack runs later).
      */
     @Volatile
     var unloading = false
@@ -855,7 +859,10 @@ class RuntimeState(plugins: List<Plugin>, private val open: Boolean = false) {
     }
 
     internal suspend fun update(key: String, config: Any?) {
-        val row = synchronized(lock) { rows[key] } ?: throw IllegalStateException("row $key is not loaded")
+        // A row on its unload stack is on its way out: as for one already
+        // gone, `rows.update` says it is not loaded.
+        val row = synchronized(lock) { rows[key]?.takeUnless { it.unloading } }
+            ?: throw IllegalStateException("row $key is not loaded")
         // Leaf plugins have no volatile fields: a new config restarts the row.
         unload(key)
         load(key, row.name, row.entry, config, row.exports, row.isolate, row.scope, row.inject, row.plugin)

@@ -137,6 +137,10 @@ type row struct {
 	// Its unload stack is running: it registers no listener, cleanup or
 	// service any more, while the emissions its cleanups make still reach
 	// the other rows (§7.1). It leaves rt.rows when the stack ends.
+	//
+	// Not providedService.unloading, which says a service of this row is
+	// already invisible to other rows (that starts with the same unload, but
+	// the withdrawal on the stack runs later).
 	unloading bool
 }
 

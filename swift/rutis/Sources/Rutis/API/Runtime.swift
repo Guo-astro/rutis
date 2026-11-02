@@ -143,6 +143,12 @@ final class Row: @unchecked Sendable {
     /// A provide that failed while the row loads: it fails the load.
     var failure: Error?
     var order = 0
+    /// Whether its unload stack is running: it registers no listener,
+    /// cleanup or service any more, while the emissions its cleanups make
+    /// still reach the other rows (§7.1); it leaves `rows` when the stack
+    /// ends. Not `Provided.unloading`, which says a service of this row is
+    /// already invisible to other rows (that starts with the same unload,
+    /// but the withdrawal on the stack runs later).
     var unloading = false
 
     // The invocations of its listeners running, and its spawned tasks: an

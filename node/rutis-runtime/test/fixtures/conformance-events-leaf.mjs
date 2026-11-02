@@ -149,6 +149,8 @@ export const conformanceEvents = (provides = {}) => definePlugin({
       })
     }
     if (config.name) ctx.on(config.name, listener(ctx, log, config), config.options ?? {})
+    // What it emits while it unloads (§7.1): a cleanup on its stack.
+    if (config.onUnload) ctx.effect(() => dispatch(ctx, log, config.onUnload.emits))
   },
 })
 

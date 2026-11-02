@@ -68,6 +68,8 @@ public struct Participant: Decodable {
     var options: Options?
     /// A service of this name the row provides besides (rutis/service).
     var provides: String?
+    /// What it emits while it unloads (§7.1): a cleanup on its stack.
+    var onUnload: JSONValue?
     /// The row's apply fails with this error, having registered nothing.
     var fails: Thrown?
 
@@ -380,4 +382,8 @@ public let conformanceEventsPlugin = Rutis.define(Plugin(
             }
         }
         if let provides = participant.provides { ctx.provide(provides, Present()) }
+        if let onUnload = participant.onUnload {
+            // What it emits while it unloads (§7.1).
+            ctx.effect { _ = try await row.dispatch(row.nativeSpec(onUnload["emits"] ?? .object([:]))) }
+        }
     }))
