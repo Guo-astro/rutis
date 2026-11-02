@@ -754,17 +754,68 @@ fn a_python_project_runs_a_typescript_fake_from_dev() {
     assert_eq!(status.code(), Some(0), "{stderr}");
 }
 
-/// A project whose rows provide nothing: its services line says `none`
-/// (#670).
+/// A project whose rows provide nothing says no services line (#1046: it
+/// used to say `none` at every start and every rebuild).
 #[test]
-fn dev_says_when_no_service_is_provided() {
+fn dev_says_no_services_line_when_no_row_provides_one() {
     let dir = tempfile::tempdir().unwrap();
     common::process::dev_project(dir.path());
     let mut host = Host::start(&["dev", "."], dir.path());
-    host.wait_line(|line| (line == "rutis-host dev: services: none").then_some(()));
+    host.wait_line(|line| line.ends_with(": running").then_some(()));
+    // A few polls: the line would be said once every row settled.
+    std::thread::sleep(std::time::Duration::from_millis(1200));
     signal(&host, libc::SIGINT, true);
-    let (status, stderr, _) = host.exit();
+    let (status, stderr, output) = host.exit();
     assert_eq!(status.code(), Some(0), "{stderr}");
+    assert!(
+        !output
+            .iter()
+            .any(|line| line.starts_with("rutis-host dev: services:")),
+        "no row provides a service, so nothing is said: {output:#?}"
+    );
+}
+
+/// A reload takes the row's service away for a moment: the services line
+/// is not said in between, only before and after (#1046).
+#[test]
+fn dev_does_not_say_none_between_a_reload() {
+    let dir = tempfile::tempdir().unwrap();
+    project(dir.path(), &NODE);
+    let mut host = Host::start(&["dev", "."], dir.path());
+    fn services(line: &str) -> Option<&str> {
+        line.strip_prefix("rutis-host dev: services: ")
+    }
+    let first = host.wait_line(|line| services(line).map(str::to_owned));
+    assert!(first.contains("llm (llm)"), "{first}");
+    // `llm` reloads into a version that provides its service only after a
+    // while: for that while nothing provides one, long enough for a poll to
+    // see it, which is when the line used to say `none`.
+    edit(
+        &dir.path().join(NODE.llm),
+        &format!(
+            "import {{ definePlugin }} from '{}'\n\
+             export default definePlugin({{\n\
+               provides: {{ llm: {{ ask: 'async' }} }},\n\
+               apply(ctx) {{\n\
+                 setTimeout(() => ctx.provide('llm', {{ ask: async () => 'ok' }}), 900)\n\
+               }},\n\
+             }})\n",
+            sdk()
+        ),
+    );
+    host.wait_line(|line| line.starts_with("llm: reloaded").then_some(()));
+    // A few polls: a `none` line would come between the two.
+    std::thread::sleep(std::time::Duration::from_millis(1200));
+    signal(&host, libc::SIGINT, true);
+    let (status, stderr, output) = host.exit();
+    let context = format!("status {status:?}; output: {output:#?}; stderr: {stderr}");
+    assert_eq!(status.code(), Some(0), "{context}");
+    assert!(
+        !output
+            .iter()
+            .any(|line| line == "rutis-host dev: services: none"),
+        "{context}"
+    );
 }
 
 /// A service provided after its row settled, as one a runtime registers
@@ -773,14 +824,15 @@ fn dev_says_when_no_service_is_provided() {
 fn dev_says_the_services_again_when_they_change() {
     let dir = tempfile::tempdir().unwrap();
     project(dir.path(), &NODE);
-    // The project's own plugin, whose service comes a while after its
-    // apply returned.
+    // The project's own plugin: one service as it applies, another one a
+    // while after its apply returned.
     edit(
         &dir.path().join(NODE.own),
         &format!(
             "import {{ definePlugin }} from '{}'\n\
              export default definePlugin({{\n\
                apply(ctx) {{\n\
+                 ctx.provide('early', {{ now: async () => 'ok' }})\n\
                  setTimeout(() => ctx.provide('late', {{ now: async () => 'ok' }}), 1500)\n\
                }},\n\
              }})\n",
@@ -794,6 +846,7 @@ fn dev_says_the_services_again_when_they_change() {
         line.strip_prefix("rutis-host dev: services: ")
     }
     let first = host.wait_line(|line| services(line).map(str::to_owned));
+    assert!(first.contains("early (weather)"), "{first}");
     assert!(!first.contains("late"), "{first}");
     host.wait_line(|line| services(line)?.contains("late (weather)").then_some(()));
     signal(&host, libc::SIGINT, true);

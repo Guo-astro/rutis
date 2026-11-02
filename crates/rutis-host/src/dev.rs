@@ -156,12 +156,7 @@ pub async fn dev(args: &[String]) -> Result<Stopped, String> {
         remove_builds(&mut project.stale);
         tokio::select! {
             _ = tokio::time::sleep(POLL) => {
-                let changed = shown
-                    .lock()
-                    .unwrap()
-                    .as_ref()
-                    .is_some_and(|line| *line != services_line(&host.loader));
-                if changed {
+                if shown.lock().unwrap().as_ref() != services_line(&host.loader).as_ref() {
                     show_services(&host.loader, &shown);
                 }
             }
@@ -238,16 +233,18 @@ pub async fn dev(args: &[String]) -> Result<Stopped, String> {
 
 /// The services and the rows providing them, as `Loader::status()` has
 /// them: `rutis-host dev: services: forecast (weather), llm (llm)`, by
-/// name; `host` for one the host provides (`rutis/loader`); `none` when no row
-/// provides one, whatever the host does.
-fn services_line(loader: &rutis_loader::Loader) -> String {
+/// name; `host` for one the host provides (`rutis/loader`); `None` when no
+/// row provides one, whatever the host does — nothing to say (#1046: the
+/// line said `none` at every start and every rebuild, and after a reload it
+/// said it again while the row was gone for a moment).
+fn services_line(loader: &rutis_loader::Loader) -> Option<String> {
     let status = loader.status();
     if status
         .services
         .iter()
         .all(|service| service.provider.is_none())
     {
-        return "rutis-host dev: services: none".to_owned();
+        return None;
     }
     let services: Vec<String> = status
         .services
@@ -260,7 +257,7 @@ fn services_line(loader: &rutis_loader::Loader) -> String {
             )
         })
         .collect();
-    format!("rutis-host dev: services: {}", services.join(", "))
+    Some(format!("rutis-host dev: services: {}", services.join(", ")))
 }
 
 /// What `dev --debug` says of each local runtime `config` starts: where its
@@ -985,11 +982,14 @@ struct Cause {
     changed: bool,
 }
 
-/// Print the services line, and keep it as the one last said.
+/// Print the services line, and keep it as the one last said; nothing when
+/// no row provides a service.
 fn show_services(loader: &rutis_loader::Loader, shown: &std::sync::Mutex<Option<String>>) {
     let line = services_line(loader);
-    errln!("{line}");
-    *shown.lock().unwrap() = Some(line);
+    *shown.lock().unwrap() = line.clone();
+    if let Some(line) = line {
+        errln!("{line}");
+    }
 }
 
 /// Delete the builds in `stale`, keeping those that cannot be deleted yet

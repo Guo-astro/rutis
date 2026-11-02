@@ -110,7 +110,7 @@ No separate "command line" identity: rutis-host itself calls no service, so in r
   rutis-host dev: services: forecast (weather), llm (llm), loader (host), sessions (host)
   ```
 
-  Sorted by service name; in parentheses the row providing it (0.18's `provider`; `host` for the host). When no row provides one: `rutis-host dev: services: none`, whatever the host provides.
+  Sorted by service name; in parentheses the row providing it (0.18's `provider`; `host` for the host). When no row provides one, nothing is printed, whatever the host provides (revised 2026-11-02: it used to say `rutis-host dev: services: none`, and printed it at every start and every rebuild, #1046).
 - After each reload, rebuild or reread of `rutis.dev.json` has finished (after the existing `settled`), it prints the line again, as the issue's "print after starting and reloading" says, without comparing with the last one.
 - The data comes only from `Loader::status().services`. `run` does not print it (production output does not change); use `rutis-host status` there.
 - It is a new kind of line in `dev`'s output, starting with `rutis-host dev: ` like the existing `rutis-host dev: running …`, not shaped like `<row>: <state>`, so scripts reading state lines are unaffected; existing lines do not change. It goes into the output table of "Developing plugins with dev" in rutis-host.md.
