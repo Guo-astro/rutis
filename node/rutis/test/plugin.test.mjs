@@ -15,6 +15,8 @@ import store from './fixtures/store.mjs'
 import unnamed from './fixtures/unnamed.mjs'
 import summary from './fixtures/summary.mjs'
 import both from './fixtures/both.mjs'
+import withdrawer from './fixtures/withdrawer.mjs'
+import taker from './fixtures/taker.mjs'
 
 const llm = { ask: async city => city === 'Oslo' ? 'sunny' : 'rain' }
 
@@ -43,6 +45,29 @@ test('the host fills the config defaults and refuses a config the schema refuses
   assert.equal(await t.service('weather').today(), 'rain in Bergen')
   await t.unload()
   await assert.rejects(load(weather, { config: {}, services: { llm } }), { name: 'PluginTestError', message: /^weather: .*city/ })
+})
+
+// #1030: `provided()` is what the row provides now, not what it provided
+// once. A name one row withdraws and another provides afterwards is the
+// other's, though both declared it.
+test('a service another row provides after this one withdrew it is that row\'s', async () => {
+  const h = host()
+  const first = await h.load(withdrawer)
+  assert.deepEqual(first.provided(), ['control', 'echo'])
+  assert.equal(first.service('echo').say(), 'A')
+  first.service('control').withdraw()
+  // Between the withdrawal and the next provider the name is no one's.
+  assert.deepEqual(first.provided(), ['control'])
+  assert.throws(() => first.service('echo'), { name: 'PluginTestError', message: 'the plugin does not provide echo (now)' })
+  const second = await h.load(taker)
+  assert.deepEqual(second.provided(), ['echo'])
+  // Announced, so its methods are async.
+  assert.equal(await second.service('echo').say(), 'B')
+  assert.deepEqual(first.provided(), ['control'])
+  assert.throws(() => first.service('echo'), { name: 'PluginTestError', message: 'the plugin does not provide echo (now)' })
+  await second.unload()
+  await first.unload()
+  await h.unload()
 })
 
 test('a plugin using a service it does not declare, which no one provides, is told what to declare', async () => {
