@@ -259,7 +259,8 @@ fn project(dir: &Path, lang: &Lang) -> PathBuf {
 /// lines are printed every 200 ms, apart from the rest): a line equal to
 /// it, or starting with it when it ends in `*`, a plugin's line without
 /// the row's name `dev` starts it with. The lines read for them, in the
-/// order of `wants`.
+/// order of `wants`. A wait that times out says the lines it had not read
+/// yet (#1044).
 fn expect(host: &mut Host, wants: &[&str]) -> Vec<String> {
     let matches = |want: &str, line: &str| match want.strip_suffix('*') {
         Some(prefix) => unprefixed(line).starts_with(prefix),
@@ -267,6 +268,13 @@ fn expect(host: &mut Host, wants: &[&str]) -> Vec<String> {
     };
     let mut found: Vec<Option<String>> = vec![None; wants.len()];
     while found.contains(&None) {
+        let missing: Vec<&str> = wants
+            .iter()
+            .zip(&found)
+            .filter(|(_, found)| found.is_none())
+            .map(|(want, _)| *want)
+            .collect();
+        host.waiting(format!("{missing:?}"));
         let (index, line) = host.wait_line(|line| {
             let index = (0..wants.len())
                 .find(|index| found[*index].is_none() && matches(wants[*index], line))?;

@@ -247,9 +247,10 @@ impl Client {
         self.stream.write_all(&frame).await.unwrap();
     }
 
-    /// The next frame the runtime sends.
-    async fn next(&mut self) -> (u8, Vec<u8>) {
-        within("a frame", async {
+    /// The next frame the runtime sends, waited for as `what`: the guard
+    /// says what did not come.
+    async fn next(&mut self, what: &str) -> (u8, Vec<u8>) {
+        within(what, async {
             let mut head = [0u8; 2];
             self.stream.read_exact(&mut head).await.unwrap();
             let mut length = (head[1] & 0x7F) as u64;
@@ -272,9 +273,43 @@ impl Client {
     /// The code of the runtime's close frame.
     async fn closed(&mut self) -> u16 {
         loop {
-            let (opcode, payload) = self.next().await;
+            let (opcode, payload) = self.next("a close frame").await;
             if opcode == 0x8 {
                 return u16::from_be_bytes([payload[0], payload[1]]);
+            }
+        }
+    }
+
+    /// The runtime's greeting: the text frame whose `op` is `hello`. A
+    /// control frame may come before it — the heartbeat's own timer writes
+    /// its ping ahead of what waits
+    /// (`kotlin/rutis/rutis/src/shared/kotlin/arcships/rutis/internal/remote/Frames.kt`,
+    /// #1044) — so the control frames before the greeting are read and said,
+    /// not taken for it; a text frame that is not the greeting, or a close,
+    /// fails with what it was.
+    async fn greeting(&mut self, who: &str) -> Vec<u8> {
+        let mut before: Vec<String> = Vec::new();
+        loop {
+            let (opcode, payload) = self
+                .next(&format!(
+                    "the greeting of {who} (a text frame `\"op\":\"hello\"`, {before:?} before it)"
+                ))
+                .await;
+            match opcode {
+                0x1 if String::from_utf8_lossy(&payload).contains("\"op\":\"hello\"") => {
+                    // What a fast machine skips says how often this path ran.
+                    println!("{who} greeted after {} frame(s): {before:?}", before.len());
+                    return payload;
+                }
+                0x1 => panic!(
+                    "{who} was sent a text frame that is not the greeting, after {before:?}: {}",
+                    String::from_utf8_lossy(&payload)
+                ),
+                0x8 => panic!(
+                    "{who} was closed with {} before greeting it; before that: {before:?}",
+                    u16::from_be_bytes([payload[0], payload[1]])
+                ),
+                _ => before.push(format!("{opcode:#04x} ({} bytes)", payload.len())),
             }
         }
     }
@@ -318,18 +353,13 @@ async fn a_newer_controller_takes_over_and_a_silent_one_is_dropped() {
     )
     .await;
     let mut first = Client::connect(&address).await;
-    let (opcode, hello) = first.next().await;
-    assert_eq!(opcode, 0x1);
-    assert!(
-        String::from_utf8_lossy(&hello).contains("\"op\":\"hello\""),
-        "{hello:?}"
-    );
+    first.greeting("the first controller").await;
     let mut second = Client::connect(&address).await;
     assert_eq!(first.closed().await, 4002);
     // The second says nothing: pinged, then dropped.
     let mut pinged = false;
     loop {
-        let (opcode, payload) = second.next().await;
+        let (opcode, payload) = second.next("a ping, then the close").await;
         match opcode {
             0x9 => pinged = true,
             0x8 => {
@@ -340,6 +370,31 @@ async fn a_newer_controller_takes_over_and_a_silent_one_is_dropped() {
         }
     }
     assert!(pinged);
+}
+
+/// A ping as short as the heartbeat goes comes before the greeting on a
+/// loaded machine, and the greeting still arrives: the frames before it are
+/// not the greeting (#1044, the failure of the 0.20.0 release gate: the
+/// first frame read was a ping, `0x9`, not the hello, `0x1`).
+#[tokio::test(flavor = "multi_thread")]
+async fn the_greeting_arrives_after_a_ping() {
+    if !rutis_test_support::runtimes::enabled("kotlin") {
+        return;
+    }
+    let (_runtime, address) = Runtime::listening(
+        "listen:ws://127.0.0.1:0/rutis",
+        // A ping every millisecond, and a silent controller kept long enough
+        // that a loaded machine still has its greeting: a timeout of a
+        // second would close it (1001) before the greeting arrives, which is
+        // another test's event.
+        &[("RUTIS_TOKEN", TOKEN), ("RUTIS_HEARTBEAT", "1,30000")],
+    )
+    .await;
+    let mut client = Client::connect(&address).await;
+    // Whether a ping came first is the machine's: 1 ms against a JVM that
+    // writes the greeting after its reader, writer and hello. Either way
+    // the greeting is what the controller waits for, and it comes.
+    client.greeting("a controller under a 1 ms heartbeat").await;
 }
 
 /// A CA and a certificate for `localhost` and 127.0.0.1 it signed.
