@@ -2,10 +2,12 @@
 //! it changes.
 //!
 //! - A changed file reloads the rows whose file it is (`dev/fake-llm.ts`,
-//!   `src/fake_llm.py`); any other file of the project reloads the
-//!   project's own row. A Go or Swift project is rebuilt instead when its
-//!   sources change, and its runtime restarted on the new build; its other
-//!   files rebuild nothing.
+//!   `src/fake_llm.py`); a module the project loads reloads the project's
+//!   own row: a source file, a manifest, `.env`. A test file, a document,
+//!   an image or a lockfile reloads nothing (#938: a test run or a new
+//!   `README` restarted the row and every row that uses it). A Go or Swift
+//!   project is rebuilt instead when its sources change, and its runtime
+//!   restarted on the new build; its other files rebuild nothing.
 //! - `rutis.dev.json` is read again when its content changes (or on
 //!   SIGUSR1), as `run --watch-config` reads `rutis.json`: all or nothing,
 //!   the rows that changed restarting with their new fields.
@@ -461,6 +463,7 @@ impl Project {
             .into_iter()
             .map(|(path, _)| path)
             .filter(|path| !claimed.contains(path))
+            .filter(|path| reloads_own(&self.dir, path))
             .collect();
         if !rest.is_empty() {
             match plan.iter_mut().find(|(id, _)| *id == self.own) {
@@ -671,6 +674,86 @@ fn row_name(host: &Host, id: &str) -> Option<String> {
 /// directory reached through a symbolic link is one directory).
 fn same(path: &Path) -> PathBuf {
     path.canonicalize().unwrap_or_else(|_| path.to_owned())
+}
+
+/// Whether a change to `path`, a file of the project that is no row's own
+/// file, reloads the project's own row: a module or a manifest a runtime
+/// loads, or `.env`. A test file, a document, an image or a lockfile
+/// changes nothing the plugin runs, and with them a test run or a new
+/// `README` restarted the row and every row that uses it (#1046).
+///
+/// `project` is the project's directory, which `path` is under: the
+/// directories in between count from there, so a project that lives under a
+/// directory called `tests` is not a project of nothing but test files.
+fn reloads_own(project: &Path, path: &Path) -> bool {
+    const LOADED: &[&str] = &[
+        "ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs", "json", "py", "pyi", "yaml", "yml",
+        "toml",
+    ];
+    // Tool output that shares a source file's extension: a test run writing
+    // coverage is not a change to the plugin.
+    const OUTPUT: &[&str] = &[
+        "package-lock.json",
+        "npm-shrinkwrap.json",
+        "pnpm-lock.yaml",
+        "yarn.lock",
+        "bun.lock",
+        "bun.lockb",
+        "uv.lock",
+        "poetry.lock",
+        "Cargo.lock",
+        "go.sum",
+        "Package.resolved",
+    ];
+    let relative = path.strip_prefix(project).unwrap_or(path);
+    if is_test_file(relative) {
+        return false;
+    }
+    let name = relative
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
+    if OUTPUT.contains(&name) {
+        return false;
+    }
+    match relative
+        .extension()
+        .and_then(|extension| extension.to_str())
+    {
+        Some(extension) => LOADED.contains(&extension.to_ascii_lowercase().as_str()),
+        // `.env` has no extension, and `project::sources` keeps it.
+        None => name == ".env",
+    }
+}
+
+/// A file a test runner runs rather than one a plugin loads: `*.test.ts`,
+/// `*.spec.js`, `*.bench.mjs`, `test_*.py`, `*_test.py`, `*_test.go`, and
+/// anything under a `test`, `tests`, `__tests__` or `__mocks__` directory of
+/// the project.
+fn is_test_file(relative: &Path) -> bool {
+    let name = relative
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if [".test.", ".spec.", ".bench."]
+        .iter()
+        .any(|part| name.contains(part))
+    {
+        return true;
+    }
+    if name.ends_with("_test.py")
+        || name.ends_with("_test.go")
+        || (name.starts_with("test_") && name.ends_with(".py"))
+    {
+        return true;
+    }
+    relative.components().any(|component| {
+        matches!(
+            component.as_os_str().to_str(),
+            Some("test" | "tests" | "__tests__" | "__mocks__" | "coverage" | "htmlcov")
+        )
+    })
 }
 
 /// The local runtime (`node`, `py`, `bun`) of the row named `name`, among
@@ -961,6 +1044,49 @@ mod tests {
             ["dev/probe.py", "gone.go", "new.go"].map(PathBuf::from)
         );
         assert!(changed_files(&before, &before).is_empty());
+    }
+
+    /// guarantee: host/dev-reload
+    /// A change to a test file, a document or a lockfile reloads nothing;
+    /// a module, a manifest and `.env` do (#938).
+    #[test]
+    fn dev_reloads_modules_and_not_tests_or_documents() {
+        let project = Path::new("/work/weather");
+        let reloads = |path: &str| reloads_own(project, Path::new(path));
+        assert!(reloads("/work/weather/src/helpers.ts"));
+        assert!(reloads("/work/weather/src/fake_llm.py"));
+        assert!(reloads("/work/weather/package.json"));
+        assert!(reloads("/work/weather/pyproject.toml"));
+        assert!(reloads("/work/weather/config.yaml"));
+        assert!(reloads("/work/weather/.env"));
+        assert!(!reloads("/work/weather/src/weather.test.ts"));
+        assert!(!reloads("/work/weather/src/weather.spec.mjs"));
+        assert!(!reloads("/work/weather/src/weather.bench.ts"));
+        assert!(!reloads("/work/weather/tests/fixture.py"));
+        assert!(!reloads("/work/weather/test_weather.py"));
+        assert!(!reloads("/work/weather/weather_test.go"));
+        assert!(!reloads("/work/weather/README.md"));
+        assert!(!reloads("/work/weather/notes.txt"));
+        assert!(!reloads("/work/weather/logo.png"));
+        // A lockfile or a tool's output is not a change to the plugin,
+        // though it shares a manifest's extension.
+        assert!(!reloads("/work/weather/package-lock.json"));
+        assert!(!reloads("/work/weather/pnpm-lock.yaml"));
+        assert!(!reloads("/work/weather/uv.lock"));
+        assert!(!reloads("/work/weather/Cargo.lock"));
+        assert!(!reloads("/work/weather/Package.resolved"));
+        assert!(!reloads("/work/weather/coverage/tmp/report.json"));
+        // The directories in between count from the project: a project under
+        // a directory called `tests` still reloads its modules.
+        let under_tests = Path::new("/work/tests/weather");
+        assert!(reloads_own(
+            under_tests,
+            Path::new("/work/tests/weather/src/index.ts")
+        ));
+        assert!(!reloads_own(
+            under_tests,
+            Path::new("/work/tests/weather/src/index.test.ts")
+        ));
     }
 
     /// The runtime a row runs in: its prefix, or Node; none for a peer, or

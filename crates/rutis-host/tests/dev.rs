@@ -392,6 +392,11 @@ fn the_dev_loop(lang: &Lang) {
         ],
     );
 
+    // 6. A document, and a file no runtime loads: nothing reloads for them
+    // (#938). The reload counts below would see it.
+    std::fs::write(dir.path().join("README.md"), "notes\n").unwrap();
+    std::fs::write(dir.path().join("notes.txt"), "notes\n").unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(1200));
     signal(&host, libc::SIGTERM, false);
     let (status, stderr, output) = host.exit();
     let context = format!("status {status:?}; output: {output:#?}; stderr: {stderr}");
