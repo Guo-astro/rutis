@@ -269,9 +269,21 @@ jobs:
       - run: mkdir dist && cp packages/wheels/* dist/
       # uv, not pypa/gh-action-pypi-publish: that action is a Docker image,
       # and a self-hosted Linux runner carrying the label ubuntu-24.04 may
-      # have no Docker. --check-url skips the files PyPI already has.
+      # have no Docker.
       - uses: astral-sh/setup-uv@v6
-      - run: uv publish --trusted-publishing always --publish-url https://upload.pypi.org/legacy/ --check-url https://pypi.org/simple/ dist/*
+      # The version first: a re-run builds the wheels again and they differ
+      # (a wheel carries its build's paths and times), so `--check-url`
+      # refuses them — "Local file and index file do not match" — once the
+      # version is up. Publishing only what PyPI lacks is what the other
+      # channels do too (docs/release.md, step 5).
+      - name: Publish unless PyPI has this version
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          if curl -sf "https://pypi.org/pypi/rutis/$version/json" > /dev/null; then
+            echo "rutis $version is already on PyPI"
+            exit 0
+          fi
+          uv publish --trusted-publishing always --publish-url https://upload.pypi.org/legacy/ --check-url https://pypi.org/simple/ dist/*
 
   pypi-host:
     needs: [verify, ci, install, dylib-windows]
@@ -287,9 +299,17 @@ jobs:
           pattern: wheels-*
           merge-multiple: true
           path: dist
-      # uv, as in the job pypi: no Docker.
+      # uv, as in the job pypi: no Docker, and the version first (a re-run's
+      # wheels differ, so `--check-url` would refuse them).
       - uses: astral-sh/setup-uv@v6
-      - run: uv publish --trusted-publishing always --publish-url https://upload.pypi.org/legacy/ --check-url https://pypi.org/simple/ dist/*
+      - name: Publish unless PyPI has this version
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          if curl -sf "https://pypi.org/pypi/rutis-host/$version/json" > /dev/null; then
+            echo "rutis-host $version is already on PyPI"
+            exit 0
+          fi
+          uv publish --trusted-publishing always --publish-url https://upload.pypi.org/legacy/ --check-url https://pypi.org/simple/ dist/*
 
   # Maven Central: the Kotlin SDK, io.github.arcships:rutis (jvm and
   # android), io.github.arcships:rutis-ksp and io.github.arcships:rutis-testing, under the namespace
