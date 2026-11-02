@@ -30,6 +30,10 @@ type Participant struct {
 	} `json:"options"`
 	// A service of this name the row provides besides (rutis/service).
 	Provides string `json:"provides"`
+	// What it emits while it unloads (§7.1): a cleanup on its stack.
+	OnUnload *struct {
+		Emits Spec `json:"emits"`
+	} `json:"onUnload"`
 	// The row's Apply fails with this error, having registered nothing.
 	Fails *struct {
 		Name    string `json:"name"`
@@ -442,6 +446,13 @@ var Plugin = rutis.Define(rutis.Plugin[Participant]{
 		}
 		if p.Provides != "" {
 			c.Provide(p.Provides, Present{})
+		}
+		if p.OnUnload != nil {
+			spec := p.OnUnload.Emits
+			c.Effect(func(ctx context.Context) error {
+				_, err := r.dispatch(ctx, spec)
+				return err
+			})
 		}
 		return nil
 	},

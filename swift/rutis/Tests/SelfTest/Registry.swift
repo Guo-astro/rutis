@@ -59,6 +59,7 @@ private let everywhere: [(String, () async throws -> Void)] = [
     ("UnloadOrderTests.anotherRowLosesItWhenTheUnloadStarts", { try await UnloadOrderTests().anotherRowLosesItWhenTheUnloadStarts() }),
     ("UnloadOrderTests.aCleanupRegisteringOneIsRefused", { try await UnloadOrderTests().aCleanupRegisteringOneIsRefused() }),
     ("UnloadOrderTests.anOldWithdrawalLeavesANewRegistrationAlone", { try await UnloadOrderTests().anOldWithdrawalLeavesANewRegistrationAlone() }),
+    ("UnloadOrderTests.aRowsCleanupStillEmits", { try await UnloadOrderTests().aRowsCleanupStillEmits() }),
     ("PluginValueTests.theRuntimeTakesDefinitionsBack", { try await PluginValueTests().theRuntimeTakesDefinitionsBack() }),
     ("PluginValueTests.eachCopyLoadsWithItsConfig", { try await PluginValueTests().eachCopyLoadsWithItsConfig() }),
     ("PluginValueTests.aDefinitionGoesHomeAsItself", { try await PluginValueTests().aDefinitionGoesHomeAsItself() }),

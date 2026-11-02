@@ -521,6 +521,19 @@ impl DynPlugin for Participant {
             if self.config.get("name").is_some() {
                 listen(ctx, &self.log, &self.alive, &self.config)?;
             }
+            // What it emits while it unloads (§7.1): a cleanup on its stack,
+            // registered before this apply returns.
+            if let Some(spec) = self.config.get("onUnload") {
+                let spec = spec["emits"].clone();
+                let (owned, log) = (ctx.clone(), self.log.clone());
+                ctx.effect(move || {
+                    let (ctx, log, spec) = (owned.clone(), log.clone(), spec.clone());
+                    async move {
+                        let _ = dispatch(&ctx, &log, &spec, None).await;
+                        Ok(())
+                    }
+                })?;
+            }
             Ok(Effect::Done)
         })
     }

@@ -264,6 +264,14 @@ def apply(ctx, config):
             prepend=bool(options.get("prepend")),
             global_=bool(options.get("global")),
         )
+    if "onUnload" in config:
+        # What it emits while it unloads (§7.1): a cleanup on its stack.
+        spec = config["onUnload"]["emits"]
+
+        async def closing():
+            await _settled(dispatch(ctx, log, spec))
+
+        ctx.effect(closing)
 
 
 # Declared with its name, as the other languages name it: the descriptors

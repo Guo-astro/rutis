@@ -66,7 +66,7 @@
 - **线上的作用域链**：JSON 数组，元素是 `{ "id": <字符串>, "group": <字符串> }`，最外层在前。根是 `[]`。`id` 是不透明的字符串，在宿主现在和过去的全部实例中唯一（Rust：组 fiber 的 `InstanceId` 的十进制）；`group` 是加载器组的名字。例：`[{"id":"17","group":"tenant"},{"id":"42","group":"session"}]`。
 - **规则**：事件按名字送达；作用域是监听器的描述，供过滤使用，不是送达规则。一个 root 总线上这个名字的每个监听器都收到每次分发，不论它在哪个作用域、哪个运行时（Cordis 的平总线）。相连的节点只增加它的连接 `export` / `import` 承载的名字。
 - **进程怎样知道作用域链**：宿主告诉每一行它的链。`rows.load` 增加第七个参数 `{ "scope": <链>, "id": <行的 id> }`（0.13 宿主总是发七个参数；行不导出服务时 `exports` 是 `{}`）。`id` 是配置给这一行的 id（加载器的行 id；同一组的各实例复制的行 id 相同），与会话内唯一的行键不同：描述（§4.2）与报告的各条信息（§5.6、第十一节）用它称呼这一行，协议消息仍用行键。没有 `id` 时用行键。经 `mount` 的 `plugins` 列表加载的插件，得到 `mount` 参数 `scope`（挂载它的插件的链）。Rust 插件用 `Ctx::scope()`（§12.1）。`mount` 还带 `runtime`，即描述里给出的运行时名字（§4.2）：运行时在快速路径上给自己的条目写描述时用它，与经宿主时的描述一致。
-- **发出方的作用域从不由发出方自报**：运行时的 `events.dispatch` 写明发出的 `row`，宿主用这一行的链；这一行没有加载在这个会话上时拒绝（`BindingError`，`row <key> is not loaded in this runtime`）。挂载方式加载的插件写 `row: null`，用挂载的链。
+- **发出方的作用域从不由发出方自报**：运行时的 `events.dispatch` 写明发出的 `row`，宿主用这一行的链；这一行没有加载在这个会话上时拒绝（`BindingError`，`row <key> is not loaded in this runtime`）。正在卸载、还没回答 `rows.unload` 的行仍算加载着（§7.1）。挂载方式加载的插件写 `row: null`，用挂载的链。
 - 叶子插件的 `isolate` 标签（服务作用域、U+0001 的租约）与事件作用域无关。
 
 ## 四、监听器登记
@@ -236,11 +236,13 @@ Cordis 的 `events.dispatch(type, args)`（五个方法底下的原语，返回�
 
 一行卸载时（宿主发 `rows.unload`，或运行时报告 `rows.ended`），依次：
 
-1. 宿主在发出 `rows.unload` 或收到 `rows.ended` 时，把这一行的条目撤出监听器表（并发 `events.elsewhere`）；运行时再为它们发 `events.off` 也无妨。`rows.ended` 与同一会话的 `events.*` 按帧的顺序处理（它也只改表，§4.1）：在它之前发出的 `events.on` 先进表、再随这一行撤下，在它之后发出的 `events.dispatch` 不再送达这一行。
+1. 宿主在发出 `rows.unload` 或收到 `rows.ended` 时，把这一行的条目撤出监听器表（并发 `events.elsewhere`）；运行时再为它们发 `events.off` 也无妨。`rows.ended` 与同一会话的 `events.*` 按帧的顺序处理（它也只改表，§4.1）：在它之前发出的 `events.on` 先进表、再随这一行撤下，在它之后发出的 `events.dispatch` 不再送达这一行。撤下的是它的**监听器**：这一行仍是自己的发出方，直到第 5 步跑完、`rows.unload` 得到回复（2026-11-02 修订，[#1041](https://github.com/arcships/rutis/issues/1041)）。
 2. 运行时立即不再接受这一行的调用：之后到达的 `events.call` 以已撤下的错误失败（§5.3）。
 3. 提供的服务从这里起对这一行的**其他**读者不可见：别的行拿到的是 `service <name> is not available`，不看到旧答案。删表与“这一行自己也不再把它算作自己提供的”都在第 5 步里那一条撤回跑到的时候（[卸载顺序](design-unload-order-2026-11-01.md) D1、D2）。宿主收到这些服务撤回的时刻不变：仍是这一步，在 `rows.unload` 的回复之前。
 4. 这一行正在运行的监听器调用收到取消信号（Go：context；Python：任务取消；JavaScript：这一行的 `ctx.signal` 被中止；Rust：fiber 的停止，与它的其他任务相同），并被等待，最多 `RUTIS_SHUTDOWN_TIMEOUT`（默认 10 秒；Rust 插件用宿主自己的关闭截止时间）。超过时运行时写 `rutis: listeners of row <row> still running after <s>s; unloading anyway`，放弃它们，继续。
-5. 按逆序执行这一行的卸载栈：清理与第 3 步说的那些撤回混在一起，一条一条运行，撤回在自己的位置上发生（`provide` 之后登记的清理读得到自己提供的服务，之前登记的不行，与 Rust 的 `drain_effects` 相同）。跑完回复 `rows.unload`。
+5. 按逆序执行这一行的卸载栈：清理与第 3 步说的那些撤回混在一起，一条一条运行，撤回在自己的位置上发生（`provide` 之后登记的清理读得到自己提供的服务，之前登记的不行，与 Rust 的 `drain_effects` 相同）。清理里发出的（`emit` 与其余四种方式）照常分发，别的行的监听器听得到——这一行自己的条目已在第 1 步撤下，所以它自己听不到，也不会重入。跑完回复 `rows.unload`，宿主随后把这一行从会话上撤下（§3）：它的上下文再发出的以 `BindingError` 拒绝（`row <key> is not loaded in this runtime`），它还在排队的 emit 被丢弃（§5.5）。
+
+卸载栈里这一行登记的监听器不保留（2026-11-02 修订）：宿主照常回复 `events.on`，但不进表、不报告；各运行时的插件 API 也照旧拒绝它，说法与拒绝清理相同（Go、Swift 写 `rutis: row <行> is not active: …`，Node 的 Cordis fiber 报 `INACTIVE_EFFECT`），所以它听不到任何事件。运行时报告 `rows.ended` 时不经过第 5 步：它报告时这一行已经结束，宿主立即按撤下处理。
 
 条目被撤下时已经发出的调用失败一次，错误为已撤下的错误或传输错误；从不重试。
 
@@ -513,6 +515,7 @@ impl EventBus {
 
 - **发出说明**（spec）：`from`（位置）、`row`（发出方 label，默认 `e`）、`scope`（默认 `root`）、`mode`、`name`（默认用例的）、`args`（值；值标记写作 `{"$<tag>": …}`，同 `weather.expected.json`；`{"$callback":"upper"}` 是把参数转成大写的函数）、`filter`（`{ "keep": [labels] }`：送达 `row` 在列表中的条目；探针对它被调用时的每个描述记 `filter:<row>`）、`via`（`"thisArg"`：Cordis 的 `Context.filter`，只用于 Node 的 Cordis 发出方）、`terminal`（文字：记 `terminal` 并返回这段文字的终态；`{ "echo": true }`：记 `terminal` 并返回它的第一个参数，即事件的第一个参数）、`cancel`（`{ "when": "<label>" }`：那个监听器记下开始后，发出方取消这次分发）、`then`（`{ "until": "<entry>", "args": [..] }`，只用于 `emit`：分发之后发出方同步调用 `events-log.until(entry)`，返回后用这些参数再发出一次同样的事件；用例关心的是这次等待期间到达它的帧）。
 - **发出方的行**：运行器在 spec 的 `from` 位置与 `scope` 创建它写明的发出方（`row`，默认 `e`）；监听器的 `emits` 从监听器自己的行发出。
+- **`onUnload`**（2026-11-02 修订）：参与者可以带 `{ "emits": <发出说明> }`，这一行卸载时从卸载栈里的清理发出它——各语言都是「登记一条清理」，所以 §7.1 第 5 步在每种运行时、每个位置都按同一方式查（用例 `unload/cleanup-emits`）。
 - **步骤**，按顺序：`{ "emit": spec, "expect": … }`（`"background": true`：这一步不等分发结束；下一个 `unload` / `kill` 步骤的 `expect` 说的是这次分发的结果与日志）、`{ "load": listener }`（新的一行；`provides`：它另外提供一个这个名字的空服务）、`{ "unload": label }`、`{ "kill": "Y" | "node" }`（结束那个进程 / 那条连接；在 `restart` 步骤之前不恢复）、`{ "restart": "Y" }`、`{ "concurrent": [steps], "hold": true }`（`hold`：宿主的测试钩子扣住这些分发直到全部到达；之后 `expect` 适用于每一个，`throws` 表示至少一个）。`unload` 与 `kill` 可带 `"when": "<label>"`：先等那个监听器开始。`unload` 可带 `"then": "<entry>"`：那一行卸载后（带 `answered` 时还要等宿主回复了收到的分发），执行器记下这一条，再去等后台的分发（`then.until` 等的就是它）。
 - **期望**：`returns`（值；`null` = 没有结果）、`throws`（`{}` 任意错误，或 `name`、`message`（子串）、`errors`（按顺序的子错误，每个为 `{}` / `name` / `message`））、`log`（确切顺序）、`logUnordered`、`logContains`（按此顺序出现，中间可有其他）、`reported`（`[{ "label", "name" }]`，§5.6）、`filterSees`（过滤函数被调用时的行，按顺序；运行器按每个参与者实际所在核对描述的 `runtime`、`node` 与 `scope`）、`viaHost`（是否有 `events.dispatch` 到达宿主）、`settles`（`true`：这一步在 5 秒内结束，无论成败）、`answered`（`true`：运行器等到宿主对它收到的每个 `events.dispatch` 都写出了回复，最多 5 秒；之后发给运行时的帧都在这些回复之后到达，按 §5.5 发出方已把这些经宿主的 emit 记为已得到回复，用于其后断言 `viaHost: false` 的步骤）、`logLacks`（日志里不得出现的条目）。日志在整个用例中累积；每个日志期望说的都是到此为止的全部日志。运行器最多等 5 秒让日志完整。
 - **`vary`**：位置要变化的参与者（label，发出方为 `e`），运行器取所有位置的组合（笛卡尔积），`at` / `from` 是第一种组合。`node` 不被分配到 `root` 以外的作用域。

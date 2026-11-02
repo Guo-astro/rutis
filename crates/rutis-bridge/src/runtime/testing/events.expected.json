@@ -12,7 +12,7 @@
   "languages": ["rust", "node", "node-leaf", "bun", "python", "go", "swift", "kotlin"],
   "scopes": {"t1": "tenant", "t1/s1": "session", "t2": "team"},
   "locations": ["X", "Y", "host", "node"],
-  "toolCases": {"go": 44, "swift": 44, "kotlin": 45},
+  "toolCases": {"go": 45, "swift": 45, "kotlin": 46},
   "cases": [
     { "case": "emit/reaches-all", "rule": "5.4 emit", "name": "t/emit", "vary": ["a", "b", "c", "e"],
       "listeners": [
@@ -338,6 +338,16 @@
       "steps": [
         {"emit": {"from": "X", "mode": "parallel", "args": []}, "background": true},
         {"unload": "b", "when": "b", "expect": {"settles": true, "log": ["b", "b:cancelled"]}}
+      ] },
+
+    { "case": "unload/cleanup-emits", "rule": "7.1", "name": "t/bye", "vary": ["b", "z"],
+      "listeners": [
+        {"label": "b", "at": "X", "log": "arg", "does": {"returns": null}}
+      ],
+      "steps": [
+        {"load": {"label": "z", "at": "Y", "log": "arg", "does": {"returns": null},
+                  "onUnload": {"emits": {"mode": "serial", "name": "t/bye", "args": ["bye"]}}}},
+        {"unload": "z", "expect": {"settles": true, "log": ["b:bye"]}}
       ] },
 
     { "case": "unload/not-called-after", "rule": "7.1", "name": "t/unloaded", "vary": ["a", "b", "e"],

@@ -139,7 +139,7 @@ func (c *Ctx) On(name string, fn func(ctx context.Context, args ...any) (any, er
 	rt.mu.Lock()
 	// An unloaded row's task listening: reported, not a panic (a plain
 	// goroutine or timer calling it recovers nothing), as Provide.
-	if rt.rows[c.row.key] != c.row {
+	if rt.rows[c.row.key] != c.row || c.row.unloading {
 		rt.mu.Unlock()
 		fmt.Fprintf(rowOutput, "rutis: row %s is not active: listener of %s is not registered\n", c.row.name, name)
 		return func() {}

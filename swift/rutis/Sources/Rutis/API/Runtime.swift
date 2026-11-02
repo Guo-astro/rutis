@@ -143,6 +143,12 @@ final class Row: @unchecked Sendable {
     /// A provide that failed while the row loads: it fails the load.
     var failure: Error?
     var order = 0
+    /// Whether its unload stack is running: it registers no listener,
+    /// cleanup or service any more, while the emissions its cleanups make
+    /// still reach the other rows (§7.1); it leaves `rows` when the stack
+    /// ends. Not `Provided.unloading`, which says a service of this row is
+    /// already invisible to other rows (that starts with the same unload,
+    /// but the withdrawal on the stack runs later).
     var unloading = false
 
     // The invocations of its listeners running, and its spawned tasks: an
@@ -520,7 +526,7 @@ final class Runtime: @unchecked Sendable {
         lock.lock()
         // A task of an unloaded row providing: refused, or the service would
         // outlive its row and the row's next load find it taken.
-        guard rows[row.key] === row else {
+        guard rows[row.key] === row, !row.unloading else {
             lock.unlock()
             fail(row, RutisError(name: "Error", message: "row \(row.name) is not active"))
             return {}
@@ -812,7 +818,10 @@ final class Runtime: @unchecked Sendable {
     func unload(_ key: String) async throws {
         let row: Row? = lock.withLock {
             guard let row = rows[key] else { return nil }
-            rows[key] = nil
+            if row.unloading { return nil }
+            // Its listeners are off the table at once. The row itself stays
+            // loaded until its unload stack ends, so the emissions its
+            // cleanups make still reach the other rows (§7.1).
             row.unloading = true
             forgetListeners(row)
             // From here on no other row sees what this one provides; it still
@@ -849,6 +858,11 @@ final class Runtime: @unchecked Sendable {
         for cleanup in steps.reversed() {
             do { try await cleanup() } catch { errors.append(error) }
         }
+        // Its cleanups may emit, or register listeners: both stop here (§7.1).
+        lock.withLock {
+            if rows[row.key] === row { rows[row.key] = nil }
+            forgetListeners(row)
+        }
         if let first = errors.first {
             if errors.count == 1 { throw first }
             throw RutisError(name: RutisError.Name.aggregateError, message: "\(errors.count) cleanups of row \(row.name) failed",
@@ -857,7 +871,7 @@ final class Runtime: @unchecked Sendable {
     }
 
     func update(_ key: String, config: Value) async throws {
-        guard let row = lock.withLock({ rows[key] }) else {
+        guard let row = lock.withLock({ rows[key] }), !row.unloading else {
             throw RutisError(name: "Error", message: "row \(key) is not loaded")
         }
         // Leaf plugins have no volatile fields: a new config restarts the row.

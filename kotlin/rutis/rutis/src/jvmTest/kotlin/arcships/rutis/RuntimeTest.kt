@@ -3,7 +3,9 @@ package arcships.rutis
 import arcships.rutis.internal.RuntimeState
 import arcships.rutis.internal.Schema
 import arcships.rutis.testing.RutisTest
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import java.util.Collections
@@ -288,6 +290,42 @@ class RuntimeTest {
             assertEquals("2 listeners of t/fail failed", error.message)
             assertEquals(listOf("IllegalStateException", "Custom"), error.errors.map { (it as RutisException).name })
             assertEquals("E2", (error.errors[1] as RutisException).code)
+        }
+    }
+
+    /**
+     * A row's unload stack still emits (events protocol §7.1): another row
+     * hears it, while its own listeners are gone; once rutis answered
+     * `rows.unload`, a context kept past the row emits nothing (§3).
+     */
+    @Test
+    fun aRowsCleanupStillEmits() = runBlocking<Unit> {
+        val heard = Collections.synchronizedList(ArrayList<String>())
+        val announcing = CompletableDeferred<String>()
+        var late: Ctx? = null
+        // Two rows of one plugin: one listens, the other emits on its way out
+        // (its own listener of the name is gone by then, so it logs nothing).
+        val plugin = Rutis.define<String>(name = "closing") { ctx, role ->
+            ctx.on("t/bye") { args ->
+                heard.add("$role:${args[0]}")
+                if (role == "listening") announcing.complete("$role:${args[0]}")
+                null
+            }
+            if (role == "closing") {
+                late = ctx
+                ctx.effect { ctx.emit("t/bye", "bye") }
+            }
+        }
+        RutisTest.load(plugin, "listening").use { listening ->
+            listening.load(config = "closing").use { closing ->
+                // Its emission does not fail the unload, and reaches the other row.
+                closing.unload()
+                assertEquals("listening:bye", withTimeout(5_000) { announcing.await() })
+            }
+            assertEquals(listOf("listening:bye"), heard)
+            val error = assertFailsWith<RutisException> { late!!.emit("t/bye", "late") }
+            assertEquals("BindingError", error.name)
+            assertEquals("row ${late!!.row.name} is not loaded in this runtime", error.message)
         }
     }
 }

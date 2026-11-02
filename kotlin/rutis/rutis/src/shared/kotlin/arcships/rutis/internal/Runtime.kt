@@ -159,6 +159,18 @@ internal class Row(
     var pending: MutableList<CompletableFuture<Throwable?>>? = ArrayList()
     var loading = true
 
+    /**
+     * Its unload stack is running: it registers no listener, cleanup or
+     * service any more, while the emissions its cleanups make still reach the
+     * other rows (§7.1). It leaves `RuntimeState.rows` when the stack ends.
+     *
+     * Not [`Provided.unloading`], which says a service of this row is already
+     * invisible to other rows (that starts with the same unload, but the
+     * withdrawal on the stack runs later).
+     */
+    @Volatile
+    var unloading = false
+
     fun id(name: String): String {
         val label = isolate[name]
         return try {
@@ -359,7 +371,7 @@ class RuntimeState(plugins: List<Plugin>, private val open: Boolean = false) {
             }
         }
         synchronized(lock) {
-            if (rows[row.key] !== row) {
+            if (rows[row.key] !== row || row.unloading) {
                 // A task of an unloaded row providing: refused, or the
                 // service would outlive its row and the next load find it
                 // taken.
@@ -690,7 +702,12 @@ class RuntimeState(plugins: List<Plugin>, private val open: Boolean = false) {
 
     private suspend fun unloadRow(key: String, deadlineNanos: Long?): Unloaded {
         val row = synchronized(lock) {
-            val row = rows.remove(key) ?: return Unloaded(true, null)
+            val row = rows[key] ?: return Unloaded(true, null)
+            if (row.unloading) return Unloaded(true, null)
+            // Its listeners are off the table at once. The row itself stays
+            // loaded until its unload stack ends, so the emissions its
+            // cleanups make still reach the other rows (§7.1).
+            row.unloading = true
             EventsRuntime.forgetListeners(this, row)
             // From here on no other row sees what this one provides; it still
             // does, until each withdrawal's place on the unload stack comes
@@ -829,13 +846,23 @@ class RuntimeState(plugins: List<Plugin>, private val open: Boolean = false) {
                         failing(e)
                     }
                 }
+                // Its cleanups may emit, or register listeners: both stop here
+                // (§7.1). The remove goes with it: a row that ran out of time
+                // is gone all the same.
+                synchronized(lock) {
+                    if (rows[key] === row) rows.remove(key)
+                    EventsRuntime.forgetListeners(this@RuntimeState, row)
+                }
             }
         }
         return Unloaded(!gaveUp, failure)
     }
 
     internal suspend fun update(key: String, config: Any?) {
-        val row = synchronized(lock) { rows[key] } ?: throw IllegalStateException("row $key is not loaded")
+        // A row on its unload stack is on its way out: as for one already
+        // gone, `rows.update` says it is not loaded.
+        val row = synchronized(lock) { rows[key]?.takeUnless { it.unloading } }
+            ?: throw IllegalStateException("row $key is not loaded")
         // Leaf plugins have no volatile fields: a new config restarts the row.
         unload(key)
         load(key, row.name, row.entry, config, row.exports, row.isolate, row.scope, row.inject, row.plugin)
@@ -843,7 +870,7 @@ class RuntimeState(plugins: List<Plugin>, private val open: Boolean = false) {
 
     /** Registers a cleanup if `row` is still the loaded row with `key`. */
     internal fun addCleanup(row: Row, cleanup: suspend () -> Unit): Boolean = synchronized(lock) {
-        if (rows[row.key] !== row) return false
+        if (rows[row.key] !== row || row.unloading) return false
         row.steps.add(Step(cleanup))
         true
     }

@@ -158,12 +158,14 @@ export class Bus {
   }
 
   // Withdraw `row`'s listeners at once (§7.1 1–2): the host withdrew them
-  // itself; calls for them fail as withdrawn from now on, and the row may
-  // not emit any more. `restart`: the row restarts with a new config
-  // (`rows.update`), so it stays loaded, and the host, which keeps the
-  // row, is told (`events.off`). A failure of an invocation the row's
-  // unload stops (its signal's AbortError) is not reported (§5.6).
-  withdraw(row, { restart = false } = {}) {
+  // itself; calls for them fail as withdrawn from now on. `restart`: the row
+  // restarts with a new config (`rows.update`), so it stays loaded, and the
+  // host, which keeps the row, is told (`events.off`). `emitting`: the row
+  // is on its unload stack, whose cleanups still emit, and the other rows
+  // hear them until it ends (§7.1 5): it may emit until a later `withdraw`
+  // without `emitting`. A failure of an invocation the row's unload stops
+  // (its signal's AbortError) is not reported (§5.6).
+  withdraw(row, { restart = false, emitting = false } = {}) {
     const ids = []
     for (const entry of [...this.#entries]) {
       if (entry.row !== row || !this.#remove(entry)) continue
@@ -172,7 +174,7 @@ export class Bus {
     }
     if (restart) {
       if (ids.length && this.peer) this.peer.callAsync('', 'events.off', [ids]).catch(() => {})
-    } else if (row !== null && row !== undefined) this.#unloaded.add(row)
+    } else if (row !== null && row !== undefined && !emitting) this.#unloaded.add(row)
   }
 
   // Wait for `row`'s running listeners, at most `deadline` ms (§7.1 4).

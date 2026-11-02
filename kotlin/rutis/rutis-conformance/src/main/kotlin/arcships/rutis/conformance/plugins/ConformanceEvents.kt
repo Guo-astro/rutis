@@ -53,9 +53,15 @@ data class Participant(
     val options: ListenOptions = ListenOptions(),
     /** A service of this name the row provides besides (rutis/service). */
     val provides: String = "",
+    /** What it emits while it unloads (§7.1): a cleanup on its stack. */
+    val onUnload: OnUnload? = null,
     /** The row's apply fails with this error, having registered nothing. */
     val fails: Thrown? = null,
 )
+
+/** A row's emission from a cleanup: `{ "emits": <spec> }` (§13.2). */
+@Serializable
+data class OnUnload(val emits: Spec)
 
 @Serializable
 data class FilterSpec(val keep: List<String> = emptyList(), val throws: Thrown? = null)
@@ -336,4 +342,6 @@ val conformanceEvents = Rutis.define<Participant>(
         ctx.on(p.name, prepend = p.options.prepend, global = p.options.global) { args -> row.listen(args) }
     }
     if (p.provides.isNotEmpty()) ctx.provide(p.provides, Present())
+    // What it emits while it unloads (§7.1).
+    p.onUnload?.let { onUnload -> ctx.effect { row.dispatch(onUnload.emits) } }
 }

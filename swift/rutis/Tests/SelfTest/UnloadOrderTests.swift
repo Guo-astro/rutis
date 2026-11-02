@@ -2,6 +2,7 @@
 // services a row provides, in the order they were registered (Rust's
 // drain_effects; docs/design-unload-order-2026-11-01.md).
 import Foundation
+import RutisTest
 @testable import Rutis
 
 /// A service of the test's own.
@@ -122,5 +123,46 @@ struct UnloadOrderTests {
         try await Self.load(runtime, "a", plugin)
         try await runtime.unload("a")
         XCTAssertEqual(lines.all, ["during: count 5"])
+    }
+
+    /// A row's unload stack still emits (events protocol §7.1): another row
+    /// hears it, while the row's own listeners left when the unload started.
+    /// Once rutis answered `rows.unload`, a context kept past the row emits
+    /// nothing (§3).
+    func aRowsCleanupStillEmits() async throws {
+        let heard = Lines()
+        let late = Cell<Rutis.Ctx>()
+        // Two rows of one plugin: one listens, the other emits on its way out
+        // (its own listener of the name is gone by then, so it logs nothing).
+        let plugin = Rutis.define(Plugin(name: "closing", config: String.self) { ctx, role in
+            ctx.on("t/bye") { (value: Any?) in heard.add("\(role):\(value ?? "nil")") }
+            if role == "closing" {
+                late.value = ctx
+                ctx.effect { try ctx.emit("t/bye", "bye") }
+            }
+        })
+        let listening = try await RutisTest.load(plugin, config: "listening")
+        let closing = try await listening.load(config: "closing")
+        try await closing.unload()
+        for _ in 0..<100 where !heard.all.contains("listening:bye") {
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+        XCTAssertEqual(heard.all, ["listening:bye"])
+        let error = Self.failure { try late.value?.emit("t/bye", "late") }
+        XCTAssertTrue(error.hasPrefix("BindingError: row closing"), error)
+        XCTAssertTrue(error.hasSuffix(" is not loaded in this runtime"), error)
+        await listening.close()
+    }
+
+    /// What `body` fails with, as `name: message`, or "no error".
+    private static func failure(_ body: () throws -> Void) -> String {
+        do {
+            try body()
+            return "no error"
+        } catch let error as RutisError {
+            return "\(error.name): \(error.message)"
+        } catch {
+            return "\(error)"
+        }
     }
 }

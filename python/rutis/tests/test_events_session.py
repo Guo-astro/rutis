@@ -21,7 +21,7 @@ from support import HANG_GUARD, LOCAL, eventually, hello, within
 from rutis import BindingError
 from rutis.advanced import AggregateError, AsyncListener
 from rutis.peer import Peer
-from rutis.runner import Runtime
+from rutis.runner import Context, Row, Runtime
 
 
 def module(name: str, apply) -> str:
@@ -166,7 +166,7 @@ class Session(background.IsolatedAsyncioTestCase):
         call = self.host.invoke("mount", data({"plugins": [], "announce": True, "runtime": "py"}))
         return await self.host.outcome(call)
 
-    async def load(self, key, apply=None, scope=None, registrations=0):
+    async def load(self, key, apply=None, scope=None, registrations=0, inject=()):
         """Load the row `key`, answering its `events.on` calls."""
 
         def keep(ctx, config):
@@ -176,7 +176,7 @@ class Session(background.IsolatedAsyncioTestCase):
 
         entry = module(f"events_session_{key}", keep)
         call = self.host.invoke(
-            "rows.load", data([key, entry, {}, [], [], {}, {"scope": scope or []}])
+            "rows.load", data([key, entry, {}, [], list(inject), {}, {"scope": scope or []}])
         )
         registered = []
         for _ in range(registrations):
@@ -471,6 +471,137 @@ class CalledByTheHost(Session):
         self.assertEqual(await self.host.outcome(unload), ("return", None))
         self.assertEqual(log, ["b:cancelled"])
         self.assertEqual(await self.host.outcome(running), ("return", None))
+
+
+class Unloading(Session):
+    # guarantee: sdk/leaf-events
+    async def test_a_row_emits_from_its_unload_stack(self):
+        # §7.1 step 5: the cleanups run while `rows.unload` is answered, and
+        # what they emit reaches the other rows; the row's own listener left
+        # when the unload started. Afterwards it emits nothing.
+        await self.mount()
+        heard = []
+        await self.load(
+            "b", lambda ctx, config: ctx.on("t/bye", lambda value: heard.append(value)), registrations=1
+        )
+
+        def closing(ctx, config):
+            ctx.effect(lambda: ctx.serial("t/bye", "bye"))
+
+        await self.load("a", closing)
+        unloading = self.host.invoke("rows.unload", data(["a"]))
+        frame = await self.host.request("events.dispatch")
+        # The unload waits for this dispatch: the row is still an emitter.
+        self.assertEqual((frame["value"][0]["row"], frame["value"][0]["name"]), ("a", "t/bye"))
+        calling = self.host.invoke(
+            "events.call",
+            data([
+                {
+                    "listener": "1",
+                    "dispatch": "d1",
+                    "own": False,
+                    "name": "t/bye",
+                    "mode": "serial",
+                    "args": ["bye"],
+                }
+            ]),
+        )
+        self.host.answer(frame, await self.host.outcome(calling))
+        self.assertEqual(await self.host.outcome(unloading), ("return", None))
+        self.assertEqual(heard, ["bye"])
+        self.assertNotIn("a", self.host.runtime.rows)
+        # A context kept past its row emits nothing (§3).
+        with self.assertRaisesRegex(BindingError, "row a is not loaded in this runtime"):
+            self.contexts["a"].emit("t/bye", "late")
+
+    async def test_a_call_into_the_unloading_row_is_refused(self):
+        # No re-entrancy: a listener of the cleanup's emission that calls the
+        # unloading row's service is refused at once (its services left at
+        # step 3), and the unload still finishes — no deadline applies to the
+        # stack, so a call that got through would be what hangs it.
+        await self.mount()
+        heard = []
+
+        def listening(ctx, config):
+            def answer(value):
+                try:
+                    heard.append("ping:" + ctx.use("probe").ping())
+                except Exception:  # noqa: BLE001 - the refusal is the point
+                    heard.append("refused")
+                return None
+
+            ctx.on("t/bye", answer)
+
+        def closing(ctx, config):
+            ctx.provide("probe", Probe())
+            ctx.effect(lambda: ctx.serial("t/bye", "bye"))
+
+        # Its service is announced while it loads: answer it.
+        entry = module("events_session_a_probe", closing)
+        loading = self.host.invoke("rows.load", data(["a", entry, {}, [], [], {}, {"scope": []}]))
+        announced = await self.host.next(
+            lambda f: f["op"] == "invoke" and f.get("method") == "service"
+        )
+        self.host.answer(announced)
+        self.assertEqual(await self.host.outcome(loading), ("return", None))
+        await self.load("b", listening, inject=("probe",), registrations=1)
+        unloading = self.host.invoke("rows.unload", data(["a"]))
+        frame = await self.host.request("events.dispatch")
+        calling = self.host.invoke(
+            "events.call",
+            data([
+                {
+                    "listener": "1",
+                    "dispatch": "d1",
+                    "own": False,
+                    "name": "t/bye",
+                    "mode": "serial",
+                    "args": ["bye"],
+                }
+            ]),
+        )
+        self.host.answer(frame, await self.host.outcome(calling))
+        self.assertEqual(await self.host.outcome(unloading), ("return", None))
+        self.assertEqual(heard, ["refused"])
+
+    async def test_update_says_an_unloading_row_is_not_loaded(self):
+        runtime = Runtime()
+        row = Row(key="r", module=types.ModuleType("unloading_update"), config={}, exports={})
+        row.unloading = True
+        runtime.rows["r"] = row
+        with self.assertRaisesRegex(ValueError, "^row r is not loaded$"):
+            await runtime.update("r", {})
+
+    async def test_a_listener_registered_while_the_row_unloads_is_refused(self):
+        # The runtime's own plugin API refuses it, as it refuses a cleanup;
+        # the bus keeps no entry for it either (#1041, §7.1).
+        runtime = Runtime()
+        row = Row(key="r", module=types.ModuleType("unloading_on"), config={}, exports={})
+        row.unloading = True
+        runtime.rows["r"] = row
+        with self.assertRaisesRegex(RuntimeError, "^row r is not active$"):
+            Context(runtime, row).on("t/x", lambda: None)
+
+    async def test_an_unhandled_error_while_the_row_unloads_is_written(self):
+        # Nothing can fail the row any more (its restart was cancelled with
+        # the unload), so the error is written here, naming the row, rather
+        # than disappearing (#1041).
+        runtime = self.host.runtime
+        row = Row(key="r", module=types.ModuleType("unloading_charge"), config={}, exports={})
+        row.named = "r"
+        row.unloading = True
+        runtime.rows["r"] = row
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            runtime.charge("unhandled exception", ValueError("boom"), "r")
+        self.assertEqual(stderr.getvalue(), "runtime py: row r: unhandled exception: ValueError: boom\n")
+
+
+class Probe:
+    """A service of the test's, provided by a row."""
+
+    def ping(self) -> str:
+        return "pong"
 
 
 class Review(Session):

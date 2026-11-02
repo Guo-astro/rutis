@@ -36,7 +36,7 @@ await ctx.parallel('chat/sent', out)       // 等每个监听器，不论在哪�
 - **同步 `bail`**：别处的监听器作为同步调用执行；遇到 `async` 函数或返回 Promise 的监听器以 `AsyncListener` 失败（以前 Cordis 把 Promise 当作结果）。
 - **`parallel`** 的失败总是 `AggregateError`，子错误按登记顺序（与 Cordis 相同），信息为 `<n> listeners of <name> failed`，别处监听器的失败也在其中。`emit` 的监听器出错只在它所在的一侧报告一行，不影响发出方。
 - **`internal/*`** 仍是每个运行时自己的：`internal/dispatch`、`internal/service` 只在本进程里，从不跨进程。从别处到达的事件第一次调用本进程的监听器之前，运行时对这次分发触发一次 `internal/dispatch`，方式是 rutis 的方式名（`emit`、`parallel`、`serial`、`waterfall`、`bail`），所以它的校验插件照常看得到它们。
-- **卸载**：这一行的 `ctx.signal` 被中止，正在运行的监听器被等待，然后才运行清理。
+- **卸载**：这一行的 `ctx.signal` 被中止，正在运行的监听器被等待，然后才运行清理。这时它的监听器已经离开总线，但它仍然能发出：清理里发出的事件照常到达别的行的监听器，所以在 dispose 里报告、冲刷的插件和原生 Cordis 里一样能工作。这只持续到运行时回答 `rows.unload`：清理只发出、不等结果的 emit 在这个回答发出时仍可能被丢掉（事件协议 §5.5），要确定送出去就用 `parallel`、`serial` 等它。`rows.unload` 得到回复之后，这个上下文就发不出任何东西（`BindingError`）。
 
 ## 在 Rust 应用里挂载 Cordis 插件
 

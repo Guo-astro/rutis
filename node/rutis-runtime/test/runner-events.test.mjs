@@ -14,6 +14,7 @@ const runner = fileURLToPath(new URL('../src/runner.mjs', import.meta.url))
 const conformance = fileURLToPath(new URL('./fixtures/conformance-events.mjs', import.meta.url))
 const cordis = fileURLToPath(new URL('./fixtures/events-cordis.mjs', import.meta.url))
 const scopeFilter = fileURLToPath(new URL('./fixtures/events-scope-filter.mjs', import.meta.url))
+const cleanupEmit = fileURLToPath(new URL('./fixtures/events-cleanup-emit.mjs', import.meta.url))
 const T1 = { id: '17', group: 'tenant' }
 const T2 = { id: '18', group: 'tenant' }
 
@@ -140,6 +141,24 @@ test('a plugin keeping its context past its row emits nothing', async () => {
     await host.call('rows.unload', ['old'])
     const probe = method => host.session.invokeAsync(host.services.get('probe-p'), method, ['t/late'])
     assert.equal(await probe('emitKept'), 'BindingError: row old is not loaded in this runtime')
+  } finally {
+    await host.end()
+  }
+})
+
+// A row's unload stack still emits (§7.1 5): it stops being an emitter only
+// once it answered unloaded. Its own listeners left the bus when the unload
+// started, so only the other rows hear it.
+test('a row emits from its unload stack, and the other rows hear it', async () => {
+  const { host } = await started()
+  try {
+    await host.call('rows.load', ['a', cleanupEmit, { announce: 't/bye' }, [], [], {}, { scope: [] }])
+    await host.call('rows.load', ['b', cleanupEmit, { listen: 't/bye' }, [], [], {}, { scope: [] }])
+    await within('the unload', host.call('rows.unload', ['a']))
+    await eventually('b heard the cleanup\'s emission', () => host.log.includes('t/bye:bye'))
+    assert.deepEqual(host.log, ['t/bye:bye'])
+    assert.deepEqual(host.dispatches.map(({ row, name, mode }) => ({ row, name, mode })), [{ row: 'a', name: 't/bye', mode: 'emit' }])
+    assert.doesNotMatch(host.stderr, /is not loaded in this runtime/)
   } finally {
     await host.end()
   }
