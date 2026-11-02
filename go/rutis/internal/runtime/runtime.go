@@ -134,6 +134,10 @@ type row struct {
 	// Nil once it loaded.
 	pending []func() error
 	loading bool
+	// Its unload stack is running: it registers no listener, cleanup or
+	// service any more, while the emissions its cleanups make still reach
+	// the other rows (§7.1). It leaves rt.rows when the stack ends.
+	unloading bool
 }
 
 // plugin is what descriptors call the row's plugin: its name, or, for a
@@ -416,7 +420,7 @@ func (rt *runtimeState) provide(r *row, name string, value any) func() {
 	// A task of an unloaded row providing: refused, or the service would
 	// outlive its row and the row's next load find it taken. Reported, not
 	// a panic: a plain goroutine or timer calling it recovers nothing.
-	if rt.rows[r.key] != r {
+	if rt.rows[r.key] != r || r.unloading {
 		rt.mu.Unlock()
 		fmt.Fprintf(rowOutput, "rutis: row %s is not active: service %s is not provided\n", r.name, name)
 		return func() {}
@@ -571,11 +575,14 @@ func (rt *runtimeState) loadNamed(ctx context.Context, key, name string, entry a
 func (rt *runtimeState) unload(ctx context.Context, key string) error {
 	rt.mu.Lock()
 	r := rt.rows[key]
-	if r == nil {
+	if r == nil || r.unloading {
 		rt.mu.Unlock()
 		return nil
 	}
-	delete(rt.rows, key)
+	// Its listeners are off the table at once (`forgetListeners`). The row
+	// itself stays loaded until its unload stack ends, so the emissions its
+	// cleanups make still reach the other rows (§7.1).
+	r.unloading = true
 	rt.forgetListeners(r)
 	// From here on no other row sees what this one provides; it still does,
 	// until each withdrawal's place on the unload stack comes (as Rust's
@@ -616,6 +623,8 @@ func (rt *runtimeState) unload(ctx context.Context, key string) error {
 	}
 	rt.mu.Lock()
 	r.provided = nil
+	// Its cleanups may emit, or register listeners: both stop here (§7.1).
+	delete(rt.rows, key)
 	rt.mu.Unlock()
 	return errors.Join(errs...)
 }
@@ -624,7 +633,7 @@ func (rt *runtimeState) update(ctx context.Context, key string, config any) erro
 	rt.mu.Lock()
 	r := rt.rows[key]
 	rt.mu.Unlock()
-	if r == nil {
+	if r == nil || r.unloading {
 		return fmt.Errorf("row %s is not loaded", key)
 	}
 	// Leaf plugins have no volatile fields: a new config restarts the row.
@@ -1061,7 +1070,7 @@ func (c *Ctx) Provide(name string, value any) func() {
 // Effect registers a cleanup, run when the plugin unloads (latest first).
 func (c *Ctx) Effect(cleanup func(context.Context) error) {
 	c.rt.mu.Lock()
-	active := c.rt.rows[c.row.key] == c.row
+	active := c.rt.rows[c.row.key] == c.row && !c.row.unloading
 	if active {
 		c.row.steps = append(c.row.steps, cleanup)
 	}

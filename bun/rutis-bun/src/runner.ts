@@ -132,6 +132,10 @@ interface Row {
   pending: Array<Promise<unknown>> | null
   // The row's own `inject` (extra names it waits for).
   inject: string[] | null
+  // Whether its unload stack ended: from then on it emits nothing
+  // (protocol §7.1; while the stack runs, its cleanups' emissions still
+  // reach the other rows).
+  unloaded?: boolean
 }
 const idIn = (row: Row, name: string) => scopedId(name, row.isolate.get(name))
 
@@ -316,13 +320,14 @@ export class Runtime {
 
   // The five ways to emit from `row`, filtered by `keep` when given. Every
   // argument of `waterfall` is the event's; a terminal is given with
-  // `waterfall.with(terminal)(name, ...args)`. A row unloaded (its key
-  // perhaps taken by a new row since) emits nothing (protocol §3).
+  // `waterfall.with(terminal)(name, ...args)`. A row whose unload ended (its
+  // key perhaps taken by a new row since) emits nothing (protocol §3, §7.1);
+  // one on its unload stack still emits, and the other rows hear it.
   #emitters(row: Row, keep?: (descriptor: unknown) => unknown) {
     const dispatch = (mode: string, name: string, values: unknown[], terminal?: unknown) => {
       reserved(name)
       refuseReserved(name)
-      return this.#bus.dispatch(mode, name, values, { row: row.key, keep, terminal, gone: this.#rows.get(row.key) !== row })
+      return this.#bus.dispatch(mode, name, values, { row: row.key, keep, terminal, gone: this.#rows.get(row.key) !== row && Boolean(row.unloaded) })
     }
     const waterfall = (terminal?: unknown) => (name: string, ...values: unknown[]) => dispatch('waterfall', name, values, terminal)
     return {
@@ -438,8 +443,10 @@ export class Runtime {
     this.#rows.delete(key)
     const rowId = this.#bus.rowId(key)
     if (typeof rowId === 'string') forgetRow(rowId)
-    // Its listeners are off the bus at once (protocol §7.1).
-    this.#bus.withdraw(key)
+    // Its listeners are off the bus at once (protocol §7.1). The row itself
+    // is still loaded for its unload stack: an emission its cleanups make
+    // reaches the other rows until it ends.
+    this.#bus.withdraw(key, { emitting: true })
     // From here on no other row sees what this one provides; it still does,
     // until each withdrawal's place on the unload stack comes (as Rust's
     // read_binding_as). The host hears the withdrawals now, before the row
@@ -461,8 +468,14 @@ export class Runtime {
     await this.#bus.settle(key, this.#deadline)
     this.#bus.forgetRow(key)
     const errors: unknown[] = []
-    for (const step of row.steps.splice(0).reverse()) {
-      try { await this.within(key, step) } catch (error) { errors.push(error) }
+    try {
+      for (const step of row.steps.splice(0).reverse()) {
+        try { await this.within(key, step) } catch (error) { errors.push(error) }
+      }
+    } finally {
+      // Its cleanups may emit, or register listeners: both stop here.
+      row.unloaded = true
+      this.#bus.withdraw(key)
     }
     row.provided = []
     if (errors.length) throw errors[0]

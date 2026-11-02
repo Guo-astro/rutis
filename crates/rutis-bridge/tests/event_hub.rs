@@ -34,6 +34,10 @@ type Behavior = Arc<dyn Fn(&BTreeMap<String, Value>) -> Reply + Send + Sync>;
 struct Fake {
     calls: Mutex<Vec<BTreeMap<String, Value>>>,
     listeners: Mutex<BTreeMap<String, Behavior>>,
+    /// Rows whose `rows.unload` waits for the test to release it: a row's
+    /// unload stack runs while its answer is on its way (events protocol
+    /// §7.1 step 5).
+    held: Mutex<BTreeMap<String, tokio::sync::oneshot::Receiver<()>>>,
 }
 
 impl Dispatch for Fake {
@@ -50,7 +54,27 @@ impl Dispatch for Fake {
             ("", "mount") => Ok(Value::Data(
                 json!({ "services": {}, "features": ["rows.v2", "hosts"] }),
             )),
-            ("", "rows.load") | ("", "rows.unload") => Ok(Value::Undefined),
+            ("", "rows.load") => Ok(Value::Undefined),
+            ("", "rows.unload") => {
+                let key: String = match first()? {
+                    Value::Data(Json::String(key)) => key,
+                    other => {
+                        return Err(Error::Value(format!(
+                            "rows.unload takes a row key, not {other:?}"
+                        )))
+                    }
+                };
+                let release = self.held.lock().unwrap().remove(&key);
+                match release {
+                    // The row's unload stack runs until the test lets the
+                    // answer go.
+                    Some(release) => Ok(Value::future(async move {
+                        let _ = release.await;
+                        Ok(Value::Undefined)
+                    })),
+                    None => Ok(Value::Undefined),
+                }
+            }
             ("", "ping") => Ok(Value::Data(json!("pong"))),
             ("", "events.call") => {
                 let Value::Record(fields) = first()? else {
@@ -598,11 +622,82 @@ async fn entries_leave_with_their_row_and_their_session() {
     .await;
 }
 
+/// guarantee: events/hub-lifecycle
+///
+/// A row's cleanups emit while its unload stack runs: the host keeps the row
+/// loaded until the runtime answers `rows.unload`, so the other rows hear
+/// them, while the row's own entries have already left the bus. Once the
+/// unload is answered, what a context kept past it emits is refused (events
+/// protocol §7.1 step 5, §3).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_row_emits_from_its_unload_stack() {
+    within("unload emits", async {
+        let rig = rig().await;
+        rig.load("chat", &[]).await;
+        rig.on(
+            "mine",
+            "t/closed",
+            Some("chat"),
+            "async",
+            answers(json!(null)),
+        )
+        .await;
+        let heard = Arc::new(Mutex::new(Vec::new()));
+        rig.root
+            .listen::<Args>()
+            .name("t/closed")
+            .on(answer(Some("host"), heard.clone()))
+            .unwrap();
+
+        // The runtime keeps `rows.unload` unanswered while its unload stack
+        // runs, as a cleanup that suspends does.
+        let (release, held) = tokio::sync::oneshot::channel();
+        rig.fake.held.lock().unwrap().insert("chat".into(), held);
+        let unloading = tokio::spawn({
+            let process = rig.process.clone();
+            async move { process.unload_row("chat").await }
+        });
+        eventually(
+            || rig.fake.held.lock().unwrap().is_empty(),
+            "rows.unload to reach the runtime",
+        )
+        .await;
+        let emitted = rig
+            .dispatch(Some("chat"), "t/closed", "serial", vec![], None)
+            .await;
+        assert!(
+            emitted.is_ok(),
+            "an emission from the unload stack is accepted: {emitted:?}"
+        );
+        assert_eq!(heard.lock().unwrap().len(), 1, "another row heard it");
+        assert!(
+            rig.fake.calls.lock().unwrap().is_empty(),
+            "the row's own listener left the bus when the unload started"
+        );
+
+        release.send(()).unwrap();
+        unloading.await.unwrap().unwrap();
+        // Answered: the row left the session, and a context kept past it
+        // emits nothing.
+        let afterwards = rig
+            .dispatch(Some("chat"), "t/closed", "serial", vec![], None)
+            .await
+            .unwrap_err();
+        assert!(
+            afterwards
+                .to_string()
+                .contains("the calling row is not loaded in this runtime"),
+            "{afterwards}"
+        );
+        assert_eq!(heard.lock().unwrap().len(), 1);
+    })
+    .await;
+}
+
 /// A started call's reply, settled.
 async fn finish(call: impl std::future::Future<Output = Reply>) -> Result<Value, Error> {
     settle(call.await?).await
 }
-
 /// guarantee: events/hub-lifecycle
 ///
 /// `rows.ended` takes its place in frame order with the session's

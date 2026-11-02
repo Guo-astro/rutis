@@ -689,6 +689,7 @@ Cordis 插件用 Cordis 自己的写法：`ctx.emit(thisArg, name, ...)`（以�
 - 监听器属于登记它的插件（行），插件卸载时注销；返回的函数立即注销。
 - **卸载时**：这一行的监听器先从总线上撤下（之后的事件不再到达），正在运行的监听器收到取消信号——Go 是监听器的 `context`，Python 是任务取消，JavaScript 是这一行的 `ctx.signal` 被中止，Rust 是 `ctx.cancelled()`——并被等待，最多 `RUTIS_SHUTDOWN_TIMEOUT`（默认 10 秒；宿主里的 Rust 插件用宿主的关闭截止时间），然后才运行清理。超过时运行时在 stderr 写 `rutis: listeners of row <row> still running after <s>s; unloading anyway` 并继续。
 - 撤下时已经发往它的调用失败一次（`BindingError`，`listener <id> of <name> is withdrawn`，或传输错误），从不重试。
+- **清单里的清理仍能发出**：监听器撤下之后、`rows.unload` 得到回复之前，这一行仍是发出方，清理里 `ctx.emit` 与其余四种方式照常分发，别的行的监听器听得到（它自己的听不到，所以不会重入）。回复之后这个上下文发不出任何事件（`BindingError`，`row <行> is not loaded in this runtime`）。在 dispose 里报告、冲刷的 Cordis 插件因此与原生 Cordis 相同（[事件协议](../design-events-protocol-2026-10-18.md) §7.1，[#1041](https://github.com/arcships/rutis/issues/1041)）。
 - **发出方放弃**（Rust 丢弃 future、Python 取消任务、Go 取消 context）：不再开始新的监听器，正在运行的收到取消；发出方得到本语言的取消。`emit` 不被取消。JavaScript 没有取消一次分发的办法，JavaScript 的监听器也没有逐次调用的信号（只有卸载时的 `ctx.signal`）。
 - 监听器在哪个上下文里运行：Rust 监听器以**登记它的** `ctx` 被调用，它在里面登记的东西属于监听器的插件；Go 监听器的 `ctx` 带着发出方的调用链，发出方放弃或这一行卸载时取消，监听器里调用服务时把它传下去。
 - 与 Rust 的 `Ctx::dispose_self` 同一约定：监听器不得等待自己所属的行卸载完成，要卸载就结束监听器之后再做。

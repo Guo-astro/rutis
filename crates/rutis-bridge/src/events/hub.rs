@@ -127,9 +127,8 @@ pub(crate) struct SessionEvents {
     runtime: String,
     /// The scope of the mount's own plugins (`row: null`).
     mount_scope: Vec<Scope>,
-    /// The scope chain and the id of each row loaded on the session, by
-    /// key.
-    rows: Mutex<HashMap<String, (Vec<Scope>, String)>>,
+    /// Where each row loaded on the session is, by key (see [`RowPlace`]).
+    rows: Mutex<HashMap<String, RowPlace>>,
     /// The session's entries, by the runtime's id.
     entries: Mutex<HashMap<String, Registered>>,
     /// `emit` dispatches waiting for those before them to start (§5.5).
@@ -142,6 +141,20 @@ pub(crate) struct SessionEvents {
 struct Registered {
     row: Option<String>,
     disposer: Disposer,
+}
+
+/// Where a row loaded on the session is: the scope chain its entries were
+/// registered in, the id its configuration gives it, and whether it is
+/// unloading.
+///
+/// An unloading row keeps this place, so its own cleanups still emit (§7.1
+/// step 5: the other rows hear them), but it keeps no listeners: the ones
+/// it had left the table when the unload started, and the ones it registers
+/// meanwhile are not kept.
+struct RowPlace {
+    scope: Vec<Scope>,
+    id: String,
+    unloading: bool,
 }
 
 #[derive(Default)]
@@ -328,19 +341,45 @@ impl SessionEvents {
 
     /// Row `key` is being loaded in `scope`.
     pub(crate) fn row_loading(&self, key: &str, scope: Vec<Scope>, id: String) {
-        self.rows
-            .lock()
-            .unwrap()
-            .insert(key.to_owned(), (scope, id));
+        self.rows.lock().unwrap().insert(
+            key.to_owned(),
+            RowPlace {
+                scope,
+                id,
+                unloading: false,
+            },
+        );
     }
 
-    /// Row `key` is unloading or ended: its entries leave the table now
-    /// (events protocol §7.1).
+    /// Row `key` is gone: it left the session, so it emits nothing more and
+    /// its entries leave the table (events protocol §7.1).
     pub(crate) fn row_ended(&self, key: &str) {
         self.rows.lock().unwrap().remove(key);
-        // Its queued emits are dropped and the one running (waiting for
-        // its filter) is let go (§5.5): the session's later emits go on.
-        // Dropped after the lock: a future may write a frame on drop.
+        self.let_go_of_its_emits(key);
+        self.withdraw_entries(key);
+    }
+
+    /// Row `key` is unloading (`rows.unload` was sent): its entries leave
+    /// the table now, and the emits it left queued are dropped (§7.1 step 1,
+    /// §5.5). The row itself stays loaded, so its unload stack's cleanups
+    /// still emit, and the other rows hear them until the runtime answers
+    /// `rows.unload` (§7.1 step 5); then the host calls
+    /// [`SessionEvents::row_ended`].
+    pub(crate) fn row_unloading(&self, key: &str) {
+        match self.rows.lock().unwrap().get_mut(key) {
+            Some(place) => place.unloading = true,
+            // Not loaded on this session (an unload of a row that never
+            // loaded, or one already ended): nothing to withdraw.
+            None => return,
+        }
+        self.let_go_of_its_emits(key);
+        self.withdraw_entries(key);
+    }
+
+    /// The emits row `key` left queued are dropped, and the one running
+    /// (waiting for its filter) is let go (§5.5): the session's later emits
+    /// go on. Dropped after the lock: a future may write a frame on drop.
+    fn let_go_of_its_emits(&self, key: &str) {
         let (queued, running) = {
             let mut emits = self.emits.lock().unwrap();
             let (queued, kept): (VecDeque<_>, VecDeque<_>) = std::mem::take(&mut emits.queue)
@@ -357,6 +396,10 @@ impl SessionEvents {
         if let Some((_, cancel)) = running {
             cancel.cancel();
         }
+    }
+
+    /// Row `key`'s entries leave the table.
+    fn withdraw_entries(&self, key: &str) {
         let gone: Vec<Registered> = {
             let mut entries = self.entries.lock().unwrap();
             let ids: Vec<String> = entries
@@ -399,7 +442,9 @@ impl SessionEvents {
         }
     }
 
-    /// The id of row `key` on this session; `None` for the mount.
+    /// The id of row `key` on this session; `None` for the mount. An
+    /// unloading row still has one: its cleanups' emissions are dispatched
+    /// while it unloads (§7.1 step 5).
     fn row_id(&self, key: Option<&str>) -> Result<Option<String>, Error> {
         match key {
             None => Ok(None),
@@ -408,7 +453,7 @@ impl SessionEvents {
                 .lock()
                 .unwrap()
                 .get(key)
-                .map(|(_, id)| Some(id.clone()))
+                .map(|place| Some(place.id.clone()))
                 .ok_or_else(|| binding("the calling row is not loaded in this runtime".to_owned())),
         }
     }
@@ -422,17 +467,25 @@ impl SessionEvents {
             )));
         }
         // Held until the entry is recorded: a row unloading meanwhile
-        // (`row_ended`, on another thread) waits, then withdraws it too,
-        // instead of missing an entry registered after its look.
+        // (`row_unloading` or `row_ended`, on another thread) waits, then
+        // withdraws it too, instead of missing an entry registered after
+        // its look.
         let rows = self.rows.lock().unwrap();
         let (scope, id) = match registration.row.as_deref() {
             None => (self.mount_scope.clone(), None),
-            Some(key) => rows
-                .get(key)
-                .map(|(scope, id)| (scope.clone(), Some(id.clone())))
-                .ok_or_else(|| {
-                    binding("the calling row is not loaded in this runtime".to_owned())
-                })?,
+            Some(key) => match rows.get(key) {
+                Some(place) if !place.unloading => (place.scope.clone(), Some(place.id.clone())),
+                // An unloading row registers no listener (§7.1): one its
+                // cleanup registers is not kept and hears nothing. That is
+                // not a failure of the unload, so it is answered as usual;
+                // the entry the runtime holds is withdrawn with the row.
+                Some(_) => return Ok(Value::Undefined),
+                None => {
+                    return Err(binding(
+                        "the calling row is not loaded in this runtime".to_owned(),
+                    ))
+                }
+            },
         };
         #[cfg(test)]
         tests::REGISTERING.with(|hook| {

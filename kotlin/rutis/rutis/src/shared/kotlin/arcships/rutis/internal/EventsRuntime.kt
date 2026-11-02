@@ -92,7 +92,7 @@ internal object EventsRuntime {
         checkListen(name)
         val listener: LocalListener
         synchronized(rt.lock) {
-            if (rt.rows[row.key] !== row) throw IllegalStateException("rutis: row ${row.name} is not active")
+            if (rt.rows[row.key] !== row || row.unloading) throw IllegalStateException("rutis: row ${row.name} is not active")
             rt.listenerSeq++
             listener = LocalListener(rt, rt.listenerSeq.toString(), name, row, fn)
             rt.byId[listener.id] = listener

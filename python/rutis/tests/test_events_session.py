@@ -473,6 +473,48 @@ class CalledByTheHost(Session):
         self.assertEqual(await self.host.outcome(running), ("return", None))
 
 
+class Unloading(Session):
+    # guarantee: sdk/leaf-events
+    async def test_a_row_emits_from_its_unload_stack(self):
+        # §7.1 step 5: the cleanups run while `rows.unload` is answered, and
+        # what they emit reaches the other rows; the row's own listener left
+        # when the unload started. Afterwards it emits nothing.
+        await self.mount()
+        heard = []
+        await self.load(
+            "b", lambda ctx, config: ctx.on("t/bye", lambda value: heard.append(value)), registrations=1
+        )
+
+        def closing(ctx, config):
+            ctx.effect(lambda: ctx.serial("t/bye", "bye"))
+
+        await self.load("a", closing)
+        unloading = self.host.invoke("rows.unload", data(["a"]))
+        frame = await self.host.request("events.dispatch")
+        # The unload waits for this dispatch: the row is still an emitter.
+        self.assertEqual((frame["value"][0]["row"], frame["value"][0]["name"]), ("a", "t/bye"))
+        calling = self.host.invoke(
+            "events.call",
+            data([
+                {
+                    "listener": "1",
+                    "dispatch": "d1",
+                    "own": False,
+                    "name": "t/bye",
+                    "mode": "serial",
+                    "args": ["bye"],
+                }
+            ]),
+        )
+        self.host.answer(frame, await self.host.outcome(calling))
+        self.assertEqual(await self.host.outcome(unloading), ("return", None))
+        self.assertEqual(heard, ["bye"])
+        self.assertNotIn("a", self.host.runtime.rows)
+        # A context kept past its row emits nothing (§3).
+        with self.assertRaisesRegex(BindingError, "row a is not loaded in this runtime"):
+            self.contexts["a"].emit("t/bye", "late")
+
+
 class Review(Session):
     """Rules settled across languages after #464's review."""
 

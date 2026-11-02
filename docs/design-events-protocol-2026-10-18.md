@@ -66,7 +66,7 @@
 - **线上的作用域链**：JSON 数组，元素是 `{ "id": <字符串>, "group": <字符串> }`，最外层在前。根是 `[]`。`id` 是不透明的字符串，在宿主现在和过去的全部实例中唯一（Rust：组 fiber 的 `InstanceId` 的十进制）；`group` 是加载器组的名字。例：`[{"id":"17","group":"tenant"},{"id":"42","group":"session"}]`。
 - **规则**：事件按名字送达；作用域是监听器的描述，供过滤使用，不是送达规则。一个 root 总线上这个名字的每个监听器都收到每次分发，不论它在哪个作用域、哪个运行时（Cordis 的平总线）。相连的节点只增加它的连接 `export` / `import` 承载的名字。
 - **进程怎样知道作用域链**：宿主告诉每一行它的链。`rows.load` 增加第七个参数 `{ "scope": <链>, "id": <行的 id> }`（0.13 宿主总是发七个参数；行不导出服务时 `exports` 是 `{}`）。`id` 是配置给这一行的 id（加载器的行 id；同一组的各实例复制的行 id 相同），与会话内唯一的行键不同：描述（§4.2）与报告的各条信息（§5.6、第十一节）用它称呼这一行，协议消息仍用行键。没有 `id` 时用行键。经 `mount` 的 `plugins` 列表加载的插件，得到 `mount` 参数 `scope`（挂载它的插件的链）。Rust 插件用 `Ctx::scope()`（§12.1）。`mount` 还带 `runtime`，即描述里给出的运行时名字（§4.2）：运行时在快速路径上给自己的条目写描述时用它，与经宿主时的描述一致。
-- **发出方的作用域从不由发出方自报**：运行时的 `events.dispatch` 写明发出的 `row`，宿主用这一行的链；这一行没有加载在这个会话上时拒绝（`BindingError`，`row <key> is not loaded in this runtime`）。挂载方式加载的插件写 `row: null`，用挂载的链。
+- **发出方的作用域从不由发出方自报**：运行时的 `events.dispatch` 写明发出的 `row`，宿主用这一行的链；这一行没有加载在这个会话上时拒绝（`BindingError`，`row <key> is not loaded in this runtime`）。正在卸载、还没回答 `rows.unload` 的行仍算加载着（§7.1）。挂载方式加载的插件写 `row: null`，用挂载的链。
 - 叶子插件的 `isolate` 标签（服务作用域、U+0001 的租约）与事件作用域无关。
 
 ## 四、监听器登记
@@ -236,11 +236,13 @@ Cordis 的 `events.dispatch(type, args)`（五个方法底下的原语，返回�
 
 一行卸载时（宿主发 `rows.unload`，或运行时报告 `rows.ended`），依次：
 
-1. 宿主在发出 `rows.unload` 或收到 `rows.ended` 时，把这一行的条目撤出监听器表（并发 `events.elsewhere`）；运行时再为它们发 `events.off` 也无妨。`rows.ended` 与同一会话的 `events.*` 按帧的顺序处理（它也只改表，§4.1）：在它之前发出的 `events.on` 先进表、再随这一行撤下，在它之后发出的 `events.dispatch` 不再送达这一行。
+1. 宿主在发出 `rows.unload` 或收到 `rows.ended` 时，把这一行的条目撤出监听器表（并发 `events.elsewhere`）；运行时再为它们发 `events.off` 也无妨。`rows.ended` 与同一会话的 `events.*` 按帧的顺序处理（它也只改表，§4.1）：在它之前发出的 `events.on` 先进表、再随这一行撤下，在它之后发出的 `events.dispatch` 不再送达这一行。撤下的是它的**监听器**：这一行仍是自己的发出方，直到第 5 步跑完、`rows.unload` 得到回复（2026-11-02 修订，[#1041](https://github.com/arcships/rutis/issues/1041)）。
 2. 运行时立即不再接受这一行的调用：之后到达的 `events.call` 以已撤下的错误失败（§5.3）。
 3. 提供的服务从这里起对这一行的**其他**读者不可见：别的行拿到的是 `service <name> is not available`，不看到旧答案。删表与“这一行自己也不再把它算作自己提供的”都在第 5 步里那一条撤回跑到的时候（[卸载顺序](design-unload-order-2026-11-01.md) D1、D2）。宿主收到这些服务撤回的时刻不变：仍是这一步，在 `rows.unload` 的回复之前。
 4. 这一行正在运行的监听器调用收到取消信号（Go：context；Python：任务取消；JavaScript：这一行的 `ctx.signal` 被中止；Rust：fiber 的停止，与它的其他任务相同），并被等待，最多 `RUTIS_SHUTDOWN_TIMEOUT`（默认 10 秒；Rust 插件用宿主自己的关闭截止时间）。超过时运行时写 `rutis: listeners of row <row> still running after <s>s; unloading anyway`，放弃它们，继续。
-5. 按逆序执行这一行的卸载栈：清理与第 3 步说的那些撤回混在一起，一条一条运行，撤回在自己的位置上发生（`provide` 之后登记的清理读得到自己提供的服务，之前登记的不行，与 Rust 的 `drain_effects` 相同）。跑完回复 `rows.unload`。
+5. 按逆序执行这一行的卸载栈：清理与第 3 步说的那些撤回混在一起，一条一条运行，撤回在自己的位置上发生（`provide` 之后登记的清理读得到自己提供的服务，之前登记的不行，与 Rust 的 `drain_effects` 相同）。清理里发出的（`emit` 与其余四种方式）照常分发，别的行的监听器听得到——这一行自己的条目已在第 1 步撤下，所以它自己听不到，也不会重入。跑完回复 `rows.unload`，宿主随后把这一行从会话上撤下（§3）：它的上下文再发出的以 `BindingError` 拒绝（`row <key> is not loaded in this runtime`），它还在排队的 emit 被丢弃（§5.5）。
+
+卸载栈里这一行登记的监听器不保留：宿主照常回复 `events.on`，但不进表、不报告，它听不到任何事件（2026-11-02 修订）。运行时报告 `rows.ended` 时不经过第 5 步：它报告时这一行已经结束，宿主立即按撤下处理。
 
 条目被撤下时已经发出的调用失败一次，错误为已撤下的错误或传输错误；从不重试。
 

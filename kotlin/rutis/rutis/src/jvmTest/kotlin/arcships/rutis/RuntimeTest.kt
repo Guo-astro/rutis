@@ -3,7 +3,9 @@ package arcships.rutis
 import arcships.rutis.internal.RuntimeState
 import arcships.rutis.internal.Schema
 import arcships.rutis.testing.RutisTest
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import java.util.Collections
@@ -288,6 +290,30 @@ class RuntimeTest {
             assertEquals("2 listeners of t/fail failed", error.message)
             assertEquals(listOf("IllegalStateException", "Custom"), error.errors.map { (it as RutisException).name })
             assertEquals("E2", (error.errors[1] as RutisException).code)
+        }
+    }
+
+    /**
+     * A row's unload stack still emits (events protocol §7.1): the other
+     * listeners hear it, while the row's own are gone; once rutis answered
+     * `rows.unload`, a context kept past the row emits nothing (§3).
+     */
+    @Test
+    fun aRowsCleanupStillEmits() = runBlocking<Unit> {
+        var late: Ctx? = null
+        val plugin = Rutis.define<Rutis.NoConfig>(name = "closing") { ctx, _ ->
+            late = ctx
+            ctx.effect { ctx.emit("t/bye", "bye") }
+        }
+        RutisTest.load(plugin).use { loaded ->
+            val heard = CompletableDeferred<Any?>()
+            loaded.on("t/bye") { args -> heard.complete(args[0]); null }
+            // Its emission does not fail the unload, and reaches this listener.
+            loaded.unload()
+            assertEquals("bye", withTimeout(5_000) { heard.await() })
+            val error = assertFailsWith<RutisException> { late!!.emit("t/bye", "late") }
+            assertEquals("BindingError", error.name)
+            assertEquals("row closing is not loaded in this runtime", error.message)
         }
     }
 }

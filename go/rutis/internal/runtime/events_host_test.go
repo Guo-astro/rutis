@@ -90,6 +90,9 @@ type fakeHost struct {
 	end    func()
 	mu     sync.Mutex
 	frames []string
+	// Each `events.dispatch` the host got, as `<row>:<name>` (the emitting
+	// row; empty for a plugin loaded by mount).
+	dispatched []string
 	// The handle of each service the runtime published, by id.
 	handles map[string]string
 }
@@ -117,6 +120,13 @@ func (h *fakeHost) log() []string {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return append([]string(nil), h.frames...)
+}
+
+// dispatches is each `events.dispatch` the host got, as `<row>:<name>`.
+func (h *fakeHost) dispatches() []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]string(nil), h.dispatched...)
 }
 
 func startFakeHost(t *testing.T, refuse func(string) error, defs ...*Definition) *fakeHost {
@@ -160,8 +170,13 @@ func startFakeHostWith(t *testing.T, wrap func(peer.Channel) peer.Channel, refus
 				h.mu.Unlock()
 			}
 			if target == "" && method == "events.dispatch" {
+				var fields struct{ Row, Name string }
+				if len(args) > 0 {
+					_ = convert.Decode(args[0], &fields)
+				}
 				h.mu.Lock()
 				h.frames = append(h.frames, method)
+				h.dispatched = append(h.dispatched, fields.Row+":"+fields.Name)
 				h.mu.Unlock()
 			}
 			return nil, nil
@@ -268,6 +283,47 @@ func TestARefusedRegistrationFailsTheLoad(t *testing.T) {
 	h.rt.mu.Unlock()
 	if !loaded {
 		t.Fatal("a refusal outside a load unloaded the row")
+	}
+}
+
+// guarantee: sdk/leaf-events (a row's unload stack still emits, §7.1)
+func TestARowEmitsFromItsUnloadStack(t *testing.T) {
+	var closing *Ctx
+	cleanup := Define(Plugin[NoConfig]{Name: "closing", Apply: func(c *Ctx, _ NoConfig) error {
+		closing = c
+		// Its listeners left when the unload started; the other rows hear
+		// what its unload stack emits.
+		c.Effect(func(ctx context.Context) error { return c.Emit(ctx, "t/bye", "bye") })
+		return nil
+	}})
+	listening := Define(Plugin[NoConfig]{Name: "listening", Apply: func(c *Ctx, _ NoConfig) error {
+		c.On("t/bye", func(context.Context, ...any) (any, error) { return nil, nil })
+		return nil
+	}})
+	h := startFakeHost(t, nil, cleanup, listening)
+	if err := h.load("b", "listening"); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.load("a", "closing"); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.call("rows.unload", "a"); err != nil {
+		t.Fatalf("the cleanup's emission failed the unload: %v", err)
+	}
+	// It reached the host while the row was still loaded, for the rows that
+	// listen to the name.
+	testwait.Eventually(t, "the cleanup's dispatch", func() bool {
+		return slices.Contains(h.dispatches(), "a:t/bye")
+	}, func() string { return fmt.Sprint(h.dispatches()) })
+	// Answered: the row is gone, and its context emits nothing any more.
+	if err := closing.Emit(context.Background(), "t/bye", "late"); !errors.Is(err, ErrBinding) || err.Error() != "row a is not loaded in this runtime" {
+		t.Fatalf("an emission after the unload: %v", err)
+	}
+	h.rt.mu.Lock()
+	_, loaded := h.rt.rows["a"]
+	h.rt.mu.Unlock()
+	if loaded {
+		t.Fatal("the row stayed loaded")
 	}
 }
 

@@ -283,6 +283,10 @@ class Row:
     # Failed by an exception its code left unhandled, once loaded: rutis
     # was told (`rows.failed`, #688).
     failed: bool = False
+    # Its unload stack is running: it registers no listener or cleanup any
+    # more, while the emissions its cleanups make still reach the other rows
+    # (§7.1). It leaves `rows` when the stack ends.
+    unloading: bool = False
     # Guards `pending`, which other threads add to.
     lock: Any = field(default_factory=threading.Lock)
 
@@ -334,13 +338,13 @@ class Context(sdk.Context):
     def effect(self, cleanup: Callable) -> None:
         # As Rust's InactiveEffect: once the row is unloading, the stack it
         # would join is the one the unload took, so it would never run.
-        if self._runtime.rows.get(self._row.key) is not self._row:
+        if self._runtime.rows.get(self._row.key) is not self._row or self._row.unloading:
             say(f"rutis: row {self._row.named or self._row.key} is not active: cleanup is not registered")
             return
         self._row.steps.append(cleanup)
 
     def on(self, name: str, listener: Callable, *, prepend: bool = False, global_: bool = False) -> Callable[[], None]:
-        if self._runtime.rows.get(self._row.key) is not self._row:
+        if self._runtime.rows.get(self._row.key) is not self._row or self._row.unloading:
             raise RuntimeError(f"row {self._row.named or self._row.key} is not active")
         return self._runtime.listen(self._row, name, listener, prepend, global_)
 
@@ -726,12 +730,14 @@ class Runtime:
         return None
 
     async def unload(self, key: str) -> None:
-        row = self.rows.pop(key, None)
-        if row is None:
+        row = self.rows.get(key)
+        if row is None or row.unloading:
             return
+        row.unloading = True
         # Its listeners start nothing any more; an `events.call` for one of
         # them is refused (the host withdrew them already: telling it again
-        # does no harm).
+        # does no harm). The row itself stays loaded until the stack ends, so
+        # the emissions its cleanups make still reach the other rows (§7.1).
         self._withdrawn(self.bus.withdraw_row(key))
         # From here on no other row sees what this one provides; it still
         # does, until each withdrawal's place on the unload stack comes (as
@@ -756,11 +762,16 @@ class Runtime:
         errors = []
         steps = row.steps[::-1]
         row.steps.clear()
-        for step in steps:
-            try:
-                await _settle(step())
-            except Exception as error:  # noqa: BLE001 - run every step
-                errors.append(error)
+        try:
+            for step in steps:
+                try:
+                    await _settle(step())
+                except Exception as error:  # noqa: BLE001 - run every step
+                    errors.append(error)
+        finally:
+            # Its cleanups may emit, or register listeners: both stop here.
+            self.rows.pop(key, None)
+            self.bus.withdraw_row(key)
         row.provided.clear()
         if errors:
             raise errors[0]
@@ -962,9 +973,10 @@ class Runtime:
 
     def send(self, row: Row, mode: str, name: str, args: list, terminal: Callable | None, keep: Callable | None) -> Any:
         """An emission of the row, through the host, which dispatches over
-        every listener and calls this process's own back. A row that
-        unloaded emits nothing (BindingError, refused at once like a
-        reserved name)."""
+        every listener and calls this process's own back. A row that is gone
+        emits nothing (BindingError, refused at once like a reserved name);
+        one that is unloading still does, and the other rows hear it until
+        its unload stack ends (§7.1)."""
         if self.rows.get(row.key) is not row:
             raise BindingError(f"row {row.named or row.key} is not loaded in this runtime")
         if not self._here():

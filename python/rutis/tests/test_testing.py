@@ -207,7 +207,7 @@ class Testing(background.TestCase):
 
         run(go())
 
-    def test_an_unloaded_row_emits_nothing(self):
+    def test_a_rows_cleanup_emits_while_it_unloads(self):
         async def go():
             seen, saved, refused = [], [], []
 
@@ -231,9 +231,13 @@ class Testing(background.TestCase):
                 saved[1]()
                 await saved[0].parallel("tick", 2)
                 self.assertEqual(seen, [1, 1, 2])
-            # An unloaded row emits nothing: refused at once (#464 §3).
-            self.assertEqual(refused, ["row ticks is not loaded in this runtime"])
-            self.assertEqual(seen, [1, 1, 2], "cleanup emissions cannot reach the unloading plugin")
+            # A row's unload stack still emits (#464 §7.1): accepted, and the
+            # row's own listeners, gone with the unload, hear nothing.
+            self.assertEqual(refused, [])
+            self.assertEqual(seen, [1, 1, 2], "the row's own listener left with it")
+            # Once unloaded, a context kept past its row emits nothing (§3).
+            with self.assertRaisesRegex(BindingError, "row ticks is not loaded in this runtime"):
+                saved[0].emit("early", 100)
 
         run(go())
 

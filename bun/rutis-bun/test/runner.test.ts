@@ -418,6 +418,23 @@ test('unload aborts the row signal and waits for its running listeners', () => e
   await running
 }))
 
+// guarantee: sdk/leaf-events (a row's unload stack still emits, §7.1)
+test('a row emits from its unload stack, and the other rows hear it', () => eventRows(async (runtime, a, b, host) => {
+  const received: number[] = []
+  a.on('closing', (value: number) => { received.push(value) })
+  b.on('closing', (value: number) => { received.push(-value) })
+  // Its cleanups run while `rows.unload` is being answered: their emissions
+  // still reach the other rows, while its own listener has left.
+  b.effect(() => { b.emit('closing', 1) })
+  host.forget('b')
+  await runtime.unload('b')
+  await host.settled()
+  expect(received).toEqual([1])
+  expect(host.failures).toEqual([])
+  // Answered: the row is gone, and its context emits nothing.
+  expect(() => b.emit('closing', 2)).toThrow('row b is not loaded in this runtime')
+}))
+
 // guarantee: sdk/leaf-events (events.call; withdrawn; the host's messages)
 test('the host registers, dispatches and calls back through the session', async () => {
   const dir = project({ 'events.ts': 'export function apply(ctx) { ctx.on("t/x", x => `x${x}`); ctx.provide("me", ctx) }' })

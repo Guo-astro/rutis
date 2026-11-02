@@ -78,7 +78,7 @@ extension Runtime {
             return {}
         }
         lock.lock()
-        guard rows[row.key] === row else {
+        guard rows[row.key] === row, !row.unloading else {
             lock.unlock()
             fail(row, RutisError(name: "Error", message: "row \(row.name) is not active"))
             return {}

@@ -81,7 +81,7 @@ extension Rutis {
             // As Rust's InactiveEffect: once the row is unloading, the stack
             // it would join is the one the unload took, so it would never run.
             let active = runtime.lock.withLock { () -> Bool in
-                guard runtime.rows[row.key] === row else { return false }
+                guard runtime.rows[row.key] === row, !row.unloading else { return false }
                 row.steps.append(cleanup)
                 return true
             }

@@ -1108,6 +1108,17 @@ impl Process {
         }
     }
 
+    /// Row `key` is unloading: its listeners leave the bus now, while the
+    /// row itself stays loaded for its own cleanups' emissions, which the
+    /// other rows hear until it answers `rows.unload` (events protocol §7.1
+    /// step 5). [`Process::unload_row`] calls [`Process::row_gone`] once it
+    /// did.
+    fn row_unloading(&self, key: &str) {
+        if let Some(events) = self.imports.bus.get() {
+            events.row_unloading(key);
+        }
+    }
+
     /// Load row `key` like [`Process::load_row`], exporting the services in
     /// `exports` (`{ name: { method: "sync" | "async" } }`) to `observer`:
     /// it hears every change of each service, read from the row's scope,
@@ -1330,15 +1341,19 @@ impl Process {
             .map(|_| ())
     }
 
-    /// Dispose row `key`.
+    /// Dispose row `key`. Its listeners leave the bus when `rows.unload` is
+    /// sent; the row itself stays loaded until the runtime answers, so the
+    /// emissions its unload stack's cleanups make reach the other rows
+    /// (events protocol §7.1 step 5).
     pub async fn unload_row(&self, key: &str) -> Result<(), Error> {
-        // Withdrawn when `rows.unload` is sent (events protocol §7.1).
-        self.row_gone(key);
+        self.row_unloading(key);
         let unloaded = self.call_async("", "rows.unload", json!([key])).await;
         // After the call: the withdrawals of the row's services arrive
         // before its reply.
         self.forget_exports(key);
         self.imports.forget_row(key);
+        // Answered (or the session ended): it emits nothing more.
+        self.row_gone(key);
         unloaded.map(|_| ())
     }
 

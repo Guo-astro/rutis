@@ -98,7 +98,9 @@ const mountAbort = new AbortController()
 // The row whose plugin is being created (its fiber not known yet).
 let creating
 // The fibers of rows unloaded, with their row: a plugin keeping its
-// context past its row emits from that row, which the bus refuses (§3).
+// context past its row emits from that row, which the bus refuses (§3). A
+// row on its unload stack still emits, so `row.unloaded` (set when the stack
+// ended) is what the bus refuses on (§7.1 5).
 const unloaded = new WeakMap()
 // Under `rutis-host dev`, which row each piece of asynchronous work is
 // (#688, ./unhandled.mjs): an error it leaves unhandled fails that row.
@@ -121,7 +123,7 @@ function whose(context) {
   const owner = rowOf(context?.fiber) ?? (creating ? [creating.key, creating] : undefined)
   if (!owner) {
     const gone = goneRowOf(context?.fiber)
-    if (gone) return { row: gone.key, scope: gone.chain, signal: gone.abort.signal, gone: true }
+    if (gone) return { row: gone.key, scope: gone.chain, signal: gone.abort.signal, gone: Boolean(gone.unloaded) }
     return { row: null, scope: mountScope, signal: mountAbort.signal }
   }
   const [key, row] = owner
@@ -445,10 +447,17 @@ function dispose() {
   return disposing ??= (async () => {
     for (const slot of slots.values()) await slot.exporter?.dispose()
     for (const [key, row] of [...rows].reverse()) {
-      bus.withdraw(key)
+      // As `unloadRow`: the row's cleanups still emit while its stack runs.
+      bus.withdraw(key, { emitting: true })
+      for (const fiber of [row.fiber, row.inner]) if (fiber) unloaded.set(fiber, row)
       row.abort.abort(new DOMException('the row is unloading', 'AbortError'))
       await bus.settle(key, deadline)
-      await row.fiber.dispose()
+      try {
+        await row.fiber.dispose()
+      } finally {
+        row.unloaded = true
+        bus.withdraw(key)
+      }
     }
     rows.clear()
     bus.withdraw(null)
@@ -736,8 +745,10 @@ async function unloadRow(key) {
   if (!row) return null
   const rowId = bus.rowId(key)
   // Its listeners are off the bus at once; those running are signalled
-  // and waited for, at most the shutdown deadline (§7.1).
-  bus.withdraw(key)
+  // and waited for, at most the shutdown deadline (§7.1). The row itself is
+  // still loaded for its unload stack: an emission its cleanups make reaches
+  // the other rows until it ends (§7.1 5).
+  bus.withdraw(key, { emitting: true })
   rows.delete(key)
   if (typeof rowId === 'string') forgetRow(rowId)
   for (const fiber of [row.fiber, row.inner]) if (fiber) unloaded.set(fiber, row)
@@ -749,8 +760,14 @@ async function unloadRow(key) {
   }
   row.abort.abort(new DOMException('the row is unloading', 'AbortError'))
   await bus.settle(key, deadline)
-  await row.fiber.dispose()
-  bus.forgetRow(key)
+  try {
+    await row.fiber.dispose()
+  } finally {
+    // Its cleanups may emit, or register listeners: both stop here (§7.1 5).
+    row.unloaded = true
+    bus.withdraw(key)
+    bus.forgetRow(key)
+  }
   // What it provided is gone: a host service waiting for the name takes it.
   provideWaitingLater()
   return null

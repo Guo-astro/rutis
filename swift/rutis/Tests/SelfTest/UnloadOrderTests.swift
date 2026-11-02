@@ -2,6 +2,7 @@
 // services a row provides, in the order they were registered (Rust's
 // drain_effects; docs/design-unload-order-2026-11-01.md).
 import Foundation
+import RutisTest
 @testable import Rutis
 
 /// A service of the test's own.
@@ -122,5 +123,42 @@ struct UnloadOrderTests {
         try await Self.load(runtime, "a", plugin)
         try await runtime.unload("a")
         XCTAssertEqual(lines.all, ["during: count 5"])
+    }
+
+    /// A row's unload stack still emits (events protocol §7.1): the other
+    /// listeners hear it, while the row's own left when the unload started.
+    /// Once rutis answered `rows.unload`, a context kept past the row emits
+    /// nothing (§3).
+    func aRowsCleanupStillEmits() async throws {
+        let late = Cell<Rutis.Ctx>()
+        let plugin = Rutis.define(Plugin(name: "closing") { ctx in
+            late.value = ctx
+            ctx.effect { try ctx.emit("t/bye", "bye") }
+        })
+        let loaded = try await RutisTest.load(plugin)
+        defer { Task { await loaded.close() } }
+        let heard = Cell<Any?>()
+        await loaded.on("t/bye") { (value: Any?) in
+            heard.value = value
+        }
+        try await loaded.unload()
+        for _ in 0..<100 where heard.value == nil {
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+        XCTAssertEqual(heard.value as? String, "bye")
+        let error = Self.failure { try late.value?.emit("t/bye", "late") }
+        XCTAssertEqual(error, "BindingError: row closing is not loaded in this runtime")
+    }
+
+    /// What `body` fails with, as `name: message`, or "no error".
+    private static func failure(_ body: () throws -> Void) -> String {
+        do {
+            try body()
+            return "no error"
+        } catch let error as RutisError {
+            return "\(error.name): \(error.message)"
+        } catch {
+            return "\(error)"
+        }
     }
 }

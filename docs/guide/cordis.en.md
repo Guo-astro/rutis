@@ -36,7 +36,7 @@ await ctx.parallel('chat/sent', out)       // waits for every listener, wherever
 - **Synchronous `bail`**: listeners elsewhere run as synchronous calls; an `async` function or a listener returning a Promise fails it with `AsyncListener` (before, Cordis took the Promise as the result).
 - **`parallel`** failures are always an `AggregateError`, its errors in registration order (as in Cordis), with the message `<n> listeners of <name> failed`, including failures of listeners elsewhere. A failing `emit` listener is reported in one line where it runs and does not reach the emitter.
 - **`internal/*`** stays each runtime's own: `internal/dispatch` and `internal/service` are local to the process and never cross. Before an event arriving from elsewhere first calls a listener in this process, the runtime fires `internal/dispatch` once for that dispatch, with rutis's mode name (`emit`, `parallel`, `serial`, `waterfall`, `bail`), so `internal/dispatch` validators still see such events.
-- **Unload**: the row's `ctx.signal` is aborted and its running listeners are waited for before the cleanups run.
+- **Unload**: the row's `ctx.signal` is aborted and its running listeners are waited for before the cleanups run. Its listeners have left the bus by then, but the row still emits: what a cleanup emits reaches the other rows' listeners, so a plugin that reports or flushes on dispose works as in native Cordis. Once `rows.unload` is answered the context emits nothing (`BindingError`).
 
 ## Mount Cordis plugins in a Rust application
 
