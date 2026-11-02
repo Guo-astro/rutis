@@ -146,14 +146,6 @@ jobs:
     if: needs.verify.outputs.publish == 'true'
     runs-on: ubuntu-24.04
     environment: release
-    env:
-      # A plain directory of this job's own: where the runner's cargo is
-      # mbx's shim, it keeps the target directory in mbx's cache (a symlink),
-      # and `cargo package` cannot stage its temporary registry there
-      # ("failed to create directory …/tmp-registry: File exists", after
-      # which a workspace crate's own version of a sibling crate, not yet on
-      # crates.io, does not resolve — 0.20.0's release).
-      CARGO_TARGET_DIR: ${{ runner.temp }}/target
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.98.1
@@ -176,8 +168,16 @@ jobs:
       # mirror in its Cargo config, and cargo then refuses to package or
       # publish for crates.io without it (0.17.2's first release attempt).
       # Dependencies are still fetched through the runner's configuration.
+      # A plain directory of this job's own: where the runner's cargo is
+      # mbx's shim, it keeps the target directory in mbx's cache (a symlink),
+      # and `cargo package` cannot stage its temporary registry there
+      # ("failed to create directory …/tmp-registry: File exists", after
+      # which a workspace crate's own version of a sibling crate, not yet on
+      # crates.io, does not resolve — 0.20.0's release).
       - name: Package (each crate built from its package, against the others)
         run: cargo package --locked --registry crates-io $(node scripts/train.mjs --crates | sed 's/[^ ]*/-p &/g')
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/target
       - name: Publish what crates.io does not have, each after those it depends on
         run: |
           version="${GITHUB_REF_NAME#v}"
@@ -190,6 +190,7 @@ jobs:
           done
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_TOKEN }}
+          CARGO_TARGET_DIR: ${{ runner.temp }}/target
 
   npm:
     needs: [verify, ci, install, dylib-windows]
