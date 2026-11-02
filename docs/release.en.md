@@ -24,6 +24,8 @@ Except for `rutis-cli` (`cli-v*`, `release-cli.yml`), these packages share a ver
 
 Required configuration: GitHub environment `release` with `CARGO_TOKEN` and `NPM_TOKEN`, and environments `pypi` and `pypi-host`. On PyPI, the trusted publisher of `rutis` points to `release.yml` with environment `pypi`, and that of `rutis-host` to environment `pypi-host`: the two must differ, or a release gets a token valid for only one of them.
 
+The publishing jobs may land on a self-hosted Linux runner (its image carries the label `ubuntu-24.04` too, [CI](ci.en.md) §11). It has no `gh`, so the GitHub Release and the issue opened after a failure call the REST API with `github.token`; npm's provenance needs a GitHub-hosted runner, so there the packages are published without it and the run summary carries a warning; and `cargo package` uses a `CARGO_TARGET_DIR` of the job's own (on a self-hosted runner cargo is mbx's shim, and its kept target directory cannot stage the temporary registry).
+
 Maven Central (release.yml's `maven` job, the vanniktech maven-publish plugin) uses four secrets of the GitHub environment `maven`; when any is missing, the job says which in the run summary and skips, and the rest of the train is published as usual. The maintainer sets them up once:
 
 1. Sign in to the [Central Portal](https://central.sonatype.com) with GitHub, add the namespace `io.github.arcships` under Namespaces, and verify it by creating, in the arcships organization, an empty public repository named with the verification key the page gives (it can be deleted afterwards).
