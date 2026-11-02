@@ -520,7 +520,13 @@ jobs:
           mkdir -p "$dir/target" "$dir/e2e"
           # As ci.yml's runtimes-windows: keep this instance's kept target
           # under RUTIS_CI_TARGET_MAX_GB (default 60 GB), emptied whole rather
-          # than by age (see there).
+          # than by age (see there); a target of another generation goes once.
+          generation=2
+          if [ "$(cat "$dir/target/.generation" 2>/dev/null)" != "$generation" ]; then
+            echo "target directory of generation $(cat "$dir/target/.generation" 2>/dev/null || echo none): emptying it"
+            rm -rf "$dir/target"
+          fi
+          mkdir -p "$dir/target"
           used=$(du -sk "$dir/target" 2>/dev/null | cut -f 1 || true)
           max=${RUTIS_CI_TARGET_MAX_GB:-60}
           if [ -n "$used" ] && [ "$used" -gt $((max * 1024 * 1024)) ]; then
@@ -528,6 +534,7 @@ jobs:
             rm -rf "$dir/target"
             mkdir -p "$dir/target"
           fi
+          echo "$generation" > "$dir/target/.generation"
           jobs=${JOBS:-$((NUMBER_OF_PROCESSORS / 4))}
           [ "$jobs" -ge 2 ] || jobs=2
           {

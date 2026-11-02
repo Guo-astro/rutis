@@ -52,9 +52,21 @@ jobs:
         if: runner.environment == 'self-hosted'
         env:
           JOBS: ${{ vars.WINDOWS_CI_JOBS }}
+          RUTIS_CI_TARGET_MAX_GB: ${{ vars.RUTIS_CI_TARGET_MAX_GB }}
         run: |
           dir="$(cygpath -m "$RUNNER_WORKSPACE/..")/_rutis-ci"
           mkdir -p "$dir/target"
+          # This job builds in a target of its own under runner.temp (below).
+          # Kept between jobs on a self-hosted runner it grows without bound
+          # too: the disk it filled failed the night of 2026-11-01 (#1028), so
+          # it goes once it is over RUTIS_CI_TARGET_MAX_GB (default 60 GB).
+          own="$(cygpath -m "$RUNNER_TEMP")/target"
+          used=$(du -sk "$own" 2>/dev/null | cut -f 1 || true)
+          max=${RUTIS_CI_TARGET_MAX_GB:-60}
+          if [ -n "$used" ] && [ "$used" -gt $((max * 1024 * 1024)) ]; then
+            echo "target directory is $((used / 1024 / 1024)) GB (over $max GB): emptying it"
+            rm -rf "$own"
+          fi
           jobs=${JOBS:-$((NUMBER_OF_PROCESSORS / 4))}
           [ "$jobs" -ge 2 ] || jobs=2
           echo "$NUMBER_OF_PROCESSORS CPUs: $jobs jobs and test threads; $dir"
