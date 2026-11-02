@@ -81,9 +81,9 @@ impl Language for Python {
         Ok(())
     }
 
-    fn debugging(&self) -> Option<Result<&'static str, String>> {
+    fn debugging(&self) -> Option<Result<String, String>> {
         Some(Ok(
-            "the Python runtime reads this terminal: breakpoint() stops there in pdb",
+            "the Python runtime reads this terminal: breakpoint() stops there in pdb".to_owned(),
         ))
     }
 

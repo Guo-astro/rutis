@@ -315,6 +315,64 @@ fn dev_debug_opens_the_node_inspector() {
 }
 
 /// guarantee: host/dev-debug
+/// A `RUTIS_NODE_INSPECT` that is no address is refused before anything
+/// starts, rather than printed as an address nothing listens on (#1046).
+#[test]
+fn dev_debug_refuses_an_inspect_address_that_is_not_one() {
+    let dir = tempfile::tempdir().unwrap();
+    script_project(
+        dir.path(),
+        "index.mjs",
+        "rutis-runtime",
+        "node/rutis-runtime",
+    );
+    let mut host = Host::start_in_env(
+        &["dev", "--debug", "."],
+        dir.path(),
+        &[("RUTIS_NODE_INSPECT", "127.0.0.1:92300")],
+    );
+    let line = host.wait_line(|line| line.contains("RUTIS_NODE_INSPECT").then(|| line.to_owned()));
+    assert!(
+        line.contains("is not an address: set it to <host>:<port>"),
+        "{line}"
+    );
+    let (status, stderr, _) = host.exit();
+    assert_eq!(status.code(), Some(1), "{stderr}");
+}
+
+/// guarantee: host/dev-debug
+/// A machine where 9229 is taken: `RUTIS_NODE_INSPECT` names the address,
+/// and `dev` says which one it uses (#1046).
+#[test]
+fn dev_debug_takes_the_node_inspector_address_from_the_environment() {
+    let _ports = lock_ports();
+    let dir = tempfile::tempdir().unwrap();
+    script_project(
+        dir.path(),
+        "index.mjs",
+        "rutis-runtime",
+        "node/rutis-runtime",
+    );
+    let (mut host, _input) = Host::start_talking(
+        &["dev", "--debug", "."],
+        dir.path(),
+        &[("RUTIS_NODE_INSPECT", "127.0.0.1:9230")],
+    );
+    // Said as it starts, before the runtime is up.
+    host.wait_line(|line| {
+        line.contains("inspector listens on 127.0.0.1:9230")
+            .then_some(())
+    });
+    let url = host.wait_line(|line| {
+        line.strip_prefix("Debugger listening on ")
+            .map(str::to_owned)
+    });
+    assert!(url.starts_with("ws://127.0.0.1:9230/"), "{url}");
+    host.wait_lines(&["weather: running"]);
+    stop(host);
+}
+
+/// guarantee: host/dev-debug
 #[test]
 fn dev_debug_opens_the_bun_inspector() {
     let _ports = lock_ports();

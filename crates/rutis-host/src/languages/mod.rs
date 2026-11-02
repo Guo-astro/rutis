@@ -163,7 +163,7 @@ pub trait Language: Sync {
     /// How its runtime is debugged under `rutis-host dev --debug`
     /// ([`Runtimes::debug`]), as `dev` says it; `None` when it has no
     /// debugger there, an error when the debugger is not installed.
-    fn debugging(&self) -> Option<Result<&'static str, String>> {
+    fn debugging(&self) -> Option<Result<String, String>> {
         None
     }
 }

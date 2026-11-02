@@ -119,14 +119,15 @@ impl Language for Go {
     }
 
     /// Delve runs each Go runtime ([`Delve`]); it must be installed.
-    fn debugging(&self) -> Option<Result<&'static str, String>> {
+    fn debugging(&self) -> Option<Result<String, String>> {
         let installed = std::process::Command::new(DELVE)
             .arg("version")
             .output()
             .is_ok_and(|output| output.status.success());
         Some(match installed {
             true => Ok(
-                "the Go runtime runs under Delve, listening on 127.0.0.1:2345 (`dlv connect 127.0.0.1:2345`); after a rebuild, connect again",
+                "the Go runtime runs under Delve, listening on 127.0.0.1:2345 (`dlv connect 127.0.0.1:2345`); after a rebuild, connect again"
+                    .to_owned(),
             ),
             false => Err(
                 "rutis-host dev --debug runs the Go runtime under Delve, and dlv does not run: install it with \

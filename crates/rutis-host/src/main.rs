@@ -55,8 +55,8 @@ usage:
     dev: --debug                              run the runtimes under their debuggers: Python
                                               stops at breakpoint() in this terminal, Node
                                               and Bun open their inspectors (127.0.0.1:9229,
-                                              127.0.0.1:6499), Go runs under Delve
-                                              (127.0.0.1:2345)
+                                              or RUTIS_NODE_INSPECT; 127.0.0.1:6499), Go
+                                              runs under Delve (127.0.0.1:2345)
     run and dev: --shutdown-timeout <seconds> how long cleanups may take after
                                               Ctrl-C or SIGTERM (default 10, or
                                               RUTIS_SHUTDOWN_TIMEOUT)

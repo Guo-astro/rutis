@@ -317,7 +317,7 @@ How a host installs your plugin: [rutis-host: how a host installs plugins](rutis
 
 ## Debugging
 
-`--debug` opens the Node runtime process's own inspector, on `127.0.0.1:9229`:
+`--debug` opens the Node runtime process's own inspector, on `127.0.0.1:9229` (`RUTIS_NODE_INSPECT=127.0.0.1:<port>` when that port is taken):
 
 <!-- example: typescript-en run until="greeter: running" -->
 ```bash
@@ -329,7 +329,7 @@ The output has `Debugger listening on ws://127.0.0.1:9229/…`. Open `chrome://i
 - The npm launcher that starts `rutis-host` does not take the port. Do not use `NODE_OPTIONS=--inspect`: it opens an inspector in the launcher too, the launcher starts first and takes the port, and you attach to the launcher; `--inspect-brk` stops the launcher.
 - After a reload the module's URL carries `?rutis-reload=<n>` and is a new script: set the breakpoints again in the new script, or use `debugger;`.
 - While stopped at a breakpoint the whole Node runtime is stopped: calls to the other rows in that runtime wait too.
-- When port 9229 is taken, Node prints `Starting inspector on 127.0.0.1:9229 failed` and runs on without an inspector: end the process holding the port first.
+- When port 9229 is taken, Node prints `Starting inspector on 127.0.0.1:9229 failed` and runs on without an inspector: take another port (`RUTIS_NODE_INSPECT=127.0.0.1:9230 npx rutis-host dev --debug`), or end the process holding it first. `dev` prints the address it uses as it starts (`rutis-host dev: debugging: the Node runtime's inspector listens on …`).
 - What `console.log` writes shows in `dev`'s output.
 
 ## Advanced: plugin API
