@@ -66,9 +66,10 @@ impl Language for Bun {
             .map(|bun| runtime(bun, runtimes.debug))
     }
 
-    fn debugging(&self) -> Option<Result<&'static str, String>> {
+    fn debugging(&self) -> Option<Result<String, String>> {
         Some(Ok(
-            "the Bun runtime's inspector listens on ws://127.0.0.1:6499/rutis (open https://debug.bun.sh/#127.0.0.1:6499/rutis)",
+            "the Bun runtime's inspector listens on ws://127.0.0.1:6499/rutis (open https://debug.bun.sh/#127.0.0.1:6499/rutis)"
+                .to_owned(),
         ))
     }
 

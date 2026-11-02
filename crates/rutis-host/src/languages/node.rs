@@ -82,10 +82,12 @@ impl Language for Node {
             .map(|node| runtime(node, runtimes.debug))
     }
 
-    fn debugging(&self) -> Option<Result<&'static str, String>> {
-        Some(Ok(
-            "the Node runtime's inspector listens on 127.0.0.1:9229 (chrome://inspect, or a debugger attaching to port 9229)",
-        ))
+    fn debugging(&self) -> Option<Result<String, String>> {
+        Some(inspect().map(|inspect| {
+            format!(
+                "the Node runtime's inspector listens on {inspect} (chrome://inspect, or a debugger attaching to it); set RUTIS_NODE_INSPECT=host:port to change it"
+            )
+        }))
     }
 
     fn new_names(&self) -> &'static [&'static str] {
@@ -130,6 +132,30 @@ impl Language for Node {
 /// launcher that started this host, as `NODE_OPTIONS=--inspect` would).
 pub const INSPECT: &str = "127.0.0.1:9229";
 
+/// [`INSPECT`], or the address `RUTIS_NODE_INSPECT` names (`host:port`, or a
+/// bare port on 127.0.0.1): on a machine where 9229 is taken, `dev --debug`
+/// would otherwise start a runtime with no inspector (#1046). A value that
+/// is no address is an error rather than a line that names an address
+/// nothing listens on.
+fn inspect() -> Result<String, String> {
+    let Some(address) = std::env::var("RUTIS_NODE_INSPECT")
+        .ok()
+        .map(|address| address.trim().to_owned())
+        .filter(|address| !address.is_empty())
+    else {
+        return Ok(INSPECT.to_owned());
+    };
+    if let Ok(port) = address.parse::<u16>() {
+        return Ok(format!("127.0.0.1:{port}"));
+    }
+    if address.parse::<std::net::SocketAddr>().is_ok() {
+        return Ok(address);
+    }
+    Err(format!(
+        "RUTIS_NODE_INSPECT={address} is not an address: set it to <host>:<port>, such as 127.0.0.1:9230, or to a port"
+    ))
+}
+
 /// The Node runtime package (`@arcships/rutis-runtime`) for the project
 /// `project`: `configured` (`runtimes.node.runtime`), else the project's
 /// own, else the one `RUTIS_NODE_RUNTIME` names; the first that is there.
@@ -172,7 +198,7 @@ fn runtime(node: &NodeRuntime, debug: bool) -> Result<SpawnPlugin, Error> {
     if debug {
         launcher
             .args
-            .insert(0, format!("--inspect={INSPECT}").into());
+            .insert(0, format!("--inspect={}", inspect()?).into());
     }
     Ok(SpawnPlugin::new("node", launcher, anchor))
 }
