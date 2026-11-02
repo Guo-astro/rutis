@@ -34,6 +34,7 @@ import type { Client } from './client.ts'
 import { Bus, refuseReserved } from './events.mjs'
 import { definition, locate, Modules, versionOf, type Kind } from './plugin.ts'
 import { registeredDefinition } from './definitions.ts'
+import { followRow, forgetRow } from './rows.ts'
 import { MANIFEST } from './session.ts'
 import { UNDECLARED, noMethod, notDeclared, notDeclaredOptional, serviceName, unavailable } from './errors.ts'
 import { prefixOutput, say, watchBlocking } from './output.mjs'
@@ -423,6 +424,11 @@ export class Runtime {
       await this.unload(key).catch(() => {})
       throw error
     }
+    // What the row provides, as the test driver reads it (`provided()`): the
+    // host published these before it heard that the row loaded, so they are
+    // here at once; its `rutis/service` events cross the session afterwards
+    // (#1030).
+    if (this.#rows.get(key) === row) followRow(String(this.#bus.rowId(key)), () => [...new Set(row.provided.map(serviceName))].sort())
     return null
   }
 
@@ -430,6 +436,8 @@ export class Runtime {
     const row = this.#rows.get(key)
     if (!row) return null
     this.#rows.delete(key)
+    const rowId = this.#bus.rowId(key)
+    if (typeof rowId === 'string') forgetRow(rowId)
     // Its listeners are off the bus at once (protocol §7.1).
     this.#bus.withdraw(key)
     // From here on no other row sees what this one provides; it still does,

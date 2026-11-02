@@ -13,6 +13,7 @@ import { rowTracking, install as handleUnhandled, failureText, kindText, realFil
 import { cannotLoad, encodeError, entryGone, fileShown, noMethod, notDefinePlugin, serviceName, unavailable } from './errors.mjs'
 import { prefixOutput, say, watchBlocking } from './output.mjs'
 import { registeredDefinition } from './definitions.mjs'
+import { followRow, forgetRow } from './rows.mjs'
 
 // `<channel> --id <endpoint> [--peer <endpoint>] <first plugin or anchor>`.
 // The session greets as `--id`, expecting `--peer` as the controller when
@@ -700,6 +701,16 @@ async function loadRow([key, entry, config, isolate, inject, exports, place]) {
   }
   row.failLoad = undefined
   row.loading = false
+  // What the row provides, as the test driver reads it (`provided()`): the
+  // host published these before it heard that the row loaded, so they are
+  // here at once; its `rutis/service` events cross the session afterwards
+  // (#1030).
+  if (rows.get(key) === row) {
+    followRow(bus.rowId(key), () => [...new Set(row.exports
+      .map(id => slots.get(id))
+      .filter(slot => slot?.object !== undefined)
+      .map(slot => slot.name))].sort())
+  }
   // Ended while it loaded (rutis unloading it meanwhile forgot it).
   if (rows.get(key) === row && hasEnded(row)) endRow(key)
   return null
@@ -710,10 +721,12 @@ async function loadRow([key, entry, config, isolate, inject, exports, place]) {
 async function unloadRow(key) {
   const row = rows.get(key)
   if (!row) return null
+  const rowId = bus.rowId(key)
   // Its listeners are off the bus at once; those running are signalled
   // and waited for, at most the shutdown deadline (§7.1).
   bus.withdraw(key)
   rows.delete(key)
+  if (typeof rowId === 'string') forgetRow(rowId)
   for (const fiber of [row.fiber, row.inner]) if (fiber) unloaded.set(fiber, row)
   for (const id of row.exports) {
     const slot = slots.get(id)
