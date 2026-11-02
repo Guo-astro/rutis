@@ -337,7 +337,7 @@ impl Project {
                 // it can go.
                 self.stale.push(project.binary(self.build - 1));
                 remove_builds(&mut self.stale);
-                host.loader.settled().await;
+                let after = Rows::at_rest(host).await;
                 let own = |id: &str| row_name(host, id).is_some_and(|name| owns(key, &name));
                 // Its rows restarted with it: a row using one says so.
                 let said = format!("{} restarted", project.runtime());
@@ -348,7 +348,7 @@ impl Project {
                     .filter(|entry| own(&entry.id))
                     .map(|entry| (entry.id, said.clone()))
                     .collect();
-                for line in Rows::of(host).restarted(&before, &causes, &|id| own(id)) {
+                for line in after.restarted(&before, &causes, &|id| own(id)) {
                     errln!("{line}");
                 }
             }
@@ -396,13 +396,13 @@ impl Project {
             let before = Rows::of(host);
             match host.loader.reload(id).await {
                 Ok(_) => {
-                    host.loader.settled().await;
+                    let after = Rows::at_rest(host).await;
                     // Before it is said: `status` agrees from then on.
                     self.previous.running(id, false);
                     errln!("{id}: reloaded ({} changed)", self.files(files));
                     reloaded.insert(id.clone());
                     let cause = [(id.clone(), format!("{id} reloaded"))];
-                    affected.add(&before, &Rows::of(host), &cause);
+                    affected.add(&before, &after, &cause);
                 }
                 Err(error) => {
                     let running = Rows::of(host).active(id);
@@ -525,7 +525,7 @@ impl Project {
                         }
                     }
                 }
-                host.loader.settled().await;
+                let after = Rows::at_rest(host).await;
                 let causes: Vec<(String, String)> = changes
                     .iter()
                     .map(|(id, change)| {
@@ -538,7 +538,7 @@ impl Project {
                     })
                     .collect();
                 let changed: HashSet<&str> = changes.iter().map(|(id, _)| id.as_str()).collect();
-                for line in Rows::of(host).restarted(&before, &causes, &|id| changed.contains(id)) {
+                for line in after.restarted(&before, &causes, &|id| changed.contains(id)) {
                     errln!("{line}");
                 }
                 // Rows that changed, of a runtime that is down: it starts
@@ -785,6 +785,41 @@ impl Rows {
             .is_some_and(|(_, _, state)| *state == FiberState::Active)
     }
 
+    /// The rows as they are once none of them is moving any more: `settled`
+    /// waits for what is queued for each row, then a round more while a row
+    /// is still on its way (`Pending`, `Loading`, `Unloading`) and the round
+    /// moved it — a row a change restarts comes back after the reload that
+    /// restarted it has returned (#789), and one waiting for the service it
+    /// uses is `Pending`, which awaiting a row does not wait for (#1044).
+    /// A round that moves nothing is what the rows came to: one that stays
+    /// `Pending` has lost what it uses, and saying so beats waiting forever.
+    async fn at_rest(host: &Host) -> Self {
+        let mut rows = Self::of(host);
+        loop {
+            host.loader.settled().await;
+            let now = Self::of(host);
+            if !now.moving() || now.states == rows.states {
+                return now;
+            }
+            rows = now;
+        }
+    }
+
+    /// Whether a row is between two states ([`Rows::moving_one`]).
+    fn moving(&self) -> bool {
+        self.states.keys().any(|id| self.moving_one(id))
+    }
+
+    /// Whether the row `id` is between two states ([`Rows::moving`]).
+    fn moving_one(&self, id: &str) -> bool {
+        self.states.get(id).is_some_and(|(_, _, state)| {
+            matches!(
+                state,
+                FiberState::Pending | FiberState::Loading | FiberState::Unloading
+            )
+        })
+    }
+
     /// The rows that restarted, started or stopped since `before`, but
     /// those `skip` takes: one line each, naming what of `causes` it uses
     /// ([`Affected::add`]).
@@ -826,6 +861,11 @@ impl Affected {
             let what = match (restarted, was_active, active) {
                 (true, true, true) => "restarted",
                 (true, false, true) => "started",
+                // Restarted, and not back yet: a row waiting for the service
+                // it uses is `Pending` while the change reaches it (#1044,
+                // said `stopped` while it was on its way back), so what it
+                // is between is no answer; one that is `Failed` or gone is.
+                (true, true, false) if after.moving_one(id) => "restarted",
                 (_, true, false) => "stopped",
                 _ => continue,
             };
@@ -1040,6 +1080,38 @@ mod tests {
                 "loose: restarted",
             ]
         );
+
+        // The change reaching a row in flight: one that restarted and waits
+        // for the service it uses (`Pending`), or is still loading its new
+        // version, is on its way back, not stopped (#1044: a snapshot taken
+        // while `caller` waited for `weather` said "stopped", and no line
+        // ever said it came back). What lost what it uses is stopped all the
+        // same.
+        for in_flight in [FiberState::Pending, FiberState::Loading] {
+            let after = rows(
+                &[
+                    ("greeter", 2, FiberState::Active),
+                    ("llm", 2, FiberState::Active),
+                    ("caller", 2, in_flight),
+                    ("audit", 1, FiberState::Pending),
+                    ("idle", 1, FiberState::Active),
+                    ("loose", 2, FiberState::Active),
+                ],
+                &uses[..2],
+            );
+            let mut affected = Affected::default();
+            affected.add(&before, &after, &[("llm".into(), "llm reloaded".into())]);
+            assert_eq!(
+                affected.lines(&|id| id == "llm"),
+                [
+                    "audit: stopped (greeter restarted)",
+                    "caller: restarted (greeter restarted)",
+                    "greeter: restarted (llm reloaded)",
+                    "loose: restarted",
+                ],
+                "{in_flight:?}"
+            );
+        }
 
         // Two changes, one after the other, both used: both named, once.
         let uses: &[(&str, &[&str])] = &[("caller", &["weather", "llm"])];
