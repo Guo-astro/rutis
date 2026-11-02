@@ -110,7 +110,7 @@ rutis-host call [--config <路径>] <服务>.<方法> [参数…]
   rutis-host dev: services: forecast (weather), llm (llm), loader (host), sessions (host)
   ```
 
-  按服务名排序，括号里是提供它的行（0.18 的 `provider`；宿主提供的写 `host`）。没有行提供服务时写 `rutis-host dev: services: none`，宿主提供的不算。
+  按服务名排序，括号里是提供它的行（0.18 的 `provider`；宿主提供的写 `host`）。没有行提供服务时什么都不打印，宿主提供的不算（2026-11-02 修订：原来写 `rutis-host dev: services: none`，启动和每次重建都会先打这一行，#1046）。
 - 每次重新加载、重新构建、重读 `rutis.dev.json` 结束（已有的 `settled` 之后）再打印一行，照 issue 的"启动和重载后打印"，不和上一次比较。
 - 数据只来自 `Loader::status().services`，不另建。`run` 不打印（生产输出不变），要看用 `rutis-host status`。
 - 这是 `dev` 输出里新加的一种行，以 `rutis-host dev: ` 开头，和已有的 `rutis-host dev: running …` 一样，不像 `<行>: <状态>`，读状态行的脚本不受影响；已有的行不变。写进 rutis-host.md 的"用 dev 开发插件"一节的输出表。
