@@ -518,9 +518,9 @@ jobs:
           dir="$(cygpath -m "$RUNNER_WORKSPACE/..")/_rutis-ci"
           rm -rf "$dir/e2e"
           mkdir -p "$dir/target" "$dir/e2e"
-          # As ci.yml's runtimes-windows: drop old build units, then keep this
-          # instance's kept target under RUTIS_CI_TARGET_MAX_GB (default 60 GB).
-          find "$dir/target" -type f -mtime +3 -delete 2>/dev/null || true
+          # As ci.yml's runtimes-windows: keep this instance's kept target
+          # under RUTIS_CI_TARGET_MAX_GB (default 60 GB), emptied whole rather
+          # than by age (see there).
           used=$(du -sk "$dir/target" 2>/dev/null | cut -f 1 || true)
           max=${RUTIS_CI_TARGET_MAX_GB:-60}
           if [ -n "$used" ] && [ "$used" -gt $((max * 1024 * 1024)) ]; then
