@@ -146,6 +146,14 @@ jobs:
     if: needs.verify.outputs.publish == 'true'
     runs-on: ubuntu-24.04
     environment: release
+    env:
+      # A plain directory of this job's own: where the runner's cargo is
+      # mbx's shim, it keeps the target directory in mbx's cache (a symlink),
+      # and `cargo package` cannot stage its temporary registry there
+      # ("failed to create directory …/tmp-registry: File exists", after
+      # which a workspace crate's own version of a sibling crate, not yet on
+      # crates.io, does not resolve — 0.20.0's release).
+      CARGO_TARGET_DIR: ${{ runner.temp }}/target
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.98.1
@@ -210,13 +218,24 @@ jobs:
         run: |
           version="${GITHUB_REF_NAME#v}"
           registry=https://registry.npmjs.org/
+          # Provenance comes from the GitHub Actions OIDC identity, which only
+          # GitHub-hosted runners provide: on a self-hosted one (its image may
+          # carry the label ubuntu-24.04 too) npm refuses the upload with
+          # E422 "Unsupported GitHub Actions runner environment". Say so and
+          # publish without it rather than fail the release.
+          if [ "${ACTIONS_RUNNER_ENVIRONMENT:-}" = github-hosted ]; then
+            provenance=--provenance
+          else
+            provenance=
+            echo "::warning title=npm provenance::this runner is not GitHub-hosted, so npm cannot attach a provenance bundle: publishing without it"
+          fi
           publish() {
             tarball="packages/npm/$1-$version.tgz"
             name=$(tar -xOzf "$tarball" package/package.json | node -p "JSON.parse(require('fs').readFileSync(0)).name")
             if npm view "$name@$version" version --registry "$registry" >/dev/null 2>&1; then
               echo "$name $version is already published"
             else
-              npm publish "$tarball" --provenance --access public --registry "$registry"
+              npm publish "$tarball" $provenance --access public --registry "$registry"
             fi
           }
           publish arcships-rutis
@@ -411,12 +430,35 @@ jobs:
           merge-multiple: true
       # The notes' relative links point into the repository at this tag:
       # on the release page they would resolve against /releases/tag/.
+      # The REST API with the token, not `gh`: these jobs may run on a
+      # self-hosted runner, whose image has no `gh` (the token it does have).
       - name: Release
         run: |
           node tools/release-notes.mjs "${GITHUB_REF_NAME#v}" > "$RUNNER_TEMP/notes.md"
-          gh release create "$GITHUB_REF_NAME" dist/rutis-host-* \
-            --title "rutis $GITHUB_REF_NAME" \
-            --notes-file "$RUNNER_TEMP/notes.md"
+          api="https://api.github.com/repos/$GITHUB_REPOSITORY"
+          auth=(-H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json"
+                -H "X-GitHub-Api-Version: 2022-11-28")
+          id=$(curl -sS "${auth[@]}" "$api/releases/tags/$GITHUB_REF_NAME" | jq -r '.id // empty')
+          if [ -z "$id" ]; then
+            id=$(jq -n --arg tag "$GITHUB_REF_NAME" --arg name "rutis $GITHUB_REF_NAME" \
+                  --rawfile body "$RUNNER_TEMP/notes.md" \
+                  '{tag_name: $tag, name: $name, body: $body}' |
+              curl -sS "${auth[@]}" -X POST --data-binary @- "$api/releases" | jq -r '.id // empty')
+          fi
+          if [ -z "$id" ]; then
+            echo "could not create the release $GITHUB_REF_NAME" >&2
+            exit 1
+          fi
+          for file in dist/rutis-host-*; do
+            name=$(basename "$file")
+            if [ -n "$(curl -sS "${auth[@]}" "$api/releases/$id/assets?name=$name" | jq -r 'if type == "array" then (.[0].id // "") else (.id // "") end')" ]; then
+              echo "$name is uploaded already"
+              continue
+            fi
+            curl -sS --fail-with-body "${auth[@]}" -X POST \
+              -H "Content-Type: application/octet-stream" \
+              --data-binary @"$file" "$api/releases/$id/assets?name=$name" > /dev/null
+          done
         env:
           GH_TOKEN: ${{ github.token }}
 
@@ -534,6 +576,15 @@ jobs:
             echo
             echo "Whether to deprecate (npm) or yank (PyPI, crates.io) the release and publish a fix is decided by hand; see docs/release.md."
           } > "$RUNNER_TEMP/issue.md"
-          gh issue create --repo "$GITHUB_REPOSITORY" --assignee eric8810 \
-            --title "release $VERSION: a job failed after publishing began" \
-            --body-file "$RUNNER_TEMP/issue.md"
+          # The REST API with the token, not `gh`: these jobs may run on a
+          # self-hosted runner, whose image has no `gh` (the token it does have).
+          jq -n --arg title "release $VERSION: a job failed after publishing began" \
+                --rawfile body "$RUNNER_TEMP/issue.md" --arg assignee eric8810 \
+                '{title: $title, body: $body, assignees: [$assignee]}' |
+            curl -sS --fail-with-body \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              -X POST --data-binary @- \
+              "https://api.github.com/repos/$GITHUB_REPOSITORY/issues" > "$RUNNER_TEMP/issue.json"
+          jq -r '.html_url' "$RUNNER_TEMP/issue.json"
