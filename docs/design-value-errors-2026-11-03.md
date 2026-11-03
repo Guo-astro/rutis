@@ -17,6 +17,7 @@ Issue：[#936](https://github.com/arcships/rutis/issues/936)（属于 [#663](htt
 | Node、Bun 发送装着自己的 Map | `test.take: argument 1 cannot be sent: a value nested deeper than 64 levels cannot cross between processes` | Map / Set 走 `#encodeTagged`，那里只查深度（`session.mjs:360-363`） |
 | Python 发送循环引用 | `weather.tomorrow: argument 1 cannot be sent: value nested deeper than 64 levels, the most a value crossing processes may nest` | `_data` 只查深度，不查循环（`python/rutis/rutis/peer.py:648-675`） |
 | Go 发送循环引用（指向自己的指针、装着自己的切片） | `… cannot be sent: value nested deeper than 64 levels, the most a value crossing processes may nest` | `go/rutis/internal/convert/encode.go:142-147`：结构体字段也让 `levels` 加一，先撞 64 层，`maxHops` 那句到不了 |
+| Swift 发送循环引用 | `weather.tomorrow: argument 1 cannot be sent: value nested deeper than 64 levels, the most a value crossing processes may nest (a cyclic reference?)` | 只查深度，括号里猜「是循环吧」：`swift/rutis/Sources/Rutis/Codec/ValueCodec.swift:147-148`、`Codec/Encoder.swift:55-57`；收值的一侧同样（`Session/Peer.swift:662,741-742`） |
 | Go 返回 channel / NaN | `chan int cannot cross between processes`、`the number NaN is not finite: only finite numbers cross`：没有 `bad-value`、没有方法名、没有「返回值」 | 方法返回时 `convert.Results` 就把值换成对端的样子（`convert.go:244-258`），失败于是成了这个方法的 error，走 `respondTo` 的 throw 分支，`ofResult`（`peer/crossing.go:68-75`）碰不到它 |
 | Go 调用方发送 NaN | `argument 1: the number NaN is not finite: only finite numbers cross`：没有方法名、没有 `bad-value` | `Service.Call` 直接返回 `convert.ToPeerArgs` 的错误（`go/rutis/internal/runtime/runtime.go:1153`） |
 | 返回值解不开（Go 收到对象却要 string；Rust 宿主收到 42 却要 string） | `cannot decode {"text":"cloudy"} as string: json: cannot unmarshal object into Go value of type string`；``invalid type: integer `42`, expected a string`` | Go：`decode.go:70`，`Service.Call` 原样返回；Rust：`decode_value` 把 serde 的原文塞进 `Error::Value`（`crates/rutis-bridge/src/session/objects.rs:784`、`:809`） |
@@ -29,7 +30,11 @@ Issue：[#936](https://github.com/arcships/rutis/issues/936)（属于 [#663](htt
 
 - **Rust 发 NaN 不报错，发出去的是 `null`。** `Exact` 把标量交给 `serde_json::value::Serializer`（`objects.rs:380-396`），它对 f64 用 `Value::from`，非有限数变成 `Json::Null`（serde_json 的 `From<f64> for Value` 文档写明）。别的语言都拒绝，Rust 悄悄换成了另一个值。
 - **Node 的 `String(fn)` 把运行时的源码印给开发者看。** 上面那一行就是它印的。
-- **Rust 的深度是第四种说法**：`value nested deeper than 64 levels, the most a value crossing a session may nest`（`crates/rutis-bridge/src/session/rpc.rs:3136`）。
+- **「嵌套过深」今天有四种说法**，循环只能靠它表达，Swift 甚至在括号里猜：
+  - Node、Bun：`a value nested deeper than 64 levels cannot cross between processes`（`session.mjs:102`）；
+  - Python、Go、Kotlin：`value nested deeper than 64 levels, the most a value crossing processes may nest`（`peer.py:520-523`、`peer.go:607`、`internal/peer/Peer.kt:63-65`）；
+  - Swift：后一种加 ` (a cyclic reference?)`（`Codec/ValueCodec.swift:148`）；
+  - Rust：`value nested deeper than 64 levels, the most a value crossing a session may nest`（`rpc.rs:3136`）。
 
 另外，`bad-value` 的 `data` 今天只有 `{part, argument?, limit?}`（诊断 §4.3）：程序分不出「NaN」和「循环」，只能读文字。
 
@@ -47,7 +52,7 @@ Issue：[#936](https://github.com/arcships/rutis/issues/936)（属于 [#663](htt
 
 **D3 循环先于深度。** 每个节点先看「它是不是这条路上已经出现过」，再看深度；`seen` 是当前这条路上的容器，往回走时删掉，所以同一个对象出现在兄弟位置（`[shared, shared]`）不是循环。循环长过 64 层的（走完 64 层才重复）仍报「嵌套过深」——那是它唯一能说清的。**不采用**：只靠深度——#936 的第二行就是这样，开发者看到「嵌套过深」去改结构，改不好。
 
-**D4 深度限制留 64 层，一句话。** 三种语言今天有三种说法（§1），统一成 `the value nests deeper than 64 levels`。限制留下：它保证一次发送不会把进程栈走穿，也让对端收到的东西有界；去掉它，值的大小只受 16 MiB 消息限制约束。**不采用**：去掉限制。
+**D4 深度限制留 64 层，一句话。** 今天有四种说法（§1），Swift 还在括号里猜是不是循环，统一成 `the value nests deeper than 64 levels`。限制留下：它保证一次发送不会把进程栈走穿，也让对端收到的东西有界；去掉它，值的大小只受 16 MiB 消息限制约束。**不采用**：去掉限制。
 
 **D5 非有限数：`the number NaN is not finite`。** 「NaN」「Infinity」「-Infinity」是开发者写的那个值本身；Python 今天的 `NaN cannot cross processes`、Go 的 `… : only finite numbers cross` 都改成这一句。Rust 的 `Exact` 在 `serialize_f32` / `serialize_f64` 里拒绝（今天变成 `null`，D9 的兼容一节）。**不采用**：让 NaN 变成 `null`——那是 Rust 今天的行为，两次开发者的调用因此得到不同的值而不是一个错误。
 
@@ -55,7 +60,7 @@ Issue：[#936](https://github.com/arcships/rutis/issues/936)（属于 [#663](htt
 
 **D7 事件的负载说自己的名字。** 事件经过会话时是一个控制调用（`events.dispatch`），今天负载坏了报 `events.dispatch: argument 1 cannot be sent: …`：那是内部名字，也说不清是哪个参数。发出事件的一方把这次调用**描述成事件名**（会话的调用方法多收一个描述），于是报 `the payload of weather/asked cannot be sent: …`，`part` 是 `payload`。事件在本进程分发时不过会话，也就不会有这个错误。
 
-**D8 引用值的样子：`<function of another process>`（有行名时 `<function of row weather in node>`）。** 三种引用一个形状：`<function of …>`、`<object of …>`、`<asynchronous result of …>`。今天 Python 说「from the host」（它其实来自另一行）、Node 印 `[Function (anonymous)]` 和运行时的源码、Kotlin 印 `RemoteFunction(7)`（内部 id）。行名今天不在线上：引用只带 `origin`（调用 id 的链），带的是调用方的端点，不是发出值的行。**不采用**：现在就把行名放进引用——协议里 `WireValue::Reference` 是 `deny_unknown_fields`（`crates/rutis-bridge/src/session/protocol.rs:8,31,42-47`），多一个键会让旧宿主直接结束会话；要做就得先抬协议版本。这一轮的话术先不承诺行名，行名留给需要它的那个协议改动（§7 的 S5 记下这一点）。
+**D8 引用值的样子：`<function of another process>`（有行名时 `<function of row weather in node>`）。** 三种引用一个形状：`<function of …>`、`<object of …>`、`<asynchronous result of …>`。今天 Python 说「from the host」（它其实来自另一行）、Node 印 `[Function (anonymous)]` 和运行时的源码、Kotlin 印 `RemoteFunction(7)`（内部 id）。行名今天不在线上：引用只带 `origin`（调用 id 的链），带的是调用方的端点，不是发出值的行。**不采用**：现在就把行名放进引用——协议里 `WireValue::Reference` 是 `deny_unknown_fields`（`crates/rutis-bridge/src/session/protocol.rs:8,31,42-47`），多一个键会让旧宿主直接结束会话；要做就得先抬协议版本。这一轮的话术先不承诺行名，行名留给需要它的那个协议改动（§7 的 S7 记下这一点）。
 
 **D9 谁失败，只有那一次调用。** 上面每一行都只让这次调用失败（发出的一方拿到错误，收到的一方拿到一个 throw），会话继续；只有「消息超过 16 MiB」照旧在整帧编码后判（`part` + `limit`）。**不采用**：让坏值结束会话——那是 0.18 之前的样子。
 
@@ -84,8 +89,8 @@ Issue：[#936](https://github.com/arcships/rutis/issues/936)（属于 [#663](htt
 | `reason` | 一句话 | 谁来报 |
 | --- | --- | --- |
 | `non-finite` | `the number NaN is not finite`、`the number Infinity is not finite`、`the number -Infinity is not finite` | 所有语言（Rust 今天不报，D5） |
-| `cycle` | `the value holds itself (a cycle)` | 所有语言（Python、Go 今天报成深度） |
-| `too-deep` | `the value nests deeper than 64 levels` | 所有语言（今天有三种说法，Rust 是第四种，见 §1） |
+| `cycle` | `the value holds itself (a cycle)` | 所有语言（Python、Go、Kotlin、Swift 今天报成深度） |
+| `too-deep` | `the value nests deeper than 64 levels` | 所有语言（今天有四种说法，Swift 那句后面还带 `(a cyclic reference?)`，见 §1） |
 | `type` | `a <类型名> cannot cross between processes`：`a symbol`、`a chan int`、`a module`；Node 今天在纯数据的位置还会补一句怎么办（`a WeakMap cannot cross between processes: pass plain data instead`），那一句照留 | 各语言今天已有的那一句，加上冠词与 `between processes`；句子里的类型名用它自己的语言写（Go 写 `chan int`，Python 写 `module`） |
 | `tag` | `the far end does not take <标签> values (it did not declare the capability value-<标签>)` | 今天已有的句子，不改 |
 | `limit` | `the message would be <n> bytes, over the limit of <limit> bytes (<n> MiB)` | 今天已有的句子，不改 |
@@ -97,7 +102,8 @@ Issue：[#936](https://github.com/arcships/rutis/issues/936)（属于 [#663](htt
 - 传不出去：`bad-value`，`data` = `{part, argument?, reason, limit?}`。`part` 取 `argument` / `arguments` / `result` / `error` / `payload`；`argument` 从 1；`reason` 取 §4.2 的六个之一；`limit` 只在 `reason` 是 `limit` 时有，单位字节。
 - 收到的参数解不开：`bad-argument`（不变），`data` = `{service|object, method, argument, expected}`。
 - 收到的返回值解不开：`bad-result`（新），`data` = `{service|object, method, expected}`。
-- 诊断设计的码表（§4.3）加一行 `bad-result`；`bad-value` 一行加 `reason`。
+
+诊断设计的码表（§4.3）里，这份设计**只动两行**：`bad-value` 一行（`data` 加 `reason`，`part` 多一个 `payload`）和新增的 `bad-result` 一行。表里别的行不归这份设计——`already-provided`、`no-method` 的 `provider` 等属于 [#937](https://github.com/arcships/rutis/issues/937) 的设计稿（`docs/design-error-messages-2026-11-03.md`），两份稿子落进同一张表，后落地的那一份负责 rebase。这份设计不复制整张表。
 
 ### 4.4 检查在哪一步
 
@@ -107,7 +113,7 @@ Issue：[#936](https://github.com/arcships/rutis/issues/936)（属于 [#663](htt
 - **Python**：`_data`、`_encode`、`_encode_tagged` 都带 `seen` 与 `depth`，顺序同 Node。
 - **Go**：`convert.toPeerValue` 带 `seen`（`map[uintptr]bool`，往回收时删），`levels` 与 `hops` 照旧；数字在 `float32` / `float64` 那一支查。
 - **Rust**：`Exact` 的 `serialize_f32` / `serialize_f64` 先查有限，再交给 `serde_json`（今天不查）；层级照今天的位置（发出去之前 `fits` 查 `MAX_DEPTH`，`rpc.rs:3139`，收进来之前 `MAX_FRAME_DEPTH`），只换那句说法；`Exact` 自己也要数层级，否则一个用 `Rc` 指回自己的值在 `arg` 里就递归下去，到不了 `fits`。
-- **Swift / Kotlin**：编码器按同一顺序做同样三步。它们今天已经拒绝非有限数（用例表的 `swift/nan`、`kotlin/nan`），循环与深度按这条规则补齐，由 S6 的用例核对。
+- **Swift / Kotlin**：编码器按同一顺序做同样三步。它们今天都查深度（`Codec/ValueCodec.swift:115`、`Codec/Encoder.swift:55`、`internal/peer/Peer.kt:420,508`）并拒绝非有限数（用例表的 `swift/nan`、`kotlin/nan`），但都不查循环、都把循环报成深度（Swift 还在括号里猜）；`seen` 与三句话按这条规则补上，由 S8 的用例核对。
 
 层级照旧：数组、对象、Map、Set、记录各算一层，一次调用的参数表不算一层。
 
@@ -261,7 +267,11 @@ Rust 今天发 NaN 得到 `null`（§1）；改完之后它和别的语言一样
 - `rutis-host call weather.today Oslo` 印的错误行就是 §5.1 那一句，不另外包装。
 - 发出事件时报告的一行（§4.6）与今天同一位置、同一前缀，只有里面那句话变了。
 
-### 5.6 要学的概念
+### 5.6 部署的人
+
+看不到变化：没有新配置键、没有新文件、没有新端口、没有协议版本，`rutis-host` 和运行时照旧升级即可。
+
+### 5.7 要学的概念
 
 这一轮加：一个错误码（`bad-result`）、一个 `data` 字段（`reason`）、一种显示形式（`<… of another process>`）。按 #663 的分层预算，「值」这一层从 2 个概念（`bad-value`、`bad-argument`）到 3 个，不超；同时去掉一个误解：「嵌套过深」不再兼指循环。没有新配置项、没有新 API。
 
@@ -274,8 +284,9 @@ Rust 今天发 NaN 得到 `null`（§1）；改完之后它和别的语言一样
 | `TypeError: non-finite number`（Node、Bun，发参数时） | `<调用>: argument N cannot be sent: the number NaN is not finite` 等 |
 | `NaN cannot cross processes`（Python） | `the number NaN is not finite` |
 | `a value that holds itself (a cycle) cannot cross between processes`（Node、Bun） | `the value holds itself (a cycle)` |
-| `value nested deeper than 64 levels, the most a value crossing processes may nest`（Python、Go） | `the value nests deeper than 64 levels` |
 | `a value nested deeper than 64 levels cannot cross between processes`（Node、Bun） | `the value nests deeper than 64 levels` |
+| `value nested deeper than 64 levels, the most a value crossing processes may nest`（Python、Go、Kotlin） | 同上 |
+| `value nested deeper than 64 levels, the most a value crossing processes may nest (a cyclic reference?)`（Swift） | `the value nests deeper than 64 levels`（括号里那句「是循环吧」没有了：循环报循环） |
 | `value nested deeper than 64 levels, the most a value crossing a session may nest`（Rust） | 同上 |
 | `module cannot cross the boundary`（Python） | `a module cannot cross between processes` |
 | `argument 1: the number NaN is not finite: only finite numbers cross`（Go 调用方） | `forecast.week: argument 2 cannot be sent: the number NaN is not finite` |
@@ -291,25 +302,38 @@ Rust 今天发 NaN 得到 `null`（§1）；改完之后它和别的语言一样
 
 - Rust 发 NaN / Infinity 从「变成 `null`」改成报错。依赖 `null` 的代码要自己换。
 - Go 的返回值在方法里不再换成对端的样子：`Results` 交回原来的值，编码在 `respondTo` 里做（那是唯一知道「这是谁的返回值」的地方）。返回 channel 之类的方法，错误从「方法的 error」变成「这次调用的 `bad-value`」。
-- 循环引用在 Python、Go 里从「嵌套过深」改成「循环」；`reason` 让程序能分辨。
+- 循环引用在 Python、Go、Kotlin、Swift 里从「嵌套过深」改成「循环」（Swift 括号里那句「是循环吧」也去掉）；`reason` 让程序能分辨。
 
 **文档**：插件 API 指南「值怎样传递」（`docs/guide/plugin-api.md:938`）那一句把 `data` 写成 `{part, argument?, limit?}`；它加 `reason`、加 `payload` 这个 `part`、并把「名字（`BindingError`、`TypeError`……）不作保证，看错误码」说清 `bad-result`，两种语言都改。
 
-**协议不变**：没有新帧、没有新字段、没有抬版本。`bad-value` 的 `data` 多一个 `reason` 键，每种语言都按键读，旧的一端看到多余的键照旧忽略（`bad-value` 的 `data` 本来是 `{part, argument?, limit?}`，加键与 0.18 加 `limit` 一样）。
+**协议不变**：没有新帧、没有新字段、没有抬版本。`bad-value` 的 `data` 多一个 `reason` 键，旧的一端照旧忽略它——错误的 `data` 在每种语言里都当普通数据读，不按结构解：Node、Bun（`node/rutis-runtime/src/errors.mjs:170`、`bun/rutis-bun/src/errors.ts:170`）、Python（`peer.py:114-135` 的 `_code_and_data`）、Go（`peer/errors.go:350` 的 `codeAndData`）、Rust（`session/mod.rs:199-213` 的 `Error::data()`）、Kotlin（`internal/peer/Errors.kt:408`）、Swift（`Errors.swift:385`）。按结构解、多一个键就会失败的是**帧**的形状，不是 `data` 的里面：Rust 的 `WireValue`、`Failure` 是 `deny_unknown_fields`（`protocol.rs:31,88,155`，`Implementation` 之外）。所以往 `data` 里加键可以，加字段不行。加键与 0.18 加 `limit` 一样。
+
+一个例外要说清：Rust 自己造出来的 `bad-value`，`data` 不是从线上读的，是从文字反推的（`rpc/crossing.rs:61-95` 的 `value_data`）。`reason` 在那里推不出来，所以 `Error::Value` 要显式带上 `reason`，不从文字猜（S4）。
+
+**每条线上的版本**：
+
+| 线 | 版本 | 这份设计 | 旧的一端对新的一端 |
+| --- | --- | --- | --- |
+| 会话协议 | 4（`node/rutis-runtime/package.json:18`、`bun/rutis-bun/package.json:18`、`node/rutis-runtime/src/session.mjs:58` 的 `ENDPOINT_PROTOCOL`） | 不变：没有新帧、没有新字段、没有新能力 | 旧运行时对新宿主：它照旧说旧话，宿主拿到的码、`data` 与今天一样；新运行时对旧宿主：新说法和 `reason` 照常跨过去，旧宿主按名读 `data`，多一个键不影响它 |
+| `rutis.json` | 1（`crates/rutis-host/src/config.rs:78` 的 `FORMAT`） | 不变：没有新键 | 旧文件照读，新文件旧宿主照读 |
+| 插件 API | 3（`crates/rutis-loader/src/runtime/go.rs:34`、`swift.rs:33` 的 `PLUGIN_API`，清单里的 `pluginApi`） | 不变：插件要声明的东西没有变化，只有错误的文字与码 | 旧的清单与新宿主、新的清单与旧宿主都照装 |
+| 清单格式 | 1（`crates/rutis-loader/src/runtime/binary.rs:186` 的 `MANIFEST_FORMAT`） | 不变 | 同上 |
 
 **新旧混跑**：检查都在本地，一端新一端旧没有任何危险；旧的一端仍用旧的说法（它不知道自己手里的值要怎么说新话），新的一端照新说法。所以 §5 的逐字用例要求两端都是这一版。
 
-**迁移指南**（0.21，两种语言）加四条：Node、Bun 发 NaN 的错误、Python 的循环与 NaN 说法、Go 的返回值与调用方的参数说法、Rust 的 NaN。**不采用**：为了文字对齐抬协议版本——文字不跨版本协商，抬了也没用。
+**迁移指南**（0.21，两种语言）加五条：Node、Bun 发 NaN 的错误；Python 的循环与 NaN 说法；Go 的返回值与调用方的参数说法；Rust 的 NaN；Swift、Kotlin 的深度那句和引用值的显示。**不采用**：为了文字对齐抬协议版本——文字不跨版本协商，抬了也没用。
 
 ## 7. 实施
 
 | Issue | 内容 | 完成的标志 |
 | --- | --- | --- |
-| S1（#936） | Node、Bun：`checkData` 走进 Map / Set / 记录 / 带标签的值；数字、循环（先于深度）、深度三句统一；事件的调用描述成事件名（D7）；显示（D8） | `node/rutis-runtime/test/session.test.mjs`、`node/rutis/test/values.test.mjs`、`bun/rutis-bun/test/session.test.ts` 逐字锁住 §5.1 的每一行与 `code`、`data`；事件那条在 `bad-values` 用例里 |
+| S1（#936） | Node、Bun：`checkData` 走进 Map / Set / 记录 / 带标签的值；数字、循环（先于深度）、深度一句话（今天四种说法，§1）；事件的调用描述成事件名（D7）；显示（D8） | `node/rutis-runtime/test/session.test.mjs`、`node/rutis/test/values.test.mjs`、`bun/rutis-bun/test/session.test.ts` 逐字锁住 §5.1 的每一行与 `code`、`data`；事件那条在 `bad-values` 用例里 |
 | S2（#936） | Python：`_data` / `_encode` / `_encode_tagged` 带 `seen`；三句统一；`repr` 改 `<… of another process>` | `python/rutis/tests/test_plain_texts.py` 逐字锁住 §5.2 |
 | S3（#936） | Go：`toPeerValue` 带 `seen`；`ToPeerArgs` 带上调用名（`Service.Call` 与运行时里已知服务、方法的地方）；`Results` 不再提前换值，返回值的编码与 `ofResult` 在 `respondTo` 里做；`badResult`（`refusals.go` 旁边） | `go/rutis/internal/convert`、`internal/peer` 的用例逐字锁住 §5.3；`go/rutis/internal/fixtures/session` 里加一条 channel 返回值的用例 |
 | S4（#936） | Rust：`Exact` 的 `serialize_f32` / `serialize_f64` 查有限；`Exact` 自己数层级（`Rc` 指回自己时以 `cycle` 失败），`fits` 那句说法换掉；`call_service` 把解不开的返回值包成 `bad-result`，不再出现 serde 原文 | `crates/rutis-bridge/src/session/rpc/tests.rs` 与 `objects.rs` 的用例逐字锁住 §5.4 |
-| S5（`bad-result` 与行名） | 诊断设计 §4.3 的码表加 `bad-result`；引用值带行名（新的协议改动，`deny_unknown_fields` 决定它必须先抬版本或先加一条能力，另写一个 issue） | 码表更新；行名那一条在它自己的设计里定 |
-| S6（#936 的完成条件） | `crates/rutis-bridge/src/runtime/testing/weather.expected.json` 的 `samples` 加 `throws: {name, message, code, data}`，逐字比较；§1 的每一行一个 sample，Node、Bun、Python、Go、Swift、Kotlin 各一列 | 会话矩阵（Node、Bun、Python、Go、Swift、Kotlin、Rust）全绿，一行的文字或码改了而用例没改就红 |
+| S5（#936） | Swift：`Codec/ValueCodec.swift`（编码、`:147-148`）与 `Session/Peer.swift`（收值、`:662,741-742`）加 `seen`，循环先于深度，三句话统一；`Errors.swift:385` 的 `data` 照旧按数据读 | `swift/rutis/Tests/SelfTest/PeerTests.swift`（今天 `:96` 只查「包含 nested deeper」）逐字锁住属于 Swift 的行 |
+| S6（#936） | Kotlin：`internal/peer/Peer.kt:420,508` 两处编码加 `seen`，`tooDeep()`（`:63-65`）换句；`advanced/RemoteFunction.kt:25`、`RemoteObject.kt:29` 的 `toString` 改 `<… of another process>` | `kotlin/rutis/rutis/src/jvmTest/kotlin/arcships/rutis/PeerTest.kt`、`ErrorTextTest.kt` 逐字锁住属于 Kotlin 的行 |
+| S7（`bad-result` 与行名） | 诊断设计 §4.3 的码表只动这份设计的两行（§4.3；其余属于 #937，后落地的一份 rebase）；引用值带行名（新的协议改动，`deny_unknown_fields` 决定它必须先抬版本或先加一条能力，另写一个 issue） | 码表更新；行名那一条在它自己的设计里定 |
+| S8（#936 的完成条件） | `crates/rutis-bridge/src/runtime/testing/weather.expected.json` 的 `samples` 加 `throws: {name, message, code, data}`，逐字比较；§1 的每一行一个 sample，Node、Bun、Python、Go、Rust、Swift、Kotlin 各一列 | 会话矩阵（上列七种，加宿主）全绿，一行的文字或码改了而用例没改就红 |
 
 每个 issue 的「完成」都包含：§5 里属于它的每一行都有用例逐字比较；旧的说法（§6 的表）在仓库里不再出现。

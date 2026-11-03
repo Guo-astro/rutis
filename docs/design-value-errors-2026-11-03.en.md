@@ -17,6 +17,7 @@ What the 0.19 evaluation said: when a value cannot cross, most exits report `<se
 | Node, Bun sending a Map that holds itself | `test.take: argument 1 cannot be sent: a value nested deeper than 64 levels cannot cross between processes` | A Map or Set goes through `#encodeTagged`, which checks only the depth (`session.mjs:360-363`) |
 | Python sending a cycle | `weather.tomorrow: argument 1 cannot be sent: value nested deeper than 64 levels, the most a value crossing processes may nest` | `_data` checks the depth only, not a cycle (`python/rutis/rutis/peer.py:648-675`) |
 | Go sending a cycle (a pointer to itself, a slice holding itself) | `… cannot be sent: value nested deeper than 64 levels, the most a value crossing processes may nest` | `go/rutis/internal/convert/encode.go:142-147`: a struct field also adds a level, so 64 levels is hit before `maxHops` and its sentence is never reached |
+| Swift sending a cycle | `weather.tomorrow: argument 1 cannot be sent: value nested deeper than 64 levels, the most a value crossing processes may nest (a cyclic reference?)` | Only the depth is checked, and the parenthesis guesses "a cycle?": `swift/rutis/Sources/Rutis/Codec/ValueCodec.swift:147-148`, `Codec/Encoder.swift:55-57`; taking a value in does the same (`Session/Peer.swift:662,741-742`) |
 | Go returning a channel / NaN | `chan int cannot cross between processes`, `the number NaN is not finite: only finite numbers cross`: no `bad-value`, no method, no "the result" | A method's value is turned into a peer value inside the method call (`convert.Results`, `convert.go:244-258`), so the failure becomes that method's own error and takes the throw path of `respondTo`, which `ofResult` (`peer/crossing.go:68-75`) never sees |
 | Go sending NaN as an argument | `argument 1: the number NaN is not finite: only finite numbers cross`: no method, no `bad-value` | `Service.Call` returns the error of `convert.ToPeerArgs` as it is (`go/rutis/internal/runtime/runtime.go:1153`) |
 | A result that does not decode (Go gets an object where it wants a string; a Rust host gets 42 where it wants a string) | `cannot decode {"text":"cloudy"} as string: json: cannot unmarshal object into Go value of type string`; ``invalid type: integer `42`, expected a string`` | Go: `decode.go:70`, returned as it is by `Service.Call`; Rust: `decode_value` puts serde's own text into `Error::Value` (`crates/rutis-bridge/src/session/objects.rs:784`, `:809`) |
@@ -29,7 +30,11 @@ Checking the source also found two things the evaluation's table does not have:
 
 - **Rust does not refuse a NaN; it sends `null`.** `Exact` hands scalars to `serde_json::value::Serializer` (`objects.rs:380-396`), which uses `Value::from` for an f64, and a non-finite number becomes `Json::Null` (serde_json's `From<f64> for Value` says so). Every other language refuses it; Rust quietly sends a different value.
 - **Node's `String(fn)` prints the runtime's own source to the developer.** The line above is what it prints.
-- **Rust words the depth a fourth way**: `value nested deeper than 64 levels, the most a value crossing a session may nest` (`crates/rutis-bridge/src/session/rpc.rs:3136`).
+- **"Nested too deep" is worded four ways today**, and a cycle can only be said through it; Swift even guesses in a parenthesis:
+  - Node, Bun: `a value nested deeper than 64 levels cannot cross between processes` (`session.mjs:102`);
+  - Python, Go, Kotlin: `value nested deeper than 64 levels, the most a value crossing processes may nest` (`peer.py:520-523`, `peer.go:607`, `internal/peer/Peer.kt:63-65`);
+  - Swift: the last one with ` (a cyclic reference?)` (`Codec/ValueCodec.swift:148`);
+  - Rust: `value nested deeper than 64 levels, the most a value crossing a session may nest` (`rpc.rs:3136`).
 
 Also, a `bad-value`'s `data` is `{part, argument?, limit?}` today (diagnostics §4.3): a program cannot tell a NaN from a cycle without reading the text.
 
@@ -47,7 +52,7 @@ Also, a `bad-value`'s `data` is `{part, argument?, limit?}` today (diagnostics �
 
 **D3 A cycle before the depth.** Each node asks first "is it already on this path", then the depth; `seen` holds the containers on the path and is emptied on the way back up, so the same object in two sibling places (`[shared, shared]`) is not a cycle. A cycle longer than 64 levels (it repeats only after 64) is still reported as too deep: that is the one thing it can say. **Dropped**: leaving it to the depth — that is row 2 of #936, where the developer is told to change a structure that is a cycle.
 
-**D4 The depth limit stays at 64 levels, in one sentence.** Three languages say it three ways today (§1); it becomes `the value nests deeper than 64 levels`. The limit stays: it keeps one send from running a process's stack out, and it bounds what the far end takes; without it a value is bounded only by the 16 MiB message limit. **Dropped**: removing the limit.
+**D4 The depth limit stays at 64 levels, in one sentence.** It is worded four ways today (§1), and Swift guesses at a cycle in a parenthesis; it becomes `the value nests deeper than 64 levels`. The limit stays: it keeps one send from running a process's stack out, and it bounds what the far end takes; without it a value is bounded only by the 16 MiB message limit. **Dropped**: removing the limit.
 
 **D5 Non-finite numbers: `the number NaN is not finite`.** "NaN", "Infinity" and "-Infinity" are the value the developer wrote; Python's `NaN cannot cross processes` today and Go's `… : only finite numbers cross` both become this sentence. Rust's `Exact` refuses in `serialize_f32` / `serialize_f64` (today it becomes `null`, §6). **Dropped**: letting a NaN become `null` — that is what Rust does today, and two calls of one plugin then get different values instead of an error.
 
@@ -55,7 +60,7 @@ Also, a `bad-value`'s `data` is `{part, argument?, limit?}` today (diagnostics �
 
 **D7 An event's payload gets its own name.** An event that crosses a session is a control call (`events.dispatch`), and a bad payload reports `events.dispatch: argument 1 cannot be sent: …` today: an internal name, and an argument number that means nothing to the developer. The emitting side **describes that call as the event's name** (the session's call methods take one more description), so it reads `the payload of weather/asked cannot be sent: …` with `part` `payload`. An event dispatched in this process does not cross a session and has no such error.
 
-**D8 A reference shows as `<function of another process>` (with a row, `<function of row weather in node>`).** Three kinds, one shape: `<function of …>`, `<object of …>`, `<asynchronous result of …>`. Today Python says "from the host" (it came from another row), Node prints `[Function (anonymous)]` and the runtime's source, Kotlin prints `RemoteFunction(7)` (an internal id). A row's name is not on the wire: a reference carries only `origin` (a chain of call ids), which names the calling endpoints, not the row that made the value. **Dropped**: putting the row in a reference now — `WireValue::Reference` is `deny_unknown_fields` (`crates/rutis-bridge/src/session/protocol.rs:8,31,42-47`), so one more key ends the session on an older host; it needs a protocol version first. This round's wording promises no row name; the row name belongs to the protocol change that wants it (S5 of §7).
+**D8 A reference shows as `<function of another process>` (with a row, `<function of row weather in node>`).** Three kinds, one shape: `<function of …>`, `<object of …>`, `<asynchronous result of …>`. Today Python says "from the host" (it came from another row), Node prints `[Function (anonymous)]` and the runtime's source, Kotlin prints `RemoteFunction(7)` (an internal id). A row's name is not on the wire: a reference carries only `origin` (a chain of call ids), which names the calling endpoints, not the row that made the value. **Dropped**: putting the row in a reference now — `WireValue::Reference` is `deny_unknown_fields` (`crates/rutis-bridge/src/session/protocol.rs:8,31,42-47`), so one more key ends the session on an older host; it needs a protocol version first. This round's wording promises no row name; the row name belongs to the protocol change that wants it (S7 of §7).
 
 **D9 Only that call fails.** Every row above fails only that call (the sender gets an error, the receiver gets a throw) and the session goes on; only "over the 16 MiB message limit" is still decided after the whole frame is encoded (`part` plus `limit`). **Dropped**: ending the session on a bad value — that was the way before 0.18.
 
@@ -84,8 +89,8 @@ A reason is one sentence that says nothing about the runtime's internals. `data.
 | `reason` | The one sentence | Who reports it |
 | --- | --- | --- |
 | `non-finite` | `the number NaN is not finite`, `the number Infinity is not finite`, `the number -Infinity is not finite` | every language (Rust says nothing today, D5) |
-| `cycle` | `the value holds itself (a cycle)` | every language (Python and Go say too deep today) |
-| `too-deep` | `the value nests deeper than 64 levels` | every language (three sentences today, and a fourth in Rust, §1) |
+| `cycle` | `the value holds itself (a cycle)` | every language (Python, Go, Kotlin and Swift say too deep today) |
+| `too-deep` | `the value nests deeper than 64 levels` | every language (four wordings today, Swift's with `(a cyclic reference?)`, §1) |
 | `type` | `a <type name> cannot cross between processes`: `a symbol`, `a chan int`, `a module`; where Node says today what to do instead in the plain-data position (`a WeakMap cannot cross between processes: pass plain data instead`), that tail stays | each language's existing sentence, with the article and `between processes`; the type name is written as that language writes it (Go `chan int`, Python `module`) |
 | `tag` | `the far end does not take <tag> values (it did not declare the capability value-<tag>)` | the sentence it has today, unchanged |
 | `limit` | `the message would be <n> bytes, over the limit of <limit> bytes (<n> MiB)` | the sentence it has today, unchanged |
@@ -97,7 +102,8 @@ The `type` row is each language's own rule about which values do not cross; this
 - Cannot be sent: `bad-value`, `data` = `{part, argument?, reason, limit?}`. `part` is `argument`, `arguments`, `result`, `error` or `payload`; `argument` counts from 1; `reason` is one of the six in §4.2; `limit` (bytes) is there only when `reason` is `limit`.
 - An argument that does not decode: `bad-argument` (unchanged), `data` = `{service|object, method, argument, expected}`.
 - A result that does not decode: `bad-result` (new), `data` = `{service|object, method, expected}`.
-- The diagnostics design's code table (§4.3) gains `bad-result`; its `bad-value` row gains `reason`.
+
+In the diagnostics design's code table (§4.3) this design **touches two rows only**: the `bad-value` row (`data` gains `reason`, `part` gains `payload`) and the new `bad-result` row. The rest of the table is not this design's — `already-provided`, `no-method`'s `provider` and the others belong to the draft of [#937](https://github.com/arcships/rutis/issues/937) (`docs/design-error-messages-2026-11-03.md`); the two land in one table, and whichever PR lands second rebases. This design does not copy the table.
 
 ### 4.4 Where the check happens
 
@@ -107,7 +113,7 @@ Every language checks in the same step and the same place: while turning the val
 - **Python**: `_data`, `_encode` and `_encode_tagged` all carry `seen` and `depth`, in the same order as Node.
 - **Go**: `convert.toPeerValue` carries `seen` (`map[uintptr]bool`, deleted on the way back up) beside `levels` and `hops`; numbers are checked in the `float32` / `float64` arm.
 - **Rust**: `Exact`'s `serialize_f32` / `serialize_f64` check finiteness before `serde_json` sees them (they do not today); levels stay where they are today (`fits` against `MAX_DEPTH` before sending, `rpc.rs:3139`; `MAX_FRAME_DEPTH` before taking a frame in), with only the sentence changed; `Exact` counts levels too, or a value pointing at itself through an `Rc` recurses inside `arg` and never reaches `fits`.
-- **Swift / Kotlin**: their encoders make the same three steps in the same order. They refuse non-finite numbers today (the cases `swift/nan` and `kotlin/nan` of the case table); cycles and the depth are brought to this rule and checked by S6's cases.
+- **Swift / Kotlin**: their encoders make the same three steps in the same order. Both check the depth today (`Codec/ValueCodec.swift:115`, `Codec/Encoder.swift:55`, `internal/peer/Peer.kt:420,508`) and refuse non-finite numbers (the cases `swift/nan` and `kotlin/nan` of the case table), but neither looks for a cycle, and both report one as too deep (Swift even guesses in a parenthesis); `seen` and the three sentences are added as this rule says, checked by S8's cases.
 
 Levels stay as they are: an array, an object, a Map, a Set and a record are each one level; a call's argument list is not a level.
 
@@ -261,7 +267,11 @@ Rust sends a NaN as `null` today (§1); afterwards it reports the error like eve
 - `rutis-host call weather.today Oslo` prints the line of §5.1 as it is, with no wrapper of its own.
 - The line reported when an emit fails (§4.6) is in the same place with the same prefix as today; only its inner sentence changes.
 
-### 5.6 Concepts to learn
+### 5.6 Those deploying
+
+Nothing visible changes: no new configuration key, no new file, no new port, no protocol version; `rutis-host` and the runtimes are upgraded as usual.
+
+### 5.7 Concepts to learn
 
 This round adds: one error code (`bad-result`), one `data` field (`reason`), one display form (`<… of another process>`). Against the per-layer concept budget of #663, the "values" layer goes from 2 concepts (`bad-value`, `bad-argument`) to 3, which is within it; and one misunderstanding goes away: "nested deeper than 64 levels" no longer also means a cycle. No new configuration key, no new API.
 
@@ -274,8 +284,9 @@ This round adds: one error code (`bad-result`), one `data` field (`reason`), one
 | `TypeError: non-finite number` (Node, Bun, an argument) | `<call>: argument N cannot be sent: the number NaN is not finite`, and so on |
 | `NaN cannot cross processes` (Python) | `the number NaN is not finite` |
 | `a value that holds itself (a cycle) cannot cross between processes` (Node, Bun) | `the value holds itself (a cycle)` |
-| `value nested deeper than 64 levels, the most a value crossing processes may nest` (Python, Go) | `the value nests deeper than 64 levels` |
 | `a value nested deeper than 64 levels cannot cross between processes` (Node, Bun) | `the value nests deeper than 64 levels` |
+| `value nested deeper than 64 levels, the most a value crossing processes may nest` (Python, Go, Kotlin) | the same |
+| `value nested deeper than 64 levels, the most a value crossing processes may nest (a cyclic reference?)` (Swift) | `the value nests deeper than 64 levels` (the parenthesis guessing at a cycle goes: a cycle is reported as one) |
 | `value nested deeper than 64 levels, the most a value crossing a session may nest` (Rust) | the same |
 | `module cannot cross the boundary` (Python) | `a module cannot cross between processes` |
 | `argument 1: the number NaN is not finite: only finite numbers cross` (a Go caller) | `forecast.week: argument 2 cannot be sent: the number NaN is not finite` |
@@ -291,25 +302,38 @@ This round adds: one error code (`bad-result`), one `data` field (`reason`), one
 
 - Rust sending NaN or Infinity changes from "becomes `null`" to an error. Code relying on the `null` changes it itself.
 - A Go method's value is no longer turned into a peer value inside the method: `Results` gives the value back as it is and `respondTo` encodes it (the only place that knows whose result it is). A method returning a channel now fails its call with `bad-value` instead of its own error.
-- A cycle in Python and Go is reported as a cycle instead of too deep; `reason` lets a program tell them apart.
+- A cycle in Python, Go, Kotlin and Swift is reported as a cycle instead of too deep (Swift's parenthesis guessing goes too); `reason` lets a program tell them apart.
 
 **The documents**: the plugin API guide's "How values cross" (`docs/guide/plugin-api.en.md:938`) writes `data` as `{part, argument?, limit?}`; it gains `reason`, the `payload` part, and `bad-result` in its "the name is not guaranteed, look at the code" sentence, in both languages.
 
-**The protocol does not change**: no new frame, no new field, no version raised. A `bad-value`'s `data` gains a `reason` key, which every language reads by name, and an older end ignores an extra key as it did when `limit` was added in 0.18.
+**The protocol does not change**: no new frame, no new field, no version raised. A `bad-value`'s `data` gains a `reason` key, and an older end ignores it — an error's `data` is read as plain data, never decoded by structure: Node and Bun (`node/rutis-runtime/src/errors.mjs:170`, `bun/rutis-bun/src/errors.ts:170`), Python (`peer.py:114-135`, `_code_and_data`), Go (`peer/errors.go:350`, `codeAndData`), Rust (`session/mod.rs:199-213`, `Error::data()`), Kotlin (`internal/peer/Errors.kt:408`), Swift (`Errors.swift:385`). What is decoded by structure, and fails on one more key, is the shape of a **frame**, not the inside of `data`: Rust's `WireValue` and `Failure` are `deny_unknown_fields` (`protocol.rs:31,88,155`; besides `Implementation`). So a key in `data` may be added; a field may not. It is the same as adding `limit` in 0.18.
+
+One exception to state plainly: a `bad-value` the Rust side made itself does not read its `data` from the wire, it works it back out of the text (`rpc/crossing.rs:61-95`, `value_data`). A `reason` cannot be worked out there, so `Error::Value` carries `reason` explicitly instead of guessing it from the text (S4).
+
+**Each line's version**:
+
+| Line | Version | This design | An old end and a new one |
+| --- | --- | --- | --- |
+| Session protocol | 4 (`node/rutis-runtime/package.json:18`, `bun/rutis-bun/package.json:18`, `ENDPOINT_PROTOCOL` in `node/rutis-runtime/src/session.mjs:58`) | unchanged: no new frame, no new field, no new capability | An old runtime with a new host keeps its old wording, and the host gets the same codes and `data` as today; a new runtime with an old host sends the new wording and `reason` as usual, and the old host reads `data` by name, where one more key changes nothing |
+| `rutis.json` | 1 (`FORMAT` in `crates/rutis-host/src/config.rs:78`) | unchanged: no new key | An old file is read, and a new file is read by an old host |
+| Plugin API | 3 (`PLUGIN_API` in `crates/rutis-loader/src/runtime/go.rs:34` and `swift.rs:33`; `pluginApi` in a manifest) | unchanged: nothing a plugin declares changes, only an error's text and code | An old manifest with a new host, and a new manifest with an old host, both install |
+| Manifest format | 1 (`MANIFEST_FORMAT` in `crates/rutis-loader/src/runtime/binary.rs:186`) | unchanged | as above |
 
 **An old end and a new one**: every check is local, so mixing them is safe; an older end keeps its old wording (it cannot know how the new one words a value in its hands) and the new end words its own. The word-for-word cases of §5 therefore require both ends at this version.
 
-**The migration guide** (0.21, both languages) gains four entries: Node and Bun's NaN error, Python's cycle and NaN sentences, Go's result and caller-argument wording, and Rust's NaN. **Dropped**: raising the protocol version to align the text — the text is not negotiated between versions, so it would change nothing.
+**The migration guide** (0.21, both languages) gains five entries: Node and Bun's NaN error; Python's cycle and NaN sentences; Go's result and caller-argument wording; Rust's NaN; Swift's and Kotlin's depth sentence and how a reference shows. **Dropped**: raising the protocol version to align the text — the text is not negotiated between versions, so it would change nothing.
 
 ## 7. Implementation
 
 | Issue | What it does | What done means |
 | --- | --- | --- |
-| S1 (#936) | Node, Bun: `checkData` walks into Map / Set / records / tagged values; numbers, cycles (before the depth) and the three sentences; the event's call described as the event's name (D7); the display (D8) | `node/rutis-runtime/test/session.test.mjs`, `node/rutis/test/values.test.mjs` and `bun/rutis-bun/test/session.test.ts` lock every line of §5.1 with its `code` and `data` word for word; the event's line is in the `bad-values` cases |
+| S1 (#936) | Node, Bun: `checkData` walks into Map / Set / records / tagged values; numbers, cycles (before the depth) and the depth in one sentence (four wordings today, §1); the event's call described as the event's name (D7); the display (D8) | `node/rutis-runtime/test/session.test.mjs`, `node/rutis/test/values.test.mjs` and `bun/rutis-bun/test/session.test.ts` lock every line of §5.1 with its `code` and `data` word for word; the event's line is in the `bad-values` cases |
 | S2 (#936) | Python: `seen` through `_data`, `_encode` and `_encode_tagged`; the three sentences; `repr` becomes `<… of another process>` | `python/rutis/tests/test_plain_texts.py` locks §5.2 word for word |
 | S3 (#936) | Go: `seen` in `toPeerValue`; `ToPeerArgs` given the call's name (from `Service.Call` and wherever the runtime knows the service and method); `Results` no longer converts early, so the result is encoded and `ofResult` naming happens in `respondTo`; `badResult` beside `refusals.go` | the cases of `go/rutis/internal/convert` and `internal/peer` lock §5.3 word for word; `go/rutis/internal/fixtures/session` gains a case returning a channel |
 | S4 (#936) | Rust: finiteness in `Exact::serialize_f32` / `serialize_f64`; `Exact` counts levels itself (an `Rc` pointing at itself fails as `cycle`) and `fits`' sentence changes; `call_service` wraps a result that does not decode as `bad-result`, and serde's text appears nowhere | the cases of `crates/rutis-bridge/src/session/rpc/tests.rs` and `objects.rs` lock §5.4 word for word |
-| S5 (`bad-result` and the row name) | The diagnostics design's code table (§4.3) gains `bad-result`; a reference carries the row that made it (a protocol change of its own: `deny_unknown_fields` means it needs a version or a capability first, and is designed separately) | the code table is updated; the row name is decided in its own design |
-| S6 (the completion condition of #936) | `crates/rutis-bridge/src/runtime/testing/weather.expected.json`'s `samples` gain `throws: {name, message, code, data}` compared word for word; one sample per row of §1, one column each for Node, Bun, Python, Go, Swift and Kotlin | the session matrix (Node, Bun, Python, Go, Swift, Kotlin, Rust) is green, and a text or code changed without its case goes red |
+| S5 (#936) | Swift: `seen` in `Codec/ValueCodec.swift` (encoding, `:147-148`) and `Session/Peer.swift` (taking a value in, `:662,741-742`), a cycle before the depth, the three sentences; `data` at `Errors.swift:385` is still read as data | `swift/rutis/Tests/SelfTest/PeerTests.swift` (today `:96` only checks that the text contains "nested deeper than 64") locks the Swift lines word for word |
+| S6 (#936) | Kotlin: `seen` at both encoding places, `internal/peer/Peer.kt:420,508`, and a new sentence in `tooDeep()` (`:63-65`); `toString` of `advanced/RemoteFunction.kt:25` and `RemoteObject.kt:29` becomes `<… of another process>` | `kotlin/rutis/rutis/src/jvmTest/kotlin/arcships/rutis/PeerTest.kt` and `ErrorTextTest.kt` lock the Kotlin lines word for word |
+| S7 (`bad-result` and the row name) | The diagnostics design's code table (§4.3) gets only this design's two rows (§4.3; the rest belongs to #937, and whichever lands second rebases); a reference carries the row that made it (a protocol change of its own: `deny_unknown_fields` means it needs a version or a capability first, and is designed separately) | the code table is updated; the row name is decided in its own design |
+| S8 (the completion condition of #936) | `crates/rutis-bridge/src/runtime/testing/weather.expected.json`'s `samples` gain `throws: {name, message, code, data}` compared word for word; one sample per row of §1, one column each for Node, Bun, Python, Go, Rust, Swift and Kotlin | the session matrix (the seven above, plus a host) is green, and a text or code changed without its case goes red |
 
 "Done" of every issue includes: every line of §5 that belongs to it is compared word for word by a case; the old wording (the table of §6) appears nowhere in the repository.
