@@ -123,14 +123,16 @@ test('a definition whose injected service is not there waits, and starts when it
   const owner = await h.load(handover)
   const t = await h.load(handed.get('gated'))
   // Waiting, not failed: the load answered, the host reported nothing, and
-  // the service is not provided yet (the loader's status line is
-  // `gated: waiting for later`; the test tool has no status of its own).
+  // the service is not provided yet. The row's line is the host's, the one
+  // `dev` prints (#933).
   expect(t.provided()).toEqual([])
   expect(await t.reported()).toEqual([])
-  expect(() => t.service('gated')).toThrow('the plugin does not provide gated (now)')
+  expect(await t.waiting()).toBe('gated: waiting for later (nothing provides it yet)')
+  expect(() => t.service('gated')).toThrow('gated: waiting for later (nothing provides it yet)')
   const provider = await h.load(gatekeeper)
   await until(() => t.provided().includes('gated'))
   expect(t.provided()).toEqual(['gated'])
+  expect(await t.waiting()).toBeNull()
   expect(t.service('gated').ping()).toBe(7)
   await provider.unload()
   await t.unload()

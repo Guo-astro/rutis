@@ -16,7 +16,12 @@ test('a name the test does not provide is the plugin\'s', async () => {
 test('providing a name the test provides fails, a host\'s or a row\'s own', async () => {
   for (const [shared, own] of [[{ notes: notes() }, {}], [{}, { notes: notes() }]]) {
     const h = host({ services: shared })
-    await assert.rejects(h.load(wordcount, { services: own }), { name: 'PluginTestError', message: /^wordcount: Error: notes is already provided by rutis-test\/notes: rename one of them$/ })
+    // The row's line, as `dev` prints it: which step failed, the plugin's
+    // own words (#937's `: rename one of them`), and where in its code.
+    await assert.rejects(h.load(wordcount, { services: own }), {
+      name: 'PluginTestError',
+      message: /^wordcount: failed in apply: Error: notes is already provided by rutis-test\/notes: rename one of them\n    in wordcount:\n {4}at /,
+    })
     await h.unload()
   }
 })

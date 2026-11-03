@@ -54,9 +54,10 @@ class Loaded(object)(host: _Host, row: str, entry: str, plugin: sdk.Plugin) -> N
     def service(self, name: str) -> Any
     def methods(self, name: str) -> dict
     def provided(self) -> list[str]
+    async def waiting(self) -> str | None
     async def update(self, config: Any) -> None
     async def unload(self) -> None
-class PluginTestError(AssertionError)(…)
+class PluginTestError(AssertionError)(message: str, code: str | None = None, data: Any = None) -> None
 class Reported(tuple)(line: str)
     line: str
 def load(plugin: sdk.Plugin | ModuleType, *, config: Any = None, services: dict | None = None, bus: Bus | None = None, id: str | None = None, isolate: dict | None = None) -> AsyncIterator[Loaded]

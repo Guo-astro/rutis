@@ -22,6 +22,7 @@ use std::sync::{Arc, Mutex};
 use rutis::host::{BoxFuture, DynPlugin, Effect, ErrorKind, FiberState, PluginFactory};
 use rutis::{Ctx, Error};
 use rutis_bridge::pipe::{Processes, Spawn};
+use rutis_bridge::session::{code, Error as CallError};
 use rutis_loader::edit::{Editable, NewEntry, Version};
 use rutis_loader::report::{EntryInfo, EntryStatus, Isolate};
 use rutis_loader::{Builtins, Layer, Loader, LoaderError, Patch};
@@ -133,7 +134,9 @@ impl Test {
 
     /// Load `name` at the far end ([`Harness::load`]).
     pub async fn load(&self, loader: &Loader, name: &str, config: Value) -> Result<String, String> {
-        load(loader, &self.state, name, config, Options::default()).await
+        load(loader, &self.state, name, config, Options::default())
+            .await
+            .map_err(|error| error.to_string())
     }
 }
 
@@ -143,6 +146,10 @@ impl Test {
 pub struct Options {
     /// The row's id, instead of one from the plugin's name.
     pub id: Option<String>,
+    /// The plugin's name, as the test tool knows it (the package's, the
+    /// module's): the row's id comes from it, then `-2`, `-3`… while one is
+    /// taken (#933). Without it, from the name `load` was given.
+    pub name: Option<String>,
     /// The row's `isolate`, as in `rutis.json`: service name → `true` (a
     /// scope of its own) or a label (shared by the rows naming it).
     pub isolate: Option<serde_json::Map<String, Value>>,
@@ -230,8 +237,20 @@ impl DynPlugin for TestPlugin {
     }
 }
 
+/// What `state` says of a row that is not running: the line `dev` prints
+/// for it, and the code and data of its error when it has them (#933).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RowState {
+    pub line: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub code: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data: Option<Value>,
+}
+
 /// The service `rutis-host/test`: rows of plugins run at the far end of
-/// the session, through the loader.
+/// the session, through the loader. What it refuses with is the row's own
+/// line, as `dev` prints it, with the row error's code and data (#933).
 pub struct Harness {
     loader: Loader,
     state: Arc<State>,
@@ -248,7 +267,7 @@ impl Harness {
         name: String,
         config: Option<Value>,
         options: Option<Options>,
-    ) -> Result<String, String> {
+    ) -> Result<String, CallError> {
         load(
             &self.loader,
             &self.state,
@@ -262,29 +281,62 @@ impl Harness {
     /// Give the row `id` that `load` added `config`, as a row's config
     /// changes. Fails when the plugin refuses it (the row keeps its config)
     /// or fails with it.
-    pub async fn update(&self, id: String, config: Value) -> Result<(), String> {
-        loaded(&self.state, &id)?;
+    pub async fn update(&self, id: String, config: Value) -> Result<(), CallError> {
+        loaded(&self.state, &id).map_err(|line| refused_line(&line))?;
         self.loader
             .update(&id, config)
             .await
             .map_err(|error| failed(&id, &error))?;
-        let info = settled(&self.loader, &id).await?;
+        let info = settled(&self.loader, &id)
+            .await
+            .map_err(|line| refused_line(&line))?;
         if let Some(rejected) = &info.rejected {
-            return Err(format!("{id}: {rejected}"));
+            return Err(refused_line(&format!("{id}: {rejected}")));
         }
-        refused(&info).map_or(Ok(()), Err)
+        refused(&info).map_or(Ok(()), |line| Err(refused_line(&line)))
     }
 
     /// Remove the row `id` that `load` added: its plugin unloads at the far
     /// end. Returns once it unloaded.
-    pub async fn unload(&self, id: String) -> Result<(), String> {
-        loaded(&self.state, &id)?;
+    pub async fn unload(&self, id: String) -> Result<(), CallError> {
+        loaded(&self.state, &id).map_err(|line| refused_line(&line))?;
         self.loader
             .remove(&id)
             .await
             .map_err(|error| failed(&id, &error))?;
         self.state.loaded.lock().unwrap().remove(&id);
         Ok(())
+    }
+
+    /// What the row `id` is doing, when it is not running: `None` while it
+    /// runs, otherwise the line `dev` prints for it (`waiting for llm (…)`,
+    /// `failed in apply: …` with where it was), with its code and data.
+    pub fn state(&self, id: String) -> Result<Option<RowState>, CallError> {
+        loaded(&self.state, &id).map_err(|line| refused_line(&line))?;
+        let Some(info) = self.loader.get(&id) else {
+            return Ok(None);
+        };
+        let running = matches!(&info.status,
+            EntryStatus::Running(snapshot) if snapshot.state == FiberState::Active);
+        if running {
+            return Ok(None);
+        }
+        let line = match &info.status {
+            EntryStatus::Running(snapshot) if snapshot.state == FiberState::Pending => {
+                let waits = self.loader.waits(&info);
+                crate::status::row_line(&id, &crate::status::describe_waits(&waits, &|_| None))
+            }
+            status => crate::status::row_line(&id, &crate::status::describe(status)),
+        };
+        let error = match &info.status {
+            EntryStatus::Running(snapshot) => snapshot.error.clone(),
+            _ => None,
+        };
+        let (code, data) = match error.as_ref().and_then(|error| rutis_bridge::thrown(error)) {
+            Some(thrown) => (code_of(thrown.code()), thrown.data()),
+            None => (None, None),
+        };
+        Ok(Some(RowState { line, code, data }))
     }
 
     /// What the host reported of the row `id`, in order: each listener of
@@ -300,6 +352,27 @@ impl Harness {
             .map(|(_, line)| line.clone())
             .collect()
     }
+}
+
+/// `code`, one of the codes a far end reads, or `None` for one not known
+/// here (a plugin's own).
+fn code_of(code: Option<&str>) -> Option<&'static str> {
+    let known: [&'static str; 7] = [
+        code::NOT_DECLARED,
+        code::UNAVAILABLE,
+        code::NO_METHOD,
+        code::BAD_ARGUMENT,
+        code::BAD_VALUE,
+        code::PEER_GONE,
+        code::BAD_CONFIG,
+    ];
+    known.into_iter().find(|known| Some(*known) == code)
+}
+
+/// A line the harness refuses with and no code: one of rutis's own words
+/// about this row (`no row x was loaded`).
+fn refused_line(line: &str) -> CallError {
+    CallError::refused(line.to_owned())
 }
 
 /// The row `rutis-host test` starts with: the connection row. The layer
@@ -332,16 +405,16 @@ async fn load(
     name: &str,
     config: Value,
     options: Options,
-) -> Result<String, String> {
+) -> Result<String, CallError> {
     if name.is_empty() {
-        return Err("load needs the name of a plugin".into());
+        return Err(refused_line("load needs the name of a plugin"));
     }
     let id = match options.id {
         Some(id) if loader.get(&id).is_some() => {
-            return Err(format!("a row {id} is loaded already"))
+            return Err(refused_line(&format!("a row {id} is loaded already")))
         }
         Some(id) => id,
-        None => free_id(loader, name),
+        None => free_id(loader, options.name.as_deref().unwrap_or(name)),
     };
     let mut isolate = std::collections::BTreeMap::new();
     for (service, how) in options.isolate.unwrap_or_default() {
@@ -349,9 +422,9 @@ async fn load(
             Value::Bool(true) => Isolate::Private,
             Value::String(label) => Isolate::Shared(label),
             other => {
-                return Err(format!(
+                return Err(refused_line(&format!(
                     "isolate.{service} must be true or a label, not {other}"
-                ))
+                )))
             }
         };
         isolate.insert(service, how);
@@ -367,10 +440,12 @@ async fn load(
         .create(entry, None, None)
         .await
         .map_err(|error| failed(&id, &error))?;
-    let info = settled(loader, &id).await?;
+    let info = settled(loader, &id)
+        .await
+        .map_err(|line| refused_line(&line))?;
     if let Some(why) = refused(&info) {
         let _ = loader.remove(&id).await;
-        return Err(why);
+        return Err(refused_line(&why));
     }
     state.loaded.lock().unwrap().insert(id.clone());
     Ok(id)
@@ -409,16 +484,28 @@ fn loaded(state: &State, id: &str) -> Result<(), String> {
     }
 }
 
-/// The loader refused an edit of `id`: a row that failed says so as its
-/// line does.
-fn failed(id: &str, error: &LoaderError) -> String {
-    match error {
+/// The loader refused an edit of `id`: the row's line as `dev` prints it
+/// (which step failed, where the plugin's code was), with the code and data
+/// of the row's error when it has them.
+fn failed(id: &str, error: &LoaderError) -> CallError {
+    let line = match error {
         LoaderError::ApplyFailed { failures } => failures
             .iter()
             .map(ToString::to_string)
             .collect::<Vec<_>>()
             .join("\n"),
         error => format!("{id}: {error}"),
+    };
+    let (code, data) = match error {
+        LoaderError::Rejected { error, .. } => match rutis_bridge::thrown(error) {
+            Some(thrown) => (code_of(thrown.code()), thrown.data()),
+            None => (None, None),
+        },
+        _ => (None, None),
+    };
+    match code {
+        Some(code) => CallError::binding(code, line, data),
+        None => CallError::refused(line),
     }
 }
 

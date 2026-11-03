@@ -373,7 +373,7 @@ mod tests {
         let root = Ctx::root()?;
         root.provide_as::<dyn Translate>(Arc::new(FakeTranslate))?;
         let plugin = root.plugin(GreeterPlugin::new(&Config { greeting: "Hi".into() })?);
-        (&plugin).await?; // apply has run
+        plugin.running(std::time::Duration::from_secs(30)).await?; // apply has run
 
         // Listen on the root, as a host does, to the events the plugin emits
         let (sender, mut greeted) = mpsc::unbounded_channel();
@@ -401,7 +401,7 @@ cargo test
 ```
 
 - `root.provide_as::<dyn Translate>(…)` provides a service under a trait object type; `root.get::<T>()` gets a service, `None` when there is none.
-- `(&plugin).await` returns once the plugin's mount has been handled. A plugin whose dependencies are missing is not running then, so provide the fake services first, then mount the plugin.
+- `plugin.running(limit)` waits until the plugin really runs (`apply` is done). A start that does not run fails with the row's line: `GreeterPlugin: failed in apply: boom`, `GreeterPlugin: config: …`; a plugin that keeps waiting says what it waits for once `limit` passes (`GreeterPlugin: waiting for Arc<dyn Translate> (service missing)`), and comes back at once when nothing provides it. So provide the fake services first, then mount the plugin.
 - `emit` does not wait for listeners, so the test waits for its own listener to receive the event before looking at `count()`.
 - A failing `emit` listener goes to the root's error sink; to assert on those in a test, create the root with `Ctx::root_with_sink(handle, sink)`.
 

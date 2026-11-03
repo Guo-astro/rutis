@@ -8,6 +8,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertTrue
 
 /**
  * A row's config: rutis checks it against the plugin's schema and fills its
@@ -42,14 +43,20 @@ class ConfigTest {
         assertEquals(1, seen.size)
     }
 
-    /** A decoder error after the schema passed is one sentence, with its path (config schema design §3.3). */
+    /**
+     * A decoder error after the schema passed is one sentence, with its path
+     * (config schema design §3.3); the host then says where the runtime
+     * noticed it (#933, `docs/design-test-tool-errors-2026-11-03.md` §3.1.1),
+     * as `dev` prints the same row.
+     */
     @Test
     fun aDecoderErrorAfterTheSchemaIsOneSentence() {
         val loose = Json.parseToJsonElement("""{"type":"object","properties":{"days":{}}}""") as JsonObject
         val plugin = Rutis.define<Strict>(name = "strict", schema = loose) { _, _ -> }
         var error = assertFailsWith<RutisException> { RutisTest.load(plugin, mapOf("days" to "x")).close() }
-        assertEquals("strict: config: days is not a value the plugin accepts", error.message)
+        assertEquals("strict: config: days is not a value the plugin accepts", error.message.lines().first())
+        assertTrue(error.message.lines().drop(1).any { it.trim() == "in strict:" }, error.message)
         error = assertFailsWith<RutisException> { RutisTest.load(plugin, emptyMap<String, Any>()).close() }
-        assertEquals("strict: config: days is not a value the plugin accepts", error.message)
+        assertEquals("strict: config: days is not a value the plugin accepts", error.message.lines().first())
     }
 }

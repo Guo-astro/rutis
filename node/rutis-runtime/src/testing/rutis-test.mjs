@@ -106,6 +106,9 @@ export default Object.freeze({
       unload: id => harness.unload(id),
       reported: id => harness.reported(id),
       provided: id => providedBy(id),
+      // What the row does while it is not running: the line `dev` prints,
+      // its code and data (#933). The host answers it from the same code.
+      state: id => harness.state(id),
       methods: name => inferred(ctx.use(name)),
       // A service of the test, as a row of its own (./service.mjs): a
       // name rutis has already fails that row's load only. Provided here,

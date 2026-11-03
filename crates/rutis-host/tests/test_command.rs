@@ -306,10 +306,7 @@ async fn python_plugins_load_hear_emit_update_and_unload_through_rutis_host_test
         .await;
         assert_eq!(
             result,
-            expected(
-                "weather_plugin",
-                "Error: weather_plugin: config: city is required"
-            ),
+            expected("weather_plugin", "weather_plugin: config: city is required"),
             "{handover:?}"
         );
         assert_eq!(status, 0, "{handover:?}: {rest:?}");

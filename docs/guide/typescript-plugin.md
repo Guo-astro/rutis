@@ -211,7 +211,8 @@ npm test
 - `services` 是插件 `inject` 的服务的假实现，按名字给出。
 - `t.service('greeter')` 是插件提供的服务，只有 `provides` 里写的方法能调用，和在宿主里一样。
 - `t.on(名字, 监听器)` 像插件旁边的另一个插件一样监听事件，插件发出的都送到。事件经宿主送达，比 `hello` 的返回晚一点到，所以断言放在 `await t.unload()` 之后。
-- 服务的调用一直不返回时，用 `node:test` 的 `timeout` 给测试设时限（`test('…', { timeout: 2000 }, async () => { … })`）：到时这个测试失败（`test timed out after 2000ms`），其余测试照常运行，`npm test` 跑完后以退出码 1 退出，不等那个调用。时限落在 `load` 里（宿主还没启动完）时也一样：这次 `load` 不再往下走，它启动的宿主停下，后面的测试重新起一个宿主。
+- 服务的调用一直不返回时，测试工具自己给 30 秒的时限：到时不返回的调用失败（`PluginTestError: greeter.hello() did not return within 30s`，`code` 是 `timeout`），只失败那一次调用。要更短的时限，用 `node:test` 的 `timeout` 给测试设时限（`test('…', { timeout: 2000 }, async () => { … })`）：到时这个测试失败（`test timed out after 2000ms`），其余测试照常运行，`npm test` 跑完后以退出码 1 退出，不等那个调用。时限落在 `load` 里（宿主还没启动完）时也一样：这次 `load` 不再往下走，它启动的宿主停下，后面的测试重新起一个宿主。
+- 插件没起来（等一个没人提供的服务）时，`t.service()` 抛的是这一行的状态行，和 `dev` 说的一样：`greeter: waiting for translate (nothing provides it yet)`，`code` 是 `not-running`；`await t.waiting()` 也给出那一行，跑起来之后是 `null`。
 - 一个测试在 `t.unload()` 之前失败，也不留下什么：它结束时，它装载的插件被卸载，它给的服务被撤下，下一个测试照常用同样的服务装载。
 - 插件运行在真实的 Node 运行时里，由真实的宿主管理：宿主按 Schema 检查配置并补上默认值、分发事件，值在插件与测试之间跨进程传递，所以测试过了，在宿主里也一样。插件要是它那个文件的默认导出（`src/index.ts` 就是）。
 

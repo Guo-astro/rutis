@@ -291,6 +291,7 @@ go test ./...
 - `loaded.On` 监听插件发出的事件；监听的是测试自己的插件，在宿主的总线上。
 - `loaded.Unload()` 卸载插件；测试结束时这一行也会卸掉。
 - 宿主对这一行做它对每一行都做的检查：配置合 Schema（`TryLoad` 交回它的那一行，`weather: config: city is required`），`Inject` 里的服务都在。
+- 插件没起来时，`loaded.Service(name)` 让测试以这一行的状态行失败，和 `dev` 说的一样：`rutistest: greeter: waiting for translate (nothing provides it yet)`；`loaded.Waiting()` 交回同一行，跑起来之后是 `""`。服务的一次调用不返回时，测试工具给它 30 秒（`ctx` 自己有时限时用它的），到时那个错误是 `*rutistest.Error`，`Code` 是 `timeout`。
 
 宿主给的服务类型（`rutis-host types`）只有 TypeScript 与 Python 两种；Go 插件照宿主文档里的方法写函数字段的结构体。测试工具的其余接口见 [插件 API：Go 的测试工具](plugin-api.md#go-的测试工具)。
 

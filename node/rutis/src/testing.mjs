@@ -24,13 +24,28 @@
 // there. The plugin is loaded from its
 // module, which must export it as default.
 
+import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
-import { join } from 'node:path'
-import { pathToFileURL } from 'node:url'
+import { dirname, join } from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { PLUGIN_API, isPlugin } from './advanced.mjs'
 
 export class PluginTestError extends Error {
   name = 'PluginTestError'
+  /**
+   * What went wrong, for a program to branch on: `not-running` (the row is
+   * not up), `no-service` (it runs but has no such service), `timeout` (a
+   * call did not return in time), or the code of the row's own error (a
+   * config that does not match is `bad-config`).
+   */
+  code
+  /** The details of `code`: `{row}`, `{row, service, services}`, `{service, method, limit}`, or the row error's own. */
+  data
+  constructor(message, { code, data } = {}) {
+    super(message)
+    this.code = code
+    this.data = data
+  }
 }
 
 const FILE = Symbol.for('rutis.plugin-file')
@@ -202,6 +217,108 @@ async function askOf(target, method, args) {
   if (!control) throw new PluginTestError(NOT_STARTED)
   return control.callAsync(target, method, args)
 }
+// How long an asynchronous call of a service may take before the test fails
+// (the design's 30 seconds): an override, for the tool's own tests, is
+// `RUTIS_TEST_CALLING_MS`.
+function calling() {
+  const given = Number(process.env.RUTIS_TEST_CALLING_MS)
+  return Number.isFinite(given) && given > 0 ? given : 30_000
+}
+
+// `promise`, the call `service.method(args…)`, failing after `calling()`
+// seconds: only that call fails. The timer is not counted, like the call
+// itself (#997): a test whose call never returns ends at its own time limit,
+// and `node --test` exits then, without waiting for the call (#933 §3.4).
+// The tool's limit is the one a call running out of time meets while the
+// test is still going.
+function within(promise, service, method) {
+  const limit = calling()
+  let timer
+  const late = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      // From here the call keeps nothing alive either: the test fails now,
+      // and the run ends even though the plugin never answers.
+      held?.unref()
+      reject(new PluginTestError(`${service}.${method}() did not return within ${limit / 1000}s`, {
+        code: 'timeout',
+        data: { service, method, limit: limit / 1000 },
+      }))
+    }, limit)
+    timer.unref?.()
+  })
+  return Promise.race([promise, late]).finally(() => clearTimeout(timer))
+}
+
+// What the host says of the row `id` when it is not running: `{line, code?,
+// data?}`, or `null` while it runs. A host or runtime older than 0.21 cannot
+// say why, and the row is reported as up with no reason.
+const OLD_HOST = id => `${id}: not running (this rutis-host is older than 0.21 and cannot say why; upgrade it)`
+async function rowState(id) {
+  try {
+    return await ask('state', id)
+  } catch (error) {
+    if (!/has no method\b/.test(error?.message ?? '')) throw error
+    return { line: OLD_HOST(id), code: 'not-running', data: { row: id } }
+  }
+}
+
+// The name in the `package.json` nearest `file`, scope dropped
+// (`@ana/wordcount` is `wordcount`): what a plugin is called when it
+// declares no name of its own. `file` is a `file:` URL, as Node gives it,
+// or a path, as Bun does.
+const packages = new Map()
+function packageName(file) {
+  if (!file) return undefined
+  let dir = dirname(String(file).startsWith('file:') ? fileURLToPath(file) : String(file))
+  while (!packages.has(dir)) {
+    let name
+    try {
+      name = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8')).name
+    } catch {}
+    if (typeof name === 'string' && name !== '') {
+      packages.set(dir, name.includes('/') ? name.slice(name.lastIndexOf('/') + 1) : name)
+      break
+    }
+    const up = dirname(dir)
+    if (up === dir) {
+      packages.set(dir, undefined)
+      break
+    }
+    dir = up
+  }
+  return packages.get(dir)
+}
+
+// The names in `known` that `rutis::config::closest` would name for `name`
+// (the rule the host uses): one edit for 3 to 6 characters, two for more,
+// an edit being an insert, a delete, a replace or a swap of neighbours.
+function closest(name, known) {
+  const distance = (a, b) => {
+    const rows = Array.from({ length: a.length + 1 }, (_, i) => [i])
+    for (let j = 1; j <= b.length; j++) rows[0][j] = j
+    for (let i = 1; i <= a.length; i++) {
+      for (let j = 1; j <= b.length; j++) {
+        const cost = a[i - 1] === b[j - 1] ? 0 : 1
+        let best = Math.min(rows[i - 1][j] + 1, rows[i][j - 1] + 1, rows[i - 1][j - 1] + cost)
+        if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) best = Math.min(best, rows[i - 2][j - 2] + 1)
+        rows[i][j] = best
+      }
+    }
+    return rows[a.length][b.length]
+  }
+  const allowed = name.length <= 2 ? 0 : name.length <= 6 ? 1 : 2
+  let best
+  let bestDistance = allowed + 1
+  for (const candidate of known) {
+    if (candidate === name) continue
+    const d = distance(name, candidate)
+    if (d < bestDistance) {
+      bestDistance = d
+      best = candidate
+    }
+  }
+  return bestDistance <= allowed ? best : undefined
+}
 
 // The methods rutis sees on a service no declaration describes: its own
 // and inherited functions, up to Object's, not the constructor.
@@ -323,7 +440,11 @@ export function host({ services = {} } = {}) {
       await unloaded()
       const withdrawOwn = await provide(own)
       await unloaded(withdrawOwn)
-      const options = { ...(rowId === undefined ? {} : { id: rowId }), ...(isolate === undefined ? {} : { isolate }) }
+      // The row's id is the plugin's name: the one the test gives, else the
+      // plugin's own, else its package's (a plugin module's `index.ts` takes
+      // its package's name); `-2`, `-3`… while one is taken.
+      const base = rowId ?? plugin.name ?? (received ? undefined : packageName(file))
+      const options = { ...(base === undefined ? {} : { name: base }), ...(rowId === undefined ? {} : { id: rowId }), ...(isolate === undefined ? {} : { isolate }) }
       let id, provides
       try {
         if (received) {
@@ -333,9 +454,10 @@ export function host({ services = {} } = {}) {
         }
       } catch (error) {
         await withdrawOwn()
-        throw new PluginTestError(error?.message ?? String(error))
+        throw new PluginTestError(error?.message ?? String(error), { code: error?.code, data: error?.data })
       }
       const row = loaded(id, received ? { provides } : plugin, withdrawOwn, received)
+      await row.refresh()
       rows.push(row)
       await unloaded()
       return row.api
@@ -355,8 +477,31 @@ export function host({ services = {} } = {}) {
     // This row's test listeners: withdrawn when it unloads.
     const mine = new Set()
     let unloaded = false
+    // What the host last said of this row while it is not running: the line
+    // `dev` prints for it, its code and data (#933). Kept here because
+    // `service()` is synchronous and cannot ask.
+    let away = null
+    const refresh = async () => {
+      away = unloaded ? null : await rowState(id)
+      return away
+    }
+    const awayError = () => new PluginTestError(away.line, {
+      code: away.code ?? 'not-running',
+      data: away.data ?? { row: id },
+    })
+    const missingService = name => {
+      const services = call('provided', id)
+      const like = closest(name, services)
+      const provides = services.length === 0 ? 'it provides nothing' : `it provides: ${services.join(', ')}`
+      const hint = like === undefined ? '' : `; did you mean ${like}?`
+      return new PluginTestError(`${id}: no such service ${name} (${provides}${hint})`, {
+        code: 'no-service',
+        data: { row: id, service: name, services },
+      })
+    }
     const shape = name => {
-      if (!call('provided', id).includes(name)) throw new PluginTestError(`the plugin does not provide ${name} (now)`)
+      if (away) throw awayError()
+      if (!call('provided', id).includes(name)) throw missingService(name)
       return plugin.provides[name] ?? call('methods', name)
     }
     // Unload the row as the host does, then withdraw its services and the
@@ -377,10 +522,16 @@ export function host({ services = {} } = {}) {
         if (unloaded) throw new PluginTestError('the plugin is unloaded')
         return Object.fromEntries(Object.entries(shape(name)).map(([method, kind]) => [method, kind === 'sync'
           ? (...args) => control.call(name, method, args)
-          : (...args) => askOf(name, method, args)]))
+          : (...args) => within(askOf(name, method, args), name, method)]))
       },
       /** The methods rutis sees on the service `name`: `{ method: 'sync' | 'async' }`. */
       methods: name => ({ ...shape(name) }),
+      /**
+       * What the row is doing while it is not running: `null` while it runs,
+       * else the line `dev` prints (`waiting for llm (…)`, `failed in
+       * apply: …` with where it was).
+       */
+      waiting: async () => (await refresh())?.line ?? null,
       /** The names of the services the plugin provides now. */
       provided: () => call('provided', id),
       /**
@@ -421,13 +572,13 @@ export function host({ services = {} } = {}) {
         try {
           await ask('update', id, config ?? null)
         } catch (error) {
-          throw new PluginTestError(error?.message ?? String(error))
+          throw new PluginTestError(error?.message ?? String(error), { code: error?.code, data: error?.data })
         }
       },
       /** Unload the row as the host does, then withdraw its services and the test's listeners of it. */
       unload,
     }
-    const record = { api, unload }
+    const record = { api, unload, refresh }
     return record
   }
 

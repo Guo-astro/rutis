@@ -328,7 +328,7 @@ A waiting row says what it waits for and why (from 0.17.2, #676). Waiting for it
 | `waiting for llm (row model failed: <first line of the error>)` | The row that provides it failed |
 | `waiting for llm (row model, which provides it, is disabled)` | The row that provides it is disabled; written so only when that row's plugin has been resolved (another row enabling the same plugin, say), otherwise as `no enabled row provides it` above |
 | `waiting for llm (row model's runtime py is down)` / `… is not running yet` / `(row model waits for its runtime gpu)` | The row that provides it waits for its own runtime (a remote runtime's state the host does not know: it only says it waits) |
-| `waiting for bsvc (row b waits for asvc from this row: they inject each other)` | Two rows `inject` each other's services; neither starts |
+| `waiting for bsvc (row b waits for asvc too: they inject each other)` | Two rows `inject` each other's services; neither starts |
 | `waiting for llm (row model waits too, for x)` | The row that provides it waits itself |
 | `waiting for llm (row model is starting)` / `(row model has not provided it)` | The row that provides it is starting; or runs but has not provided it (one running on a connection's far end while the connection is down, say) |
 | `waiting for its services` | When rutis cannot say what it waits for |
@@ -718,10 +718,11 @@ rutis-host test <plugin> --channel <channel>
 
 | Method | Does |
 | --- | --- |
-| `load(name, config?, options?)` | Runs the plugin `name`, as the runtime knows it (a file or package for Node and Bun, a module for Python), with `config`, as a row of its own (`test:<name>`, by the session's `run`); returns the row's id. `options` gives fields of the row: `id` (one already there: `a row oslo is loaded already`), and `isolate`, as a row's in `rutis.json` (`{ "forecast": true }`, or a label). Without `id`: the file's name without its extension (`/tests/weather.mjs` is `weather`), else `name`, with `-2`, `-3`… while one is taken. When the row cannot start, it fails with the row's line (`weather: config: city is required`) and no row stays. |
+| `load(name, config?, options?)` | Runs the plugin `name`, as the runtime knows it (a file or package for Node and Bun, a module for Python), with `config`, as a row of its own (`test:<name>`, by the session's `run`); returns the row's id. `options` gives fields of the row: `id` (one already there: `a row oslo is loaded already`), and `isolate`, as a row's in `rutis.json` (`{ "forecast": true }`, or a label). Without `id`: the file's name without its extension (`/tests/weather.mjs` is `weather`), else `name`, with `-2`, `-3`… while one is taken. When the row cannot start, it fails with the row's line (`weather: config: city is required`, or `failed in apply: …` with the position lines) and no row stays. |
 | `update(id, config)` | Gives the row `config`, as a changed row's config: the plugin restarts with it. Fails when the plugin refuses it (the row keeps its config) or fails with it. |
 | `unload(id)` | Removes the row; returns once its plugin unloaded in the runtime. |
 | `reported(id)` | What the host reported of the row: each of its listeners that failed in an `emit`, each filter of its `emit` that failed, as the host prints them (`weather: listener of weather/ask failed: Error: boom`). |
+| `state(id)` | What the row is doing while it is not running: `null` (it runs), or `{ line, code, data }` — `line` is the line `run` and `dev` print for that row (`waiting for llm (nothing provides it yet)`, `failed in apply: …` with the position lines), and `code` and `data` are its error's code and details. The testing tools use it to say what is being waited for, instead of each guessing. |
 
 - `<plugin>` is loaded first (as `load(<plugin>)`), once the runtime greeted: the plugin that drives the test. It injects `rutis-host/test`, provides the fakes the plugin under test uses (`ctx.provide`), listens (`ctx.on`) and emits (`ctx.emit`) as any plugin. It calls `load` outside its `apply` (in a task it starts, or a listener): the loader is starting it while its `apply` runs.
 - Plugins loaded this way share the runtime and one event bus with the driving plugin; services are visible to all of them, as in any host.

@@ -86,7 +86,8 @@ struct ConfigSchemaTests {
     }
 
     /// A decoder error after the schema passed is one sentence, never the
-    /// decoder's text (design §3.3).
+    /// decoder's text (design §3.3); the host then says where the runtime
+    /// noticed it, as `dev` prints the same row (#933).
     func aDecoderErrorAfterTheSchemaIsOneSentence() async throws {
         let plugin = Rutis.define(Plugin(name: "loose", config: LooseDays.self) { _, _ in })
         do {
@@ -94,7 +95,12 @@ struct ConfigSchemaTests {
             await loaded.close()
             XCTFail("a wrong config loads")
         } catch let error as RutisError {
-            XCTAssertEqual(error.message, "loose: config: days is not a value the plugin accepts")
+            let lines = error.message.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+            XCTAssertEqual(lines.first, "loose: config: days is not a value the plugin accepts", error.message)
+            XCTAssertTrue(
+                lines.dropFirst().contains { $0.trimmingCharacters(in: .whitespaces) == "in loose:" },
+                error.message
+            )
         }
     }
 

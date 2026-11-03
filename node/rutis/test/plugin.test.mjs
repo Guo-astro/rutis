@@ -33,7 +33,7 @@ test('a plugin runs with the services it injects and provides what it declares',
   assert.deepEqual(t.service('weather').forecast(['mon']), ['mon: fine'])
   assert.deepEqual(t.provided(), ['weather'])
   assert.deepEqual(t.methods('weather'), { today: 'async', forecast: 'sync', unit: 'sync' })
-  assert.throws(() => t.service('other'), { name: 'PluginTestError', message: 'the plugin does not provide other (now)' })
+  assert.throws(() => t.service('other'), { name: 'PluginTestError', message: "weather: no such service other (it provides: weather)", code: 'no-service' })
   await t.unload()
 })
 
@@ -58,13 +58,13 @@ test('a service another row provides after this one withdrew it is that row\'s',
   first.service('control').withdraw()
   // Between the withdrawal and the next provider the name is no one's.
   assert.deepEqual(first.provided(), ['control'])
-  assert.throws(() => first.service('echo'), { name: 'PluginTestError', message: 'the plugin does not provide echo (now)' })
+  assert.throws(() => first.service('echo'), { name: 'PluginTestError', message: `${first.row}: no such service echo (it provides: control)`, code: 'no-service' })
   const second = await h.load(taker)
   assert.deepEqual(second.provided(), ['echo'])
   // Announced, so its methods are async.
   assert.equal(await second.service('echo').say(), 'B')
   assert.deepEqual(first.provided(), ['control'])
-  assert.throws(() => first.service('echo'), { name: 'PluginTestError', message: 'the plugin does not provide echo (now)' })
+  assert.throws(() => first.service('echo'), { name: 'PluginTestError', message: `${first.row}: no such service echo (it provides: control)`, code: 'no-service' })
   await second.unload()
   await first.unload()
   await h.unload()

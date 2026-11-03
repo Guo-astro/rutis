@@ -673,7 +673,7 @@ impl Inner {
                     (snapshot.state == FiberState::Failed).then(|| {
                         snapshot
                             .error
-                            .map_or_else(|| "failed".to_owned(), |e| e.to_string())
+                            .map_or_else(|| "failed".to_owned(), |e| crate::error::printed(&e))
                     })
                 } else if row.group || state.stopped.contains_key(&slot) {
                     None

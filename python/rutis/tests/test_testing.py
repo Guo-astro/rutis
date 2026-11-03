@@ -81,16 +81,55 @@ class Testing(background.TestCase):
 
         run(go())
 
-    def test_a_missing_service_is_an_error(self):
+    def test_a_missing_service_is_the_rows_line(self):
+        # #933: the host's line, the one `dev` prints, not the tool's guess,
+        # and the code says the row is not up.
         plugin, _ = weather_plugin()
 
         async def missing():
-            async with load(plugin):
-                pass
+            async with load(plugin) as t:
+                self.assertEqual(await t.waiting(), "weather: waiting for llm (nothing provides it yet)")
+                with self.assertRaises(PluginTestError) as refused:
+                    t.service("weather")
+                self.assertEqual(str(refused.exception), "weather: waiting for llm (nothing provides it yet)")
+                self.assertEqual(refused.exception.code, "not-running")
+                self.assertEqual(refused.exception.data, {"row": "weather"})
 
-        with self.assertRaises(PluginTestError) as refused:
-            run(missing())
-        self.assertEqual(str(refused.exception), "weather did not start: it injects llm, which nothing provides: give the test services=")
+        run(missing())
+
+    def test_a_name_the_running_row_has_not_got(self):
+        # #933: the tool's own words, since this is not an underlying error.
+        plugin, _ = weather_plugin()
+
+        async def go():
+            async with load(plugin, services={"llm": Llm()}) as t:
+                self.assertIsNone(await t.waiting())
+                with self.assertRaises(PluginTestError) as refused:
+                    t.service("wether")
+                self.assertEqual(
+                    str(refused.exception),
+                    "weather: no such service wether (it provides: weather; did you mean weather?)",
+                )
+                self.assertEqual(refused.exception.code, "no-service")
+                self.assertEqual(
+                    refused.exception.data,
+                    {"row": "weather", "service": "wether", "services": ["weather"]},
+                )
+
+        run(go())
+
+    def test_a_plugin_that_declares_no_name_takes_its_packages(self):
+        # #933: `apply` is defined in this module, whose package is
+        # `tests`, so the row is `tests`; a plugin that declares a name
+        # keeps it (the fixture above is `weather`).
+        def apply(ctx, config):
+            ctx.provide("anon", object())
+
+        async def go():
+            async with load(define_plugin(apply, provides={"anon": object})) as t:
+                self.assertEqual(t.row, apply.__module__.split(".")[0])
+
+        run(go())
 
     def test_a_plugin_that_needs_a_newer_plugin_api_is_refused(self):
         plugin, _ = weather_plugin()
@@ -377,7 +416,8 @@ class Testing(background.TestCase):
             with self.assertRaises(PluginTestError) as failed:
                 # Only so that this test, run before the fix, does not hang.
                 await asyncio.wait_for(scope(), 10)
-            self.assertEqual(str(failed.exception), "stuck.wait() did not return within 0.2 s")
+            self.assertEqual(str(failed.exception), "stuck.wait() did not return within 0.2s")
+            self.assertEqual(failed.exception.code, "timeout")
             self.assertTrue(cancelled.is_set())
 
             # A TimeoutError of the plugin's own is the plugin's.

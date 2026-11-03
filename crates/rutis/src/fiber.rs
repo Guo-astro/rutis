@@ -10,7 +10,7 @@ use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
 
 use crate::ctx::{Ctx, Shared};
-use crate::diagnostics::ServiceAccess;
+use crate::diagnostics::{DependencyStatus, ServiceAccess};
 use crate::effect::{Effect, EffectRecord};
 use crate::error::{aggregate_arcs, panic_error, Error, ErrorKind, ServiceReadFailure};
 use crate::events::{CatchUnwind, Event};
@@ -1787,6 +1787,110 @@ impl FiberView {
         self.inner.snapshot_rx.clone()
     }
 
+    /// Wait until the plugin runs: `apply` is done. A failed start comes back at
+    /// once, saying which step failed and in what words; a plugin that is still
+    /// waiting comes back when `limit` passes, saying what it waits for — at
+    /// once when nothing provides any of it (#933,
+    /// `docs/design-test-tool-errors-2026-11-03.md` §3.7).
+    ///
+    /// The words are the ones [`RuntimeDiagnostics`](crate::host::diagnostics::RuntimeDiagnostics)
+    /// prints for this plugin: the two cannot say different things.
+    ///
+    /// ```
+    /// # use rutis::{Ctx, Plugin, Result};
+    /// # use rutis::host::CtxHost;
+    /// # struct Service;
+    /// # struct Waiter;
+    /// # impl Plugin for Waiter {
+    /// #     type Deps = ();
+    /// #     async fn apply(&self, ctx: &Ctx, _: ()) -> Result { ctx.provide(Service)?; Ok(()) }
+    /// # }
+    /// # async fn test() -> Result {
+    /// let root = Ctx::root()?;
+    /// let waiter = root.plugin(Waiter);
+    /// waiter.running(std::time::Duration::from_secs(30)).await?;
+    /// assert!(root.get::<Service>().is_some());
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn running(&self, limit: Duration) -> Result<(), Error> {
+        let mut states = self.watch();
+        let deadline = tokio::time::Instant::now() + limit;
+        loop {
+            match states.borrow_and_update().state {
+                FiberState::Active => return Ok(()),
+                // A plugin that failed says so now: waiting longer cannot help.
+                FiberState::Failed => return Err(Error::msg(self.line())),
+                // Nothing provides what it waits for: in a test every plugin
+                // is the test's own, so this will not change.
+                FiberState::Pending if self.unmet_is_missing() => {
+                    return Err(Error::msg(self.line()));
+                }
+                _ => {}
+            }
+            tokio::select! {
+                changed = states.changed() => {
+                    if changed.is_err() {
+                        return Err(Error::msg(self.line()));
+                    }
+                }
+                _ = tokio::time::sleep_until(deadline) => return Err(Error::msg(self.line())),
+            }
+        }
+    }
+
+    /// The row's line, as the testing tools print it (#933): `<name>: running`,
+    /// `<name>: failed in apply: …` (or `config: …`), `<name>: waiting for …`.
+    /// The words are the diagnostics' own.
+    fn line(&self) -> String {
+        let name = self.name();
+        let snapshot = self.state();
+        let state = match snapshot.state {
+            FiberState::Active => "running".to_owned(),
+            FiberState::Failed => match &snapshot.error {
+                Some(error) if crate::ConfigError::of(error).is_some() => error.to_string(),
+                Some(error) => format!("failed in apply: {error}"),
+                None => "failed".to_owned(),
+            },
+            FiberState::Pending => {
+                let diagnostics = self.inner.ctx.diagnostics();
+                diagnostics
+                    .plugins
+                    .iter()
+                    .find(|plugin| plugin.id == self.id)
+                    .map(|plugin| crate::diagnostics::waiting(plugin, &diagnostics.key_names))
+                    .unwrap_or_else(|| "waiting".to_owned())
+            }
+            FiberState::Loading => "starting".to_owned(),
+            FiberState::Unloading => "stopping".to_owned(),
+            FiberState::Disposed => "stopped".to_owned(),
+        };
+        format!("{name}: {state}")
+    }
+
+    /// Whether every dependency this plugin waits for is missing: nothing
+    /// provides it, and no plugin is waiting to.
+    fn unmet_is_missing(&self) -> bool {
+        let diagnostics = self.inner.ctx.diagnostics();
+        let Some(plugin) = diagnostics
+            .plugins
+            .iter()
+            .find(|plugin| plugin.id == self.id)
+        else {
+            return false;
+        };
+        let unmet: Vec<&DependencyStatus> = plugin
+            .injects
+            .iter()
+            .map(|dep| &dep.status)
+            .filter(|status| **status != DependencyStatus::Ready)
+            .collect();
+        !unmet.is_empty()
+            && unmet
+                .iter()
+                .all(|status| matches!(status, DependencyStatus::Missing))
+    }
+
     /// Dispose the fiber, exactly once: repeated or concurrent calls join the
     /// same `Arc<ErrorKind>`. The current generation's token is cancelled
     /// before the intent is queued, so a running `apply` can return early.
@@ -2210,3 +2314,112 @@ mod transient_tests;
 // (`crate::sync`; CONTRIBUTING.md says how to run them).
 #[cfg(all(test, rutis_shuttle))]
 mod shuttle_tests;
+
+#[cfg(test)]
+mod running_tests {
+    use super::*;
+    use crate::host::CtxHost;
+
+    /// A service nothing provides.
+    pub struct Translate;
+
+    /// A plugin that waits for it.
+    struct Gated;
+
+    impl crate::Plugin for Gated {
+        type Deps = Arc<Translate>;
+
+        async fn apply(&self, _: &Ctx, _: Arc<Translate>) -> crate::Result {
+            Ok(())
+        }
+    }
+
+    /// A plugin that fails in `apply`.
+    struct Broken;
+
+    impl crate::Plugin for Broken {
+        type Deps = ();
+
+        async fn apply(&self, _: &Ctx, _: ()) -> crate::Result {
+            Err(Error::msg("boom"))
+        }
+    }
+
+    /// A plugin whose config does not match.
+    struct Configured;
+
+    impl crate::Plugin for Configured {
+        type Deps = ();
+
+        async fn apply(&self, _: &Ctx, _: ()) -> crate::Result {
+            Ok(())
+        }
+
+        fn validate(&self) -> crate::Result {
+            // What a row's config step fails with: a `ConfigError`, which
+            // says `config: …` and never `failed in apply: config: …`.
+            Err(crate::ConfigError::new(vec![crate::ConfigIssue {
+                path: vec![crate::config::PathSegment::Key("greeting".into())],
+                message: "greeting should be a string, got 3".into(),
+            }])
+            .into())
+        }
+    }
+
+    /// What a Rust test sees when a plugin does not run (#933): the words
+    /// `RuntimeDiagnostics` prints for it — the tools of the other languages
+    /// print the host's line, and both say `<name>: <state>`.
+    ///
+    /// The parentheticals are the diagnostics' own, today `service missing`
+    /// for a dependency nothing provides; #937's E-2 changes that one to
+    /// `nothing provides it yet`, and `running` moves with it.
+    #[tokio::test]
+    async fn a_plugin_that_does_not_run_says_why() {
+        let root = Ctx::root().unwrap();
+
+        // Nothing provides `Translate`: it comes back at once, not after the
+        // limit, since no plugin will.
+        let gated = root.plugin(Gated);
+        let error = gated
+            .running(Duration::from_secs(30))
+            .await
+            .expect_err("waiting");
+        assert_eq!(
+            error.to_string(),
+            "Gated: waiting for rutis::fiber::running_tests::Translate (service missing)"
+        );
+
+        // A start that failed, and a config that does not match, come back
+        // at once too.
+        let broken = root.plugin(Broken);
+        let error = broken
+            .running(Duration::from_secs(30))
+            .await
+            .expect_err("failed");
+        assert_eq!(error.to_string(), "Broken: failed in apply: boom");
+
+        let configured = root.plugin(Configured);
+        let error = configured
+            .running(Duration::from_secs(30))
+            .await
+            .expect_err("config");
+        assert_eq!(
+            error.to_string(),
+            "Configured: config: greeting should be a string, got 3"
+        );
+
+        // A plugin that runs says nothing.
+        struct Ready;
+        impl crate::Plugin for Ready {
+            type Deps = ();
+            async fn apply(&self, _: &Ctx, _: ()) -> crate::Result {
+                Ok(())
+            }
+        }
+        root.plugin(Ready)
+            .running(Duration::from_secs(30))
+            .await
+            .expect("running");
+        root.shutdown().await.unwrap();
+    }
+}
