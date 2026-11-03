@@ -356,7 +356,7 @@ services:
 
 ## 六、实施
 
-先做宿主与内核（错误码、同名、等待原因、在途调用），再按语言做归属与帧，最后是文档。逐字用例写在各语言已有的文字测试与 `rutis-host` 的集成测试里，每行注明的就是那些文件；不另开一套按语言的用例表。测试工具那一列（#663 的调试评估在测试工具里也跑）用 #933 的 `specs/test-tool/cases.json`，同样不另建一份。
+先做宿主与内核（错误码、同名、等待原因、在途调用），再按语言做归属与帧，最后是文档。逐字用例写在各语言已有的文字测试与 `rutis-host` 的集成测试里，每行注明的就是那些文件；不另开一套按语言的用例表。测试工具那一列也不建共用的期望文件：#933 把"这一行自己的字"锁在 `crates/rutis-host` 的集成测试里（`crates/rutis-host/tests/test_command.rs`，一条用例同时跑 `dev` 与宿主的行），每种工具各一条"原样打印这一行"的用例（今天有的：`node/rutis/test/testing-provide.test.mjs`、`testing-taken.test.mjs`、`bun/rutis-bun/test/sdk-taken.test.ts`、`python/rutis/tests/test_testing.py`；Go 的那条在 `go/rutis/rutistest` 的测试里，由 #933 的 T-4 加）。
 
 | # | 内容（含位置） | 完成条件 |
 | --- | --- | --- |
@@ -371,7 +371,7 @@ services:
 
 完成条件（#937 在全部满足后关闭）：
 
-- [ ] §四 的每一条逐字输出，在 E-1 至 E-7 注明的那些文件里断言（各语言已有的文字测试与 `rutis-host` 的集成测试）；测试工具那一列由 #933 的 `specs/test-tool/cases.json` 覆盖；
+- [ ] §四 的每一条逐字输出，在 E-1 至 E-7 注明的那些文件里断言；测试工具那一列按 #933 的做法：那一行本身锁在 `crates/rutis-host/tests/test_command.rs`，`node/rutis/test/testing-provide.test.mjs` 与 `testing-taken.test.mjs`、`bun/rutis-bun/test/sdk-taken.test.ts`、`python/rutis/tests/test_testing.py`、`go/rutis/rutistest` 的测试各有一条原样打印它的用例；
 - [ ] 禁用词由 `crates/rutis-loader/tests/fault_texts.rs` 跑（新文字加进它那份清单）；
 - [ ] §3.6 的两个码在测试里按码断言，不按文字；
 - [ ] 逐条重跑 0.19.0 评估里 #937 点到的故障，输出与 §四 一致；

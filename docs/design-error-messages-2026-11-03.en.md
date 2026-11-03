@@ -356,7 +356,7 @@ To go into "Migrating to 0.21" and the release notes (both languages):
 
 ## 6. Implementation
 
-The host and the kernel first (codes, shared names, wait reasons, calls in flight), then attribution and frames per language, then the documents. The word-for-word cases go into each language's existing text tests and into `rutis-host`'s integration tests — the files named in each row below; no separate per-language case table is added. The test-tool column (the 0.19.0 evaluation also runs the test tools) uses #933's `specs/test-tool/cases.json`, and no second list is built for it either.
+The host and the kernel first (codes, shared names, wait reasons, calls in flight), then attribution and frames per language, then the documents. The word-for-word cases go into each language's existing text tests and into `rutis-host`'s integration tests — the files named in each row below; no separate per-language case table is added. The test-tool column builds no shared expectation file either: #933 locks the line itself in `rutis-host`'s integration tests (`crates/rutis-host/tests/test_command.rs`, one case running `dev` and the host's line), and each tool has one test that prints that line verbatim (those that exist today: `node/rutis/test/testing-provide.test.mjs` and `testing-taken.test.mjs`, `bun/rutis-bun/test/sdk-taken.test.ts`, `python/rutis/tests/test_testing.py`; Go's, in `go/rutis/rutistest`'s tests, is added by #933's T-4).
 
 | # | What (and where) | Done when |
 | --- | --- | --- |
@@ -371,7 +371,7 @@ The host and the kernel first (codes, shared names, wait reasons, calls in fligh
 
 Done when (#937 closes when all hold):
 
-- [ ] every word-for-word line of §4 is asserted in the files named in E-1 to E-7 (each language's existing text tests, and `rutis-host`'s integration tests); the test-tool column is covered by #933's `specs/test-tool/cases.json`;
+- [ ] every word-for-word line of §4 is asserted in the files named in E-1 to E-7; the test-tool column follows #933: the line itself locked in `crates/rutis-host/tests/test_command.rs`, and one case printing it verbatim per tool, in `node/rutis/test/testing-provide.test.mjs` and `testing-taken.test.mjs`, `bun/rutis-bun/test/sdk-taken.test.ts`, `python/rutis/tests/test_testing.py` and `go/rutis/rutistest`'s tests;
 - [ ] forbidden words are checked by `crates/rutis-loader/tests/fault_texts.rs` (the new lines are added to its list);
 - [ ] the two codes of §3.6 are asserted by code in tests, not by text;
 - [ ] the faults #937 names are re-run from the 0.19.0 evaluation, and the output matches §4;
