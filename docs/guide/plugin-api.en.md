@@ -1252,7 +1252,7 @@ The `t` that `load` and `h.load` return:
 | `t.service(name)` | The service the plugin provides, as rutis sees it: its declared methods, or, undeclared, the object's methods, all async |
 | `t.methods(name)` | The methods rutis sees: `{ today: 'async' }` |
 | `t.provided()` | The names of the services the plugin provides now |
-| `await t.waiting()` | What the host says the row is doing while it is not running: `null` while it runs, else the line `dev` prints (`greeter: waiting for translate (no row provides it)`, `greeter: failed in apply: …` with the position lines) |
+| `await t.waiting()` | What the host says the row is doing while it is not running: `null` while it runs, else the line `dev` prints (`greeter: waiting for translate (nothing provides it yet)`, `greeter: failed in apply: …` with the position lines) |
 | `t.on(name, listener, options)` | Listen as another plugin next to it does; see the language guides |
 | `t.emit`, `t.parallel`, `t.serial`, `t.waterfall`, `t.bail` | Emit from the test's plugin |
 | `t.filter(keep)` | The five methods, delivering only to the listeners `keep(descriptor)` keeps |
@@ -1312,7 +1312,7 @@ A plugin definition a test double receives can be passed to `load` as it is.
 | `loaded.Provided()`, `loaded.Unload()` | The names of the services the row provides now; unload |
 | `loaded.Service(name)` | The service as a plugin injecting it gets it: `Call(ctx, method, &result, args...)`, `Methods()`, and `Bind(&target)`, which fills a struct of function fields as `ctx.Use` does |
 | `TryLoad` | `Load` giving back the row's line when it cannot start (`weather: config: city is required`) |
-| `loaded.Waiting()` | What the host says the row is doing while it is not running: `""` while it runs, else the line `dev` prints (`weather: waiting for llm (no row provides it)`, `failed in apply: …` with the position lines) |
+| `loaded.Waiting()` | What the host says the row is doing while it is not running: `""` while it runs, else the line `dev` prints (`weather: waiting for llm (nothing provides it yet)`, `failed in apply: …` with the position lines) |
 | `rutistest.Error` | A failure of the tool itself: `Code` (`not-running`, `no-service`, `timeout`), `Line` (the sentence people read), `Data`; test it with `errors.As` |
 | Option of `Load`, `TryLoad` and `loaded.Load` | `Row(key)` gives the row its id (default the plugin's name, then `<name>-2`, `<name>-3`, ...) |
 

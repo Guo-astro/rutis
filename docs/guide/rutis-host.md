@@ -328,7 +328,7 @@ rutis-host: listening on <监听器名> <地址:端口>
 | `waiting for llm (row model failed: <错误第一行>)` | 提供它的行失败了 |
 | `waiting for llm (row model, which provides it, is disabled)` | 提供它的行被禁用；只在这一行的插件已经解析过时这样写（例如另一行启用了同一个插件），否则是上面 `no enabled row provides it` 那种写法 |
 | `waiting for llm (row model's runtime py is down)` / `… is not running yet` / `(row model waits for its runtime gpu)` | 提供它的行在等自己的运行时（宿主不知道远程运行时的状态，只写在等它） |
-| `waiting for bsvc (row b waits for asvc from this row: they inject each other)` | 两行互相 `inject` 对方的服务，谁也起不来 |
+| `waiting for bsvc (row b waits for asvc too: they inject each other)` | 两行互相 `inject` 对方的服务，谁也起不来 |
 | `waiting for llm (row model waits too, for x)` | 提供它的行自己也在等 |
 | `waiting for llm (row model is starting)` / `(row model has not provided it)` | 提供它的行正在启动；或在运行但还没有提供（例如它在连接的对面运行，连接断了） |
 | `waiting for its services` | rutis 说不出在等什么时 |
@@ -722,7 +722,7 @@ rutis-host test <插件> --channel <通道>
 | `update(id, config)` | 像改了一行的配置那样给这一行 `config`：插件以它重启。插件拒绝它（这一行保留原配置）或以它失败时失败 |
 | `unload(id)` | 删掉这一行；插件在运行时里卸载完才返回 |
 | `reported(id)` | 宿主报告过的这一行的事：它的监听器在 `emit` 里失败、它的 `emit` 的过滤器失败，文字与宿主打印的相同（`weather: listener of weather/ask failed: Error: boom`） |
-| `state(id)` | 这一行不在跑时它在做什么：`null`（在跑），或 `{ line, code, data }`——`line` 就是 `run` 与 `dev` 给这一行打印的那一行（`waiting for llm (no row provides it)`、`failed in apply: …` 加位置行），`code`、`data` 是它错误的码与细节。测试工具用它说清"在等什么"，没有这一步它们各自猜 |
+| `state(id)` | 这一行不在跑时它在做什么：`null`（在跑），或 `{ line, code, data }`——`line` 就是 `run` 与 `dev` 给这一行打印的那一行（`waiting for llm (nothing provides it yet)`、`failed in apply: …` 加位置行），`code`、`data` 是它错误的码与细节。测试工具用它说清"在等什么"，没有这一步它们各自猜 |
 
 - `<插件>` 在运行时完成握手后最先加载（等同 `load(<插件>)`）：它是驱动测试的插件。它 inject `rutis-host/test`，提供被测插件要用的假服务（`ctx.provide`），像任何插件一样监听（`ctx.on`）和发出事件（`ctx.emit`）。它在 `apply` 之外调用 `load`（在它起的任务里，或在监听器里）：它的 `apply` 运行时，loader 正在启动它。
 - 这样加载的插件与驱动测试的插件在同一个运行时里，共用一条事件总线；服务对它们都可见，与任何宿主相同。

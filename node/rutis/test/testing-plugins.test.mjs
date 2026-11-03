@@ -135,11 +135,11 @@ test('a definition whose injected service is not there waits, and starts when it
   const t = await h.load(handed.get('gated'))
   // Waiting, not failed: the load answered, the host reported nothing, and
   // the service is not provided yet. The row's state is the host's line, the
-  // one `dev` prints (`gated: waiting for later (no row provides it)`), and
+  // one `dev` prints (`gated: waiting for later (nothing provides it yet)`), and
   // `waiting()` hands it over.
   assert.deepEqual(t.provided(), [])
   assert.deepEqual(await t.reported(), [])
-  const away = 'gated: waiting for later (no row provides it)'
+  const away = 'gated: waiting for later (nothing provides it yet)'
   assert.equal(await t.waiting(), away)
   assert.throws(() => t.service('gated'), { name: 'PluginTestError', message: away, code: 'not-running' })
   // The service arrives, as a row of its own: the waiting row starts.

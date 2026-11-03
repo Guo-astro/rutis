@@ -88,10 +88,10 @@ class Testing(background.TestCase):
 
         async def missing():
             async with load(plugin) as t:
-                self.assertEqual(await t.waiting(), "weather: waiting for llm (no row provides it)")
+                self.assertEqual(await t.waiting(), "weather: waiting for llm (nothing provides it yet)")
                 with self.assertRaises(PluginTestError) as refused:
                     t.service("weather")
-                self.assertEqual(str(refused.exception), "weather: waiting for llm (no row provides it)")
+                self.assertEqual(str(refused.exception), "weather: waiting for llm (nothing provides it yet)")
                 self.assertEqual(refused.exception.code, "not-running")
                 self.assertEqual(refused.exception.data, {"row": "weather"})
 

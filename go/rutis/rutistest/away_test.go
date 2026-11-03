@@ -21,7 +21,7 @@ func TestARowThatWaitsSaysWhatDevSays(t *testing.T) {
 		Apply:  func(*rutis.Ctx, rutis.NoConfig) error { return nil },
 	}), nil, nil)
 	// The row is not up: the host's line, the one `dev` prints.
-	if line := loaded.Waiting(); line != "gated: waiting for later (no row provides it)" {
+	if line := loaded.Waiting(); line != "gated: waiting for later (nothing provides it yet)" {
 		t.Fatalf("waiting: %q", line)
 	}
 }

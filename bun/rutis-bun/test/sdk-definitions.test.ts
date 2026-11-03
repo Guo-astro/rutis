@@ -127,8 +127,8 @@ test('a definition whose injected service is not there waits, and starts when it
   // `dev` prints (#933).
   expect(t.provided()).toEqual([])
   expect(await t.reported()).toEqual([])
-  expect(await t.waiting()).toBe('gated: waiting for later (no row provides it)')
-  expect(() => t.service('gated')).toThrow('gated: waiting for later (no row provides it)')
+  expect(await t.waiting()).toBe('gated: waiting for later (nothing provides it yet)')
+  expect(() => t.service('gated')).toThrow('gated: waiting for later (nothing provides it yet)')
   const provider = await h.load(gatekeeper)
   await until(() => t.provided().includes('gated'))
   expect(t.provided()).toEqual(['gated'])

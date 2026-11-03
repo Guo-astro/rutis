@@ -289,7 +289,7 @@ go test ./...
 - `rutistest.Load(t, plugin, config, services)` loads the plugin as a row, in its real runtime under the real rutis kernel. The last argument gives the services the plugin uses, here a fake `translate`: a plugin of the test's provides them.
 - `loaded.Service("greeter")` gets a service the plugin provides; `Call(ctx, method, &result, args...)` calls it.
 - `loaded.On` listens to the plugin's events; the listener is a plugin of the test's, on the host's bus.
-- While the plugin is not up, `loaded.Service(name)` fails the test with the row's state line, exactly as `dev` says it (`rutistest: greeter: waiting for translate (no row provides it)`); `loaded.Waiting()` gives that line, and `""` once it runs. A call that does not return is failed by the tool at 30 seconds (or at the `ctx`'s own deadline), as a `*rutistest.Error` whose `Code` is `timeout`.
+- While the plugin is not up, `loaded.Service(name)` fails the test with the row's state line, exactly as `dev` says it (`rutistest: greeter: waiting for translate (nothing provides it yet)`); `loaded.Waiting()` gives that line, and `""` once it runs. A call that does not return is failed by the tool at 30 seconds (or at the `ctx`'s own deadline), as a `*rutistest.Error` whose `Code` is `timeout`.
 - `loaded.Unload()` unloads the plugin; the row also goes when the test ends.
 - The host checks what it checks for every row: the configuration matches the Schema (`TryLoad` gives back its line, `weather: config: city is required`), the services in `Inject` are there.
 

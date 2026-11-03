@@ -1252,7 +1252,7 @@ fn mount(at: &Ctx, definition: &Definition) -> Result {
 | `t.service(name)` | 插件提供的服务，按 rutis 看到的样子：声明的方法，没有声明时是对象的方法，都按 async |
 | `t.methods(name)` | rutis 看到的方法：`{ today: 'async' }` |
 | `t.provided()` | 插件现在提供的服务名 |
-| `await t.waiting()` | 这一行不在跑时宿主说它在做什么：`null`（在跑），或 `dev` 打印的那一行（`greeter: waiting for translate (no row provides it)`、`greeter: failed in apply: …` 与位置行） |
+| `await t.waiting()` | 这一行不在跑时宿主说它在做什么：`null`（在跑），或 `dev` 打印的那一行（`greeter: waiting for translate (nothing provides it yet)`、`greeter: failed in apply: …` 与位置行） |
 | `t.on(name, listener, options)` | 像插件旁边的另一个插件一样监听，见各语言指南 |
 | `t.emit`、`t.parallel`、`t.serial`、`t.waterfall`、`t.bail` | 从测试的插件发出 |
 | `t.filter(keep)` | 带这五个方法的对象，只送达 `keep(descriptor)` 留下的监听器 |
@@ -1261,7 +1261,7 @@ fn mount(at: &Ctx, definition: &Definition) -> Result {
 | `await t.unload()` | 像宿主那样卸载这一行（撤下监听器和服务，中止 `ctx.signal`，等正在运行的监听器，再按倒序运行清理），然后撤下测试给它的服务和监听器 |
 | `t.row`、`t.host` | 行在宿主上的 id：插件的名字（声明的 `name`，没有时它那个 `package.json` 的 `name`，被占用时加 `-2`、`-3`……）；它所在的 `host()` |
 
-`PluginTestError`：测试工具拒绝的事：装载失败（文字是这一行的状态，与宿主打印的相同，如 `weather: config: city is required`，`failed in apply: …` 带位置行）、不能装载的插件、这一行不在跑时问它要服务（`greeter: waiting for translate (no row provides it)`）、这一行在跑但没有这个服务名（`greeter: no such service greter (it provides: greeter; did you mean greeter?)`）、一次调用在 30 秒内没有返回（`greeter.hello() did not return within 30s`）。它的 `code` 是 `not-running`、`no-service`、`timeout`，或这一行错误自己的码（配置不合格是 `bad-config`）；`data` 是那一条的细节。这一行不在跑时，文字就是宿主给 `dev` 打的那一行，一个字不改。
+`PluginTestError`：测试工具拒绝的事：装载失败（文字是这一行的状态，与宿主打印的相同，如 `weather: config: city is required`，`failed in apply: …` 带位置行）、不能装载的插件、这一行不在跑时问它要服务（`greeter: waiting for translate (nothing provides it yet)`）、这一行在跑但没有这个服务名（`greeter: no such service greter (it provides: greeter; did you mean greeter?)`）、一次调用在 30 秒内没有返回（`greeter.hello() did not return within 30s`）。它的 `code` 是 `not-running`、`no-service`、`timeout`，或这一行错误自己的码（配置不合格是 `bad-config`）；`data` 是那一条的细节。这一行不在跑时，文字就是宿主给 `dev` 打的那一行，一个字不改。
 
 测试的替身收到的插件定义可以直接交给 `load`：插件把它在 `apply` 里造的 `definePlugin` 结果交给测试的服务，测试再把它交给 `load`，它就在**定义它的运行时**里作为一行装载——配置按它声明的 schema 校验并补默认值、`inject` 的服务都在了才启动、事件经宿主、`service()` 和 `t.row` 与 `load` 一个插件模块相同。三处与插件代码里 `ctx.plugin(def.at(..))` 挂出的副本不同（理由见[插件定义](#插件定义)与[设计](../design-test-tool-definition-load-2026-11-01.md) §四）：来源行卸载不带走这一行（测试自己卸）、同一个定义 `load` 两次是两行、`ended()` 与"只能挂在来源实例里或更里面"不适用。
 
@@ -1311,7 +1311,7 @@ fn mount(at: &Ctx, definition: &Definition) -> Result {
 | `loaded.Provided()`、`loaded.Unload()` | 这一行现在提供的服务名；卸载 |
 | `loaded.Service(name)` | 注入它的插件拿到的那个服务：`Call(ctx, method, &result, args...)`、`Methods()`，`Bind(&target)` 像 `ctx.Use` 一样填好函数字段的结构体 |
 | `TryLoad` | 行起不来时交回它那一行（`weather: config: city is required`）的 `Load` |
-| `loaded.Waiting()` | 这一行不在跑时宿主说它在做什么：`""`（在跑），或 `dev` 打印的那一行（`weather: waiting for llm (no row provides it)`、`failed in apply: …` 与位置行） |
+| `loaded.Waiting()` | 这一行不在跑时宿主说它在做什么：`""`（在跑），或 `dev` 打印的那一行（`weather: waiting for llm (nothing provides it yet)`、`failed in apply: …` 与位置行） |
 | `rutistest.Error` | 工具自己的失败：`Code`（`not-running`、`no-service`、`timeout`）、`Line`（给人看的那一句）、`Data`；用 `errors.As` 取 |
 | `Load`、`TryLoad`、`loaded.Load` 的选项 | `Row(key)` 给行 id（默认插件名，然后 `<名字>-2`、`<名字>-3`……） |
 

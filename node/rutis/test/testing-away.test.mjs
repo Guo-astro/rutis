@@ -19,7 +19,7 @@ async function until(check) {
 test('a row that waits says what `dev` says, with the code `not-running`', async () => {
   const h = host()
   const t = await h.load(gated)
-  const away = 'gated: waiting for later (no row provides it)'
+  const away = 'gated: waiting for later (nothing provides it yet)'
   assert.equal(await t.waiting(), away)
   // The same line the host gives, thrown by the synchronous `service()`.
   assert.throws(() => t.service('gated'), { name: 'PluginTestError', message: away, code: 'not-running' })
@@ -39,10 +39,7 @@ test('two rows that inject each other are told so, as `dev` tells it', async () 
   const h = host()
   const t = await h.load(gated)
   const other = await h.load(cycler)
-  // The host's words today; #937's E-2 shortens the same sentence to
-  // `row cycler waits for gated too: they inject each other`, and this line
-  // moves with it (the tool only passes it on).
-  const away = 'gated: waiting for later (row cycler waits for gated from this row: they inject each other)'
+  const away = 'gated: waiting for later (row cycler waits for gated too: they inject each other)'
   assert.equal(await t.waiting(), away)
   assert.throws(() => t.service('gated'), { name: 'PluginTestError', message: away, code: 'not-running' })
   await other.unload()
