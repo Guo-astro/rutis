@@ -68,7 +68,7 @@ Python 收到的函数是 `RemoteFunction`（`python/rutis/rutis/peer.py:678`）
 | F3 | **不加新名字**：Node、Bun 不给交来的函数加 `callSync` 之类；Python 的 `call_async` 与 `await f(...)` 是同一件事，写进指南 | 三 3.2 |
 | F4 | **Cordis 的同步链不变**（#918）：运行时自己调用 `next` 的地方在同步链上改用内部的同步形式，插件作者的写法与今天相同 | 三 3.3 |
 | F5 | **测试工具跟着真实宿主**：Node、Bun 的插件在另一个运行时进程里，测试调交来的函数要 `await`；Python 的插件在测试进程里，交来的是插件自己的函数（`def` 时直接用它，`async def` 时 `await` 它）。两处都写进指南 | 三 3.5 |
-| F6 | **出错时**：真正的环照旧以 `SyncWaitCycle` 失败，不卡死；Node、Bun 那条文字去掉内部的调用编号（`path: test:5 -> …`），三个运行时说法一致 | 四 4.3 |
+| F6 | **出错时**：真正的环照旧以 `SyncWaitCycle`（`name` 不变）失败，不卡死；文字由[诊断设计](design-diagnostics-2026-10-26.md)定，本稿在那里提一句（§四 4.3 的依赖） | 四 4.3 |
 | F7 | **发布门跑一次只会装 npm / PyPI 的指南示例**：用发布门自己构建的包，在 Linux 上跑（含 open-host 第 5 节的两份）；发布后照旧用注册表上的包跑全部示例 | 六 |
 | F8 | **线上格式、能力、Rust 一侧都不动**：`call` / `call_async`、协议的 `sync` 标记、等待环检测照旧 | 五 |
 
@@ -149,7 +149,7 @@ Python 收到的函数是 `RemoteFunction`（`python/rutis/rutis/peer.py:678`）
 
 ### 4.1 插件作者：TypeScript（正常）
 
-指南第 5 节的例子（`docs/guide/open-host.md` 第 5 节）：模板、生成的类型不变，测试里的假服务写成 `async`，与真实服务一样。三个文件与今天相同，只有假服务那一行回到 `async`：
+指南第 5 节的例子（`docs/guide/open-host.md` 第 5 节）：模板、生成的类型不变，与今天相同。测试里的假服务回到 `async`，与真实服务一样 —— 这也是这个例子今天唯一改的一行：
 
 ```ts
 // count/test/index.test.ts
@@ -330,15 +330,16 @@ $ npx rutis-host call commands.run '"count"'
 
 ### 4.3 出错时
 
-错误码按[诊断](design-diagnostics-2026-10-26.md) §4.3；码不出现在给人看的文字里。`SyncWaitCycle` 有自己的类型名，不带码。
+这份设计不写错误码与给人看的措辞：它们是[诊断设计](design-diagnostics-2026-10-26.md) §4.3、§4.5 的事。这里只写这两种失败怎样出现、记在哪一行、怎么改，措辞按那份设计稿。
 
-| 情况 | 怎样触发 | 逐字输出 | 记在哪一行 | 怎样改 |
-| --- | --- | --- | --- | --- |
-| 同步调用里 `await` 交来的函数的结果 | `sync` 方法（或 Cordis 的同步分发）里 `await f()`，`f` 的结果要等这个线程 / 循环推进才能落定 | `SyncWaitCycle: a function would wait on itself: it is awaited inside the synchronous call that produces it (synchronous calls)` | 调用方这一行；在测试里是这一条测试失败 | 同步调用里去不掉 `await`：交来的函数在那里同步返回结果，直接用它；或者把这个方法声明成 `async` |
-| 两个运行时经交来的函数互相同步调用 | A 在同步调用里调用 B 交来的函数，B 在它的同步调用里又调用 A 的 | `SyncWaitCycle: weather.tomorrow would wait on itself: weather → forecast (synchronous calls)`（宿主写的那条，带走过哪些行；没有行时省略这一段） | 发出这次同步调用的行 | 改用 `async` 方法，或换个时机（[插件 API](guide/plugin-api.md)「同步调用与可重入」）；不要立刻重试同一个调用 |
+| 情况 | 怎样触发 | 记在哪一行 | 怎样改 |
+| --- | --- | --- | --- |
+| 同步调用里 `await` 交来的函数的结果 | `sync` 方法（或 Cordis 的同步分发）里 `await f()`，`f` 的结果要等这个线程 / 循环推进才能落定 | 调用方这一行；在测试里是这一条测试失败 | 同步调用里去不掉 `await`：交来的函数在那里同步返回结果，直接用它；或者把这个方法声明成 `async` |
+| 两个运行时经交来的函数互相同步调用 | A 在同步调用里调用 B 交来的函数，B 在它的同步调用里又调用 A 的 | 发出这次同步调用的行 | 改用 `async` 方法，或换个时机（[插件 API](guide/plugin-api.md)「同步调用与可重入」）；不要立刻重试同一个调用 |
 
-- 今天 Node、Bun 那条还带内部的调用编号（`path: test:5 -> rutis-test:3 -> rutis-test:4`），按[诊断](design-diagnostics-2026-10-26.md) §4.5 换成上面第一行的说法；Python 的说法跟着一致。宿主那一行不变。
-- 其余错误照旧：值传不过去 `bad-value`、方法不存在 `no-method`、对面退出 `peer-gone`（[诊断](design-diagnostics-2026-10-26.md) §4.3）。
+- 两种失败都以 `SyncWaitCycle` 结束，`name` 与今天相同；它的码与句子按[诊断设计](design-diagnostics-2026-10-26.md)。今天 Node、Bun 那条带内部的调用编号（原样见 §一 1.1），宿主那条带走过哪些行。
+- **依赖**：本稿提议诊断设计在 §4.3 加一行、在 §4.5 的措辞里写成一句运行时自己发现时的说法 —— 本稿提议的那句是 `SyncWaitCycle: <what> would wait on itself: it is awaited inside the synchronous call that produces it (synchronous calls)`（`<what>` 是这次调用：`a function`、`the method get`、`weather.tomorrow`）。采纳与措辞由那份设计稿的负责人决定；这里不另立一条文风规则。
+- 其余错误照旧（`bad-value`、`no-method`、`peer-gone`，见那份设计稿 §4.3）。
 - 正常时（§4.1、§4.2）没有任何新的输出：调用照常返回，测试照常通过。
 
 ### 4.4 宿主持有者
@@ -346,7 +347,11 @@ $ npx rutis-host call commands.run '"count"'
 - 宿主调用插件交来的函数，写法不变：Rust 是 `call`（同步）与 `call_async`（异步），Go、Swift、Kotlin 各自的写法不变。
 - 宿主把回调交给插件时，插件的代码 `await` 它；Node、Bun、Python 的插件在 `sync` 方法里照旧同步拿到结果。宿主一侧不改代码。
 - `rutis-host status` 里「看不到按引用传过来的函数的调用」（[开放插件的宿主](guide/open-host.md) 第 6 节）不变：它们是本机运行时与本机运行时之间的调用。
-- 出错时宿主拿到的与今天相同：宿主自己写的那条是 `session::Error::SyncWaitCycle`；经会话传到另一端时，它的 `name` 是 `SyncWaitCycle`、没有 `code`（`crates/rutis-bridge/src/session/protocol.rs:107`、`:142`）。
+- `SyncWaitCycle` 经会话的样子不变（`crates/rutis-bridge/src/session/protocol.rs:89`–`111`、`:140`–`144`）：
+  - 宿主自己拒绝时是 `session::Error::SyncWaitCycle(message)`（`crates/rutis-bridge/src/session/rpc.rs:1875`）；它会以 `Failure { name: "SyncWaitCycle", message, graph: None }` 落到运行时，**没有 `code`、没有 `data`、没有图**；
+  - 运行时抛出的那个带错误图，宿主收到的是 `session::Error::Remote { name: "SyncWaitCycle", message, graph }`（`crates/rutis-bridge/tests/rpc_callbacks.rs:221`、`:480`）；不带图时又收回成 `Error::SyncWaitCycle`；
+  - 运行时的代码看到的是：Node、Bun 拿到一个 `name` 为 `SyncWaitCycle` 的 `Error`，没有 `code`（`node/rutis-runtime/src/errors.mjs:133`–`140`）；Python 拿到 `rutis.advanced.SyncWaitCycle`（`python/rutis/rutis/peer.py:416`）；Go 拿到 `*rutis.RemoteError`，`errors.Is(err, advanced.ErrSyncWaitCycle)` 成立（`advanced` 即 `rutis/advanced`；`go/rutis/internal/errs/errs.go:38`）。
+- 线上不带新的字段：`code`、`data` 只在图里（那份设计稿 §4.3），`SyncWaitCycle` 没有图。
 
 ### 4.5 用 `rutis-host` 组装插件的人
 
@@ -366,16 +371,40 @@ $ npx rutis-host call commands.run '"count"'
 
 ## 五、兼容与迁移
 
-写进《迁移到 0.21》（两份，新建）：
+### 5.1 协议与版本，逐项
+
+| 项 | 现在 | 本稿 |
+| --- | --- | --- |
+| 会话协议 | `ENDPOINT_PROTOCOL` = 4（`node/rutis-runtime/src/session.mjs:58`；`bun/rutis-bun/src/session.ts:57`、`python/rutis/rutis/peer.py:42`、`go/rutis/internal/peer/peer.go:34` 同值） | 不变：不加帧、不加字段、不加能力（`sync` 标记与 `sync-stack` / `reentrant-sync` 都照旧） |
+| `rutis.json` | `FORMAT` = 1（`crates/rutis-host/src/config.rs:78`） | 不变：没有新的行字段，也没有新的 `runtimes` 写法 |
+| 插件 API | 3（`node/rutis/src/advanced.mjs:15`、`python/rutis/rutis/plugin.py:125`） | 不变：`definePlugin` / `define_plugin` 的名字与形状没有增减，交来的函数的调用方式不在 API 版本里（它是运行时的行为） |
+| 线上错误 | `Failure { name, message, graph? }`（`crates/rutis-bridge/src/session/protocol.rs:89`） | 不变：`SyncWaitCycle` 仍是 `name`，没有 `code`、没有 `data`、没有图（§四 4.4） |
+| 生成的类型 | `rutis-host types` 写出 `.d.ts` 与 `.py`（`run: (arg0: string[]) => string \| Promise<string>`） | 不变，不用重新生成：回调的返回类型本来就把两种都写上，`await` 在异步与同步两种上下文都通过类型检查（§三 3.2） |
+| Rust 的 `call` / `call_async`、Go / Swift / Kotlin 的写法、Python 的 `call_async` | — | 不变 |
+
+### 5.2 混用：旧的一端遇到新的一端
+
+差别在本端的运行时里，不跨进程约定，所以任意组合都照常工作：
+
+| 组合 | 结果 |
+| --- | --- |
+| 0.21 的宿主 + 0.20 的运行时 | 宿主不变；那个运行时里的交来的函数照旧同步调用（0.20 的行为）。同一个插件照 0.21 写成 `await`，在 0.20 的 Node、Bun 上也成立（`await` 一个不是 Promise 的值原样给出它）；Python 上 `await` 一个普通值会失败，所以同一份 Python 插件不要在两种运行时上混用 |
+| 0.20 的宿主 + 0.21 的运行时 | 宿主不变；运行时按本稿（异步默认、同步调用里同步）。同步调用的等待环检查、`SyncWaitCycle` 都是宿主已有的，行为与今天相同 |
+| 0.21 的调用方调用 0.20 的运行时里的函数 | 调用方发的是异步调用（不在同步调用里时）：0.20 的运行时照常回答，`await` 得到结果；在同步调用里调用时照旧同步，与今天相同 |
+| 0.20 的调用方调用 0.21 的运行时里的函数 | 0.20 的调用方发同步调用（它的规则）；0.21 的运行时在同步调用里同步返回结果，与今天相同 |
+
+### 5.3 写进《迁移到 0.21》（两份，新建）
 
 - **交来的函数默认异步（Node、Bun、Python）**：在 `apply`、`async` 方法、监听器、定时器里调用交来的函数，现在得到 Promise / 可 await 的对象。过去的写法（同步等结果）在同步调用里仍然成立；不在同步调用里等它、又把它当值的代码要改成 `await`：
-  - TypeScript、Bun：`const text = f()` → `const text = await f()`；
+  - TypeScript、Bun：`const text = f()` → `const text = await f()`（`await` 一个不是 Promise 的值原样给出它，所以改过的写法在 0.20 上也能运行）；
   - Python：`text = f()` → `text = await f()`。
 - **测试里的假服务可以写 `async`**：过去必须直接返回结果的地方现在两种都行。写成 `async` 而调用的地方又 `await` 的测试，在 0.21 上通过、在 0.20 上失败——按 0.21 的写法改，不要交叉使用。
-- **`SyncWaitCycle` 的文字**（Node、Bun）：去掉内部的调用编号；`name` 与判断它的代码不变。按 `name` 判断的代码不受影响。
-- **没有变化的**：线上格式、协议版本、能力、Rust 的 `call` / `call_async`、Go、Swift、Kotlin 的写法、Python 的 `call_async`。
-- **新的一端与旧的一端**：运行时之间的行为差在本端，不跨进程约定：0.20 的运行时与 0.21 的宿主、0.21 的运行时与 0.20 的宿主都照常工作；两端都是 0.20 的运行时，交来的函数照旧同步调用。
-- **保证表**（[guarantees](guarantees.md)）新增 `bridge/function-refs`：交来的函数在异步上下文里是异步、在同步调用里同步、真正的环以 `SyncWaitCycle` 失败；`boundary/5.6` 那一条加一句指向本稿。
+- **`SyncWaitCycle` 的文字**（Node、Bun）：按诊断设计采纳的说法（§四 4.3 的依赖）；`name` 与按它判断的代码不变。
+- **不兼容的只有一处**：上面第一条（交来的函数在异步上下文里改成异步）。其余都是行为不变或变宽松。
+
+### 5.4 保证表
+
+[guarantees](guarantees.md) 新增 `bridge/function-refs`：交来的函数在异步上下文里是异步、在同步调用里同步、真正的环以 `SyncWaitCycle` 失败；`boundary/5.6` 那一条加一句指向本稿。
 
 ## 六、发布门跑一次指南示例
 
@@ -394,7 +423,7 @@ $ npx rutis-host call commands.run '"count"'
 
 | 阶段 | 内容 |
 | --- | --- |
-| F-1 | Node、Bun 运行时：交来的函数的代理按上下文走 `#requestSync` / `#requestAsync`；同步调用标记（§三 3.2 的表）；`events.mjs` 的同步 `next` 改用内部的 `callFunctionSync`；`SyncWaitCycle` 的文字（§四 4.3）；运行时的测试 |
+| F-1 | Node、Bun 运行时：交来的函数的代理按上下文走 `#requestSync` / `#requestAsync`；同步调用标记（§三 3.2 的表）；`events.mjs` 的同步 `next` 改用内部的 `callFunctionSync`；`SyncWaitCycle` 的文字按诊断设计采纳的那一句（§四 4.3）；运行时的测试 |
 | F-2 | Python 运行时：`RemoteFunction.__call__` 按上下文返回可 await 的对象或值，`call_async` 与之相同；`_execute` 执行带 `sync` 的帧时算同步调用；运行时的测试 |
 | F-3 | 文档（两份）：open-host 第 5 节（删掉 `SyncWaitCycle` 那一段、假服务回到 `async`、新增 Python 例子与它的那处不同）；[插件 API](guide/plugin-api.md)（「值怎样传递」函数一行、「同步调用与可重入」、Python 与 TypeScript 的测试工具段）；[TypeScript](guide/typescript-plugin.md)、[Bun](guide/bun-plugin.md)、[Python](guide/python-plugin.md) 指南的测试一节；《迁移到 0.21》；保证表 |
 | F-4 | 发布门：`tools/install/artifact-registry.mjs`、`Scenario` 的本地包变体、`install.yml` 在 `source=local` 时跑第 3 条列出的示例；`doc_examples.rs` 的本地模式 |
@@ -405,7 +434,7 @@ F-1 与 F-2 可以并行；F-3 的两份文档在 F-1、F-2 之后一起改；F-
 
 - [ ] open-host 第 5 节的 TypeScript 例子原样 `npm test` 通过，假服务写 `async`；Python 例子同样通过（两种语言各一条）。
 - [ ] Node、Bun、Python 各有测试：交来的函数在异步上下文里返回 Promise / 可 await 的对象；在同步调用里同步返回结果；真正的环以 `SyncWaitCycle` 失败、不卡死。
-- [ ] `SyncWaitCycle` 的文字在 Node、Bun、Python 一致，按 §四 4.3 逐字比较。
+- [ ] 诊断设计采纳 §四 4.3 提议的那一句（依赖）；Node、Bun、Python 的文字与它一致，验收测试按那份设计稿的文字比较。
 - [ ] 两份文档同步改完，第 5 节的例子在发布门里跑过。
 - [ ] 发布门在 `source=local` 时用本构建的包跑第 3 条列出的示例并通过；发布后那次照旧全部通过。
 - [ ] 保证表新增 `bridge/function-refs`，指名的测试通过（`node tools/check-guarantees.mjs`）。

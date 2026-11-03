@@ -68,7 +68,7 @@ Synchronous calls themselves were settled by #918: Cordis's `emit` and `waterfal
 | F3 | **No new names**: no `callSync` on received functions in Node or Bun; Python's `call_async` is the same thing as `await f(...)` and goes into its guide | 3.2 |
 | F4 | **Cordis's synchronous chains stay as they are** (#918): where the runtime itself calls `next` in a synchronous chain it uses an internal synchronous form; what plugin authors write does not change | 3.3 |
 | F5 | **The test tools follow the real host**: in Node and Bun the plugin's row runs in another runtime process, so a test `await`s a received function; in Python the plugin runs in the test's process, so the function is the plugin's own (a `def` is used directly, an `async def` is awaited). Both are written in the guides | 3.5 |
-| F6 | **When it fails**: a real cycle still fails with `SyncWaitCycle` and never hangs; the Node and Bun line loses its internal call ids (`path: test:5 -> …`), so all three runtimes say the same thing | 4.3 |
+| F6 | **When it fails**: a real cycle still fails with `SyncWaitCycle` (same `name`) and never hangs; the wording is the [diagnostics design](design-diagnostics-2026-10-26.en.md)'s, and this draft proposes a sentence there (§4.3's dependency) | 4.3 |
 | F7 | **The release gate runs the guide examples that install only npm / PyPI packages once**, with the packages the gate itself builds, on Linux (including both versions of open-host §5); after a release the whole set still runs with the published packages | 6 |
 | F8 | **The wire format, the capabilities and the Rust side do not change**: `call` / `call_async`, the protocol's `sync` marker and the wait-cycle check stay as they are | 5 |
 
@@ -149,7 +149,7 @@ Neither test tool changes its semantics; Python's difference goes into the Pytho
 
 ### 4.1 Plugin authors: TypeScript (the normal case)
 
-The example in the guide's §5 (`docs/guide/open-host.md` §5): the template and the generated types are unchanged, and the test's fakes are written `async`, as a real service is. The three files stay as they are; only the fake's line goes back to `async`:
+The example in the guide's §5 (`docs/guide/open-host.md` §5): the template and the generated types are unchanged, as they are today. The test's fakes go back to `async`, as a real service is — the only line of the example that changes today:
 
 ```ts
 // count/test/index.test.ts
@@ -331,15 +331,16 @@ $ npx rutis-host call commands.run '"count"'
 
 ### 4.3 When it fails
 
-Error codes follow the [diagnostics design](design-diagnostics-2026-10-26.en.md) §4.3; a code never appears in the line meant for people. `SyncWaitCycle` has its own type name and no code.
+This design writes neither error codes nor the wording people read: those belong to the [diagnostics design](design-diagnostics-2026-10-26.en.md) §4.3, §4.5. What is here is how the two failures appear, which row each is recorded on, and how to fix them; the wording follows that design.
 
-| Case | How it is caused | Output, word for word | Which row it is recorded on | How to fix |
-| --- | --- | --- | --- | --- |
-| Awaiting a received function's result inside a synchronous call | `await f()` in a `sync` method (or in Cordis's synchronous dispatch), where `f`'s result needs this thread / loop to make progress to settle | `SyncWaitCycle: a function would wait on itself: it is awaited inside the synchronous call that produces it (synchronous calls)` | the calling row; in a test, that test fails | Inside a synchronous call the `await` goes away: the received function gives its result there, so use it directly; or make the method `async` |
-| Two runtimes calling each other's received functions synchronously | A calls B's received function inside a synchronous call, and B calls A's inside its own | `SyncWaitCycle: weather.tomorrow would wait on itself: weather → forecast (synchronous calls)` (the line the host writes, naming the rows the call went through; the part after `itself` is left out when there are none) | the row that sent the synchronous call | Use an `async` method, or another moment ([plugin API](guide/plugin-api.en.md) "Synchronous calls and re-entrancy"); do not retry the same call at once |
+| Case | How it is caused | Which row it is recorded on | How to fix |
+| --- | --- | --- | --- |
+| Awaiting a received function's result inside a synchronous call | `await f()` in a `sync` method (or in Cordis's synchronous dispatch), where `f`'s result needs this thread / loop to make progress to settle | the calling row; in a test, that test fails | Inside a synchronous call the `await` goes away: the received function gives its result there, so use it directly; or make the method `async` |
+| Two runtimes calling each other's received functions synchronously | A calls B's received function inside a synchronous call, and B calls A's inside its own | the row that sent the synchronous call | Use an `async` method, or another moment ([plugin API](guide/plugin-api.en.md) "Synchronous calls and re-entrancy"); do not retry the same call at once |
 
-- Today the Node and Bun line still carries internal call ids (`path: test:5 -> rutis-test:3 -> rutis-test:4`); the [diagnostics design](design-diagnostics-2026-10-26.en.md) §4.5 turns it into the first row above, and Python's line follows. The host's line does not change.
-- Every other error is as before: a value that cannot be sent `bad-value`, a missing method `no-method`, the other side gone `peer-gone` ([diagnostics](design-diagnostics-2026-10-26.en.md) §4.3).
+- Both failures end as `SyncWaitCycle`, with the `name` it has today; its code and its sentence follow the [diagnostics design](design-diagnostics-2026-10-26.en.md). Today the Node and Bun line carries internal call ids (quoted as it is in §1.1), and the host's line names the rows the call went through.
+- **Dependency**: this draft proposes that the diagnostics design add a row to its §4.3 and a sentence to its §4.5 for the case the runtime notices itself — the sentence this draft proposes is `SyncWaitCycle: <what> would wait on itself: it is awaited inside the synchronous call that produces it (synchronous calls)` (`<what>` is the call: `a function`, `the method get`, `weather.tomorrow`). Whether to take it, and its wording, are that design's owner's decision; this draft sets no house style of its own.
+- Every other error is as before (`bad-value`, `no-method`, `peer-gone`; that design's §4.3).
 - In the normal case (§4.1, §4.2) there is no new output at all: calls return, tests pass.
 
 ### 4.4 Host owners
@@ -347,7 +348,11 @@ Error codes follow the [diagnostics design](design-diagnostics-2026-10-26.en.md)
 - Calling a function a plugin handed over is written as before: `call` (synchronous) and `call_async` (asynchronous) in Rust, each language's own form in Go, Swift and Kotlin.
 - When a host hands a callback to a plugin, the plugin's code awaits it; in a Node, Bun or Python plugin's `sync` method it still gets the result synchronously. No host code changes.
 - `rutis-host status` still cannot see calls of functions passed by reference ([a host that opens up plugins](guide/open-host.en.md) §6): they are calls between a local runtime and itself.
-- What a host gets on failure is what it gets today: the line the host writes itself is `session::Error::SyncWaitCycle`; crossing a session it arrives with `name` `SyncWaitCycle` and no `code` (`crates/rutis-bridge/src/session/protocol.rs:107`, `:142`).
+- How `SyncWaitCycle` crosses a session is unchanged (`crates/rutis-bridge/src/session/protocol.rs:89`–`111`, `:140`–`144`):
+  - a refusal the host makes itself is `session::Error::SyncWaitCycle(message)` (`crates/rutis-bridge/src/session/rpc.rs:1875`); it reaches a runtime as `Failure { name: "SyncWaitCycle", message, graph: None }`, with **no `code`, no `data` and no graph**;
+  - the one a runtime throws carries an error graph, and the host receives it as `session::Error::Remote { name: "SyncWaitCycle", message, graph }` (`crates/rutis-bridge/tests/rpc_callbacks.rs:221`, `:480`); without a graph it becomes `Error::SyncWaitCycle` again;
+  - what runtime code sees: in Node and Bun an `Error` whose `name` is `SyncWaitCycle` and which has no `code` (`node/rutis-runtime/src/errors.mjs:133`–`140`); in Python `rutis.advanced.SyncWaitCycle` (`python/rutis/rutis/peer.py:416`); in Go a `*rutis.RemoteError` for which `errors.Is(err, advanced.ErrSyncWaitCycle)` holds (`go/rutis/internal/errs/errs.go:38`);
+- nothing new goes on the wire: `code` and `data` live in the graph only (that design's §4.3), and `SyncWaitCycle` has none.
 
 ### 4.5 People assembling plugins with `rutis-host`
 
@@ -367,16 +372,40 @@ No change: the processes, the packages, the configuration, stopping and exit cod
 
 ## 5. Compatibility and migration
 
-Written into "Migrating to 0.21" (both languages, new files):
+### 5.1 The protocol and versions, item by item
+
+| Item | Now | This design |
+| --- | --- | --- |
+| Session protocol | `ENDPOINT_PROTOCOL` = 4 (`node/rutis-runtime/src/session.mjs:58`; `bun/rutis-bun/src/session.ts:57`, `python/rutis/rutis/peer.py:42` and `go/rutis/internal/peer/peer.go:34` hold the same value) | Unchanged: no frame, no field and no capability added (the `sync` marker and `sync-stack` / `reentrant-sync` stay as they are) |
+| `rutis.json` | `FORMAT` = 1 (`crates/rutis-host/src/config.rs:78`) | Unchanged: no new row field and no new `runtimes` form |
+| Plugin API | 3 (`node/rutis/src/advanced.mjs:15`, `python/rutis/rutis/plugin.py:125`) | Unchanged: nothing is added to or taken from `definePlugin` / `define_plugin`; how a received function is called is not in the API version (it is the runtime's behaviour) |
+| Errors on the wire | `Failure { name, message, graph? }` (`crates/rutis-bridge/src/session/protocol.rs:89`) | Unchanged: `SyncWaitCycle` is still the `name`, with no `code`, no `data` and no graph (§4.4) |
+| Generated types | what `rutis-host types` writes, `.d.ts` and `.py` (`run: (arg0: string[]) => string \| Promise<string>`) | Unchanged, no regeneration needed: a callback's return type already writes both, and `await` type-checks in an asynchronous and in a synchronous context alike (§3.2) |
+| Rust's `call` / `call_async`, the Go / Swift / Kotlin forms, Python's `call_async` | — | Unchanged |
+
+### 5.2 Mixing: an old end meeting a new one
+
+The difference lives inside this side's runtime and is no agreement across a process, so every combination works as before:
+
+| Combination | Result |
+| --- | --- |
+| A 0.21 host with a 0.20 runtime | The host is unchanged; a received function in that runtime is still called synchronously (0.20's behaviour). A plugin written for 0.21 with `await` still works on a 0.20 Node or Bun (`await` of a value that is not a Promise gives the value); in Python awaiting a plain value fails, so one Python plugin should not run on both |
+| A 0.20 host with a 0.21 runtime | The host is unchanged; the runtime follows this design (asynchronous by default, synchronous inside a synchronous call). The wait-cycle check and `SyncWaitCycle` are the host's, already there, and behave as today |
+| A 0.21 caller calling a function in a 0.20 runtime | When the caller is not in a synchronous call it sends an asynchronous call, and the 0.20 runtime answers it as usual, so `await` gives the result; in a synchronous call it is synchronous, as today |
+| A 0.20 caller calling a function in a 0.21 runtime | The 0.20 caller sends a synchronous call (its rule); the 0.21 runtime returns the result synchronously inside it, as today |
+
+### 5.3 Written into "Migrating to 0.21" (both languages, new files)
 
 - **A received function is asynchronous by default (Node, Bun, Python)**: calling a received function in `apply`, an `async` method, a listener or a timer now gives a Promise / awaitable. The old way (waiting for the result on the spot) still holds inside a synchronous call; code that does not wait inside a synchronous call and uses the value must `await`:
-  - TypeScript, Bun: `const text = f()` → `const text = await f()`;
+  - TypeScript, Bun: `const text = f()` → `const text = await f()` (`await` of a value that is not a Promise gives the value, so the changed code also runs on 0.20);
   - Python: `text = f()` → `text = await f()`.
 - **A test's fakes may be `async`**: what had to return directly may now do either. A test whose fake is `async` and which awaits the plugin's function passes on 0.21 and fails on 0.20 — write it for 0.21 and do not mix.
-- **The `SyncWaitCycle` line** (Node, Bun): the internal call ids go; its `name`, and code that branches on it, do not change.
-- **Unchanged**: the wire format, the protocol version, the capabilities, Rust's `call` / `call_async`, the Go, Swift and Kotlin forms, Python's `call_async`.
-- **A new end meeting an old one**: the difference lives on this side of the process, not in an agreement across it: a 0.20 runtime with a 0.21 host, and a 0.21 runtime with a 0.20 host, work as before; with 0.20 runtimes at both ends a received function is still called synchronously.
-- **The guarantees table** ([guarantees](guarantees.en.md)) gains `bridge/function-refs`: a received function is asynchronous in an asynchronous context, synchronous inside a synchronous call, and a real cycle fails with `SyncWaitCycle`; `boundary/5.6` gains a sentence pointing here.
+- **The `SyncWaitCycle` line** (Node, Bun): as the diagnostics design takes it (§4.3's dependency); its `name`, and code that branches on it, do not change.
+- **One incompatible change, and only that**: the first item above (a received function becomes asynchronous in an asynchronous context). The rest is unchanged or more permissive.
+
+### 5.4 The guarantees table
+
+[guarantees](guarantees.en.md) gains `bridge/function-refs`: a received function is asynchronous in an asynchronous context, synchronous inside a synchronous call, and a real cycle fails with `SyncWaitCycle`; `boundary/5.6` gains a sentence pointing here.
 
 ## 6. The release gate runs the guide examples once
 
@@ -395,7 +424,7 @@ So open-host §5's example runs in every release gate, with the packages about t
 
 | Stage | Contents |
 | --- | --- |
-| F-1 | Node and Bun runtimes: a received function's proxy picks `#requestSync` / `#requestAsync` from the context; the synchronous-call marker (§3.2's table); `events.mjs`'s synchronous `next` uses the internal `callFunctionSync`; the `SyncWaitCycle` line (§4.3); the runtimes' tests |
+| F-1 | Node and Bun runtimes: a received function's proxy picks `#requestSync` / `#requestAsync` from the context; the synchronous-call marker (§3.2's table); `events.mjs`'s synchronous `next` uses the internal `callFunctionSync`; the `SyncWaitCycle` line as the diagnostics design takes it (§4.3); the runtimes' tests |
 | F-2 | Python runtime: `RemoteFunction.__call__` returns an awaitable or the value from the context, `call_async` the same; `_execute` counts a frame carrying `sync` as a synchronous call; the runtime's tests |
 | F-3 | The documentation (both languages): open-host §5 (the `SyncWaitCycle` paragraph goes, the fakes go back to `async`, the new Python example and its one difference); the [plugin API](guide/plugin-api.en.md) ("How values cross"'s function row, "Synchronous calls and re-entrancy", the Python and TypeScript test-tool sections); the test sections of the [TypeScript](guide/typescript-plugin.en.md), [Bun](guide/bun-plugin.en.md) and [Python](guide/python-plugin.en.md) guides; "Migrating to 0.21"; the guarantees table |
 | F-4 | The release gate: `tools/install/artifact-registry.mjs`, the local-packages variant of `Scenario`, `install.yml` running item 3's examples when `source=local`, and `doc_examples.rs`'s local mode |
@@ -406,7 +435,7 @@ Done (when all hold, #932 closes):
 
 - [ ] open-host §5's TypeScript example passes `npm test` as written with an `async` fake, and the Python example passes too (one test each).
 - [ ] Node, Bun and Python each have tests: a received function is a Promise / awaitable in an asynchronous context, gives its result inside a synchronous call, and a real cycle fails with `SyncWaitCycle` without hanging.
-- [ ] The `SyncWaitCycle` line is the same in Node, Bun and Python, compared word for word as §4.3 writes it.
+- [ ] The diagnostics design takes the sentence §4.3 proposes (a dependency); the Node, Bun and Python lines match it, compared word for word against that design.
 - [ ] Both documents are changed together, and §5's example has run in the release gate.
 - [ ] With `source=local`, the release gate runs item 3's examples against this build's packages and passes; the post-release run still passes with all of them.
 - [ ] The guarantees table has `bridge/function-refs`, naming tests that pass (`node tools/check-guarantees.mjs`).
