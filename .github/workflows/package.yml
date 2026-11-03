@@ -29,7 +29,7 @@ jobs:
   # Orchestration only: on the self-hosted macOS runners but for a release
   # (the repository variable GATE_RUNNER switches it, docs/ci.md §10).
   plan:
-    runs-on: ${{ startsWith(github.ref, 'refs/tags/') && 'Linux' || fromJSON(vars.GATE_RUNNER || '["self-hosted","macOS","ARM64"]') }}
+    runs-on: ${{ startsWith(github.ref, 'refs/tags/') && 'ubuntu-24.04' || fromJSON(vars.GATE_RUNNER || '["self-hosted","macOS","ARM64"]') }}
     outputs:
       binaries: ${{ steps.plan.outputs.binaries }}
       wheels: ${{ steps.plan.outputs.wheels }}
@@ -46,8 +46,8 @@ jobs:
           node - <<'EOF' >> "$GITHUB_OUTPUT"
           const wanted = JSON.parse(process.env.PLATFORMS)
           const binaries = [
-            { os: 'Linux', target: 'x86_64-unknown-linux-musl', zig: true, npm: 'linux-x64' },
-            { os: 'Linux', target: 'aarch64-unknown-linux-musl', zig: true, npm: 'linux-arm64' },
+            { os: 'ubuntu-24.04', target: 'x86_64-unknown-linux-musl', zig: true, npm: 'linux-x64' },
+            { os: 'ubuntu-24.04', target: 'aarch64-unknown-linux-musl', zig: true, npm: 'linux-arm64' },
             { os: 'macos-14', target: 'x86_64-apple-darwin', npm: 'darwin-x64' },
             { os: 'macos-14', target: 'aarch64-apple-darwin', npm: 'darwin-arm64' },
             { os: 'windows-2025', target: 'x86_64-pc-windows-msvc', npm: 'win32-x64', exe: '.exe' },
@@ -55,8 +55,8 @@ jobs:
           // Linux wheels are linked by zig against the given glibc, without a
           // container: any Linux runner builds them, Docker or not.
           const wheels = [
-            { os: 'Linux', target: 'x86_64-unknown-linux-gnu', artifact: 'x86_64', manylinux: '2014', npm: 'linux-x64' },
-            { os: 'Linux', target: 'aarch64-unknown-linux-gnu', artifact: 'aarch64', manylinux: '_2_28', npm: 'linux-arm64' },
+            { os: 'ubuntu-24.04', target: 'x86_64-unknown-linux-gnu', artifact: 'x86_64', manylinux: '2014', npm: 'linux-x64' },
+            { os: 'ubuntu-24.04', target: 'aarch64-unknown-linux-gnu', artifact: 'aarch64', manylinux: '_2_28', npm: 'linux-arm64' },
             { os: 'macos-14', target: 'x86_64-apple-darwin', npm: 'darwin-x64' },
             { os: 'macos-14', target: 'aarch64-apple-darwin', npm: 'darwin-arm64' },
             { os: 'windows-2025', target: 'x86_64-pc-windows-msvc', npm: 'win32-x64' },
@@ -159,7 +159,7 @@ jobs:
   # made from the binaries above, as published.
   packages:
     needs: binaries
-    runs-on: Linux
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
