@@ -6,6 +6,7 @@ rutis 的所有包用同一个版本号。每个版本的完整说明在 [docs/r
 
 | 版本 | 日期 | 变化 | 说明 |
 | --- | --- | --- | --- |
+| 0.20.1 | 2026-11-03 | 修复 bug：`dev` 只对插件会加载的文件重新加载，测试文件、文档、图片、锁文件不再重启行（#1046）；Node 检查器的地址可以用 `RUTIS_NODE_INSPECT` 换（#1048）；`dev` 不再打印 `services: none`（#1049）；一行的清理仍能发出事件，别的行听得到（#1041、#1050）；发布门里的两处偶发失败：`dev` 不再把在回来的路上的行说成 `stopped`，远程运行时的测试等 hello 帧（#1044、#1051） | [中文](docs/releases/0.20.1.md) · [English](docs/releases/0.20.1.en.md) |
 | 0.20.0 | 2026-11-02 | 插件可以写可选依赖（`optional` 与 `ctx.get`）；行的 `inject` 算这一行已声明，运行时的行由 rutis 门控并租借；同一进程里的服务在 Go、Kotlin 也拿到对象本身；测试工具装上替身收到的插件定义；卸载时清理与服务撤回走同一个逆序栈；每个实例的常驻占用更小。**不兼容** | [中文](docs/releases/0.20.0.md) · [English](docs/releases/0.20.0.en.md) |
 | 0.19.3 | 2026-10-31 | 修 TypeScript 测试工具与插件 API 事件例子的 bug；`loader`、`sessions` 改名 `rutis/loader`、`rutis/sessions`。**不兼容** | [中文](docs/releases/0.19.3.md) · [English](docs/releases/0.19.3.en.md) |
 | 0.19.2 | 2026-10-30 | 修复 bug：大量实例关闭时的内存峰值（#977）；提前取消的装载回到 Pending（#968）；放弃的 `reconcile` 不再挡住后来的操作；`dev` 与测试工具的 bug；写错的运行时路径报错 | [中文](docs/releases/0.19.2.md) · [English](docs/releases/0.19.2.en.md) |

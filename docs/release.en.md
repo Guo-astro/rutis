@@ -74,6 +74,12 @@ Expected behavior: the dialer prints `clock: <n>` every second. After a network 
 
 The nightly stress workflow also runs two soak tests (repeated link disconnect/reconnect and repeated process start/exit) and checks that file descriptor and thread counts do not grow and all processes are reaped.
 
+## 0.20.1
+
+0.20.1 is a patch release: `rutis-host dev` reloads only the files a plugin loads, so a test file, a document, an image or a lockfile no longer restarts a row (#1046, #1047), the Node inspector's address can be changed with `RUTIS_NODE_INSPECT` (#1048), and `dev` no longer prints `services: none` (#1049); a row's cleanup can emit again, and the other rows hear it (#1041, #1050); and the release gate's two load-dependent failures are fixed (`dev` no longer calls a row on its way back `stopped`, and the remote runtimes' tests wait for the hello frame; #1044, #1051). All packages are at 0.20.1; see [the release notes](releases/0.20.1.en.md). There is nothing to migrate: no API is removed or renamed, and a plugin, `rutis.json` and `rutis.dev.json` need no change.
+
+A patch release has to stay compatible with 0.20.0: `cargo-semver-checks` compares with 0.20.0 and accepts no breaking Rust API change (this release adds and removes no public API). `format` of `rutis.json` stays 1 and no configuration changes: the persisted sample is copied from 0.20.0 and its expectations are unchanged; dsh's user layer has not changed, so `cordis.patch.yml` is copied as is. The session protocol stays 4, there is no new capability, and the plugin API stays 3: the release gate's cross-version tests (`RUTIS_E2E_ONLY_OLDER=1`) meet 0.20.0 and the meeting works as usual. The Kotlin SDK takes the train's version like the other packages; Maven Central is published by the rules of `release.yml` (the four secrets of the environment `maven`; the `maven` job skips when one is missing).
+
 ## 0.20.0
 
 0.20 lets a plugin write optional dependencies (`optional` and `ctx.get`, #999), makes a row's `inject` count as that row's declaration in all six languages, gates a runtime's rows by it and leases them (#1000, #1001), hands out the object itself for a service in the same process in Go and Kotlin too (#1006, #1015), and has the test tools mount a plugin definition a double received (#1004); unloading runs cleanups and service withdrawals on one reverse stack (#1010), and the resident memory per instance is smaller (#979). All packages are at 0.20.0; see [the release notes](releases/0.20.0.en.md) and [Migration to 0.20](migration-0.20.en.md).
