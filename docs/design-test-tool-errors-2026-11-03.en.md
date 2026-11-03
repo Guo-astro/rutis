@@ -4,7 +4,7 @@
 
 Status: draft, not implemented. Date: 2026-11-03. Baseline: `main` `d2a8d069` (after 0.20.1). Release: 0.21.
 Issue: [#933](https://github.com/arcships/rutis/issues/933) (part of [#663](https://github.com/arcships/rutis/issues/663)'s A5, D1, D2). Implemented as: #933's T-1 to T-6 (§7).
-Basis: [diagnostics](design-diagnostics-2026-10-26.en.md) (error codes §4.3, speaking only with what the developer wrote §4.5, `status` §5, the fault table §8.1); [config schema](design-config-schema-2026-10-27.en.md) §5.2 (testing tools throw errors with `bad-config`); [plugin API](guide/plugin-api.en.md) "Testing tools", "How testing tools differ from a real runtime"; [rutis-host](guide/rutis-host.en.md) "What `run` prints" (the table of row state lines — "what `dev` says" throughout this document means that table).
+Basis: [diagnostics](design-diagnostics-2026-10-26.en.md) (error codes §4.3, speaking only with what the developer wrote §4.5, `status` §5, the fault table §8.1); [error messages](https://github.com/arcships/rutis/issues/937) (#937's design draft, in review; once merged: `docs/design-error-messages-2026-11-03.md`: the waiting wording of `dev`, `status` and `diagnostics()`, and the state words, are its; this document only repeats them); [config schema](design-config-schema-2026-10-27.en.md) §5.2 (testing tools throw errors with `bad-config`); [plugin API](guide/plugin-api.en.md) "Testing tools", "How testing tools differ from a real runtime"; [rutis-host](guide/rutis-host.en.md) "What `run` prints" (the table of row state lines — "what `dev` says" throughout this document means that table).
 
 Out of scope:
 
@@ -50,14 +50,14 @@ The words of `dev` live in `crates/rutis-loader/src/loader/status.rs` (`describe
 
 | # | Decision | Section |
 | --- | --- | --- |
-| T1 | **One place writes the line**: the host `rutis-host test` computes the row's state line with the same code `dev` uses (`describe` + `describe_waits` + `prefixed`), and the SDKs print it unchanged. The three tools therefore say exactly what `dev` says, and change together from now on | 3.1, 3.3 |
+| T1 | **One place writes the line**: the host `rutis-host test` computes the row's state line with the same code `dev` uses (`describe` + `describe_waits` + `prefixed`), and the SDKs print it unchanged. That sentence's wording and codes are #937's and the diagnostics design's; this document only repeats them (`state(id)` is host-local: the protocol, `rutis.json` and the plugin API are untouched) | 3.1, 3.3 |
 | T2 | **The row's name is the plugin's name** (package, module, `Name`), as the language guides' examples write it; an `id` the test gives wins | 3.2 |
 | T3 | **When the plugin is not up, say what the row waits for**: `t.service()` and `loaded.Service()` no longer answer "no such service" but the row's state line; `waiting()` lets a test look on purpose. `load` still returns (a test may load the provider afterwards and let the row start) | 3.3 |
 | T4 | **An `apply` failure carries its position**: the loader's `Failure` stops using `Display` and uses `report()` (the same headline plus the position lines); `dev`'s `cannot reload`, `rutis/loader` and the testing tools then say the same thing | 3.1, 6 |
 | T5 | **A call that never returns fails at the tool's own limit**: 30 seconds in TypeScript, Bun, Python and Go; in Go the caller's own `ctx` deadline wins when it has one; only that call fails, and the test process can exit | 3.4 |
-| T6 | **The tools' own three failures have error codes** (`not-running`, `no-service`, `timeout`), and a host refusal carries the plugin error's code (`bad-config` and so on). The text stays the line people read; codes are for programs | 3.5 |
+| T6 | **The tools' own failures have error codes** (`not-running`, `no-service`, `timeout`), and a host refusal carries the plugin error's code (`bad-config` and so on). All three languages have text only today; `code` and `data` are this document's addition | 3.5 |
 | T7 | **A test leaves nothing behind for the next**: TS and Bun already do (§1.2); Python's `async with` and Go's `t.Cleanup` stay. What this adds is the "a refused load that got halfway" path | 3.6 |
-| T8 | **Rust has no tool**: `FiberView` gets a "wait until it runs" method (`running(limit)`) whose failure says the same line; the kernel's way of saying what it waits for becomes the same sentence as `dev`'s | 3.7 |
+| T8 | **Rust has no tool**: `FiberView` gets a "wait until it runs" method (`running(limit)`) whose failure says what `diagnostics()` says for that one plugin (its wording is #937's E-2), so all four languages say the same sentence, with only the name and "what it waits for" written in each language's own terms | 3.7 |
 
 Dropped:
 
@@ -68,28 +68,40 @@ Dropped:
 
 ## 3. Rules
 
-### 3.1 One sentence: the host writes it, the SDK passes it on
+### 3.1 The host writes the line, the SDK prints it unchanged
 
-The service `rutis-host/test` (`Harness` in `crates/rutis-host/src/test.rs`) gains a method:
+This line (`<row id>: <state>`, what it waits for, where it failed, with the position lines after it) is not written by the testing tool: the host `rutis-host test` computes it with the same code `dev` uses, and an SDK puts it in the error without changing a character.
+
+| Case | What the host uses |
+| --- | --- |
+| the row runs | `describe` (`crates/rutis-host/src/status.rs:18`) |
+| the row waits | `describe_waits` (`crates/rutis-loader/src/loader/status.rs:411`, `Loader::waits` / `waits_of`) |
+| the row failed | `describe` → `report()` (`crates/rutis-bridge/src/report.rs:172`): the same sentence plus the position lines |
+| the row's name and the indent of the position lines | `prefixed` (`crates/rutis-host/src/status.rs:297`) |
+
+**Those sentences, their wording and their codes belong to [error messages](https://github.com/arcships/rutis/issues/937) (#937's design draft, in review) and [diagnostics](design-diagnostics-2026-10-26.en.md) §4.3 and §4.5.** This document writes none of them and changes none: the waiting words of `status` and `dev`, `failed in apply:`, the position lines and the state words are settled there (#937's E-2 changes `no row provides it` to `nothing provides it yet`, and that is what a testing tool shows). This document adds three things:
+
+1. one method for the test host (below);
+2. the wording and codes of the two failures the tool itself produces (`no-service`, `timeout`, §3.3 and §3.4), plus the code `not-running` for when the row is not up;
+3. how each language hands the code over (§3.5).
+
+`rutis-host/test` is `rutis-host test`'s service (`Harness` in `crates/rutis-host/src/test.rs`), used only between the test process and the host it started. It gains a method:
 
 ```text
 state(id) -> null | { line, code?, data? }
 ```
 
-`null`: the row runs. Otherwise `line` is exactly the line `dev` prints (`<row id>: <state>`, the position lines under the state line without the prefix again, as `prefixed` does); `code` and `data` are the row error's code and details, left out when a plugin's own error has no code. `load`, `update` and `unload` fail with the same `{ line, code?, data? }` (whose Display is `line`), so what an SDK gets is word for word what `dev` says.
+- `null`: the row runs. Otherwise `line` is that line above (what the host writes for `dev`), and `code` and `data` are the row error's code and details (left out when a plugin's own error has no code).
+- **A synchronous method** (it awaits nothing), so TS's `t.service()` stays synchronous (`call('state', id)`; `SYNCHRONOUS` in `node/rutis-runtime/src/testing/rutis-test.mjs:23` gains it), and so do Python's `t.service()` and Go's `Service()`.
+- **Host-local only**: it touches none of three things — the session protocol (version 4, `ENDPOINT_PROTOCOL`, `crates/rutis-bridge/src/session/mod.rs:14`), `rutis.json`'s format (1, `FORMAT`, `crates/rutis-host/src/config.rs:78`), the plugin API (3, `node/rutis/src/advanced.mjs:15`, `python/rutis/rutis/plugin.py:125`, `go/rutis/internal/runtime/version.go:9`).
+- `load`, `update` and `unload` fail with the same `{ line, code?, data? }` (whose Display is `line`).
 
-`line` is put together from three existing functions; no new wording:
+The two versions meeting:
 
-| Case | Which | Example |
-| --- | --- | --- |
-| the row runs | `describe(&status)` | `running` |
-| the row waits | `describe_waits` (`Loader::waits` / `waits_of`) | `waiting for llm (no row provides it; did you mean llm?)` |
-| the row failed | `describe(&status)`: `report()`'s sentence | `failed in apply: KeyError: 'town'`, then `in weather:` and the position lines |
-| the row's config does not match | the same (`bad-config` says so itself) | `config: city is required` |
-
-The row's name is the `<row id>` in front of the line; that is how `dev` writes it too (`prefixed` at `crates/rutis-host/src/status.rs:297`).
-
-`state` is a synchronous method (it awaits nothing), so an SDK keeps its synchronous shape: TS's `t.service()` uses `call('state', id)` (`SYNCHRONOUS` in `node/rutis-runtime/src/testing/rutis-test.mjs:23` gains it), Go's `Service()` calls it directly.
+| Case | What you see |
+| --- | --- |
+| a 0.20 testing tool on a 0.21 host | unchanged: the old tool never asks for `state`, and cannot see the extra method |
+| a 0.21 testing tool on a 0.20 host (and, in TS and Bun, with 0.20's runtime package, `@arcships/rutis-runtime` or `@arcships/rutis-bun`: their test driver has no `state`) | while the row is not up: `greeter: not running (this rutis-host is older than 0.21 and cannot say why; upgrade it)`, code `not-running`; `waiting()` gives `null`. The guide says to bring `rutis-host` (and `@arcships/rutis-runtime` in TS and Bun) to one version |
 
 ### 3.2 The row's name
 
@@ -110,7 +122,9 @@ Rust differs: it has no `rutis.json` row, and the kernel knows a plugin by its n
 
 ### 3.3 When the plugin is not up
 
-- `t.service(name)` and `t.methods(name)` (TS, Bun, Python), `loaded.Service(name)` (Go), when the row is **not running**, fail with the row's state line: `greeter: waiting for translate (no row provides it)`, `a: waiting for bsvc (row b waits for asvc from this row: they inject each other)`, `greeter: failed in apply: …`. Code `not-running`, `data: {row}`.
+- `t.service(name)` and `t.methods(name)` (TS, Bun, Python), `loaded.Service(name)` (Go), when the row is **not running**, fail with the row's state line: `greeter: waiting for translate (nothing provides it yet)`, `a: waiting for bsvc (row b waits for asvc too: they inject each other)`, `greeter: failed in apply: …`. Code `not-running`, `data: {row}`.
+  - The reasons in the parentheses are #937 §3.3's words (`nothing provides it yet`, `row b waits for asvc too: they inject each other`); this document only repeats them, and changes with the host.
+- The row **never started at all** (a 0.20 host): `greeter: not running (this rutis-host is older than 0.21 and cannot say why; upgrade it)`, also code `not-running` (§3.1).
 - The row runs but has no such service: `greeter: no such service forcast (it provides: forecast, today; did you mean forecast?)`; when it provides nothing, `(it provides nothing)`. Code `no-service`, `data: {row, service, services}`.
 - `await t.waiting()` (TS, Bun, Python), `loaded.Waiting()` (Go): `null` / `""` while it runs, otherwise the same line. Each call asks the host, so once a provider loaded later starts the row it is `null` at once.
 - `load` and `Load` still return: a waiting row is not a failed load. `apply` really failing and a config that does not match are still failed loads, whose text becomes this line (§3.1).
@@ -132,7 +146,7 @@ Rust differs: it has no `rutis.json` row, and the kernel knows a plugin by its n
 
 ### 3.5 Error codes
 
-The tools' own failures get three codes, added to the table in [diagnostics](design-diagnostics-2026-10-26.en.md) §4.3 (that table says rows may be added at implementation time, existing rows unchanged):
+This document adds three codes for the testing tools, to the table in [diagnostics](design-diagnostics-2026-10-26.en.md) §4.3 (that table says rows may be added at implementation time, existing rows unchanged; #937 adds `already-provided` to the same table, each document adding its own rows). The table's other rows, and the rule that codes do not appear in the text people read, belong to it; this document changes neither:
 
 | code | When | `data` |
 | --- | --- | --- |
@@ -140,9 +154,18 @@ The tools' own failures get three codes, added to the table in [diagnostics](des
 | `no-service` | the row runs but provides no such service name | `{row, service, services}` |
 | `timeout` | a call did not return within its limit (§3.4) | `{service, method, limit}` |
 
-- A host refusal carries the row error's own code: a config that does not match is `bad-config` (`data: {issues}`, as [config schema](design-config-schema-2026-10-27.en.md) §5.2 already says); a plugin's own error carries none.
-- Codes do not appear in the text people read (an existing rule of diagnostics §4.3).
-- How each language delivers them: `PluginTestError` in TypeScript, Bun and Python has `code` and `data`; Go uses `*rutistest.Error{Code, Line, Data}` (`errors.As`), and a host refusal comes back as `*rutis.RemoteError`, whose `Code` is already set; Rust has no tool — `running`'s error is a `rutis::Error`, matched by `ErrorKind`.
+- **Today those errors carry a name and a text only; `code` and `data` are this document's addition**:
+
+| Language | Today | Added here |
+| --- | --- | --- |
+| TypeScript, Bun | `class PluginTestError extends Error { name = 'PluginTestError' }` (`node/rutis/src/testing.mjs:32`), so a test can only compare text | the fields `code` and `data` |
+| Python | `class PluginTestError(AssertionError)` with a docstring only (`python/rutis/rutis/testing.py:64`) | the attributes `code` and `data` |
+| Go | no error type: `Load` calls `t.Fatalf`, `TryLoad` hands back an `error`; when the host refused the load that is a `*rutis.RemoteError` whose `Name` is `BindingError` and whose `Code` is already set (as [config schema](design-config-schema-2026-10-27.en.md) §5.2 says) | `*rutistest.Error{Code, Line, Data}` |
+| Rust | no tool | `running`'s error is a `rutis::Error`, matched by `ErrorKind` |
+
+- A host refusal carries the row error's own code: a config that does not match is `bad-config` (`data: {issues}`, config schema design §5.2); a plugin's own error carries none.
+- Codes do not appear in the text people read (diagnostics §4.3's rule).
+- A test that asserts on the code does not compare text: `assert.equal(error.code, 'not-running')` in TypeScript and Bun, `self.assertEqual(refused.exception.code, 'not-running')` in Python, `errors.As(err, &target)` and then `target.Code` in Go.
 
 ### 3.6 When a test ends
 
@@ -152,7 +175,7 @@ The tools' own failures get three codes, added to the table in [diagnostics](des
 
 ### 3.7 Rust
 
-Rust has no testing tool: step 6 of the guide builds a root, mounts the plugin and asserts. It gets one thing, in `crates/rutis/src/fiber.rs`:
+Rust has no testing tool: step 6 of the guide builds a root, mounts the plugin and asserts, with no `rutis-host test`, no loader and no rows. It gets one thing, in `crates/rutis/src/fiber.rs`:
 
 ```rust
 /// Wait until the plugin runs: `apply` is done. A failure (`apply` failed,
@@ -163,11 +186,20 @@ pub async fn running(&self, limit: Duration) -> Result<(), Error>
 ```
 
 - It runs: `Ok(())`.
-- It failed: `Err` whose text is `<name>: failed in apply: <error>`, or `<name>: config: …` when the config does not match (`dev`'s two sentences).
-- It keeps waiting: `Err` whose text is `<name>: waiting for <what DependencyStatus says>`; several unmet dependencies are joined with `; `.
+- It failed: `Err` whose text is `<name>: <what diagnostics() says for this one plugin>`: `GreeterPlugin: failed in apply: boom`, `GreeterPlugin: config: greeting should be a string, got 3`.
+- It keeps waiting: `Err` with the same sentence: `GreeterPlugin: waiting for Arc<dyn Translate> (nothing provides it yet)`; several dependencies are joined with `; `.
 - When every unmet dependency is `Missing` (no plugin provides it) it comes back **at once**, without waiting for `limit`: in a test the test itself mounts every plugin, so waiting longer cannot help.
-- The kernel's `DependencyStatus` wording lines up with `dev`: `Missing` changes from `service missing` to `no plugin provides it`; the other four (`instance out of scope`, `service being removed`, `provider inactive (…)`, `ready`) stay. `RuntimeDiagnostics`'s `Display` (`crates/rutis/src/diagnostics.rs:65`, the waiting arm at `:75`) prints that wording, so both change together.
+- **That sentence's wording is not this document's**: it is what `RuntimeDiagnostics`'s `Display` says for this one plugin (`crates/rutis/src/diagnostics.rs:65`, the waiting arm at `:75`), and `running` shares that function with it, so the two cannot drift. #937's E-2 changes the wording there (to the same words as `status`), and `running` changes with it; this document writes none of it.
 - Step 6 of the guide uses it (§4.4); the `emit`, `dispose` and `shutdown` lines stay.
+
+**Why Rust is not a different behaviour.** For the same input — a plugin that needs a dependency nobody provides — all four languages say the same sentence, `<name>: waiting for <what it needs> (<why>)`, with only two places written in the developer's own terms:
+
+| | The name | What it needs | Why |
+| --- | --- | --- | --- |
+| TypeScript, Bun, Python, Go | the row's name: the plugin's name (§3.2) | a service name, `translate` for example | `nothing provides it yet` (#937 §3.3) |
+| Rust | `Plugin::name()`: the plugin's name | the type it declares, `Arc<dyn Translate>` for example | the same sentence |
+
+Rust has no row layer: the process is the test's own, the plugin runs on a fiber, there is no `rutis-host test`, no `rutis.json` row, and no module name to take a row id from, so the name can only be the plugin's own. What it needs can only be written as a type, because that is what `type Deps` holds. What changes is those two subjects, not the sentence.
 
 ### 3.8 What it cannot say
 
@@ -181,6 +213,8 @@ pub async fn running(&self, limit: Duration) -> Result<(), Error>
 Only the roles affected: plugin authors writing tests (one per language), the people assembling plugins with `rutis-host` (`rutis-host test`'s output changes, and `dev`'s wording too), and the people deploying (no change). Error codes per §3.5; codes do not appear in the text.
 
 Each line below is what the tool prints, after the test framework's own prefix (`go test`'s `file:line:`, `cargo test`'s `panicked at …`); tests compare it word for word, and position lines only by file name and method (diagnostics design §4.6).
+
+The waiting and failed lines are the line the host writes for `dev` (§3.1); the reasons in the parentheses are written as [error messages](https://github.com/arcships/rutis/issues/937) (#937) §3.3 has them today, and change with it. The two sentences the tools write themselves (`no such service …`, `did not return within 30s`) are this document's.
 
 ### 4.1 TypeScript and Bun
 
@@ -208,14 +242,15 @@ test('greets with the translated greeting', async () => {
 
 | Trigger | What you see | Code |
 | --- | --- | --- |
-| `services` lacks a service the plugin injects | `PluginTestError: greeter: waiting for translate (no row provides it)` | `not-running`, `data: {row: 'greeter'}` |
-| two plugins inject each other (on a `host()`) | `PluginTestError: a: waiting for bsvc (row b waits for asvc from this row: they inject each other)` | `not-running` |
+| `services` lacks a service the plugin injects | `PluginTestError: greeter: waiting for translate (nothing provides it yet)` | `not-running`, `data: {row: 'greeter'}` |
+| two plugins inject each other (on a `host()`) | `PluginTestError: a: waiting for bsvc (row b waits for asvc too: they inject each other)` | `not-running` |
 | the provider failed | `PluginTestError: chat: waiting for llm (row model failed: Error: no key)` | `not-running` |
 | the plugin runs, the service name is misspelt | `PluginTestError: greeter: no such service greter (it provides: greeter; did you mean greeter?)` | `no-service`, `data: {row: 'greeter', service: 'greter', services: ['greeter']}` |
 | `apply` fails | `PluginTestError: greeter: failed in apply: Error: boom`, then `in greeter:` and `at apply (/Users/me/greeter/src/index.ts:42:11)` and the frames after it | none (the plugin's own error) |
 | the config does not match | `PluginTestError: greeter: config: greeting should be a string, got 3` | `bad-config`, `data: {issues: [{path, message}]}` (the shape in [diagnostics](design-diagnostics-2026-10-26.en.md) §4.3) |
 | a call never returns | `PluginTestError: greeter.hello() did not return within 30s` | `timeout`, `data: {service: 'greeter', method: 'hello', limit: 30}` |
-| `await t.waiting()` | running: `null`; waiting: `greeter: waiting for translate (no row provides it)` | none (it returns a string, it does not throw) |
+| `await t.waiting()` | running: `null`; waiting: `greeter: waiting for translate (nothing provides it yet)` | none (it returns a string, it does not throw) |
+| the host is 0.20 (no `state`) | `PluginTestError: greeter: not running (this rutis-host is older than 0.21 and cannot say why; upgrade it)` | `not-running` |
 
 `t.service()` and `t.methods()` stay synchronous and still throw `PluginTestError` synchronously: they ask the host about this row and await nothing.
 
@@ -227,13 +262,14 @@ Normal: as today (`async with load(plugin, config={...}, services={...}) as t`),
 
 | Trigger | What you see | Code |
 | --- | --- | --- |
-| `services` lacks a service | `PluginTestError: greeter: waiting for translate (no row provides it)` | `not-running` |
-| two plugins inject each other | `PluginTestError: a: waiting for bsvc (row b waits for asvc from this row: they inject each other)` | `not-running` |
+| `services` lacks a service | `PluginTestError: greeter: waiting for translate (nothing provides it yet)` | `not-running` |
+| two plugins inject each other | `PluginTestError: a: waiting for bsvc (row b waits for asvc too: they inject each other)` | `not-running` |
 | the service name is misspelt | `PluginTestError: greeter: no such service greter (it provides: greeter; did you mean greeter?)` | `no-service` |
 | `apply` fails | `PluginTestError: greeter: failed in apply: KeyError: 'town'`, then `in greeter:` and `File "/Users/me/greeter/plugin.py", line 42, in apply` | none |
 | the config does not match | `PluginTestError: greeter: config: greeting should be a string, got 3` | `bad-config` |
 | a call never returns | `PluginTestError: greeter.hello() did not return within 30s` | `timeout` |
 | `await t.waiting()` | `None` / the same line | none |
+| the host is 0.20 (no `state`) | `PluginTestError: greeter: not running (this rutis-host is older than 0.21 and cannot say why; upgrade it)` | `not-running` |
 
 `PluginTestError` stays a subclass of `AssertionError` and gains the two attributes `code` and `data`.
 
@@ -252,8 +288,8 @@ if line := loaded.Waiting(); line != "" {
 
 | Trigger | What you see | Code |
 | --- | --- | --- |
-| `services` lacks a service | `--- FAIL: TestHello (0.01s)` / `plugin_test.go:23: rutistest: greeter: waiting for translate (no row provides it)` | `not-running` |
-| two plugins inject each other | the same, `a: waiting for bsvc (row b waits for asvc from this row: they inject each other)` | `not-running` |
+| `services` lacks a service | `--- FAIL: TestHello (0.01s)` / `plugin_test.go:23: rutistest: greeter: waiting for translate (nothing provides it yet)` | `not-running` |
+| two plugins inject each other | the same, `a: waiting for bsvc (row b waits for asvc too: they inject each other)` | `not-running` |
 | the service name is misspelt | `rutistest: greeter: no such service greter (it provides: greeter; did you mean greeter?)` | `no-service` |
 | `apply` fails | `rutistest: greeter: failed in apply: Error: boom`, then `in greeter:` and `at Apply (/Users/me/greeter/plugin.go:31)` | none |
 | `apply` panics | the same, then the whole `goroutine …` stack (as a service method's panic is today) | none |
@@ -278,11 +314,12 @@ assert_eq!(greeter.hello("Ada")?, "Salut, Ada!");
 
 | Trigger | What you see |
 | --- | --- |
-| no plugin provides a dependency | `thread 'tests::greets…' panicked at src/lib.rs:…: GreeterPlugin: waiting for Arc<dyn Translate> (no plugin provides it)` (at once, not after 30 seconds) |
-| the provider exists but is still waiting itself | `GreeterPlugin: waiting for Arc<dyn Greeting> (provider inactive (Pending))`, after 30 seconds |
+| no plugin provides a dependency | `thread 'tests::greets…' panicked at src/lib.rs:…: GreeterPlugin: waiting for Arc<dyn Translate> (nothing provides it yet)` (at once, not after 30 seconds) |
 | `apply` fails | `GreeterPlugin: failed in apply: boom` |
 | the config does not match | `GreeterPlugin: config: greeting should be a string, got 3` |
 | a call never returns | the test's own `tokio::time::timeout`: the guide says how, the tool does not take its place |
+
+For other waiting reasons (a provider that failed, one waiting for its own dependency) the parentheses hold what `diagnostics()` says of that plugin, worded by #937's E-2; this document does not repeat it.
 
 A Rust row's name is `Plugin::name()`: `GreeterPlugin` above. The guide adds one sentence at that step: to call it `greeter` (its package's name), write `fn name(&self) -> &str { "greeter" }` in `impl Plugin`.
 
@@ -296,47 +333,38 @@ A Rust row's name is `Plugin::name()`: `GreeterPlugin` above. The guide adds one
 
 Against the concept budget #663 wrote down (7 to write a plugin, about 9 reasonable while debugging): this design asks plugin authors to know nothing more. `waiting()` and `running(limit)` are new ways into one concept they already need, the row's state (`dev`'s `waiting for …`); error codes are for programs, not a new concept. In a test, "row" gains one sentence: the row's name is the plugin's name.
 
-## 5. Consistency cases
+## 5. Where the cases live
 
-The three implementations (TS/Bun, Python, Go) go through one host and one piece of wording, locked by one shared case list: `specs/test-tool/cases.json` (the same practice as [`specs/config-schema/cases.json`](../specs/config-schema/cases.json); not a TLA+ model). Each case is:
+**No shared expectation file, and no new `specs/` directory**: unlike [`specs/config-schema/cases.json`](../specs/config-schema/cases.json), a case here is not a piece of data but "a plugin plus one action in a test", and a cross-language file would have to hold a plugin's code written three times over. The cases live in each tool's existing tests:
 
-```json
-{
-  "name": "a service the plugin injects is missing",
-  "plugin": { "inject": ["translate"], "provides": { "greeter": { "hello": "async" } } },
-  "test": { "services": [], "call": "greeter" },
-  "then": { "line": "greeter: waiting for translate (no row provides it)", "code": "not-running" }
-}
-```
-
-- Each language's test builds the plugin from the case, runs `test`, and compares `line` and `code` word for word.
-- The position lines (the `apply` case) are compared by file name and method, not by line number (diagnostics design §4.6).
-- Rust is not in the list: it is not a tool going through the host and its words differ (`no plugin provides it`); `running`'s tests in `crates/rutis` lock them.
-- Swift and Kotlin read the same list when they are hooked up (§6).
+- **The line itself** is written in one place (§3.1) and locked in `crates/rutis-host`'s tests: one case runs `dev` and `state` and compares the same row (T-1's completion condition). Its words change with #937's E-2.
+- **That the tool prints it unchanged** is one case per tool: a plugin that needs a service nobody provides, asserting that the text `t.service()` / `loaded.Service()` throws is exactly what the host gave.
+- **The two sentences the tool writes itself** (`no such service …`, `did not return within 30s`) are one case per language, and the expected text is the sentence written down in §3.3 and §3.4; the three agree word for word, and reviews read them together.
+- Rust is locked by `running`'s tests in `crates/rutis` (§3.7).
 
 ## 6. Compatibility and migration
 
 Written into "Migrating to 0.21" (both languages):
 
 - **Row names change**: in TypeScript and Bun a test's row id goes from the file name's first segment (`index`) to the package's name (`greeter`); in Python from `plugin` to the package's name. Tests asserting `t.row`, or matching rows in `reported()`, have to change. Tests that give `id` are unaffected.
-- **Python's `load` no longer throws for "this row is waiting"**: `weather did not start: it injects llm, which nothing provides: give the test services=` is gone; the same mistake now appears on `t.service()` as `greeter: waiting for translate (no row provides it)`, and in `await t.waiting()`.
+- **Python's `load` no longer throws for "this row is waiting"**: `weather did not start: it injects llm, which nothing provides: give the test services=` is gone; the same mistake now appears on `t.service()` as the row's state line (`greeter: waiting for translate (nothing provides it yet)`), and in `await t.waiting()`.
 - **Some wording changes** (tests matching text have to change): `the plugin does not provide X (now)` → the row's state line or `no such service …`; `timed out (10s): the service X` → the same; Python's `did not return within 30 s` → `30s`; `plugin: KeyError: 'town'` → `greeter: failed in apply: KeyError: 'town'` plus the position lines.
 - **`Failure`'s `error` carries positions**: a Rust host that reads `Failure.error` as one line has to read several (`error.lines()`); `dev`'s `cannot reload` line becomes more than one line with it. `check` is unchanged (it does not call `apply`).
-- **`DependencyStatus::Missing`'s wording**: `service missing` → `no plugin provides it`; `RuntimeDiagnostics`'s `Display` output changes with it.
-- **New**: `rutis-host/test`'s `state`; `FiberView::running`; `PluginTestError.code` / `.data`; `rutistest.Error`; `specs/test-tool/cases.json`.
-- The wire format and the protocol version are unchanged. `rutis-host test` gains one method; an older tool at the other end keeps working (it never asks for it).
+- **`DependencyStatus` / `RuntimeDiagnostics`'s wording**: not this document's, but [#937](https://github.com/arcships/rutis/issues/937)'s E-2 (internal words such as `service missing` go); `running` follows it.
+- **New**: `rutis-host/test`'s `state` (host-local, §3.1); `FiberView::running`; `PluginTestError.code` / `.data` (absent today, §3.5); `rutistest.Error`. The plugin API (3), `rutis.json`'s format (1) and the session protocol (4) are unchanged.
+- Versions meeting: a 0.20 testing tool on a 0.21 host is unchanged; a 0.21 tool on a 0.20 host sees `greeter: not running (this rutis-host is older than 0.21 and cannot say why; upgrade it)` (§3.1).
 
 ## 7. Implementation
 
 | Issue | What | Done when |
 | --- | --- | --- |
 | T-1 | `rutis-host` and `rutis-loader`: `state(id)` on `rutis-host/test` and its errors with `code`/`data`; `Failure`'s positions (`report()` instead of `Display`); reusing `describe`/`describe_waits`/`prefixed`; positions for a panicking Go `Apply` (the Go runtime) | the host's line is word for word what `dev` prints (one test runs `dev` and `state` and compares the same row); every text-matching test in `crates/rutis-host` and `crates/rutis-loader` is updated to the new wording, with the change called out as user-visible |
-| T-2 | TypeScript, Bun: the row's name (the package); `waiting()`; the lines and codes of `service()`/`methods()`; the 30 second call limit and releasing `hold`; withdrawing the batch when a load is refused | step 6 of the guide's example passes as it is written; `specs/test-tool/cases.json` passes word for word in `node/rutis/test` and `bun/rutis-bun/test`; after a test fails, the next one loads the same plugin with the same services and passes |
-| T-3 | Python: the row's name (the package); `waiting()`; the lines and codes of `service()`/`methods()`; `30 s` → `30s`; dropping `did not start` | the same (`python/rutis/tests/test_testing.py` reads the case list) |
-| T-4 | Go: `Waiting()`; the lines and codes of `Service()`; 30 seconds for a `ctx` without a deadline; `rutistest.Error` | the same (`go/rutis/rutistest` reads the case list) |
-| T-5 | Rust: `FiberView::running(limit)`; `DependencyStatus::Missing`'s wording; step 6 of the guide's example | one test in `crates/rutis` locks the four texts (waiting, `apply` failed, config does not match, failing at once); the guide's example passes as it is written |
+| T-2 | TypeScript, Bun: the row's name (the package); `waiting()`; the lines and codes of `service()`/`methods()`; the 30 second call limit and releasing `hold`; withdrawing the batch when a load is refused | step 6 of the guide's example passes as it is written; one case each in `node/rutis/test` and `bun/rutis-bun/test`: the text thrown is exactly the host's and the code is `not-running`; after a test fails, the next one loads the same plugin with the same services and passes; the 0.20 host case (§3.1) |
+| T-3 | Python: the row's name (the package); `waiting()`; the lines and codes of `service()`/`methods()`; `30 s` → `30s`; dropping `did not start` | the same (`python/rutis/tests/test_testing.py` gains those three cases) |
+| T-4 | Go: `Waiting()`; the lines and codes of `Service()`; 30 seconds for a `ctx` without a deadline; `rutistest.Error` | the same (`go/rutis/rutistest`'s tests gain those three cases) |
+| T-5 | Rust: `FiberView::running(limit)`, sharing one sentence with `RuntimeDiagnostics`; step 6 of the guide's example. **After #937's E-2**, which settles `diagnostics()`'s wording | one test in `crates/rutis` locks the four texts (waiting, `apply` failed, config does not match, failing at once); the guide's example passes as it is written |
 | T-6 | Documentation (both languages): [plugin API](guide/plugin-api.en.md)'s "Testing tools" and "How testing tools differ from a real runtime", step 6 of the four language guides, [rutis-host](guide/rutis-host.en.md)'s `test` and "What `run` prints" (`dev`'s wording is unchanged; add that the testing tools say the same), "Migrating to 0.21" | the four guides' step 6 examples and outputs agree; both languages in step |
 
-T-1 merges first; T-2 to T-4 are one pull request each, in order; T-5 may run alongside them; T-6 goes with the last implementation.
+T-1 merges first; T-2 to T-4 are one pull request each, in order; T-5 comes after #937's E-2 and may run alongside T-2 to T-4; T-6 goes with the last implementation.
 
 #933 closes once all of it holds: every line in §4 has a word-for-word test in all four languages, and step 6 of the four guides' examples and outputs agree.
