@@ -3,7 +3,7 @@
 [English](design-error-messages-2026-11-03.en.md)
 
 状态：草稿。日期：2026-11-03。基准：`main` `d2a8d069`（0.20.1）。
-Issue：[#937](https://github.com/arcships/rutis/issues/937)，属于 [#663](https://github.com/arcships/rutis/issues/663)（D2、D3、D5、O6）。
+Issue：[#937](https://github.com/arcships/rutis/issues/937)，属于 [#663](https://github.com/arcships/rutis/issues/663) 的 D2、D3、D5、O6；按本稿实施的也是它，按 §六 的 E-1 至 E-8 分 PR 落地，各步的完成条件见 §六。
 依据：[#663](https://github.com/arcships/rutis/issues/663) 的 0.19.0 评估（14 种故障、四种语言全写清楚的有 34 / 56）；[诊断](design-diagnostics-2026-10-26.md) §4.1（`site`）、§4.4（`rethrown`）、§4.5（用词）、§4.6（打印不失败）、§5.2（在途调用与写明的边界）；[声明集合](design-declared-services-2026-10-29.md)（`not-declared` 的文字）；[对象引用](design-object-refs-2026-10-27.md) §四（同一进程里拿到的是对象本身）。
 
 范围外：

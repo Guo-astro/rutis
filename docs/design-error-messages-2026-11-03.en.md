@@ -3,7 +3,7 @@
 [中文](design-error-messages-2026-11-03.md)
 
 Status: draft. Date: 2026-11-03. Base: `main` `d2a8d069` (0.20.1).
-Issue: [#937](https://github.com/arcships/rutis/issues/937), part of [#663](https://github.com/arcships/rutis/issues/663) (D2, D3, D5, O6).
+Issue: [#937](https://github.com/arcships/rutis/issues/937), part of [#663](https://github.com/arcships/rutis/issues/663) (D2, D3, D5, O6); it is also the issue this design is implemented under, in PRs for E-1 to E-8 of §6, each with the completion criteria written there.
 Basis: [#663](https://github.com/arcships/rutis/issues/663)'s 0.19.0 evaluation (14 faults, 34 / 56 written clearly in all four languages); the [diagnostics design](design-diagnostics-2026-10-26.md) §4.1 (`site`), §4.4 (`rethrown`), §4.5 (words), §4.6 (printing never fails), §5.2 (calls in flight, and the boundaries it writes down); [declared services](design-declared-services-2026-10-29.md) (the wording of `not-declared`); [object references](design-object-refs-2026-10-27.md) §4 (in one process a service is the object itself).
 
 Out of scope:
