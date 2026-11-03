@@ -116,6 +116,10 @@ After the session closes, a reply still awaited gets `Error::Transport("the conn
 
 ## 3. Rules
 
+**The body does not change; only a prefix is added.** The body of a message is the underlying error's own words, kept verbatim (serde's ``invalid type: integer `42`, expected a string``, Python's `KeyError: 'town'`, Go's `json: unsupported type: chan int`); rutis adds only a short prefix that answers "which of my calls caused this" (`call to weather.tomorrow failed: `, `in llm: `, `called from: `), never paraphrasing, summarising, or repeating what the underlying error already said. Only errors rutis made up itself (`SyncWaitCycle …`, `row <x> is not loaded in this runtime`, `service missing` — rutis's own ways of speaking) are rewritten into plain words, because they are not the underlying error. When in doubt, keep the original.
+
+The sections below obey this: the `site` and `rethrown` of §3.1 add only which row and which call, and §3.5 trims frames; neither touches the body. The sentences of §3.2 and §3.3 are rutis's own (a shared name, a missing method, what a row waits for), so they may speak plainly under this rule.
+
 ### 3.1 Whose error it is, inside one runtime
 
 1. **When to label**: once per error as it leaves a row — the reply of a `dispatch`, the reply of a listener, an `apply` failure, a cleanup failure, an unhandled error. An error the plugin catches and handles is not labelled.
@@ -169,6 +173,7 @@ After the session closes, a reply still awaited gets `Error::Transport("the conn
 3. Rust's `session::Error`: a hand-written `Debug`, with `Remote` printed as `Remote { name, message, code, site, frames }`, `frames` being a count and `graph` not printed. The structure is read through `thrown()`.
 4. State words: `unloading` → `stopping`; `inactive` → `not running (its group is not running)`. `running`, `waiting`, `starting`, `failed`, `disabled`, `stopped in its instance` and `stopped` stay, and all of them go into the `status` section of the [rutis-host guide](guide/rutis-host.md).
 5. Stop timeouts: `still stopping: weather`; when rutis's own plugins are the stuck ones, `still stopping: the host`; a runtime process still there, `still stopping: runtime py`.
+6. Where only one line fits (a status line, a line of `check`, the parentheses of `still waiting`), it is the error's own first line (`KeyError: 'town'`), never a sentence of rutis's summarising it; where the whole error is printed (`report`), a multi-line error stays multi-line.
 
 ### 3.6 Error codes
 
@@ -203,7 +208,7 @@ chat: KeyError: 'region'
     at reply (src/chat.ts:14:36)
 ```
 
-The first line is the error's own text (this hop knows the row's name but not the service's and method's, D2); below it, every hop, the earliest first.
+The first line is the error's own text (this hop knows the row's name but not the service's and method's, D2); below it, every hop, the earliest first. What follows `chat: ` is that text itself (across processes it opens with `call to … failed: `): rutis changes not a word and adds no explanation.
 
 **In one runtime, Go calling through a `*Service` or a struct of function fields** (D2 names the service):
 
@@ -235,6 +240,8 @@ chat: call to llm.ask failed: no API key
 | 14 | A listener still running at shutdown fails | `runtime py: row weather: listener of weather/asked failed: KeyError: 'region'` | none | the runtime's standard error (forwarded under `run`) | look at the row |
 
 Row 1's first line is the error's own text; across processes that part is still `call to weather.tomorrow failed: …` (row 2 of diagnostics design §8.1 is unchanged).
+
+Only three kinds of words in this section are rutis's own; everything else is carried verbatim from the underlying error: **prefixes** (`chat: `, `call to weather.tomorrow failed: `, `in llm: `, `called from: `, `listener of weather/asked failed: `, `runtime py: row weather: `), **errors rutis made up** (rows 3 to 13: a shared name, a missing method, nothing declared, what a row waits for, a runtime that is not there), and **short phrases taken from a fact** (`down: exited with status 1` in row 13 is the process's own exit, not a summary). An underlying error of several lines stays several lines: not flattened, not reworded, no sentence of explanation added.
 
 ### 4.2 People assembling plugins with `rutis-host`
 
@@ -343,6 +350,7 @@ To go into "Migrating to 0.21" and the release notes (both languages):
 - **The words of `not-declared`**: with a close name it no longer says `add '…'` but `did you mean …?`. `data` and the code are unchanged.
 - **`check`'s warning**: it no longer lists rows; `--strict` behaves as before (still an error, still exit status 1).
 - **Status and notice words**: `no row provides it` → `nothing provides it yet` (only when nothing provides it); `still waiting … for hang: it starts once that is provided` → `… for runtime py (down: …)`; `still stopping: rutis-loader` → `still stopping: the host`; `unloading` → `stopping`, `inactive` → `not running (its group is not running)`. Scripts matching those words have to follow; the shape of `status --json` is unchanged (the state words follow).
+- **The body of an underlying error never changes**: this design adds a prefix and which row and call (`§3`, first rule); the body is carried verbatim. The one place that used to lose it was a listener still running at shutdown, reported as `the connection closed` while the error in hand was dropped; it now shows the listener's own error (D12).
 - **Rust**: `session::Error`'s `Debug` no longer prints the error graph (read the structure through `thrown()`); the text of `ErrorKind::ServiceExists`'s `Display` changes (the variant and its field do not).
 - **Builtin rows should declare `provides`**: without it, `check` and `status` still say "nothing declares it" / "nothing provides it yet" about the names they provide. That is a relaxation (a wrong sentence stops), not a tightening.
 - **No version changes**:

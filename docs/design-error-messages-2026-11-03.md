@@ -116,6 +116,10 @@ Issue：[#937](https://github.com/arcships/rutis/issues/937)，属于 [#663](htt
 
 ## 三、规则
 
+**正文不动，只加前缀。** 一条消息的正文是底层错误自己的话，逐字保留（serde 的 ``invalid type: integer `42`, expected a string``、Python 的 `KeyError: 'town'`、Go 的 `json: unsupported type: chan int`）；rutis 只加一个短前缀，回答"是我的哪一次调用"（`call to weather.tomorrow failed: `、`in llm: `、`called from: `），不改写、不概括，也不重复底层错误已经说过的话。只有 rutis 自己造的错误（`SyncWaitCycle …`、`row <x> is not loaded in this runtime`、`service missing` 这类 rutis 自己的说法）才改写成开发者看得懂的话，因为它不是底层错误。拿不准时保留原文。
+
+下面各节服从这一条：§3.1 的 `site` 与 `rethrown` 只加"哪一行、哪一次调用"，§3.5 只裁帧，两处都不碰正文；§3.2、§3.3 的那些句子是 rutis 自己造的（同名、方法不在、在等什么），所以按这里的规则可以说人话。
+
 ### 3.1 归属：一个运行时里谁出的错
 
 1. **什么时候标**：错误离开一行时标一次——`dispatch` 的回复、监听器的回复、`apply` 失败、清理失败、没人处理的错误。插件自己接住、处理的错误不标。
@@ -169,6 +173,7 @@ Issue：[#937](https://github.com/arcships/rutis/issues/937)，属于 [#663](htt
 3. Rust 的 `session::Error`：`Debug` 手写，`Remote` 打印成 `Remote { name, message, code, site, frames }`，`frames` 是帧数，`graph` 不打印。读结构用 `thrown()`。
 4. 状态词：`unloading` → `stopping`；`inactive` → `not running (its group is not running)`。`running`、`waiting`、`starting`、`failed`、`disabled`、`stopped in its instance`、`stopped` 不变，全部写进 [rutis-host 指南](guide/rutis-host.md) 的 `status` 一节。
 5. 停止超时：`still stopping: weather`；卡住的是 rutis 自己的插件时 `still stopping: the host`；一个运行时进程还在时 `still stopping: runtime py`。
+6. 只放得下一行的地方（状态行、`check` 的一行、`still waiting` 的括号）取错误自己的第一行（`KeyError: 'town'`），不另写一句概括；多行错误在整段打印的地方（`report`）照原样多行。
 
 ### 3.6 错误码
 
@@ -203,7 +208,7 @@ chat: KeyError: 'region'
     at reply (src/chat.ts:14:36)
 ```
 
-头一行是错误自己的文字（这一跳只知道行名，不知道服务名与方法名，D2），下面按"最早的在前"列出每一跳。
+头一行是错误自己的文字（这一跳只知道行名，不知道服务名与方法名，D2），下面按"最早的在前"列出每一跳。`chat: ` 之后接着的就是错误自己的文字（跨进程时由 `call to … failed: ` 起头），rutis 一个字都不改，也不加解释。
 
 **同一个运行时，Go 用 `*Service` 或函数字段结构体调用**（D2 写明服务名）：
 
@@ -235,6 +240,8 @@ chat: call to llm.ask failed: no API key
 | 14 | 关闭时监听器还在跑、抛了错 | `runtime py: row weather: listener of weather/asked failed: KeyError: 'region'` | 无 | 运行时的标准错误（`run` 下照旧转发） | 看这一行 |
 
 第 1 行的头一行是错误自己的文字；跨进程时这一段仍然是 `call to weather.tomorrow failed: …`（诊断设计 §8.1 第 2 行不变）。
+
+这一节里 rutis 自己写的只有三类，其余都是底层错误逐字搬过来：**前缀**（`chat: `、`call to weather.tomorrow failed: `、`in llm: `、`called from: `、`listener of weather/asked failed: `、`runtime py: row weather: `）、**rutis 自己造的错误**（第 3 至 13 行：同名、方法不在、没声明、在等什么、运行时不在），以及**从事实来的短句**（第 13 行的 `down: exited with status 1` 是进程自己的退出，不是概括）。底层错误是几行就还是几行，不压成一行、不改措辞、不补一句解释。
 
 ### 4.2 用 `rutis-host` 组装插件的人
 
@@ -343,6 +350,7 @@ services:
 - **`not-declared` 的文字**：名字有近名时不再说 `add '…'`，改说 `did you mean …?`。`data` 不变，码不变。
 - **`check` 的告警**：不再列行；`--strict` 的行为不变（还是算错误、还是以 1 退出）。
 - **状态与提示的文字**：`no row provides it` → `nothing provides it yet`（只在确实没人提供时）；`still waiting … for hang: it starts once that is provided` → `… for runtime py (down: …)`；`still stopping: rutis-loader` → `still stopping: the host`；`unloading` → `stopping`，`inactive` → `not running (its group is not running)`。按这些字匹配的脚本要改；`status` 的 `--json` 形状不变（状态词跟着变）。
+- **底层错误的正文不变**：本稿只加前缀与"哪一行、哪一次调用"，正文逐字保留（§三 的第一条）。唯一一处本来会被顶掉的是关闭时还在跑的监听器：以前报成 `the connection closed`，原来的错误就没了；现在写的是监听器自己的错误（D12）。
 - **Rust**：`session::Error` 的 `Debug` 不再打印错误图（读结构用 `thrown()`）；`ErrorKind::ServiceExists` 的 `Display` 文本变了（变体与字段不变）。
 - **内置行要声明 `provides`**：不声明时，`check` 与 `status` 对它们提供的名字仍说"没人声明/还没人提供"。这是行为上的放宽（不再说错），不是收紧。
 - **版本都不变**：
