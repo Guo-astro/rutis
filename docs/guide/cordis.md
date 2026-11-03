@@ -10,7 +10,7 @@ Cordis 插件作为 rutis-loader 的行运行时，`rutis.json` 的行里写包�
 - 同一个 Node 运行时里的 Cordis 行按 Cordis 的原生规则互相使用服务，拿到的是对象本身。
 - 一行提供的服务自动投到 rutis，别的运行时的行、别的节点和 Rust 插件按名字使用；方法取服务对象上的函数（自身和原型链上的，不含 `constructor`），都按 `async` 调用。包的 `package.json` 里写了 `rutis.provides` 时按它（例如把某些方法标成 `sync`）。
 - 同名服务已经有别的提供者（另一个运行时的行、Rust 插件、相连节点的插件）时，后提供的那一行失败（装载后才提供的也一样），错误写明双方，例如 `service storage is already provided by row prompts: row storage cannot provide it too`。
-- `rutis-host check` 不运行插件，看不到没有声明的服务：一行依赖的服务只可能由这类行提供时，写一条告警 `nothing declares <服务>; it may be provided at runtime by …`，不算失败（`check --strict` 时算）。
+- `rutis-host check` 不运行插件，看不到没有声明的服务：一行依赖的服务只可能由这类行提供时，写一条告警 `nothing declares <服务>; a row that does not declare its services may provide it once it runs`，不算失败（`check --strict` 时算）。
 
 - Cordis 插件用 Cordis 自己的 `ctx.get('llm')` 读没有也能运行的服务。它由别的运行时或宿主提供时，在 `inject` 旁边写 `optional = ['llm']`（插件对象、函数或类上；Cordis 忽略这个字段）：这一行启动时它在，rutis 就把它租借进这个进程，不等它。不写 `optional`，`ctx.get` 只看得到这个进程里的服务（否则是 `undefined`）。见[插件 API：可选服务](plugin-api.md#可选服务)。
 

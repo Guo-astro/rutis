@@ -287,7 +287,7 @@ fn services_no_declaration_describes_cross_languages() {
     assert!(status.success(), "check: {status}\n{printed}");
     assert!(!printed.contains("nothing provides"), "{printed}");
     for service in used.iter().filter(|service| **service != "counter") {
-        let line = format!("nothing declares {service}; it may be provided at runtime by ");
+        let line = format!("nothing declares {service}; a row that does not declare its services may provide it once it runs");
         assert!(printed.contains(&line), "check, {service}:\n{printed}");
     }
     // Leaf plugins, no Cordis rows: nothing about resolving in Cordis (#446).

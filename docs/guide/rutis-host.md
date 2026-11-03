@@ -323,7 +323,7 @@ rutis-host: listening on <监听器名> <地址:端口>
 | `waiting for runtime <名字> (down: <原因>)` | 这一行的运行时结束了，原因同 `runtime <名字>: down` |
 | `waiting for runtime <名字> (stopped)` / `waiting for runtime <名字>` | 运行时被宿主停下；或运行时已运行、正在重新解析它的行 |
 | `waiting for <连接行>` | 行 `<连接行>:<插件>` 在等它的连接：连接行还没连上，或正在重新解析（宿主不知道远程运行时的状态，只写连接行的名字，例如 `translate: waiting for fakes`） |
-| `waiting for lmm (no row provides it; did you mean llm?)` | 没有行声明提供它；有名字相近的服务时给出（多半是写错了名字） |
+| `waiting for lmm (nothing provides it yet; did you mean llm?)` | 没有行声明提供它；有名字相近的服务时给出（多半是写错了名字） |
 | `waiting for llm (no enabled row provides it; rutis-host check says whether a disabled row does)` | 没有启用的行提供它，但有被禁用的行（自己或所在的组被禁用）在运行时没有解析过，不知道它们提供什么；`rutis-host check` 会解析它们，写明是不是被禁用的行提供。有相近的名字时同样在 `it` 后面加 `, did you mean llm?` |
 | `waiting for llm (row model failed: <错误第一行>)` | 提供它的行失败了 |
 | `waiting for llm (row model, which provides it, is disabled)` | 提供它的行被禁用；只在这一行的插件已经解析过时这样写（例如另一行启用了同一个插件），否则是上面 `no enabled row provides it` 那种写法 |
@@ -409,7 +409,7 @@ rutis 0.12 及更早的运行时（或节点）连进来时按协议版本被拒
 插件 `ctx.provide` 的服务不用声明就投到 rutis（0.12 起四种 SDK 写的插件都是，声明了 `provides` 的也可以多提供；没有声明 `rutis.provides` 的 Cordis 行也是），这些服务运行时才知道。一个服务没有行声明、但有这样的行时，`check` 在 stderr 写一条告警，仍以 0 退出：
 
 ```
-rutis-host: warning: <行>: nothing declares <服务>; it may be provided at runtime by <行>, …
+rutis-host: warning: <行>: nothing declares <服务>; a row that does not declare its services may provide it once it runs
 ```
 
 最多列三行，多的写成 `and N more`；这一行和可能提供它的行里有 Cordis 行时，后面再加 `; between Cordis rows of one runtime it resolves in Cordis`——同一个 Node 运行时里的 Cordis 行之间的依赖在 Cordis 里解析。声明了的名字照常算作提供者。

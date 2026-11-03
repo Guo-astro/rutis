@@ -46,7 +46,6 @@ pub fn describe(status: &EntryStatus) -> String {
             },
             FiberState::Unloading => "stopping".into(),
             FiberState::Disposed => "stopped".into(),
-            _ => format!("{:?}", snapshot.state).to_lowercase(),
         },
         status => format!("{status:?}").to_lowercase(),
     }

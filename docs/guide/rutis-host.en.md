@@ -323,7 +323,7 @@ A waiting row says what it waits for and why (from 0.17.2, #676). Waiting for it
 | `waiting for runtime <name> (down: <reason>)` | The row's runtime ended, the reason as in `runtime <name>: down` |
 | `waiting for runtime <name> (stopped)` / `waiting for runtime <name>` | The host stopped the runtime; or it runs and is resolving its rows again |
 | `waiting for <connection row>` | A row `<connection row>:<plugin>` waits for its connection: the connection row has not connected yet, or the row is being resolved again (the host does not know a remote runtime's state and names only the connection row, as in `translate: waiting for fakes`) |
-| `waiting for lmm (no row provides it; did you mean llm?)` | No row declares it; a service with a close name is suggested (most likely a misspelling) |
+| `waiting for lmm (nothing provides it yet; did you mean llm?)` | No row declares it; a service with a close name is suggested (most likely a misspelling) |
 | `waiting for llm (no enabled row provides it; rutis-host check says whether a disabled row does)` | No enabled row provides it, but rows that are disabled (themselves or by their group) were never resolved while the host runs, so what they provide is not known; `rutis-host check` resolves them and says whether a disabled row provides it. A close name adds `, did you mean llm?` after `it` here too |
 | `waiting for llm (row model failed: <first line of the error>)` | The row that provides it failed |
 | `waiting for llm (row model, which provides it, is disabled)` | The row that provides it is disabled; written so only when that row's plugin has been resolved (another row enabling the same plugin, say), otherwise as `no enabled row provides it` above |
@@ -409,7 +409,7 @@ A row waiting for a service no row provides, and no row may provide at runtime, 
 What a plugin `ctx.provide`s reaches rutis without a declaration (from 0.12, every plugin of the four SDKs, one declaring `provides` too, which may provide more; also a Cordis row without `rutis.provides`), so it is known only when the plugin runs. A service no row declares, while there are such rows, is a warning on stderr, and `check` still exits with 0:
 
 ```
-rutis-host: warning: <row>: nothing declares <service>; it may be provided at runtime by <rows>, …
+rutis-host: warning: <row>: nothing declares <service>; a row that does not declare its services may provide it once it runs
 ```
 
 At most three rows are named, the rest as `and N more`; when the row and one of those rows are Cordis rows, the line goes on with `; between Cordis rows of one runtime it resolves in Cordis`: dependencies between Cordis rows of one Node runtime resolve in Cordis. A declared name counts as provided, as before.
