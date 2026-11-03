@@ -2,7 +2,7 @@
 
 [中文](design-function-refs-2026-11-03.md)
 
-Status: draft. Date: 2026-11-03. Baseline: `main` `d2a8d069` (0.20.1).
+Status: final, not implemented. Date: 2026-11-03. Baseline: `main` `d2a8d069` (0.20.1).
 Issue: [#932](https://github.com/arcships/rutis/issues/932) (part of [#663](https://github.com/arcships/rutis/issues/663)'s O2, O5, A5). Implemented by: F-1 to F-4 (§7), all under #932. Schedule: 0.21.
 Sources: [plugin API](guide/plugin-api.en.md) "How values cross", "Synchronous calls and re-entrancy", "Python's test tool"; [a host that opens up plugins](guide/open-host.en.md) §5; [object references](design-object-refs-2026-10-27.en.md) §4 (an object's methods are asynchronous calls) and §6 (wait cycles); the [diagnostics design](design-diagnostics-2026-10-26.en.md) §4.3, §4.5; [#918](https://github.com/arcships/rutis/pull/918) (Node's Cordis synchronous chains); the [release gate](ci.en.md) and the [install scenarios](design-e2e-install-2026-10-11.en.md).
 

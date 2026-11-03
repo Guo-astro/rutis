@@ -2,7 +2,7 @@
 
 [English](design-function-refs-2026-11-03.en.md)
 
-状态：草稿。日期：2026-11-03。基准：`main` `d2a8d069`（0.20.1）。
+状态：定稿，未实现。日期：2026-11-03。基准：`main` `d2a8d069`（0.20.1）。
 Issue：[#932](https://github.com/arcships/rutis/issues/932)（属于 [#663](https://github.com/arcships/rutis/issues/663) 的 O2、O5、A5）。按本稿实施：F-1～F-4（§七），都记在 #932 下。排期：0.21。
 依据：[插件 API](guide/plugin-api.md)「值怎样传递」「同步调用与可重入」「Python 的测试工具」；[开放插件的宿主](guide/open-host.md) 第 5 节；[对象引用](design-object-refs-2026-10-27.md) §四（对象的方法都是异步调用）与 §六（等待环）；[诊断](design-diagnostics-2026-10-26.md) §4.3、§4.5；[#918](https://github.com/arcships/rutis/pull/918)（Node 的 Cordis 同步链）；[发布门](ci.md) 与 [安装场景](design-e2e-install-2026-10-11.md)。
 
