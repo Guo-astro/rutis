@@ -376,12 +376,40 @@ No change: the processes, the packages, the configuration, stopping and exit cod
 
 | Item | Now | This design |
 | --- | --- | --- |
-| Session protocol | `ENDPOINT_PROTOCOL` = 4 (`node/rutis-runtime/src/session.mjs:58`; `bun/rutis-bun/src/session.ts:57`, `python/rutis/rutis/peer.py:42` and `go/rutis/internal/peer/peer.go:34` hold the same value) | Unchanged: no frame, no field and no capability added (the `sync` marker and `sync-stack` / `reentrant-sync` stay as they are) |
+| Session protocol | 4: one constant in each of the six runtimes and in the host (5.1a) | Unchanged: no frame, no field and no capability added (the `sync` marker and `sync-stack` / `reentrant-sync` stay as they are) |
 | `rutis.json` | `FORMAT` = 1 (`crates/rutis-host/src/config.rs:78`) | Unchanged: no new row field and no new `runtimes` form |
-| Plugin API | 3 (`node/rutis/src/advanced.mjs:15`, `python/rutis/rutis/plugin.py:125`) | Unchanged: nothing is added to or taken from `definePlugin` / `define_plugin`; how a received function is called is not in the API version (it is the runtime's behaviour) |
+| Plugin API | 3: six SDKs declare it, Rust has none (5.1b) | Unchanged: nothing is added to or taken from `definePlugin` / `define_plugin`; how a received function is called is not in the API version (it is the runtime's behaviour) |
 | Errors on the wire | `Failure { name, message, graph? }` (`crates/rutis-bridge/src/session/protocol.rs:89`) | Unchanged: `SyncWaitCycle` is still the `name`, with no `code`, no `data` and no graph (§4.4) |
 | Generated types | what `rutis-host types` writes, `.d.ts` and `.py` (`run: (arg0: string[]) => string \| Promise<string>`) | Unchanged, no regeneration needed: a callback's return type already writes both, and `await` type-checks in an asynchronous and in a synchronous context alike (§3.2) |
 | Rust's `call` / `call_async`, the Go / Swift / Kotlin forms, Python's `call_async` | — | Unchanged |
+
+#### 5.1a Session protocol 4: the one constant in each language
+
+| Language | Constant | Value |
+| --- | --- | --- |
+| Node | `ENDPOINT_PROTOCOL`, `node/rutis-runtime/src/session.mjs:58` | 4 |
+| Bun | `ENDPOINT_PROTOCOL`, `bun/rutis-bun/src/session.ts:57` | 4 |
+| Python | `ENDPOINT_PROTOCOL`, `python/rutis/rutis/peer.py:42` | 4 |
+| Go | `EndpointProtocol`, `go/rutis/internal/peer/peer.go:34` | 4 |
+| Kotlin | `ENDPOINT_PROTOCOL`, `kotlin/rutis/rutis/src/shared/kotlin/arcships/rutis/internal/peer/Peer.kt:42` | 4 |
+| Swift | `endpointProtocol`, `swift/rutis/Sources/Rutis/Session/Peer.swift:13` | 4 |
+| Rust (the host) | `ENDPOINT_PROTOCOL`, `crates/rutis-bridge/src/session/mod.rs:14` | 4 |
+
+A far end whose value is not this one is refused with `incompatible session: the far end speaks protocol <far>, this side <local>`: each of the six runtimes and the host has its own check (Node `node/rutis-runtime/src/session.mjs:86`, Python `python/rutis/rutis/peer.py:50`, Rust `crates/rutis-bridge/src/session/rpc.rs:1229`); this design does not touch it.
+
+#### 5.1b Plugin API 3: who declares it
+
+| Language | Constant | Value |
+| --- | --- | --- |
+| Node | `PLUGIN_API`, `node/rutis/src/advanced.mjs:15` | 3 |
+| Bun | `PLUGIN_API`, `bun/rutis-bun/src/plugin.ts:21` | 3 |
+| Python | `PLUGIN_API`, `python/rutis/rutis/plugin.py:125` | 3 |
+| Go | `PluginAPI`, `go/rutis/internal/runtime/version.go:9` (the manifest's `pluginApi`, `go/rutis/internal/runtime/serve.go:133`) | 3 |
+| Kotlin | `PLUGIN_API`, `kotlin/rutis/rutis/src/shared/kotlin/arcships/rutis/advanced/Versions.kt:7` | 3 |
+| Swift | `Advanced.pluginAPI`, `swift/rutis/Sources/Rutis/Version.swift:28` | 3 |
+| Rust | **no such constant**: a Rust plugin is compiled into its host, with no manifest and no `pluginApi`; the host reads the manifest of a binary runtime only, whose constant is `crates/rutis-loader/src/runtime/go.rs:34` and `swift.rs:33`, and refuses one larger than its own (`crates/rutis-loader/src/runtime/binary.rs:1111`) | — |
+
+A plugin declaring a newer API than the runtime is refused with "needs plugin API <the plugin's>; this runtime supports <the runtime's>" (Node `node/rutis-runtime/src/leaf.mjs:25`, Bun `bun/rutis-bun/src/plugin.ts:100`, Python `python/rutis/rutis/runner.py:1417`, Go `go/rutis/internal/runtime/runtime.go:280`, Kotlin `kotlin/rutis/rutis/src/shared/kotlin/arcships/rutis/internal/Runtime.kt:267`, Swift `swift/rutis/Sources/Rutis/API/Runtime.swift:420`). This design changes neither the version number nor that check.
 
 ### 5.2 Mixing: an old end meeting a new one
 

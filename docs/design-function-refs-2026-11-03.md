@@ -375,12 +375,40 @@ $ npx rutis-host call commands.run '"count"'
 
 | 项 | 现在 | 本稿 |
 | --- | --- | --- |
-| 会话协议 | `ENDPOINT_PROTOCOL` = 4（`node/rutis-runtime/src/session.mjs:58`；`bun/rutis-bun/src/session.ts:57`、`python/rutis/rutis/peer.py:42`、`go/rutis/internal/peer/peer.go:34` 同值） | 不变：不加帧、不加字段、不加能力（`sync` 标记与 `sync-stack` / `reentrant-sync` 都照旧） |
+| 会话协议 | 4，六种语言的运行时与宿主各有一处常量（5.1a） | 不变：不加帧、不加字段、不加能力（`sync` 标记与 `sync-stack` / `reentrant-sync` 都照旧） |
 | `rutis.json` | `FORMAT` = 1（`crates/rutis-host/src/config.rs:78`） | 不变：没有新的行字段，也没有新的 `runtimes` 写法 |
-| 插件 API | 3（`node/rutis/src/advanced.mjs:15`、`python/rutis/rutis/plugin.py:125`） | 不变：`definePlugin` / `define_plugin` 的名字与形状没有增减，交来的函数的调用方式不在 API 版本里（它是运行时的行为） |
+| 插件 API | 3，六种语言的 SDK 声明它，Rust 没有（5.1b） | 不变：`definePlugin` / `define_plugin` 的名字与形状没有增减，交来的函数的调用方式不在 API 版本里（它是运行时的行为） |
 | 线上错误 | `Failure { name, message, graph? }`（`crates/rutis-bridge/src/session/protocol.rs:89`） | 不变：`SyncWaitCycle` 仍是 `name`，没有 `code`、没有 `data`、没有图（§四 4.4） |
 | 生成的类型 | `rutis-host types` 写出 `.d.ts` 与 `.py`（`run: (arg0: string[]) => string \| Promise<string>`） | 不变，不用重新生成：回调的返回类型本来就把两种都写上，`await` 在异步与同步两种上下文都通过类型检查（§三 3.2） |
 | Rust 的 `call` / `call_async`、Go / Swift / Kotlin 的写法、Python 的 `call_async` | — | 不变 |
+
+#### 5.1a 会话协议 4：每种语言的那一处
+
+| 语言 | 常量 | 值 |
+| --- | --- | --- |
+| Node | `ENDPOINT_PROTOCOL`，`node/rutis-runtime/src/session.mjs:58` | 4 |
+| Bun | `ENDPOINT_PROTOCOL`，`bun/rutis-bun/src/session.ts:57` | 4 |
+| Python | `ENDPOINT_PROTOCOL`，`python/rutis/rutis/peer.py:42` | 4 |
+| Go | `EndpointProtocol`，`go/rutis/internal/peer/peer.go:34` | 4 |
+| Kotlin | `ENDPOINT_PROTOCOL`，`kotlin/rutis/rutis/src/shared/kotlin/arcships/rutis/internal/peer/Peer.kt:42` | 4 |
+| Swift | `endpointProtocol`，`swift/rutis/Sources/Rutis/Session/Peer.swift:13` | 4 |
+| Rust（宿主） | `ENDPOINT_PROTOCOL`，`crates/rutis-bridge/src/session/mod.rs:14` | 4 |
+
+握手时对方不是这个值就以 `incompatible session: the far end speaks protocol <对方>, this side <本地>` 拒绝：六种语言的运行时与宿主各有一处（Node `node/rutis-runtime/src/session.mjs:86`、Python `python/rutis/rutis/peer.py:50`、Rust `crates/rutis-bridge/src/session/rpc.rs:1229`），本稿不碰。
+
+#### 5.1b 插件 API 3：谁声明它
+
+| 语言 | 常量 | 值 |
+| --- | --- | --- |
+| Node | `PLUGIN_API`，`node/rutis/src/advanced.mjs:15` | 3 |
+| Bun | `PLUGIN_API`，`bun/rutis-bun/src/plugin.ts:21` | 3 |
+| Python | `PLUGIN_API`，`python/rutis/rutis/plugin.py:125` | 3 |
+| Go | `PluginAPI`，`go/rutis/internal/runtime/version.go:9`（清单里的 `pluginApi`，`go/rutis/internal/runtime/serve.go:133`） | 3 |
+| Kotlin | `PLUGIN_API`，`kotlin/rutis/rutis/src/shared/kotlin/arcships/rutis/advanced/Versions.kt:7` | 3 |
+| Swift | `Advanced.pluginAPI`，`swift/rutis/Sources/Rutis/Version.swift:28` | 3 |
+| Rust | **没有这个常量**：Rust 插件编进宿主，没有清单、没有 `pluginApi`；宿主只读二进制运行时的清单，那里的常量是 `crates/rutis-loader/src/runtime/go.rs:34` 与 `swift.rs:33`，比自己的大就拒绝（`crates/rutis-loader/src/runtime/binary.rs:1111`） | — |
+
+插件声明得比运行时新时，运行时以「needs plugin API <插件声明的>; this runtime supports <运行时的>」拒绝（Node `node/rutis-runtime/src/leaf.mjs:25`、Bun `bun/rutis-bun/src/plugin.ts:100`、Python `python/rutis/rutis/runner.py:1417`、Go `go/rutis/internal/runtime/runtime.go:280`、Kotlin `kotlin/rutis/rutis/src/shared/kotlin/arcships/rutis/internal/Runtime.kt:267`、Swift `swift/rutis/Sources/Rutis/API/Runtime.swift:420`）。本稿不改版本号，也不改这条判断。
 
 ### 5.2 混用：旧的一端遇到新的一端
 
