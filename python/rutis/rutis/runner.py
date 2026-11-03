@@ -394,7 +394,8 @@ class Context(sdk.Context):
     def _closest(self, name: str) -> str | None:
         """The name `name` was probably meant to be: one this plugin or row
         declares, or one this process has (#937)."""
-        known = set(self._row.inject) | set(self._row.optional) | set(self._row.uses)
+        known = set(self._row.inject) | set(self._row.uses)
+        known |= set(self._row.row_inject)
         for id in list(self._runtime.services) + list(self._runtime.hosts):
             known.add(id.split("\0", 1)[0])
         return closest(name, sorted(known))
