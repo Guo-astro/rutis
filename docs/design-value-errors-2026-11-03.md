@@ -20,7 +20,7 @@ Issue：[#936](https://github.com/arcships/rutis/issues/936)（属于 [#663](htt
 | Swift 发送循环引用 | `weather.tomorrow: argument 1 cannot be sent: value nested deeper than 64 levels, the most a value crossing processes may nest (a cyclic reference?)` | 只查深度，括号里猜「是循环吧」：`swift/rutis/Sources/Rutis/Codec/ValueCodec.swift:147-148`、`Codec/Encoder.swift:55-57`；收值的一侧同样（`Session/Peer.swift:662,741-742`） |
 | Go 返回 channel / NaN | `chan int cannot cross between processes`、`the number NaN is not finite: only finite numbers cross`：没有 `bad-value`、没有方法名、没有「返回值」 | 方法返回时 `convert.Results` 就把值换成对端的样子（`convert.go:244-258`），失败于是成了这个方法的 error，走 `respondTo` 的 throw 分支，`ofResult`（`peer/crossing.go:68-75`）碰不到它 |
 | Go 调用方发送 NaN | `argument 1: the number NaN is not finite: only finite numbers cross`：没有方法名、没有 `bad-value` | `Service.Call` 直接返回 `convert.ToPeerArgs` 的错误（`go/rutis/internal/runtime/runtime.go:1153`） |
-| 返回值解不开（Go 收到对象却要 string；Rust 宿主收到 42 却要 string） | `cannot decode {"text":"cloudy"} as string: json: cannot unmarshal object into Go value of type string`；``invalid type: integer `42`, expected a string`` | Go：`decode.go:70`，`Service.Call` 原样返回；Rust：`decode_value` 把 serde 的原文塞进 `Error::Value`（`crates/rutis-bridge/src/session/objects.rs:784`、`:809`） |
+| 返回值解不开（Go 收到对象却要 string；Rust 宿主收到 42 却要 string） | `cannot decode {"text":"cloudy"} as string: json: cannot unmarshal object into Go value of type string`；``invalid type: integer `42`, expected a string`` | Go：`decode.go:70`，`Service.Call` 原样返回；Rust：`decode_value` 把 serde 的原文塞进 `Error::Value`（`crates/rutis-bridge/src/session/objects.rs:784`、`:809`）。原文本身是对的（§4 的原则），缺的是「这是哪个方法的返回值」这个前缀 |
 | Python 收到 TS 的函数 | `<function from the host>` | `peer.py:694-695` |
 | Python 返回函数给 Rust 要的 `serde_json::Value` | `the value holds a live Cordis object or function that its Rust type cannot represent` | `objects.rs:809`：这句跟 Cordis 无关 |
 | Node 收到另一行的函数 | `console.log` 印 `[Function (anonymous)]`；`String(fn)` 印 `() => { check(); return this.#requestSync('call', { reference: id }, args) }` | 收到的函数就是个普通箭头函数，没有自己的显示（`session.mjs:474`） |
@@ -42,11 +42,11 @@ Issue：[#936](https://github.com/arcships/rutis/issues/936)（属于 [#663](htt
 
 1. 值传不过去时只有一个样子：前缀（是哪个调用、第几个参数或返回值）、原因的一句话、错误码 `bad-value`、`data`。
 2. 循环引用报成循环，不报成「嵌套过深」。
-3. 收到的值解不开时，说是哪个方法、期望什么、收到什么，不出现 serde 或 encoding/json 的原文。
+3. 收到的值解不开时，说这是哪个方法的参数或返回值，然后照搬解码器的原文（serde 说 ``invalid type: integer `42`, expected a string``，Go 说 `json: cannot unmarshal object into Go value of type string`），前缀只说位置。
 
 ## 3. 决策
 
-**D1 一个框架，原因一句话。** 每个「值传不过去」的出口都写成 `<调用>: argument N cannot be sent: <原因>`、`<调用>: the result cannot be sent: <原因>`、`<调用>: the error <Name> cannot be sent: <原因>`、`the payload of <事件> cannot be sent: <原因>`；码一律 `bad-value`，`data` 一律 `{part, argument?, reason, limit?}`。原因是一句话，只说开发者写的名字（服务、方法、参数、类型名），说 `cannot cross between processes`（Python 今天的「cannot cross the boundary」改掉）。**不采用**：给每个出口一套自己的文字——程序还是只能读文字，评估里的每一行也正是这么来的。
+**D1 一个框架，原因一句话。** 每个「值传不过去」的出口都写成 `<调用>: argument N cannot be sent: <原因>`、`<调用>: the result cannot be sent: <原因>`、`<调用>: the error <Name> cannot be sent: <原因>`、`the payload of <事件> cannot be sent: <原因>`；码一律 `bad-value`，`data` 一律 `{part, argument?, reason, limit?}`。原因是一句话，只说开发者写的名字（服务、方法、参数、类型名），说 `cannot cross between processes`（Python 今天的「cannot cross the boundary」改掉）。这里能改写，是因为这句话是 rutis 自己造的，没有底层错误可言（§4 的原则、D6）。**不采用**：给每个出口一套自己的文字——程序还是只能读文字，评估里的每一行也正是这么来的。
 
 **D2 检查在编码之前，逐种语言统一。** 值的检查放在编码之前的一次遍历里，遍历的就是运行时本来就要走的那条路（数据、列表、记录、带标签的值、Map / Set），不是等 `JSON.stringify`、`json.Marshal`、serde 报错。Node / Bun 的 `checkData` 因此要走进 Map / Set 与记录（今天只走纯数据），数字检查从 `codec.mjs` 挪出来；Python 的 `_data` / `_encode` / `_encode_tagged` 都要带 `seen`；Go 的 `toPeerValue` 把 `seen` 与 `levels`、`hops` 一起传。**不采用**：在 codec 里兜底——那里已经不知道是哪个调用的第几个参数了。
 
@@ -54,9 +54,9 @@ Issue：[#936](https://github.com/arcships/rutis/issues/936)（属于 [#663](htt
 
 **D4 深度限制留 64 层，一句话。** 今天有四种说法（§1），Swift 还在括号里猜是不是循环，统一成 `the value nests deeper than 64 levels`。限制留下：它保证一次发送不会把进程栈走穿，也让对端收到的东西有界；去掉它，值的大小只受 16 MiB 消息限制约束。**不采用**：去掉限制。
 
-**D5 非有限数：`the number NaN is not finite`。** 「NaN」「Infinity」「-Infinity」是开发者写的那个值本身；Python 今天的 `NaN cannot cross processes`、Go 的 `… : only finite numbers cross` 都改成这一句。Rust 的 `Exact` 在 `serialize_f32` / `serialize_f64` 里拒绝（今天变成 `null`，D9 的兼容一节）。**不采用**：让 NaN 变成 `null`——那是 Rust 今天的行为，两次开发者的调用因此得到不同的值而不是一个错误。
+**D5 非有限数：`the number NaN is not finite`。** 「NaN」「Infinity」「-Infinity」是开发者写的那个值本身；Python 今天的 `NaN cannot cross processes`、Go 的 `… : only finite numbers cross` 都改成这一句。Rust 的 `Exact` 在 `serialize_f32` / `serialize_f64` 里拒绝（今天变成 `null`，D9 的兼容一节）。**不采用**：让 NaN 变成 `null`——那是 Rust 今天的行为，两次开发者的调用因此得到不同的值而不是一个错误。今天那句 `non-finite number` 是 Node 的编码器自己说的，没有底层错误，所以这句改写不算转述（§4 的原则）。
 
-**D6 解不开的参数不变，解不开的返回值新加一个码。** 收到的参数解不开仍是 `bad-argument`，文字不变（`<调用>: argument 1 should be a string, got an object`，Rust `marked.rs:440-575`、Go `convert/refusals.go:55-62`、Kotlin `Refusals.kt:41-53` 已经是这套说法）。收到的返回值解不开用新码 `bad-result`，文字与参数同一套：`<调用>: the result should be a string, got an object`，`data` 是 `{service, method, expected}`（对象的方法 `{object, method, expected}`）。**不采用**：复用 `bad-value`——那句话是「cannot be sent」，可这个值已经到了，只不过是这个类型收不下；也说不出期望什么。**不采用**：留一句 serde 的原文——#936 明说不要。
+**D6 解不开的值：原文照搬，只加前缀，各给一个码。** 值到了却解不开，是 serde、`encoding/json`、kotlinx.serialization、Swift 的 `ValueCodec` 说的话，它们比任何改写都准：``invalid type: integer `42`, expected a string`` 一次说出了期望什么、收到什么，`json: cannot unmarshal object into Go value of type string` 说出了 Go 看到了什么。所以消息体是那句原文，rutis 只加一个前缀回答「是我的哪次调用、哪个参数」：`<服务>.<方法>: argument N: <原文>`（码 `bad-argument`）、`<服务>.<方法>: the result: <原文>`（码 `bad-result`）。`data` 照旧是 `{service|object, method, argument?, expected?}`，`expected` 来自声明里的类型，不是消息的替代品。**不采用**：转述成 `<调用>: argument 1 should be a string, got an object`（Rust 的 `marked.rs`、Go 的 `refusals.go`、Kotlin 的 `Refusals.kt`、Swift 今天就是这么做的）——`got an object` 把解码器已经说清的事又说了一遍，还常常说得更少；这是这份设计要改回来的一处。**不采用**：复用 `bad-value`——那句框架是「cannot be sent」，可这个值已经到了，只是这个类型收不下。**不采用**：只留原文、不加前缀——开发者就不知道是哪次调用；去掉码——程序还是要有码。
 
 **D7 事件的负载说自己的名字。** 事件经过会话时是一个控制调用（`events.dispatch`），今天负载坏了报 `events.dispatch: argument 1 cannot be sent: …`：那是内部名字，也说不清是哪个参数。发出事件的一方把这次调用**描述成事件名**（会话的调用方法多收一个描述），于是报 `the payload of weather/asked cannot be sent: …`，`part` 是 `payload`。事件在本进程分发时不过会话，也就不会有这个错误。
 
@@ -65,6 +65,15 @@ Issue：[#936](https://github.com/arcships/rutis/issues/936)（属于 [#663](htt
 **D9 谁失败，只有那一次调用。** 上面每一行都只让这次调用失败（发出的一方拿到错误，收到的一方拿到一个 throw），会话继续；只有「消息超过 16 MiB」照旧在整帧编码后判（`part` + `limit`）。**不采用**：让坏值结束会话——那是 0.18 之前的样子。
 
 ## 4. 规则
+
+### 原则：原文优先
+
+消息体是底层错误自己的话，逐字照搬；rutis 只加一个短前缀，回答「这是我的哪次调用、哪个参数」。
+
+- 底层错误（serde、`encoding/json`、kotlinx.serialization、Swift 的 `ValueCodec`、Go 的 `reflect`）说什么，就说什么：``invalid type: integer `42`, expected a string``、`json: cannot unmarshal object into Go value of type string`、`KeyError: 'town'`。
+- 前缀只说位置：`weather.ask: `、`argument 2: `、`the result: `、`the payload of weather/asked: `。不转述，不概括，不把底层错误已经说过的话再说一遍。
+- 只有 rutis 自己造的错误才改写成开发者读得懂的话——它没有底层错误可言：同步等待成环的 `… path: test:5 -> …`、Node 那条光秃秃的 `non-finite number`、`row <x> is not loaded in this runtime`、四种说法的「嵌套过深」、`a symbol cannot cross between processes`。这类句子由这份设计定（§4.2），它们没有原文可留。
+- 拿不准时，保留原文。
 
 ### 4.1 框架
 
@@ -117,13 +126,17 @@ Issue：[#936](https://github.com/arcships/rutis/issues/936)（属于 [#663](htt
 
 层级照旧：数组、对象、Map、Set、记录各算一层，一次调用的参数表不算一层。
 
-### 4.5 收到的值解不开
+### 4.5 收到的值解不开：原文照搬，只加前缀
 
-- 只有把值解成声明过类型的运行时才会有这个错误：Go、Rust、Swift、Kotlin。Node、Bun、Python 没有声明类型，收到的值是什么就是什么，不会有这一行。
-- 说的是调用的名字（`<服务>.<方法>`，对象的方法写 `<类型>.<方法>`），期望什么、收到什么：`expected` 用各语言 `Expected` 那套词（`a string`、`an integer`、`a list`、`a Forecast`、`data`），`got` 用那套 `actual` 的词（`an object`、`a string`、`an integer`、`a function`、`an asynchronous result`、`null`）。
-- 不出现 serde、`encoding/json`、Go 的类型写法 `[]int`、JSON 的原文。Go 今天 `cannot decode {"text":"cloudy"} as string: json: …` 里的 `{"text":"cloudy"}` 也不出现：值不是开发者此刻要读的东西，收到什么用一句话说（`an object`）。
-- 一个引用（函数、对象、异步结果）落在要数据的位置：`the result should be data, got a function`（`bad-result`）。
-- 一个带标签的值落在要 JSON 的位置：`the result should be data, got an instant`（`bad-result`），替换 `objects.rs:809` 那句「live Cordis object」。
+- 只有把值解成声明过类型的运行时才会有这个错误：Go、Rust、Swift、Kotlin。Node、Bun、Python 没有声明过类型，收到的值是什么就是什么，不会有这一行。
+- 消息体是解码器的原文，rutis 只加前缀：`<服务>.<方法>: argument N: <原文>`（码 `bad-argument`）、`<服务>.<方法>: the result: <原文>`（码 `bad-result`）；对象的方法写 `<类型>.<方法>: …`。前缀只说位置，原文一个字不改，也不补一句自己的概括。
+- 各语言的「原文」是哪一句：
+  - **Rust**：serde 逐字的那句——``invalid type: integer `42`, expected a string``、``invalid type: null, expected a string``。`marked.rs` 的 `of_decoding` 不再把它转述成 `should be a string, got an integer`。
+  - **Go**：`encoding/json` 逐字的那句——`json: cannot unmarshal object into Go value of type string`、`json: cannot unmarshal array into Go value of type int`；`convert.FromPeer` 自己的判断（`a list cannot be decoded as string`、`a function cannot be decoded as int` 之类，`convert/decode.go:70`）是 rutis 造的，照它今天的说法留。
+  - **Swift**：`ValueCodec` 自己的那句 `cannot decode an object into String`（`Codec/ValueCodec.swift:232`）——rutis 造的，本来就清楚，只加前缀。
+  - **Kotlin**：生成代码保留解码器（kotlinx.serialization 的 `SerializationException`）的原文；`Refusals.kt:32-45` 不再拼成 `should be … got …`。只有「参数没给」这类没有底层错误的，仍用平白的话。
+- rutis 自己造的、没有底层错误的，仍用平白的话，逐字保留今天的句子：`argument 1 is missing`、`<服务>.<方法> takes 1 argument, got 2`、`the value holds a function that its Rust type cannot represent`（今天那句里的 `live Cordis` 去掉）、`the value holds a tagged value (an instant, bytes, a map, ...) that its Rust type cannot represent`。
+- `data` 的作用不变：`{service|object, method, argument?, expected?}`。`expected` 是声明里那个类型（Go 的 `Expected(t)`，Rust 从 serde 那句里取的 `expected`），它是给程序看的，不是消息的替代品。
 
 ### 4.6 事件的负载
 
@@ -242,8 +255,8 @@ if err := forecast.Call(ctx, "tomorrow", &text, "Oslo"); err != nil {
 | 方法返回 `make(chan int)` | `weather.today: the result cannot be sent: a chan int cannot cross between processes` | `Code()` 是 `bad-value`，`Data()` 是 `{part: "result", reason: "type"}` |
 | 方法返回指回自己的 `*Node`、装着自己的 `[]any` | `weather.today: the result cannot be sent: the value holds itself (a cycle)` | `Code()` 是 `bad-value`，`Data()` 是 `{part: "result", reason: "cycle"}` |
 | 方法返回 65 层的值 | `weather.today: the result cannot be sent: the value nests deeper than 64 levels` | `Code()` 是 `bad-value`，`Data()` 是 `{part: "result", reason: "too-deep"}` |
-| 调用一个要 `string` 的方法，返回值是对象 | `forecast.tomorrow: the result should be a string, got an object` | `Code()` 是 `bad-result`，`Data()` 是 `{service: "forecast", method: "tomorrow", expected: "a string"}` |
-| 收到的参数不是声明的类型（不变） | `weather.today: argument 1 should be a string, got an object` | `Code()` 是 `bad-argument`，`Data()` 是 `{service, method, argument, expected}` |
+| 调用一个要 `string` 的方法，返回值是对象 | `forecast.tomorrow: the result: json: cannot unmarshal object into Go value of type string` | `Code()` 是 `bad-result`，`Data()` 是 `{service: "forecast", method: "tomorrow", expected: "a string"}` |
+| 收到的参数不是声明的类型 | `weather.today: argument 1: json: cannot unmarshal object into Go value of type string` | `Code()` 是 `bad-argument`，`Data()` 是 `{service, method, argument: 1, expected: "a string"}` |
 
 ### 5.4 Rust：只有不同的地方
 
@@ -255,9 +268,9 @@ let text: String = call_service(&ctx, "forecast", "tomorrow", ("Oslo",)).await?;
 | 怎么造成的 | 输出 | 码与 `data` |
 | --- | --- | --- |
 | `call_service(&ctx, "forecast", "week", ("Oslo", f64::NAN)).await` | `forecast.week: argument 2 cannot be sent: the number NaN is not finite` | `bad-value`，`{part: "argument", argument: 2, reason: "non-finite"}` |
-| 返回值是 42，要 `String` | `forecast.tomorrow: the result should be a string, got an integer` | `bad-result`，`{service: "forecast", method: "tomorrow", expected: "a string"}` |
-| 返回值里有函数，要 `serde_json::Value` | `forecast.tomorrow: the result should be data, got a function` | `bad-result`，`{service: "forecast", method: "tomorrow", expected: "data"}` |
-| 返回值里有 instant，要 `serde_json::Value` | `forecast.tomorrow: the result should be data, got an instant` | `bad-result`，同 `expected: "data"` |
+| 返回值是 42，要 `String` | ``forecast.tomorrow: the result: invalid type: integer `42`, expected a string`` | `bad-result`，`{service: "forecast", method: "tomorrow", expected: "a string"}` |
+| 返回值里有函数，要 `serde_json::Value` | `forecast.tomorrow: the result: the value holds a function that its Rust type cannot represent` | `bad-result`，`{service: "forecast", method: "tomorrow"}` |
+| 返回值里有 instant，要 `serde_json::Value` | `forecast.tomorrow: the result: the value holds a tagged value (an instant, bytes, a map, ...) that its Rust type cannot represent` | `bad-result`，`{service: "forecast", method: "tomorrow"}` |
 
 Rust 今天发 NaN 得到 `null`（§1）；改完之后它和别的语言一样报错。`serde` 的原文不再出现在任何一行里。
 
@@ -265,6 +278,7 @@ Rust 今天发 NaN 得到 `null`（§1）；改完之后它和别的语言一样
 
 - 同一个错误跨进程：`code` 与 `data` 原样到达调用方（诊断 §4.4）。宿主按 `code` 分支的程序多一个分支 `bad-result`；`bad-value` 的 `data` 多一个键 `reason`（按名读的代码不用改）。
 - `rutis-host call weather.today Oslo` 印的错误行就是 §5.1 那一句，不另外包装。
+- 宿主会看到 serde、`encoding/json` 的原文（例如 ``invalid type: integer `42`, expected a string``）。这是有意的：原文最准，rutis 只加前缀（§4 的原则）。
 - 发出事件时报告的一行（§4.6）与今天同一位置、同一前缀，只有里面那句话变了。
 
 ### 5.6 部署的人
@@ -291,9 +305,10 @@ Rust 今天发 NaN 得到 `null`（§1）；改完之后它和别的语言一样
 | `module cannot cross the boundary`（Python） | `a module cannot cross between processes` |
 | `argument 1: the number NaN is not finite: only finite numbers cross`（Go 调用方） | `forecast.week: argument 2 cannot be sent: the number NaN is not finite` |
 | `chan int cannot cross between processes`（Go 的返回值） | `weather.today: the result cannot be sent: a chan int cannot cross between processes` |
-| `cannot decode {…} as string: json: …`（Go） | `forecast.tomorrow: the result should be a string, got an object` |
-| ``invalid type: integer `42`, expected a string``（Rust 的返回值） | `forecast.tomorrow: the result should be a string, got an integer` |
-| `the value holds a live Cordis object or function that its Rust type cannot represent` | `forecast.tomorrow: the result should be data, got a function` |
+| `cannot decode {…} as string: json: …`（Go 的返回值） | ``forecast.tomorrow: the result: json: cannot unmarshal object into Go value of type string``（原文不变，只加前缀） |
+| ``invalid type: integer `42`, expected a string``（Rust 的返回值） | ``forecast.tomorrow: the result: invalid type: integer `42`, expected a string``（原文不变，只加前缀） |
+| `forecast.tomorrow: argument 1 should be a string, got an object`（Rust、Go、Kotlin、Swift 今天的参数） | `forecast.tomorrow: argument 1: <解码器的原文>`——转述没了 |
+| `the value holds a live Cordis object or function that its Rust type cannot represent` | `forecast.tomorrow: the result: the value holds a function that its Rust type cannot represent`（`live Cordis` 去掉，其余照旧） |
 | `<function from the host>`（Python） | `<function of another process>` |
 | `[remote object]`（Node 的对象）、`[Function (anonymous)]`（Node 的函数） | `<object of another process>`、`<function of another process>` |
 | `RemoteFunction(7)`、`RemoteObject(7)`（Kotlin） | `<function of another process>`、`<object of another process>` |
@@ -303,6 +318,8 @@ Rust 今天发 NaN 得到 `null`（§1）；改完之后它和别的语言一样
 - Rust 发 NaN / Infinity 从「变成 `null`」改成报错。依赖 `null` 的代码要自己换。
 - Go 的返回值在方法里不再换成对端的样子：`Results` 交回原来的值，编码在 `respondTo` 里做（那是唯一知道「这是谁的返回值」的地方）。返回 channel 之类的方法，错误从「方法的 error」变成「这次调用的 `bad-value`」。
 - 循环引用在 Python、Go、Kotlin、Swift 里从「嵌套过深」改成「循环」（Swift 括号里那句「是循环吧」也去掉）；`reason` 让程序能分辨。
+
+**码不变**：`bad-value`、`bad-argument`、`bad-result` 三个码，以及 `data` 的字段都不变；凡是底层错误，变的是句话——它现在就是原文，前面只有位置前缀（`weather.ask: `、`argument 2: `、`the result: `）。按码判断的程序一行都不用改。
 
 **文档**：插件 API 指南「值怎样传递」（`docs/guide/plugin-api.md:938`）那一句把 `data` 写成 `{part, argument?, limit?}`；它加 `reason`、加 `payload` 这个 `part`、并把「名字（`BindingError`、`TypeError`……）不作保证，看错误码」说清 `bad-result`，两种语言都改。
 
@@ -334,10 +351,10 @@ Rust 今天发 NaN 得到 `null`（§1）；改完之后它和别的语言一样
 | --- | --- | --- |
 | S1（#936） | Node、Bun：`checkData` 走进 Map / Set / 记录 / 带标签的值；数字、循环（先于深度）、深度一句话（今天四种说法，§1）；事件的调用描述成事件名（D7）；显示（D8） | `node/rutis-runtime/test/session.test.mjs`、`node/rutis/test/values.test.mjs`、`bun/rutis-bun/test/session.test.ts` 逐字锁住 §5.1 的每一行与 `code`、`data`；事件那条在 `bad-values` 用例里 |
 | S2（#936） | Python：`_data` / `_encode` / `_encode_tagged` 带 `seen`；三句统一；`repr` 改 `<… of another process>` | `python/rutis/tests/test_plain_texts.py` 逐字锁住 §5.2 |
-| S3（#936） | Go：`toPeerValue` 带 `seen`；`ToPeerArgs` 带上调用名（`Service.Call` 与运行时里已知服务、方法的地方）；`Results` 不再提前换值，返回值的编码与 `ofResult` 在 `respondTo` 里做；`badResult`（`refusals.go` 旁边） | `go/rutis/internal/convert`、`internal/peer` 的用例逐字锁住 §5.3；`go/rutis/internal/fixtures/session` 里加一条 channel 返回值的用例 |
-| S4（#936） | Rust：`Exact` 的 `serialize_f32` / `serialize_f64` 查有限；`Exact` 自己数层级（`Rc` 指回自己时以 `cycle` 失败），`fits` 那句说法换掉；`call_service` 把解不开的返回值包成 `bad-result`，不再出现 serde 原文 | `crates/rutis-bridge/src/session/rpc/tests.rs` 与 `objects.rs` 的用例逐字锁住 §5.4 |
-| S5（#936） | Swift：`Codec/ValueCodec.swift`（编码、`:147-148`）与 `Session/Peer.swift`（收值、`:662,741-742`）加 `seen`，循环先于深度，三句话统一；`Errors.swift:385` 的 `data` 照旧按数据读 | `swift/rutis/Tests/SelfTest/PeerTests.swift`（今天 `:96` 只查「包含 nested deeper」）逐字锁住属于 Swift 的行 |
-| S6（#936） | Kotlin：`internal/peer/Peer.kt:420,508` 两处编码加 `seen`，`tooDeep()`（`:63-65`）换句；`advanced/RemoteFunction.kt:25`、`RemoteObject.kt:29` 的 `toString` 改 `<… of another process>` | `kotlin/rutis/rutis/src/jvmTest/kotlin/arcships/rutis/PeerTest.kt`、`ErrorTextTest.kt` 逐字锁住属于 Kotlin 的行 |
+| S3（#936） | Go：`toPeerValue` 带 `seen`；`ToPeerArgs` 带上调用名（`Service.Call` 与运行时里已知服务、方法的地方）；`Results` 不再提前换值，返回值的编码与 `ofResult` 在 `respondTo` 里做；`badResult`（`refusals.go` 旁边）；`badArgument` 不再转述 `encoding/json`，只加 `argument N: ` 前缀（`Expected`／`actual` 只留给 `data`） | `go/rutis/internal/convert`、`internal/peer` 的用例逐字锁住 §5.3；`go/rutis/internal/fixtures/session` 里加一条 channel 返回值的用例 |
+| S4（#936） | Rust：`Exact` 的 `serialize_f32` / `serialize_f64` 查有限；`Exact` 自己数层级（`Rc` 指回自己时以 `cycle` 失败），`fits` 那句说法换掉；`call_service` 把解不开的返回值包成 `bad-result`：serde 原文逐字保留，只加 `the result: ` 前缀；`of_decoding` 不再转述成 `should be … got …`；`objects.rs:809` 那句去掉 `live Cordis` | `crates/rutis-bridge/src/session/rpc/tests.rs` 与 `objects.rs` 的用例逐字锁住 §5.4 |
+| S5（#936） | Swift：`Codec/ValueCodec.swift`（编码、`:147-148`）与 `Session/Peer.swift`（收值、`:662,741-742`）加 `seen`，循环先于深度，三句话统一；`ValueCodec` 的 `cannot decode … into …` 是 Swift 自己造的句子，照旧，只加前缀；`Errors.swift:385` 的 `data` 照旧按数据读 | `swift/rutis/Tests/SelfTest/PeerTests.swift`（今天 `:96` 只查「包含 nested deeper」）逐字锁住属于 Swift 的行 |
+| S6（#936） | Kotlin：`internal/peer/Peer.kt:420,508` 两处编码加 `seen`，`tooDeep()`（`:63-65`）换句；生成的参数解码保留 kotlinx.serialization 的原文（`Refusals.kt:32-45` 不再拼 `should be … got …`）；`advanced/RemoteFunction.kt:25`、`RemoteObject.kt:29` 的 `toString` 改 `<… of another process>` | `kotlin/rutis/rutis/src/jvmTest/kotlin/arcships/rutis/PeerTest.kt`、`ErrorTextTest.kt` 逐字锁住属于 Kotlin 的行 |
 | S7（`bad-result` 与行名） | 诊断设计 §4.3 的码表只动这份设计的两行（§4.3；其余属于 #937，后落地的一份 rebase）；引用值带行名（新的协议改动，`deny_unknown_fields` 决定它必须先抬版本或先加一条能力，另写一个 issue） | 码表更新；行名那一条在它自己的设计里定 |
 | S8（#936 的完成条件） | `weather.expected.json` 的 `throws` 加 `code` 与 `data`（下面的「S8 怎么加」写清怎么加、谁产生、谁跑）；§1 的每一行一个 sample，六个运行时各报自己那些 | 会话矩阵的六格（Node、Python、Go、Swift、Bun、Kotlin）全绿，一行的文字或码改了而用例没改就红 |
 

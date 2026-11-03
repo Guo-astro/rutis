@@ -20,7 +20,7 @@ What the 0.19 evaluation said: when a value cannot cross, most exits report `<se
 | Swift sending a cycle | `weather.tomorrow: argument 1 cannot be sent: value nested deeper than 64 levels, the most a value crossing processes may nest (a cyclic reference?)` | Only the depth is checked, and the parenthesis guesses "a cycle?": `swift/rutis/Sources/Rutis/Codec/ValueCodec.swift:147-148`, `Codec/Encoder.swift:55-57`; taking a value in does the same (`Session/Peer.swift:662,741-742`) |
 | Go returning a channel / NaN | `chan int cannot cross between processes`, `the number NaN is not finite: only finite numbers cross`: no `bad-value`, no method, no "the result" | A method's value is turned into a peer value inside the method call (`convert.Results`, `convert.go:244-258`), so the failure becomes that method's own error and takes the throw path of `respondTo`, which `ofResult` (`peer/crossing.go:68-75`) never sees |
 | Go sending NaN as an argument | `argument 1: the number NaN is not finite: only finite numbers cross`: no method, no `bad-value` | `Service.Call` returns the error of `convert.ToPeerArgs` as it is (`go/rutis/internal/runtime/runtime.go:1153`) |
-| A result that does not decode (Go gets an object where it wants a string; a Rust host gets 42 where it wants a string) | `cannot decode {"text":"cloudy"} as string: json: cannot unmarshal object into Go value of type string`; ``invalid type: integer `42`, expected a string`` | Go: `decode.go:70`, returned as it is by `Service.Call`; Rust: `decode_value` puts serde's own text into `Error::Value` (`crates/rutis-bridge/src/session/objects.rs:784`, `:809`) |
+| A result that does not decode (Go gets an object where it wants a string; a Rust host gets 42 where it wants a string) | `cannot decode {"text":"cloudy"} as string: json: cannot unmarshal object into Go value of type string`; ``invalid type: integer `42`, expected a string`` | Go: `decode.go:70`, returned as it is by `Service.Call`; Rust: `decode_value` puts serde's own text into `Error::Value` (`crates/rutis-bridge/src/session/objects.rs:784`, `:809`). The text itself is right (the principle in §4); what is missing is the prefix saying which call's result it is |
 | Python receiving a TypeScript function | `<function from the host>` | `peer.py:694-695` |
 | Python returning a function into a Rust `serde_json::Value` | `the value holds a live Cordis object or function that its Rust type cannot represent` | `objects.rs:809`: the sentence has nothing to do with Cordis |
 | Node receiving another row's function | `console.log` prints `[Function (anonymous)]`; `String(fn)` prints `() => { check(); return this.#requestSync('call', { reference: id }, args) }` | A received function is a plain arrow function with no display of its own (`session.mjs:474`) |
@@ -42,11 +42,11 @@ Also, a `bad-value`'s `data` is `{part, argument?, limit?}` today (diagnostics �
 
 1. When a value cannot cross, there is one shape: the prefix (which call, which argument or the result), one sentence of reason, the code `bad-value`, and `data`.
 2. A cycle is reported as a cycle, not as "nested deeper than 64 levels".
-3. A value that arrives and does not decode says which method, what it should be and what it is, and never serde's or encoding/json's own text.
+3. A value that arrives and does not decode says which method's argument or result it is, and then repeats the decoder's own sentence (serde says ``invalid type: integer `42`, expected a string``, Go says `json: cannot unmarshal object into Go value of type string`); the prefix says only where.
 
 ## 3. Decisions
 
-**D1 One frame, one sentence of reason.** Every exit where a value cannot cross reads `<call>: argument N cannot be sent: <reason>`, `<call>: the result cannot be sent: <reason>`, `<call>: the error <Name> cannot be sent: <reason>`, or `the payload of <event> cannot be sent: <reason>`; the code is always `bad-value`, `data` is always `{part, argument?, reason, limit?}`. The reason is one sentence that names only what the developer wrote (service, method, argument, type name) and says `cannot cross between processes` (Python's "cannot cross the boundary" goes). **Dropped**: a wording per exit — programs would still read text, and every row of the evaluation came from exactly that.
+**D1 One frame, one sentence of reason.** Every exit where a value cannot cross reads `<call>: argument N cannot be sent: <reason>`, `<call>: the result cannot be sent: <reason>`, `<call>: the error <Name> cannot be sent: <reason>`, or `the payload of <event> cannot be sent: <reason>`; the code is always `bad-value`, `data` is always `{part, argument?, reason, limit?}`. The reason is one sentence that names only what the developer wrote (service, method, argument, type name) and says `cannot cross between processes` (Python's "cannot cross the boundary" goes). Rewording is allowed here because rutis made the sentence itself: there is no underlying error (the principle in §4, D6). **Dropped**: a wording per exit — programs would still read text, and every row of the evaluation came from exactly that.
 
 **D2 The check is before encoding, the same in every language.** The walk over the value happens before the value is encoded, and it is the walk the runtime already makes (data, lists, records, tagged values, Map / Set), not a failure of `JSON.stringify`, `json.Marshal` or serde. Node and Bun's `checkData` therefore walks into Map / Set and records (today plain data only), and the number check moves out of `codec.mjs`; Python's `_data`, `_encode` and `_encode_tagged` carry `seen`; Go's `toPeerValue` carries `seen` beside `levels` and `hops`. **Dropped**: catching it in the codec — by then it no longer knows which call's argument it is.
 
@@ -54,9 +54,9 @@ Also, a `bad-value`'s `data` is `{part, argument?, limit?}` today (diagnostics �
 
 **D4 The depth limit stays at 64 levels, in one sentence.** It is worded four ways today (§1), and Swift guesses at a cycle in a parenthesis; it becomes `the value nests deeper than 64 levels`. The limit stays: it keeps one send from running a process's stack out, and it bounds what the far end takes; without it a value is bounded only by the 16 MiB message limit. **Dropped**: removing the limit.
 
-**D5 Non-finite numbers: `the number NaN is not finite`.** "NaN", "Infinity" and "-Infinity" are the value the developer wrote; Python's `NaN cannot cross processes` today and Go's `… : only finite numbers cross` both become this sentence. Rust's `Exact` refuses in `serialize_f32` / `serialize_f64` (today it becomes `null`, §6). **Dropped**: letting a NaN become `null` — that is what Rust does today, and two calls of one plugin then get different values instead of an error.
+**D5 Non-finite numbers: `the number NaN is not finite`.** "NaN", "Infinity" and "-Infinity" are the value the developer wrote; Python's `NaN cannot cross processes` today and Go's `… : only finite numbers cross` both become this sentence. Rust's `Exact` refuses in `serialize_f32` / `serialize_f64` (today it becomes `null`, §6). **Dropped**: letting a NaN become `null` — that is what Rust does today, and two calls of one plugin then get different values instead of an error. Today's `non-finite number` is what Node's encoder says of itself, with no underlying error behind it, so rewording it is no paraphrase (the principle in §4).
 
-**D6 An argument that does not decode stays; a result that does not decode gets a new code.** An argument that arrives and does not decode stays `bad-argument` with the words it has (`<call>: argument 1 should be a string, got an object`; already Rust `marked.rs:440-575`, Go `convert/refusals.go:55-62`, Kotlin `Refusals.kt:41-53`). A result that arrives and does not decode uses a new code, `bad-result`, with the same words: `<call>: the result should be a string, got an object`, `data` = `{service, method, expected}` (`{object, method, expected}` for a method of an object). **Dropped**: reusing `bad-value` — its sentence is "cannot be sent", but the value did arrive and this type does not take it, and it cannot say what was expected. **Dropped**: leaving serde's own text — #936 says it must go.
+**D6 A value that does not decode: the raw sentence, one prefix, one code each.** A value that arrived and does not decode was refused by serde, `encoding/json`, kotlinx.serialization or Swift's `ValueCodec`, and their sentence is more exact than any rewrite: ``invalid type: integer `42`, expected a string`` says at once what was expected and what came, `json: cannot unmarshal object into Go value of type string` says what Go saw. So the body of the message is that sentence, and rutis adds only a prefix answering "which of my calls, which argument": `<service>.<method>: argument N: <the sentence>` (code `bad-argument`), `<service>.<method>: the result: <the sentence>` (code `bad-result`). `data` stays `{service|object, method, argument?, expected?}`, where `expected` comes from the declared type, not from the message. **Dropped**: paraphrasing it as `<call>: argument 1 should be a string, got an object` (what Rust's `marked.rs`, Go's `refusals.go`, Kotlin's `Refusals.kt` and Swift do today) — `got an object` repeats what the decoder already said, and often says less; this design changes that back. **Dropped**: reusing `bad-value` — its frame says "cannot be sent", but the value did arrive and this type does not take it. **Dropped**: the raw sentence with no prefix — the developer would not know which call; or no code — a program still needs one.
 
 **D7 An event's payload gets its own name.** An event that crosses a session is a control call (`events.dispatch`), and a bad payload reports `events.dispatch: argument 1 cannot be sent: …` today: an internal name, and an argument number that means nothing to the developer. The emitting side **describes that call as the event's name** (the session's call methods take one more description), so it reads `the payload of weather/asked cannot be sent: …` with `part` `payload`. An event dispatched in this process does not cross a session and has no such error.
 
@@ -65,6 +65,15 @@ Also, a `bad-value`'s `data` is `{part, argument?, limit?}` today (diagnostics �
 **D9 Only that call fails.** Every row above fails only that call (the sender gets an error, the receiver gets a throw) and the session goes on; only "over the 16 MiB message limit" is still decided after the whole frame is encoded (`part` plus `limit`). **Dropped**: ending the session on a bad value — that was the way before 0.18.
 
 ## 4. Rules
+
+### The principle: the raw error first
+
+The body of a message is the underlying error's own words, verbatim; rutis adds only a short prefix answering "which of my calls is this, which argument".
+
+- What the underlying error says (serde, `encoding/json`, kotlinx.serialization, Swift's `ValueCodec`, Go's `reflect`) is what the developer reads: ``invalid type: integer `42`, expected a string``, `json: cannot unmarshal object into Go value of type string`, `KeyError: 'town'`.
+- The prefix says only where: `weather.ask: `, `argument 2: `, `the result: `, `the payload of weather/asked: `. No paraphrase, no summary, nothing the underlying error already said repeated.
+- Only an error rutis made up itself is rewritten into plain words — it has no underlying error: a synchronous wait cycle's `… path: test:5 -> …`, Node's bare `non-finite number`, `row <x> is not loaded in this runtime`, the four wordings of "nested too deep", `a symbol cannot cross between processes`. Those sentences are this design's to set (§4.2); they have no original to keep.
+- When in doubt, keep the original.
 
 ### 4.1 The frame
 
@@ -117,13 +126,17 @@ Every language checks in the same step and the same place: while turning the val
 
 Levels stay as they are: an array, an object, a Map, a Set and a record are each one level; a call's argument list is not a level.
 
-### 4.5 A value that arrives and does not decode
+### 4.5 A value that arrives and does not decode: the raw sentence, one prefix
 
 - Only a runtime that decodes into declared types has this error: Go, Rust, Swift, Kotlin. Node, Bun and Python declare no types, so a received value is what it is and this line cannot happen.
-- The text names the call (`<service>.<method>`, `<Type>.<method>` for a method of an object), what was expected and what came: `expected` uses the words of each language's `Expected` (`a string`, `an integer`, `a list`, `a Forecast`, `data`), and `got` the words of its `actual` (`an object`, `a string`, `an integer`, `a function`, `an asynchronous result`, `null`).
-- No serde, no `encoding/json`, no Go type syntax such as `[]int`, no JSON text. `{"text":"cloudy"}` in Go's `cannot decode {"text":"cloudy"} as string: json: …` goes too: the value is not what the developer is reading now, and what came is one sentence (`an object`).
-- A reference (function, object, asynchronous result) where data is expected: `the result should be data, got a function` (`bad-result`).
-- A tagged value where JSON is expected: `the result should be data, got an instant` (`bad-result`), replacing the "live Cordis object" sentence of `objects.rs:809`.
+- The body of the message is the decoder's own sentence, verbatim; rutis adds a prefix: `<service>.<method>: argument N: <the sentence>` (code `bad-argument`), `<service>.<method>: the result: <the sentence>` (code `bad-result`); a method of an object reads `<Type>.<method>: …`. The prefix says where, the sentence is untouched, and no summary of ours is added.
+- Which sentence that is, per language:
+  - **Rust**: serde's, verbatim — ``invalid type: integer `42`, expected a string``, ``invalid type: null, expected a string``. `of_decoding` in `marked.rs` stops paraphrasing it into `should be a string, got an integer`.
+  - **Go**: `encoding/json`'s, verbatim — `json: cannot unmarshal object into Go value of type string`, `json: cannot unmarshal array into Go value of type int`; `convert.FromPeer`'s own refusals (`a list cannot be decoded as string`, `a function cannot be decoded as int` and the like, `convert/decode.go:70`) are rutis's, and keep the words they have today.
+  - **Swift**: `ValueCodec`'s own `cannot decode an object into String` (`Codec/ValueCodec.swift:232`) — rutis's, already clear, and only the prefix is added.
+  - **Kotlin**: generated code keeps the decoder's sentence (kotlinx.serialization's `SerializationException`); `Refusals.kt:32-45` no longer builds `should be … got …`. Only a case with no underlying error, such as a missing argument, is said in plain words.
+- What rutis made up itself, with no underlying error, keeps its plain words today, verbatim: `argument 1 is missing`, `<service>.<method> takes 1 argument, got 2`, `the value holds a function that its Rust type cannot represent` (the `live Cordis` of today's sentence goes), `the value holds a tagged value (an instant, bytes, a map, ...) that its Rust type cannot represent`.
+- `data` keeps its part: `{service|object, method, argument?, expected?}`. `expected` is the declared type (Go's `Expected(t)`, the `expected` Rust reads out of serde's sentence); it is for programs, not a substitute for the message.
 
 ### 4.6 An event's payload
 
@@ -242,8 +255,8 @@ if err := forecast.Call(ctx, "tomorrow", &text, "Oslo"); err != nil {
 | The method returns `make(chan int)` | `weather.today: the result cannot be sent: a chan int cannot cross between processes` | `Code()` is `bad-value`, `Data()` is `{part: "result", reason: "type"}` |
 | The method returns a `*Node` pointing at itself, a `[]any` holding itself | `weather.today: the result cannot be sent: the value holds itself (a cycle)` | `Code()` is `bad-value`, `Data()` is `{part: "result", reason: "cycle"}` |
 | The method returns 65 levels | `weather.today: the result cannot be sent: the value nests deeper than 64 levels` | `Code()` is `bad-value`, `Data()` is `{part: "result", reason: "too-deep"}` |
-| A method that wants a `string` is given back an object | `forecast.tomorrow: the result should be a string, got an object` | `Code()` is `bad-result`, `Data()` is `{service: "forecast", method: "tomorrow", expected: "a string"}` |
-| An argument is not the declared type (unchanged) | `weather.today: argument 1 should be a string, got an object` | `Code()` is `bad-argument`, `Data()` is `{service, method, argument, expected}` |
+| A method that wants a `string` is given back an object | `forecast.tomorrow: the result: json: cannot unmarshal object into Go value of type string` | `Code()` is `bad-result`, `Data()` is `{service: "forecast", method: "tomorrow", expected: "a string"}` |
+| An argument is not the declared type | `weather.today: argument 1: json: cannot unmarshal object into Go value of type string` | `Code()` is `bad-argument`, `Data()` is `{service, method, argument: 1, expected: "a string"}` |
 
 ### 5.4 Rust: only where it differs
 
@@ -255,9 +268,9 @@ let text: String = call_service(&ctx, "forecast", "tomorrow", ("Oslo",)).await?;
 | How it is caused | The output | Code and `data` |
 | --- | --- | --- |
 | `call_service(&ctx, "forecast", "week", ("Oslo", f64::NAN)).await` | `forecast.week: argument 2 cannot be sent: the number NaN is not finite` | `bad-value`, `{part: "argument", argument: 2, reason: "non-finite"}` |
-| The result is 42 and a `String` is wanted | `forecast.tomorrow: the result should be a string, got an integer` | `bad-result`, `{service: "forecast", method: "tomorrow", expected: "a string"}` |
-| The result holds a function and a `serde_json::Value` is wanted | `forecast.tomorrow: the result should be data, got a function` | `bad-result`, `{service: "forecast", method: "tomorrow", expected: "data"}` |
-| The result holds an instant and a `serde_json::Value` is wanted | `forecast.tomorrow: the result should be data, got an instant` | `bad-result`, the same `expected: "data"` |
+| The result is 42 and a `String` is wanted | ``forecast.tomorrow: the result: invalid type: integer `42`, expected a string`` | `bad-result`, `{service: "forecast", method: "tomorrow", expected: "a string"}` |
+| The result holds a function and a `serde_json::Value` is wanted | `forecast.tomorrow: the result: the value holds a function that its Rust type cannot represent` | `bad-result`, `{service: "forecast", method: "tomorrow"}` |
+| The result holds an instant and a `serde_json::Value` is wanted | `forecast.tomorrow: the result: the value holds a tagged value (an instant, bytes, a map, ...) that its Rust type cannot represent` | `bad-result`, `{service: "forecast", method: "tomorrow"}` |
 
 Rust sends a NaN as `null` today (§1); afterwards it reports the error like every other language, and serde's own text appears in no line.
 
@@ -265,6 +278,7 @@ Rust sends a NaN as `null` today (§1); afterwards it reports the error like eve
 
 - One error across processes: `code` and `data` arrive at the caller as they are (diagnostics §4.4). A program that switches on `code` gains one arm, `bad-result`; a `bad-value`'s `data` gains a key, `reason` (code that reads by name need not change).
 - `rutis-host call weather.today Oslo` prints the line of §5.1 as it is, with no wrapper of its own.
+- A host sees serde's and `encoding/json`'s own text (``invalid type: integer `42`, expected a string``, say). That is intended: the original is the most exact, and rutis adds only a prefix (the principle in §4).
 - The line reported when an emit fails (§4.6) is in the same place with the same prefix as today; only its inner sentence changes.
 
 ### 5.6 Those deploying
@@ -291,9 +305,10 @@ This round adds: one error code (`bad-result`), one `data` field (`reason`), one
 | `module cannot cross the boundary` (Python) | `a module cannot cross between processes` |
 | `argument 1: the number NaN is not finite: only finite numbers cross` (a Go caller) | `forecast.week: argument 2 cannot be sent: the number NaN is not finite` |
 | `chan int cannot cross between processes` (a Go result) | `weather.today: the result cannot be sent: a chan int cannot cross between processes` |
-| `cannot decode {…} as string: json: …` (Go) | `forecast.tomorrow: the result should be a string, got an object` |
-| ``invalid type: integer `42`, expected a string`` (a Rust result) | `forecast.tomorrow: the result should be a string, got an integer` |
-| `the value holds a live Cordis object or function that its Rust type cannot represent` | `forecast.tomorrow: the result should be data, got a function` |
+| `cannot decode {…} as string: json: …` (a Go result) | ``forecast.tomorrow: the result: json: cannot unmarshal object into Go value of type string`` (the sentence kept, only the prefix added) |
+| ``invalid type: integer `42`, expected a string`` (a Rust result) | ``forecast.tomorrow: the result: invalid type: integer `42`, expected a string`` (the sentence kept, only the prefix added) |
+| `forecast.tomorrow: argument 1 should be a string, got an object` (arguments in Rust, Go, Kotlin and Swift today) | `forecast.tomorrow: argument 1: <the decoder's sentence>` — the paraphrase goes |
+| `the value holds a live Cordis object or function that its Rust type cannot represent` | `forecast.tomorrow: the result: the value holds a function that its Rust type cannot represent` (`live Cordis` goes, the rest stays) |
 | `<function from the host>` (Python) | `<function of another process>` |
 | `[remote object]` (a Node object), `[Function (anonymous)]` (a Node function) | `<object of another process>`, `<function of another process>` |
 | `RemoteFunction(7)`, `RemoteObject(7)` (Kotlin) | `<function of another process>`, `<object of another process>` |
@@ -303,6 +318,8 @@ This round adds: one error code (`bad-result`), one `data` field (`reason`), one
 - Rust sending NaN or Infinity changes from "becomes `null`" to an error. Code relying on the `null` changes it itself.
 - A Go method's value is no longer turned into a peer value inside the method: `Results` gives the value back as it is and `respondTo` encodes it (the only place that knows whose result it is). A method returning a channel now fails its call with `bad-value` instead of its own error.
 - A cycle in Python, Go, Kotlin and Swift is reported as a cycle instead of too deep (Swift's parenthesis guessing goes too); `reason` lets a program tell them apart.
+
+**The codes do not change**: `bad-value`, `bad-argument` and `bad-result`, and the fields of `data`, all stay; where the underlying error speaks, what changes is the sentence — it is now the original, with only a prefix saying where (`weather.ask: `, `argument 2: `, `the result: `). A program that decides by the code changes nothing.
 
 **The documents**: the plugin API guide's "How values cross" (`docs/guide/plugin-api.en.md:938`) writes `data` as `{part, argument?, limit?}`; it gains `reason`, the `payload` part, and `bad-result` in its "the name is not guaranteed, look at the code" sentence, in both languages.
 
@@ -334,10 +351,10 @@ One exception to state plainly: a `bad-value` the Rust side made itself does not
 | --- | --- | --- |
 | S1 (#936) | Node, Bun: `checkData` walks into Map / Set / records / tagged values; numbers, cycles (before the depth) and the depth in one sentence (four wordings today, §1); the event's call described as the event's name (D7); the display (D8) | `node/rutis-runtime/test/session.test.mjs`, `node/rutis/test/values.test.mjs` and `bun/rutis-bun/test/session.test.ts` lock every line of §5.1 with its `code` and `data` word for word; the event's line is in the `bad-values` cases |
 | S2 (#936) | Python: `seen` through `_data`, `_encode` and `_encode_tagged`; the three sentences; `repr` becomes `<… of another process>` | `python/rutis/tests/test_plain_texts.py` locks §5.2 word for word |
-| S3 (#936) | Go: `seen` in `toPeerValue`; `ToPeerArgs` given the call's name (from `Service.Call` and wherever the runtime knows the service and method); `Results` no longer converts early, so the result is encoded and `ofResult` naming happens in `respondTo`; `badResult` beside `refusals.go` | the cases of `go/rutis/internal/convert` and `internal/peer` lock §5.3 word for word; `go/rutis/internal/fixtures/session` gains a case returning a channel |
-| S4 (#936) | Rust: finiteness in `Exact::serialize_f32` / `serialize_f64`; `Exact` counts levels itself (an `Rc` pointing at itself fails as `cycle`) and `fits`' sentence changes; `call_service` wraps a result that does not decode as `bad-result`, and serde's text appears nowhere | the cases of `crates/rutis-bridge/src/session/rpc/tests.rs` and `objects.rs` lock §5.4 word for word |
-| S5 (#936) | Swift: `seen` in `Codec/ValueCodec.swift` (encoding, `:147-148`) and `Session/Peer.swift` (taking a value in, `:662,741-742`), a cycle before the depth, the three sentences; `data` at `Errors.swift:385` is still read as data | `swift/rutis/Tests/SelfTest/PeerTests.swift` (today `:96` only checks that the text contains "nested deeper than 64") locks the Swift lines word for word |
-| S6 (#936) | Kotlin: `seen` at both encoding places, `internal/peer/Peer.kt:420,508`, and a new sentence in `tooDeep()` (`:63-65`); `toString` of `advanced/RemoteFunction.kt:25` and `RemoteObject.kt:29` becomes `<… of another process>` | `kotlin/rutis/rutis/src/jvmTest/kotlin/arcships/rutis/PeerTest.kt` and `ErrorTextTest.kt` lock the Kotlin lines word for word |
+| S3 (#936) | Go: `seen` in `toPeerValue`; `ToPeerArgs` given the call's name (from `Service.Call` and wherever the runtime knows the service and method); `Results` no longer converts early, so the result is encoded and `ofResult` naming happens in `respondTo`; `badResult` beside `refusals.go`; `badArgument` no longer paraphrases `encoding/json`, it adds `argument N: ` and keeps the sentence (`Expected` / `actual` are left to `data`) | the cases of `go/rutis/internal/convert` and `internal/peer` lock §5.3 word for word; `go/rutis/internal/fixtures/session` gains a case returning a channel |
+| S4 (#936) | Rust: finiteness in `Exact::serialize_f32` / `serialize_f64`; `Exact` counts levels itself (an `Rc` pointing at itself fails as `cycle`) and `fits`' sentence changes; `call_service` wraps a result that does not decode as `bad-result`, keeping serde's sentence word for word and adding the `the result: ` prefix; `of_decoding` stops paraphrasing into `should be … got …`; the `live Cordis` of `objects.rs:809` goes | the cases of `crates/rutis-bridge/src/session/rpc/tests.rs` and `objects.rs` lock §5.4 word for word |
+| S5 (#936) | Swift: `seen` in `Codec/ValueCodec.swift` (encoding, `:147-148`) and `Session/Peer.swift` (taking a value in, `:662,741-742`), a cycle before the depth, the three sentences; `ValueCodec`'s `cannot decode … into …` is Swift's own sentence and stays, only the prefix is added; `data` at `Errors.swift:385` is still read as data | `swift/rutis/Tests/SelfTest/PeerTests.swift` (today `:96` only checks that the text contains "nested deeper than 64") locks the Swift lines word for word |
+| S6 (#936) | Kotlin: `seen` at both encoding places, `internal/peer/Peer.kt:420,508`, and a new sentence in `tooDeep()` (`:63-65`); generated argument decoding keeps kotlinx.serialization's sentence (`Refusals.kt:32-45` stops building `should be … got …`); `toString` of `advanced/RemoteFunction.kt:25` and `RemoteObject.kt:29` becomes `<… of another process>` | `kotlin/rutis/rutis/src/jvmTest/kotlin/arcships/rutis/PeerTest.kt` and `ErrorTextTest.kt` lock the Kotlin lines word for word |
 | S7 (`bad-result` and the row name) | The diagnostics design's code table (§4.3) gets only this design's two rows (§4.3; the rest belongs to #937, and whichever lands second rebases); a reference carries the row that made it (a protocol change of its own: `deny_unknown_fields` means it needs a version or a capability first, and is designed separately) | the code table is updated; the row name is decided in its own design |
 | S8 (the completion condition of #936) | `weather.expected.json`'s `throws` gains `code` and `data` (the section "How S8 is added" below says how, who produces them and who runs them); one sample per row of §1, each of the six runtimes naming its own | the matrix's six cells (Node, Python, Go, Swift, Bun, Kotlin) are green, and a text or code changed without its case goes red |
 
