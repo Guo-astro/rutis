@@ -47,7 +47,7 @@ Bun 的运行时的形状相同（`bun/rutis-bun/src/session.ts:468`、`:568`、
 
 ### 1.2 Python：交来的函数同步调用，阻塞事件循环
 
-Python 收到的函数是 `RemoteFunction`（`python/rutis/rutis/peer.py:678`）。调用它走 `__call__` → `_call_sync`（`peer.py:686`、`:1438`）：在事件循环线程上阻塞，抽帧直到结果回来。对面交来的函数返回一个普通值时，`await f(...)` 因此得到 `'str' object can't be awaited`：它返回的不是可 await 的对象。同一个类上有 `call_async`（`peer.py:690`），Python 指南里没有写它。
+Python 收到的函数是 `RemoteFunction`（`python/rutis/rutis/peer.py:678`）。调用它走 `__call__` → `_call_sync`（`peer.py:686`、`:1438`）：在事件循环线程上阻塞，抽帧直到结果回来。对面交来的函数返回一个普通值时，`await f(...)` 拿到的是 Python 自己的错误，逐字是 `TypeError: object str can't be used in 'await' expression`（3.12；本机实测）：它返回的不是可 await 的对象。同一个类上有 `call_async`（`peer.py:690`），Python 指南里没有写它。
 
 用 Python 写插件的人还有一层：插件收到的函数返回什么，取决于它是 `async def` 还是 `def`。`async def` 时 `f(...)` 拿到的是可 await 的结果，`def` 时是值本身，同一个写法在两种情况下不一样。
 
@@ -144,6 +144,14 @@ Python 收到的函数是 `RemoteFunction`（`python/rutis/rutis/peer.py:678`）
 - Cordis 的同步 `emit` / `waterfall` 照 #918：发出方同步等，`next` 在同步链上返回链上的值。
 - 运行时内部调用 `next` 的代码在同步链上改用内部的同步形式（`Session.callFunctionSync`，与已有的 `callFunctionAsync` 对称），插件作者的写法不变（`events.mjs:361`–`370`）。`next` 是交来的函数，它照 3.2 的规则：同步链上同步返回，别处返回 Promise。
 - 插件里的 Cordis 代码调用别的进程交来的函数时，按 3.2 判断。
+
+### 3.7 出错时的文字：底层错误照原样
+
+- **消息的主体是底层错误自己的话，逐字**：serde 的 ``invalid type: integer `42`, expected a string``、Python 的 `KeyError: 'town'`、Go 的 `json: unsupported type: chan int`、插件自己 `throw` 的错误。运行时与宿主原样带过去，不改写、不翻译、不概括。
+- **rutis 只加一句短前缀**，回答「这是我哪一次调用引起的」（哪个服务、哪个方法、第几个参数、哪一行）。
+- **不重复底层错误已经说过的话**，也不替它解释。前缀之外的部分就是它自己的文字。
+- **只有 rutis 自己造的错误才改写成开发者看得懂的话**：它自己的行话、内部编号（`SyncWaitCycle` 那句里的 `path: test:5 -> …`）、不该露出的实现词。那不是底层错误，改写它是这条规则要的，不是例外。
+- 拿不准时保留原文。
 
 ## 四、开发者看到什么
 
@@ -321,7 +329,7 @@ Ran 1 test in 0.412s
 OK
 ```
 
-与 TypeScript 例子只有一处不同，写进指南：**测试里拿到的函数是插件自己的函数**。它是 `async def` 时 `await` 它（上面的例子）；插件交来的是普通 `def`（返回 `str`）时直接用它，`await` 一个 `str` 报 `'str' object can't be awaited`。**跨进程收到的函数总是 `await`**：另一个插件、宿主给的回调是 `RemoteFunction`，`await f(...)`（或 `f.call_async(...)`）得到返回值。`dev` 里用 `py:fake_jot` 这一行时也是同一个进程，`npx rutis-host call commands.run '"count"'` 与 TypeScript 例子相同：
+与 TypeScript 例子只有一处不同，写进指南：**测试里拿到的函数是插件自己的函数**。它是 `async def` 时 `await` 它（上面的例子）；插件交来的是普通 `def`（返回 `str`）时直接用它；`await` 一个 `str` 时 Python 抛出它自己的 `TypeError: object str can't be used in 'await' expression`，与 rutis 无关。**跨进程收到的函数总是 `await`**：另一个插件、宿主给的回调是 `RemoteFunction`，`await f(...)`（或 `f.call_async(...)`）得到返回值。`dev` 里用 `py:fake_jot` 这一行时也是同一个进程，`npx rutis-host call commands.run '"count"'` 与 TypeScript 例子相同：
 
 ```console
 $ npx rutis-host call commands.run '"count"'
@@ -338,7 +346,7 @@ $ npx rutis-host call commands.run '"count"'
 | 两个运行时经交来的函数互相同步调用 | A 在同步调用里调用 B 交来的函数，B 在它的同步调用里又调用 A 的 | 发出这次同步调用的行 | 改用 `async` 方法，或换个时机（[插件 API](guide/plugin-api.md)「同步调用与可重入」）；不要立刻重试同一个调用 |
 
 - 两种失败都以 `SyncWaitCycle` 结束，`name` 与今天相同；它的码与句子按[诊断设计](design-diagnostics-2026-10-26.md)。今天 Node、Bun 那条带内部的调用编号（原样见 §一 1.1），宿主那条带走过哪些行。
-- **依赖**：本稿提议诊断设计在 §4.3 加一行、在 §4.5 的措辞里写成一句运行时自己发现时的说法 —— 本稿提议的那句是 `SyncWaitCycle: <what> would wait on itself: it is awaited inside the synchronous call that produces it (synchronous calls)`（`<what>` 是这次调用：`a function`、`the method get`、`weather.tomorrow`）。采纳与措辞由那份设计稿的负责人决定；这里不另立一条文风规则。
+- **依赖**：本稿提议诊断设计在 §4.3 加一行、在 §4.5 的措辞里写成一句运行时自己发现时的说法 —— 本稿提议的那句是 `SyncWaitCycle: <what> would wait on itself: it is awaited inside the synchronous call that produces it (synchronous calls)`（`<what>` 是这次调用：`a function`、`the method get`、`weather.tomorrow`）。采纳与措辞由那份设计稿的负责人决定。改这一句正是 §三 3.7 的最后一条：`SyncWaitCycle` 是 rutis 自己造的错，今天那句里带 rutis 的内部编号；插件抛出的错误、Python 的 `TypeError`、Go 编码器的错误都是底层错误，照原样，本稿不改它们的文字。
 - 其余错误照旧（`bad-value`、`no-method`、`peer-gone`，见那份设计稿 §4.3）。
 - 正常时（§4.1、§4.2）没有任何新的输出：调用照常返回，测试照常通过。
 
@@ -394,7 +402,7 @@ $ npx rutis-host call commands.run '"count"'
 | Swift | `endpointProtocol`，`swift/rutis/Sources/Rutis/Session/Peer.swift:13` | 4 |
 | Rust（宿主） | `ENDPOINT_PROTOCOL`，`crates/rutis-bridge/src/session/mod.rs:14` | 4 |
 
-握手时对方不是这个值就以 `incompatible session: the far end speaks protocol <对方>, this side <本地>` 拒绝：六种语言的运行时与宿主各有一处（Node `node/rutis-runtime/src/session.mjs:86`、Python `python/rutis/rutis/peer.py:50`、Rust `crates/rutis-bridge/src/session/rpc.rs:1229`），本稿不碰。
+握手时对方不是这个值就被拒绝，并说明升级哪一端：Node 的那句以 `incompatible session: the far end speaks protocol <对方>, this side <本地>` 开头（`node/rutis-runtime/src/session.mjs:86`），Python（`python/rutis/rutis/peer.py:50`）与 Rust（`crates/rutis-bridge/src/session/rpc.rs:1229`）同形，六种语言的运行时与宿主各有一处。本稿不碰。
 
 #### 5.1b 插件 API 3：谁声明它
 
@@ -408,7 +416,7 @@ $ npx rutis-host call commands.run '"count"'
 | Swift | `Advanced.pluginAPI`，`swift/rutis/Sources/Rutis/Version.swift:28` | 3 |
 | Rust | **没有这个常量**：Rust 插件编进宿主，没有清单、没有 `pluginApi`；宿主只读二进制运行时的清单，那里的常量是 `crates/rutis-loader/src/runtime/go.rs:34` 与 `swift.rs:33`，比自己的大就拒绝（`crates/rutis-loader/src/runtime/binary.rs:1111`） | — |
 
-插件声明得比运行时新时，运行时以「needs plugin API <插件声明的>; this runtime supports <运行时的>」拒绝（Node `node/rutis-runtime/src/leaf.mjs:25`、Bun `bun/rutis-bun/src/plugin.ts:100`、Python `python/rutis/rutis/runner.py:1417`、Go `go/rutis/internal/runtime/runtime.go:280`、Kotlin `kotlin/rutis/rutis/src/shared/kotlin/arcships/rutis/internal/Runtime.kt:267`、Swift `swift/rutis/Sources/Rutis/API/Runtime.swift:420`）。本稿不改版本号，也不改这条判断。
+插件声明得比运行时新时，运行时拒绝，说出插件要的版本与运行时的版本（Node 的那句还提示升哪个包）：Node `node/rutis-runtime/src/leaf.mjs:25`、Bun `bun/rutis-bun/src/plugin.ts:100`、Python `python/rutis/rutis/runner.py:1417`、Go `go/rutis/internal/runtime/runtime.go:280`、Kotlin `kotlin/rutis/rutis/src/shared/kotlin/arcships/rutis/internal/Runtime.kt:267`、Swift `swift/rutis/Sources/Rutis/API/Runtime.swift:420`。本稿不改版本号，也不改这条判断。
 
 ### 5.2 混用：旧的一端遇到新的一端
 

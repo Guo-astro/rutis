@@ -47,7 +47,7 @@ That synchronous call also decides how the guide is written: the example's fakes
 
 ### 1.2 Python: a received function is called synchronously and blocks the event loop
 
-A function received by Python is a `RemoteFunction` (`python/rutis/rutis/peer.py:678`). Calling it goes through `__call__` → `_call_sync` (`peer.py:686`, `:1438`): it blocks on the event loop's thread, pumping frames until the result arrives. When the other side's function returns a plain value, `await f(...)` therefore fails with `'str' object can't be awaited`: what came back is not awaitable. The same class has `call_async` (`peer.py:690`), and the Python guide never mentions it.
+A function received by Python is a `RemoteFunction` (`python/rutis/rutis/peer.py:678`). Calling it goes through `__call__` → `_call_sync` (`peer.py:686`, `:1438`): it blocks on the event loop's thread, pumping frames until the result arrives. When the other side's function returns a plain value, `await f(...)` gets Python's own error, word for word `TypeError: object str can't be used in 'await' expression` (3.12, run here): what came back is not awaitable. The same class has `call_async` (`peer.py:690`), and the Python guide never mentions it.
 
 Authors writing plugins in Python meet one more layer: what a received function returns depends on whether it is `async def` or `def`. With `async def` the result of `f(...)` is awaitable; with `def` it is the value itself. The same expression behaves differently in the two cases.
 
@@ -144,6 +144,14 @@ Neither test tool changes its semantics; Python's difference goes into the Pytho
 - Cordis's synchronous `emit` / `waterfall` stay as #918 left them: the emitter waits synchronously, and `next` returns the chain's value inside a synchronous chain.
 - Where the runtime itself calls `next` in a synchronous chain it uses an internal synchronous form (`Session.callFunctionSync`, the mirror of the existing `callFunctionAsync`); what plugin authors write does not change (`events.mjs:361`–`370`). `next` is a received function, so 3.2 applies to it: synchronous inside a synchronous chain, a Promise elsewhere.
 - Cordis code in a plugin that calls a function from another process follows 3.2.
+
+### 3.7 The wording of an error: the underlying error, as it is
+
+- **The body of a message is the underlying error's own words, verbatim**: serde's ``invalid type: integer `42`, expected a string``, Python's `KeyError: 'town'`, Go's `json: unsupported type: chan int`, an error the plugin threw itself. Runtimes and hosts carry it across unchanged: no rewriting, no translation, no summary.
+- **rutis adds one short prefix**, answering "which of my calls caused this" (which service, which method, which argument, which row).
+- **It does not repeat what the underlying error already said**, and does not explain it either. Everything past the prefix is the error's own words.
+- **Only an error rutis made up is rewritten into plain words**: its own jargon, internal ids (the `path: test:5 -> …` in the `SyncWaitCycle` line), implementation words that should not show. That is not an underlying error; rewriting it is what this rule asks for, not an exception to it.
+- When in doubt, keep the original.
 
 ## 4. What developers see
 
@@ -322,7 +330,7 @@ Ran 1 test in 0.412s
 OK
 ```
 
-One difference from the TypeScript example, written in the guide: **a test gets the plugin's own function**. An `async def` is awaited (the example above); a plain `def` the plugin handed over returns its value, and awaiting a `str` reports `'str' object can't be awaited`, so the test uses it directly. **A function from another process is always awaited**: another plugin's function or a host's callback is a `RemoteFunction`; `await f(...)` (or `f.call_async(...)`) gives its result. In `dev`, with a `py:fake_jot` row it is the same process too, and `npx rutis-host call commands.run '"count"'` gives what the TypeScript example gives:
+One difference from the TypeScript example, written in the guide: **a test gets the plugin's own function**. An `async def` is awaited (the example above); a plain `def` the plugin handed over returns its value, so the test uses it directly; awaiting a `str` raises Python's own `TypeError: object str can't be used in 'await' expression`, nothing to do with rutis. **A function from another process is always awaited**: another plugin's function or a host's callback is a `RemoteFunction`; `await f(...)` (or `f.call_async(...)`) gives its result. In `dev`, with a `py:fake_jot` row it is the same process too, and `npx rutis-host call commands.run '"count"'` gives what the TypeScript example gives:
 
 ```console
 $ npx rutis-host call commands.run '"count"'
@@ -339,7 +347,7 @@ This design writes neither error codes nor the wording people read: those belong
 | Two runtimes calling each other's received functions synchronously | A calls B's received function inside a synchronous call, and B calls A's inside its own | the row that sent the synchronous call | Use an `async` method, or another moment ([plugin API](guide/plugin-api.en.md) "Synchronous calls and re-entrancy"); do not retry the same call at once |
 
 - Both failures end as `SyncWaitCycle`, with the `name` it has today; its code and its sentence follow the [diagnostics design](design-diagnostics-2026-10-26.en.md). Today the Node and Bun line carries internal call ids (quoted as it is in §1.1), and the host's line names the rows the call went through.
-- **Dependency**: this draft proposes that the diagnostics design add a row to its §4.3 and a sentence to its §4.5 for the case the runtime notices itself — the sentence this draft proposes is `SyncWaitCycle: <what> would wait on itself: it is awaited inside the synchronous call that produces it (synchronous calls)` (`<what>` is the call: `a function`, `the method get`, `weather.tomorrow`). Whether to take it, and its wording, are that design's owner's decision; this draft sets no house style of its own.
+- **Dependency**: this draft proposes that the diagnostics design add a row to its §4.3 and a sentence to its §4.5 for the case the runtime notices itself — the sentence this draft proposes is `SyncWaitCycle: <what> would wait on itself: it is awaited inside the synchronous call that produces it (synchronous calls)` (`<what>` is the call: `a function`, `the method get`, `weather.tomorrow`). Whether to take it, and its wording, are that design's owner's decision. Rewriting this one is exactly §3.7's last item: `SyncWaitCycle` is an error rutis made up, and today's line carries rutis's internal ids; an error a plugin threw, Python's `TypeError` and a Go encoder's error are underlying errors and stay as they are — this draft does not re-word them.
 - Every other error is as before (`bad-value`, `no-method`, `peer-gone`; that design's §4.3).
 - In the normal case (§4.1, §4.2) there is no new output at all: calls return, tests pass.
 
@@ -395,7 +403,7 @@ No change: the processes, the packages, the configuration, stopping and exit cod
 | Swift | `endpointProtocol`, `swift/rutis/Sources/Rutis/Session/Peer.swift:13` | 4 |
 | Rust (the host) | `ENDPOINT_PROTOCOL`, `crates/rutis-bridge/src/session/mod.rs:14` | 4 |
 
-A far end whose value is not this one is refused with `incompatible session: the far end speaks protocol <far>, this side <local>`: each of the six runtimes and the host has its own check (Node `node/rutis-runtime/src/session.mjs:86`, Python `python/rutis/rutis/peer.py:50`, Rust `crates/rutis-bridge/src/session/rpc.rs:1229`); this design does not touch it.
+A far end whose value is not this one is refused, saying which end to upgrade: Node's line begins `incompatible session: the far end speaks protocol <far>, this side <local>` (`node/rutis-runtime/src/session.mjs:86`), Python (`python/rutis/rutis/peer.py:50`) and Rust (`crates/rutis-bridge/src/session/rpc.rs:1229`) have the same shape, and each of the six runtimes and the host has its own check. This design does not touch it.
 
 #### 5.1b Plugin API 3: who declares it
 
@@ -409,7 +417,7 @@ A far end whose value is not this one is refused with `incompatible session: the
 | Swift | `Advanced.pluginAPI`, `swift/rutis/Sources/Rutis/Version.swift:28` | 3 |
 | Rust | **no such constant**: a Rust plugin is compiled into its host, with no manifest and no `pluginApi`; the host reads the manifest of a binary runtime only, whose constant is `crates/rutis-loader/src/runtime/go.rs:34` and `swift.rs:33`, and refuses one larger than its own (`crates/rutis-loader/src/runtime/binary.rs:1111`) | — |
 
-A plugin declaring a newer API than the runtime is refused with "needs plugin API <the plugin's>; this runtime supports <the runtime's>" (Node `node/rutis-runtime/src/leaf.mjs:25`, Bun `bun/rutis-bun/src/plugin.ts:100`, Python `python/rutis/rutis/runner.py:1417`, Go `go/rutis/internal/runtime/runtime.go:280`, Kotlin `kotlin/rutis/rutis/src/shared/kotlin/arcships/rutis/internal/Runtime.kt:267`, Swift `swift/rutis/Sources/Rutis/API/Runtime.swift:420`). This design changes neither the version number nor that check.
+A plugin declaring a newer API than the runtime is refused, naming the version the plugin asks for and the runtime's own (Node's line also says which package to upgrade): Node `node/rutis-runtime/src/leaf.mjs:25`, Bun `bun/rutis-bun/src/plugin.ts:100`, Python `python/rutis/rutis/runner.py:1417`, Go `go/rutis/internal/runtime/runtime.go:280`, Kotlin `kotlin/rutis/rutis/src/shared/kotlin/arcships/rutis/internal/Runtime.kt:267`, Swift `swift/rutis/Sources/Rutis/API/Runtime.swift:420`. This design changes neither the version number nor that check.
 
 ### 5.2 Mixing: an old end meeting a new one
 
