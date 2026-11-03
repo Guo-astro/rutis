@@ -604,7 +604,17 @@ func marked(value any) bool {
 const MaxDepth = 64
 
 // ErrTooDeep is the error of a call whose value nests deeper than MaxDepth.
-var ErrTooDeep = fmt.Errorf("value nested deeper than %d levels, the most a value crossing processes may nest", MaxDepth)
+var ErrTooDeep = tooDeep{}
+
+// tooDeep is why a value that nests too far cannot cross (design §4.2): the
+// sentence is rutis's own, the reason is what `data.reason` carries.
+type tooDeep struct{}
+
+func (tooDeep) Error() string {
+	return fmt.Sprintf("the value nests deeper than %d levels", MaxDepth)
+}
+
+func (tooDeep) Reason() string { return ReasonTooDeep }
 
 // jsonDepth is how deep arrays and objects nest in a JSON text.
 func jsonDepth(text []byte) int {
@@ -1735,6 +1745,13 @@ func (p *Peer) respondTo(id string, value any, failure error, chain []string, ca
 	var data []byte
 	var grants []int64
 	var err error
+	// A result that could not be turned into a value where it was made (a
+	// channel, a NaN, a cycle): the call's result cannot be sent, with code
+	// bad-value (design §5.3), not the method's own error.
+	var unsent ResultNotSent
+	if failure != nil && errors.As(failure, &unsent) {
+		failure = ofResult(unsent.Err, call)
+	}
 	if failure == nil {
 		var encoded map[string]any
 		encoded, err = p.encode(value, &grants, chain, 0)

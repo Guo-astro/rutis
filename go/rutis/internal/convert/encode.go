@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"math"
 	"math/big"
@@ -51,6 +50,24 @@ var (
 // on one path, so a cycle of pointers fails instead of recursing forever.
 const maxHops = 1000
 
+// reasoned is an error that says why its value cannot cross (design §4.2),
+// for `data.reason`: the sentence is rutis's own.
+type reasoned struct {
+	reason string
+	err    error
+}
+
+func (e reasoned) Error() string  { return e.err.Error() }
+func (e reasoned) Unwrap() error  { return e.err }
+func (e reasoned) Reason() string { return e.reason }
+func why(reason string, format string, args ...any) error {
+	return reasoned{reason: reason, err: fmt.Errorf(format, args...)}
+}
+
+// seen is where a value has been on this path, so one that holds itself says
+// so (design D3); the pointer, map and slice identities on the way.
+type seen map[uintptr]bool
+
 // ToPeerArgs converts arguments.
 func ToPeerArgs(args []any) ([]any, error) {
 	out := make([]any, len(args))
@@ -87,11 +104,12 @@ var (
 )
 
 // ToPeer converts a Go value to a peer value.
-func ToPeer(v any) (any, error) { return toPeer(v, 0, 0) }
+func ToPeer(v any) (any, error) { return toPeer(v, 0, 0, seen{}) }
 
 // toPeer converts a value whose type is known only now. `levels` counts
-// the arrays and objects around it, `hops` the steps on its path.
-func toPeer(v any, levels, hops int) (any, error) {
+// the arrays and objects around it, `hops` the steps on its path, `seen`
+// the containers on it.
+func toPeer(v any, levels, hops int, seen seen) (any, error) {
 	switch x := v.(type) {
 	case nil:
 		return nil, nil
@@ -118,11 +136,11 @@ func toPeer(v any, levels, hops int) (any, error) {
 		}
 		return x.remote, nil
 	case context.Context:
-		return nil, errors.New("a context.Context cannot cross between processes")
+		return nil, why(peer.ReasonType, "a context.Context cannot cross between processes")
 	case error:
 		return x, nil
 	}
-	return toPeerValue(reflect.ValueOf(v), levels, hops)
+	return toPeerValue(reflect.ValueOf(v), levels, hops, seen)
 }
 
 func rawData(raw json.RawMessage) (any, error) {
@@ -130,12 +148,12 @@ func rawData(raw json.RawMessage) (any, error) {
 		return nil, nil
 	}
 	if !json.Valid(raw) {
-		return nil, errors.New("a json.RawMessage that is not JSON cannot cross")
+		return nil, why(peer.ReasonType, "a json.RawMessage that is not JSON cannot cross")
 	}
 	return raw, nil
 }
 
-func toPeerValue(rv reflect.Value, levels, hops int) (any, error) {
+func toPeerValue(rv reflect.Value, levels, hops int, seen seen) (any, error) {
 	if !rv.IsValid() {
 		return nil, nil
 	}
@@ -143,7 +161,7 @@ func toPeerValue(rv reflect.Value, levels, hops int) (any, error) {
 		return nil, peer.ErrTooDeep
 	}
 	if hops > maxHops {
-		return nil, fmt.Errorf("%s nests through more than %d pointers: a cycle cannot cross", rv.Type(), maxHops)
+		return nil, why(peer.ReasonCycle, "%s nests through more than %d pointers: a cycle cannot cross", rv.Type(), maxHops)
 	}
 	t := rv.Type()
 	switch t.Kind() {
@@ -154,13 +172,13 @@ func toPeerValue(rv reflect.Value, levels, hops int) (any, error) {
 	}
 	switch t.Kind() {
 	case reflect.Interface:
-		return toPeer(rv.Elem().Interface(), levels, hops+1)
+		return toPeer(rv.Elem().Interface(), levels, hops+1, seen)
 	case reflect.Pointer:
 		switch t {
 		case bigIntPointerType:
 			return rv.Interface(), nil
 		case futureType, functionType:
-			return toPeer(rv.Interface(), levels, hops+1)
+			return toPeer(rv.Interface(), levels, hops+1, seen)
 		}
 		// A plugin definition crosses as itself, a `plugin` reference.
 		if t == PluginType && PluginToPeer != nil {
@@ -174,7 +192,13 @@ func toPeerValue(rv reflect.Value, levels, hops int) (any, error) {
 		}
 		// What it points to: addressable, so methods on the pointer are
 		// found there (as encoding/json finds them).
-		return toPeerValue(rv.Elem(), levels, hops+1)
+		// A pointer on the path already holds itself (design D3).
+		if seen[rv.Pointer()] {
+			return nil, why(peer.ReasonCycle, "the value holds itself (a cycle)")
+		}
+		seen[rv.Pointer()] = true
+		defer delete(seen, rv.Pointer())
+		return toPeerValue(rv.Elem(), levels, hops+1, seen)
 	}
 	switch t {
 	case timeType, dateTimeType, dateType, timeOfDayType, decimalType, uuidType:
@@ -197,7 +221,7 @@ func toPeerValue(rv reflect.Value, levels, hops int) (any, error) {
 			text = "0"
 		}
 		if _, err := strconv.ParseFloat(text, 64); err != nil || !json.Valid([]byte(text)) {
-			return nil, fmt.Errorf("invalid json.Number %q", text)
+			return nil, why(peer.ReasonType, "invalid json.Number %q", text)
 		}
 		return withBigInts(json.RawMessage(text))
 	}
@@ -227,7 +251,7 @@ func toPeerValue(rv reflect.Value, levels, hops int) (any, error) {
 	case reflect.Float32, reflect.Float64:
 		f := rv.Float()
 		if math.IsNaN(f) || math.IsInf(f, 0) {
-			return nil, fmt.Errorf("the number %v is not finite: only finite numbers cross", f)
+			return nil, why(peer.ReasonNonFinite, "the number %s is not finite", notFinite(f))
 		}
 		if t.Kind() == reflect.Float32 {
 			// Written as encoding/json writes a float32: 0.1, not
@@ -244,9 +268,19 @@ func toPeerValue(rv reflect.Value, levels, hops int) (any, error) {
 			reflect.Copy(reflect.ValueOf(out), rv)
 			return out, nil
 		}
+		// A slice on the path already holds itself (design D3): its data
+		// pointer and length say which slice it is.
+		if t.Kind() == reflect.Slice && !rv.IsNil() {
+			key := rv.Pointer()<<8 ^ uintptr(rv.Len())
+			if seen[key] {
+				return nil, why(peer.ReasonCycle, "the value holds itself (a cycle)")
+			}
+			seen[key] = true
+			defer delete(seen, key)
+		}
 		items := make([]any, rv.Len())
 		for i := range items {
-			item, err := toPeerValue(rv.Index(i), levels+1, hops+1)
+			item, err := toPeerValue(rv.Index(i), levels+1, hops+1, seen)
 			if err != nil {
 				return nil, err
 			}
@@ -254,7 +288,7 @@ func toPeerValue(rv reflect.Value, levels, hops int) (any, error) {
 		}
 		return items, nil
 	case reflect.Map:
-		return mapToPeer(rv, levels, hops)
+		return mapToPeer(rv, levels, hops, seen)
 	case reflect.Struct:
 		fields := structFields(t)
 		out := make(map[string]any, len(fields))
@@ -266,7 +300,7 @@ func toPeerValue(rv reflect.Value, levels, hops int) (any, error) {
 			if field.omitEmpty && isEmpty(value) || field.omitZero && isZero(value) {
 				continue
 			}
-			item, err := toPeerValue(value, levels+1, hops+1)
+			item, err := toPeerValue(value, levels+1, hops+1, seen)
 			if err != nil {
 				return nil, err
 			}
@@ -277,7 +311,18 @@ func toPeerValue(rv reflect.Value, levels, hops int) (any, error) {
 		}
 		return out, nil
 	}
-	return nil, fmt.Errorf("%s cannot cross between processes", t)
+	return nil, why(peer.ReasonType, "a %s cannot cross between processes", t)
+}
+
+// notFinite is `f` as design §4.2 writes it: NaN, Infinity or -Infinity.
+func notFinite(f float64) string {
+	switch {
+	case math.IsNaN(f):
+		return "NaN"
+	case f > 0:
+		return "Infinity"
+	}
+	return "-Infinity"
 }
 
 // marshaled is the value of a type that writes itself (json.Marshaler,
@@ -292,11 +337,11 @@ func marshaled(rv reflect.Value) (any, bool, error) {
 		}
 		data, err := rv.Interface().(json.Marshaler).MarshalJSON()
 		if err != nil {
-			return nil, true, fmt.Errorf("%s cannot cross between processes: %w", t, err)
+			return nil, true, why(peer.ReasonType, "%s cannot cross between processes: %w", t, err)
 		}
 		var compact bytes.Buffer
 		if err := json.Compact(&compact, data); err != nil {
-			return nil, true, fmt.Errorf("%s cannot cross between processes: its MarshalJSON wrote invalid JSON", t)
+			return nil, true, why(peer.ReasonType, "%s cannot cross between processes: its MarshalJSON wrote invalid JSON", t)
 		}
 		value, err := withBigInts(json.RawMessage(compact.Bytes()))
 		return value, true, err
@@ -306,7 +351,7 @@ func marshaled(rv reflect.Value) (any, bool, error) {
 		}
 		text, err := rv.Interface().(encoding.TextMarshaler).MarshalText()
 		if err != nil {
-			return nil, true, fmt.Errorf("%s cannot cross between processes: %w", t, err)
+			return nil, true, why(peer.ReasonType, "%s cannot cross between processes: %w", t, err)
 		}
 		return string(text), true, nil
 	}
@@ -394,13 +439,22 @@ func isRecordKey(t reflect.Type) bool {
 	return t.Kind() == reflect.String && t != decimalType && t != uuidType
 }
 
-func mapToPeer(rv reflect.Value, levels, hops int) (any, error) {
+func mapToPeer(rv reflect.Value, levels, hops int, seen seen) (any, error) {
 	t := rv.Type()
+	// A map on the path already holds itself (design D3).
+	if !rv.IsNil() {
+		key := rv.Pointer()<<1 | 1
+		if seen[key] {
+			return nil, why(peer.ReasonCycle, "the value holds itself (a cycle)")
+		}
+		seen[key] = true
+		defer delete(seen, key)
+	}
 	if isRecordKey(t.Key()) && !isSetType(t) {
 		out := make(map[string]any, rv.Len())
 		iter := rv.MapRange()
 		for iter.Next() {
-			item, err := toPeerValue(iter.Value(), levels+1, hops+1)
+			item, err := toPeerValue(iter.Value(), levels+1, hops+1, seen)
 			if err != nil {
 				return nil, err
 			}
@@ -415,7 +469,7 @@ func mapToPeer(rv reflect.Value, levels, hops int) (any, error) {
 	if isSetType(t) {
 		out := make(peer.Set, len(keys))
 		for i, key := range keys {
-			element, err := toPeerValue(key, levels+1, hops+1)
+			element, err := toPeerValue(key, levels+1, hops+1, seen)
 			if err != nil {
 				return nil, err
 			}
@@ -425,11 +479,11 @@ func mapToPeer(rv reflect.Value, levels, hops int) (any, error) {
 	}
 	out := make(peer.Map, len(keys))
 	for i, key := range keys {
-		k, err := toPeerValue(key, levels+1, hops+1)
+		k, err := toPeerValue(key, levels+1, hops+1, seen)
 		if err != nil {
 			return nil, err
 		}
-		v, err := toPeerValue(rv.MapIndex(key), levels+1, hops+1)
+		v, err := toPeerValue(rv.MapIndex(key), levels+1, hops+1, seen)
 		if err != nil {
 			return nil, err
 		}

@@ -517,10 +517,19 @@ def _beyond_data(value: Any, seen: set | None = None, depth: int = 0) -> bool:
 MAX_DEPTH = 64
 
 
+def _why(error: BaseException, reason: str) -> BaseException:
+    """`error` with the reason a program reads in `data.reason` (design
+    §4.2): the sentence is rutis's own, the reason is the closed name."""
+    error.reason = reason
+    return error
+
+
 def _too_deep() -> ValueError:
-    return ValueError(
-        f"value nested deeper than {MAX_DEPTH} levels, the most a value crossing processes may nest"
-    )
+    return _why(ValueError(f"the value nests deeper than {MAX_DEPTH} levels"), "too-deep")
+
+
+def _cyclic() -> ValueError:
+    return _why(ValueError("the value holds itself (a cycle)"), "cycle")
 
 
 # The largest plain integer crossing a session (#356): ±(2^53−1), the
@@ -613,6 +622,9 @@ def _cannot_send(
         data["argument"] = index + 1
     if limit is not None:
         data["limit"] = limit
+    carried = getattr(error, "reason", None)
+    if carried is not None:
+        data["reason"] = carried
     return _coded(made, BAD_VALUE, data)
 
 
@@ -625,7 +637,7 @@ def host_gone(message: str = "the host disconnected", reason: str = "disconnecte
 def _not_finite(value: float) -> ValueError:
     """Why a float that is not a finite number cannot be sent."""
     shown = "NaN" if value != value else "Infinity" if value > 0 else "-Infinity"
-    return ValueError(f"{shown} cannot cross processes")
+    return _why(ValueError(f"the number {shown} is not finite"), "non-finite")
 
 
 def _over_limit(size: int, limit: int) -> str:
@@ -645,34 +657,44 @@ def _largest(args: Any) -> int | None:
     return max(range(len(sizes)), key=sizes.__getitem__)
 
 
-def _data(value: Any, depth: int = 0) -> Any:
-    """Plain data for the wire, or TypeError (ValueError if nested deeper
-    than MAX_DEPTH or an integer beyond ±MAX_SAFE_INTEGER; `depth` counts
-    the levels around it). A dict's undefined value is None (#355)."""
+def _data(value: Any, depth: int = 0, seen: set | None = None) -> Any:
+    """Plain data for the wire, or TypeError (ValueError if it holds itself,
+    nests deeper than MAX_DEPTH or is an integer beyond ±MAX_SAFE_INTEGER;
+    `depth` counts the levels around it, `seen` the containers on the path).
+    A dict's undefined value is None (#355)."""
     if isinstance(value, _DATA):
         if isinstance(value, int) and not -MAX_SAFE_INTEGER <= value <= MAX_SAFE_INTEGER:
             raise _too_large()
         if isinstance(value, float) and not -_INF < value < _INF:
             raise _not_finite(value)
         return value
-    if isinstance(value, (list, tuple, dict)) and depth >= MAX_DEPTH:
-        raise _too_deep()
-    if isinstance(value, (list, tuple)):
-        return [_data(item, depth + 1) for item in value]
-    if isinstance(value, dict):
-        if not all(isinstance(key, str) for key in value):
-            raise TypeError("only string keys cross the boundary")
-        return {key: _data(item, depth + 1) for key, item in value.items()}
+    if isinstance(value, (list, tuple, dict)):
+        if seen is None:
+            seen = set()
+        # A container already on the path holds itself (design D3).
+        if id(value) in seen:
+            raise _cyclic()
+        if depth >= MAX_DEPTH:
+            raise _too_deep()
+        seen.add(id(value))
+        try:
+            if isinstance(value, (list, tuple)):
+                return [_data(item, depth + 1, seen) for item in value]
+            if not all(isinstance(key, str) for key in value):
+                raise _why(TypeError("only string keys cross between processes"), "type")
+            return {key: _data(item, depth + 1, seen) for key, item in value.items()}
+        finally:
+            seen.discard(id(value))
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
         try:
             fields = dataclasses.asdict(value)
         except RecursionError:
             # asdict recurses with no limit of its own.
             raise _too_deep() from None
-        return _data(fields, depth)
+        return _data(fields, depth, seen)
     if value is UNDEFINED:
         return None
-    raise TypeError(f"{type(value).__name__} cannot cross the boundary")
+    raise _why(TypeError(f"a {type(value).__name__} cannot cross between processes"), "type")
 
 
 class RemoteFunction:
@@ -692,7 +714,7 @@ class RemoteFunction:
         return _plain(await self._peer._request_async("call", {"reference": self._record.id}, list(args)))
 
     def __repr__(self) -> str:
-        return "<function from the host>"
+        return "<function of another process>"
 
 
 class RemoteFuture:
@@ -714,7 +736,7 @@ class RemoteFuture:
         return _awaited_plain(self._task).__await__()
 
     def __repr__(self) -> str:
-        return "<awaitable result from the host>"
+        return "<asynchronous result of another process>"
 
 
 async def _awaited_plain(task: asyncio.Future) -> Any:
@@ -747,7 +769,7 @@ class RemoteObject:
         return method
 
     def __repr__(self) -> str:
-        return "<remote object>"
+        return "<object of another process>"
 
 
 def _method(value: Any, name: str) -> Any:
@@ -805,7 +827,7 @@ class _Import:
 
     def check(self) -> None:
         if self.released:
-            raise RuntimeError("this function or result from the host was released")
+            raise RuntimeError("this function or result of another process was released")
 
 
 @dataclasses.dataclass
@@ -1057,7 +1079,7 @@ class Peer:
 
     # ── Values ───────────────────────────────────────────────────
 
-    def _encode(self, value: Any, grants: list, business: bool, depth: int = 0) -> dict:
+    def _encode(self, value: Any, grants: list, business: bool, depth: int = 0, seen: set | None = None) -> dict:
         """The wire form of `value`; `depth` counts the levels around it (an
         argument list starts at -1: it is not a level)."""
         if value is UNDEFINED:
@@ -1120,32 +1142,49 @@ class Peer:
             }
         tag = _values.tag_of(value)
         if tag is not None:
-            return self._encode_tagged(tag, value, grants, business, depth)
-        if isinstance(value, (list, tuple, dict, BaseException)) and depth >= MAX_DEPTH:
-            raise _too_deep()
-        if isinstance(value, (list, tuple)):
+            return self._encode_tagged(tag, value, grants, business, depth, seen)
+        if isinstance(value, (list, tuple, dict)):
+            if seen is None:
+                seen = set()
+            # A container already on the path holds itself (design D3).
+            if id(value) in seen:
+                raise _cyclic()
+            if depth >= MAX_DEPTH:
+                raise _too_deep()
+            references = isinstance(value, (list, tuple)) and _beyond_data(value)
             # An argument list keeps an undefined argument as one.
-            if _beyond_data(value) or (depth < 0 and any(item is UNDEFINED for item in value)):
-                return {
-                    "type": "list",
-                    # In data undefined is null (design V10); an argument
-                    # list keeps it, as an omitted argument.
-                    "value": [
-                        _NULL if item is UNDEFINED and depth >= 0 else self._encode(item, grants, business, depth + 1)
-                        for item in value
-                    ],
-                }
-            return {"type": "data", "value": _data(value, depth)}
+            if references or (depth < 0 and any(item is UNDEFINED for item in value)):
+                seen.add(id(value))
+                try:
+                    return {
+                        "type": "list",
+                        # In data undefined is null (design V10); an argument
+                        # list keeps it, as an omitted argument.
+                        "value": [
+                            _NULL if item is UNDEFINED and depth >= 0 else self._encode(item, grants, business, depth + 1, seen)
+                            for item in value
+                        ],
+                    }
+                finally:
+                    seen.discard(id(value))
+            if isinstance(value, dict) and _beyond_data(value):
+                seen.add(id(value))
+                try:
+                    return {
+                        "type": "record",
+                        "value": {
+                            key: _NULL if item is UNDEFINED else self._encode(item, grants, business, depth + 1, seen)
+                            for key, item in value.items()
+                        },
+                    }
+                finally:
+                    seen.discard(id(value))
+            # Plain data: `_data` walks it, adding this container itself.
+            return {"type": "data", "value": _data(value, depth, seen)}
+        if isinstance(value, BaseException) and depth >= MAX_DEPTH:
+            raise _too_deep()
         if isinstance(value, BaseException):
             return {"type": "data", "value": {"name": type(value).__name__, "message": str(value)}}
-        if isinstance(value, dict) and _beyond_data(value):
-            return {
-                "type": "record",
-                "value": {
-                    key: _NULL if item is UNDEFINED else self._encode(item, grants, business, depth + 1)
-                    for key, item in value.items()
-                },
-            }
         if dataclasses.is_dataclass(value) and not isinstance(value, type) and _beyond_data(value):
             # A dataclass crosses as a dict of its fields (asdict copies
             # them): tagged values in it as such, but no references.
@@ -1155,44 +1194,56 @@ class Peer:
                 raise _too_deep() from None
             if _holds_reference(fields):
                 raise TypeError(
-                    f"{type(value).__name__} cannot cross the boundary: a dataclass crosses as data, "
+                    f"a {type(value).__name__} cannot cross between processes: a dataclass crosses as data, "
                     "without functions or objects with behaviour"
                 )
-            return self._encode(fields, grants, business, depth)
-        return {"type": "data", "value": _data(value, depth)}
+            return self._encode(fields, grants, business, depth, seen)
+        return {"type": "data", "value": _data(value, depth, seen)}
 
-    def _encode_tagged(self, tag: str, value: Any, grants: list, business: bool, depth: int) -> dict:
+    def _encode_tagged(self, tag: str, value: Any, grants: list, business: bool, depth: int, seen: set | None = None) -> dict:
         """A tagged value (#308), sent only to a far end that declared
         `value-<tag>`: to any other, the call carrying it fails."""
         capability = f"value-{tag}"
         if capability not in self._declared:
-            raise ValueError(
-                f"cannot send {_values.describe(value)}: the far end does not take {tag} values "
-                f"(it did not declare the capability {capability})"
+            raise _why(
+                ValueError(
+                    f"cannot send {_values.describe(value)}: the far end does not take {tag} values "
+                    f"(it did not declare the capability {capability})"
+                ),
+                "tag",
             )
         if tag not in ("map", "set"):
             return {"type": tag, "value": _values.write(tag, value)}
+        if seen is None:
+            seen = set()
+        # A map or set that holds itself says so (design D3).
+        if id(value) in seen:
+            raise _cyclic()
         if depth >= MAX_DEPTH:
             raise _too_deep()
-        if tag == "set":
-            elements = list(value)
-            _values.check_keys(elements, "set element")
-            return {"type": "set", "value": [self._encode(item, grants, business, depth + 1) for item in elements]}
-        entries = list(value.items())
-        _values.check_keys((key for key, _item in entries), "map key")
-        return {
-            "type": "map",
-            "value": [
-                [
-                    self._encode(key, grants, business, depth + 1),
-                    # Undefined is null in data (design V10).
-                    _NULL
-                    if item is UNDEFINED
-                    else self._encode(item, grants, business, depth + 1),
-                ]
-                for key, item in entries
-            ],
-        }
+        seen.add(id(value))
+        try:
+            if tag == "set":
+                elements = list(value)
+                _values.check_keys(elements, "set element")
+                return {"type": "set", "value": [self._encode(item, grants, business, depth + 1, seen) for item in elements]}
+            entries = list(value.items())
+            _values.check_keys((key for key, _item in entries), "map key")
+            return {
+                "type": "map",
+                "value": [
+                    [
+                        self._encode(key, grants, business, depth + 1, seen),
+                        # Undefined is null in data (design V10).
+                        _NULL
+                        if item is UNDEFINED
+                        else self._encode(item, grants, business, depth + 1, seen),
+                    ]
+                    for key, item in entries
+                ],
+            }
+        finally:
+            seen.discard(id(value))
 
     def _future_done(self, entry: _Export, done: asyncio.Future) -> None:
         # Recorded early when an await needed it first (see _execute).
@@ -1372,7 +1423,15 @@ class Peer:
     # ── Outgoing calls ───────────────────────────────────────────
 
     def _request(
-        self, op: str, fields: dict, args: Any, finish: Callable, origin: list | None = None, sync: bool = False
+        self,
+        op: str,
+        fields: dict,
+        args: Any,
+        finish: Callable,
+        origin: list | None = None,
+        sync: bool = False,
+        described: str | None = None,
+        payload: str | None = None,
     ) -> str:
         call = self._allocate()
         grants: list = []
@@ -1383,9 +1442,9 @@ class Peer:
             # cycles (#228).
             if sync:
                 frame["sync"] = True
-            described = _described(op, fields)
+            described = described or _described(op, fields)
             if op != "await":
-                frame["args"] = self._encode_args(args, grants, described)
+                frame["args"] = self._encode_args(args, grants, described, payload)
             data = dumps(frame)
             # A message over the limit would end the channel: only this call
             # fails, before it is sent (#675).
@@ -1394,7 +1453,11 @@ class Peer:
                 reason = _over_limit(len(data), limit)
                 index = _largest(frame.get("args"))
                 raise _cannot_send(
-                    ValueError(reason), described, "argument", index, limit, None if index is not None else "the arguments"
+                    _why(ValueError(reason), "limit"),
+                    described,
+                    "argument" if index is not None else "arguments",
+                    index,
+                    limit,
                 )
             self._pending[call] = finish
             if self.closed_error is not None:
@@ -1419,10 +1482,16 @@ class Peer:
         limit = getattr(self._channel, "max_message", None)
         return limit if isinstance(limit, int) and not isinstance(limit, bool) else MAX_MESSAGE
 
-    def _encode_args(self, args: Any, grants: list, call: str) -> dict:
+    def _encode_args(self, args: Any, grants: list, call: str, payload: str | None = None) -> dict:
         """The wire form of a call's arguments (a list; the list is not a
         level), as `_encode` makes it: an error says which argument of
-        `call` it is (#675)."""
+        `call` it is (#675), or, for an event's arguments (`payload`), the
+        event's name and `part` `payload` (design §4.6, D7)."""
+        def refuse(error: BaseException, index: int) -> BaseException:
+            if payload is None:
+                return _cannot_send(error, call, "argument", index)
+            return _cannot_send(error, None, "payload", what=f"the payload of {payload}")
+
         if not isinstance(args, (list, tuple)):
             return self._encode(args, grants, True, -1)
         # An argument list keeps an undefined argument as one.
@@ -1432,17 +1501,17 @@ class Peer:
             try:
                 encoded.append(self._encode(item, grants, True, 0) if listed else _data(item, 0))
             except (ValueError, TypeError, RuntimeError) as error:
-                raise _cannot_send(error, call, "argument", index) from error
+                raise refuse(error, index) from error
         return {"type": "list" if listed else "data", "value": encoded}
 
-    def _call_sync(self, op: str, fields: dict, args: Any) -> Any:
+    def _call_sync(self, op: str, fields: dict, args: Any, payload: str | None = None) -> Any:
         if threading.get_ident() != self._thread:
             # A foreign thread: let the loop make the call, and block only
             # this thread.
-            future = asyncio.run_coroutine_threadsafe(self._request_async(op, fields, args), self.loop)
+            future = asyncio.run_coroutine_threadsafe(self._request_async(op, fields, args, None, payload), self.loop)
             return future.result()
         result: list = []
-        call = self._request(op, fields, args, result.append, sync=True)
+        call = self._request(op, fields, args, result.append, sync=True, payload=payload)
         self._waiting.append(call)
         try:
             for job in list(self._queued):
@@ -1464,7 +1533,9 @@ class Peer:
             raise value
         return value
 
-    async def _request_async(self, op: str, fields: dict, args: Any, origin: list | None = None) -> Any:
+    async def _request_async(
+        self, op: str, fields: dict, args: Any, origin: list | None = None, payload: str | None = None
+    ) -> Any:
         future = self.loop.create_future()
 
         def finish(result: tuple) -> None:
@@ -1476,7 +1547,7 @@ class Peer:
             else:
                 future.set_exception(value)
 
-        call = self._request(op, fields, args, finish, origin)
+        call = self._request(op, fields, args, finish, origin, payload=payload)
         try:
             return await future
         except asyncio.CancelledError:
@@ -1489,16 +1560,18 @@ class Peer:
                     pass
             raise
 
-    def call(self, target: str, method: str, args: list) -> Any:
-        return self._call_sync("invoke", {"target": target, "method": method}, args)
+    def call(self, target: str, method: str, args: list, payload: str | None = None) -> Any:
+        return self._call_sync("invoke", {"target": target, "method": method}, args, payload)
 
-    async def call_async(self, target: str, method: str, args: list) -> Any:
-        result = await self._request_async("invoke", {"target": target, "method": method}, args)
+    async def call_async(self, target: str, method: str, args: list, payload: str | None = None) -> Any:
+        result = await self._request_async("invoke", {"target": target, "method": method}, args, None, payload)
         if isinstance(result, RemoteFuture):
             result = await result
         return result
 
-    def request_answered(self, target: str, method: str, args: list, answered: Callable[[bool, Any], None]) -> None:
+    def request_answered(
+        self, target: str, method: str, args: list, answered: Callable[[bool, Any], None], payload: str | None = None
+    ) -> None:
         """Send a call nobody waits for; `answered(ok, value)` is told its
         reply as the reply's frame is taken, before the next frame (or the
         session's end), not on a later turn of the loop (events protocol
@@ -1509,14 +1582,14 @@ class Peer:
 
         def send() -> None:
             try:
-                self._request("invoke", {"target": target, "method": method}, args, finish)
+                self._request("invoke", {"target": target, "method": method}, args, finish, payload=payload)
             except BaseException as error:  # noqa: BLE001 - told as the answer
                 answered(False, error)
 
         if threading.get_ident() != self._thread:
             self.loop.call_soon_threadsafe(send)
             return
-        self._request("invoke", {"target": target, "method": method}, args, finish)
+        self._request("invoke", {"target": target, "method": method}, args, finish, payload=payload)
 
     def request(self, target: str, method: str, args: list):
         """Send a call now, before this returns, so it goes out ahead of
@@ -1812,7 +1885,7 @@ class Peer:
                 self._rollback(grants)
                 name = value.name if isinstance(value, RemoteError) else type(value).__name__
                 reason = _cannot_send(
-                    ValueError(_over_limit(len(data), limit)),
+                    _why(ValueError(_over_limit(len(data), limit)), "limit"),
                     described,
                     "result" if ok else "error",
                     limit=limit,

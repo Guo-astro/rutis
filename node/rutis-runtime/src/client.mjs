@@ -67,9 +67,9 @@ export class Process {
   get greeting() { return this.#session.greeting }
   // What this side found wrong with the session, if that ended it.
   get fault() { return this.#session.fault }
-  call(target, method, args) { return this.#session.invoke(target, method, args) }
-  callAsync(target, method, args) { return this.#session.invokeAsync(target, method, args) }
-  callAnswered(target, method, args, answered) { this.#session.invokeAnswered(target, method, args, answered) }
+  call(target, method, args, described) { return this.#session.invoke(target, method, args, described) }
+  callAsync(target, method, args, described) { return this.#session.invokeAsync(target, method, args, described) }
+  callAnswered(target, method, args, answered, described) { this.#session.invokeAnswered(target, method, args, answered, described) }
   callFunctionAsync(fn, args) { return this.#session.callFunctionAsync(fn, args) }
   release(value) { this.#session.release(value) }
   references() { return this.#session.references() }

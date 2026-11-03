@@ -935,7 +935,7 @@ logging.basicConfig(level=logging.INFO)
 | 嵌套超过 64 层的值 | 不能跨进程（这次调用失败，见下） |
 | 编码后超过 16 MiB 的调用或返回值 | 不能跨进程（这次调用失败，见下） |
 
-不能跨进程的值只让**这一次调用**失败：错误写明方法、第几个参数（或返回值）和原因，例如参数编码后过大时，这次调用得到 `store.put: argument 1 cannot be sent: the message would be 30889096 bytes, over the limit of 16777216 bytes (16 MiB)`。会话、运行时、同一会话上的其他调用和其他行都不受影响。错误的名字取决于是哪一方拒绝的、用什么语言写的（宿主是 `BindingError`，Node、Bun 是 `RangeError` 或 `TypeError`，Python 是 `ValueError`，Go、Swift、Kotlin 是 `Error`），不作保证；要判断是哪种失败，看错误码：值传不过去都是 `bad-value`，`data` 写明是参数还是返回值（`{part, argument?, limit?}`），不要看名字或文字。
+不能跨进程的值只让**这一次调用**失败：错误写明方法、第几个参数（或返回值）和原因，例如参数编码后过大时，这次调用得到 `store.put: argument 1 cannot be sent: the message would be 30889096 bytes, over the limit of 16777216 bytes (16 MiB)`。会话、运行时、同一会话上的其他调用和其他行都不受影响。错误的名字取决于是哪一方拒绝的、用什么语言写的（宿主是 `BindingError`，Node、Bun 是 `RangeError` 或 `TypeError`，Python 是 `ValueError`，Go、Swift、Kotlin 是 `Error`），不作保证；要判断是哪种失败，看错误码：值传不过去都是 `bad-value`，`data` 写明是参数、返回值还是事件的参数（`{part, argument?, reason, limit?}`；`reason` 是 `non-finite`、`cycle`、`too-deep`、`type`、`tag`、`limit` 之一），不要看名字或文字。收到的值解不开是 `bad-argument`（参数）或 `bad-result`（返回值），它们的话是解码器自己的那句（`json: cannot unmarshal object into Go value of type string`、``invalid type: integer `42`, expected a string``），前面只加 `<服务>.<方法>: argument N: ` 或 `<服务>.<方法>: the result: `。
 
 嵌套深度：一个值最多嵌套 **64 层**。数组 / list / tuple、对象 / dict（含 dataclass）、Map、Set、Go 的切片、map、结构体各算一层，里面有没有引用都一样；作为值传递的 `Error` / 异常也算一层。调用的参数列表本身不算一层：每个参数各自最多 64 层；返回值最多 64 层。更深的值由**要发送它的一方**在发出之前拒绝，只让这次调用失败，错误信息说明上限（`value nested deeper than 64 levels`）：
 

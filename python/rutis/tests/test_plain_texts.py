@@ -93,8 +93,52 @@ class HostProxyTexts(unittest.TestCase):
 
     def test_references_from_the_host_have_plain_reprs(self):
         record = _Import(1, "function", [])
-        self.assertEqual(repr(RemoteFunction(None, record)), "<function from the host>")
-        self.assertEqual(repr(RemoteFuture(None, record)), "<awaitable result from the host>")
+        # Where it came from, never the runtime's own words (design §4.7, D8).
+        self.assertEqual(repr(RemoteFunction(None, record)), "<function of another process>")
+        self.assertEqual(repr(RemoteFuture(None, record)), "<asynchronous result of another process>")
+
+
+# What a value that cannot cross says (design §5.2, docs/design-value-errors-
+# 2026-11-03.md): one frame, one sentence of reason, `bad-value`, and `data`
+# carrying the reason. Locked word for word. guarantee: bridge/bad-values
+class ValueTexts(background.IsolatedAsyncioTestCase):
+    def session(self):
+        ours, theirs = socket.socketpair()
+        theirs.settimeout(10)
+        self.addCleanup(ours.close)
+        self.addCleanup(theirs.close)
+        peer = Peer(SocketChannel(ours), lambda target, method, args: None, endpoint=LOCAL)
+        self.addCleanup(peer._channel.close)
+        self.addCleanup(peer.close)
+        peer._receive(hello())
+        return peer
+
+    def refused(self, value):
+        peer = self.session()
+        with self.assertRaises(ValueError) as refused:
+            peer.call("host:forecast", "week", ["Oslo", value])
+        return refused.exception
+
+    def cases(self):
+        yield float("nan"), "non-finite", "forecast.week: argument 2 cannot be sent: the number NaN is not finite"
+        cycle = []
+        cycle.append(cycle)
+        yield cycle, "cycle", "forecast.week: argument 2 cannot be sent: the value holds itself (a cycle)"
+        held = {}
+        held["self"] = held
+        yield held, "cycle", "forecast.week: argument 2 cannot be sent: the value holds itself (a cycle)"
+        deep = 1
+        for _ in range(70):
+            deep = [deep]
+        yield deep, "too-deep", "forecast.week: argument 2 cannot be sent: the value nests deeper than 64 levels"
+
+    async def test_a_value_that_cannot_cross_says_which_call_and_why(self):
+        for value, reason, message in self.cases():
+            error = self.refused(value)
+            self.assertEqual(str(error), message)
+            self.assertEqual(
+                (error.code, error.data), ("bad-value", {"part": "argument", "argument": 2, "reason": reason})
+            )
 
 
 class SessionTexts(background.IsolatedAsyncioTestCase):
@@ -138,10 +182,12 @@ class SessionTexts(background.IsolatedAsyncioTestCase):
                 with self.assertRaises(ValueError) as refused:
                     peer.call("host:weather\0t1", "tomorrow", ["Oslo", value])
                 self.assertEqual(
-                    str(refused.exception), f"weather.tomorrow: argument 2 cannot be sent: {shown} cannot cross processes"
+                    str(refused.exception), f"weather.tomorrow: argument 2 cannot be sent: the number {shown} is not finite"
                 )
                 self.assertEqual(refused.exception.code, "bad-value")
-                self.assertEqual(refused.exception.data, {"part": "argument", "argument": 2})
+                self.assertEqual(
+                    refused.exception.data, {"part": "argument", "argument": 2, "reason": "non-finite"}
+                )
         self.assertIsNone(peer.closed_error)
 
     async def test_a_result_that_is_not_finite_is_answered_with_why(self):
@@ -152,7 +198,7 @@ class SessionTexts(background.IsolatedAsyncioTestCase):
         )
         reply = await read()
         self.assertEqual(reply["op"], "throw", reply)
-        self.assertEqual(reply["error"]["message"], "weather.today: the result cannot be sent: NaN cannot cross processes")
+        self.assertEqual(reply["error"]["message"], "weather.today: the result cannot be sent: the number NaN is not finite")
         root = reply["error"]["graph"]["nodes"][reply["error"]["graph"]["root"]["value"]]
         self.assertEqual(root["code"], "bad-value")
         self.assertIsNone(peer.closed_error)
