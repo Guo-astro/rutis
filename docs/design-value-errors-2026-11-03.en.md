@@ -72,8 +72,23 @@ The body of a message is the underlying error's own words, verbatim; rutis adds 
 
 - What the underlying error says (serde, `encoding/json`, kotlinx.serialization, Swift's `ValueCodec`, Go's `reflect`) is what the developer reads: ``invalid type: integer `42`, expected a string``, `json: cannot unmarshal object into Go value of type string`, `KeyError: 'town'`.
 - The prefix says only where: `weather.ask: `, `argument 2: `, `the result: `, `the payload of weather/asked: `. No paraphrase, no summary, nothing the underlying error already said repeated.
-- Only an error rutis made up itself is rewritten into plain words — it has no underlying error: a synchronous wait cycle's `… path: test:5 -> …`, Node's bare `non-finite number`, `row <x> is not loaded in this runtime`, the four wordings of "nested too deep", `a symbol cannot cross between processes`. Those sentences are this design's to set (§4.2); they have no original to keep.
+- Only an error rutis made up itself is rewritten into plain words — it has no underlying error. Those sentences fall into two kinds: the ones this design sets again, and the ones left as they are today.
 - When in doubt, keep the original.
+
+One table says which sentence is whose:
+
+| The sentence | Who said it | This design |
+| --- | --- | --- |
+| ``invalid type: integer `42`, expected a string``, `json: cannot unmarshal object into Go value of type string`, what kotlinx.serialization and Swift's `ValueCodec` say when a decode fails | the underlying decoder | kept verbatim, with only the position prefix (§4.5) |
+| `the number NaN is not finite` (Node says only `non-finite number` today) | rutis | **set again** (§4.2) |
+| `the value holds itself (a cycle)` | rutis | **set again**: Python, Go, Kotlin and Swift say too deep today |
+| `the value nests deeper than 64 levels` | rutis | **set again**: four wordings today, Swift's with `(a cyclic reference?)` |
+| `a <type name> cannot cross between processes` (`a symbol`, `a chan int`, `a module`, Node's `: pass plain data instead`) | rutis | **the sentence set again**: one sentence everywhere; which values do not cross stays each language's rule (§4.2, the `type` row) |
+| `the far end does not take <tag> values (it did not declare the capability value-<tag>)` | rutis | unchanged from today |
+| `the message would be <n> bytes, over the limit of <limit> bytes (<n> MiB)` | rutis | unchanged from today |
+| `argument 1 is missing`, `<service>.<method> takes 1 argument, got 2` | rutis (no underlying error) | unchanged from today |
+| `the value holds a function that its Rust type cannot represent`, `the value holds a tagged value (…) that its Rust type cannot represent`, Swift's `cannot decode … into …` | rutis (no underlying error) | unchanged from today, only `live Cordis` goes |
+| a synchronous wait cycle's `… path: test:5 -> …`, `row <x> is not loaded in this runtime`, a bare `non-finite number` and the runtime's own lines like them | rutis | not this design's (the diagnostics design and their own designs) |
 
 ### 4.1 The frame
 
@@ -104,7 +119,7 @@ A reason is one sentence that says nothing about the runtime's internals. `data.
 | `tag` | `the far end does not take <tag> values (it did not declare the capability value-<tag>)` | the sentence it has today, unchanged |
 | `limit` | `the message would be <n> bytes, over the limit of <limit> bytes (<n> MiB)` | the sentence it has today, unchanged |
 
-The `type` row is each language's own rule about which values do not cross; this design only unifies the sentence: `a <type name> cannot cross between processes`. Apart from these three (`non-finite`, `cycle`, `too-deep`) this design changes no existing sentence of a reason.
+This table holds only the reason sentences rutis made itself; the classification table at the start of §4 says where each is: **set again** are `non-finite`, `cycle` and `too-deep`, and the shape of the `type` sentences; **unchanged from today** are `tag` and `limit`. The other half of the `type` row is each language's own rule about which values do not cross, which this design leaves alone and whose sentence alone it unifies: `a <type name> cannot cross between processes`.
 
 ### 4.3 Codes and `data`
 
@@ -272,7 +287,7 @@ let text: String = call_service(&ctx, "forecast", "tomorrow", ("Oslo",)).await?;
 | The result holds a function and a `serde_json::Value` is wanted | `forecast.tomorrow: the result: the value holds a function that its Rust type cannot represent` | `bad-result`, `{service: "forecast", method: "tomorrow"}` |
 | The result holds an instant and a `serde_json::Value` is wanted | `forecast.tomorrow: the result: the value holds a tagged value (an instant, bytes, a map, ...) that its Rust type cannot represent` | `bad-result`, `{service: "forecast", method: "tomorrow"}` |
 
-Rust sends a NaN as `null` today (§1); afterwards it reports the error like every other language, and serde's own text appears in no line.
+Rust sends a NaN as `null` today (§1); afterwards it reports the error like every other language. serde's own text has not gone: it stays only where it belongs, repeated verbatim when a decode fails (§4.5 — what a host and a developer read in `bad-result` and `bad-argument`); the cases where a value cannot be sent (non-finite, cycle, depth, kind) are rutis's own judgement, said in rutis's own words (§4.2).
 
 ### 5.5 Host owners (applications embedding rutis, products using `rutis-host` as their runtime)
 
@@ -356,15 +371,10 @@ One exception to state plainly: a `bad-value` the Rust side made itself does not
 | S5 (#936) | Swift: `seen` in `Codec/ValueCodec.swift` (encoding, `:147-148`) and `Session/Peer.swift` (taking a value in, `:662,741-742`), a cycle before the depth, the three sentences; `ValueCodec`'s `cannot decode … into …` is Swift's own sentence and stays, only the prefix is added; `data` at `Errors.swift:385` is still read as data | `swift/rutis/Tests/SelfTest/PeerTests.swift` (today `:96` only checks that the text contains "nested deeper than 64") locks the Swift lines word for word |
 | S6 (#936) | Kotlin: `seen` at both encoding places, `internal/peer/Peer.kt:420,508`, and a new sentence in `tooDeep()` (`:63-65`); generated argument decoding keeps kotlinx.serialization's sentence (`Refusals.kt:32-45` stops building `should be … got …`); `toString` of `advanced/RemoteFunction.kt:25` and `RemoteObject.kt:29` becomes `<… of another process>` | `kotlin/rutis/rutis/src/jvmTest/kotlin/arcships/rutis/PeerTest.kt` and `ErrorTextTest.kt` lock the Kotlin lines word for word |
 | S7 (`bad-result` and the row name) | The diagnostics design's code table (§4.3) gets only this design's two rows (§4.3; the rest belongs to #937, and whichever lands second rebases); a reference carries the row that made it (a protocol change of its own: `deny_unknown_fields` means it needs a version or a capability first, and is designed separately) | the code table is updated; the row name is decided in its own design |
-| S8 (the completion condition of #936) | `weather.expected.json`'s `throws` gains `code` and `data` (the section "How S8 is added" below says how, who produces them and who runs them); one sample per row of §1, each of the six runtimes naming its own | the matrix's six cells (Node, Python, Go, Swift, Bun, Kotlin) are green, and a text or code changed without its case goes red |
+| S8 (the completion condition of #936) | no new machinery: each row of §1 is locked word for word by the tests of S1–S6, one line written by each of the six runtimes (the next paragraph says why the shared case table is not used) | the six stages' tests together cover every row of §1, with its `code` and `data`; a changed line without its case goes red |
+
+#### Why the shared case table is not touched
+
+`throws` in `crates/rutis-bridge/src/runtime/testing/weather.expected.json` is `{}` or `{name, message}` — the file's own `about` says so, and the code that reads it compares those two only (`check` in `crates/rutis-bridge/src/runtime/testing.rs:178-195`). Adding `code` and `data` would change three places at once: `check`, the file's `about`, and each of the three testing tools' own `throws` structs (Go `go/rutis/rutistest/conformance_test.go:132-196`, Kotlin `kotlin/rutis/rutis-conformance/src/test/kotlin/arcships/rutis/conformance/WeatherConformanceTest.kt:53-67`, Swift `swift/rutis/Tests/SelfTest/WeatherConformanceTests.swift:64-72`), and those tools do not simulate crossing and skip such samples through `crossing: true`. That is the shared case table's own piece of work, unrelated to this design's six stages, so this design does not change it: each row of §1 lives in its own language's tests (the "what done means" column of S1–S6 names the files). A cross-language table of value errors, when it is wanted, is a design of its own.
 
 "Done" of every issue includes: every line of §5 that belongs to it is compared word for word by a case; the old wording (the table of §6) appears nowhere in the repository.
-
-#### How S8 is added (`weather.expected.json`)
-
-A sample's `throws` compares `name` and `message` only today (`crates/rutis-bridge/src/runtime/testing.rs:178-195`), and, when it compares anything, requires the error to be one the plugin threw (`Error::Remote`). Two keys are added: `code` (a string) and `data` (JSON), compared in the same place with `Error::code()` and `Error::data()` of the error received (`crates/rutis-bridge/src/session/mod.rs:181-213`) — both are read from the error's graph, so what is compared is the `data` that crossed.
-
-- **Who runs it**: `rutis_bridge::runtime::testing::runtime`, which `crates/rutis-bridge/tests/session_matrix.rs` runs on six runtimes: Node, Python, Go, Swift, Bun, Kotlin. Rust is the host: it reports no samples, it reads them. Whether a cell runs is still decided by `RUTIS_TEST_RUNTIMES`.
-- **Who produces `code`**: a sample's value is the **result** of `sample(name)`, so the failure happens in the result path of the runtime that made it, and `code` is `bad-value` with `data.part` `result` everywhere: Node and Bun's `#respond` → `ofResult` (`node/rutis-runtime/src/session.mjs:750-754`; the graph is written at `errors.mjs:170` / `errors.ts:170`); Python's `_respond` → `_cannot_send(…, "result")` (`peer.py:1804`); Go's `respondTo` → `ofResult` (`peer.go:1749`; `*ValueError`'s `Code()` / `Data()` at `values.go:52-90`); Swift's `respond` → `ofResult` (`Peer.swift:1391`; `ValueError`'s `code` at `TaggedValues.swift:431-441`); Kotlin's `respond` → `ofResult` (`Peer.kt:1324`; `ValueException`'s `code` / `data` at `Tagged.kt:61-66`, the graph written at `Errors.kt:213-221`). Kotlin's `tooDeep()` and Swift's depth `ValueError` carry no `data` themselves; that path adds `{part: "result"}` for them, and `reason` comes from this design (S1–S6).
-- **The testing tools**: the three SDK tools read the same JSON (Go `rutistest/conformance_test.go:132-196`, Kotlin `WeatherConformanceTest.kt:53-67`, Swift `WeatherConformanceTests.swift:64-72`), compare `name` and `message` only, and skip `crossing: true`. They do not simulate crossing, so a value that cannot cross never fails there; such a sample is written with `crossing: true`, the tool skips it, and only the matrix checks it — the switch the file already has, with no new field.
-

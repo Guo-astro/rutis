@@ -72,8 +72,23 @@ Issue：[#936](https://github.com/arcships/rutis/issues/936)（属于 [#663](htt
 
 - 底层错误（serde、`encoding/json`、kotlinx.serialization、Swift 的 `ValueCodec`、Go 的 `reflect`）说什么，就说什么：``invalid type: integer `42`, expected a string``、`json: cannot unmarshal object into Go value of type string`、`KeyError: 'town'`。
 - 前缀只说位置：`weather.ask: `、`argument 2: `、`the result: `、`the payload of weather/asked: `。不转述，不概括，不把底层错误已经说过的话再说一遍。
-- 只有 rutis 自己造的错误才改写成开发者读得懂的话——它没有底层错误可言：同步等待成环的 `… path: test:5 -> …`、Node 那条光秃秃的 `non-finite number`、`row <x> is not loaded in this runtime`、四种说法的「嵌套过深」、`a symbol cannot cross between processes`。这类句子由这份设计定（§4.2），它们没有原文可留。
+- 只有 rutis 自己造的错误才改写成开发者读得懂的话——它没有底层错误可言。这类句子又分两种：这份设计重定的，和照今天不动的。
 - 拿不准时，保留原文。
+
+每一句归谁，一张表说清：
+
+| 句子 | 谁说的 | 这份设计 |
+| --- | --- | --- |
+| ``invalid type: integer `42`, expected a string``、`json: cannot unmarshal object into Go value of type string`、kotlinx.serialization 与 Swift `ValueCodec` 解码时的那句 | 底层解码器 | 逐字保留，只加位置前缀（§4.5） |
+| `the number NaN is not finite`（Node 今天只说 `non-finite number`） | rutis | **重定**（§4.2） |
+| `the value holds itself (a cycle)` | rutis | **重定**：今天 Python、Go、Kotlin、Swift 报成「嵌套过深」 |
+| `the value nests deeper than 64 levels` | rutis | **重定**：今天四种说法，Swift 还带 `(a cyclic reference?)` |
+| `a <类型名> cannot cross between processes`（`a symbol`、`a chan int`、`a module`，Node 的 `: pass plain data instead`） | rutis | **重定句子**：统一成这一句；哪些值不跨仍由各语言的规则定（§4.2 的 `type` 行） |
+| `the far end does not take <标签> values (it did not declare the capability value-<标签>)` | rutis | 照今天的句子不动 |
+| `the message would be <n> bytes, over the limit of <limit> bytes (<n> MiB)` | rutis | 照今天的句子不动 |
+| `argument 1 is missing`、`<服务>.<方法> takes 1 argument, got 2` | rutis（没有底层错误） | 照今天的句子不动 |
+| `the value holds a function that its Rust type cannot represent`、`the value holds a tagged value (…) that its Rust type cannot represent`、Swift 的 `cannot decode … into …` | rutis（没有底层错误） | 照今天的句子不动，只把 `live Cordis` 去掉 |
+| 同步等待成环的 `… path: test:5 -> …`、`row <x> is not loaded in this runtime`、`non-finite number` 这类运行时自己的行 | rutis | 不归这份设计（诊断设计与它自己的设计管） |
 
 ### 4.1 框架
 
@@ -104,7 +119,7 @@ Issue：[#936](https://github.com/arcships/rutis/issues/936)（属于 [#663](htt
 | `tag` | `the far end does not take <标签> values (it did not declare the capability value-<标签>)` | 今天已有的句子，不改 |
 | `limit` | `the message would be <n> bytes, over the limit of <limit> bytes (<n> MiB)` | 今天已有的句子，不改 |
 
-`type` 那一行是各语言自己的规则（哪些值不跨），这套规则只统一句子：`a <类型名> cannot cross between processes`。除这三句（`non-finite`、`cycle`、`too-deep`）之外，本设计不改各语言已有的原因句子。
+这张表只收 rutis 自己造的原因句子，逐句归在哪里见 §4 开头的分类表：**重定**的是 `non-finite`、`cycle`、`too-deep` 三句，以及 `type` 那类句子的写法；**照今天不动**的是 `tag` 与 `limit` 两句。`type` 那一行的另一半是各语言自己的规则（哪些值不跨），那部分这份设计不管，只统一句子：`a <类型名> cannot cross between processes`。
 
 ### 4.3 错误码与 `data`
 
@@ -272,7 +287,7 @@ let text: String = call_service(&ctx, "forecast", "tomorrow", ("Oslo",)).await?;
 | 返回值里有函数，要 `serde_json::Value` | `forecast.tomorrow: the result: the value holds a function that its Rust type cannot represent` | `bad-result`，`{service: "forecast", method: "tomorrow"}` |
 | 返回值里有 instant，要 `serde_json::Value` | `forecast.tomorrow: the result: the value holds a tagged value (an instant, bytes, a map, ...) that its Rust type cannot represent` | `bad-result`，`{service: "forecast", method: "tomorrow"}` |
 
-Rust 今天发 NaN 得到 `null`（§1）；改完之后它和别的语言一样报错。`serde` 的原文不再出现在任何一行里。
+Rust 今天发 NaN 得到 `null`（§1）；改完之后它和别的语言一样报错。serde 的原文没有消失，而是只留在它该在的地方：解不开的时候逐字照搬（§4.5，宿主和开发者在 `bad-result`、`bad-argument` 里读到的就是它）；值传不出去的那几种（非有限数、循环、深度、种类）是 rutis 自己的判断，说的是 rutis 自己的话（§4.2）。
 
 ### 5.5 宿主、应用（嵌入 rutis 的程序，或把 `rutis-host` 当运行时的产品）
 
@@ -356,15 +371,10 @@ Rust 今天发 NaN 得到 `null`（§1）；改完之后它和别的语言一样
 | S5（#936） | Swift：`Codec/ValueCodec.swift`（编码、`:147-148`）与 `Session/Peer.swift`（收值、`:662,741-742`）加 `seen`，循环先于深度，三句话统一；`ValueCodec` 的 `cannot decode … into …` 是 Swift 自己造的句子，照旧，只加前缀；`Errors.swift:385` 的 `data` 照旧按数据读 | `swift/rutis/Tests/SelfTest/PeerTests.swift`（今天 `:96` 只查「包含 nested deeper」）逐字锁住属于 Swift 的行 |
 | S6（#936） | Kotlin：`internal/peer/Peer.kt:420,508` 两处编码加 `seen`，`tooDeep()`（`:63-65`）换句；生成的参数解码保留 kotlinx.serialization 的原文（`Refusals.kt:32-45` 不再拼 `should be … got …`）；`advanced/RemoteFunction.kt:25`、`RemoteObject.kt:29` 的 `toString` 改 `<… of another process>` | `kotlin/rutis/rutis/src/jvmTest/kotlin/arcships/rutis/PeerTest.kt`、`ErrorTextTest.kt` 逐字锁住属于 Kotlin 的行 |
 | S7（`bad-result` 与行名） | 诊断设计 §4.3 的码表只动这份设计的两行（§4.3；其余属于 #937，后落地的一份 rebase）；引用值带行名（新的协议改动，`deny_unknown_fields` 决定它必须先抬版本或先加一条能力，另写一个 issue） | 码表更新；行名那一条在它自己的设计里定 |
-| S8（#936 的完成条件） | `weather.expected.json` 的 `throws` 加 `code` 与 `data`（下面的「S8 怎么加」写清怎么加、谁产生、谁跑）；§1 的每一行一个 sample，六个运行时各报自己那些 | 会话矩阵的六格（Node、Python、Go、Swift、Bun、Kotlin）全绿，一行的文字或码改了而用例没改就红 |
+| S8（#936 的完成条件） | 不加新机制：§1 的每一行由 S1–S6 各自的用例逐字锁住，六个运行时各写自己那一行（下段说明为什么不走共用用例表） | 六个阶段的用例合起来覆盖 §1 的每一行，连同 `code` 与 `data`；一行改了而用例没改就红 |
+
+#### 共用用例表为什么不动
+
+`crates/rutis-bridge/src/runtime/testing/weather.expected.json` 的 `throws` 只写 `{}` 或 `{name, message}`——文件自己的 `about` 这么写，读它的代码也只比这两项（`crates/rutis-bridge/src/runtime/testing.rs:178-195` 的 `check`）。把 `code` 与 `data` 加进去要同时改三处：`check`、那份文件的 `about`，以及三个测试工具里各自的 `throws` 结构（Go `go/rutis/rutistest/conformance_test.go:132-196`、Kotlin `kotlin/rutis/rutis-conformance/src/test/kotlin/arcships/rutis/conformance/WeatherConformanceTest.kt:53-67`、Swift `swift/rutis/Tests/SelfTest/WeatherConformanceTests.swift:64-72`），而三个工具又不模拟跨进程、靠 `crossing: true` 跳过这类 sample。那是共用用例表自己的一件事，跟本设计的六个阶段无关，所以这份设计不改它：§1 的每一行落在各语言自己的用例里（S1–S6 的「完成」一列写着文件），要一张跨语言的值错误表时，它自己另写一份设计。
 
 每个 issue 的「完成」都包含：§5 里属于它的每一行都有用例逐字比较；旧的说法（§6 的表）在仓库里不再出现。
-
-#### S8 怎么加（`weather.expected.json`）
-
-一个 sample 的 `throws` 今天只比 `name` 与 `message`（`crates/rutis-bridge/src/runtime/testing.rs:178-195`），而且要比对时要求它确实是插件那边抛过来的错误（`Error::Remote`）。加两个键即可：`code`（字符串）与 `data`（JSON），在同一个地方用收到错误的 `Error::code()` / `Error::data()` 比较（`crates/rutis-bridge/src/session/mod.rs:181-213`）——两者都从错误图上读，所以比的就是跨过来的那份 `data`。
-
-- **谁跑**：`rutis_bridge::runtime::testing::runtime`，由 `crates/rutis-bridge/tests/session_matrix.rs` 在六个运行时上各跑一遍：Node、Python、Go、Swift、Bun、Kotlin。Rust 是宿主，它不报 sample，只读。哪一格跑不跑照旧由 `RUTIS_TEST_RUNTIMES` 决定。
-- **`code` 由谁产生**：sample 的值是 `sample(name)` 的**返回值**，失败因此发生在产值的那个运行时的返回值那一支，`code` 都是 `bad-value`、`data.part` 是 `result`：Node、Bun 的 `#respond` → `ofResult`（`node/rutis-runtime/src/session.mjs:750-754`，图写在 `errors.mjs:170`／`errors.ts:170`）；Python `_respond` → `_cannot_send(…, "result")`（`peer.py:1804`）；Go `respondTo` → `ofResult`（`peer.go:1749`，`*ValueError` 的 `Code()`／`Data()` 在 `values.go:52-90`）；Swift `respond` → `ofResult`（`Peer.swift:1391`，`ValueError` 的 `code` 在 `TaggedValues.swift:431-441`）；Kotlin `respond` → `ofResult`（`Peer.kt:1324`，`ValueException` 的 `code`／`data` 在 `Tagged.kt:61-66`，图写在 `Errors.kt:213-221`）。Kotlin 的 `tooDeep()` 与 Swift 的深度 `ValueError` 本身不带 `data`，是这一支替它们加上 `{part: "result"}`；`reason` 由这份设计加上（S1–S6）。
-- **测试工具**：三种 SDK 工具读同一份 JSON（Go `rutistest/conformance_test.go:132-196`、Kotlin `WeatherConformanceTest.kt:53-67`、Swift `WeatherConformanceTests.swift:64-72`），只比 `name` 与 `message`，并且跳过 `crossing: true`。它们不模拟跨进程，值传不过去这一类在它们那里根本不发生，所以这类 sample 写 `crossing: true`：工具跳过，只有会话矩阵的格子在查——正是这份文件已有的那个开关，不新增字段。
-
