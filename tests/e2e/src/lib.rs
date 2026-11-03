@@ -214,6 +214,16 @@ pub enum Lang {
 ///   probes/    one request directory per probe
 ///   logs/      on failure: each host's output, the residue found
 /// ```
+/// The gate's own packages a scenario installs from
+/// ([`Scenario::installed_with_artifacts`]).
+struct Artifacts {
+    /// What every program of the scenario gets: the local npm registry, the
+    /// wheels, and an empty index for uv and pip.
+    env: Vec<(String, String)>,
+    /// The registry's process, stopped by [`Scenario::finish`].
+    registry: std::process::Child,
+}
+
 pub struct Scenario {
     name: String,
     /// Unique among the scenarios running on the machine: the directory's
@@ -222,6 +232,10 @@ pub struct Scenario {
     dir: PathBuf,
     /// Installed mode ([`Scenario::installed`]).
     installed: bool,
+    /// The gate's own packages, when the scenario installs from them
+    /// ([`Scenario::installed_with_artifacts`]): the environment every
+    /// program gets, and the local npm registry's process.
+    artifacts: RefCell<Option<Artifacts>>,
     hosts: RefCell<Vec<host::Started>>,
     ports: RefCell<Vec<u16>>,
     proxies: RefCell<Vec<Arc<proxy::Shared>>>,
@@ -245,6 +259,7 @@ impl Scenario {
             id,
             dir,
             installed: false,
+            artifacts: RefCell::new(None),
             hosts: RefCell::new(Vec::new()),
             ports: RefCell::new(Vec::new()),
             proxies: RefCell::new(Vec::new()),
@@ -266,6 +281,51 @@ impl Scenario {
         let mut scenario = Self::new(name);
         scenario.installed = true;
         std::fs::create_dir_all(scenario.dir.join("home")).expect("the scenario's home");
+        scenario
+    }
+
+    /// A scenario in installed mode whose packages are the ones a release
+    /// gate built (`RUTIS_E2E_ARTIFACTS`, tools/install/local-artifacts.sh or
+    /// package.yml), before they are published: a local npm registry serves
+    /// the tarballs in `<built>/npm`, the wheels in `<built>/wheels` are what
+    /// uv and pip install from, and every other name a project asks for comes
+    /// from the public registry, so a guide's commands run as written
+    /// (docs/design-function-refs-2026-11-03.md §6).
+    pub fn installed_with_artifacts(name: &str, built: &Path) -> Self {
+        let scenario = Self::installed(name);
+        let npm = built.join("npm");
+        let tool = repo().join("tools/install/artifact-registry.mjs");
+        let mut registry = std::process::Command::new("node")
+            .arg(&tool)
+            .arg(&npm)
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap_or_else(|error| panic!("node {}: {error}", tool.display()));
+        // The URL, printed once it listens.
+        let stdout = registry.stdout.take().expect("piped stdout");
+        let mut line = String::new();
+        std::io::BufRead::read_line(&mut std::io::BufReader::new(stdout), &mut line)
+            .expect("the registry's URL");
+        let url = line.trim().to_owned();
+        assert!(
+            url.starts_with("http://127.0.0.1:"),
+            "the npm registry said {url:?}"
+        );
+        // An index with nothing in it (uv before 0.7 has no UV_NO_INDEX), and
+        // the wheels beside it, as tests/e2e/tests/plugin_install.rs does.
+        let index = scenario.dir.join("index");
+        std::fs::create_dir_all(&index).expect("the index directory");
+        let index = format!("file://{}", index.display());
+        let wheels = built.join("wheels").display().to_string();
+        let env = vec![
+            ("npm_config_registry".to_owned(), url),
+            ("UV_FIND_LINKS".to_owned(), wheels.clone()),
+            ("UV_INDEX_URL".to_owned(), index.clone()),
+            ("UV_DEFAULT_INDEX".to_owned(), index),
+            ("PIP_FIND_LINKS".to_owned(), wheels),
+            ("PIP_NO_INDEX".to_owned(), "1".to_owned()),
+        ];
+        *scenario.artifacts.borrow_mut() = Some(Artifacts { env, registry });
         scenario
     }
 
@@ -690,6 +750,9 @@ impl Scenario {
                 .env("RUTIS_PYTHON_PATH", repo().join("python/rutis"));
         }
         command.envs(env.iter().copied());
+        if let Some(artifacts) = self.artifacts.borrow().as_ref() {
+            command.envs(artifacts.env.iter().map(|(name, value)| (name, value)));
+        }
         let name = format!("host-{}", self.hosts.borrow().len() + 1);
         let marker = format!("{}/{name}", self.id);
         let (host, started) = Host::spawn(&name, &marker, command, input);
@@ -820,6 +883,10 @@ impl Scenario {
     /// the residue in `logs/`.
     pub fn finish(self) {
         self.finished.set(true);
+        if let Some(mut artifacts) = self.artifacts.borrow_mut().take() {
+            let _ = artifacts.registry.kill();
+            let _ = artifacts.registry.wait();
+        }
         let residue = self.residue();
         for skipped in &residue.skipped {
             eprintln!("e2e {}: residue check skipped: {skipped}", self.name);

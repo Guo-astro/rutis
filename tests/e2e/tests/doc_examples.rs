@@ -1,11 +1,22 @@
 //! The guides' runnable examples (#193, Q2.13): each one marked in
 //! docs/guide/*.md (tools/doc-examples.mjs) is followed as written, in a
-//! new directory, with the published packages (the guides install from the
-//! registries), in installed mode. Swift plugins build only on macOS, so
+//! new directory, in installed mode. Swift plugins build only on macOS, so
 //! the Swift guides' examples run on macOS and the others elsewhere.
-//! install.yml runs this after a release; `cargo test` skips it:
+//!
+//! Two sources of packages:
+//!
+//! - after a release, the published ones (the guides install from the
+//!   registries): `install.yml` runs it with the registry source;
+//! - in a release gate, the packages the gate built, before they are
+//!   published: with `RUTIS_E2E_ARTIFACTS` set, the examples that install
+//!   only npm and PyPI packages run against a local npm registry over those
+//!   tarballs and those wheels (docs/design-function-refs-2026-11-03.md §6).
+//!   The others need crates.io or the Go module proxy and stay post-release.
+//!
+//! `cargo test` skips it:
 //!
 //!   RUTIS_E2E_SOURCE=registry cargo test -p rutis-e2e --test doc_examples -- --ignored
+//!   RUTIS_E2E_ARTIFACTS=<dir> cargo test -p rutis-e2e --test doc_examples -- --ignored
 
 #![cfg(unix)]
 
@@ -13,8 +24,9 @@ use rutis_e2e::{build_guard, repo, Scenario};
 use serde_json::Value;
 
 #[test]
-#[ignore = "installs the published packages: install.yml runs it after a release"]
+#[ignore = "installs packages: a release gate runs it with the ones it built, and after a release with the published ones"]
 fn the_guides_examples_run_as_written() {
+    let built = std::env::var_os("RUTIS_E2E_ARTIFACTS").map(std::path::PathBuf::from);
     let out = std::env::temp_dir().join(format!("rutis-doc-examples-{}.json", std::process::id()));
     let status = std::process::Command::new("node")
         .arg(repo().join("tools/doc-examples.mjs"))
@@ -27,15 +39,42 @@ fn the_guides_examples_run_as_written() {
     let _ = std::fs::remove_file(&out);
     for example in examples.as_array().unwrap() {
         let swift = example["guide"].as_str().unwrap().starts_with("swift-");
-        if swift == cfg!(target_os = "macos") {
-            follow(example);
+        if swift != cfg!(target_os = "macos") {
+            continue;
         }
+        let name = example["name"].as_str().unwrap();
+        if built.is_some() && !installs_only_npm_and_pypi(name) {
+            continue;
+        }
+        follow(example, built.as_deref());
     }
 }
 
-fn follow(example: &Value) {
+/// Whether every package an example installs comes from npm or PyPI: those
+/// run with the packages a release gate built. The others (`jot`, `rust`,
+/// `go`, `swift`) need crates.io or the Go module proxy, and run after a
+/// release only. Each guide's English twin adds `-en` to the name.
+fn installs_only_npm_and_pypi(name: &str) -> bool {
+    const NAMES: [&str; 8] = [
+        "jot-command",
+        "jot-command-python",
+        "plugin-api-ts",
+        "plugin-api-py",
+        "typescript",
+        "bun",
+        "python",
+        "rutis-host",
+    ];
+    let name = name.strip_suffix("-en").unwrap_or(name);
+    NAMES.contains(&name)
+}
+
+fn follow(example: &Value, built: Option<&std::path::Path>) {
     let name = example["name"].as_str().unwrap();
-    let s = Scenario::installed(&format!("doc-{name}"));
+    let s = match built {
+        Some(built) => Scenario::installed_with_artifacts(&format!("doc-{name}"), built),
+        None => Scenario::installed(&format!("doc-{name}")),
+    };
     // The directory the reader is in: changed by `cd` lines.
     let mut cwd = String::new();
     for step in example["steps"].as_array().unwrap() {
