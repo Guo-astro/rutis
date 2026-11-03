@@ -85,6 +85,22 @@ This line (`<row id>: <state>`, what it waits for, where it failed, with the pos
 2. the wording and codes of the two failures the tool itself produces (`no-service`, `timeout`, §3.3 and §3.4), plus the code `not-running` for when the row is not up;
 3. how each language hands the code over (§3.5).
 
+### 3.1.1 The body is the underlying error's own words
+
+A message has two parts: a **prefix** answering "which of my calls was this" (the row, the `apply` step, the service and method), and a **body that is the underlying error's own words, verbatim**. No paraphrasing, no summarising, and no repeating what the error already said; when in doubt, keep the original.
+
+| What the plugin threw | What the test shows (prefix + the original) |
+| --- | --- |
+| `KeyError: 'town'` (Python) | `greeter: failed in apply: KeyError: 'town'`, then `in greeter:` and `File "/…/greeter/plugin.py", line 42, in apply` |
+| `new Error('boom')` (Node) | `greeter: failed in apply: Error: boom`, then `in greeter:` and `at apply (/…/src/index.ts:42:11)` |
+| serde's ``invalid type: integer `42`, expected a string`` | ``greeter: failed in apply: invalid type: integer `42`, expected a string`` |
+| Go's `json: unsupported type: chan int` | `greeter: failed in apply: json: unsupported type: chan int` |
+
+`failed in apply: `, `in greeter:` and the position lines are rutis's; the rest is not touched. For this document the rule has one landing place: in the `line` `state(id)` gives, and in `load`'s failures, everything after the prefix must be exactly what the plugin threw (§4's tables say so word for word, and T-1's case compares it verbatim) — this document does not rewrite it, and an implementation may not "clear it up a little" on the way.
+
+Only **errors rutis itself made up** become plain words: the waiting reasons (`nothing provides it yet`), which step failed, a config that does not match (`config: greeting should be a string, got 3`), and this document's three sentences (`no such service …`, `did not return within 30s`, `not running (…)`). They have no underlying original to keep: they are rutis's judgement, not something a plugin said. (Diagnostics §4.5 owns that vocabulary; the rule above is about not rewriting the plugin's own words.)
+
+
 `rutis-host/test` is `rutis-host test`'s service (`Harness` in `crates/rutis-host/src/test.rs`), used only between the test process and the host it started. It gains a method:
 
 ```text
@@ -216,7 +232,7 @@ Only the roles affected: plugin authors writing tests (one per language), the pe
 
 Each line below is what the tool prints, after the test framework's own prefix (`go test`'s `file:line:`, `cargo test`'s `panicked at …`); tests compare it word for word, and position lines only by file name and method (diagnostics design §4.6).
 
-The waiting and failed lines are the line the host writes for `dev` (§3.1); the reasons in the parentheses are written as [error messages](https://github.com/arcships/rutis/issues/937) (#937) §3.3 has them today, and change with it. The two sentences the tools write themselves (`no such service …`, `did not return within 30s`) are this document's.
+After each line's prefix comes the plugin's own words, untouched (§3.1.1). The waiting and failed lines are the line the host writes for `dev` (§3.1); the reasons in the parentheses are written as [error messages](https://github.com/arcships/rutis/issues/937) (#937) §3.3 has them today, and change with it. The two sentences the tools write themselves (`no such service …`, `did not return within 30s`) are this document's.
 
 ### 4.1 TypeScript and Bun
 
@@ -294,7 +310,7 @@ if line := loaded.Waiting(); line != "" {
 | two plugins inject each other | the same, `a: waiting for bsvc (row b waits for asvc too: they inject each other)` | `not-running` |
 | the service name is misspelt | `rutistest: greeter: no such service greter (it provides: greeter; did you mean greeter?)` | `no-service` |
 | `apply` fails | `rutistest: greeter: failed in apply: Error: boom`, then `in greeter:` and `at Apply (/Users/me/greeter/plugin.go:31)` | none |
-| `apply` panics | the same, then the whole `goroutine …` stack (as a service method's panic is today) | none |
+| `apply` panics | `rutistest: greeter: failed in apply: Panic: panic: boom`, then the whole `goroutine …` stack (as a service method's panic is today) | none |
 | the config does not match | `rutistest: greeter: config: greeting should be a string, got 3` (`TryLoad` gives back the same error) | `bad-config` |
 | a call never returns | `rutistest: greeter.hello() did not return within 30s`; the caller's own `ctx` limit in seconds when it has one | `timeout` |
 
@@ -350,7 +366,7 @@ Written into "Migrating to 0.21" (both languages):
 
 - **Row names change**: in TypeScript and Bun a test's row id goes from the file name's first segment (`index`) to the package's name (`greeter`); in Python from `plugin` to the package's name. Tests asserting `t.row`, or matching rows in `reported()`, have to change. Tests that give `id` are unaffected.
 - **Python's `load` no longer throws for "this row is waiting"**: `weather did not start: it injects llm, which nothing provides: give the test services=` is gone; the same mistake now appears on `t.service()` as the row's state line (`greeter: waiting for translate (nothing provides it yet)`), and in `await t.waiting()`.
-- **Some wording changes** (tests matching text have to change): `the plugin does not provide X (now)` → the row's state line or `no such service …`; `timed out (10s): the service X` → the same; Python's `did not return within 30 s` → `30s`; `plugin: KeyError: 'town'` → `greeter: failed in apply: KeyError: 'town'` plus the position lines.
+- **Some wording changes** (tests matching text have to change): `the plugin does not provide X (now)` → the row's state line or `no such service …`; `timed out (10s): the service X` → the same; Python's `did not return within 30 s` → `30s`; `plugin: KeyError: 'town'` → `greeter: failed in apply: KeyError: 'town'` plus the position lines — only the prefix changes (the row, the step); `KeyError: 'town'` is not touched (§3.1.1).
 - **`Failure`'s `error` carries positions**: a Rust host that reads `Failure.error` as one line has to read several (`error.lines()`); `dev`'s `cannot reload` line becomes more than one line with it. `check` is unchanged (it does not call `apply`).
 - **`DependencyStatus` / `RuntimeDiagnostics`'s wording**: not this document's, but [#937](https://github.com/arcships/rutis/issues/937)'s E-2 (internal words such as `service missing` go); `running` follows it.
 - **New**: `rutis-host/test`'s `state` (host-local, §3.1); `FiberView::running`; `PluginTestError.code` / `.data` (absent today, §3.5); `rutistest.Error`. The plugin API (3), `rutis.json`'s format (1) and the session protocol (4) are unchanged.

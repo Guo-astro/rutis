@@ -85,6 +85,21 @@ Issue：[#933](https://github.com/arcships/rutis/issues/933)（属于 [#663](htt
 2. 工具自己产生的两种失败的说法与码（`no-service`、`timeout`，§3.3、§3.4），以及宿主那一行不跑时用的码 `not-running`；
 3. 每种语言怎样把码交出来（§3.5）。
 
+### 3.1.1 正文是底层错误自己的话
+
+一条消息分两段：**前缀**回答"是我哪一次调用"（这一行、这一步 `apply`、这个服务与方法），**正文逐字是底层错误自己写的字**。不转述、不概括，也不把错误里已经说过的话再说一遍；拿不准时保留原文。
+
+| 插件抛出的 | 测试里看到的（前缀 + 原文） |
+| --- | --- |
+| `KeyError: 'town'`（Python） | `greeter: failed in apply: KeyError: 'town'`，下面 `in greeter:` 与 `File "/…/greeter/plugin.py", line 42, in apply` |
+| `new Error('boom')`（Node） | `greeter: failed in apply: Error: boom`，下面 `in greeter:` 与 `at apply (/…/src/index.ts:42:11)` |
+| serde 的 ``invalid type: integer `42`, expected a string`` | ``greeter: failed in apply: invalid type: integer `42`, expected a string`` |
+| Go 的 `json: unsupported type: chan int` | `greeter: failed in apply: json: unsupported type: chan int` |
+
+`failed in apply: `、`in greeter:`、位置行都是 rutis 加的，其余一个字不动。这条规则对本稿只有一个落点：`state(id)` 回来的 `line` 与 `load` 的失败里，前缀之后的部分必须与插件抛出来的字完全相同（§4 的表逐字写着这一点，T-1 的用例逐字比较）——本稿不改写它，实现时也不许"顺手说清楚一点"。
+
+只有 **rutis 自己编出来的错**才换成平实的话：等待原因（`nothing provides it yet`）、失败在哪一步、配置不合格（`config: greeting should be a string, got 3`），以及本稿的三句（`no such service …`、`did not return within 30s`、`not running (…)`）。它们没有"底层的原话"可保留：它们是 rutis 的判断，不是插件说的话。（诊断设计 §4.5 管的是这一套词；上面这条管的是别改写插件自己的话。）
+
 `rutis-host/test` 是 `rutis-host test` 的服务（`crates/rutis-host/src/test.rs` 的 `Harness`），只在测试进程与它起的那个宿主之间用。它多一个方法：
 
 ```text
@@ -215,7 +230,7 @@ Rust 里没有"行"这一层：进程是测试自己的，插件跑在一个 fib
 
 以下每一行都是工具打印的那一行，前面加上测试框架自己的前缀（`go test` 的 `file:line:`、`cargo test` 的 `panicked at …`）；测试逐字比较，位置行只比文件名与方法名（诊断设计 §4.6）。
 
-"在等"与"失败"那几行是宿主写给 `dev` 的那一行（§3.1），括号里的原因按[出错信息](https://github.com/arcships/rutis/issues/937)（#937）§3.3 现在的稿子写；那份稿子改词，这里跟着改。工具自己写的两句（`no such service …`、`did not return within 30s`）归本稿。
+表里每一条的前缀之后都是插件自己的字，一个字不改（§3.1.1）。"在等"与"失败"那几行是宿主写给 `dev` 的那一行（§3.1），括号里的原因按[出错信息](https://github.com/arcships/rutis/issues/937)（#937）§3.3 现在的稿子写；那份稿子改词，这里跟着改。工具自己写的两句（`no such service …`、`did not return within 30s`）归本稿。
 
 ### 4.1 TypeScript 与 Bun
 
@@ -293,7 +308,7 @@ if line := loaded.Waiting(); line != "" {
 | 两个插件互相 inject | 同上，`a: waiting for bsvc (row b waits for asvc too: they inject each other)` | `not-running` |
 | 服务名写错 | `rutistest: greeter: no such service greter (it provides: greeter; did you mean greeter?)` | `no-service` |
 | `apply` 出错 | `rutistest: greeter: failed in apply: Error: boom`，下面 `in greeter:` 与 `at Apply (/Users/me/greeter/plugin.go:31)` | 无 |
-| panic 的 `apply` | 同一句，下面是 `goroutine …` 的完整堆栈（与现在服务方法的 panic 一样） | 无 |
+| panic 的 `apply` | `rutistest: greeter: failed in apply: Panic: panic: boom`，下面是 `goroutine …` 的完整堆栈（与现在服务方法的 panic 一样） | 无 |
 | 配置不合格 | `rutistest: greeter: config: greeting should be a string, got 3`（`TryLoad` 交回同样的错误） | `bad-config` |
 | 调用不返回 | `rutistest: greeter.hello() did not return within 30s`；调用方给了 `ctx` 的时限时写它的秒数 | `timeout` |
 
@@ -349,7 +364,7 @@ Rust 的行名就是 `Plugin::name()`：上例是 `GreeterPlugin`。指南在这
 
 - **行名变了**：TypeScript、Bun 的测试里行 id 从文件名的头一段（`index`）变成包名（`greeter`）；Python 从 `plugin` 变成包名。断言 `t.row`、按行名匹配 `reported()` 的测试要改。给 `id` 的测试不受影响。
 - **Python 的 `load` 不再为"这一行在等"抛错**：`weather did not start: it injects llm, which nothing provides: give the test services=` 没有了；同一件事现在在 `t.service()` 上以这一行的状态行（`greeter: waiting for translate (nothing provides it yet)`）出现，还有 `await t.waiting()`。
-- **几处文字变了**（按文字断言的测试要改）：`the plugin does not provide X (now)` → 这一行的状态行或 `no such service …`；`timed out (10s): the service X` → 同上；Python 的 `did not return within 30 s` → `30s`；`plugin: KeyError: 'town'` → `greeter: failed in apply: KeyError: 'town'` 加位置行。
+- **几处文字变了**（按文字断言的测试要改）：`the plugin does not provide X (now)` → 这一行的状态行或 `no such service …`；`timed out (10s): the service X` → 同上；Python 的 `did not return within 30 s` → `30s`；`plugin: KeyError: 'town'` → `greeter: failed in apply: KeyError: 'town'` 加位置行——变的只是前缀（行名、哪一步），`KeyError: 'town'` 一个字没动（§3.1.1）。
 - **`Failure` 的 `error` 带位置**：Rust 宿主读 `Failure.error` 并当作一行用的地方要改成多行（`error.lines()`）；`dev` 的 `cannot reload` 那一行随之变成多行。`check` 不变（它不跑 `apply`）。
 - **`DependencyStatus` / `RuntimeDiagnostics` 的用词**：不归本稿，归 [#937](https://github.com/arcships/rutis/issues/937) 的 E-2（`service missing` 这类内部说法换掉）；`running` 只是跟着它走。
 - **新增**：`rutis-host/test` 的 `state`（宿主本地，§3.1）；`FiberView::running`；`PluginTestError.code` / `.data`（今天没有，§3.5）；`rutistest.Error`。插件 API（3）、`rutis.json` 格式（1）、会话协议（4）都不变。
