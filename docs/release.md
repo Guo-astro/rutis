@@ -80,6 +80,8 @@ cargo run -p rutis-bridge --features websocket --example smoke -- \
 
 补丁版本要和 0.20.0 兼容：`cargo-semver-checks` 与 0.20.0 比较，不接受不兼容的 Rust API 改动（这一版没有新增或删除公开 API）。`rutis.json` 的 `format` 仍是 1，配置没有变化：持久化样本从 0.20.0 复制，期望不变；dsh 的用户层没变，`cordis.patch.yml` 原样复制。会话协议仍是 4，没有新的能力，插件 API 仍是 3：发布门的跨版本测试（`RUTIS_E2E_ONLY_OLDER=1`）与 0.20.0 相遇，相遇正常工作。Kotlin SDK 随列车一起打版本；Maven Central 按 `release.yml` 的规则发（environment `maven` 的四个 secret，缺一个时 `maven` 任务跳过）。
 
+这一版不做网络冒烟（维护者的决定）。
+
 ## 0.20.0
 
 0.20 让插件可以写可选依赖（`optional` 与 `ctx.get`，#999），行的 `inject` 在六种语言里都算这一行的声明、运行时的行由 rutis 门控并租借（#1000、#1001），同一进程里的服务在 Go、Kotlin 也拿到对象本身（#1006、#1015），测试工具收下插件交出的定义（#1004）；卸载顺序改成清理与服务撤回在同一个逆序栈里（#1010），每个实例的常驻占用更小（#979）。所有包均为 0.20.0；见[发布说明](releases/0.20.0.md)与[迁移到 0.20](migration-0.20.md)。

@@ -80,6 +80,8 @@ The nightly stress workflow also runs two soak tests (repeated link disconnect/r
 
 A patch release has to stay compatible with 0.20.0: `cargo-semver-checks` compares with 0.20.0 and accepts no breaking Rust API change (this release adds and removes no public API). `format` of `rutis.json` stays 1 and no configuration changes: the persisted sample is copied from 0.20.0 and its expectations are unchanged; dsh's user layer has not changed, so `cordis.patch.yml` is copied as is. The session protocol stays 4, there is no new capability, and the plugin API stays 3: the release gate's cross-version tests (`RUTIS_E2E_ONLY_OLDER=1`) meet 0.20.0 and the meeting works as usual. The Kotlin SDK takes the train's version like the other packages; Maven Central is published by the rules of `release.yml` (the four secrets of the environment `maven`; the `maven` job skips when one is missing).
 
+There is no network smoke test for this release (the maintainer's decision).
+
 ## 0.20.0
 
 0.20 lets a plugin write optional dependencies (`optional` and `ctx.get`, #999), makes a row's `inject` count as that row's declaration in all six languages, gates a runtime's rows by it and leases them (#1000, #1001), hands out the object itself for a service in the same process in Go and Kotlin too (#1006, #1015), and has the test tools mount a plugin definition a double received (#1004); unloading runs cleanups and service withdrawals on one reverse stack (#1010), and the resident memory per instance is smaller (#979). All packages are at 0.20.0; see [the release notes](releases/0.20.0.en.md) and [Migration to 0.20](migration-0.20.en.md).
