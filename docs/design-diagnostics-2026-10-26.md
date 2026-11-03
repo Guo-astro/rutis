@@ -99,7 +99,8 @@ site: {
 | `unavailable` | 服务现在没有提供者 | `{service, reason}`（`Loader::waits` 的原因） |
 | `no-method` | 方法不存在 | `{service, method, methods}`；对象调用是 `{object, method, methods}`（`object` 是类名，普通对象为 `null`，见[对象引用](design-object-refs-2026-10-27.md) §八） |
 | `bad-argument` | 参数个数或类型不对 | `{service, method, argument, expected}` |
-| `bad-value` | 值传不过去，或消息超过上限 | `{argument?, part, limit?}` |
+| `bad-value` | 值传不过去，或消息超过上限 | `{argument?, part, reason, limit?}`（`reason` 是 [#936](https://github.com/arcships/rutis/issues/936) 加上的：`non-finite`、`cycle`、`too-deep`、`type`、`tag`、`limit`；`part` 多一个 `payload`，是事件的参数） |
+| `bad-result` | 收到的返回值解不开（[#936](https://github.com/arcships/rutis/issues/936)）：消息是解码器自己的那句，前面只有 `<服务>.<方法>: the result: ` | `{service, method, expected}`（对象的方法为 `{object, method, expected}`） |
 | `peer-gone` | 调用进行中对面的运行时退出或断开 | `{runtime, reason}` |
 | `bad-config` | 这一行的配置不符合插件的 Schema（[配置 Schema 设计](design-config-schema-2026-10-27.md) §5.2 加的一行） | `{issues: [{path, message}]}`（`path` 的每一项是键或下标） |
 

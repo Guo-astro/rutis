@@ -85,23 +85,23 @@ func TestARefusedCallNamesTheServiceMethodAndArgument(t *testing.T) {
 	}
 
 	err = dispatch("tomorrow", `"x"`)
-	if err.Error() != `weather.tomorrow: argument 1 should be an integer, got "x"` {
+	if err.Error() != `weather.tomorrow: argument 1: json: cannot unmarshal string into Go value of type int` {
 		t.Fatal(err)
 	}
 	sameData(t, coded(t, err, "BindingError", "bad-argument"), map[string]any{"service": "weather", "method": "tomorrow", "argument": 1, "expected": "an integer"})
-	if err := dispatch("tomorrow", "1.5"); err.Error() != "weather.tomorrow: argument 1 should be an integer, got 1.5" {
+	if err := dispatch("tomorrow", "1.5"); err.Error() != "weather.tomorrow: argument 1: json: cannot unmarshal number 1.5 into Go value of type int" {
 		t.Fatal(err)
 	}
-	if err := dispatch("tomorrow", "99999999999999999999"); err.Error() != "weather.tomorrow: argument 1 should be an integer, got 99999999999999999999 (out of range for int)" {
+	if err := dispatch("tomorrow", "99999999999999999999"); err.Error() != "weather.tomorrow: argument 1: json: cannot unmarshal number 99999999999999999999 into Go value of type int" {
 		t.Fatal(err)
 	}
-	if err := dispatch("forecast", `"oslo"`); err.Error() != `weather.forecast: argument 1 should be a textForecast, got "oslo"` {
+	if err := dispatch("forecast", `"oslo"`); err.Error() != `weather.forecast: argument 1: json: cannot unmarshal string into Go value of type rutis.textForecast` {
 		t.Fatal(err)
 	}
-	if err := dispatch("forecast", `{"city":3}`); err.Error() != "weather.forecast: argument 1 should be a textForecast, got an object whose city is a number" {
+	if err := dispatch("forecast", `{"city":3}`); err.Error() != "weather.forecast: argument 1: json: cannot unmarshal number into Go struct field textForecast.city of type string" {
 		t.Fatal(err)
 	}
-	if err := dispatch("forecast", `[1]`); err.Error() != "weather.forecast: argument 1 should be a textForecast, got a list" {
+	if err := dispatch("forecast", `[1]`); err.Error() != "weather.forecast: argument 1: json: cannot unmarshal array into Go value of type rutis.textForecast" {
 		t.Fatal(err)
 	}
 	// A missing argument is the parameter's zero value, as Go has no

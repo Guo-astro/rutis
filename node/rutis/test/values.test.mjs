@@ -103,8 +103,9 @@ test('maps and sets keep their order; keys follow design §5', async () => {
   // Deep maps count levels as arrays do (#279).
   const nest = depth => Array.from({ length: depth }).reduce(inner => new Map([['k', inner]]), 'bottom')
   back(nest(64))
-  assert.throws(() => back(nest(65)), /nested deeper than 64 levels/)
+  assert.throws(() => back(nest(65)), /the value nests deeper than 64 levels/)
   const cyclic = new Map()
   cyclic.set('self', cyclic)
-  assert.throws(() => back(cyclic), /nested deeper than 64 levels/)
+  // A map that holds itself says so (design §4.2, D3), not "too deep".
+  assert.throws(() => back(cyclic), /the value holds itself [(]a cycle[)]/)
 })

@@ -194,9 +194,9 @@ export class Runtime {
   attach(client: Client) {
     this.client = client
     this.#bus.peer = {
-      call: (target: string, method: string, args: unknown) => client.call(target, method, args),
-      callAsync: (target: string, method: string, args: unknown) => client.callAsync(target, method, args),
-      callAnswered: (target: string, method: string, args: unknown, answered: (result: { ok: boolean, value: unknown }) => void) => client.callAnswered(target, method, args, answered),
+      call: (target: string, method: string, args: unknown, described?: unknown) => client.call(target, method, args, described),
+      callAsync: (target: string, method: string, args: unknown, described?: unknown) => client.callAsync(target, method, args, described),
+      callAnswered: (target: string, method: string, args: unknown, answered: (result: { ok: boolean, value: unknown }) => void, described?: unknown) => client.callAnswered(target, method, args, answered, described),
       callFunctionAsync: (fn: unknown, args: unknown[]) => client.callFunctionAsync(fn, args),
     }
   }

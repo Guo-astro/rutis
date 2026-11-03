@@ -560,7 +560,7 @@ fn call_reaches_a_go_service() {
             (
                 &["ping.echo", "3"],
                 "",
-                "rutis-host: ping.echo: argument 1 should be a string, got 3\n",
+                "rutis-host: ping.echo: argument 1: json: cannot unmarshal number into Go value of type string\n",
             ),
         ],
     );

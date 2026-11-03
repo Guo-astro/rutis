@@ -56,11 +56,13 @@ type ValueError struct {
 	// What it says more of (ErrTooDeep, say), for errors.Is.
 	cause error
 	// Which part of a call it is of (#677): "argument" (argument, from
-	// 1), "arguments", "result"; "" when not known. limit is the message
-	// limit it is over, 0 when it is not over it.
+	// 1), "arguments", "result", "payload"; "" when not known. limit is
+	// the message limit it is over, 0 when it is not over it; reason is
+	// why the value cannot cross (design §4.2).
 	argument int
 	part     string
 	limit    int
+	reason   string
 }
 
 func (e *ValueError) Error() string { return e.Message }
@@ -80,8 +82,43 @@ func (e *ValueError) Data() any {
 	if e.limit > 0 {
 		data["limit"] = e.limit
 	}
+	if e.reason != "" {
+		data["reason"] = e.reason
+	}
 	return data
 }
+
+// The reasons a value cannot cross (design §4.2, a closed set): the sentence
+// is rutis's own, the reason is what a program reads in `data.reason`.
+const (
+	ReasonNonFinite = "non-finite"
+	ReasonCycle     = "cycle"
+	ReasonTooDeep   = "too-deep"
+	ReasonType      = "type"
+	ReasonTag       = "tag"
+	ReasonLimit     = "limit"
+)
+
+// Reasoned is an error that says why its value cannot cross, for
+// `data.reason`.
+type Reasoned interface{ Reason() string }
+
+// reasonOf is the reason `err` names, "" when it names none.
+func reasonOf(err error) string {
+	var reasoned Reasoned
+	if errors.As(err, &reasoned) {
+		return reasoned.Reason()
+	}
+	return ""
+}
+
+// ResultNotSent is a result that could not be turned into a value where it
+// was made: `respondTo` reports it as the call's result (design §5.3), with
+// code bad-value.
+type ResultNotSent struct{ Err error }
+
+func (e ResultNotSent) Error() string { return e.Err.Error() }
+func (e ResultNotSent) Unwrap() error { return e.Err }
 
 // Unwrap is the error it says more of, if any.
 func (e *ValueError) Unwrap() error { return e.cause }

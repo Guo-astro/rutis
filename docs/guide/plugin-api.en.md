@@ -935,9 +935,9 @@ A plugin and the services it uses may run in different processes. Across process
 | Values nested more than 64 levels deep | Cannot cross processes (the call fails, see below) |
 | A call or result over 16 MiB once encoded | Cannot cross processes (the call fails, see below) |
 
-A value that cannot cross fails **only that call**: the error names the method, which argument (or the result) and why; for example, when an argument is too large once encoded, the call gets `store.put: argument 1 cannot be sent: the message would be 30889096 bytes, over the limit of 16777216 bytes (16 MiB)`. The session, the runtime, other calls on the same session and other rows are not affected. The error's name depends on which side refused the value and its language (`BindingError` from the host, `RangeError` or `TypeError` from Node and Bun, `ValueError` from Python, `Error` from Go, Swift and Kotlin) and is not guaranteed: to tell which failure it is, check the error code: a value that cannot cross is always `bad-value`, with `data` saying whether it was an argument or the result (`{part, argument?, limit?}`); not the name or the text.
+A value that cannot cross fails **only that call**: the error names the method, which argument (or the result) and why; for example, when an argument is too large once encoded, the call gets `store.put: argument 1 cannot be sent: the message would be 30889096 bytes, over the limit of 16777216 bytes (16 MiB)`. The session, the runtime, other calls on the same session and other rows are not affected. The error's name depends on which side refused the value and its language (`BindingError` from the host, `RangeError` or `TypeError` from Node and Bun, `ValueError` from Python, `Error` from Go, Swift and Kotlin) and is not guaranteed: to tell which failure it is, check the error code: a value that cannot cross is always `bad-value`, with `data` saying whether it was an argument, the result or an event's payload (`{part, argument?, reason, limit?}`; `reason` is one of `non-finite`, `cycle`, `too-deep`, `type`, `tag`, `limit`); not the name or the text. A value that arrived and does not decode is `bad-argument` (an argument) or `bad-result` (a result), and its text is the decoder's own sentence (`json: cannot unmarshal object into Go value of type string`, ``invalid type: integer `42`, expected a string``) with only `<service>.<method>: argument N: ` or `<service>.<method>: the result: ` before it.
 
-Nesting depth: a value nests at most **64 levels**. Each array / list / tuple, object / dictionary (dataclasses included), map, set, and Go slice, map or struct is a level, whether or not it holds references; an `Error` / exception passed as a value is a level too. A call's argument list is not a level: each argument may nest 64 levels; a result may nest 64 levels. The side that **would send** a deeper value refuses it before sending, failing only that call, with an error naming the limit (`value nested deeper than 64 levels`):
+Nesting depth: a value nests at most **64 levels**. Each array / list / tuple, object / dictionary (dataclasses included), map, set, and Go slice, map or struct is a level, whether or not it holds references; an `Error` / exception passed as a value is a level too. A call's argument list is not a level: each argument may nest 64 levels; a result may nest 64 levels. The side that **would send** a deeper value refuses it before sending, failing only that call, with an error naming the limit (`the value nests deeper than 64 levels`):
 
 - as an argument: the caller's call fails (in Rust with `Error::Value`) and the far end does not run it;
 - as a result: the caller receives the error the callee throws;
@@ -995,7 +995,7 @@ await cache.set('a', 1)          // every method is an asynchronous call of the 
 const value = await cache.get('a')
 ```
 
-- Every name read on a proxy is a method (but `then`, `toJSON`, `toString`, `valueOf` and symbols: so awaiting a proxy gives the proxy itself, and the object's own methods of these names cannot be called through it). `console.log` shows `[remote object]`.
+- Every name read on a proxy is a method (but `then`, `toJSON`, `toString`, `valueOf` and symbols: so awaiting a proxy gives the proxy itself, and the object's own methods of these names cannot be called through it). `console.log` shows `<object of another process>`.
 - `undefined` inside an array or object arrives as `null`; only a whole argument or a whole result keeps it.
 
 **Python**: `dict`, `list`, `tuple` and dataclasses are copied; an instance of any other class is handed over by reference:
@@ -1006,7 +1006,7 @@ await cache.set("a", 1)          # every method is async, a call of the far end'
 value = await cache.get("a")
 ```
 
-- Every public name on a proxy is a method (as with `ctx.use`). Its `repr` is `<remote object>`. One object passed several times is one proxy on the far end (`is`).
+- Every public name on a proxy is a method (as with `ctx.use`). Its `repr` is `<object of another process>`. One object passed several times is one proxy on the far end (`is`).
 - `undefined` (sent by JavaScript) inside a list or dict is `None` here, at any depth.
 
 **Go**: structs, slices and maps are data and are copied; to hand an object over by reference, write `rutis.Ref(v)`. For an object another process passes, write the parameter's type as a struct of function fields (as for a `ctx.Use` target, the field names matching the methods by the same rule), or as `any` or `*advanced.Service`:

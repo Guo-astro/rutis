@@ -99,7 +99,13 @@ export function greetingOf(frame, endpoint) {
 // argument list is not a level. A deeper value fails its own call here,
 // before it is sent; the session goes on.
 export const MAX_DEPTH = 64
-const tooDeep = () => new RangeError(`a value nested deeper than ${MAX_DEPTH} levels cannot cross between processes`)
+// Why a value cannot cross, in `data.reason` (design §4.2, a closed set): the
+// sentence is rutis's own, and the reason is what a program reads.
+export const REASONS = ['non-finite', 'cycle', 'too-deep', 'type', 'tag', 'limit']
+const why = (error: any, reason: string) => Object.assign(error, { reason })
+const tooDeep = () => why(new RangeError(`the value nests deeper than ${MAX_DEPTH} levels`), 'too-deep')
+const cyclic = () => why(new TypeError('the value holds itself (a cycle)'), 'cycle')
+const notFinite = (value: number) => why(new TypeError(`the number ${Number.isNaN(value) ? 'NaN' : value > 0 ? 'Infinity' : '-Infinity'} is not finite`), 'non-finite')
 
 // The largest message either way, as the channels take it: 16 MiB. A frame
 // over it fails its own call here, before it is sent; the channel would
@@ -113,7 +119,8 @@ const sizeOver = (text, limit) => text.length * 3 <= limit ? 0 : Buffer.byteLeng
 // What a call is, for messages: `service.method` for an invocation (its
 // target without a `host:` prefix or a scope label), the method alone for a
 // control call, `a function` for a call of a function reference.
-export function describeCall(op, { target, method, property } = {}) {
+export function describeCall(op, { target, method, property } = {}, described?: any) {
+  if (described) return described
   if (op === 'invoke') {
     const service = String(target).replace(/^host:/, '').split('\0')[0]
     return service ? `${service}.${method}` : method
@@ -130,6 +137,9 @@ export function describeCall(op, { target, method, property } = {}) {
 const cannotSend = (call, what) => call ? `${call}: ${what} cannot be sent` : `${what} cannot be sent`
 const ofArgument = (error, index, call) => prefixed(error, cannotSend(call, `argument ${index + 1}`), { part: 'argument', argument: index + 1 })
 const ofResult = (error, call) => prefixed(error, cannotSend(call, 'the result'), { part: 'result' })
+// An event's payload that cannot be sent (design §4.6, D7): the event's
+// name says which emission, `part` is `payload`.
+const ofPayload = (error, name) => prefixed(error, `the payload of ${name} cannot be sent`, { part: 'payload' })
 // A value that cannot be sent, as every language says it (§4.3): code
 // `bad-value`, data `{ part, argument?, limit? }` (`part`: argument,
 // arguments, result or error; `limit`: the message limit in bytes).
@@ -138,11 +148,13 @@ const badValue = (error, data) => Object.assign(error, { code: 'bad-value', data
 // thrown value is wrapped in an Error.
 const VALUE_ERRORS = [ValueError, RangeError, TypeError]
 function prefixed(error, what, data) {
-  let reason
-  try { reason = error instanceof Error ? error.message : String(error) } catch { reason = 'a value that cannot be shown was thrown' }
+  let said
+  try { said = error instanceof Error ? error.message : String(error) } catch { said = 'a value that cannot be shown was thrown' }
   const Class = VALUE_ERRORS.find(type => error?.constructor === type) ?? Error
-  const refused = new Class(`${what}: ${reason}`, { cause: error })
-  return data ? badValue(refused, data) : refused
+  const refused = new Class(`${what}: ${said}`, { cause: error })
+  if (!data) return refused
+  const carried = (error as any)?.reason
+  return badValue(refused, carried ? { ...data, reason: carried } : data)
 }
 // A class instance's class name, for messages: none for a plain object.
 const classOf = value => {
@@ -181,30 +193,47 @@ export function noMethod(value, method, found) {
 // What a received object (a proxy) shows as, and the names that are not
 // its methods: `then` (so awaiting a proxy gives the proxy), the
 // conversions, and symbols.
-const REMOTE = '[remote object]'
+const REMOTE = '<object of another process>'
+const REMOTE_FUNCTION = '<function of another process>'
+const REMOTE_RESULT = '<asynchronous result of another process>'
 const NOT_METHODS = new Set(['then', 'toJSON', 'toString', 'valueOf'])
 const INSPECT = Symbol.for('nodejs.util.inspect.custom')
 
 function checkData(value, seen = new Set(), depth = 0) {
-  if (typeof value === 'function' || typeof value === 'symbol') throw new TypeError(`a ${typeof value} cannot cross between processes`)
+  // A function crosses by reference (the branch in `#encode`), so one that
+  // reaches here is plain data's neighbour and does not cross; a symbol
+  // never does.
+  if (typeof value === 'function') throw why(new TypeError('a function cannot cross between processes'), 'type')
+  if (typeof value === 'symbol') throw why(new TypeError('a symbol cannot cross between processes'), 'type')
+  if (typeof value === 'number') { if (!Number.isFinite(value)) throw notFinite(value); return }
   if (value === null || typeof value !== 'object') return
+  if (seen.has(value)) throw cyclic()
   if (depth >= MAX_DEPTH) throw tooDeep()
-  if (seen.has(value)) throw new TypeError('a value that holds itself (a cycle) cannot cross between processes')
   if (!Array.isArray(value) && ![Object.prototype, null].includes(Object.getPrototypeOf(value))) throw new TypeError(`a ${value.constructor?.name ?? 'value'} cannot cross between processes: pass plain data instead`)
   seen.add(value)
   for (const item of Object.values(value)) checkData(item, seen, depth + 1)
   seen.delete(value)
 }
 
-class RemotePromise extends Promise {
+class RemotePromise extends Promise<any> {
   static get [Symbol.species]() { return Promise }
-  #start
+  #start: any
   constructor(start) {
     let resolve, reject
     super((a, b) => { resolve = a; reject = b })
     this.#start = () => { this.#start = undefined; start().then(resolve, reject) }
   }
   then(...args) { this.#start?.(); return super.then(...args) }
+  toString() { return REMOTE_RESULT }
+  [INSPECT]() { return REMOTE_RESULT }
+}
+
+// A received function (design §4.7, D8): it shows where it came from, and
+// never the runtime's own source.
+function remoteFunction(call: any) {
+  Object.defineProperty(call, 'toString', { value: () => REMOTE_FUNCTION })
+  Object.defineProperty(call, INSPECT, { value: () => REMOTE_FUNCTION })
+  return call
 }
 
 // One session of the rutis protocol, as the runtime side. The transport owns
@@ -300,8 +329,14 @@ export class Session {
   }
   // `depth`: the arrays and objects around `value`; an argument list
   // starts at -1, as it is not a level.
-  #encode(value, grants, business, depth = 0) {
+  #encode(value, grants, business, depth = 0, seen = new Set()) {
     if (value === undefined) return { type: 'undefined' }
+    // A number that is not finite has no wire form (design §4.2): said here,
+    // before the frame is encoded, so the call that carries it is named.
+    if (typeof value === 'number') { if (!Number.isFinite(value)) throw notFinite(value); return { type: 'data', value } }
+    // A container on the path already: it holds itself (D3, before the depth).
+    const enter = () => { if (seen.has(value)) throw cyclic(); seen.add(value) }
+    const leave = () => seen.delete(value)
     const imported = value && (typeof value === 'function' || typeof value === 'object') && this.#proxies.get(value)
     if (imported) {
       if (imported.released) throw new Error('reference released')
@@ -327,7 +362,7 @@ export class Session {
       return { type: 'reference', value: { id, kind: entry.kind, home: false, origin: entry.origin } }
     }
     const tag = tagOf(value)
-    if (tag) return this.#encodeTagged(value, tag, grants, business, depth)
+    if (tag) return this.#encodeTagged(value, tag, grants, business, depth, seen)
     // Binary data is a Uint8Array, an ArrayBuffer or a DataView: another
     // typed array's element type would be lost.
     if (ArrayBuffer.isView(value)) throw new ValueError(`cannot send ${describe(value)}: binary data crosses as a Uint8Array (or Buffer), an ArrayBuffer or a DataView`)
@@ -335,31 +370,40 @@ export class Session {
     // An empty slot of an array is undefined, as when it is read (#675).
     // Undefined inside a value is null (#687 §七), also an empty slot of an
     // array: only a whole argument or result keeps it.
-    if (Array.isArray(value)) return { type: 'list', value: Array.from(value, value => value === undefined ? { type: 'data', value: null } : this.#encode(value, grants, business, depth + 1)) }
+    if (Array.isArray(value)) {
+      enter()
+      try { return { type: 'list', value: Array.from(value, value => value === undefined ? { type: 'data', value: null } : this.#encode(value, grants, business, depth + 1, seen)) } } finally { leave() }
+    }
     // An Error passed as a value (e.g. to a callback) crosses as data.
     if (value instanceof Error) return { type: 'data', value: { name: value.name, message: value.message, ...(typeof value.stack === 'string' ? { stack: value.stack } : {}) } }
     if (value !== null && typeof value === 'object' && needsRecord(value)) {
-      return { type: 'record', value: Object.fromEntries(Object.entries(value).map(([key, item]) => [key, item === undefined ? { type: 'data', value: null } : this.#encode(item, grants, business, depth + 1)])) }
+      enter()
+      try { return { type: 'record', value: Object.fromEntries(Object.entries(value).map(([key, item]) => [key, item === undefined ? { type: 'data', value: null } : this.#encode(item, grants, business, depth + 1, seen)])) } } finally { leave() }
     }
     checkData(value, new Set(), depth)
     return { type: 'data', value }
   }
   // A Date, binary data, a Map, a Set, a bigint or an SDK constructor's
   // value, to a far end that declared it takes `tag`; else this call fails.
-  #encodeTagged(value, tag, grants, business, depth) {
-    if (!this.#declared.includes(`value-${tag}`)) throw undeclared(value, tag)
+  #encodeTagged(value, tag, grants, business, depth, seen?) {
+    if (!this.#declared.includes(`value-${tag}`)) throw why(undeclared(value, tag), 'tag')
     switch (tag) {
       case 'instant': return { type: tag, value: instantText(value) }
       case 'bytes': return { type: tag, value: base64Encode(bytesOf(value)) }
       case 'bigint': return { type: tag, value: checkText(tag, String(value)) }
       case 'map': case 'set': {
-        // Each a level, as an array is (#279).
+        // Each a level, as an array is (#279); a map or set that holds
+        // itself says so (D3).
+        if (seen?.has(value)) throw cyclic()
         if (depth >= MAX_DEPTH) throw tooDeep()
-        const entries = tag === 'map' ? [...value] : [...value].map(element => [element])
-        checkKeys(entries.map(([key]) => keyOf(key)), tag === 'map' ? 'map key' : 'set element')
-        const item = item => this.#encode(item, grants, business, depth + 1)
-        // Undefined in a map is null, as in data (design V10).
-        return { type: tag, value: entries.map(([key, entry]) => tag === 'set' ? item(key) : [item(key), entry === undefined ? { type: 'data', value: null } : item(entry)]) }
+        seen?.add(value)
+        try {
+          const entries = tag === 'map' ? [...value] : [...value].map(element => [element])
+          checkKeys(entries.map(([key]) => keyOf(key)), tag === 'map' ? 'map key' : 'set element')
+          const item = item => this.#encode(item, grants, business, depth + 1, seen)
+          // Undefined in a map is null, as in data (design V10).
+          return { type: tag, value: entries.map(([key, entry]) => tag === 'set' ? item(key) : [item(key), entry === undefined ? { type: 'data', value: null } : item(entry)]) }
+        } finally { seen?.delete(value) }
       }
       default: return { type: tag, value: checkText(tag, value.value) }
     }
@@ -466,7 +510,7 @@ export class Session {
         const record = { id, kind, origin, grants: 1, released: false }
         const check = () => { if (record.released) throw new Error('reference released') }
         proxy = kind === 'function'
-          ? (...args) => { check(); return this.#requestSync('call', { reference: id }, args) }
+          ? remoteFunction((...args) => { check(); return this.#requestSync('call', { reference: id }, args) })
           : kind === 'object' ? this.#remoteObject(id, check)
             : kind === 'plugin' ? pluginHandle()
               : new RemotePromise(() => { check(); return this.#requestAsync('await', { reference: id }, undefined, origin) })
@@ -533,13 +577,13 @@ export class Session {
     if (!record) throw new Error('not an imported reference')
     this.#finalizer.unregister(record); this.#release(record)
   }
-  #request(op, fields, args, finish, origin = [], sync = false, site = callSite()) {
+  #request(op, fields, args, finish, origin = [], sync = false, site = callSite(), described?) {
     // `site`: where the plugin's code made the call, the stack an error it
     // gets back has and what it adds when thrown on (§4.4).
     const id = this.#allocate(), grants = []
     try {
       const call = () => describeCall(op, fields)
-      const frame: any = { op, id, path: [...new Set([...this.#path(), ...origin])], ...fields, ...(op === 'await' ? {} : { args: this.#encodeArgs(args, grants, call) }) }
+      const frame: any = { op, id, path: [...new Set([...this.#path(), ...origin])], ...fields, ...(op === 'await' ? {} : { args: this.#encodeArgs(args, grants, call, described?.payload) }) }
       // This thread waits for the reply: the host checks for wait cycles
       // (#228).
       if (sync) frame.sync = true
@@ -551,7 +595,7 @@ export class Session {
         const sizes = items.map(item => Buffer.byteLength(encode(item)))
         const largest = sizes.indexOf(Math.max(...sizes))
         const what = largest < 0 ? 'the arguments' : `argument ${largest + 1}`
-        throw badValue(new RangeError(`${cannotSend(call(), what)}: ${overLimit(size, this.#max)}`), largest < 0 ? { part: 'arguments', limit: this.#max } : { part: 'argument', argument: largest + 1, limit: this.#max })
+        throw badValue(new RangeError(`${cannotSend(call(), what)}: ${overLimit(size, this.#max)}`), largest < 0 ? { part: 'arguments', limit: this.#max, reason: 'limit' } : { part: 'argument', argument: largest + 1, limit: this.#max, reason: 'limit' })
       }
       this.#pending.set(id, finish); this.#sites.set(id, site); this.#send(encoded)
     } catch (error) { this.#pending.delete(id); this.#sites.delete(id); this.#rollback(grants); throw error }
@@ -559,15 +603,17 @@ export class Session {
   }
   // A call's arguments, each nested at most MAX_DEPTH deep: what cannot be
   // sent says which argument of `call` it is.
-  #encodeArgs(args, grants, call) {
+  // `payload`: the name of the event whose arguments these are (D7).
+  #encodeArgs(args, grants, call, payload?) {
+    const refuse = index => error => payload ? ofPayload(error, payload) : ofArgument(error, index, call())
     if (!Array.isArray(args)) return this.#encode(args, grants, true, -1)
     return { type: 'list', value: Array.from(args, (arg, index) => {
-      try { return this.#encode(arg, grants, true, 0) } catch (error) { throw ofArgument(error, index, call()) }
+      try { return this.#encode(arg, grants, true, 0) } catch (error) { throw refuse(index)(error) }
     }) }
   }
-  #requestSync(op, fields, args) {
+  #requestSync(op, fields, args, described?) {
     let result
-    const id = this.#request(op, fields, args, value => { result = value }, [], true)
+    const id = this.#request(op, fields, args, value => { result = value }, [], true, callSite(), described)
     this.#waiting.push(id)
     try {
       for (const job of this.#queued) this.#run(job)
@@ -580,23 +626,23 @@ export class Session {
     if (!result.ok) throw result.value
     return result.value
   }
-  #requestAsync(op, fields, args, origin) {
+  #requestAsync(op, fields, args, origin, described?) {
     // Taken here, before the Promise's executor adds its frame.
     const site = callSite()
     return new Promise((resolve, reject) => {
       const done = this.#outgoing?.()
       const finish = result => { done?.(); if (result.ok) resolve(result.value); else reject(result.value) }
-      try { this.#request(op, fields, args, finish, origin, false, site) } catch (error) { done?.(); throw error }
+      try { this.#request(op, fields, args, finish, origin, false, site, described) } catch (error) { done?.(); throw error }
     })
   }
-  invoke(target, method, args) { return this.#requestSync('invoke', { target, method }, args) }
+  invoke(target, method, args, described?) { return this.#requestSync('invoke', { target, method }, args, described) }
   // Promise assimilation here is intentional: this is the generated async
   // method API. Synchronous invoke returns the Promise reference itself.
-  invokeAsync(target, method, args) { return this.#requestAsync('invoke', { target, method }, args) }
+  invokeAsync(target, method, args, described?) { return this.#requestAsync('invoke', { target, method }, args, undefined, described) }
   // Send a call nobody waits for; `answered({ ok, value })` is told its
   // reply as the reply's frame is taken, before the next frame (or the
   // session's end), not on a later tick (events protocol §5.5).
-  invokeAnswered(target, method, args, answered) { this.#request('invoke', { target, method }, args, answered) }
+  invokeAnswered(target, method, args, answered, described?) { this.#request('invoke', { target, method }, args, answered, [], false, callSite(), described) }
   // Call an imported function asynchronously (a waterfall's `next`, #464);
   // calling the function itself waits synchronously.
   callFunctionAsync(proxy, args) {
@@ -744,7 +790,7 @@ export class Session {
       if (size > this.#max) {
         this.#rollback(grants); grants.length = 0
         const what = result.ok ? 'the result' : result.value instanceof Error ? `the error ${result.value.name}` : 'the error'
-        frame = encode({ op: 'throw', id, error: encodeError(badValue(new RangeError(`${cannotSend(call, what)}: ${overLimit(size, this.#max)}`), { part: result.ok ? 'result' : 'error', limit: this.#max })) })
+        frame = encode({ op: 'throw', id, error: encodeError(badValue(new RangeError(`${cannotSend(call, what)}: ${overLimit(size, this.#max)}`), { part: result.ok ? 'result' : 'error', limit: this.#max, reason: 'limit' })) })
       }
       this.#send(frame)
     } catch (error) { this.#fault(error) }

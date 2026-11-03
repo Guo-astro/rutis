@@ -55,7 +55,7 @@ class ObjectTests(background.IsolatedAsyncioTestCase):
         await read_op("return")
         cache, again = got
         self.assertIs(cache, again, "passed twice, one proxy")
-        self.assertEqual(repr(cache), "<remote object>")
+        self.assertEqual(repr(cache), "<object of another process>")
         with self.assertRaises(AttributeError):
             cache._private  # noqa: B018
         result = asyncio.ensure_future(cache.get("a"))

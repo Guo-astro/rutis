@@ -582,7 +582,7 @@ class DepthTests(unittest.TestCase):
         self.assertEqual(_data(nest(MAX_DEPTH, listed)), nest(MAX_DEPTH, listed))
         for value in (nest(MAX_DEPTH + 1, listed), nest(5000, listed), nest(5000, Node)):
             self.assertFalse(_holds_reference(value))
-            with self.assertRaisesRegex(ValueError, "nested deeper than 64 levels"):
+            with self.assertRaisesRegex(ValueError, "the value nests deeper than 64 levels"):
                 _data(value)
 
 

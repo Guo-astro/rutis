@@ -1188,9 +1188,9 @@ handleUnhandled(tracking, {
   },
 })
 bus.peer = {
-  call: (target, method, args) => peer.call(target, method, args),
-  callAsync: (target, method, args) => peer.callAsync(target, method, args),
-  callAnswered: (target, method, args, answered) => peer.callAnswered(target, method, args, answered),
+  call: (target, method, args, described) => peer.call(target, method, args, described),
+  callAsync: (target, method, args, described) => peer.callAsync(target, method, args, described),
+  callAnswered: (target, method, args, answered, described) => peer.callAnswered(target, method, args, answered, described),
   callFunctionAsync: (fn, args) => peer.callFunctionAsync(fn, args),
 }
 if (dialed) {

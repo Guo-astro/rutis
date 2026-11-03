@@ -75,9 +75,9 @@ export class Client {
     finally { signal?.removeEventListener('abort', abandon) }
   }
   get session() { return this.#session }
-  call(target: string, method: string, args: unknown) { return this.#session.invoke(target, method, args) }
-  callAsync(target: string, method: string, args: unknown) { return this.#session.invokeAsync(target, method, args) }
-  callAnswered(target: string, method: string, args: unknown, answered: (result: { ok: boolean, value: unknown }) => void) { this.#session.invokeAnswered(target, method, args, answered) }
+  call(target: string, method: string, args: unknown, described?: unknown) { return this.#session.invoke(target, method, args, described) }
+  callAsync(target: string, method: string, args: unknown, described?: unknown) { return this.#session.invokeAsync(target, method, args, described) }
+  callAnswered(target: string, method: string, args: unknown, answered: (result: { ok: boolean, value: unknown }) => void, described?: unknown) { this.#session.invokeAnswered(target, method, args, answered, described) }
   callFunctionAsync(fn: unknown, args: unknown[]) { return this.#session.callFunctionAsync(fn, args) }
   release(value: unknown) { this.#session.release(value) }
   drain() { return this.#session.drain() }

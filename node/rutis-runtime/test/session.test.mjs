@@ -7,7 +7,7 @@ import { decode } from '../src/codec.mjs'
 import { decodeError } from '../src/errors.mjs'
 
 const data = value => ({ type: 'data', value })
-function harness(dispatch, options = {}) {
+function harness(dispatch, options = {}, capabilities = ['objects']) {
   const sent = [], incoming = []
   let fault
   const peer = new Session({
@@ -18,7 +18,7 @@ function harness(dispatch, options = {}) {
     pump: () => { assert.ok(incoming.length, 'sync caller must not strand'); peer.receive(incoming.shift()) },
     abort: error => { fault = error },
   })
-  peer.receive({ op: 'hello', version: ENDPOINT_PROTOCOL, endpoint: 'rust', capabilities: ['objects'] })
+  peer.receive({ op: 'hello', version: ENDPOINT_PROTOCOL, endpoint: 'rust', capabilities })
   return { peer, sent, incoming, fault: () => fault }
 }
 const invoke = (id, method, path = []) => ({ op: 'invoke', id: `rust:${id}`, path, target: 'test', method, args: data([]) })
@@ -348,8 +348,9 @@ test('an object from the far end is a proxy whose methods call it (#687)', async
   const [cache, again] = got
   // Passed twice, it is one proxy.
   assert.equal(cache, again)
-  assert.equal(String(cache), '[remote object]')
-  assert.equal(util.inspect(cache), '[remote object]')
+  // Where it came from, never the runtime's own words (design §4.7, D8).
+  assert.equal(String(cache), '<object of another process>')
+  assert.equal(util.inspect(cache), '<object of another process>')
   assert.equal(cache.then, undefined)
   assert.equal(await cache, cache, 'awaiting a proxy gives the proxy')
   // A method is an asynchronous call of the original object.
@@ -491,17 +492,88 @@ test('a value that cannot be sent carries code bad-value and its part', async ()
   const big = 'x'.repeat(2048)
   const { peer, sent } = harness((_, method) => method === 'big' ? big : method === 'boom' ? (() => { throw new Error(big) })() : { f: Symbol('s') }, { maxMessage: 1024 })
   const refusal = run => { try { run() } catch (error) { return { code: error.code, data: error.data } } }
-  assert.deepEqual(refusal(() => peer.invoke('host:svc', 'take', [1, big])), { code: 'bad-value', data: { part: 'argument', argument: 2, limit: 1024 } })
-  assert.deepEqual(refusal(() => peer.invoke('host:svc', 'take', [1, { a: [Symbol('s')] }])), { code: 'bad-value', data: { part: 'argument', argument: 2 } })
+  assert.deepEqual(refusal(() => peer.invoke('host:svc', 'take', [1, big])), { code: 'bad-value', data: { part: 'argument', argument: 2, limit: 1024, reason: 'limit' } })
+  assert.deepEqual(refusal(() => peer.invoke('host:svc', 'take', [1, { a: [Symbol('s')] }])), { code: 'bad-value', data: { part: 'argument', argument: 2, reason: 'type' } })
   const { decodeError } = await import('../src/errors.mjs')
   // The refusal this side sends, as the far end decodes it.
   const wire = async (id, method) => { peer.receive(invoke(id, method)); await Promise.resolve(); return decodeError(sent.at(-1).error) }
   const back = await wire(1, 'big')
-  assert.deepEqual([back.code, back.data], ['bad-value', { part: 'result', limit: 1024 }])
+  assert.deepEqual([back.code, back.data], ['bad-value', { part: 'result', limit: 1024, reason: 'limit' }])
   const boom = await wire(2, 'boom')
-  assert.deepEqual([boom.code, boom.data], ['bad-value', { part: 'error', limit: 1024 }])
+  assert.deepEqual([boom.code, boom.data], ['bad-value', { part: 'error', limit: 1024, reason: 'limit' }])
   const symbol = await wire(3, 'symbol')
-  assert.deepEqual([symbol.message, symbol.code, symbol.data], ['test.symbol: the result cannot be sent: a symbol cannot cross between processes', 'bad-value', { part: 'result' }])
+  assert.deepEqual([symbol.message, symbol.code, symbol.data], ['test.symbol: the result cannot be sent: a symbol cannot cross between processes', 'bad-value', { part: 'result', reason: 'type' }])
+  peer.close()
+})
+
+// What a value that cannot be sent says (design §5.1, docs/design-value-errors-
+// 2026-11-03.md): one frame, one sentence of reason, `bad-value`, and `data`
+// carrying the reason. Locked word for word.
+// guarantee: bridge/bad-values
+test('a value that cannot cross says which call, what is wrong, and why', () => {
+  const { peer } = harness(() => undefined, {}, ['objects', 'value-map'])
+  const refusal = run => { try { run(); throw new Error('no error') } catch (error) { return { name: error.constructor.name, message: error.message, code: error.code, data: error.data } } }
+  const cyclic = () => { const a = {}; a.self = a; return a }
+  const mapCycle = () => { const m = new Map(); m.set('self', m); return m }
+  const deep = depth => Array.from({ length: depth }).reduce(inner => [inner], 1)
+  const call = args => () => peer.invoke('forecast', 'week', args)
+  assert.deepEqual(refusal(call(['Oslo', Number.NaN])), {
+    name: 'TypeError', message: 'forecast.week: argument 2 cannot be sent: the number NaN is not finite', code: 'bad-value', data: { part: 'argument', argument: 2, reason: 'non-finite' },
+  })
+  assert.deepEqual(refusal(call([{ a: [-Infinity] }])), {
+    name: 'TypeError', message: 'forecast.week: argument 1 cannot be sent: the number -Infinity is not finite', code: 'bad-value', data: { part: 'argument', argument: 1, reason: 'non-finite' },
+  })
+  assert.deepEqual(refusal(call([cyclic()])), {
+    name: 'TypeError', message: 'forecast.week: argument 1 cannot be sent: the value holds itself (a cycle)', code: 'bad-value', data: { part: 'argument', argument: 1, reason: 'cycle' },
+  })
+  assert.deepEqual(refusal(call([mapCycle()])), {
+    name: 'TypeError', message: 'forecast.week: argument 1 cannot be sent: the value holds itself (a cycle)', code: 'bad-value', data: { part: 'argument', argument: 1, reason: 'cycle' },
+  })
+  assert.deepEqual(refusal(call([deep(70)])), {
+    name: 'RangeError', message: 'forecast.week: argument 1 cannot be sent: the value nests deeper than 64 levels', code: 'bad-value', data: { part: 'argument', argument: 1, reason: 'too-deep' },
+  })
+  assert.deepEqual(refusal(call([Symbol('x')])), {
+    name: 'TypeError', message: 'forecast.week: argument 1 cannot be sent: a symbol cannot cross between processes', code: 'bad-value', data: { part: 'argument', argument: 1, reason: 'type' },
+  })
+  // A function is not refused: it crosses by reference (#687), and the walk
+  // of plain data never sees one. Sent without waiting for an answer.
+  peer.invokeAnswered('forecast', 'week', [() => 1], () => {})
+  peer.close()
+})
+
+// The result that cannot be sent names the call and the reason too (§5.1).
+test('a result that cannot be sent carries its reason', async () => {
+  const { peer, sent } = harness(() => ({ degrees: Number.NaN }))
+  const { decodeError } = await import('../src/errors.mjs')
+  peer.receive(invoke(1, 'today'))
+  await Promise.resolve()
+  const back = decodeError(sent.at(-1).error)
+  assert.equal(back.message, 'test.today: the result cannot be sent: the number NaN is not finite')
+  assert.deepEqual([back.code, back.data], ['bad-value', { part: 'result', reason: 'non-finite' }])
+  peer.close()
+})
+
+// An event's payload that cannot be sent names the event (§4.6, D7): through
+// the session, `parallel` fails with it and `emit` reports it, because the
+// API has returned already.
+test('an event payload that cannot be sent names the event', async () => {
+  const { Bus } = await import('../src/events.mjs')
+  const { peer } = harness(() => undefined)
+  const reported = []
+  const bus = new Bus({
+    peer: {
+      call: (target, method, args, described) => peer.invoke(target, method, args, described),
+      callAsync: (target, method, args, described) => peer.invokeAsync(target, method, args, described),
+      callAnswered: (target, method, args, answered, described) => peer.invokeAnswered(target, method, args, answered, described),
+      callFunctionAsync: () => Promise.resolve(),
+    },
+    report: line => reported.push(line),
+  })
+  const failed = await bus.dispatch('parallel', 'weather/asked', [{ city: 'Oslo', degrees: Number.NaN }]).then(() => undefined, error => error)
+  assert.equal(failed.message, 'the payload of weather/asked cannot be sent: the number NaN is not finite')
+  assert.deepEqual([failed.code, failed.data], ['bad-value', { part: 'payload', reason: 'non-finite' }])
+  bus.dispatch('emit', 'weather/asked', [{ city: 'Oslo', degrees: Number.NaN }])
+  assert.deepEqual(reported, ['rutis: emit of weather/asked from the mount failed: TypeError: the payload of weather/asked cannot be sent: the number NaN is not finite'])
   peer.close()
 })
 

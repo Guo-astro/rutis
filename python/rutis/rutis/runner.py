@@ -1069,7 +1069,9 @@ class Runtime:
             self._emit_via_host(row.key, name, request)
             return None
         if mode == "bail":
-            return plain(self.peer.call("", "events.dispatch", [request]))
+            # The payload is the event's arguments: a value in it that cannot
+            # be sent says the event's name (design §4.6, D7).
+            return plain(self.peer.call("", "events.dispatch", [request], name))
         # Sent now: the host takes its snapshot of the listeners now.
         return start(self._dispatch_via_host(request))
 
@@ -1106,7 +1108,7 @@ class Runtime:
         return asyncio.wrap_future(result)
 
     async def _dispatch_via_host(self, request: dict) -> Any:
-        return plain(await _settle(await self.peer.call_async("", "events.dispatch", [request])))
+        return plain(await _settle(await self.peer.call_async("", "events.dispatch", [request], request["name"])))
 
     def _emit_via_host(self, row: str, name: str, request: dict) -> None:
         def failed(error: BaseException) -> None:
@@ -1128,7 +1130,7 @@ class Runtime:
                 self.peer.loop.create_task(awaited()).add_done_callback(settled)
 
         try:
-            self.peer.request_answered("", "events.dispatch", [request], answered)
+            self.peer.request_answered("", "events.dispatch", [request], answered, request["name"])
         except Exception as error:  # noqa: BLE001 - contained and reported
             failed(error)
 

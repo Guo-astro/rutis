@@ -3,6 +3,7 @@ package convert
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math/big"
 	"reflect"
 	"sort"
@@ -52,13 +53,47 @@ func tooMany(c Callee, expected, received int) error {
 		"%s takes %s, got %d", c.label(), plural(expected, "argument"), received)
 }
 
-// badArgument is `<service>.<method>: argument <i> should be <expected>,
-// got <actual>` (i from 1), code bad-argument.
+// badArgument is `<service>.<method>: argument <i>: <why>` (i from 1), the
+// decoder's own sentence verbatim, code bad-argument (design §4.5): rutis
+// adds only the position.
 func badArgument(c Callee, index int, t reflect.Type, arg any, cause error) error {
-	expected := Expected(t)
 	return peer.NewCoded("BindingError", "bad-argument",
-		c.data(map[string]any{"argument": index + 1, "expected": expected}),
-		"%s: argument %d should be %s, got %s", c.label(), index+1, expected, actual(arg, t, cause))
+		c.data(map[string]any{"argument": index + 1, "expected": Expected(t)}),
+		"%s: argument %d: %s", c.label(), index+1, decoderSaid(cause, arg, t))
+}
+
+// badResult is `<service>.<method>: the result: <why>`, the decoder's own
+// sentence verbatim, code bad-result (design §5.3).
+func badResult(c Callee, arg any, t reflect.Type, cause error) error {
+	return peer.NewCoded("BindingError", "bad-result",
+		map[string]any{"service": c.Service, "method": c.Method, "expected": Expected(t)},
+		"%s: the result: %s", c.label(), decoderSaid(cause, arg, t))
+}
+
+// decoderSaid is the decoder's own sentence: the error's own text, verbatim.
+// A failure rutis made itself, which has no decoder behind it (`a list
+// cannot be decoded as string`), is what it says too.
+func decoderSaid(cause error, arg any, t reflect.Type) string {
+	if cause != nil {
+		// The decoder's own words: the innermost error, past rutis's own
+		// wrapper (`cannot decode x as int: json: …`).
+		for {
+			inner := errors.Unwrap(cause)
+			if inner == nil {
+				break
+			}
+			cause = inner
+		}
+		return cause.Error()
+	}
+	return "cannot decode " + shownJSONArg(arg) + " as " + t.String()
+}
+
+func shownJSONArg(arg any) string {
+	if raw, ok := arg.(json.RawMessage); ok {
+		return string(raw)
+	}
+	return fmt.Sprint(arg)
 }
 
 // NoMethod is `<service> has no method <method> (methods: a, b)`, code

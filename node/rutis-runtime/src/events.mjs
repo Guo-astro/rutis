@@ -301,8 +301,11 @@ export class Bus {
       this.report(`rutis: emit of ${name} from ${this.#from(row)} failed: ${errorText(hostGone())}`)
       return undefined
     }
-    if (synchronous) return peer.call('', 'events.dispatch', [fields])
-    if (mode !== 'emit') return peer.callAsync('', 'events.dispatch', [fields])
+    // The payload is the event's arguments: a value in it that cannot be
+    // sent says the event's name (design §4.6, D7), not `events.dispatch`.
+    const described = { payload: name }
+    if (synchronous) return peer.call('', 'events.dispatch', [fields], described)
+    if (mode !== 'emit') return peer.callAsync('', 'events.dispatch', [fields], described)
     // emit: the API has returned already; a failure is reported here.
     const failed = error => { this.report(`rutis: emit of ${name} from ${this.#from(row)} failed: ${errorText(error)}`) }
     if (sync) {
@@ -310,7 +313,7 @@ export class Bus {
       // host answers once this emit's calls have started, and the calls of
       // listeners here arrive before the answer (§5.4).
       try {
-        const result = peer.call('', 'events.dispatch', [fields])
+        const result = peer.call('', 'events.dispatch', [fields], described)
         if (typeof result?.then === 'function') result.then(() => {}, failed)
       } catch (error) { failed(error) }
       return undefined
@@ -320,9 +323,9 @@ export class Bus {
         peer.callAnswered('', 'events.dispatch', [fields], ({ ok, value }) => {
           if (!ok) failed(value)
           else if (typeof value?.then === 'function') value.then(() => {}, failed)
-        })
+        }, described)
       } else {
-        peer.callAsync('', 'events.dispatch', [fields]).catch(failed)
+        peer.callAsync('', 'events.dispatch', [fields], described).catch(failed)
       }
     } catch (error) { failed(error) }
     return undefined

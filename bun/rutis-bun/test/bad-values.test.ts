@@ -9,7 +9,7 @@ const data = (value: unknown) => ({ type: 'data', value })
 const invoke = (id: number, method: string) => ({ op: 'invoke', id: `main:${id}`, path: [], target: 'test', method, args: data([]) })
 const tick = () => new Promise(resolve => setImmediate(resolve))
 
-function harness(dispatch: (target: string, method: string, args: unknown[]) => unknown, options = {}) {
+function harness(dispatch: (target: string, method: string, args: unknown[]) => unknown, options = {}, capabilities = ['objects']) {
   const sent: any[] = [], incoming: any[] = []
   let fault: Error | undefined
   const peer = new Session({
@@ -20,7 +20,7 @@ function harness(dispatch: (target: string, method: string, args: unknown[]) => 
     abort: (error: Error) => { fault = error },
     endpoint: { local: 'bun' },
   })
-  peer.receive({ op: 'hello', version: ENDPOINT_PROTOCOL, endpoint: 'main', capabilities: ['objects'] })
+  peer.receive({ op: 'hello', version: ENDPOINT_PROTOCOL, endpoint: 'main', capabilities })
   return { peer, sent, incoming, fault: () => fault }
 }
 
@@ -82,8 +82,9 @@ test('an object from the far end is a proxy whose methods call it (#687)', async
   await tick()
   const [cache, again] = got
   expect(cache).toBe(again)
-  expect(String(cache)).toBe('[remote object]')
-  expect(util.inspect(cache)).toBe('[remote object]')
+  // Where it came from, never the runtime's own words (design §4.7, D8).
+  expect(String(cache)).toBe('<object of another process>')
+  expect(util.inspect(cache)).toBe('<object of another process>')
   expect(cache.then).toBeUndefined()
   expect(await cache).toBe(cache)
   const result = cache.get('a')
@@ -200,15 +201,71 @@ test('a value that cannot be sent carries code bad-value and its part (#677)', a
   const big = 'x'.repeat(2048)
   const { peer, sent } = harness((_, method) => method === 'big' ? big : method === 'boom' ? (() => { throw new Error(big) })() : { f: Symbol('s') }, { maxMessage: 1024 })
   const refusal = (run: () => unknown) => { try { run() } catch (error: any) { return { code: error.code, data: error.data } } }
-  expect(refusal(() => peer.invoke('host:svc', 'take', [1, big]))).toEqual({ code: 'bad-value', data: { part: 'argument', argument: 2, limit: 1024 } })
-  expect(refusal(() => peer.invoke('host:svc', 'take', [1, { a: [Symbol('s')] }]))).toEqual({ code: 'bad-value', data: { part: 'argument', argument: 2 } })
+  expect(refusal(() => peer.invoke('host:svc', 'take', [1, big]))).toEqual({ code: 'bad-value', data: { part: 'argument', argument: 2, limit: 1024, reason: 'limit' } })
+  expect(refusal(() => peer.invoke('host:svc', 'take', [1, { a: [Symbol('s')] }]))).toEqual({ code: 'bad-value', data: { part: 'argument', argument: 2, reason: 'type' } })
   const wire = async (id: number, method: string) => { peer.receive(invoke(id, method)); await tick(); return decodeError(sent.at(-1).error) }
   const back = await wire(1, 'big')
-  expect([back.code, back.data]).toEqual(['bad-value', { part: 'result', limit: 1024 }])
+  expect([back.code, back.data]).toEqual(['bad-value', { part: 'result', limit: 1024, reason: 'limit' }])
   const boom = await wire(2, 'boom')
-  expect([boom.code, boom.data]).toEqual(['bad-value', { part: 'error', limit: 1024 }])
+  expect([boom.code, boom.data]).toEqual(['bad-value', { part: 'error', limit: 1024, reason: 'limit' }])
   const symbol = await wire(3, 'symbol')
-  expect([symbol.message, symbol.code, symbol.data]).toEqual(['test.symbol: the result cannot be sent: a symbol cannot cross between processes', 'bad-value', { part: 'result' }])
+  expect([symbol.message, symbol.code, symbol.data]).toEqual(['test.symbol: the result cannot be sent: a symbol cannot cross between processes', 'bad-value', { part: 'result', reason: 'type' }])
+  peer.close()
+})
+
+// What a value that cannot be sent says (design §5.1, docs/design-value-errors-
+// 2026-11-03.md): one frame, one sentence of reason, `bad-value`, and `data`
+// carrying the reason. Locked word for word.
+// guarantee: bridge/bad-values
+test('a value that cannot cross says which call, what is wrong, and why', () => {
+  const { peer } = harness(() => undefined, {}, ['objects', 'value-map'])
+  const refusal = (run: () => unknown) => { try { run(); throw new Error('no error') } catch (error: any) { return { name: error.constructor.name, message: error.message, code: error.code, data: error.data } } }
+  const cyclic = () => { const a: any = {}; a.self = a; return a }
+  const mapCycle = () => { const m = new Map(); m.set('self', m); return m }
+  const deep = (depth: number) => Array.from({ length: depth }).reduce(inner => [inner], 1)
+  const call = (args: unknown[]) => () => peer.invoke('forecast', 'week', args)
+  expect(refusal(call(['Oslo', Number.NaN]))).toEqual({
+    name: 'TypeError', message: 'forecast.week: argument 2 cannot be sent: the number NaN is not finite', code: 'bad-value', data: { part: 'argument', argument: 2, reason: 'non-finite' },
+  })
+  expect(refusal(call([{ a: [-Infinity] }]))).toEqual({
+    name: 'TypeError', message: 'forecast.week: argument 1 cannot be sent: the number -Infinity is not finite', code: 'bad-value', data: { part: 'argument', argument: 1, reason: 'non-finite' },
+  })
+  expect(refusal(call([cyclic()]))).toEqual({
+    name: 'TypeError', message: 'forecast.week: argument 1 cannot be sent: the value holds itself (a cycle)', code: 'bad-value', data: { part: 'argument', argument: 1, reason: 'cycle' },
+  })
+  expect(refusal(call([mapCycle()]))).toEqual({
+    name: 'TypeError', message: 'forecast.week: argument 1 cannot be sent: the value holds itself (a cycle)', code: 'bad-value', data: { part: 'argument', argument: 1, reason: 'cycle' },
+  })
+  expect(refusal(call([deep(70)]))).toEqual({
+    name: 'RangeError', message: 'forecast.week: argument 1 cannot be sent: the value nests deeper than 64 levels', code: 'bad-value', data: { part: 'argument', argument: 1, reason: 'too-deep' },
+  })
+  expect(refusal(call([Symbol('x')]))).toEqual({
+    name: 'TypeError', message: 'forecast.week: argument 1 cannot be sent: a symbol cannot cross between processes', code: 'bad-value', data: { part: 'argument', argument: 1, reason: 'type' },
+  })
+  // A function is not refused: it crosses by reference (#687).
+  peer.invokeAnswered('forecast', 'week', [() => 1], () => {})
+  peer.close()
+})
+
+// An event's payload that cannot be sent names the event (§4.6, D7).
+test('an event payload that cannot be sent names the event', async () => {
+  const { Bus } = await import('../src/events.mjs')
+  const { peer } = harness(() => undefined)
+  const reported: string[] = []
+  const bus = new Bus({
+    peer: {
+      call: (target: string, method: string, args: unknown[], described?: unknown) => peer.invoke(target, method, args, described),
+      callAsync: (target: string, method: string, args: unknown[], described?: unknown) => peer.invokeAsync(target, method, args, described),
+      callAnswered: (target: string, method: string, args: unknown[], answered: any, described?: unknown) => peer.invokeAnswered(target, method, args, answered, described),
+      callFunctionAsync: () => Promise.resolve(),
+    },
+    report: (line: string) => reported.push(line),
+  })
+  const failed: any = await bus.dispatch('parallel', 'weather/asked', [{ city: 'Oslo', degrees: Number.NaN }]).then(() => undefined, (error: any) => error)
+  expect(failed.message).toBe('the payload of weather/asked cannot be sent: the number NaN is not finite')
+  expect([failed.code, failed.data]).toEqual(['bad-value', { part: 'payload', reason: 'non-finite' }])
+  bus.dispatch('emit', 'weather/asked', [{ city: 'Oslo', degrees: Number.NaN }])
+  expect(reported).toEqual(['rutis: emit of weather/asked from the mount failed: TypeError: the payload of weather/asked cannot be sent: the number NaN is not finite'])
   peer.close()
 })
 

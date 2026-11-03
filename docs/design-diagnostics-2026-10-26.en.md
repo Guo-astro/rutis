@@ -99,7 +99,8 @@ An error a plugin throws itself keeps whatever `code` it has. `BindingError`s th
 | `unavailable` | The service has no provider right now | `{service, reason}` (the reason from `Loader::waits`) |
 | `no-method` | The method does not exist | `{service, method, methods}`; for object calls `{object, method, methods}` (`object` is the class name, `null` for a plain object; see [object references](design-object-refs-2026-10-27.en.md) §8) |
 | `bad-argument` | Wrong number or type of arguments | `{service, method, argument, expected}` |
-| `bad-value` | A value cannot be sent, or a message exceeds the limit | `{argument?, part, limit?}` |
+| `bad-value` | A value cannot be sent, or a message exceeds the limit | `{argument?, part, reason, limit?}` (`reason` added by [#936](https://github.com/arcships/rutis/issues/936): `non-finite`, `cycle`, `too-deep`, `type`, `tag`, `limit`; `part` gains `payload`, an event's arguments) |
+| `bad-result` | A result that arrived and does not decode ([#936](https://github.com/arcships/rutis/issues/936)): the message is the decoder's own sentence, with only `<service>.<method>: the result: ` before it | `{service, method, expected}` (`{object, method, expected}` for a method of an object) |
 | `peer-gone` | The runtime on the other side exited or disconnected during the call | `{runtime, reason}` |
 | `bad-config` | A row's config does not match its plugin's schema (added by the [config schema design](design-config-schema-2026-10-27.en.md) §5.2) | `{issues: [{path, message}]}` (the items of `path` are keys or indices) |
 
