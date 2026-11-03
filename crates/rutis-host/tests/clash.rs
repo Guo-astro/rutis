@@ -147,11 +147,11 @@ fn a_service_provided_after_loading_twice_fails_the_later_row() {
     let context = format!("{:#?}", host.seen);
     // The row that fails names the service and who has it (§8.1 row 13).
     assert_eq!(
-        failed[0], "node-late: weather is already provided by py-early",
+        failed[0], "node-late: weather is already provided by py-early: rename one of them",
         "{context}"
     );
     assert_eq!(
-        failed[1], "py-late: forecast is already provided by node-early",
+        failed[1], "py-late: forecast is already provided by node-early: rename one of them",
         "{context}"
     );
     signal(&host, libc::SIGTERM, false);

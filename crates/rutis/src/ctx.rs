@@ -691,10 +691,16 @@ impl Ctx {
         // name (R6) is checked by the exposer, where it would serve it.
         let scope = self.scope_for(&key);
         if self.slot_taken(&key) {
-            return Err(ErrorKind::ServiceExists(format!(
-                "{} in scope {}",
-                key.describe(),
-                scope.as_deref().unwrap_or("<default>")
+            let held = self
+                .0
+                .shared
+                .registry
+                .lookup(&key, scope.as_ref())
+                .map(|binding| crate::registry::holder(&binding))
+                .unwrap_or_else(|| "another plugin".to_owned());
+            return Err(ErrorKind::ServiceExists(crate::service::taken_message(
+                &self.key_name(&key),
+                &held,
             ))
             .into());
         }
@@ -729,6 +735,20 @@ impl Ctx {
         }
     }
 
+    /// The name a message gives `key`: the first namer that names it (the
+    /// loader's catalog, the rows' names), else its own description.
+    pub(crate) fn key_name(&self, key: &TypeKey) -> String {
+        let namers: Vec<_> = {
+            let mut namers = self.0.shared.key_namers.lock().unwrap();
+            namers.retain(|namer| namer.strong_count() > 0);
+            namers.iter().filter_map(Weak::upgrade).collect()
+        };
+        namers
+            .iter()
+            .find_map(|namer| namer(key))
+            .unwrap_or_else(|| key.describe())
+    }
+
     /// Whether `key`'s slot, in the isolation scope this context gives it,
     /// holds a binding that is not being removed.
     pub(crate) fn slot_taken(&self, key: &TypeKey) -> bool {
@@ -750,6 +770,7 @@ impl Ctx {
         let event_key = key.clone();
         let event_scope = scope.clone();
         let shared = self.0.shared.clone();
+        let named = self.key_name(&key);
         let label = format!("service provide: {}", key.describe());
         let inserted = Arc::new(Mutex::new(None));
         let inserted_slot = inserted.clone();
@@ -772,6 +793,7 @@ impl Ctx {
                         provider_gen,
                         removing: AtomicBool::new(false),
                     },
+                    &named,
                 )?;
                 *inserted_slot.lock().unwrap() = Some(binding);
                 fiber

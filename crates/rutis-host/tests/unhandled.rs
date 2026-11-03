@@ -146,7 +146,14 @@ fn ran_on(output: &[String], row: &str) -> bool {
     let line = |state: &str| format!("{row}: {state}");
     let before = states(&output[..stop], row);
     let after = states(&output[stop..], row);
-    let stopping = ["unloading", "stopped", "inactive"].map(line);
+    // The state words of the stop (#937): `stopping`, `stopped`, and a row
+    // whose group is not running any more.
+    let stopping = [
+        "stopping",
+        "stopped",
+        "not running (its group is not running)",
+    ]
+    .map(line);
     !before.is_empty()
         && before.iter().all(|state| **state == line("running"))
         && after.iter().all(|state| stopping.contains(state))

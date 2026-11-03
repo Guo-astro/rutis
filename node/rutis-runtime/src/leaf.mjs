@@ -60,8 +60,10 @@ function emittable(name) {
 export { UNDECLARED }
 
 // What a leaf plugin providing a service someone else provides there is
-// told: `forecast is already provided by a` (§8.1 row 13).
-export const ALREADY_PROVIDED = (name, provider) => `${name} is already provided by ${provider}`
+// told: `forecast is already provided by a: rename one of them` (§8.1
+// row 13, #937): the same sentence every provider gives.
+export const ALREADY_PROVIDED = (name, provider) =>
+  `${name} is already provided by ${provider === 'the host' ? 'the host: rename it' : `${provider}: rename one of them`}`
 
 // Marks the test driver (./testing/rutis-test.mjs): it is the test, not a
 // plugin under the rules, and uses whatever service the test names,

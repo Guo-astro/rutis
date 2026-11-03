@@ -1,6 +1,7 @@
 //! `Loader::waits`: what a waiting row waits for, and why each service is
 //! not there (#676): a misspelt name, a provider that failed or is
 //! disabled, two rows that inject each other.
+//! guarantee: loader/wait-words
 #![cfg(feature = "runtimes")]
 
 use std::sync::{Arc, Mutex};
@@ -284,10 +285,7 @@ async fn a_long_wait_is_reported_by_service_name() {
             || format!("{:?}", sunk.lock().unwrap()),
         )
         .await;
-    assert_eq!(
-        said,
-        "provider: still waiting after 0.1s for lmm: it starts once that is provided"
-    );
+    assert_eq!(said, "provider: still waiting after 0.1s for lmm");
     root.shutdown().await.unwrap();
 }
 

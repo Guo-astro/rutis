@@ -199,7 +199,7 @@ fn call_in_a_dev_project_says_what_it_did() {
     );
     fails(
         &["forecast.tomorow", "\"Oslo\""],
-        "rutis-host: forecast has no method tomorow (methods: today, wait, week)\n",
+        "rutis-host: forecast has no method tomorow (methods: today, wait, week); it is provided by row weather\n",
     );
     // The method throws: the call, then the row and its frames.
     let (code, stdout, stderr) = call(&["forecast.today", "\"Nowhere\""], dir, runtime);

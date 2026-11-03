@@ -138,7 +138,7 @@ class Testing(background.TestCase):
                         pass
                 self.assertEqual(
                     str(refused.exception),
-                    "rutis-test/rutis/sessions: rutis/sessions is already provided by the host",
+                    "rutis-test/rutis/sessions: rutis/sessions is already provided by the host: rename it",
                 )
                 # The host serves the tests after it: a service of the
                 # test's, its listener, and unloading.

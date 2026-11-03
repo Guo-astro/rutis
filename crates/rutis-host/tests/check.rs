@@ -3,7 +3,7 @@
 //! change users see, to be explained in review). It needs Node (with
 //! node/rutis-runtime's dependencies installed) and Python, as the host's
 //! own tests do.
-
+//! guarantee: loader/wait-words
 mod common;
 
 use std::path::Path;
@@ -559,7 +559,7 @@ async fn check_fails_on_a_service_nothing_provides() {
     assert_eq!(
         checked.stderr,
         "rutis-host: warning: chat: index is declared only by row indexer, which is disabled: enable it, or add a row that provides index\n\
-         rutis-host: warning: chat: nothing declares llm; it may be provided at runtime by notes\n"
+         rutis-host: warning: chat: nothing declares llm; a row that does not declare its services may provide it once it runs\n"
     );
     assert_eq!(checked.status, 0);
 }
@@ -639,9 +639,9 @@ async fn check_fails_on_cycles_and_clashes_and_suggests_misspelt_names() {
     assert_eq!(
         checked.stderr,
         "rutis-host: warning: rutis.json: rows use the py runtime (py:geo), which runtimes does not declare: it runs with its defaults; declare \"runtimes\": { \"py\": {} } to say so\n\
-         rutis-host: warning: weather: nothing declares lmm; it may be provided at runtime by a, b, one and 2 more; did you mean llm?\n\
+         rutis-host: warning: weather: nothing declares lmm; did you mean llm?\n\
          rutis-host: error: rows a, b wait for each other (a waits for bsvc from b, b waits for asvc from a): none of them starts; break the cycle in their inject\n\
-         rutis-host: error: rows one, two all provide llm: only the first to start provides it, the others fail; keep one, or isolate the name in each row\n\
+         rutis-host: error: rows one, two provide llm in the same scope: only the first to start provides it, the others fail; rename one of them, or isolate the name in each row\n\
          rutis-host: 3 row(s) or binaries cannot run\n"
     );
     assert_eq!(checked.status, 1);
@@ -675,8 +675,8 @@ async fn check_counts_a_row_clashing_on_two_names_once() {
     let checked = check(dir.path(), &["rutis.json"], &[]).await;
     assert_eq!(
         checked.stderr,
-        "rutis-host: error: rows one, two all provide embed: only the first to start provides it, the others fail; keep one, or isolate the name in each row\n\
-         rutis-host: error: rows one, two all provide llm: only the first to start provides it, the others fail; keep one, or isolate the name in each row\n\
+        "rutis-host: error: rows one, two provide embed in the same scope: only the first to start provides it, the others fail; rename one of them, or isolate the name in each row\n\
+         rutis-host: error: rows one, two provide llm in the same scope: only the first to start provides it, the others fail; rename one of them, or isolate the name in each row\n\
          rutis-host: 1 row(s) or binaries cannot run\n"
     );
     assert_eq!(checked.status, 1);
@@ -767,9 +767,9 @@ async fn check_passes_what_cordis_rows_may_provide_at_runtime() {
         ]
     );
     let warnings = "\
-        domain: nothing declares storage; it may be provided at runtime by storage, workspace, forecast and 1 more; between Cordis rows of one runtime it resolves in Cordis\n\
-        workspace: nothing declares storageDomain; it may be provided at runtime by storage, domain, forecast and 1 more; between Cordis rows of one runtime it resolves in Cordis\n\
-        planner: nothing declares forecast; it may be provided at runtime by storage, domain, workspace and 1 more\n";
+        domain: nothing declares storage; a row that does not declare its services may provide it once it runs; between Cordis rows of one runtime it resolves in Cordis\n\
+        workspace: nothing declares storageDomain; a row that does not declare its services may provide it once it runs; between Cordis rows of one runtime it resolves in Cordis\n\
+        planner: nothing declares forecast; a row that does not declare its services may provide it once it runs\n";
     let prefixed = |level: &str| {
         warnings
             .lines()

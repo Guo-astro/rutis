@@ -844,16 +844,28 @@ impl Host {
             }
         }
         // What is not a row (a runtime, a session) and still stops is named
-        // too; the rest of rutis's own plugins are not counted.
+        // too; rutis's own plugins are the host's, said once (`the host`),
+        // never by their names inside rutis (#937).
+        let mut host = false;
         for plugin in self.root.diagnostics().plugins {
             if Some(plugin.id) == root || rows.contains(&plugin.id) {
                 continue;
             }
+            let name = match plugin.platform {
+                true => {
+                    host = true;
+                    continue;
+                }
+                false => plugin.name,
+            };
             match plugin.state {
-                FiberState::Unloading => stopping.push(plugin.name),
-                FiberState::Loading => stopping.push(format!("{} (still starting)", plugin.name)),
+                FiberState::Unloading => stopping.push(name),
+                FiberState::Loading => stopping.push(format!("{name} (still starting)")),
                 _ => {}
             }
+        }
+        if host {
+            stopping.push("the host".to_owned());
         }
         (stopping, waiting)
     }

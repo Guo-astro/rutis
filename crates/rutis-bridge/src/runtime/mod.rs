@@ -24,7 +24,7 @@ pub mod testing;
 /// Where a runtime process's standard streams go ([`Launcher::stdin`],
 /// [`Launcher::stdout`]).
 pub use crate::pipe::Stdio;
-pub use calls::InFlight;
+pub use calls::{host_calls, InFlight};
 pub(crate) use definitions::read as read_definition;
 pub use definitions::{mounter_key, returned, ForeignPlugin, PluginMounter};
 pub(crate) use process::calling as calling_process;

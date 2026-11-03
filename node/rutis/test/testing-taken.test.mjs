@@ -12,7 +12,7 @@ import echo from './fixtures/echo.mjs'
 
 test('a service the host provides already fails the load that gives it', async () => {
   await assert.rejects(load(taken, { services: { 'rutis/sessions': { x: () => 7 } } }), {
-    message: 'rutis-test/rutis/sessions: rutis/sessions is already provided by the host',
+    message: 'rutis-test/rutis/sessions: rutis/sessions is already provided by the host: rename it',
   })
 })
 

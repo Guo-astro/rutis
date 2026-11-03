@@ -103,7 +103,7 @@ async fn the_status_names_rows_services_runtimes_and_calls() {
     let printed = status.to_string();
     assert!(
         printed.starts_with(
-            "rows:\n  slow: running\n  needy: waiting for missing (no row provides it)\nservices:\n"
+            "rows:\n  slow: running\n  needy: waiting for missing (nothing provides it yet)\nservices:\n"
         ),
         "{printed}"
     );

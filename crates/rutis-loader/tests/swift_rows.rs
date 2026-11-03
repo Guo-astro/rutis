@@ -460,7 +460,7 @@ async fn an_announced_service_another_provider_has_fails_the_later_row() {
     };
     let error = snapshot.error.expect("why it failed").to_string();
     assert!(
-        error.contains("llm is already provided by the host"),
+        error.contains("llm is already provided by the host: rename it"),
         "{error}"
     );
     // Announced methods are all `async`.

@@ -1,6 +1,8 @@
 //! What the host prints: each row's state as it changes, and a local
 //! runtime that went down or came back (`docs/guide/rutis-host.md`, "What
 //! `run` prints"). Connection rows print their own lines (`connect`).
+//! guarantee: loader/wait-words
+//! guarantee: loader/wait-words
 
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -18,7 +20,7 @@ use crate::languages::BinaryHost;
 pub fn describe(status: &EntryStatus) -> String {
     match status {
         EntryStatus::Disabled => "disabled".into(),
-        EntryStatus::Inactive => "inactive".into(),
+        EntryStatus::Inactive => "not running (its group is not running)".into(),
         // A config that does not match its schema: `config: …`, a line
         // per problem.
         EntryStatus::Unresolved(error) if error.config().is_some() => error.to_string(),
@@ -32,12 +34,17 @@ pub fn describe(status: &EntryStatus) -> String {
             // `call to forecast.tomorrow failed: …`).
             FiberState::Failed => match &snapshot.error {
                 Some(error) if rutis::ConfigError::of(error).is_some() => error.to_string(),
+                // A name two providers share says itself who holds it.
+                Some(error) if rutis_bridge::report::is_name_clash(error) => {
+                    rutis_bridge::report::report(error)
+                }
                 Some(error) if rutis_bridge::report::headline(error).is_some() => {
                     rutis_bridge::report::report(error)
                 }
                 Some(error) => format!("failed: {}", rutis_bridge::report::report(error)),
                 None => "failed".into(),
             },
+            FiberState::Unloading => "stopping".into(),
             FiberState::Disposed => "stopped".into(),
             _ => format!("{:?}", snapshot.state).to_lowercase(),
         },
@@ -542,7 +549,7 @@ mod tests {
                         like: Some("llm".into()),
                     },
                 )],
-                "waiting for lmm (no row provides it; did you mean llm?)",
+                "waiting for lmm (nothing provides it yet; did you mean llm?)",
             ),
             (
                 vec![
@@ -555,7 +562,7 @@ mod tests {
                     ),
                     Wait::new("blob", WaitReason::NoProvider { like: None }),
                 ],
-                "waiting for llm (row model failed: Error: boom); blob (no row provides it)",
+                "waiting for llm (row model failed: Error: boom); blob (nothing provides it yet)",
             ),
             (
                 vec![Wait::new(
@@ -595,7 +602,7 @@ mod tests {
                         service: "asvc".into(),
                     },
                 )],
-                "waiting for bsvc (row b waits for asvc from this row: they inject each other)",
+                "waiting for bsvc (row b waits for asvc too: they inject each other)",
             ),
             (
                 vec![Wait::new(

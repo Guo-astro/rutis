@@ -286,7 +286,7 @@ async fn a_clashing_provide_fails_only_its_row(language: Language) {
     probe.wait_for("user: host").await;
     let error = failure(loader, "claimer").await;
     assert!(
-        error.contains("notes is already provided by the host"),
+        error.contains("notes is already provided by the host: rename it"),
         "{language:?}: {error}"
     );
     reconcile.await.unwrap().unwrap();

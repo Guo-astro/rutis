@@ -58,6 +58,30 @@ class UndeclaredUse(background.TestCase):
         self.assertEqual(seen["declared code"], ("unavailable", {"service": "gone"}))
         self.assertEqual(seen["row code"], ("unavailable", {"service": "extra"}))
 
+    def test_a_misspelt_name_is_pointed_at_instead_of_added(self):
+        """A name close to one the plugin declares is a misspelling: the
+        error says which name was meant, not to declare the typo (#937)."""
+        seen = {}
+
+        def read(ctx, config):
+            try:
+                ctx.use(config["name"])
+            except LookupError as error:
+                seen[config["as"]] = str(error)
+
+        runtime = Runtime()
+        plugin = module("undeclared_typo", read, inject=["llm"])
+
+        async def run():
+            await runtime.load("t", plugin, {"name": "lmm", "as": "lmm"}, None)
+
+        asyncio.run(run())
+        self.assertEqual(
+            seen["lmm"],
+            "service lmm is not available to this plugin, which does not declare it "
+            "in inject: did you mean llm?",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -65,8 +65,8 @@ export default definePlugin({ apply(ctx) { ctx.provide('llm', { ask() { return 1
     assert.deepEqual(pick(await load('caller', 'caller.mjs')), { name: 'BindingError', message: 'llm has no method other (methods: ask)', code: 'no-method', data: { service: 'llm', method: 'other', methods: ['ask'] } })
     assert.deepEqual(pick(await load('sneaky', 'sneaky.mjs')), { name: 'BindingError', message: "service tools is not available to this plugin, which does not declare it in inject: add 'tools' to its inject", code: 'not-declared', data: { service: 'tools' } })
     assert.equal(await load('a', 'forecast.mjs'), null)
-    assert.deepEqual(pick(await load('b', 'forecast.mjs')), { name: 'Error', message: 'forecast is already provided by a', code: undefined, data: undefined })
-    assert.deepEqual(pick(await load('n', 'notes.mjs')), { name: 'Error', message: 'llm is already provided by the host', code: undefined, data: undefined })
+    assert.deepEqual(pick(await load('b', 'forecast.mjs')), { name: 'Error', message: 'forecast is already provided by a: rename one of them', code: undefined, data: undefined })
+    assert.deepEqual(pick(await load('n', 'notes.mjs')), { name: 'Error', message: 'llm is already provided by the host: rename it', code: undefined, data: undefined })
     // Nothing of the platform in any of it.
     assert.doesNotMatch(host.stderr, /Cordis|without inject|rutis host/)
   } finally {

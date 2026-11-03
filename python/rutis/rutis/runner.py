@@ -95,24 +95,74 @@ def shutdown_deadline() -> float:
     return seconds if 0 < seconds < float("inf") else 10.0
 
 
-def undeclared_use(name: str) -> str:
+def undeclared_use(name: str, like: str | None = None) -> str:
     """What a plugin using `name`, which neither its `inject` nor its row's
-    declares, is told when the service is not there for it: what to declare,
-    not that it is missing (#676). The same in every runtime and testing
-    tool."""
+    declares, is told when the service is not there for it: the name it was
+    meant to be when `like` is close (#937), else what to declare, not that
+    it is missing (#676). The same in every runtime and testing tool."""
+    if like is not None:
+        return (
+            f"service {name} is not available to this plugin, which does not declare it "
+            f"in inject: did you mean {like}?"
+        )
     return (
         f"service {name} is not available to this plugin, which does not declare it "
         f"in inject: add '{name}' to its inject"
     )
 
 
-def undeclared_get(name: str) -> str:
-    """The same for `ctx.get`, which reads an optional service: declare it
-    there."""
+def undeclared_get(name: str, like: str | None = None) -> str:
+    """The same for `ctx.get`, which reads an optional service: the name it
+    was meant to be, else what to declare there."""
+    if like is not None:
+        return (
+            f"service {name} is not available to this plugin, which does not declare it: "
+            f"did you mean {like}?"
+        )
     return (
         f"service {name} is not available to this plugin, which does not declare it: "
         f"add '{name}' to its optional (or to its inject, if it cannot run without it)"
     )
+
+
+def closest(name: str, known: list[str]) -> str | None:
+    """The name in `known` closest to `name`, when close enough to be a
+    misspelling: the rule of `rutis::config::closest` (#937), the same in
+    every runtime: at most one edit for 3 to 6 characters, two beyond that,
+    and none for a name of two characters or fewer."""
+    limit = 0 if len(name) <= 2 else (1 if len(name) <= 6 else 2)
+    if limit == 0:
+        return None
+    best: tuple[int, str] | None = None
+    for candidate in known:
+        if candidate == name:
+            continue
+        distance = _edits(name, candidate, limit)
+        if distance > limit:
+            continue
+        if best is None or distance < best[0]:
+            best = (distance, candidate)
+    return best[1] if best is not None else None
+
+
+def _edits(a: str, b: str, limit: int) -> int:
+    """Edits (insert, delete, replace, swap two neighbours) between `a` and
+    `b`, stopped early past `limit` (which then says `limit + 1`)."""
+    if abs(len(a) - len(b)) > limit:
+        return limit + 1
+    rows = [[0] * (len(b) + 1) for _ in range(len(a) + 1)]
+    for i in range(len(a) + 1):
+        rows[i][0] = i
+    for j in range(len(b) + 1):
+        rows[0][j] = j
+    for i in range(1, len(a) + 1):
+        for j in range(1, len(b) + 1):
+            cost = 0 if a[i - 1] == b[j - 1] else 1
+            value = min(rows[i - 1][j] + 1, rows[i][j - 1] + 1, rows[i - 1][j - 1] + cost)
+            if i > 1 and j > 1 and a[i - 1] == b[j - 2] and a[i - 2] == b[j - 1]:
+                value = min(value, rows[i - 2][j - 2] + 1)
+            rows[i][j] = value
+    return rows[len(a)][len(b)]
 
 
 def not_declared(cls: type, name: str, text: Callable[[str], str] = undeclared_use) -> BaseException:
@@ -318,9 +368,12 @@ class Context(sdk.Context):
         # Not injected by it or its row (an optional one is read with
         # `get`, as Rust's `require` reads only the injects): say what to
         # declare, not that it is missing (#676), whether or not another
-        # row here provides it.
+        # row here provides it; a name close to one it has is a misspelling
+        # to point at (#937).
         if name not in self._row.uses and self._row.id(name) not in self._row.provided:
-            raise not_declared(LookupError, name)
+            raise not_declared(
+                LookupError, name, lambda name: undeclared_use(name, self._closest(name))
+            )
         try:
             return self._runtime.lookup(self._row.id(name), self._row)
         except LookupError:
@@ -328,13 +381,23 @@ class Context(sdk.Context):
 
     def get(self, name: str) -> Any | None:
         if name not in self._row.inject and self._row.id(name) not in self._row.provided:
-            raise not_declared(LookupError, name, undeclared_get)
+            raise not_declared(
+                LookupError, name, lambda name: undeclared_get(name, self._closest(name))
+            )
         # None: an optional service rutis did not have when the row
         # started, or one no row here provides now.
         try:
             return self._runtime.lookup(self._row.id(name), self._row)
         except LookupError:
             return None
+
+    def _closest(self, name: str) -> str | None:
+        """The name `name` was probably meant to be: one this plugin or row
+        declares, or one this process has (#937)."""
+        known = set(self._row.inject) | set(self._row.optional) | set(self._row.uses)
+        for id in list(self._runtime.services) + list(self._runtime.hosts):
+            known.add(id.split("\0", 1)[0])
+        return closest(name, sorted(known))
 
     def provide(self, name: str, value: Any) -> Callable[[], None]:
         return self._runtime.provide(self._row, name, value)
