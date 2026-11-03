@@ -74,6 +74,14 @@ cargo run -p rutis-bridge --features websocket --example smoke -- \
 
 每晚的 stress 工作流还跑两个浸泡测试（link 反复断开重连、进程反复拉起结束），检查文件描述符、线程数不增长、进程都被回收。
 
+## 0.20.1
+
+0.20.1 是补丁版本：`rutis-host dev` 只对插件会加载的文件重新加载，测试文件、文档、图片、锁文件不再重启行（#1046、#1047），Node 检查器的地址可以用 `RUTIS_NODE_INSPECT` 换（#1048），`dev` 也不再打印 `services: none`（#1049）；一行的清理仍能发出事件，别的行听得到（#1041、#1050）；发布门里与装载有关的两处偶发失败修好（`dev` 不再把还在回来的路上的行说成 `stopped`，远程运行时的测试等 hello 帧；#1044、#1051）。所有包均为 0.20.1；见[发布说明](releases/0.20.1.md)。没有要迁移的：没有 API 删除或改名，插件、`rutis.json` 与 `rutis.dev.json` 都不用改。
+
+补丁版本要和 0.20.0 兼容：`cargo-semver-checks` 与 0.20.0 比较，不接受不兼容的 Rust API 改动（这一版没有新增或删除公开 API）。`rutis.json` 的 `format` 仍是 1，配置没有变化：持久化样本从 0.20.0 复制，期望不变；dsh 的用户层没变，`cordis.patch.yml` 原样复制。会话协议仍是 4，没有新的能力，插件 API 仍是 3：发布门的跨版本测试（`RUTIS_E2E_ONLY_OLDER=1`）与 0.20.0 相遇，相遇正常工作。Kotlin SDK 随列车一起打版本；Maven Central 按 `release.yml` 的规则发（environment `maven` 的四个 secret，缺一个时 `maven` 任务跳过）。
+
+这一版不做网络冒烟（维护者的决定）。
+
 ## 0.20.0
 
 0.20 让插件可以写可选依赖（`optional` 与 `ctx.get`，#999），行的 `inject` 在六种语言里都算这一行的声明、运行时的行由 rutis 门控并租借（#1000、#1001），同一进程里的服务在 Go、Kotlin 也拿到对象本身（#1006、#1015），测试工具收下插件交出的定义（#1004）；卸载顺序改成清理与服务撤回在同一个逆序栈里（#1010），每个实例的常驻占用更小（#979）。所有包均为 0.20.0；见[发布说明](releases/0.20.0.md)与[迁移到 0.20](migration-0.20.md)。

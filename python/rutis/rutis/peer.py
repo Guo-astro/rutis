@@ -44,7 +44,7 @@ ENDPOINT_PROTOCOL = 4
 # waits are stacked on its one thread; `value-<tag>`: it takes every tagged
 # value (#308, `rutis._values`).
 CAPABILITIES = ["reentrant-sync", "sync-stack", *_values.CAPABILITIES]
-IMPLEMENTATION = {"name": "rutis", "version": "0.20.0"}
+IMPLEMENTATION = {"name": "rutis", "version": "0.20.1"}
 
 
 def version_mismatch(far, local: int, implementation) -> str:
