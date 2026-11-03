@@ -226,13 +226,18 @@ function calling() {
 }
 
 // `promise`, the call `service.method(args…)`, failing after `calling()`
-// seconds: only that call fails, and it stops keeping the process alive, so
-// a test that never returns still lets the run end (#933).
+// seconds: only that call fails. The timer is not counted, like the call
+// itself (#997): a test whose call never returns ends at its own time limit,
+// and `node --test` exits then, without waiting for the call (#933 §3.4).
+// The tool's limit is the one a call running out of time meets while the
+// test is still going.
 function within(promise, service, method) {
   const limit = calling()
   let timer
   const late = new Promise((_, reject) => {
     timer = setTimeout(() => {
+      // From here the call keeps nothing alive either: the test fails now,
+      // and the run ends even though the plugin never answers.
       held?.unref()
       reject(new PluginTestError(`${service}.${method}() did not return within ${limit / 1000}s`, {
         code: 'timeout',
@@ -259,11 +264,12 @@ async function rowState(id) {
 
 // The name in the `package.json` nearest `file`, scope dropped
 // (`@ana/wordcount` is `wordcount`): what a plugin is called when it
-// declares no name of its own.
+// declares no name of its own. `file` is a `file:` URL, as Node gives it,
+// or a path, as Bun does.
 const packages = new Map()
 function packageName(file) {
   if (!file) return undefined
-  let dir = dirname(fileURLToPath(file))
+  let dir = dirname(String(file).startsWith('file:') ? fileURLToPath(file) : String(file))
   while (!packages.has(dir)) {
     let name
     try {

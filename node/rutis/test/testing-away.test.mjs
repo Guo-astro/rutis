@@ -66,9 +66,14 @@ test('a service the running row has not got is `no-service`, with the nearest na
   await t.unload()
 })
 
-test('a call that never returns fails at the tool\'s limit, and the process can end', async () => {
+test('a call that never returns fails at the tool\'s limit', async () => {
   const previous = process.env.RUTIS_TEST_CALLING_MS
   process.env.RUTIS_TEST_CALLING_MS = '50'
+  // The limit meets a call while the test is still going, as another test in
+  // the file would keep it going; a call that holds nothing by itself is
+  // what lets `node --test` exit at the test's own limit (#997, §3.4), so
+  // this one keeps the loop alive on its own.
+  const going = setInterval(() => {}, 10)
   try {
     const t = await load(stuck)
     await assert.rejects(t.service('stuck').wait(), {
@@ -79,6 +84,7 @@ test('a call that never returns fails at the tool\'s limit, and the process can 
     })
     await t.unload()
   } finally {
+    clearInterval(going)
     if (previous === undefined) delete process.env.RUTIS_TEST_CALLING_MS
     else process.env.RUTIS_TEST_CALLING_MS = previous
   }
