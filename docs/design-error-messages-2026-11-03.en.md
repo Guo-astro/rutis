@@ -48,7 +48,7 @@ One sentence in six languages (`python/rutis/rutis/runner.py:98`, `node/rutis-ru
 
 > `check`'s warning `nothing declares lmm; it may be provided at runtime by llm` lists every row that may provide services at run time, unrelated to this name.
 
-`undeclared_line` (`crates/rutis-host/src/main.rs:953`) is given `Supply::Announced(rows)`, which is **every row that does not declare `provides`** (`:889`), not the rows that may provide this name. When a close name exists it still lists them first and appends the did you mean after (`:907`).
+`undeclared_line` (`crates/rutis-host/src/main.rs:953`) is given `Supply::Announced(rows)`, which is **every row that does not declare `provides`** (`:831`), not the rows that may provide this name. When a close name exists it still lists them first and appends the did you mean after (`:907`).
 
 ### 1.5 Two Rust rows that inject each other
 
@@ -120,7 +120,7 @@ After the session closes, a reply still awaited gets `Error::Transport("the conn
 
 1. **When to label**: once per error as it leaves a row — the reply of a `dispatch`, the reply of a listener, an `apply` failure, a cleanup failure, an unhandled error. An error the plugin catches and handles is not labelled.
 2. **How to label** (the same in every runtime):
-   1. Walk the stack from the innermost frame outward; the first frame that belongs to **another row** names the row that failed first (`R`). The mapping already exists: a row's entry module file → the row's id (Python's `charged_row` in `runner.py:649` does exactly this; Node, Bun and Go each keep their rows' entry files).
+   1. Walk the stack from the innermost frame outward; the first frame that belongs to **another row** names the row that failed first (`R`). The mapping already exists: a row's entry module file → the row's id (Python's `charged_row` in `runner.py:649` does exactly this; Node, Bun and Go have the entry they were given at `rows.load`).
    2. Found: the error's root node gets `site = {row: R, doing: "call"}`; the hop rutis handed over also gets `service` and `method` (D2).
    3. `stack` keeps only `R`'s frames (from the innermost up to `R`'s first frame); each stretch outward, cut where the row changes, becomes one `rethrown` item (at most 8, `crates/rutis-bridge/src/exports.rs:79`).
    4. Not found (the error is this row's own): nothing changes.

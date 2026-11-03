@@ -48,7 +48,7 @@ Issue：[#937](https://github.com/arcships/rutis/issues/937)，属于 [#663](htt
 
 > `check` 的告警 `nothing declares lmm; it may be provided at runtime by llm` 列出所有可能在运行时提供服务的行，和这个名字无关。
 
-`undeclared_line`（`crates/rutis-host/src/main.rs:953`）拿到的是 `Supply::Announced(rows)`，也就是**所有不声明 `provides` 的行**（`:889`），不是"可能提供这个名字"的行。名字对得上时它照样把清单列在前面（`:907` 的 did you mean 接在后面）。
+`undeclared_line`（`crates/rutis-host/src/main.rs:953`）拿到的是 `Supply::Announced(rows)`，也就是**所有不声明 `provides` 的行**（`:831`），不是"可能提供这个名字"的行。名字对得上时它照样把清单列在前面（`:907` 的 did you mean 接在后面）。
 
 ### 1.5 两个 Rust 行互相依赖
 
@@ -120,7 +120,7 @@ Issue：[#937](https://github.com/arcships/rutis/issues/937)，属于 [#663](htt
 
 1. **什么时候标**：错误离开一行时标一次——`dispatch` 的回复、监听器的回复、`apply` 失败、清理失败、没人处理的错误。插件自己接住、处理的错误不标。
 2. **怎么标**（每个运行时一样）：
-   1. 从栈的最里面往外走，第一个属于**另一个行**的帧是"最早出错的那一行"（`R`）。判断用已有的映射：行的入口模块文件 → 行的 id（Python `runner.py:649` 的 `charged_row` 就是这么做的；Node、Bun、Go 各自记着行的入口文件）。
+   1. 从栈的最里面往外走，第一个属于**另一个行**的帧是"最早出错的那一行"（`R`）。判断用已有的映射：行的入口模块文件 → 行的 id（Python `runner.py:649` 的 `charged_row` 就是这么做的；Node、Bun、Go 用它们 `rows.load` 时拿到的入口）。
    2. 找到了：错误的根节点写 `site = {row: R, doing: "call"}`；rutis 递过来的那一跳另外写 `service`、`method`（D2）。
    3. `stack` 只保留 `R` 的帧（从最里面数到 `R` 的第一帧为止）；往外的每一段，按行的变化切一刀，各写一条 `rethrown`（最多 8 条，`crates/rutis-bridge/src/exports.rs:79`）。
    4. 没找到（错误就在这一行里）：什么都不改。
@@ -356,7 +356,7 @@ services:
 | E-4 在途调用 | 宿主把调用交给宿主自己的服务时登记（`crates/rutis-bridge/src/session/services.rs`）；`Loader::status` 合并两处（`crates/rutis-loader/src/loader/status.rs:313`） | 一条用例：宿主 → 运行时行 → 宿主服务（卡住），`status` 里两条都在，`from` 是行名 |
 | E-5 Python | 归属与拆栈（`runner.py` 的 `charged_row` 复用、`peer.py` 的 `encode_error`）；帧过滤用 `_plugin_frame`（`runner.py:1341`）；`not-declared` 的 did you mean（`runner.py:98`）；关闭时的监听器错误（`runner.py` 的 `charge`）；`no-method` 的 `provider` | 四条逐字用例（归属、did you mean、关闭时的监听器、`no-method`），外加一条"内部帧不出现"的禁用词用例 |
 | E-6 Node、Bun | 归属与拆栈（`node/rutis-runtime/src/unhandled.mjs`、`errors.mjs`；`bun/rutis-bun/src/errors.ts`）；`not-declared` 的 did you mean；`no-method` 的 `provider`；同名文字统一（`leaf.mjs:63`、`runner.ts:239`） | 同上 |
-| E-7 Go、Swift、Kotlin | 归属：Go 在 `localService`（`runtime.go:1201`）里写 `site`（行、服务、方法），接口目标写明边界；Swift、Kotlin 按栈判断（各自的会员文件表）；panic 的帧过滤（`peer/peer.go:1712`）；`not-declared` 的 did you mean（`runtime.go:988`、`Runtime.swift:1075`、`Refusals.kt:144`）；同名文字统一（`runtime.go:435`、`:528`、`Runtime.kt:379-380`、`:497`、`:606`） | 每种语言同上四条；Go 另外一条"接口目标归不到提供者"的用例（输出与今天相同，写明在指南里） |
+| E-7 Go、Swift、Kotlin | 归属：Go 在 `localService`（`runtime.go:1201`）里写 `site`（行、服务、方法），接口目标写明边界；Swift、Kotlin 按栈判断（各自 `rows.load` 时拿到的入口）；panic 的帧过滤（`peer/peer.go:1712`）；`not-declared` 的 did you mean（`runtime.go:988`、`Runtime.swift:1075`、`Refusals.kt:144`）；同名文字统一（`runtime.go:435`、`:528`、`Runtime.kt:379-380`、`:497`、`:606`） | 每种语言同上四条；Go 另外一条"接口目标归不到提供者"的用例（输出与今天相同，写明在指南里） |
 | E-8 文档 | [rutis-host](guide/rutis-host.md) 的 `status` 一节（状态词、`calls:` 列什么）、[插件 API](guide/plugin-api.md)（出错时的字、同一运行时里的归属与它的边界）、各语言指南（Go 的接口目标边界）、《迁移到 0.21》、[保证表](guarantees.md)（新条目 `bridge/error-ownership`、`loader/wait-words`） | 链接检查、两份同步 |
 
 完成条件（#937 在全部满足后关闭）：
