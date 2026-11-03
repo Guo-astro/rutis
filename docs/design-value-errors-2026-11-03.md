@@ -306,7 +306,12 @@ Rust 今天发 NaN 得到 `null`（§1）；改完之后它和别的语言一样
 
 **文档**：插件 API 指南「值怎样传递」（`docs/guide/plugin-api.md:938`）那一句把 `data` 写成 `{part, argument?, limit?}`；它加 `reason`、加 `payload` 这个 `part`、并把「名字（`BindingError`、`TypeError`……）不作保证，看错误码」说清 `bad-result`，两种语言都改。
 
-**协议不变**：没有新帧、没有新字段、没有抬版本。`bad-value` 的 `data` 多一个 `reason` 键，旧的一端照旧忽略它——错误的 `data` 在每种语言里都当普通数据读，不按结构解：Node、Bun（`node/rutis-runtime/src/errors.mjs:170`、`bun/rutis-bun/src/errors.ts:170`）、Python（`peer.py:114-135` 的 `_code_and_data`）、Go（`peer/errors.go:350` 的 `codeAndData`）、Rust（`session/mod.rs:199-213` 的 `Error::data()`）、Kotlin（`internal/peer/Errors.kt:408`）、Swift（`Errors.swift:385`）。按结构解、多一个键就会失败的是**帧**的形状，不是 `data` 的里面：Rust 的 `WireValue`、`Failure` 是 `deny_unknown_fields`（`protocol.rs:31,88,155`，`Implementation` 之外）。所以往 `data` 里加键可以，加字段不行。加键与 0.18 加 `limit` 一样。
+**协议不变**：没有新帧、没有新字段、没有抬版本。`bad-value` 的 `data` 多一个 `reason` 键，旧的一端照旧忽略它，因为错误的 `data` 不是按结构解的，它作为普通 JSON 随错误图一起传：
+
+- Rust 收错误时，`Failure` 把整个 `graph` 当作 `Option<serde_json::Value>`（`crates/rutis-bridge/src/session/protocol.rs:87-95`），`Error::data()` 再按键从图上取（`session/mod.rs:199-213` 的 `graph_root` / `graph_value`）；
+- 其余每一种语言都从图上按名读：Node、Bun（`node/rutis-runtime/src/errors.mjs:170`、`bun/rutis-bun/src/errors.ts:170`）、Python（`peer.py:114-135` 的 `_code_and_data`）、Go（`peer/errors.go:350` 的 `codeAndData`）、Kotlin（`internal/peer/Errors.kt:408`）、Swift（`Errors.swift:385`）。
+
+`deny_unknown_fields` 在哪里、不在哪里，说清：它在**帧的形状**上——`Frame` 的键、`Failure` 顶层的键（`name`、`message`、`graph`）、`WireValue` 的键（`protocol.rs:31,88,155`）；它不在 `graph` 里面，也不在一个节点的 `data` 的值里，那里是普通 JSON（`{type: "data", value: …}` 的 `value` 原样带过去）。所以往 `data` 里加一个键可以，与 0.18 加 `limit` 一样；往帧或 `Failure` 顶上加一个字段不行。
 
 一个例外要说清：Rust 自己造出来的 `bad-value`，`data` 不是从线上读的，是从文字反推的（`rpc/crossing.rs:61-95` 的 `value_data`）。`reason` 在那里推不出来，所以 `Error::Value` 要显式带上 `reason`，不从文字猜（S4）。
 
@@ -314,7 +319,7 @@ Rust 今天发 NaN 得到 `null`（§1）；改完之后它和别的语言一样
 
 | 线 | 版本 | 这份设计 | 旧的一端对新的一端 |
 | --- | --- | --- | --- |
-| 会话协议 | 4（`node/rutis-runtime/package.json:18`、`bun/rutis-bun/package.json:18`、`node/rutis-runtime/src/session.mjs:58` 的 `ENDPOINT_PROTOCOL`） | 不变：没有新帧、没有新字段、没有新能力 | 旧运行时对新宿主：它照旧说旧话，宿主拿到的码、`data` 与今天一样；新运行时对旧宿主：新说法和 `reason` 照常跨过去，旧宿主按名读 `data`，多一个键不影响它 |
+| 会话协议 | 4（`node/rutis-runtime/package.json:18`、`bun/rutis-bun/package.json:18`、`node/rutis-runtime/src/session.mjs:58` 的 `ENDPOINT_PROTOCOL`） | 不变：没有新帧、没有新字段、没有新能力 | 旧运行时对新宿主：它照旧说旧话，宿主拿到的码、`data` 与今天一样；新运行时对旧宿主：新说法和 `reason` 照常跨过去，旧宿主从错误图上按名读 `data`（上面那段），`data` 里多一个键它不看也不拒 |
 | `rutis.json` | 1（`crates/rutis-host/src/config.rs:78` 的 `FORMAT`） | 不变：没有新键 | 旧文件照读，新文件旧宿主照读 |
 | 插件 API | 3（`crates/rutis-loader/src/runtime/go.rs:34`、`swift.rs:33` 的 `PLUGIN_API`，清单里的 `pluginApi`） | 不变：插件要声明的东西没有变化，只有错误的文字与码 | 旧的清单与新宿主、新的清单与旧宿主都照装 |
 | 清单格式 | 1（`crates/rutis-loader/src/runtime/binary.rs:186` 的 `MANIFEST_FORMAT`） | 不变 | 同上 |
@@ -334,6 +339,15 @@ Rust 今天发 NaN 得到 `null`（§1）；改完之后它和别的语言一样
 | S5（#936） | Swift：`Codec/ValueCodec.swift`（编码、`:147-148`）与 `Session/Peer.swift`（收值、`:662,741-742`）加 `seen`，循环先于深度，三句话统一；`Errors.swift:385` 的 `data` 照旧按数据读 | `swift/rutis/Tests/SelfTest/PeerTests.swift`（今天 `:96` 只查「包含 nested deeper」）逐字锁住属于 Swift 的行 |
 | S6（#936） | Kotlin：`internal/peer/Peer.kt:420,508` 两处编码加 `seen`，`tooDeep()`（`:63-65`）换句；`advanced/RemoteFunction.kt:25`、`RemoteObject.kt:29` 的 `toString` 改 `<… of another process>` | `kotlin/rutis/rutis/src/jvmTest/kotlin/arcships/rutis/PeerTest.kt`、`ErrorTextTest.kt` 逐字锁住属于 Kotlin 的行 |
 | S7（`bad-result` 与行名） | 诊断设计 §4.3 的码表只动这份设计的两行（§4.3；其余属于 #937，后落地的一份 rebase）；引用值带行名（新的协议改动，`deny_unknown_fields` 决定它必须先抬版本或先加一条能力，另写一个 issue） | 码表更新；行名那一条在它自己的设计里定 |
-| S8（#936 的完成条件） | `crates/rutis-bridge/src/runtime/testing/weather.expected.json` 的 `samples` 加 `throws: {name, message, code, data}`，逐字比较；§1 的每一行一个 sample，Node、Bun、Python、Go、Rust、Swift、Kotlin 各一列 | 会话矩阵（上列七种，加宿主）全绿，一行的文字或码改了而用例没改就红 |
+| S8（#936 的完成条件） | `weather.expected.json` 的 `throws` 加 `code` 与 `data`（下面的「S8 怎么加」写清怎么加、谁产生、谁跑）；§1 的每一行一个 sample，六个运行时各报自己那些 | 会话矩阵的六格（Node、Python、Go、Swift、Bun、Kotlin）全绿，一行的文字或码改了而用例没改就红 |
 
 每个 issue 的「完成」都包含：§5 里属于它的每一行都有用例逐字比较；旧的说法（§6 的表）在仓库里不再出现。
+
+#### S8 怎么加（`weather.expected.json`）
+
+一个 sample 的 `throws` 今天只比 `name` 与 `message`（`crates/rutis-bridge/src/runtime/testing.rs:178-195`），而且要比对时要求它确实是插件那边抛过来的错误（`Error::Remote`）。加两个键即可：`code`（字符串）与 `data`（JSON），在同一个地方用收到错误的 `Error::code()` / `Error::data()` 比较（`crates/rutis-bridge/src/session/mod.rs:181-213`）——两者都从错误图上读，所以比的就是跨过来的那份 `data`。
+
+- **谁跑**：`rutis_bridge::runtime::testing::runtime`，由 `crates/rutis-bridge/tests/session_matrix.rs` 在六个运行时上各跑一遍：Node、Python、Go、Swift、Bun、Kotlin。Rust 是宿主，它不报 sample，只读。哪一格跑不跑照旧由 `RUTIS_TEST_RUNTIMES` 决定。
+- **`code` 由谁产生**：sample 的值是 `sample(name)` 的**返回值**，失败因此发生在产值的那个运行时的返回值那一支，`code` 都是 `bad-value`、`data.part` 是 `result`：Node、Bun 的 `#respond` → `ofResult`（`node/rutis-runtime/src/session.mjs:750-754`，图写在 `errors.mjs:170`／`errors.ts:170`）；Python `_respond` → `_cannot_send(…, "result")`（`peer.py:1804`）；Go `respondTo` → `ofResult`（`peer.go:1749`，`*ValueError` 的 `Code()`／`Data()` 在 `values.go:52-90`）；Swift `respond` → `ofResult`（`Peer.swift:1391`，`ValueError` 的 `code` 在 `TaggedValues.swift:431-441`）；Kotlin `respond` → `ofResult`（`Peer.kt:1324`，`ValueException` 的 `code`／`data` 在 `Tagged.kt:61-66`，图写在 `Errors.kt:213-221`）。Kotlin 的 `tooDeep()` 与 Swift 的深度 `ValueError` 本身不带 `data`，是这一支替它们加上 `{part: "result"}`；`reason` 由这份设计加上（S1–S6）。
+- **测试工具**：三种 SDK 工具读同一份 JSON（Go `rutistest/conformance_test.go:132-196`、Kotlin `WeatherConformanceTest.kt:53-67`、Swift `WeatherConformanceTests.swift:64-72`），只比 `name` 与 `message`，并且跳过 `crossing: true`。它们不模拟跨进程，值传不过去这一类在它们那里根本不发生，所以这类 sample 写 `crossing: true`：工具跳过，只有会话矩阵的格子在查——正是这份文件已有的那个开关，不新增字段。
+
