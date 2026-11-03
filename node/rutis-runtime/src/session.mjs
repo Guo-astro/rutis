@@ -242,6 +242,13 @@ class RemotePromise extends Promise {
   [INSPECT]() { return REMOTE_RESULT }
 }
 
+// How many synchronous calls this thread is inside of (#932): a wait of ours
+// (`#requestSync`) or a call of the far end's that arrived with `sync`. While
+// it is above zero nothing else on this thread can run, so a received function
+// is called synchronously; outside one it is called asynchronously, as a
+// service method is. One counter for the process: the thread is the process's.
+let blocking = 0
+
 // One peer is used by both the Cordis runner and the application's Rust client.
 // The transport owns I/O; every decoder, reference table and callback stays on
 // the owning JS thread, including while a synchronous caller pumps its chain.
@@ -521,7 +528,14 @@ export class Session {
         const record = { id, kind, origin, grants: 1, released: false }
         const check = () => { if (record.released) throw new Error('reference released') }
         proxy = kind === 'function'
-          ? remoteFunction((...args) => { check(); return this.#requestSync('call', { reference: id }, args) })
+          ? remoteFunction((...args) => {
+            check()
+            // Asynchronous outside a synchronous call, the value itself inside
+            // one: nothing could await there (#932 §3.2).
+            return blocking > 0
+              ? this.#requestSync('call', { reference: id }, args)
+              : this.#requestAsync('call', { reference: id }, args)
+          })
           : kind === 'object' ? this.#remoteObject(id, check)
             : kind === 'plugin' ? pluginHandle()
               : new RemotePromise(() => { check(); return this.#requestAsync('await', { reference: id }, undefined, origin) })
@@ -628,11 +642,13 @@ export class Session {
     let result
     const id = this.#request(op, fields, args, value => { result = value }, [], true, callSite(), described)
     this.#waiting.push(id)
+    blocking++
     try {
       for (const job of this.#queued) this.#run(job)
       while (!result) this.#pump(() => !!result)
     }
     finally {
+      blocking--
       this.#waiting.pop()
       if (!this.#waiting.length) for (const job of this.#queued) queueMicrotask(() => this.#run(job))
     }
@@ -657,12 +673,28 @@ export class Session {
   // session's end), not on a later tick (events protocol §5.5).
   invokeAnswered(target, method, args, answered, described) { this.#request('invoke', { target, method }, args, answered, [], false, callSite(), described) }
   // Call an imported function asynchronously (a waterfall's `next`, #464);
-  // calling the function itself waits synchronously.
+  // calling the function itself is asynchronous outside a synchronous call
+  // and returns the value inside one (#932 §3.2).
   callFunctionAsync(proxy, args) {
     const record = this.#proxies.get(proxy)
     if (!record || record.kind !== 'function') return Promise.reject(new TypeError('not an imported function'))
     if (record.released) return Promise.reject(new Error('reference released'))
     return this.#requestAsync('call', { reference: record.id }, args)
+  }
+  // Run `run` as a synchronous call of this thread (#932): a received
+  // function it calls answers now, not as a Promise. A filter's answer is a
+  // decision taken during the dispatch, so the runtime asks it this way.
+  withinSync(run) {
+    blocking++
+    try { return run() } finally { blocking-- }
+  }
+  // Call an imported function synchronously: a Cordis waterfall's `next` in a
+  // synchronous chain (#918), where the listener's value is needed at once.
+  callFunctionSync(proxy, args) {
+    const record = this.#proxies.get(proxy)
+    if (!record || record.kind !== 'function') throw new TypeError('not an imported function')
+    if (record.released) throw new Error('reference released')
+    return this.#requestSync('call', { reference: record.id }, args)
   }
   drain() { return this.#active ? new Promise(resolve => this.#draining.push(resolve)) : Promise.resolve() }
   #finish() { if (--this.#active === 0) for (const resolve of this.#draining.splice(0)) resolve() }
@@ -749,6 +781,10 @@ export class Session {
     if (this.#closed) { if (business) this.#finish(); return }
     const path = [...frame.path, frame.id]
     const previous = this.#syncPath
+    // The far end waits for this call (a `sync` method, a synchronous
+    // waterfall): anything it calls here is synchronous too (#932 §3.2).
+    const synchronous = frame.sync === true
+    if (synchronous) blocking++
     this.#syncPath = path
     // The call answered, for messages: an await's is the call that
     // returned the Promise, when it was one of the far end's.
@@ -788,7 +824,10 @@ export class Session {
           this.#respond(frame.id, { ok: true, value }, business, call)
         } catch (value) { this.#respond(frame.id, { ok: false, value }, business, call) }
       })
-    } finally { this.#syncPath = previous }
+    } finally {
+      this.#syncPath = previous
+      if (synchronous) blocking--
+    }
   }
   // Answer the far end's call `id` (of `call`, for messages): a result that
   // cannot be sent (a value the far end does not take, a message over the

@@ -768,7 +768,7 @@ test('counts the notes and their words', async () => {
   const commands = new Map<string, (args: string[]) => Promise<string>>()
   const t = await load(plugin, {
     services: {
-      notes: { list: () => ['buy milk', 'call Ada back'] },
+      notes: { list: async () => ['buy milk', 'call Ada back'] },
       commands: { register: async (name: string, run: (args: string[]) => Promise<string>) => { commands.set(name, run) } },
     },
   })
@@ -795,15 +795,158 @@ $ npx rutis-host call commands.run '"count"'
 ```
 
 - 测试里的假服务直接写在 `load` 的 `services` 里；`dev` 里的假服务是 `rutis.dev.json` 里的一行。
-- 测试把收到的命令当函数调用，这种调用在测试的线程上同步等结果；等的时候这个线程无法完成 Promise。所以命令运行中要调用的假服务直接返回结果（`list: () => [...]`，不写 `async`）。写成 `async` 时调用失败：
-
-  ```text
-  SyncWaitCycle: await requires the Node thread occupied by its parent synchronous call; path: test:5 -> rutis-test:3 -> rutis-test:4
-  ```
-
-  `dev` 用的假服务（`dev/fake-jot.ts`）照样写 `async`：那里是 jot 这一侧调用命令，和真的 jot 一样。
+- 测试把收到的命令当函数调用：这是异步的调用，`await` 它即得到结果（`await commands.get('count')!([])`）；假服务照真实服务的样子写 `async`。`dev` 用的假服务（`dev/fake-jot.ts`）也一样。
 - 用 Python 写命令的作者用 `--python` 写出的 `jot_types.py`；假的 jot 可以照样用 TypeScript 写：`rutis.dev.json` 里不同语言的行可以放在一起。
 - 测试工具、`dev`、`rutis-host call` 的用法见各语言的插件指南（[TypeScript](typescript-plugin.md#6-测试)、[Python](python-plugin.md#6-测试)）与 [rutis-host：用 dev 开发插件](rutis-host.md#用-dev-开发插件)。
+
+### 用 Python 写命令
+
+同一份东西给 Python 作者：`rutis-host new count --lang python` 的模板，加上假的 `notes` 与 `commands`、放进 `rutis.dev.json` 的那几行。
+
+<!-- example: jot-command-python run -->
+```bash
+npx @arcships/rutis-host new count --lang python
+cd count
+uv sync
+```
+
+<!-- example: jot-command-python file=count/src/count/__init__.py -->
+```python
+"""count: a jot command."""
+
+from rutis import define_plugin
+
+
+async def apply(ctx, config):
+    commands = ctx.use("commands")
+    notes = ctx.use("notes")
+
+    async def count(args):
+        all_notes = await notes.list()
+        words = len(" ".join(all_notes).split())
+        return f"{len(all_notes)} notes, {words} words"
+
+    await commands.register("count", count)
+
+
+plugin = define_plugin(apply, inject=["notes", "commands"])
+```
+
+假的 jot 放在项目的 `src/` 里（不打包进插件），`rutis.dev.json` 用它那一行：
+
+<!-- example: jot-command-python file=count/src/fake_jot.py -->
+```python
+"""A fake jot for `rutis-host dev`: two notes and a `commands` service."""
+
+from rutis import define_plugin
+
+
+class Jot:
+    def __init__(self):
+        self.notes = ["buy milk", "call Ada back"]
+        self.commands = {}
+
+    async def list(self):
+        return list(self.notes)
+
+    async def add(self, text):
+        self.notes.append(text)
+
+    async def register(self, name, run):
+        self.commands[name] = run
+
+    async def run(self, name, args=None):
+        return await self.commands[name](args or [])
+
+
+def apply(ctx, config):
+    jot = Jot()
+    ctx.provide("notes", jot)
+    ctx.provide("commands", jot)
+
+
+plugin = define_plugin(
+    apply,
+    provides={"notes": {"add": "async", "list": "async"}, "commands": {"register": "async", "run": "async"}},
+)
+```
+
+<!-- example: jot-command-python file=count/rutis.dev.json -->
+```json
+{
+  "format": 1,
+  "rows": [
+    { "id": "count" },
+    { "id": "jot", "name": "py:fake_jot" }
+  ]
+}
+```
+
+测试（换掉模板里的 `tests/test_plugin.py`）：
+
+<!-- example: jot-command-python file=count/tests/test_plugin.py -->
+```python
+import asyncio
+import unittest
+
+from rutis.testing import load
+
+from count import plugin
+
+
+class FakeNotes:
+    async def list(self):
+        return ["buy milk", "call Ada back"]
+
+
+class FakeCommands:
+    def __init__(self):
+        self.runs = {}
+
+    async def register(self, name, run):
+        self.runs[name] = run
+
+
+class Plugin(unittest.TestCase):
+    def test_counts_the_notes_and_their_words(self):
+        async def go():
+            commands = FakeCommands()
+            async with load(plugin, services={"notes": FakeNotes(), "commands": commands}) as t:
+                self.assertEqual(await commands.runs["count"]([]), "2 notes, 5 words")
+
+        asyncio.run(go())
+
+
+if __name__ == "__main__":
+    unittest.main()
+```
+
+<!-- example: jot-command-python run -->
+```bash
+uv run python -m unittest discover -s tests
+```
+
+```console
+$ uv run python -m unittest discover -s tests
+.
+----------------------------------------------------------------------
+Ran 1 test in 0.025s
+
+OK
+```
+
+<!-- example: jot-command-python run until="count: running" -->
+```bash
+npx rutis-host dev
+```
+
+```console
+$ npx rutis-host call commands.run '"count"'
+"2 notes, 5 words"
+```
+
+- 插件把 `count` 交给测试时传的是它自己的函数（Python 的测试工具把插件装在测试进程里）：`async def` 时 `await` 它（上面的测试），普通 `def` 时直接用它。别的进程交来的函数是 `RemoteFunction`：`await f(...)`（与 `f.call_async(...)` 相同）；裸的 `f(...)` 同步返回结果、占着事件循环，只在 `sync` 方法里用。
+- `dev` 里两种语言的假 jot 都可以：`rutis.dev.json` 里 `py:fake_jot` 或 TypeScript 写的 `./dev/fake-jot.ts`。
 
 ### 开发循环
 

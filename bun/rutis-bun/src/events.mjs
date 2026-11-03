@@ -71,7 +71,7 @@ export class Bus {
   #unloaded = new Set()
 
   // `runtime`: this runtime's name, for descriptors (null when unknown).
-  // `peer`: { callAsync, call, callAnswered?, callFunctionAsync } to the
+  // `peer`: { callAsync, call, callAnswered?, callFunctionAsync, callFunctionSync } to the
   // host; null once the session ended. `report(line, details?)`: a failure
   // reported here (§5.6). `dispatched(mode, name, args)`: Cordis's
   // `internal/dispatch` for a dispatch from elsewhere (§5.3). `loading(row)`:
@@ -242,7 +242,13 @@ export class Bus {
   #keeps(keep, descriptor, entry) {
     const outer = this.filtering
     this.filtering = entry ? { owner: entry.owner, descriptor } : undefined
-    try { return Boolean(keep(descriptor, entry)) } finally { this.filtering = outer }
+    // A filter's answer is a decision taken during the dispatch: a filter of
+    // another process is asked synchronously (#932), also when the plugin's
+    // own predicate wraps one. On main every call was, so nothing changes for
+    // a local filter.
+    const ask = () => Boolean(keep(descriptor, entry))
+    const within = this.peer?.withinSync
+    try { return typeof within === 'function' ? within.call(this.peer, ask) : ask() } finally { this.filtering = outer }
   }
 
   // Run one listener here, counted as running for its row until it settles.
@@ -368,7 +374,7 @@ export class Bus {
           called = true
           if (!this.peer) return Promise.reject(hostGone())
           // Calling the function itself waits for it synchronously.
-          return sync ? next() : this.peer.callFunctionAsync(next, [])
+          return sync ? this.peer.callFunctionSync(next, []) : this.peer.callFunctionAsync(next, [])
         }
         return this.#invoke(entry, [...values, onward], null)
       }

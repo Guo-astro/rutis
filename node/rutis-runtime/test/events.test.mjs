@@ -22,6 +22,7 @@ function peer(answer = () => undefined) {
     callAsync(target, method, args) { sent.push([method, args]); return Promise.resolve(answer(method, args)) },
     call(target, method, args) { sent.push([method, args]); return answer(method, args) },
     callFunctionAsync(fn, args) { sent.push(['call', args]); return Promise.resolve(fn(...args)) },
+    callFunctionSync(fn, args) { sent.push(['call', args]); return fn(...args) },
   }
 }
 

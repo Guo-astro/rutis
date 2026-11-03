@@ -75,6 +75,49 @@ test('sync wait only pumps related calls and admits a prequeued related callback
 
 // Events protocol §5.5: an emit's reply is taken as its frame is read,
 // before the next frame is handled, not on a later tick.
+// guarantee: bridge/function-refs
+test('a received function is called asynchronously outside a synchronous call (#932)', async () => {
+  let proxy
+  const { peer, sent, fault } = harness((_target, _method, args) => (proxy = args[0]))
+  const reference = { type: 'reference', value: { id: 9, home: false, kind: 'function', origin: [] } }
+  peer.receive({ op: 'invoke', id: 'rust:1', path: [], target: 'test', method: 'take', args: { type: 'list', value: [reference] } })
+  await Promise.resolve()
+  const answer = proxy(1)
+  assert.equal(typeof answer?.then, 'function', 'a Promise outside a synchronous call')
+  const call = sent.find(frame => frame.op === 'call')
+  assert.deepEqual(call.args, { type: 'list', value: [data(1)] })
+  peer.receive({ op: 'return', id: call.id, value: data(2) })
+  assert.equal(await answer, 2)
+  assert.equal(fault(), undefined)
+  peer.close()
+})
+
+// guarantee: bridge/function-refs
+test('a received function is called synchronously inside a synchronous call (#932)', async () => {
+  let proxy
+  const sent = [], pending = []
+  const peer = new Session({
+    endpoint: { local: 'node' },
+    dispatch: (target, method, args) => method === 'take' ? (proxy = args[0]) : proxy(),
+    send: line => {
+      const frame = JSON.parse(line)
+      sent.push(frame)
+      if (frame.op === 'call') pending.push(frame.id)
+    },
+    pump: () => peer.receive({ op: 'return', id: pending.shift(), value: data(3) }),
+    abort: () => {},
+  })
+  peer.receive({ op: 'hello', version: ENDPOINT_PROTOCOL, endpoint: 'rust', capabilities: [] })
+  const reference = { type: 'reference', value: { id: 9, home: false, kind: 'function', origin: [] } }
+  peer.receive({ op: 'invoke', id: 'rust:1', path: [], target: 'test', method: 'take', args: { type: 'list', value: [reference] }, sync: true })
+  await Promise.resolve()
+  peer.receive({ op: 'invoke', id: 'rust:2', path: [], target: 'test', method: 'call it', args: data([]), sync: true })
+  await Promise.resolve()
+  const reply = sent.findLast(frame => frame.op === 'return')
+  assert.deepEqual(reply.value, data(3), 'the value itself, not a Promise reference')
+  peer.close()
+})
+
 test('invokeAnswered tells the reply as its frame is read, before the next frame', async () => {
   const seen = []
   const { peer, sent, fault } = harness((_, method) => { seen.push(method); return null }, { inline: ['plugins.read'] })

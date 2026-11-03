@@ -198,6 +198,8 @@ export class Runtime {
       callAsync: (target: string, method: string, args: unknown, described?: unknown) => client.callAsync(target, method, args, described),
       callAnswered: (target: string, method: string, args: unknown, answered: (result: { ok: boolean, value: unknown }) => void, described?: unknown) => client.callAnswered(target, method, args, answered, described),
       callFunctionAsync: (fn: unknown, args: unknown[]) => client.callFunctionAsync(fn, args),
+      callFunctionSync: (fn: unknown, args: unknown[]) => client.callFunctionSync(fn, args),
+      withinSync: (run: () => unknown) => (typeof client.withinSync === 'function' ? client.withinSync(run) : run()),
     }
   }
 

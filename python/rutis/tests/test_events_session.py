@@ -261,6 +261,29 @@ class ThroughTheHost(Session):
         self.host.answer(frame, "R")
         self.assertEqual(await within("the dispatch", dispatch), "R")
 
+    async def test_the_filter_is_asked_inside_a_synchronous_call(self):
+        # #932: a filter's answer is a decision taken during the dispatch, so
+        # the plugin's predicate is asked as a synchronous call — the same
+        # when it wraps a filter of another process, whose call would
+        # otherwise come back as a coroutine (truthy, so every listener kept).
+        await self.mount()
+        await self.load("a")
+        depths = []
+        peer = self.host.peer
+
+        def keep(descriptor):
+            depths.append(peer._blocking)
+            return True
+
+        dispatch = asyncio.ensure_future(self.contexts["a"].filter(keep).serial("t/f"))
+        frame = await self.host.request("events.dispatch")
+        selector = frame["value"][0]["filter"]
+        call = self.host.call(selector["$ref"], [[{"row": "chat"}]])
+        self.assertEqual(await self.host.outcome(call), ("return", [True]))
+        self.assertEqual(depths, [1], "asked inside a synchronous call")
+        self.host.answer(frame)
+        await within("the dispatch", dispatch)
+
     async def test_the_filter_runs_here_as_a_selector(self):
         # §6: one call with the descriptors, a boolean each.
         await self.mount()
