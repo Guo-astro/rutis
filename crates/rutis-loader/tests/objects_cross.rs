@@ -629,8 +629,8 @@ async fn a_go_parameter_that_takes_no_object_says_so() {
     assert_eq!(
         call(&fixture.root, "owner", "wrongs").await,
         json!(
-            "bad-argument: holder.wrong: argument 1 should be a Tally, got an object (an object is received only as a struct of function fields or any) | \
-             bad-argument: holder.text: argument 1 should be a string, got an object"
+            "bad-argument: holder.wrong: argument 1: an object is received only as a struct of function fields or any | \
+             bad-argument: holder.text: argument 1: an object cannot be decoded as string"
         )
     );
     fixture.root.shutdown().await.unwrap();
