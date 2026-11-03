@@ -668,6 +668,13 @@ export class Session {
     if (record.released) return Promise.reject(new Error('reference released'))
     return this.#requestAsync('call', { reference: record.id }, args)
   }
+  // Run `run` as a synchronous call of this thread (#932): a received
+  // function it calls answers now, not as a Promise. A filter's answer is a
+  // decision taken during the dispatch, so the runtime asks it this way.
+  withinSync<T>(run: () => T): T {
+    blocking++
+    try { return run() } finally { blocking-- }
+  }
   // Call an imported function synchronously: a Cordis waterfall's `next` in a
   // synchronous chain (#918), where the listener's value is needed at once.
   callFunctionSync(proxy: unknown, args: unknown[]) {

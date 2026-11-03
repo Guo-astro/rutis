@@ -1062,7 +1062,7 @@ class Runtime:
             return self._send_from_thread(row, mode, name, args, terminal, keep)
         request = {"row": row.key, "name": name, "mode": mode, "args": args}
         if keep is not None:
-            request["filter"] = _selector(keep)
+            request["filter"] = _selector(keep, self.peer)
         if terminal is not None:
             request["terminal"] = terminal
         if mode == "emit":
@@ -1531,7 +1531,7 @@ async def _settle(value: Any) -> Any:
     return value
 
 
-def _selector(keep: Callable) -> Callable:
+def _selector(keep: Callable, peer: Peer) -> Callable:
     """What the host calls once per dispatch with the descriptors of the
     candidates (non-`global`, in order): the plugin's filter asked of each,
     here, in order; a boolean each (§6)."""
@@ -1539,7 +1539,16 @@ def _selector(keep: Callable) -> Callable:
     def select(descriptors: list) -> list:
         # The host marks the emitter's own session's entries with their
         # `listener` id; the plugin sees descriptors as on the fast path.
-        return [bool(keep(_descriptor(descriptor))) for descriptor in descriptors]
+        #
+        # A filter's answer is a decision taken during the dispatch: a filter
+        # of another process is asked synchronously (#932), also when the
+        # plugin's own predicate wraps one. On main every call was, so nothing
+        # changes for a local filter.
+        peer._blocking += 1
+        try:
+            return [bool(keep(_descriptor(descriptor))) for descriptor in descriptors]
+        finally:
+            peer._blocking -= 1
 
     return select
 
