@@ -92,7 +92,8 @@ state(id) -> null | { line, code?, data? }
 ```
 
 - `null`: the row runs. Otherwise `line` is that line above (what the host writes for `dev`), and `code` and `data` are the row error's code and details (left out when a plugin's own error has no code).
-- **A synchronous method** (it awaits nothing), so TS's `t.service()` stays synchronous (`call('state', id)`; `SYNCHRONOUS` in `node/rutis-runtime/src/testing/rutis-test.mjs:23` gains it), and so do Python's `t.service()` and Go's `Service()`.
+- **Read-only**: it reads a snapshot inside the host (`describe` / `describe_waits`), awaits nothing and changes nothing.
+- **Who asks it, and when**: to an SDK it is one round trip (TS's and Python's `waiting()` await it), so **the two synchronous `t.service()`s do not make that round trip**: `load` (`Load`) asks once before it returns, `waiting()` asks every time, and `t.service()` uses the line those two saw last (§3.3). Go's `Service()` already treats calls to the host as blocking calls (it does when it loads), so it asks directly.
 - **Host-local only**: it touches none of three things — the session protocol (version 4, `ENDPOINT_PROTOCOL`, `crates/rutis-bridge/src/session/mod.rs:14`), `rutis.json`'s format (1, `FORMAT`, `crates/rutis-host/src/config.rs:78`), the plugin API (3, `node/rutis/src/advanced.mjs:15`, `python/rutis/rutis/plugin.py:125`, `go/rutis/internal/runtime/version.go:9`).
 - `load`, `update` and `unload` fail with the same `{ line, code?, data? }` (whose Display is `line`).
 
@@ -101,7 +102,7 @@ The two versions meeting:
 | Case | What you see |
 | --- | --- |
 | a 0.20 testing tool on a 0.21 host | unchanged: the old tool never asks for `state`, and cannot see the extra method |
-| a 0.21 testing tool on a 0.20 host (and, in TS and Bun, with 0.20's runtime package, `@arcships/rutis-runtime` or `@arcships/rutis-bun`: their test driver has no `state`) | while the row is not up: `greeter: not running (this rutis-host is older than 0.21 and cannot say why; upgrade it)`, code `not-running`; `waiting()` gives `null`. The guide says to bring `rutis-host` (and `@arcships/rutis-runtime` in TS and Bun) to one version |
+| a 0.21 testing tool on a 0.20 host (and, in TS and Bun, with 0.20's runtime package, `@arcships/rutis-runtime` or `@arcships/rutis-bun`: their test driver has no `state`) | while the row is not up: `greeter: not running (this rutis-host is older than 0.21 and cannot say why; upgrade it)`, code `not-running`; `waiting()` gives `null`. The guide says to bring `rutis-host` (and each runtime package in TS and Bun) to one version |
 
 ### 3.2 The row's name
 
@@ -127,6 +128,7 @@ Rust differs: it has no `rutis.json` row, and the kernel knows a plugin by its n
 - The row **never started at all** (a 0.20 host): `greeter: not running (this rutis-host is older than 0.21 and cannot say why; upgrade it)`, also code `not-running` (§3.1).
 - The row runs but has no such service: `greeter: no such service forcast (it provides: forecast, today; did you mean forecast?)`; when it provides nothing, `(it provides nothing)`. Code `no-service`, `data: {row, service, services}`.
 - `await t.waiting()` (TS, Bun, Python), `loaded.Waiting()` (Go): `null` / `""` while it runs, otherwise the same line. Each call asks the host, so once a provider loaded later starts the row it is `null` at once.
+- `t.service()` (TS, Bun, Python) is synchronous and cannot make that round trip: it first looks at what the runtime knows (TS's `provided`, Python's `runtime.slots`) to tell whether the row runs, and when it does not, it says why with the line `load` and `waiting()` saw last. Once the row runs it hands out the service as usual, and that line is never used.
 - `load` and `Load` still return: a waiting row is not a failed load. `apply` really failing and a config that does not match are still failed loads, whose text becomes this line (§3.1).
 - Python's `weather did not start: it injects llm, which nothing provides: give the test services=` goes away: it says whether anyone in that runtime provides the service, not why this row did not start (with two plugins injecting each other it says nothing provides `bsvc`, while `b` provides it), and it is not `dev`'s wording.
 
@@ -252,7 +254,7 @@ test('greets with the translated greeting', async () => {
 | `await t.waiting()` | running: `null`; waiting: `greeter: waiting for translate (nothing provides it yet)` | none (it returns a string, it does not throw) |
 | the host is 0.20 (no `state`) | `PluginTestError: greeter: not running (this rutis-host is older than 0.21 and cannot say why; upgrade it)` | `not-running` |
 
-`t.service()` and `t.methods()` stay synchronous and still throw `PluginTestError` synchronously: they ask the host about this row and await nothing.
+`t.service()` and `t.methods()` stay synchronous and still throw `PluginTestError` synchronously: they say why with the line `load` and `waiting()` saw last, and await no round trip there (§3.3).
 
 Two plugins of one package on a `host()` both want the package's name, and the second is `<package>-2`: give `id` (`h.load(plugin, { id: 'shout' })`).
 

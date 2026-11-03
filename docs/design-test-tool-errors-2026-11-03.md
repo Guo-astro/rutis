@@ -92,7 +92,8 @@ state(id) -> null | { line, code?, data? }
 ```
 
 - `null`：这一行在跑。否则 `line` 是上面那一行（宿主写给 `dev` 的那个字），`code`、`data` 是这一行错误的码与细节（插件自己的错误没有码时省略）。
-- **同步方法**（不 await 任何东西）：TS 的 `t.service()` 因此仍是同步的（`call('state', id)`；`node/rutis-runtime/src/testing/rutis-test.mjs:23` 的 `SYNCHRONOUS` 加上它），Python 的 `t.service()` 与 Go 的 `Service()` 也是。
+- **只读**：它在宿主里读一份快照（`describe` / `describe_waits`），不 await 任何东西，也不改变任何东西。
+- **谁在什么时候问它**：对 SDK 来说它是一次往返（TS、Python 的 `waiting()` 用 `await`），所以**两个同步的 `t.service()` 不在里面做往返**：`load`（`Load`）在返回前问一次，`waiting()` 每次问，`t.service()` 用这两处最近拿到的那一行（§3.3）。Go 的 `Service()` 本来就把对宿主的调用当作阻塞调用（它装载时已是这样），所以它直接问。
 - **只在这个宿主里**，不碰三样东西：会话协议（版本 4，`ENDPOINT_PROTOCOL`，`crates/rutis-bridge/src/session/mod.rs:14`）、`rutis.json` 的格式（1，`FORMAT`，`crates/rutis-host/src/config.rs:78`）、插件 API（3，`node/rutis/src/advanced.mjs:15`、`python/rutis/rutis/plugin.py:125`、`go/rutis/internal/runtime/version.go:9`）。
 - `load`、`update`、`unload` 的失败也换成同样的 `{ line, code?, data? }`（Display 就是 `line`）。
 
@@ -101,7 +102,7 @@ state(id) -> null | { line, code?, data? }
 | 情形 | 看到什么 |
 | --- | --- |
 | 0.20 的测试工具 + 0.21 的宿主 | 不变：旧工具不问 `state`，多出来的方法它看不到 |
-| 0.21 的测试工具 + 0.20 的宿主（TS、Bun 还有各自 0.20 的运行时包 `@arcships/rutis-runtime`、`@arcships/rutis-bun`：它们的测试驱动没有 `state`） | 这一行不跑时 `greeter: not running (this rutis-host is older than 0.21 and cannot say why; upgrade it)`，码 `not-running`；`waiting()` 回 `null`。指南写明把 `rutis-host`（TS、Bun 还有 `@arcships/rutis-runtime`）升到同一版本 |
+| 0.21 的测试工具 + 0.20 的宿主（TS、Bun 还有各自 0.20 的运行时包 `@arcships/rutis-runtime`、`@arcships/rutis-bun`：它们的测试驱动没有 `state`） | 这一行不跑时 `greeter: not running (this rutis-host is older than 0.21 and cannot say why; upgrade it)`，码 `not-running`；`waiting()` 回 `null`。指南写明把 `rutis-host`（TS、Bun 还有各自的运行时包）升到同一版本 |
 
 ### 3.2 行名
 
@@ -126,7 +127,8 @@ Rust 不一样：它没有 `rutis.json` 的行，内核只知道插件的名字�
   - 括号里的原因是 #937 §3.3 的词（`nothing provides it yet`、`row b waits for asvc too: they inject each other`），本稿只是转述：宿主改说法，这里跟着改。
 - 这一行**压根没起来过**（0.20 的宿主）：`greeter: not running (this rutis-host is older than 0.21 and cannot say why; upgrade it)`，码同样是 `not-running`（§3.1）。
 - 这一行在跑、但没有这个服务名时：`greeter: no such service forcast (it provides: forecast, today; did you mean forecast?)`；它什么都不提供时 `(it provides nothing)`。码 `no-service`，`data: {row, service, services}`。
-- `await t.waiting()`（TS、Bun、Python）、`loaded.Waiting()`（Go）：在跑时是 `null` / `""`，否则是同一行。每次都问宿主，所以后加载的提供者让它起来之后立刻是 `null`。
+- `await t.waiting()`（TS、Bun、Python）、`loaded.Waiting()`（Go）：在跑时是 `null` / `""`，否则是同一行。每次调用都问宿主，所以后加载的提供者让它起来之后立刻是 `null`。
+- `t.service()`（TS、Bun、Python）是同步的，问不了宿主：它先用运行时里的实情（TS 的 `provided`、Python 的 `runtime.slots`）判断这一行在不在跑，不在跑时用 `load` 与 `waiting()` 最近一次拿到的那一行说原因。行跑起来之后它照常交出服务，那一行用不上。
 - `load`、`Load` 照旧返回：这一行在等不算装载失败。`apply` 真出错、配置不合格这两件事仍然是装载失败，文字换成这一行（§3.1）。
 - Python 现在那句 `weather did not start: it injects llm, which nothing provides: give the test services=` 删掉：它说的是这个运行时里有没有人提供，不是这一行为的什么没起来（互相 inject 时它说 `bsvc` 没人提供，而 `b` 会提供它），而且与 `dev` 不同。
 
@@ -251,7 +253,7 @@ test('greets with the translated greeting', async () => {
 | `await t.waiting()` | 在跑：`null`；在等：`greeter: waiting for translate (nothing provides it yet)` | 无（返回字符串，不抛错） |
 | 宿主是 0.20（没有 `state`） | `PluginTestError: greeter: not running (this rutis-host is older than 0.21 and cannot say why; upgrade it)` | `not-running` |
 
-`t.service()` 与 `t.methods()` 是同步方法，照样同步抛 `PluginTestError`：它问宿主要这一行，不等任何调用。
+`t.service()` 与 `t.methods()` 是同步方法，照样同步抛 `PluginTestError`：用 `load` 与 `waiting()` 最近看到的那一行说原因，不在这里等一次往返（§3.3）。
 
 `host()` 上装同一个包的两个插件时两个都想叫包名，第二个是 `<包名>-2`：给 `id`（`h.load(plugin, { id: 'shout' })`）。
 
