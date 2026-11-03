@@ -73,7 +73,7 @@ test('the SDK test tool passes objects with methods by reference under Bun', asy
   const t = await load(warmer)
   const cache = new Cache()
   const service = t.service('warmer')
-  expect(await service.warm(cache)).toEqual(['[remote object]', 1])
+  expect(await service.warm(cache)).toEqual(['<object of another process>', 1])
   expect(cache.get('a')).toBe(1)
   expect(await service.back(cache)).toBe(cache)
   expect(await service.plain({ ping: () => 'pong' })).toBe('pong')

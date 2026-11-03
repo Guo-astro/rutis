@@ -279,8 +279,8 @@ async fn a_bad_value_fails_only_its_call_between_node_python_and_go() {
     expect(&fixture, "js object to py: RemoteObject", &[]).await;
     expect(&fixture, "js object to go: *rutis.Service", &[]).await;
     expect(&fixture, "py object to js: object", &[]).await;
-    expect(&fixture, "js object from py: [remote object]", &[]).await;
-    expect(&fixture, "py object from js: <remote object>", &[]).await;
+    expect(&fixture, "js object from py: <object of another process>", &[]).await;
+    expect(&fixture, "py object from js: <object of another process>", &[]).await;
     // An empty slot is undefined: the array crosses whole.
     expect(&fixture, "js sparse to py: list of 3", &[]).await;
     // Over the limit, refused by the side that would send it, either way.

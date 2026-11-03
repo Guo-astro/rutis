@@ -109,7 +109,7 @@ test('values cross between the test and the plugin as between processes', async 
   assert.equal(got, 1)
   assert.equal(cache.size, 1, 'the original object changed')
   assert.deepEqual(seen, {
-    shown: '[remote object]',
+    shown: '<object of another process>',
     field: 'function',
     then: null,
     missing: ['Cache has no method gett (methods: get, set)', 'no-method', { object: 'Cache', method: 'gett', methods: ['get', 'set'] }],

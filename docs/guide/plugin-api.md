@@ -937,7 +937,7 @@ logging.basicConfig(level=logging.INFO)
 
 不能跨进程的值只让**这一次调用**失败：错误写明方法、第几个参数（或返回值）和原因，例如参数编码后过大时，这次调用得到 `store.put: argument 1 cannot be sent: the message would be 30889096 bytes, over the limit of 16777216 bytes (16 MiB)`。会话、运行时、同一会话上的其他调用和其他行都不受影响。错误的名字取决于是哪一方拒绝的、用什么语言写的（宿主是 `BindingError`，Node、Bun 是 `RangeError` 或 `TypeError`，Python 是 `ValueError`，Go、Swift、Kotlin 是 `Error`），不作保证；要判断是哪种失败，看错误码：值传不过去都是 `bad-value`，`data` 写明是参数、返回值还是事件的参数（`{part, argument?, reason, limit?}`；`reason` 是 `non-finite`、`cycle`、`too-deep`、`type`、`tag`、`limit` 之一），不要看名字或文字。收到的值解不开是 `bad-argument`（参数）或 `bad-result`（返回值），它们的话是解码器自己的那句（`json: cannot unmarshal object into Go value of type string`、``invalid type: integer `42`, expected a string``），前面只加 `<服务>.<方法>: argument N: ` 或 `<服务>.<方法>: the result: `。
 
-嵌套深度：一个值最多嵌套 **64 层**。数组 / list / tuple、对象 / dict（含 dataclass）、Map、Set、Go 的切片、map、结构体各算一层，里面有没有引用都一样；作为值传递的 `Error` / 异常也算一层。调用的参数列表本身不算一层：每个参数各自最多 64 层；返回值最多 64 层。更深的值由**要发送它的一方**在发出之前拒绝，只让这次调用失败，错误信息说明上限（`value nested deeper than 64 levels`）：
+嵌套深度：一个值最多嵌套 **64 层**。数组 / list / tuple、对象 / dict（含 dataclass）、Map、Set、Go 的切片、map、结构体各算一层，里面有没有引用都一样；作为值传递的 `Error` / 异常也算一层。调用的参数列表本身不算一层：每个参数各自最多 64 层；返回值最多 64 层。更深的值由**要发送它的一方**在发出之前拒绝，只让这次调用失败，错误信息说明上限（`the value nests deeper than 64 levels`）：
 
 - 作为参数：调用方的这次调用失败（Rust 中是 `Error::Value`），对端不执行它；
 - 作为返回值：调用方收到被调方抛出的错误；
@@ -995,7 +995,7 @@ await cache.set('a', 1)          // 方法都是异步调用，调用的是对�
 const value = await cache.get('a')
 ```
 
-- 代理上读到的每个名字都是方法（`then`、`toJSON`、`toString`、`valueOf` 和 symbol 除外：所以 `await` 一个代理得到它自己，对象自己的这几个方法也不能经代理调用）。`console.log` 显示 `[remote object]`。
+- 代理上读到的每个名字都是方法（`then`、`toJSON`、`toString`、`valueOf` 和 symbol 除外：所以 `await` 一个代理得到它自己，对象自己的这几个方法也不能经代理调用）。`console.log` 显示 `<object of another process>`。
 - 数组、对象里的 `undefined` 到了对方是 `null`；只有作为整个参数或整个返回值时保留。
 
 **Python**：`dict`、`list`、`tuple`、dataclass 复制；其他类的实例按引用交出：
@@ -1006,7 +1006,7 @@ await cache.set("a", 1)          # 方法都是 async，调用的是对方的原
 value = await cache.get("a")
 ```
 
-- 代理上任何公开名字都是方法（和 `ctx.use` 一样）。`repr` 是 `<remote object>`。同一个对象交出几次，对方拿到同一个代理（`is`）。
+- 代理上任何公开名字都是方法（和 `ctx.use` 一样）。`repr` 是 `<object of another process>`。同一个对象交出几次，对方拿到同一个代理（`is`）。
 - 列表、字典里的 `undefined`（JavaScript 发来的）到这里是 `None`，不论在哪一层。
 
 **Go**：结构体、切片、map 是数据，复制过去；要按引用交出一个对象，写 `rutis.Ref(v)`。别的进程交来的对象，参数类型写成函数字段的结构体（和 `ctx.Use` 的目标一样，字段名按同样的规则对应方法名），或者写 `any`、`*advanced.Service`：
