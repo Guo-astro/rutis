@@ -2,7 +2,7 @@
 
 [中文](design-test-tool-errors-2026-11-03.md)
 
-Status: draft, not implemented. Date: 2026-11-03. Baseline: `main` `d2a8d069` (after 0.20.1). Release: 0.21.
+Status: final, not implemented. Date: 2026-11-03. Baseline: `main` `d2a8d069` (after 0.20.1). Release: 0.21.
 Issue: [#933](https://github.com/arcships/rutis/issues/933) (part of [#663](https://github.com/arcships/rutis/issues/663)'s A5, D1, D2). Implemented as: #933's T-1 to T-6 (§7).
 Basis: [diagnostics](design-diagnostics-2026-10-26.en.md) (error codes §4.3, speaking only with what the developer wrote §4.5, `status` §5, the fault table §8.1); [error messages](https://github.com/arcships/rutis/issues/937) (#937's design draft, in review; once merged: `docs/design-error-messages-2026-11-03.md`: the waiting wording of `dev`, `status` and `diagnostics()`, and the state words, are its; this document only repeats them); [config schema](design-config-schema-2026-10-27.en.md) §5.2 (testing tools throw errors with `bad-config`); [plugin API](guide/plugin-api.en.md) "Testing tools", "How testing tools differ from a real runtime"; [rutis-host](guide/rutis-host.en.md) "What `run` prints" (the table of row state lines — "what `dev` says" throughout this document means that table).
 

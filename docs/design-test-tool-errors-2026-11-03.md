@@ -2,7 +2,7 @@
 
 [English](design-test-tool-errors-2026-11-03.en.md)
 
-状态：草稿，未实现。日期：2026-11-03。基准：`main` `d2a8d069`（0.20.1 之后）。排期：0.21。
+状态：定稿，未实现。日期：2026-11-03。基准：`main` `d2a8d069`（0.20.1 之后）。排期：0.21。
 Issue：[#933](https://github.com/arcships/rutis/issues/933)（属于 [#663](https://github.com/arcships/rutis/issues/663) 的 A5、D1、D2）。按本稿实施：#933 的 T-1 到 T-6（§7）。
 依据：[诊断](design-diagnostics-2026-10-26.md)（错误码 §4.3、只用开发者写过的东西说话 §4.5、`status` §五、故障表 §8.1）；[出错信息](https://github.com/arcships/rutis/issues/937)（#937 的设计稿，评审中，合并后在 `docs/design-error-messages-2026-11-03.md`：`dev`、`status`、`diagnostics()` 的等待说法与状态词归它，本稿只转述）；[配置 Schema](design-config-schema-2026-10-27.md) §5.2（测试工具抛的错误带 `bad-config`）；[插件 API](guide/plugin-api.md)「测试工具」「测试工具与真实运行时的差异」；[rutis-host](guide/rutis-host.md)「run 打印什么」（`dev` 的行状态表，本稿说的"`dev` 的话"就是这张表）。
 
