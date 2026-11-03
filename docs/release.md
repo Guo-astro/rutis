@@ -24,7 +24,7 @@
 
 需要的配置：GitHub environment `release`（`CARGO_TOKEN`、`NPM_TOKEN`）、`pypi` 和 `pypi-host`。PyPI 上 `rutis` 的 trusted publisher 指向 release.yml 与 environment `pypi`，`rutis-host` 的指向 environment `pypi-host`：两个项目的 publisher 不能完全相同，否则一次发布拿到的令牌只对其中一个有效。
 
-发布任务可能落在自托管的 Linux runner 上（它们的镜像也带 `ubuntu-24.04` 标签，见 [CI](ci.md) §11）。那里没有 `gh`，所以 GitHub Release 与失败时开的 issue 用 `github.token` 直接调 REST API；npm 的 provenance 只认 GitHub 的 runner，自托管上不带它发布，任务摘要里给一条警告；`cargo package` 用任务自己的 `CARGO_TARGET_DIR`（自托管上 cargo 是 mbx 的 shim，保留的编译目录里建不出它的临时注册表）。
+发布任务跑在自托管的 Linux runner 上（`runs-on: Linux`，见 [CI](ci.md) §11）：不绑发行版镜像，GitHub 托管的 runner 没有 `Linux` 这个标签。那里没有 `gh`，所以 GitHub Release 与失败时开的 issue 用 `github.token` 直接调 REST API；npm 的 provenance 只认 GitHub 的 runner，自托管上不带它发布，任务摘要里给一条警告；`cargo package` 用任务自己的 `CARGO_TARGET_DIR`（自托管上 cargo 是 mbx 的 shim，保留的编译目录里建不出它的临时注册表）。
 
 Maven Central（release.yml 的 `maven` 任务，vanniktech maven-publish 插件）用 GitHub environment `maven` 的四个 secret；缺任何一个，这一步在运行摘要里写明缺哪些并跳过，其余照常发布。维护者一次性配置：
 
