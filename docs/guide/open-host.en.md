@@ -768,7 +768,7 @@ test('counts the notes and their words', async () => {
   const commands = new Map<string, (args: string[]) => Promise<string>>()
   const t = await load(plugin, {
     services: {
-      notes: { list: () => ['buy milk', 'call Ada back'] },
+      notes: { list: async () => ['buy milk', 'call Ada back'] },
       commands: { register: async (name: string, run: (args: string[]) => Promise<string>) => { commands.set(name, run) } },
     },
   })
@@ -795,15 +795,158 @@ $ npx rutis-host call commands.run '"count"'
 ```
 
 - The fakes of a test go in `load`'s `services`; the fakes of `dev` are rows of `rutis.dev.json`.
-- The test calls the command it received as a function, and such a call waits for its result on the test's thread; while it waits, that thread cannot settle a Promise. So a fake the command calls while it runs answers at once (`list: () => [...]`, not `async`). Written `async`, the call fails:
-
-  ```text
-  SyncWaitCycle: await requires the Node thread occupied by its parent synchronous call; path: test:5 -> rutis-test:3 -> rutis-test:4
-  ```
-
-  The fakes of `dev` (`dev/fake-jot.ts`) stay `async`: there jot's side calls the command, as jot does.
+- The test calls the command it received as a function: that call is asynchronous, so `await` it for the result (`await commands.get('count')!([])`), and a fake is written `async`, as a real service is. The fakes of `dev` (`dev/fake-jot.ts`) are the same.
 - Authors writing commands in Python use the `jot_types.py` that `--python` writes; the fake jot can stay in TypeScript: rows of different languages sit together in `rutis.dev.json`.
 - The test tools, `dev` and `rutis-host call` are in each language's plugin guide ([TypeScript](typescript-plugin.en.md#6-test), [Python](python-plugin.en.md#6-test)) and in [rutis-host: developing a plugin with `dev`](rutis-host.en.md#developing-a-plugin-with-dev).
+
+### Commands in Python
+
+The same material for Python authors: the project `rutis-host new count --lang python` makes, a fake `notes` and `commands`, and the rows of `rutis.dev.json` that put them together.
+
+<!-- example: jot-command-python-en run -->
+```bash
+npx @arcships/rutis-host new count --lang python
+cd count
+uv sync
+```
+
+<!-- example: jot-command-python-en file=count/src/count/__init__.py -->
+```python
+"""count: a jot command."""
+
+from rutis import define_plugin
+
+
+async def apply(ctx, config):
+    commands = ctx.use("commands")
+    notes = ctx.use("notes")
+
+    async def count(args):
+        all_notes = await notes.list()
+        words = len(" ".join(all_notes).split())
+        return f"{len(all_notes)} notes, {words} words"
+
+    await commands.register("count", count)
+
+
+plugin = define_plugin(apply, inject=["notes", "commands"])
+```
+
+The fake jot lives in the project's `src/` (it is not packed into the plugin), and `rutis.dev.json` has its row:
+
+<!-- example: jot-command-python-en file=count/src/fake_jot.py -->
+```python
+"""A fake jot for `rutis-host dev`: two notes and a `commands` service."""
+
+from rutis import define_plugin
+
+
+class Jot:
+    def __init__(self):
+        self.notes = ["buy milk", "call Ada back"]
+        self.commands = {}
+
+    async def list(self):
+        return list(self.notes)
+
+    async def add(self, text):
+        self.notes.append(text)
+
+    async def register(self, name, run):
+        self.commands[name] = run
+
+    async def run(self, name, args=None):
+        return await self.commands[name](args or [])
+
+
+def apply(ctx, config):
+    jot = Jot()
+    ctx.provide("notes", jot)
+    ctx.provide("commands", jot)
+
+
+plugin = define_plugin(
+    apply,
+    provides={"notes": {"add": "async", "list": "async"}, "commands": {"register": "async", "run": "async"}},
+)
+```
+
+<!-- example: jot-command-python-en file=count/rutis.dev.json -->
+```json
+{
+  "format": 1,
+  "rows": [
+    { "id": "count" },
+    { "id": "jot", "name": "py:fake_jot" }
+  ]
+}
+```
+
+The test (it replaces the template's `tests/test_plugin.py`):
+
+<!-- example: jot-command-python-en file=count/tests/test_plugin.py -->
+```python
+import asyncio
+import unittest
+
+from rutis.testing import load
+
+from count import plugin
+
+
+class FakeNotes:
+    async def list(self):
+        return ["buy milk", "call Ada back"]
+
+
+class FakeCommands:
+    def __init__(self):
+        self.runs = {}
+
+    async def register(self, name, run):
+        self.runs[name] = run
+
+
+class Plugin(unittest.TestCase):
+    def test_counts_the_notes_and_their_words(self):
+        async def go():
+            commands = FakeCommands()
+            async with load(plugin, services={"notes": FakeNotes(), "commands": commands}) as t:
+                self.assertEqual(await commands.runs["count"]([]), "2 notes, 5 words")
+
+        asyncio.run(go())
+
+
+if __name__ == "__main__":
+    unittest.main()
+```
+
+<!-- example: jot-command-python-en run -->
+```bash
+uv run python -m unittest discover -s tests
+```
+
+```console
+$ uv run python -m unittest discover -s tests
+.
+----------------------------------------------------------------------
+Ran 1 test in 0.025s
+
+OK
+```
+
+<!-- example: jot-command-python-en run until="count: running" -->
+```bash
+npx rutis-host dev
+```
+
+```console
+$ npx rutis-host call commands.run '"count"'
+"2 notes, 5 words"
+```
+
+- A test gets the plugin's own function (Python's test tool loads the plugin into the test's process): `await` it when it is an `async def` (the test above), use its value when it is a plain `def`. A function from another process is a `RemoteFunction`: `await f(...)` (the same as `f.call_async(...)`); a bare `f(...)` returns its result synchronously and holds the event loop, so it is only for a `sync` method.
+- The fake jot may be written in either language: `py:fake_jot` in `rutis.dev.json`, or a TypeScript `./dev/fake-jot.ts`.
 
 ### The development loop
 

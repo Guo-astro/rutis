@@ -65,6 +65,71 @@ class PeerTests(background.IsolatedAsyncioTestCase):
         future.cancel()
 
 
+    # guarantee: bridge/function-refs
+    async def test_a_received_function_is_awaited_outside_a_synchronous_call(self):
+        # #932: a function the far end hands over is called as a service
+        # method is — an awaitable outside a synchronous call.
+        captured = []
+
+        def dispatch(target, method, args):
+            captured.append(args[0])
+            return 0
+
+        self.peer._dispatch = dispatch
+        reference = {"type": "reference", "value": {"id": 9, "home": False, "kind": "function", "origin": []}}
+        self.peer._receive(
+            {"op": "invoke", "id": "main:1", "path": [], "target": "test", "method": "take",
+             "args": {"type": "list", "value": [reference]}}
+        )
+        await asyncio.sleep(0)
+        self.assertEqual(self.read()["op"], "return")
+        function = captured[0]
+        answer = asyncio.ensure_future(function(1))
+        await asyncio.sleep(0)
+        call = self.read()
+        self.assertEqual(call["op"], "call")
+        self.peer._receive({"op": "return", "id": call["id"], "value": {"type": "data", "value": 2}})
+        self.assertEqual(await answer, 2)
+
+    # guarantee: bridge/function-refs
+    async def test_a_received_function_is_synchronous_inside_a_synchronous_call(self):
+        # Inside a synchronous call the loop is held: `f(...)` returns the
+        # result itself, and the far end answers from its own wait.
+        captured = []
+
+        def dispatch(target, method, args):
+            if method == "take":
+                captured.append(args[0])
+                return 0
+            return captured[0]()
+
+        self.peer._dispatch = dispatch
+        reference = {"type": "reference", "value": {"id": 9, "home": False, "kind": "function", "origin": []}}
+        self.peer._receive(
+            {"op": "invoke", "id": "main:1", "path": [], "target": "test", "method": "take",
+             "args": {"type": "list", "value": [reference]}, "sync": True}
+        )
+        await asyncio.sleep(0)
+        self.assertEqual(self.read()["op"], "return")
+
+        def answer():
+            # The wait reads its frames from `_inbox`, as the reader thread's
+            # own loop does: hand the reply there.
+            call = self.read()
+            with self.peer._cv:
+                self.peer._inbox.append({"op": "return", "id": call["id"], "value": {"type": "data", "value": 3}})
+                self.peer._cv.notify_all()
+
+        threading.Thread(target=answer, daemon=True).start()
+        self.peer._receive(
+            {"op": "invoke", "id": "main:2", "path": [], "target": "test", "method": "call it",
+             "args": {"type": "data", "value": []}, "sync": True}
+        )
+        await asyncio.sleep(0)
+        reply = self.read()
+        self.assertEqual(reply["op"], "return", reply)
+        self.assertEqual(reply["value"], {"type": "data", "value": 3})
+
     async def test_request_answered_tells_the_reply_as_its_frame_is_taken(self):
         # Events protocol §5.5: in place, before the next frame, not on a
         # later turn of the loop.

@@ -195,7 +195,7 @@ if __name__ == "__main__":
 uv run python -m unittest discover -s tests
 ```
 
-检查都是宿主自己做的：配置由宿主的 loader 按 Schema 补默认值并校验，不合格时 `load` 抛出 `PluginTestError`，文字是这一行的状态行（`greeter: config: greeting should be a string, got 3`）；事件经宿主分发。unittest 没有时限，测试工具给插件服务的调用一个时限：30 秒内没有返回的调用被取消，测试以 `PluginTestError: greeter.hello() did not return within 30s` 失败（`code` 是 `timeout`）。插件没起来时，`t.service()` 抛的是这一行的状态行，和 `dev` 说的一样（`greeter: waiting for translate (nothing provides it yet)`，`code` 是 `not-running`）；`await t.waiting()` 也给出那一行。测试工具的其余接口见 [插件 API：Python 的测试工具](plugin-api.md#python-的测试工具)。宿主给了它的服务的 Python 类型时，用法见 [宿主给的类型](#宿主给的类型)。
+检查都是宿主自己做的：配置由宿主的 loader 按 Schema 补默认值并校验，不合格时 `load` 抛出 `PluginTestError`，文字是这一行的状态行（`greeter: config: greeting should be a string, got 3`）；事件经宿主分发。unittest 没有时限，测试工具给插件服务的调用一个时限：30 秒内没有返回的调用被取消，测试以 `PluginTestError: greeter.hello() did not return within 30s` 失败（`code` 是 `timeout`）。插件没起来时，`t.service()` 抛的是这一行的状态行，和 `dev` 说的一样（`greeter: waiting for translate (nothing provides it yet)`，`code` 是 `not-running`）；`await t.waiting()` 也给出那一行。测试工具的其余接口见 [插件 API：Python 的测试工具](plugin-api.md#python-的测试工具)。插件交给测试的函数就在这个进程里，是它自己的函数：`async def` 时 `await` 它，普通 `def` 时直接得到它的值；别的进程交来的函数是 `RemoteFunction`，`await f(...)`（与 `f.call_async(...)` 相同），裸的 `f(...)` 只在 `sync` 方法里用（[值怎样传递](plugin-api.md#值怎样传递)）。宿主给了它的服务的 Python 类型时，用法见 [宿主给的类型](#宿主给的类型)。
 
 ## 7. 本地运行并试一下
 

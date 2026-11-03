@@ -46,7 +46,7 @@ function setup({ peer } = {}) {
 
 test('Cordis listeners register on the bus and leave with their fiber', async () => {
   const sent = []
-  const host = { callAsync: (target, method, args) => { sent.push([method, args]); return Promise.resolve() }, call() {}, callFunctionAsync() {} }
+  const host = { callAsync: (target, method, args) => { sent.push([method, args]); return Promise.resolve() }, call() {}, callFunctionAsync() {}, callFunctionSync() {} }
   const { root, bus, load } = setup({ peer: host })
   const fiber = await load('chat', ctx => {
     ctx.on('session/created', () => {})
@@ -221,7 +221,7 @@ test('a failure of events.dispatch(\'emit\') nobody awaits is reported', async (
 // fibers) has two equal descriptors.
 test('through the host, Context.filter gets the Context the host asks about', async () => {
   const sent = []
-  const host = { callAsync: (target, method, args) => { sent.push([method, args]); return Promise.resolve() }, call() {}, callFunctionAsync() {} }
+  const host = { callAsync: (target, method, args) => { sent.push([method, args]); return Promise.resolve() }, call() {}, callFunctionAsync() {}, callFunctionSync() {} }
   const { root, bus, load } = setup({ peer: host })
   const contexts = []
   await load('chat', ctx => {

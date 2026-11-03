@@ -71,6 +71,59 @@ test('a far end of another protocol version is refused, saying which end to upgr
   }
 })
 
+// #932: a function the far end hands over is called like a service method —
+// a Promise outside a synchronous call, the value itself inside one, where
+// nothing could await with.
+// guarantee: bridge/function-refs
+test('a received function is called asynchronously outside a synchronous call (#932)', async () => {
+  const { Session, ENDPOINT_PROTOCOL } = require('../src/session.ts')
+  const sent: any[] = []
+  let proxy: any
+  const peer = new Session({
+    dispatch: (_: string, __: string, args: any[]) => (proxy = args[0]),
+    send: (line: string) => sent.push(JSON.parse(line)), abort: () => {}, pump: () => {},
+    endpoint: { local: 'bun' },
+  })
+  peer.receive({ op: 'hello', version: ENDPOINT_PROTOCOL, endpoint: 'main', capabilities: [] })
+  const reference = { type: 'reference', value: { id: 9, home: false, kind: 'function', origin: [] } }
+  peer.receive({ op: 'invoke', id: 'main:1', path: [], target: 'test', method: 'take', args: { type: 'list', value: [reference] }, sync: true })
+  await Promise.resolve()
+  const answer = proxy(1)
+  expect(typeof answer.then).toBe('function')
+  const call = sent.find((frame: any) => frame.op === 'call')
+  expect(call.args).toEqual({ type: 'list', value: [{ type: 'data', value: 1 }] })
+  peer.receive({ op: 'return', id: call.id, value: { type: 'data', value: 2 } })
+  expect(await answer).toBe(2)
+  peer.close()
+})
+
+// guarantee: bridge/function-refs
+test('a received function is called synchronously inside a synchronous call (#932)', async () => {
+  const { Session, ENDPOINT_PROTOCOL } = require('../src/session.ts')
+  const sent: any[] = [], pending: string[] = []
+  let proxy: any
+  const peer = new Session({
+    dispatch: (_: string, method: string, args: any[]) => method === 'take' ? (proxy = args[0]) : proxy(),
+    send: (line: string) => {
+      const frame = JSON.parse(line)
+      sent.push(frame)
+      if (frame.op === 'call') pending.push(frame.id)
+    },
+    pump: () => peer.receive({ op: 'return', id: pending.shift(), value: { type: 'data', value: 3 } }),
+    abort: () => {},
+    endpoint: { local: 'bun' },
+  })
+  peer.receive({ op: 'hello', version: ENDPOINT_PROTOCOL, endpoint: 'main', capabilities: [] })
+  const reference = { type: 'reference', value: { id: 9, home: false, kind: 'function', origin: [] } }
+  peer.receive({ op: 'invoke', id: 'main:1', path: [], target: 'test', method: 'take', args: { type: 'list', value: [reference] }, sync: true })
+  await Promise.resolve()
+  peer.receive({ op: 'invoke', id: 'main:2', path: [], target: 'test', method: 'call it', args: { type: 'data', value: [] }, sync: true })
+  await Promise.resolve()
+  const reply = sent.filter((frame: any) => frame.op === 'return').at(-1)
+  expect(reply.value).toEqual({ type: 'data', value: 3 })
+  peer.close()
+})
+
 // Events protocol §5.5: an emit's reply is taken as its frame is read,
 // before the next frame is handled, not on a later tick.
 test('invokeAnswered tells the reply as its frame is read, before the next frame', () => {

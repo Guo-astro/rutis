@@ -71,6 +71,7 @@ export class Process {
   callAsync(target, method, args, described) { return this.#session.invokeAsync(target, method, args, described) }
   callAnswered(target, method, args, answered, described) { this.#session.invokeAnswered(target, method, args, answered, described) }
   callFunctionAsync(fn, args) { return this.#session.callFunctionAsync(fn, args) }
+  callFunctionSync(fn, args) { return this.#session.callFunctionSync(fn, args) }
   release(value) { this.#session.release(value) }
   references() { return this.#session.references() }
   drain() { return this.#session.drain() }

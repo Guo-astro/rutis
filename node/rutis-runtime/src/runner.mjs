@@ -1192,6 +1192,7 @@ bus.peer = {
   callAsync: (target, method, args, described) => peer.callAsync(target, method, args, described),
   callAnswered: (target, method, args, answered, described) => peer.callAnswered(target, method, args, answered, described),
   callFunctionAsync: (fn, args) => peer.callFunctionAsync(fn, args),
+  callFunctionSync: (fn, args) => peer.callFunctionSync(fn, args),
 }
 if (dialed) {
   // Stopped: the rows go while rutis still hears from this end, then the

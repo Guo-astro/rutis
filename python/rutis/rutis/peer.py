@@ -698,8 +698,10 @@ def _data(value: Any, depth: int = 0, seen: set | None = None) -> Any:
 
 
 class RemoteFunction:
-    """A function of the other side. Calling it is synchronous; `call_async`
-    returns its result without blocking the loop."""
+    """A function of the other side, called as a service method is: `await
+    f(...)` outside a synchronous call (the same as `f.call_async(...)`). Inside
+    one — a `sync` method, a synchronous waterfall — the thread is held and
+    nothing can be awaited, so `f(...)` returns the result itself (#932)."""
 
     def __init__(self, peer: "Peer", record: "_Import"):
         self._peer = peer
@@ -707,6 +709,8 @@ class RemoteFunction:
 
     def __call__(self, *args: Any) -> Any:
         self._record.check()
+        if not self._peer._blocking:
+            return self.call_async(*args)
         return _plain(self._peer._call_sync("call", {"reference": self._record.id}, list(args)))
 
     async def call_async(self, *args: Any) -> Any:
@@ -899,6 +903,12 @@ class Peer:
         self._identities: dict[int, int] = {}
         self._imports: dict[int, _Import] = {}
         self._waiting: list[str] = []
+        # How many synchronous calls this thread is inside of (#932): a wait
+        # of ours (`_call_sync`) or a call of the far end's that arrived with
+        # `sync`. While it is above zero the loop cannot run anything else, so
+        # a received function is called synchronously; outside one it is
+        # called asynchronously, as a service method is.
+        self._blocking = 0
         self._queued: dict[_Job, None] = {}
         self._sync_path: list | None = None
         self._context: contextvars.ContextVar[list] = contextvars.ContextVar("rutis_path", default=[])
@@ -1513,6 +1523,7 @@ class Peer:
         result: list = []
         call = self._request(op, fields, args, result.append, sync=True, payload=payload)
         self._waiting.append(call)
+        self._blocking += 1
         try:
             for job in list(self._queued):
                 self._run(job)
@@ -1524,6 +1535,7 @@ class Peer:
                     raise self.closed_error
                 self._drain()
         finally:
+            self._blocking -= 1
             self._waiting.pop()
             if not self._waiting:
                 for job in list(self._queued):
@@ -1772,6 +1784,11 @@ class Peer:
         path = [*frame["path"], call]
         previous = self._sync_path
         self._sync_path = path
+        # The far end waits for this call (a `sync` method, a synchronous
+        # waterfall): anything it calls here is synchronous too (#932 §3.2).
+        synchronous = frame.get("sync") is True
+        if synchronous:
+            self._blocking += 1
         token = self._context.set(path)
         try:
             if frame["op"] == "await":
@@ -1832,6 +1849,8 @@ class Peer:
             self._cancel_early.discard(call)
             self._context.reset(token)
             self._sync_path = previous
+            if synchronous:
+                self._blocking -= 1
 
     def _task(self, coroutine: Any, call: str | None = None) -> asyncio.Future:
         """A task for a returned coroutine, started at once like a JS async

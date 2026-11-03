@@ -35,6 +35,7 @@ export function fakePeer(answer = () => undefined) {
       host.callAsync(target, method, args).then(value => answered({ ok: true, value }), value => answered({ ok: false, value }))
     },
     callFunctionAsync: (fn, args) => Promise.resolve().then(() => fn(...args)),
+    callFunctionSync: (fn, args) => fn(...args),
   }
 
   function control(method, args, sync) {

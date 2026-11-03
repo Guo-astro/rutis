@@ -924,7 +924,7 @@ logging.basicConfig(level=logging.INFO)
 | Python dataclass | 复制为 dict |
 | 日期时间、二进制、Map、Set、大整数、Decimal、UUID | 复制，各语言收到本语言的类型，见下面的[十种值](#十种值) |
 | `Error` / 异常 | 作为值传递时复制为数据 `{ name, message }`（TypeScript 另带 `stack`）；抛出时另一端得到同名、同消息的错误（TypeScript 中内置错误类保留类，其余是 `Error`；Python 中是 `rutis.RemoteError`，`name` 是原来的类名；Go 中是 `*rutis.RemoteError`）。任何语言抛出的错误都可以带 code 和 data：TypeScript 中是字符串属性 `code` 和属性 `data`，Python 中是字符串属性 `code` 和属性 `data`，Go 中是方法 `Code() string` 和 `Data() any`，Rust 中是 [`rutis_bridge::exports::failure`](rust-host.md#手写-hostdispatch)（[导出的 Rust 服务](rust-host.md#导出服务参考)的 `Err(e)` 就变成它）。收到的一方从 `code`、`data` 读到它们（Go：`Code`、`Data`；Rust：`Error::code()`、`Error::data()`），再次抛出时继续传。`data` 按数据传（大整数为 bigint）；传不过去的 data 被略去，错误的其余部分照常传。其他属性不传 |
-| 函数、Promise / 协程 | 按引用：另一端调用或 await 的是原来那个 |
+| 函数、Promise / 协程 | 按引用：另一端调用或 await 的是原来那个。收到的函数像服务方法一样调用：不在同步调用里时是异步的（TypeScript、Bun 返回 Promise，Python 可 `await`，与 `f.call_async(...)` 相同），`await` 它得到结果；在同步调用里（`sync` 方法、同步的 waterfall、同步调用的监听器）同步返回结果，那里也 `await` 不了。Go、Swift、Kotlin、Rust 各自分开写，见[带方法的对象](#带方法的对象)里的表 |
 | 带方法的对象、类的实例 | 按引用，传给任何语言：另一端拿到代理，方法调用的是原对象。哪些值算对象、各语言怎样收，见下面的[带方法的对象](#带方法的对象) |
 | 插件定义（`definePlugin` 的结果；Node 里的 Cordis 插件；Python 的 `define_plugin` 结果；Go 的 `*rutis.Definition`；Swift、Kotlin 的 `Rutis.define` 结果） | 按引用，只交回定义它的运行时：Rust 服务把参数或返回值类型写成 `rutis::Definition`，收到的就是一个可以挂的插件定义，见下面的[插件定义](#插件定义)。Node、Bun、Python、Go、Swift、Kotlin 都能交出 |
 | `undefined` | 只在作为整个参数或整个返回值时保留：作为参数是"没有给"（Python 少收一个参数或收到 `None`，Go 是零值）；作为返回值 JS 收到 `undefined`，其他语言收到各自的空值。在数组、对象、Map、Set 里任何一层都变成 `null`（Python 收到 `None`） |
@@ -1265,7 +1265,7 @@ fn mount(at: &Ctx, definition: &Definition) -> Result {
 
 测试的替身收到的插件定义可以直接交给 `load`：插件把它在 `apply` 里造的 `definePlugin` 结果交给测试的服务，测试再把它交给 `load`，它就在**定义它的运行时**里作为一行装载——配置按它声明的 schema 校验并补默认值、`inject` 的服务都在了才启动、事件经宿主、`service()` 和 `t.row` 与 `load` 一个插件模块相同。三处与插件代码里 `ctx.plugin(def.at(..))` 挂出的副本不同（理由见[插件定义](#插件定义)与[设计](../design-test-tool-definition-load-2026-11-01.md) §四）：来源行卸载不带走这一行（测试自己卸）、同一个定义 `load` 两次是两行、`ended()` 与"只能挂在来源实例里或更里面"不适用。
 
-测试与插件可以同时调用对方：测试调用插件交给它的函数（回调）的同时，插件调用测试提供的服务。等着对方的一边在等待时执行对方的调用，Node 与 Bun 下都一样，两边都返回。所以测试还在插件的一次调用里时，测试提供的服务也可能被调用：不要在这样的调用期间持有测试自己的锁。
+测试与插件可以同时调用对方：测试调用插件交给它的函数（回调）的同时，插件调用测试提供的服务。调用交来的函数是异步的（`await` 它，见[值怎样传递](#值怎样传递)），所以两边都不占着线程，各自照常回答。测试还在插件的一次调用里时，测试提供的服务也可能被调用：不要在这样的调用期间持有测试自己的锁。
 
 ### Python 的测试工具
 
@@ -1290,6 +1290,7 @@ fn mount(at: &Ctx, definition: &Definition) -> Result {
 | `t.emit`、`t.parallel`、`t.serial`、`t.waterfall`、`t.bail` | 从插件所在的行发出事件，经宿主 |
 | `t.filter(predicate)` | 带这五个方法的对象，只送达 `predicate(descriptor)` 留下的监听器 |
 | `await t.reported()` | 宿主为这一行报告的失败（`emit` 里出错的监听器、`emit` 的过滤函数），每个是一个 `Reported`，`line` 是宿主打印的那一行 |
+| 交来的函数 | 插件在测试自己的进程里运行（`load` 把插件装进这个进程的运行时），所以它交给测试的函数就是它自己的函数：`async def` 时 `await` 它，普通 `def` 时得到它的值。别的进程交来的函数是 `RemoteFunction`：`await f(...)`（与 `f.call_async(...)` 相同）；裸的 `f(...)` 同步返回结果、占着事件循环，只在 `sync` 方法里用 |
 | `await t.update(config)` | 由宿主换配置：卸载后用新配置再运行；配置不合格时以宿主的话失败，这一行保持原配置 |
 | `await t.unload()` | 由宿主卸载：撤下监听器和服务，取消并等待正在运行的监听器，再按倒序运行清理（退出 `async with` 时自动做） |
 
@@ -1370,6 +1371,7 @@ func TestEvents(t *testing.T) {
 - Go 运行时每个进来的调用都在自己的 goroutine 上执行，所以总是可重入：Go 插件提供的对象要能被并发调用。调用链放在 `context.Context` 里：调用别的服务时**把收到的 ctx 传下去**，否则正在同步等你的调用方可能认不出你的回调。
 - Node 运行时在同步等待期间只执行属于这条调用链的调用，其他调用放到它的栈清空之后。
 - Python、Node（和 Bun）运行时在同步等待期间执行的调用压在等待的调用之上：先开始的调用要等后开始的结束。
+- **交来的函数**（另一个插件、宿主交给本插件的回调）按上面同一条规则：不在同步调用里时像服务方法一样异步（`await` 它），在同步调用里同步返回结果 —— 那里的线程 / 事件循环本来就动不了。真正的等待环仍以 `SyncWaitCycle` 失败，不卡死。
 
 几个运行时互相同步调用时，可能所有参与方都在等别人：两个 Node 运行时互相同步调用；一个 Node 运行时和两个 Python 运行时嵌套调用，也可能如此。宿主在转发每个同步调用之前检查它会不会形成这样的等待环；会的话不转发，调用方得到 `SyncWaitCycle` 错误，其余调用照常完成。收到它时不要立即重试同一个调用（多半会再次形成同一个环），可以改用 `async` 方法、换个时机，或者把它当作失败处理。
 

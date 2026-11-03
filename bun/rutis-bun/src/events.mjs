@@ -71,7 +71,7 @@ export class Bus {
   #unloaded = new Set()
 
   // `runtime`: this runtime's name, for descriptors (null when unknown).
-  // `peer`: { callAsync, call, callAnswered?, callFunctionAsync } to the
+  // `peer`: { callAsync, call, callAnswered?, callFunctionAsync, callFunctionSync } to the
   // host; null once the session ended. `report(line, details?)`: a failure
   // reported here (§5.6). `dispatched(mode, name, args)`: Cordis's
   // `internal/dispatch` for a dispatch from elsewhere (§5.3). `loading(row)`:
@@ -368,7 +368,7 @@ export class Bus {
           called = true
           if (!this.peer) return Promise.reject(hostGone())
           // Calling the function itself waits for it synchronously.
-          return sync ? next() : this.peer.callFunctionAsync(next, [])
+          return sync ? this.peer.callFunctionSync(next, []) : this.peer.callFunctionAsync(next, [])
         }
         return this.#invoke(entry, [...values, onward], null)
       }
