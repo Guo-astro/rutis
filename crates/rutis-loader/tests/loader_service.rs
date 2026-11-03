@@ -310,7 +310,11 @@ fn scenario() -> Vec<String> {
             "wether",
             "wether: cannot load \"py:wether\": ModuleNotFoundError: No module named 'wether'",
         ),
-        error("create fails", "fails", "fails: KeyError: 'units'"),
+        error(
+            "create fails",
+            "fails",
+            "fails: failed in apply: KeyError: 'units'",
+        ),
         error(
             "create syntax",
             "syntax",
@@ -330,7 +334,7 @@ fn scenario() -> Vec<String> {
         error(
             "reload fails",
             "weather",
-            "weather: cannot reload: KeyError: 'units'",
+            "weather: cannot reload: failed in apply: KeyError: 'units'",
         ),
         "reload: ok".to_owned(),
         error("reload unknown", "wether", "no row wether"),
@@ -346,7 +350,15 @@ async fn run_scenario(name: &str, config: Value) {
     let after = fixture.expect_prefix("status after: ").await;
     let lines = fixture.probe.lines();
     for line in scenario() {
-        assert!(lines.contains(&line), "{line:?} not in {lines:#?}");
+        // A row's failure says where it came from under its sentence (#933):
+        // the expected line is that sentence, matched whole or as the first
+        // line of the host's text.
+        assert!(
+            lines
+                .iter()
+                .any(|recorded| recorded == &line || recorded.starts_with(&format!("{line}\n"))),
+            "{line:?} not in {lines:#?}"
+        );
     }
     // The id `create` generates: 8 hex digits.
     let generated = lines
