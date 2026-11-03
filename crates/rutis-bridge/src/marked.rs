@@ -68,7 +68,15 @@ impl HostDispatch for Marked {
                 .iter()
                 .flat_map(|entry| entry.methods().iter().copied())
                 .collect();
-            return Err(Error::no_method(self.name(), method, methods));
+            let provider = self.ctx.row();
+            let caller = caller_row().map(|row| row.id().to_owned());
+            let provider = provider.filter(|row| Some(row.as_str()) != caller.as_deref());
+            return Err(Error::no_method_of(
+                self.name(),
+                method,
+                methods,
+                provider.as_deref(),
+            ));
         };
         let service = entry
             .resolve(&self.ctx, &self.native, &self.provision)
@@ -108,7 +116,12 @@ impl HostDispatch for Marked {
     }
 
     fn provider(&self) -> Option<String> {
-        Some(self.type_name.to_owned())
+        // The row providing it, as every other provider says who it is; a
+        // service no row provides is the host's, named by its type.
+        match self.ctx.row() {
+            Some(row) => Some(format!("row {row}")),
+            None => Some(self.type_name.to_owned()),
+        }
     }
 }
 
@@ -161,18 +174,20 @@ impl Place {
         })
     }
 
-    /// The refusal for a name another service has here (R6).
+    /// The refusal for a name another service has here (R6): the same
+    /// sentence every provider gives, naming the holder (#937).
     fn taken(&self) -> RutisError {
+        // A row's name when a row provides it; anything else served here is
+        // the host's own, which a developer cannot rename.
         let by = self
             .serving
             .get_at(&self.key)
             .and_then(|other| other.provider())
-            .map(|other| format!(" by {other}"))
-            .unwrap_or_default();
-        rutis::Error::from(ErrorKind::ServiceExists(format!(
-            "`{}` ({}): the name is already provided here{by}",
-            self.name, self.type_name
-        )))
+            .filter(|by| by.starts_with("row "))
+            .unwrap_or_else(|| "the host".to_owned());
+        rutis::Error::from(ErrorKind::ServiceExists(
+            rutis::internal::service::taken_message(self.name, &by),
+        ))
     }
 }
 

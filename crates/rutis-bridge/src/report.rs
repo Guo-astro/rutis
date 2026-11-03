@@ -110,6 +110,18 @@ pub fn whereabouts(error: &ErrorKind) -> Vec<String> {
     lines
 }
 
+/// Whether `error` is a name two providers share (#937): its message is the
+/// whole line (`b: weather is already provided by a: rename one of them`),
+/// with no `failed: …` in front of it. `true` for the kernel's
+/// `ServiceExists` and for the `ProvideError` a runtime reports.
+pub fn is_name_clash(error: &ErrorKind) -> bool {
+    matches!(error, ErrorKind::ServiceExists(_))
+        || matches!(
+            crate::thrown(error),
+            Some(crate::session::Error::Remote { name, .. }) if name == "ProvideError"
+        )
+}
+
 /// The first line printed for `error`, saying what failed when its site
 /// tells: `call to forecast.tomorrow failed: KeyError: 'region'`,
 /// `failed in apply: …`, `failed in cleanup: …`, `listener of

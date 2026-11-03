@@ -36,6 +36,19 @@ pub(crate) struct Binding {
     pub removing: std::sync::atomic::AtomicBool,
 }
 
+/// Who holds `binding`, as a message names it: the row providing it, `the
+/// host` for what the root provides, else the plugin's own name.
+pub(crate) fn holder(binding: &Binding) -> String {
+    let Some(fiber) = binding.provider.upgrade() else {
+        return "another plugin".to_owned();
+    };
+    match fiber.row.get() {
+        Some(row) => row.to_string(),
+        None if fiber.parent_fiber.is_none() => "the host".to_owned(),
+        None => fiber.name.clone(),
+    }
+}
+
 /// Ordinary bindings remain immutable; only `provide_mut_as` pays a value lock.
 pub(crate) enum ValueSlot {
     Fixed(StoredValue),
@@ -125,15 +138,15 @@ impl Registry {
         key: TypeKey,
         scope: Option<ScopeId>,
         binding: Binding,
+        name: &str,
     ) -> Result<Arc<Binding>, Error> {
         let mut bindings = self.bindings.lock().unwrap();
         let entry = (key.clone(), scope.clone());
         if let Some(existing) = bindings.get(&entry) {
             if !existing.removing.load(std::sync::atomic::Ordering::SeqCst) {
-                let scope_desc = entry.1.as_deref().unwrap_or("<default>");
-                return Err(ErrorKind::ServiceExists(format!(
-                    "{} in scope {scope_desc}",
-                    key.describe()
+                return Err(ErrorKind::ServiceExists(crate::service::taken_message(
+                    name,
+                    &holder(existing),
                 ))
                 .into());
             }

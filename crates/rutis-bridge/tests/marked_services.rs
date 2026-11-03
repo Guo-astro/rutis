@@ -329,9 +329,11 @@ async fn a_second_service_of_the_same_name_is_refused() {
         }
     }
     let error = root.provide(Clash).unwrap_err();
-    assert!(
-        error.to_string().contains("`notebook`") && error.to_string().contains("Notes"),
-        "{error}"
+    // The sentence every provider gives (#937): who holds it, and what to
+    // do. Notes was provided by the root itself, which is the host.
+    assert_eq!(
+        error.to_string(),
+        "notebook is already provided by the host: rename it"
     );
     // Refused before anything is registered: the native service is not
     // provided either.

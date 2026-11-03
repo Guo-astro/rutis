@@ -1088,7 +1088,7 @@ async fn a_service_provided_twice_fails_the_later_row() {
         panic!("s has no fiber");
     };
     let error = snapshot.error.expect("why it failed").to_string();
-    assert_eq!(error, "store is already provided by the host");
+    assert_eq!(error, "store is already provided by the host: rename it");
 
     root.shutdown().await.unwrap();
 }
@@ -1376,7 +1376,7 @@ async fn an_error_from_a_service_method_says_where_it_came_from() {
     assert_eq!(missing.code(), Some("no-method"));
     assert_eq!(
         missing.to_string(),
-        "weather has no method tomorow (methods: today, tomorrow)"
+        "weather has no method tomorow (methods: today, tomorrow); it is provided by row w"
     );
     assert_eq!(
         missing.data().unwrap()["methods"],

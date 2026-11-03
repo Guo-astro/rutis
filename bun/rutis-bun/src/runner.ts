@@ -236,8 +236,9 @@ export class Runtime {
   provide(row: Row, name: string, value: unknown): () => void {
     const id = idIn(row, name)
     const current = this.#services.get(id)
-    // `forecast is already provided by a` (§8.1 row 13): the row's name.
-    if (current) throw new Error(`${name} is already provided by ${this.#bus.rowId(current.row)}`)
+    // `forecast is already provided by a: rename one of them` (§8.1 row
+    // 13, #937): the row's name, and what to do.
+    if (current) throw new Error(`${name} is already provided by ${this.#bus.rowId(current.row)}: rename one of them`)
     const entry: Provided = { row: row.key, value, unloading: false }
     this.#services.set(id, entry)
     row.provided.push(id)

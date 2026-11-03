@@ -323,10 +323,10 @@ mod tests {
         assert_eq!(
             why(
                 running(FiberState::Pending),
-                Some("waiting for llm (no row provides it)")
+                Some("waiting for llm (nothing provides it yet)")
             )
             .as_deref(),
-            Some("waits for llm (no row provides it)")
+            Some("waits for llm (nothing provides it yet)")
         );
         assert_eq!(
             why(running(FiberState::Failed), Some("failed in apply: boom")).as_deref(),

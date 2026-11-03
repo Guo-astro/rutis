@@ -96,6 +96,29 @@ impl Calls {
     }
 }
 
+/// The host's own services' calls that have not returned yet (#937): a call
+/// a runtime makes into a service the host provides itself (a
+/// `#[rutis::service]` type, a service the embedding registered) never
+/// passes a [`Process`](crate::runtime::Process), so nothing else records
+/// it.
+static HOST_CALLS: std::sync::OnceLock<Arc<Calls>> = std::sync::OnceLock::new();
+
+fn host_registry() -> &'static Arc<Calls> {
+    HOST_CALLS.get_or_init(Arc::default)
+}
+
+/// Record a call of `method` on the host's service `service`, from the row
+/// `from` (`None`: no row, from Rust), for as long as the guard lives.
+pub(crate) fn begin_host(from: Option<String>, service: &str, method: &str) -> Ongoing {
+    host_registry().begin(from, None, service, method)
+}
+
+/// The calls into the host's own services that have not returned yet, oldest
+/// first (`Loader::status` merges them with each process's).
+pub fn host_calls() -> Vec<InFlight> {
+    host_registry().snapshot()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

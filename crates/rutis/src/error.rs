@@ -140,8 +140,11 @@ pub enum ErrorKind {
     /// does the same.
     #[error("dependency unsatisfied: {0:?}")]
     InjectUnsatisfied(Vec<String>),
-    /// A service was registered twice for the same key in the same scope.
-    #[error("service {0:?} already registered in scope")]
+    /// A name two providers would serve in the same scope: the sentence
+    /// names both and says what to do (`weather is already provided by a:
+    /// rename one of them`), built by
+    /// [`service::taken_message`](crate::service::taken_message).
+    #[error("{0}")]
     ServiceExists(String),
     #[error("instance {instance} is outside the caller's fiber subtree")]
     InstanceOutOfScope { instance: InstanceId },
@@ -214,7 +217,7 @@ pub enum ErrorKind {
     /// happens. Plugins of rutis itself (a link waiting for its peer, say)
     /// are not reported: their state says what they wait for.
     #[error(
-        "{plugin}: still waiting after {seconds}s for {}: it starts once that is provided",
+        "{plugin}: still waiting after {seconds}s for {}",
         missing.join(", ")
     )]
     StillWaiting {
@@ -621,7 +624,7 @@ mod tests {
         };
         assert_eq!(
             format_for_sink(&waiting),
-            "chat: still waiting after 10s for calendar: it starts once that is provided"
+            "chat: still waiting after 10s for calendar"
         );
     }
 

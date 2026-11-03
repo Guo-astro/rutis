@@ -286,6 +286,16 @@ impl Loader {
                 .into_iter()
                 .map(|handle| {
                     let (state, reason) = match handle.state() {
+                        // A process that has ended is down now, not once the
+                        // pipe's watcher has seen it (#937): the reason is
+                        // how it ended, as the watcher would give it.
+                        Bridge::Ready(process) if process.ended() => (
+                            RuntimeState::Down,
+                            Some(
+                                how_it_ended(&rutis_bridge::runtime::ended_status(&process))
+                                    .to_owned(),
+                            ),
+                        ),
                         Bridge::Ready(_) => (RuntimeState::Running, None),
                         Bridge::Starting => (RuntimeState::Starting, None),
                         Bridge::Down(why) => {
@@ -391,6 +401,8 @@ fn failure(error: &rutis::host::ErrorKind) -> String {
     #[cfg(feature = "runtimes")]
     let said = match rutis_bridge::report::headline(error) {
         Some(_) => rutis_bridge::report::report(error),
+        // A name two providers share says itself who holds it (#937).
+        None if rutis_bridge::report::is_name_clash(error) => rutis_bridge::report::report(error),
         None => format!("failed: {}", rutis_bridge::report::report(error)),
     };
     #[cfg(not(feature = "runtimes"))]
@@ -448,9 +460,9 @@ fn why(reason: &WaitReason, runtime: &RuntimeLookup<'_>) -> String {
     let first = |error: &str| error.lines().next().unwrap_or_default().to_owned();
     match reason {
         WaitReason::NoProvider { like: Some(like) } => {
-            format!("no row provides it; did you mean {like}?")
+            format!("nothing provides it yet; did you mean {like}?")
         }
-        WaitReason::NoProvider { like: None } => "no row provides it".into(),
+        WaitReason::NoProvider { like: None } => "nothing provides it yet".into(),
         WaitReason::NoEnabledProvider { like } => format!(
             "no enabled row provides it{}; rutis-host check says whether a disabled row does",
             like.as_ref()
@@ -472,7 +484,7 @@ fn why(reason: &WaitReason, runtime: &RuntimeLookup<'_>) -> String {
             None => format!("row {row} waits for its runtime {name}"),
         },
         WaitReason::Cycle { row, service } => {
-            format!("row {row} waits for {service} from this row: they inject each other")
+            format!("row {row} waits for {service} too: they inject each other")
         }
         WaitReason::ProviderWaiting { row, services } => {
             format!("row {row} waits too, for {}", services.join(", "))

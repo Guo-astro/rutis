@@ -887,24 +887,34 @@ fn print_row(
                 }
             }
             for requirement in &undeclared {
+                // The whole line: what is not declared, and either the name
+                // it was meant to be or that a row may provide it once it
+                // runs (#937: never other rows, which have nothing to do
+                // with this name).
                 let line = match &requirement.supply {
                     Supply::Announced(rows) => {
                         let between_cordis_rows = cordis.contains(id.as_str())
                             && rows.iter().any(|row| cordis.contains(row.as_str()));
-                        undeclared_line(id, &requirement.service, rows, between_cordis_rows)
+                        undeclared_line(
+                            id,
+                            &requirement.service,
+                            requirement.like.as_deref(),
+                            between_cordis_rows,
+                        )
                     }
-                    Supply::OnlyDisabled { disabled, .. } => {
-                        disabled_line(id, &requirement.service, disabled)
-                    }
+                    Supply::OnlyDisabled { disabled, .. } => format!(
+                        "{}{}",
+                        disabled_line(id, &requirement.service, disabled),
+                        did_you_mean(requirement.like.as_deref())
+                    ),
                     _ => continue,
                 };
                 errln!(
-                    "rutis-host: {}: {line}{}",
+                    "rutis-host: {}: {line}",
                     match strict {
                         true => "error",
                         false => "warning",
-                    },
-                    did_you_mean(requirement.like.as_deref())
+                    }
                 );
             }
             // A plugin needing a newer plugin API does not resolve: its
@@ -947,18 +957,27 @@ fn print_row(
 }
 
 /// `check`'s warning for the row `row` waiting for `service`, which no row
-/// declares and `rows` may provide once they run. `between_cordis_rows`:
-/// the row and one of those are Cordis rows, where the dependency resolves
-/// in Cordis.
-fn undeclared_line(row: &str, service: &str, rows: &[String], between_cordis_rows: bool) -> String {
-    format!(
-        "{row}: nothing declares {service}; it may be provided at runtime by {}{}",
-        some_of(rows),
-        match between_cordis_rows {
-            true => "; between Cordis rows of one runtime it resolves in Cordis",
-            false => "",
+/// declares: the name it was meant to be when one is close (`like`), else
+/// that a row which does not declare its services may provide it once it
+/// runs. `between_cordis_rows`: the row and another are Cordis rows, where
+/// the dependency resolves in Cordis.
+fn undeclared_line(
+    row: &str,
+    service: &str,
+    like: Option<&str>,
+    between_cordis_rows: bool,
+) -> String {
+    let mut line = format!("{row}: nothing declares {service}");
+    match like {
+        Some(like) => line.push_str(&format!("; did you mean {like}?")),
+        None => {
+            line.push_str("; a row that does not declare its services may provide it once it runs")
         }
-    )
+    }
+    if between_cordis_rows {
+        line.push_str("; between Cordis rows of one runtime it resolves in Cordis");
+    }
+    line
 }
 
 /// `check`'s warning for the row `row` waiting for `service`, which only
@@ -1000,8 +1019,8 @@ fn cycle_line(cycle: &[CycleLink]) -> String {
 /// `check`'s error for several rows declaring one service in one scope.
 fn clash_line(clash: &Clash) -> String {
     format!(
-        "rows {} all provide {}: only the first to start provides it, the others fail; \
-         keep one, or isolate the name in each row",
+        "rows {} provide {} in the same scope: only the first to start provides it, the others fail; \
+         rename one of them, or isolate the name in each row",
         clash.rows.join(", "),
         clash.service
     )

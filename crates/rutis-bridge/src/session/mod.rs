@@ -117,6 +117,10 @@ pub mod code {
     /// A row's config does not match its plugin's schema (config schema
     /// design §5.2); its message is `config: <problem>`, one line each.
     pub const BAD_CONFIG: &str = "bad-config";
+    /// A row provides a service name someone else already provides (#937):
+    /// its message is `<name> is already provided by <holder>: rename one of
+    /// them`, its `data` `{service, provider}`.
+    pub const ALREADY_PROVIDED: &str = "already-provided";
 }
 
 impl Error {
@@ -133,18 +137,39 @@ impl Error {
     /// `service` has no method `method`: `weather has no method tomorow
     /// (methods: today, tomorrow)`, the methods sorted, `(no methods)`
     /// when it has none (code `no-method`).
-    pub fn no_method(service: &str, method: &str, mut methods: Vec<&str>) -> Self {
+    pub fn no_method(service: &str, method: &str, methods: Vec<&str>) -> Self {
+        Self::no_method_of(service, method, methods, None)
+    }
+
+    /// [`Error::no_method`] for a service another row provides: it says
+    /// whose the name is (`weather has no method today (methods: ask); it is
+    /// provided by row store`) and puts the row in `data.provider` (#937), so
+    /// a developer looking for their own service sees the name is taken.
+    /// `provider`: the row's name; `None` when the caller is that row, or
+    /// when it is not a row's service.
+    pub fn no_method_of(
+        service: &str,
+        method: &str,
+        mut methods: Vec<&str>,
+        provider: Option<&str>,
+    ) -> Self {
         methods.sort_unstable();
         methods.dedup();
         let listed = match methods.is_empty() {
             true => "no methods".to_owned(),
             false => format!("methods: {}", methods.join(", ")),
         };
-        Self::binding(
-            code::NO_METHOD,
-            format!("{service} has no method {method} ({listed})"),
-            Some(serde_json::json!({ "service": service, "method": method, "methods": methods })),
-        )
+        let mut message = format!("{service} has no method {method} ({listed})");
+        let mut data = serde_json::json!({
+            "service": service,
+            "method": method,
+            "methods": methods,
+        });
+        if let Some(row) = provider {
+            message.push_str(&format!("; it is provided by row {row}"));
+            data["provider"] = serde_json::json!(row);
+        }
+        Self::binding(code::NO_METHOD, message, Some(data))
     }
 
     /// This error as a far end reads it: a `BindingError` (or a value

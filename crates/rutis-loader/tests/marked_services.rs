@@ -542,7 +542,7 @@ async fn waiting_for_the_old_loader_name_does_not_talk_about_marking_a_type() {
     // line); `rutis-host check` says `cannot run: nothing provides loader`.
     assert_eq!(
         rutis_loader::status::describe_waits(&waits, &|_| None),
-        "waiting for loader (no row provides it)"
+        "waiting for loader (nothing provides it yet)"
     );
     fixture.root.shutdown().await.unwrap();
 }

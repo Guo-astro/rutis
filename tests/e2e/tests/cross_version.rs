@@ -1520,7 +1520,7 @@ fn undeclared(release: &Release, s: Scenario, old: Old) {
         assert!(status.success(), "check: {status}\n{printed:#?}");
         for row in ["near", "far"] {
             assert!(
-                has(&format!("rutis-host: warning: {row}: nothing declares quiet; it may be provided at runtime by")),
+                has(&format!("rutis-host: warning: {row}: nothing declares quiet; a row that does not declare its services may provide it once it runs")),
                 "check warns for {row}: {printed:#?}"
             );
         }

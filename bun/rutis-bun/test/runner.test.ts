@@ -553,7 +553,7 @@ test('a row that cannot load or provides a taken service is told so plainly (#67
   expect(pick(await load('plain', './plain.ts'))).toEqual(['LoadError', `the default export of ${shown('plain.ts')} is not a plugin made with definePlugin`, undefined, undefined])
   expect((await load('entry', './entry.ts'))?.message).toMatch(new RegExp(`^cannot load ${shown('util.ts').replace(/[.\\]/g, '\\$&')}: RangeError: bad util \\(.*util\\.ts:2:\\d+\\)$`))
   expect(await load('a', './forecast.ts')).toBeNull()
-  expect(pick(await load('b', './forecast.ts'))).toEqual(['Error', 'forecast is already provided by a', undefined, undefined])
+  expect(pick(await load('b', './forecast.ts'))).toEqual(['Error', 'forecast is already provided by a: rename one of them', undefined, undefined])
   expect(pick(await load('c', './caller.ts'))).toEqual(['BindingError', 'llm has no method other (methods: ask)', 'no-method', { service: 'llm', method: 'other', methods: ['ask'] }])
 })
 

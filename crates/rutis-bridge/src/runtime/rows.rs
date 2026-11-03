@@ -153,7 +153,17 @@ impl HostDispatch for RowService {
                     .map(|methods| methods.keys().map(String::as_str).collect())
                     .unwrap_or_default();
                 let service = self.service.as_deref().unwrap_or(&self.handle);
-                Err(crate::runtime::Error::no_method(service, method, methods))
+                // Whose the name is, when it is another row's: the caller
+                // looking for its own service sees the name is taken (#937).
+                let provider = self.owner.as_ref().map(|row| row.id().to_owned());
+                let caller = crate::session::caller_row().map(|row| row.id().to_owned());
+                let provider = provider.filter(|row| Some(row.as_str()) != caller.as_deref());
+                Err(crate::runtime::Error::no_method_of(
+                    service,
+                    method,
+                    methods,
+                    provider.as_deref(),
+                ))
             }
         }
     }

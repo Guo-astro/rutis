@@ -61,7 +61,7 @@ fn a_waiting_row_says_what_it_waits_for_and_why() {
     let (mut weather, mut chat) = (false, false);
     while !(weather && chat) {
         let line = host.wait_line(|line| Some(line.to_owned()));
-        weather |= line == "weather: waiting for lmm (no row provides it; did you mean llm?)";
+        weather |= line == "weather: waiting for lmm (nothing provides it yet; did you mean llm?)";
         chat |= line == "chat: waiting for llm (row model failed: Error: the model is gone)";
     }
     signal(&host, libc::SIGTERM, false);

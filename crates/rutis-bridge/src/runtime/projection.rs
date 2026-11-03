@@ -248,22 +248,25 @@ impl Projection {
                     Err(error)
                         if matches!(&*error, ErrorKind::ServiceExists(_)) && occupied.is_some() =>
                     {
-                        // `forecast is already provided by a`: the row
-                        // that fails is the one printing it.
+                        // `forecast is already provided by a: rename one
+                        // of them`: the row that fails is the one printing
+                        // it, and the code lets a program decide by it.
                         let (_, occupied) = occupied.as_ref().unwrap();
                         let holder = occupied(ctx).unwrap_or_else(|| "another plugin".to_owned());
-                        let holder = holder.strip_prefix("row ").unwrap_or(&holder);
-                        let why = format!("{service} is already provided by {holder}");
+                        let why = rutis::internal::service::taken_message(&service, &holder);
                         if let Some(me) = me.upgrade() {
                             me.refuse(why.clone());
                         }
-                        // Printed as the row's state on its own (`b:
-                        // forecast is already provided by a`).
-                        Err(Error::Remote {
-                            name: "ProvideError".into(),
-                            message: why,
-                            graph: None,
-                        })
+                        let data = serde_json::json!({
+                            "service": service,
+                            "provider": holder.strip_prefix("row ").map(str::to_owned),
+                        });
+                        Err(crate::exports::failure(
+                            "ProvideError",
+                            crate::session::code::ALREADY_PROVIDED,
+                            why,
+                            Some(data),
+                        ))
                     }
                     Err(error) => Err(Error::refused(error.to_string())),
                 },

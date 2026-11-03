@@ -473,7 +473,7 @@ fn published_cordis_services_resolve_and_answer_as_in_native_cordis() {
     );
     assert!(
         printed.contains(
-            "rutis-host: warning: workspace-4: nothing declares storageDomain; it may be provided at runtime by "
+            "rutis-host: warning: workspace-4: nothing declares storageDomain; a row that does not declare its services may provide it once it runs"
         ),
         "check, what workspace uses:\n{printed}"
     );

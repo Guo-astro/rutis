@@ -401,6 +401,23 @@ pub fn name_of(type_id: TypeId) -> Option<&'static str> {
     named.or(fallback)
 }
 
+/// The sentence for a name another provider has: `weather is already
+/// provided by a: rename one of them`, and `: rename it` when the holder is
+/// the host itself (a service a developer cannot rename).
+///
+/// `holder` is a row's name, `the host`, the provider's own name, or one
+/// written `row <row>` (what [`HostDispatch::provider`] gives); the `row `
+/// is dropped, so every path says the same sentence.
+///
+/// [`HostDispatch::provider`]: crate::host::HostDispatch::provider
+pub fn taken_message(name: &str, holder: &str) -> String {
+    let holder = holder.strip_prefix("row ").unwrap_or(holder);
+    match holder {
+        "the host" => format!("{name} is already provided by the host: rename it"),
+        holder => format!("{name} is already provided by {holder}: rename one of them"),
+    }
+}
+
 /// The name the marked blocks `entries` of one type export it as: the one
 /// a block names, else the derived one. Two blocks naming it differently
 /// is an error, and so is a method name two blocks both export: the

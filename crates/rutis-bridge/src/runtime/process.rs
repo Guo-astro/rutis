@@ -478,6 +478,14 @@ impl Imports {
 impl Dispatch for Imports {
     fn invoke(&self, connection: &Connection, target: &str, method: &str, args: RpcValue) -> Reply {
         if let Some(name) = target.strip_prefix("host:") {
+            // In flight until the method returns: a call into a service the
+            // host provides itself is not any process's call (#937).
+            let from = crate::session::caller_row().map(|row| row.id().to_owned());
+            let _in_flight = crate::runtime::calls::begin_host(
+                from,
+                crate::runtime::process::name_of(name),
+                method,
+            );
             let (host, row, unleased) = {
                 let hosts = self.hosts.lock().unwrap();
                 let (host, row) = hosts
@@ -1714,6 +1722,13 @@ impl Process {
     /// The runtime's name, as the mount gave it.
     pub(crate) fn runtime_name(&self) -> Option<&str> {
         self.name.as_deref()
+    }
+
+    /// Whether the process has ended, or its session has: a status read
+    /// right after the exit says `down` without waiting for the watcher
+    /// (#937).
+    pub fn ended(&self) -> bool {
+        self.exit_status().is_some() || self.connection().close_reason().is_some()
     }
 
     /// How the Node process ended (for example `exited with signal: 9
