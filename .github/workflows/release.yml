@@ -60,7 +60,7 @@ jobs:
   # the train's (the input `tag`, if given, must match). `publish` is true
   # for a pushed tag, and for a run by hand with dry-run=false on a tag ref.
   verify:
-    runs-on: Linux
+    runs-on: ubuntu-24.04
     outputs:
       version: ${{ steps.version.outputs.version }}
       publish: ${{ steps.version.outputs.publish }}
@@ -144,7 +144,7 @@ jobs:
   crates:
     needs: [verify, ci, install, dylib-windows]
     if: needs.verify.outputs.publish == 'true'
-    runs-on: Linux
+    runs-on: ubuntu-24.04
     environment: release
     steps:
       - uses: actions/checkout@v4
@@ -156,17 +156,17 @@ jobs:
       # `rust-toolchain: manual`: the toolchain above (rust-toolchain.toml),
       # not another stable one. rustup cannot replace a toolchain baked into
       # a container image (rename across filesystem layers, os error 18), and
-      # the Linux runners this runs on (self-hosted containers) are such
-      # images.
+      # self-hosted Linux runners that also carry the label ubuntu-24.04 are
+      # such containers.
       - name: Check semver against the latest crates.io release
         uses: obi1kenobi/cargo-semver-checks-action@v2
         with:
           package: rutis,rutis-bridge,rutis-loader
           rust-toolchain: manual
-      # `--registry crates-io`, here and for `cargo publish`: the Linux
-      # runner may replace crates-io with a mirror in its Cargo config, and
-      # cargo then refuses to package or publish for crates.io without it
-      # (0.17.2's first release attempt).
+      # `--registry crates-io`, here and for `cargo publish`: a self-hosted
+      # runner carrying the label ubuntu-24.04 may replace crates-io with a
+      # mirror in its Cargo config, and cargo then refuses to package or
+      # publish for crates.io without it (0.17.2's first release attempt).
       # Dependencies are still fetched through the runner's configuration.
       # A plain directory of this job's own: where the runner's cargo is
       # mbx's shim, it keeps the target directory in mbx's cache (a symlink),
@@ -195,7 +195,7 @@ jobs:
   npm:
     needs: [verify, ci, install, dylib-windows]
     if: needs.verify.outputs.publish == 'true'
-    runs-on: Linux
+    runs-on: ubuntu-24.04
     environment: release
     permissions:
       contents: read
@@ -220,10 +220,10 @@ jobs:
           version="${GITHUB_REF_NAME#v}"
           registry=https://registry.npmjs.org/
           # Provenance comes from the GitHub Actions OIDC identity, which only
-          # GitHub-hosted runners provide: on the self-hosted Linux runners
-          # (the `Linux` label) npm refuses the upload with E422 "Unsupported
-          # GitHub Actions runner environment". Say so and publish without it
-          # rather than fail the release.
+          # GitHub-hosted runners provide: on a self-hosted one (its image may
+          # carry the label ubuntu-24.04 too) npm refuses the upload with
+          # E422 "Unsupported GitHub Actions runner environment". Say so and
+          # publish without it rather than fail the release.
           if [ "${ACTIONS_RUNNER_ENVIRONMENT:-}" = github-hosted ]; then
             provenance=--provenance
           else
@@ -255,7 +255,7 @@ jobs:
   pypi:
     needs: [verify, ci, install, dylib-windows]
     if: needs.verify.outputs.publish == 'true'
-    runs-on: Linux
+    runs-on: ubuntu-24.04
     environment: pypi
     permissions:
       contents: read
@@ -268,7 +268,8 @@ jobs:
           path: packages
       - run: mkdir dist && cp packages/wheels/* dist/
       # uv, not pypa/gh-action-pypi-publish: that action is a Docker image,
-      # and the self-hosted Linux runners (the `Linux` label) have no Docker.
+      # and a self-hosted Linux runner carrying the label ubuntu-24.04 may
+      # have no Docker.
       - uses: astral-sh/setup-uv@v6
       # The version first: a re-run builds the wheels again and they differ
       # (a wheel carries its build's paths and times), so `--check-url`
@@ -287,7 +288,7 @@ jobs:
   pypi-host:
     needs: [verify, ci, install, dylib-windows]
     if: needs.verify.outputs.publish == 'true'
-    runs-on: Linux
+    runs-on: ubuntu-24.04
     environment: pypi-host
     permissions:
       contents: read
@@ -319,7 +320,7 @@ jobs:
   maven:
     needs: [verify, ci, install, dylib-windows]
     if: needs.verify.outputs.publish == 'true'
-    runs-on: Linux
+    runs-on: ubuntu-24.04
     environment: maven
     steps:
       - uses: actions/checkout@v4
@@ -420,7 +421,7 @@ jobs:
   go:
     needs: [verify, ci, install, dylib-windows]
     if: needs.verify.outputs.publish == 'true'
-    runs-on: Linux
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
@@ -439,7 +440,7 @@ jobs:
   github:
     needs: [verify, crates, npm, pypi, pypi-host]
     if: needs.verify.outputs.publish == 'true'
-    runs-on: Linux
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
@@ -490,7 +491,7 @@ jobs:
   # decision (docs/release.md, Q13.2).
   published:
     needs: [verify, github, go]
-    runs-on: Linux
+    runs-on: ubuntu-24.04
     # The registries themselves, not a mirror a self-hosted runner may be
     # configured with: what is checked is that they serve this version.
     # (Cargo has no such variable: its step uses a Cargo home of its own.)
@@ -574,7 +575,7 @@ jobs:
       && (needs.crates.result != 'skipped' || needs.npm.result != 'skipped'
         || needs.pypi.result != 'skipped' || needs.pypi-host.result != 'skipped'
         || needs.maven.result != 'skipped' || needs.go.result != 'skipped')
-    runs-on: Linux
+    runs-on: ubuntu-24.04
     permissions:
       issues: write
     steps:
