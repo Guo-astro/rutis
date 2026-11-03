@@ -2,7 +2,7 @@
 
 [English](design-value-errors-2026-11-03.en.md)
 
-状态：草稿，未实现。日期：2026-11-03。基线：`main` `d2a8d069`（0.20.1）。计划：0.21。
+状态：定稿，未实现。日期：2026-11-03。基线：`main` `d2a8d069`（0.20.1）。计划：0.21。
 
 Issue：[#936](https://github.com/arcships/rutis/issues/936)（属于 [#663](https://github.com/arcships/rutis/issues/663) 的 D1、D5）。本设计实施的 issue 见 §7。
 依据：[插件 API](guide/plugin-api.md)「值怎样传递」；[诊断](design-diagnostics-2026-10-26.md) §4.3、§4.5；0.19.0 开发者体验评估（#663）。

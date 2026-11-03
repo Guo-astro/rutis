@@ -2,7 +2,7 @@
 
 [中文](design-value-errors-2026-11-03.md)
 
-Status: draft, not implemented. Date: 2026-11-03. Baseline: `main` `d2a8d069` (0.20.1). Planned for: 0.21.
+Status: final, not implemented. Date: 2026-11-03. Baseline: `main` `d2a8d069` (0.20.1). Planned for: 0.21.
 
 Issue: [#936](https://github.com/arcships/rutis/issues/936) (part of [#663](https://github.com/arcships/rutis/issues/663), D1 and D5). The issues implementing it are in §7.
 Based on: [Plugin API](guide/plugin-api.en.md) "How values cross"; [diagnostics](design-diagnostics-2026-10-26.en.md) §4.3, §4.5; the 0.19.0 developer experience evaluation (#663).
