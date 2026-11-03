@@ -16,6 +16,23 @@ impl std::fmt::Display for Failure {
     }
 }
 
+/// An error as it is printed for a person: the plugin's own words, then
+/// where it came from when another language's error is inside it — the same
+/// text `dev` prints (diagnostics design §4.4, `rutis_bridge::report`).
+/// Without the `runtimes` feature there is no such thing as another
+/// language's error, so it is the error's own text. `Failure` and the test
+/// host both print this (#933).
+pub(crate) fn printed(error: &ErrorKind) -> String {
+    #[cfg(feature = "runtimes")]
+    {
+        rutis_bridge::report::report(error)
+    }
+    #[cfg(not(feature = "runtimes"))]
+    {
+        error.to_string()
+    }
+}
+
 fn list(failures: &[Failure]) -> String {
     failures
         .iter()

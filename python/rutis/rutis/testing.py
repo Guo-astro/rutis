@@ -63,7 +63,51 @@ CALLING = 30.0
 
 class PluginTestError(AssertionError):
     """The plugin cannot be tested as asked: the host refused to load it,
-    it does not provide a service, or `rutis-host` cannot be started."""
+    the row is not running, it does not provide a service, or a call did not
+    return in time.
+
+    `code` is what went wrong, for a program: `not-running` (the row is not
+    up), `no-service` (it runs but has no such service), `timeout`, or the
+    code of the row's own error (a config that does not match is
+    `bad-config`). `data` is the details of `code`.
+    """
+
+    def __init__(self, message: str, code: str | None = None, data: Any = None) -> None:
+        super().__init__(message)
+        self.code = code
+        self.data = data
+
+
+def _closest(name: str, known: list[str]) -> str | None:
+    """The name in `known` that `rutis::config::closest` would name for
+    `name` (the rule the host uses): one edit for 3 to 6 characters, two for
+    more, an edit being an insert, a delete, a replace or a swap of
+    neighbours."""
+
+    def distance(a: str, b: str) -> int:
+        rows = [[0] * (len(b) + 1) for _ in range(len(a) + 1)]
+        for i in range(len(a) + 1):
+            rows[i][0] = i
+        for j in range(len(b) + 1):
+            rows[0][j] = j
+        for i in range(1, len(a) + 1):
+            for j in range(1, len(b) + 1):
+                cost = 0 if a[i - 1] == b[j - 1] else 1
+                best = min(rows[i - 1][j] + 1, rows[i][j - 1] + 1, rows[i - 1][j - 1] + cost)
+                if i > 1 and j > 1 and a[i - 1] == b[j - 2] and a[i - 2] == b[j - 1]:
+                    best = min(best, rows[i - 2][j - 2] + 1)
+                rows[i][j] = best
+        return rows[len(a)][len(b)]
+
+    allowed = 0 if len(name) <= 2 else 1 if len(name) <= 6 else 2
+    best, best_distance = None, allowed + 1
+    for candidate in known:
+        if candidate == name:
+            continue
+        d = distance(name, candidate)
+        if d < best_distance:
+            best, best_distance = candidate, d
+    return best if best_distance <= allowed else None
 
 
 class Reported(NamedTuple):
@@ -76,6 +120,14 @@ class Reported(NamedTuple):
 
     def __str__(self) -> str:
         return self.line
+
+
+def _package(plugin: "sdk.Plugin") -> str | None:
+    """The package the plugin's `apply` is defined in, which is what
+    its row is called when it declares no name: `greeter.plugin` is
+    `greeter`."""
+    module = getattr(getattr(plugin, "apply", None), "__module__", None)
+    return module.split(".", 1)[0] if module else None
 
 
 def _said(error: BaseException) -> str:
@@ -289,6 +341,10 @@ class Loaded:
         self._unloaded = False
         self.bus = host.bus
         self.row = row
+        # What the host last said of this row while it is not running: the
+        # line `dev` prints, its code and data (#933). Kept here because
+        # `service()` is synchronous and cannot ask.
+        self._away: dict | None = None
         # The test's own listeners (`on`), withdrawn when it unloads.
         self._listening: list[Callable[[], None]] = []
         self._emitter = Emitter(self._send)
@@ -298,6 +354,46 @@ class Loaded:
         if row is None:
             raise PluginTestError("the plugin is unloaded" if self._unloaded else f"row {self.row} is not running")
         return row
+
+    async def _refresh(self) -> dict | None:
+        """What the host says of this row while it is not running: the line
+        `dev` prints, its code and data; `None` while it runs. A host older
+        than 0.21 cannot say why."""
+        if self._unloaded:
+            self._away = None
+            return None
+        try:
+            self._away = await self._host.harness.state(self.row)
+        except Exception as error:  # noqa: BLE001 - the host's words
+            if "has no method" not in _said(error):
+                raise
+            self._away = {
+                "line": f"{self.row}: not running (this rutis-host is older than 0.21 and "
+                "cannot say why; upgrade it)",
+                "code": "not-running",
+                "data": {"row": self.row},
+            }
+        return self._away
+
+    def _away_error(self) -> "PluginTestError":
+        away = self._away or {}
+        return PluginTestError(
+            away.get("line", f"{self.row}: not running"),
+            code=away.get("code") or "not-running",
+            data=away.get("data") or {"row": self.row},
+        )
+
+    def _missing_service(self, name: str) -> "PluginTestError":
+        services = list(self._loaded_row().provided)
+        names = [id.split("\0", 1)[0] for id in services]
+        like = _closest(name, names)
+        provides = "it provides nothing" if not names else f"it provides: {', '.join(names)}"
+        hint = "" if like is None else f"; did you mean {like}?"
+        return PluginTestError(
+            f"{self.row}: no such service {name} ({provides}{hint})",
+            code="no-service",
+            data={"row": self.row, "service": name, "services": names},
+        )
 
     def _send(self, *request: Any) -> Any:
         return self._host.runtime.send(self._loaded_row(), *request)
@@ -358,12 +454,14 @@ class Loaded:
         """The service `name` the plugin provides, called as the host calls
         it: its declared methods, or, undeclared, the object's public
         methods, all async."""
+        if self._away is not None:
+            raise self._away_error()
         runtime = self._host.runtime
         row = self._loaded_row()
         id = row.id(name)
         slot = runtime.slots.get(id)
         if id not in row.provided or slot is None or slot.handle is None:
-            raise PluginTestError(f"the plugin does not provide {name} (now)")
+            raise self._missing_service(name)
         handle = slot.handle
         shape = self.methods(name)
 
@@ -395,7 +493,11 @@ class Loaded:
                         # The plugin's own TimeoutError stays the plugin's.
                         if not limit.expired():
                             raise
-                        raise PluginTestError(f"{name}.{_method}() did not return within {CALLING:g} s") from None
+                        raise PluginTestError(
+                            f"{name}.{_method}() did not return within {CALLING:g}s",
+                            code="timeout",
+                            data={"service": name, "method": _method, "limit": CALLING},
+                        ) from None
 
             call.__name__ = method
             call.__qualname__ = f"{name}.{method}"
@@ -405,10 +507,12 @@ class Loaded:
     def methods(self, name: str) -> dict:
         """The methods the host sees on the service `name`: `{ method:
         "sync" | "async" }`."""
+        if self._away is not None:
+            raise self._away_error()
         row = self._loaded_row()
         provided = self._host.runtime.services.get(row.id(name))
         if provided is None:
-            raise PluginTestError(f"the plugin does not provide {name} (now)")
+            raise self._missing_service(name)
         shape = self._plugin.provides.get(name)
         if shape is None:
             shape = {method: "async" for method in sorted(sdk.methods_of(provided.value))}
@@ -417,6 +521,13 @@ class Loaded:
     def provided(self) -> list[str]:
         """The names of the services the plugin provides now."""
         return [id.split("\0", 1)[0] for id in self._loaded_row().provided]
+
+    async def waiting(self) -> str | None:
+        """What the row is doing while it is not running: `None` while it
+        runs, else the line `dev` prints (`waiting for llm (…)`,
+        `failed in apply: …` with where it was)."""
+        away = await self._refresh()
+        return None if away is None else away.get("line")
 
     async def update(self, config: Any) -> None:
         """Change the row's config, as the host does: the row unloads and
@@ -489,7 +600,9 @@ async def load(
         plugin = sdk.load(plugin)
     if not isinstance(plugin, sdk.Plugin):
         raise PluginTestError("load needs a plugin module or what define_plugin returns")
-    name = id or plugin.name or (module_name.rsplit(".", 1)[-1] if module_name else None) or "plugin"
+    name = id or plugin.name or _package(plugin) or (
+        module_name.rsplit(".", 1)[-1] if module_name else None
+    ) or "plugin"
     if not name or any(c in name for c in "/\\."):
         raise PluginTestError(f"a row id has no '/', '\\' or '.': {name!r}")
     bus = bus if bus is not None else Bus()
@@ -508,19 +621,24 @@ async def load(
         sys.modules[entry] = holder = ModuleType(entry)
         holder.plugin = plugin
         try:
-            options = {key: value for key, value in (("id", id), ("isolate", isolate)) if value is not None}
+            options = {
+                key: value
+                for key, value in (("id", id), ("isolate", isolate))
+                if value is not None
+            }
+            if name != "plugin" or plugin.name:
+                options["name"] = name
             id = await host.harness.load(entry, config, options)
         except Exception as error:  # noqa: BLE001 - the host's words
             sys.modules.pop(entry, None)
-            raise PluginTestError(_said(error)) from None
+            raise PluginTestError(
+                _said(error), code=getattr(error, "code", None), data=getattr(error, "data", None)
+            ) from None
         entered = Loaded(host, id, entry, plugin)
         bus._rows.append(id)
-        if host.row(id) is None:
-            missing = [n for n in plugin.inject if n not in host.runtime.services and n not in host.runtime.hosts]
-            raise PluginTestError(
-                f"{id} did not start: it injects {', '.join(missing) or 'a service'}, "
-                "which nothing provides: give the test services="
-            )
+        # What the host says of the row now: `service()` is synchronous, so
+        # this is the look it uses until `waiting()` asks again (#933).
+        await entered._refresh()
         yield entered
     finally:
         try:

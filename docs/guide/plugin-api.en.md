@@ -1252,13 +1252,14 @@ The `t` that `load` and `h.load` return:
 | `t.service(name)` | The service the plugin provides, as rutis sees it: its declared methods, or, undeclared, the object's methods, all async |
 | `t.methods(name)` | The methods rutis sees: `{ today: 'async' }` |
 | `t.provided()` | The names of the services the plugin provides now |
+| `await t.waiting()` | What the host says the row is doing while it is not running: `null` while it runs, else the line `dev` prints (`greeter: waiting for translate (no row provides it)`, `greeter: failed in apply: …` with the position lines) |
 | `t.on(name, listener, options)` | Listen as another plugin next to it does; see the language guides |
 | `t.emit`, `t.parallel`, `t.serial`, `t.waterfall`, `t.bail` | Emit from the test's plugin |
 | `t.filter(keep)` | The five methods, delivering only to the listeners `keep(descriptor)` keeps |
 | `await t.reported()` | The failures the host reported of this row (listeners failing in an `emit`, filters): `{ line }`, where `line` is the line the host prints |
 | `await t.update(config)` | Change the config as a host does |
 | `await t.unload()` | Unload the row as a host does (withdraw its listeners and services, abort `ctx.signal`, wait for its running listeners, then run its cleanups, latest first), then withdraw the test's services and listeners of it |
-| `t.row`, `t.host` | The row's id on the host (its module's file name, with `-2`, `-3`, … when taken); the `host()` it is on |
+| `t.row`, `t.host` | The row's id on the host: the plugin's name (its declared `name`, else its `package.json`'s, with `-2`, `-3`, … when taken); the `host()` it is on |
 
 `PluginTestError`: what the test tool refuses: a load that fails (its text is the row's status, as the host prints it, such as `weather: config: city is required`), a plugin it cannot load.
 
@@ -1285,6 +1286,7 @@ The test and the plugin may call each other at the same time: the test calling a
 | `t.service(name)` | The service the plugin provides, as rutis sees it: its declared methods, or, undeclared, the object's public methods, all async |
 | `t.methods(name)` | The methods rutis sees: `{"today": "async"}` |
 | `t.provided()` | The names of the services the plugin provides now |
+| `await t.waiting()` | What the host says the row is doing while it is not running: `None` while it runs, else the line `dev` prints |
 | `t.on(name, listener, *, prepend=False, global_=False)` | Listen from the test's plugin: the plugin's emissions and the test's own reach it, its arguments sent by the host; returns the function that stops it, and without it, it stops when the plugin unloads |
 | `t.emit`, `t.parallel`, `t.serial`, `t.waterfall`, `t.bail` | Emit from the plugin's row, through the host |
 | `t.filter(predicate)` | The five methods, delivering only to the listeners `predicate(descriptor)` keeps |
@@ -1292,7 +1294,7 @@ The test and the plugin may call each other at the same time: the test calling a
 | `await t.update(config)` | The host changes the config: unload, then run again with the new config; a config that does not match fails in the host's words, and the row keeps its config |
 | `await t.unload()` | The host unloads it: withdraw listeners and services, cancel and wait for running listeners, then run the cleanups, latest first (done when the `async with` block exits) |
 
-`Bus()`: a host for tests; the plugins on the same `bus` are on one host and hear each other; it starts with the first `load` and stops when the last one ends. It has `await bus.reported()` (of the rows on the bus, row by row) and `emitter()` (emit as the test's plugin). `Reported`: one failure nobody received, with the field `line`, the line the host prints (`ticker: listener of tick failed: ValueError: boom`, then the stack). `PluginTestError`: the host refused to load the plugin or change its config (the text is the host's), the plugin does not provide the service asked for, a call of its service did not return within 30 seconds (`weather.today() did not return within 30 s`; the call is cancelled), or `rutis-host` cannot be started; a subclass of `AssertionError`.
+`Bus()`: a host for tests; the plugins on the same `bus` are on one host and hear each other; it starts with the first `load` and stops when the last one ends. It has `await bus.reported()` (of the rows on the bus, row by row) and `emitter()` (emit as the test's plugin). `Reported`: one failure nobody received, with the field `line`, the line the host prints (`ticker: listener of tick failed: ValueError: boom`, then the stack). `PluginTestError`: the host refused to load the plugin or change its config (the text is the host's), the plugin does not provide the service asked for, a name the running row has not got (`weather: no such service wether (it provides: weather; did you mean weather?)`), a call of its service did not return within 30 seconds (`weather.today() did not return within 30s`; the call is cancelled), or `rutis-host` cannot be started; a subclass of `AssertionError`. Its `code` is `not-running`, `no-service`, `timeout`, or the row error's own (a config that does not match is `bad-config`), and `data` holds that one's details. While the row is not running the text is exactly the line the host prints for `dev`.
 
 A plugin definition a test double receives can be passed to `load` as it is.
 
@@ -1310,6 +1312,8 @@ A plugin definition a test double receives can be passed to `load` as it is.
 | `loaded.Provided()`, `loaded.Unload()` | The names of the services the row provides now; unload |
 | `loaded.Service(name)` | The service as a plugin injecting it gets it: `Call(ctx, method, &result, args...)`, `Methods()`, and `Bind(&target)`, which fills a struct of function fields as `ctx.Use` does |
 | `TryLoad` | `Load` giving back the row's line when it cannot start (`weather: config: city is required`) |
+| `loaded.Waiting()` | What the host says the row is doing while it is not running: `""` while it runs, else the line `dev` prints (`weather: waiting for llm (no row provides it)`, `failed in apply: …` with the position lines) |
+| `rutistest.Error` | A failure of the tool itself: `Code` (`not-running`, `no-service`, `timeout`), `Line` (the sentence people read), `Data`; test it with `errors.As` |
 | Option of `Load`, `TryLoad` and `loaded.Load` | `Row(key)` gives the row its id (default the plugin's name, then `<name>-2`, `<name>-3`, ...) |
 
 A host has one provider of a service name: a service the test gives to two `Load`s whose rows are both loaded is one provider, so both get the same value; another value fails the second `Load`. The provider goes when the last row using it unloads.

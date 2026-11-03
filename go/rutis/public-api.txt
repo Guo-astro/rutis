@@ -94,6 +94,7 @@ type UUID = values.UUID
 func ParseUUID(text string) (UUID, error)
 
 ## github.com/arcships/rutis/go/rutis/rutistest
+const Calling = 30 * time.Second
 type Emitter struct {
 }
 func (e *Emitter) Bail(ctx context.Context, name string, args ...any) (any, error)
@@ -101,6 +102,12 @@ func (e *Emitter) Emit(ctx context.Context, name string, args ...any) error
 func (e *Emitter) Parallel(ctx context.Context, name string, args ...any) error
 func (e *Emitter) Serial(ctx context.Context, name string, args ...any) (any, error)
 func (e *Emitter) Waterfall(ctx context.Context, name string, terminal rutis.Terminal, args ...any) (any, error)
+type Error struct {
+    Code string
+    Line string
+    Data map[string]any
+}
+func (e *Error) Error() string
 type Loaded struct {
 }
 func Load(t testing.TB, plugin *rutis.Definition, config any, services map[string]any, opts ...Option) *Loaded
@@ -117,9 +124,15 @@ func (l *Loaded) Serial(ctx context.Context, name string, args ...any) (any, err
 func (l *Loaded) Service(name string) *Service
 func (l *Loaded) Unload()
 func (l *Loaded) Update(config any)
+func (l *Loaded) Waiting() string
 func (l *Loaded) Waterfall(ctx context.Context, name string, terminal rutis.Terminal, args ...any) (any, error)
 type Option func(*options)
 func Row(key string) Option
+type RowState struct {
+    Line string          `json:"line"`
+    Code string          `json:"code,omitempty"`
+    Data json.RawMessage `json:"data,omitempty"`
+}
 type Service struct {
 }
 func (s *Service) Bind(target any) error

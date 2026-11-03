@@ -7,7 +7,7 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use rutis::host::FiberState;
+use rutis::host::{ErrorKind, FiberState};
 
 use crate::errln;
 use rutis_bridge::runtime::{RuntimeHandle, RuntimeState};
@@ -33,15 +33,7 @@ pub fn describe(status: &EntryStatus) -> String {
             // A headline already says what failed (`failed in apply: …`,
             // `call to forecast.tomorrow failed: …`).
             FiberState::Failed => match &snapshot.error {
-                Some(error) if rutis::ConfigError::of(error).is_some() => error.to_string(),
-                // A name two providers share says itself who holds it.
-                Some(error) if rutis_bridge::report::is_name_clash(error) => {
-                    rutis_bridge::report::report(error)
-                }
-                Some(error) if rutis_bridge::report::headline(error).is_some() => {
-                    rutis_bridge::report::report(error)
-                }
-                Some(error) => format!("failed: {}", rutis_bridge::report::report(error)),
+                Some(error) => failed_text(error),
                 None => "failed".into(),
             },
             FiberState::Unloading => "stopping".into(),
@@ -295,6 +287,30 @@ impl Shown {
         self.rows = rows;
         out
     }
+}
+
+/// What a row that failed says, without its name: the sentence that says
+/// which step failed and where the plugin's code was (`report`), a config
+/// that does not match as itself (`config: …`), and `failed: …` for an
+/// error that names no step.
+pub(crate) fn failed_text(error: &ErrorKind) -> String {
+    if rutis::ConfigError::of(error).is_some() {
+        return error.to_string();
+    }
+    // A name two providers share says itself who holds it.
+    if rutis_bridge::report::is_name_clash(error) {
+        return rutis_bridge::report::report(error);
+    }
+    match rutis_bridge::report::headline(error) {
+        Some(_) => rutis_bridge::report::report(error),
+        None => format!("failed: {}", rutis_bridge::report::report(error)),
+    }
+}
+
+/// A row's line as `dev` prints it, `<id>: <line>`, with the position lines
+/// under it: the one place a testing tool's line comes from (#933).
+pub fn row_line(id: &str, line: &str) -> String {
+    prefixed(id, line).join("\n")
 }
 
 /// A row's line, `<id>: <line>`; each further line of a config error

@@ -41,13 +41,13 @@ test('a service another row provides after this one withdrew it is that row\'s',
   first.service('control').withdraw()
   // Between the withdrawal and the next provider the name is no one's.
   expect(first.provided()).toEqual(['control'])
-  expect(() => first.service('echo')).toThrow('the plugin does not provide echo (now)')
+  expect(() => first.service('echo')).toThrow(`${first.row}: no such service echo (it provides: control)`)
   const second = await h.load(taker)
   expect(second.provided()).toEqual(['echo'])
   // Announced, so its methods are async.
   expect(await second.service('echo').say()).toBe('B')
   expect(first.provided()).toEqual(['control'])
-  expect(() => first.service('echo')).toThrow('the plugin does not provide echo (now)')
+  expect(() => first.service('echo')).toThrow(`${first.row}: no such service echo (it provides: control)`)
   await second.unload()
   await first.unload()
   await h.unload()

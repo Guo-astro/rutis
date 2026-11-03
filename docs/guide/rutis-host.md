@@ -718,10 +718,11 @@ rutis-host test <插件> --channel <通道>
 
 | 方法 | 做什么 |
 | --- | --- |
-| `load(name, config?, options?)` | 让运行时以 `config` 运行插件 `name`（运行时认得的名字：Node 与 Bun 是文件或包，Python 是模块），成为单独一行（`test:<name>`，按 session 的 `run`）；返回这一行的 id。`options` 给这一行的字段：`id`（已有这一行时：`a row oslo is loaded already`），`isolate`，与 `rutis.json` 里一行的相同（`{ "forecast": true }`，或一个标签）。没有 `id` 时：文件名去掉扩展名（`/tests/weather.mjs` 是 `weather`），否则就是 `name`，已被占用时加 `-2`、`-3`……。这一行起不来时以这一行的状态行失败（`weather: config: city is required`），不留下这一行 |
+| `load(name, config?, options?)` | 让运行时以 `config` 运行插件 `name`（运行时认得的名字：Node 与 Bun 是文件或包，Python 是模块），成为单独一行（`test:<name>`，按 session 的 `run`）；返回这一行的 id。`options` 给这一行的字段：`id`（已有这一行时：`a row oslo is loaded already`），`isolate`，与 `rutis.json` 里一行的相同（`{ "forecast": true }`，或一个标签）。没有 `id` 时：文件名去掉扩展名（`/tests/weather.mjs` 是 `weather`），否则就是 `name`，已被占用时加 `-2`、`-3`……。这一行起不来时以这一行的状态行失败（`weather: config: city is required`，`failed in apply: …` 加位置行），不留下这一行 |
 | `update(id, config)` | 像改了一行的配置那样给这一行 `config`：插件以它重启。插件拒绝它（这一行保留原配置）或以它失败时失败 |
 | `unload(id)` | 删掉这一行；插件在运行时里卸载完才返回 |
 | `reported(id)` | 宿主报告过的这一行的事：它的监听器在 `emit` 里失败、它的 `emit` 的过滤器失败，文字与宿主打印的相同（`weather: listener of weather/ask failed: Error: boom`） |
+| `state(id)` | 这一行不在跑时它在做什么：`null`（在跑），或 `{ line, code, data }`——`line` 就是 `run` 与 `dev` 给这一行打印的那一行（`waiting for llm (no row provides it)`、`failed in apply: …` 加位置行），`code`、`data` 是它错误的码与细节。测试工具用它说清"在等什么"，没有这一步它们各自猜 |
 
 - `<插件>` 在运行时完成握手后最先加载（等同 `load(<插件>)`）：它是驱动测试的插件。它 inject `rutis-host/test`，提供被测插件要用的假服务（`ctx.provide`），像任何插件一样监听（`ctx.on`）和发出事件（`ctx.emit`）。它在 `apply` 之外调用 `load`（在它起的任务里，或在监听器里）：它的 `apply` 运行时，loader 正在启动它。
 - 这样加载的插件与驱动测试的插件在同一个运行时里，共用一条事件总线；服务对它们都可见，与任何宿主相同。

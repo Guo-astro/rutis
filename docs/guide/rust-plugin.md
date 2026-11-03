@@ -373,7 +373,7 @@ mod tests {
         let root = Ctx::root()?;
         root.provide_as::<dyn Translate>(Arc::new(FakeTranslate))?;
         let plugin = root.plugin(GreeterPlugin::new(&Config { greeting: "Hi".into() })?);
-        (&plugin).await?; // apply 执行完
+        plugin.running(std::time::Duration::from_secs(30)).await?; // apply 执行完
 
         // 像宿主一样在根上监听插件发出的事件
         let (sender, mut greeted) = mpsc::unbounded_channel();
@@ -401,7 +401,7 @@ cargo test
 ```
 
 - `root.provide_as::<dyn Translate>(…)` 以 trait 对象的类型提供服务；`root.get::<T>()` 取一个服务，没有时是 `None`。
-- `(&plugin).await` 在插件装载处理完后返回。依赖缺着的插件这时还没运行，所以先提供假服务，再装插件。
+- `plugin.running(limit)` 等到插件真的跑起来（`apply` 做完）。它跑不起来时错误就是这一行：`GreeterPlugin: failed in apply: boom`、`GreeterPlugin: config: …`；一直在等时，等满 `limit` 之后写它在等什么（`GreeterPlugin: waiting for Arc<dyn Translate> (service missing)`），没有插件提供它时立刻回来。所以先提供假服务，再装插件。
 - `emit` 不等监听器，所以测试等自己的监听器收到事件，再看 `count()`。
 - `emit` 的监听器失败进入根的错误汇集；要在测试里断言它们，用 `Ctx::root_with_sink(handle, sink)` 建根。
 

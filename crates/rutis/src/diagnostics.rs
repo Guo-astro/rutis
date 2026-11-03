@@ -62,6 +62,25 @@ impl PluginDiagnostics {
     }
 }
 
+/// What a plugin that waits says, in words: `waiting for calendar
+/// (service missing)`, `waiting`, with each unmet dependency and why,
+/// `; ` between them. The one place this sentence is written: the
+/// diagnostics print it, and so does `FiberView::running`
+/// (`docs/design-test-tool-errors-2026-11-03.md` §3.7).
+pub(crate) fn waiting(plugin: &PluginDiagnostics, names: &KeyNames) -> String {
+    let waits: Vec<String> = plugin
+        .injects
+        .iter()
+        .filter(|dep| dep.status != DependencyStatus::Ready)
+        .map(|dep| format!("{} ({})", names.get(&dep.key), dep.status))
+        .collect();
+    if waits.is_empty() {
+        "waiting".to_owned()
+    } else {
+        format!("waiting for {}", waits.join("; "))
+    }
+}
+
 impl std::fmt::Display for RuntimeDiagnostics {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let all = f.alternate();
@@ -72,19 +91,7 @@ impl std::fmt::Display for RuntimeDiagnostics {
         writeln!(f, "plugins:")?;
         for plugin in self.plugins.iter().filter(shown) {
             let state = match plugin.state {
-                FiberState::Pending => {
-                    let waits: Vec<String> = plugin
-                        .injects
-                        .iter()
-                        .filter(|dep| dep.status != DependencyStatus::Ready)
-                        .map(|dep| format!("{} ({})", self.key_names.get(&dep.key), dep.status))
-                        .collect();
-                    if waits.is_empty() {
-                        "waiting".to_owned()
-                    } else {
-                        format!("waiting for {}", waits.join("; "))
-                    }
-                }
+                FiberState::Pending => waiting(plugin, &self.key_names),
                 FiberState::Loading => "starting".to_owned(),
                 FiberState::Active => "running".to_owned(),
                 FiberState::Unloading => "stopping".to_owned(),

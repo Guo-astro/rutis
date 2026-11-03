@@ -30,11 +30,13 @@ package rutistest
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -45,6 +47,21 @@ import (
 	runtime "github.com/arcships/rutis/go/rutis/internal/runtime"
 	"github.com/arcships/rutis/go/rutis/internal/testwait"
 )
+
+// How long a call may take before the tool fails it, when the caller's
+// context has no deadline of its own (#933).
+const Calling = 30 * time.Second
+
+// Error is a failure of the test tool itself, not of the plugin: the code
+// says which (`not-running`, `no-service`, `timeout`), `Line` is what the
+// test prints, and `Data` holds the details. Test it with errors.As.
+type Error struct {
+	Code string
+	Line string
+	Data map[string]any
+}
+
+func (e *Error) Error() string { return e.Line }
 
 // Option adjusts Load and Loaded.Load.
 type Option func(*options)
@@ -216,6 +233,100 @@ func (l *Loaded) Provided() []string { return l.h.runtime.Provided(l.id) }
 
 // ── Events ───────────────────────────────────────────────────────
 
+// Waiting is what the row is doing while it is not running: `""` while it
+// runs, else the line `dev` prints (`waiting for llm (…)`,
+// `failed in apply: …` with where it was).
+func (l *Loaded) Waiting() string {
+	l.t.Helper()
+	state, err := l.h.state(l.id)
+	if err != nil {
+		l.t.Fatalf("rutistest: %v", err)
+	}
+	if state == nil {
+		return ""
+	}
+	return state.Line
+}
+
+// missing is the tool's own words for a name the running row has not got,
+// with the nearest one it has (#933).
+func (l *Loaded) missing(name string) string {
+	services := l.Provided()
+	like := closest(name, services)
+	provides := "it provides nothing"
+	if len(services) > 0 {
+		provides = "it provides: " + strings.Join(services, ", ")
+	}
+	hint := ""
+	if like != "" {
+		hint = "; did you mean " + like + "?"
+	}
+	return fmt.Sprintf("%s: no such service %s (%s%s)", l.id, name, provides, hint)
+}
+
+// closest is the name in `known` that `rutis::config::closest` would name
+// for `name` (the rule the host uses): one edit for 3 to 6 characters, two
+// for more, an edit being an insert, a delete, a replace or a swap of
+// neighbours.
+func closest(name string, known []string) string {
+	allowed := 0
+	switch {
+	case len([]rune(name)) <= 2:
+	case len([]rune(name)) <= 6:
+		allowed = 1
+	default:
+		allowed = 2
+	}
+	best, bestDistance := "", allowed+1
+	for _, candidate := range known {
+		if candidate == name {
+			continue
+		}
+		if d := editDistance(name, candidate); d < bestDistance {
+			best, bestDistance = candidate, d
+		}
+	}
+	if bestDistance <= allowed {
+		return best
+	}
+	return ""
+}
+
+// editDistance is the OSA distance, as `rutis::config::distance` counts it.
+func editDistance(a, b string) int {
+	ar, br := []rune(a), []rune(b)
+	rows := make([][]int, len(ar)+1)
+	for i := range rows {
+		rows[i] = make([]int, len(br)+1)
+		rows[i][0] = i
+	}
+	for j := 0; j <= len(br); j++ {
+		rows[0][j] = j
+	}
+	for i := 1; i <= len(ar); i++ {
+		for j := 1; j <= len(br); j++ {
+			cost := 1
+			if ar[i-1] == br[j-1] {
+				cost = 0
+			}
+			best := rows[i-1][j] + 1
+			if v := rows[i][j-1] + 1; v < best {
+				best = v
+			}
+			if v := rows[i-1][j-1] + cost; v < best {
+				best = v
+			}
+			if i > 1 && j > 1 && ar[i-1] == br[j-2] && ar[i-2] == br[j-1] {
+				if v := rows[i-2][j-2] + 1; v < best {
+					best = v
+				}
+			}
+			rows[i][j] = best
+		}
+	}
+	return rows[len(ar)][len(br)]
+}
+
 // On listens to the event `name` on the bus, until the returned disposer
 // is called or the test ends: the plugin's emissions of `name` reach `fn`,
 // and so do the test's own. In a waterfall `fn` gets an advanced.Next last.
@@ -308,6 +419,18 @@ func (l *Loaded) Service(name string) *Service {
 	if service != nil {
 		return service
 	}
+	// Is the row up? The host says what `dev` says when it is not, and that
+	// is the answer — with the code a test can branch on.
+	state, err := l.h.state(l.id)
+	if err != nil {
+		l.t.Fatalf("rutistest: %v", err)
+	}
+	if state != nil {
+		l.t.Fatalf("rutistest: %s", state.Line)
+	}
+	if !slices.Contains(l.Provided(), name) {
+		l.t.Fatal(l.missing(name))
+	}
 	service = &Service{name: name, used: make(chan struct{})}
 	user := l.h.register(service.plugin())
 	ctx, cancel := context.WithTimeout(context.Background(), testwait.HangGuard)
@@ -363,7 +486,41 @@ func (s *Service) Methods() map[string]string { return s.s.Methods() }
 // Call calls `method` and decodes its result into `result` (a pointer, or
 // nil).
 func (s *Service) Call(ctx context.Context, method string, result any, args ...any) error {
-	return s.s.Call(ctx, method, result, args...)
+	// The limit: the caller's own, or the tool's 30 seconds when the context
+	// has none (#933). Only this call fails.
+	limit := Calling
+	if deadline, ok := ctx.Deadline(); ok {
+		limit = time.Until(deadline)
+	} else {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, Calling)
+		defer cancel()
+	}
+	err := s.s.Call(ctx, method, result, args...)
+	if err != nil && errors.Is(err, context.DeadlineExceeded) {
+		return timeoutError(s.name, method, limit)
+	}
+	return err
+}
+
+// timeoutError is the tool's failure for a call that did not return in
+// `limit` (#933): its own words, and the code `timeout`.
+func timeoutError(service, method string, limit time.Duration) *Error {
+	return &Error{
+		Code: "timeout",
+		Line: service + "." + method + "() did not return within " + seconds(limit),
+		Data: map[string]any{"service": service, "method": method, "limit": limit.Seconds()},
+	}
+}
+
+// seconds is a wait as the host writes it: whole seconds as `30s`, otherwise
+// to a tenth, `2.1s`.
+func seconds(wait time.Duration) string {
+	tenths := (wait.Milliseconds() + 50) / 100
+	if tenths%10 == 0 {
+		return strconv.FormatInt(tenths/10, 10) + "s"
+	}
+	return strconv.FormatInt(tenths/10, 10) + "." + strconv.FormatInt(tenths%10, 10) + "s"
 }
 
 // Bind fills `target`, a pointer to a struct of function fields, with
@@ -478,6 +635,15 @@ func same(a, b any) bool {
 // rutis-host/test, and its listeners and emissions are the test's.
 const driverName = "rutistest"
 
+// RowState is what the host says of a row that is not running: the line
+// `dev` prints for it (`waiting for llm (…)`, `failed in apply: …` with
+// where it was), and the code and data of its error (#933).
+type RowState struct {
+	Line string          `json:"line"`
+	Code string          `json:"code,omitempty"`
+	Data json.RawMessage `json:"data,omitempty"`
+}
+
 // harness is the service rutis-host/test.
 type harness struct {
 	Load func(ctx context.Context, name string, config any) (string, error)
@@ -486,6 +652,9 @@ type harness struct {
 	Update   func(ctx context.Context, id string, config any) error
 	Unload   func(ctx context.Context, id string) error
 	Reported func(ctx context.Context, id string) ([]string, error)
+	// state: the row's line while it is not running, and nothing while it
+	// runs (`docs/design-test-tool-errors-2026-11-03.md` §3.1).
+	State func(ctx context.Context, id string) (*RowState, error) `rutis:"state"`
 }
 
 // host is the runtime of the test process and the rutis-host test it is
@@ -566,6 +735,25 @@ func start() (*host, error) {
 	case <-timer.C:
 		return nil, errors.New("timed out (30s): rutis-host test did not load the test")
 	}
+}
+
+// state is what the host says of the row `id` while it is not running:
+// nothing while it runs, the line `dev` prints plus its code and data
+// otherwise. A host older than 0.21 cannot say why, and the row is reported
+// as not running with that reason (#933).
+func (h *host) state(id string) (*RowState, error) {
+	state, err := h.test.State(context.Background(), id)
+	if err == nil {
+		return state, nil
+	}
+	why := message(err)
+	if !strings.Contains(why, "has no method") {
+		return nil, errors.New(why)
+	}
+	return &RowState{
+		Line: id + ": not running (this rutis-host is older than 0.21 and cannot say why; upgrade it)",
+		Code: "not-running",
+	}, nil
 }
 
 // find is the plugin rows find by `name`.
