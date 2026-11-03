@@ -103,7 +103,7 @@ Alternatives dropped:
 1. **We are synchronously waiting**: we sent a synchronous call (a `sync` method, `bail`, the dispatch a Cordis synchronous `emit` / `waterfall` sends), and while we wait for it this thread / event loop is occupied.
 2. **We are serving the other side's synchronous call**: the other side called our `sync` method with `sync` (or our listener is being called synchronously), and we are inside that call.
 
-Then the call of a received function goes out synchronously and gives the result itself — because there is nothing to await with: a JS thread is occupied and microtasks do not run; Python's event loop is occupied and coroutines do not run. This is the same rule #918 settled: **synchronous waiting only inside calls that are already synchronous.**
+Then the call of a received function goes out synchronously and gives the result itself (in Python, `f(...)` without `await`) — because there is nothing to await with: a JS thread is occupied and microtasks do not run; Python's event loop is occupied and coroutines do not run. This is the same rule #918 settled: **synchronous waiting only inside calls that are already synchronous.**
 
 Where the runtime keeps the state (its own, not exposed):
 
@@ -112,7 +112,7 @@ Where the runtime keeps the state (its own, not exposed):
 | Node (`session.mjs`), Bun (`session.ts`) | A counter: one more while `#requestSync` waits, one more while executing an incoming frame that carries `sync`; a received function's proxy reads it to pick `#requestSync` or `#requestAsync` |
 | Python (`peer.py`) | A counter: one more while `_call_sync` waits, one more while `_execute` runs a frame that carries `sync` (a coroutine method stops counting at its first suspension, which is when the loop can run again); `RemoteFunction.__call__` reads it to return an awaitable or the value |
 
-- **One expression, two results**: in JS and Python a call of a received function is the same expression, and whether it returns a Promise depends on the context. That matches the types a host generates: a function parameter's return type is already written `string | Promise<string>` (what `rutis-host types` writes, [a host that opens up plugins](guide/open-host.en.md) §2). The guides write `await` everywhere; inside a synchronous call the `await` goes away (it could not run there anyway).
+- **One expression, two results**: in JS and Python a call of a received function is the same expression, and whether it returns a Promise depends on the context. That matches the types a host generates: a function parameter's return type is already written `string | Promise<string>` (what `rutis-host types` writes, [a host that opens up plugins](guide/open-host.en.md) §2). What the guides teach is `await` (in Python `await f(...)`, the same as `f.call_async(...)`); inside a synchronous call the `await` goes away and a bare `f(...)` is written (it could not run there anyway).
 - **Why the runtimes do not share one treatment**: in JS and Python the call expression does not tell synchronous from asynchronous, and a `sync` method must still be able to call a received function, so the runtime has to decide from the context. Go, Swift, Kotlin and Rust already write the two forms apart and need none of this.
 
 ### 3.3 Nothing can `await` inside a synchronous call
@@ -135,7 +135,7 @@ Both are "what cannot be done is reported, never replaced silently" ([design pri
 | Language | A received function in a test | How to write it |
 | --- | --- | --- |
 | TypeScript, Bun | The plugin's row runs in another runtime process (the `rutis-host test` host plus the test's own runtime), so the function crosses processes | As with the real host: `await` it; a fake may be `async` |
-| Python | The plugin's row runs in the test's own process ([Python's test tool](guide/plugin-api.en.md#the-python-test-tool)), so the function is the plugin's own | `await` an `async def`, use a plain `def`'s value directly; a fake may be `async def`. A function from another process (another plugin, a host's callback) is always awaited |
+| Python | The plugin's row runs in the test's own process ([Python's test tool](guide/plugin-api.en.md#the-python-test-tool)), so the function is the plugin's own | `await` an `async def`, use a plain `def`'s value directly; a fake may be `async def`. One from another process (another plugin, a host's callback) is a `RemoteFunction`: write it asynchronously, `await f(...)` (the same as `f.call_async(...)`); a bare `f(...)` is for a synchronous call only (§3.2, §3.3) |
 
 Neither test tool changes its semantics; Python's difference goes into the Python guide and the plugin API guide, as §4.2 says.
 
@@ -330,7 +330,7 @@ Ran 1 test in 0.412s
 OK
 ```
 
-One difference from the TypeScript example, written in the guide: **a test gets the plugin's own function**. An `async def` is awaited (the example above); a plain `def` the plugin handed over returns its value, so the test uses it directly; awaiting a `str` raises Python's own `TypeError: object str can't be used in 'await' expression`, nothing to do with rutis. **A function from another process is always awaited**: another plugin's function or a host's callback is a `RemoteFunction`; `await f(...)` (or `f.call_async(...)`) gives its result. In `dev`, with a `py:fake_jot` row it is the same process too, and `npx rutis-host call commands.run '"count"'` gives what the TypeScript example gives:
+One difference from the TypeScript example, written in the guide: **a test gets the plugin's own function**. An `async def` is awaited (the example above); a plain `def` the plugin handed over returns its value, so the test uses it directly; awaiting a `str` raises Python's own `TypeError: object str can't be used in 'await' expression`, nothing to do with rutis. **A function from another process is called asynchronously**: another plugin's function or a host's callback is a `RemoteFunction`; `await f(...)` (the same as `f.call_async(...)`) gives its result. A bare `f(...)` returns the result synchronously and holds the event loop, so it is only for a synchronous call (a `sync` method, Cordis's synchronous dispatch; §3.3), where there is nothing to await with. Today (0.20) a cross-process `f(...)` always returns synchronously, which is why `await f(...)` on a plain value raises the `TypeError` above; that is exactly what this design removes (§3.2). In `dev`, with a `py:fake_jot` row it is the same process too, and `npx rutis-host call commands.run '"count"'` gives what the TypeScript example gives:
 
 ```console
 $ npx rutis-host call commands.run '"count"'
@@ -374,7 +374,7 @@ No change: the processes, the packages, the configuration, stopping and exit cod
 ### 4.7 Concepts to learn
 
 - **Plugin authors** (budget 7, [#663](https://github.com/arcships/rutis/issues/663)): no new concept. The rule uses "an asynchronous method / `async`" and "a `sync` method", already on the main path; the guide says it in a sentence.
-- **Plugin authors writing Python tests**: one more thing known (a test gets the plugin's own function; only one from another process is always awaited), not a new name, in the same section.
+- **Plugin authors writing Python tests**: one more thing known (a test gets the plugin's own function; one from another process is written as `await f(...)`), not a new name, in the same section.
 - **Host owners** (budget 10): no new concept.
 - **People assembling plugins with `rutis-host`** (budget 6), **people deploying** (budget 5): none.
 
@@ -425,7 +425,7 @@ The difference lives inside this side's runtime and is no agreement across a pro
 
 | Combination | Result |
 | --- | --- |
-| A 0.21 host with a 0.20 runtime | The host is unchanged; a received function in that runtime is still called synchronously (0.20's behaviour). A plugin written for 0.21 with `await` still works on a 0.20 Node or Bun (`await` of a value that is not a Promise gives the value); in Python awaiting a plain value fails, so one Python plugin should not run on both |
+| A 0.21 host with a 0.20 runtime | The host is unchanged; a received function in that runtime is still called synchronously (0.20's behaviour). A plugin written for 0.21 with `await` still works on a 0.20 Node or Bun (`await` of a value that is not a Promise gives the value); in Python a 0.20 `f(...)` returns the value synchronously and awaiting a plain value fails, so one Python plugin should not run on both |
 | A 0.20 host with a 0.21 runtime | The host is unchanged; the runtime follows this design (asynchronous by default, synchronous inside a synchronous call). The wait-cycle check and `SyncWaitCycle` are the host's, already there, and behave as today |
 | A 0.21 caller calling a function in a 0.20 runtime | When the caller is not in a synchronous call it sends an asynchronous call, and the 0.20 runtime answers it as usual, so `await` gives the result; in a synchronous call it is synchronous, as today |
 | A 0.20 caller calling a function in a 0.21 runtime | The 0.20 caller sends a synchronous call (its rule); the 0.21 runtime returns the result synchronously inside it, as today |
@@ -434,7 +434,7 @@ The difference lives inside this side's runtime and is no agreement across a pro
 
 - **A received function is asynchronous by default (Node, Bun, Python)**: calling a received function in `apply`, an `async` method, a listener or a timer now gives a Promise / awaitable. The old way (waiting for the result on the spot) still holds inside a synchronous call; code that does not wait inside a synchronous call and uses the value must `await`:
   - TypeScript, Bun: `const text = f()` → `const text = await f()` (`await` of a value that is not a Promise gives the value, so the changed code also runs on 0.20);
-  - Python: `text = f()` → `text = await f()`.
+  - Python: `text = f()` → `text = await f()` (the same as `f.call_async(...)`); inside a synchronous call keep `f()`, which returns the result there and leaves nothing else to write.
 - **A test's fakes may be `async`**: what had to return directly may now do either. A test whose fake is `async` and which awaits the plugin's function passes on 0.21 and fails on 0.20 — write it for 0.21 and do not mix.
 - **The `SyncWaitCycle` line** (Node, Bun): as the diagnostics design takes it (§4.3's dependency); its `name`, and code that branches on it, do not change.
 - **One incompatible change, and only that**: the first item above (a received function becomes asynchronous in an asynchronous context). The rest is unchanged or more permissive.

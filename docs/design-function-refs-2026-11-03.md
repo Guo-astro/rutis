@@ -103,7 +103,7 @@ Python 收到的函数是 `RemoteFunction`（`python/rutis/rutis/peer.py:678`）
 1. **我们自己正在同步等**：我们发出了一次同步调用（`sync` 方法、`bail`、Cordis 的同步 `emit` / `waterfall` 发出的分发），在我们等它的这段时间里，这个线程 / 事件循环被占着。
 2. **我们正在履行对面的一次同步调用**：对面用 `sync` 调用了我们提供的 `sync` 方法（或我们这边的监听器被同步调用），我们正在它的调用里。
 
-此时对交来的函数的调用同步发出，直接得到结果 —— 因为那里没法 `await`：JS 的线程被占着，微任务不会跑；Python 的事件循环被占着，协程不会跑。这条与 #918 定下的同步语义是同一条：**同步等待只用在本来就同步的调用里。**
+此时对交来的函数的调用同步发出，直接得到结果（Python 就是不加 `await` 的 `f(...)`）—— 因为那里没法 `await`：JS 的线程被占着，微任务不会跑；Python 的事件循环被占着，协程不会跑。这条与 #918 定下的同步语义是同一条：**同步等待只用在本来就同步的调用里。**
 
 判断的实现位置（各运行时自己的状态，不外露）：
 
@@ -112,7 +112,7 @@ Python 收到的函数是 `RemoteFunction`（`python/rutis/rutis/peer.py:678`）
 | Node（`session.mjs`）、Bun（`session.ts`） | 一个计数器：`#requestSync` 等待期间加一，正在执行的入站帧带 `sync` 时加一；交来的函数的代理看它决定走 `#requestSync` 还是 `#requestAsync` |
 | Python（`peer.py`） | 一个计数器：`_call_sync` 等待期间加一，`_execute` 执行带 `sync` 的帧时加一（协程方法在第一个挂起之后不再算，那时事件循环已经能跑）；`RemoteFunction.__call__` 看它决定返回可 await 的对象还是值 |
 
-- **一种写法、两种返回**：JS 与 Python 里调用交来的函数是同一个表达式，返回值是不是 Promise 由上下文决定。这与宿主生成的类型一致：函数参数的返回类型本来就写 `string | Promise<string>`（`rutis-host types` 写出，[开放插件的宿主](guide/open-host.md) 第 2 节）。指南统一写 `await`；同步调用里去掉 `await`（那里写 `await` 也跑不动）。
+- **一种写法、两种返回**：JS 与 Python 里调用交来的函数是同一个表达式，返回值是不是 Promise 由上下文决定。这与宿主生成的类型一致：函数参数的返回类型本来就写 `string | Promise<string>`（`rutis-host types` 写出，[开放插件的宿主](guide/open-host.md) 第 2 节）。指南教的写法是 `await`（Python 里 `await f(...)`，与 `f.call_async(...)` 相同）；同步调用里去掉 `await`，写裸的 `f(...)`（那里写 `await` 也跑不动）。
 - **为什么不在两个运行时里选同一种做法**：JS 与 Python 的调用表达式不区分同步 / 异步，`sync` 方法又要能调用交来的函数，所以只能由运行时按上下文决定；Go、Swift、Kotlin、Rust 的调用本来就分开写，不需要这条。
 
 ### 3.3 同步调用里不能 `await`
@@ -135,7 +135,7 @@ Python 收到的函数是 `RemoteFunction`（`python/rutis/rutis/peer.py:678`）
 | 语言 | 测试里交来的函数 | 怎么写 |
 | --- | --- | --- |
 | TypeScript、Bun | 插件的行在另一个运行时进程里（`rutis-host test` 起的宿主 + 测试自己的运行时），交来的是跨进程的函数 | 与真实宿主一样：`await`；假服务可以写 `async` |
-| Python | 插件的行在测试自己的进程里（[Python 的测试工具](guide/plugin-api.md#python-的测试工具)），交来的是插件自己的函数 | `async def` 的 `await` 它，普通 `def` 的直接用它的值；假服务可以写 `async def`。跨进程（另一个插件、宿主给的回调）交来的函数总是 `await` |
+| Python | 插件的行在测试自己的进程里（[Python 的测试工具](guide/plugin-api.md#python-的测试工具)），交来的是插件自己的函数 | `async def` 的 `await` 它，普通 `def` 的直接用它的值；假服务可以写 `async def`。跨进程（另一个插件、宿主给的回调）交来的是 `RemoteFunction`：用异步写法 `await f(...)`（与 `f.call_async(...)` 相同），裸的 `f(...)` 只留给同步调用（§三 3.2、3.3） |
 
 两处都不改测试工具的语义；Python 那条差别写进 Python 指南与插件 API 指南，与本稿 §四 4.2 一致。
 
@@ -329,7 +329,7 @@ Ran 1 test in 0.412s
 OK
 ```
 
-与 TypeScript 例子只有一处不同，写进指南：**测试里拿到的函数是插件自己的函数**。它是 `async def` 时 `await` 它（上面的例子）；插件交来的是普通 `def`（返回 `str`）时直接用它；`await` 一个 `str` 时 Python 抛出它自己的 `TypeError: object str can't be used in 'await' expression`，与 rutis 无关。**跨进程收到的函数总是 `await`**：另一个插件、宿主给的回调是 `RemoteFunction`，`await f(...)`（或 `f.call_async(...)`）得到返回值。`dev` 里用 `py:fake_jot` 这一行时也是同一个进程，`npx rutis-host call commands.run '"count"'` 与 TypeScript 例子相同：
+与 TypeScript 例子只有一处不同，写进指南：**测试里拿到的函数是插件自己的函数**。它是 `async def` 时 `await` 它（上面的例子）；插件交来的是普通 `def`（返回 `str`）时直接用它；`await` 一个 `str` 时 Python 抛出它自己的 `TypeError: object str can't be used in 'await' expression`，与 rutis 无关。**跨进程收到的函数用异步写法**：另一个插件、宿主给的回调是 `RemoteFunction`，`await f(...)`（与 `f.call_async(...)` 相同）拿到返回值；裸的 `f(...)` 同步返回结果、占着事件循环，只在同步调用里用（`sync` 方法、Cordis 的同步分发，§三 3.3），那里也没法 `await`。今天（0.20）跨进程的 `f(...)` 一律同步返回，所以 `await f(...)` 在普通值上报上面那个 `TypeError`；本稿去掉的正是这一条（§三 3.2）。`dev` 里用 `py:fake_jot` 这一行时也是同一个进程，`npx rutis-host call commands.run '"count"'` 与 TypeScript 例子相同：
 
 ```console
 $ npx rutis-host call commands.run '"count"'
@@ -373,7 +373,7 @@ $ npx rutis-host call commands.run '"count"'
 ### 4.7 要懂的概念
 
 - **插件作者**（预算 7，见 [#663](https://github.com/arcships/rutis/issues/663)）：0 个新概念。用的是已有的「异步方法 / `async`」与「`sync` 方法」；交来的函数按它们判断，指南写一句话。
-- **插件作者（Python 的测试）**：多知道一件事（测试里拿到的是插件自己的函数；跨进程交来的才总是 `await`），不是新名字，写在同一节里。
+- **插件作者（Python 的测试）**：多知道一件事（测试里拿到的是插件自己的函数；跨进程交来的写异步的 `await f(...)`），不是新名字，写在同一节里。
 - **宿主持有者**（预算 10）：0 个新概念。
 - **用 `rutis-host` 组装插件的人**（预算 6）、**部署的人**（预算 5）：0 个。
 
@@ -424,7 +424,7 @@ $ npx rutis-host call commands.run '"count"'
 
 | 组合 | 结果 |
 | --- | --- |
-| 0.21 的宿主 + 0.20 的运行时 | 宿主不变；那个运行时里的交来的函数照旧同步调用（0.20 的行为）。同一个插件照 0.21 写成 `await`，在 0.20 的 Node、Bun 上也成立（`await` 一个不是 Promise 的值原样给出它）；Python 上 `await` 一个普通值会失败，所以同一份 Python 插件不要在两种运行时上混用 |
+| 0.21 的宿主 + 0.20 的运行时 | 宿主不变；那个运行时里的交来的函数照旧同步调用（0.20 的行为）。同一个插件照 0.21 写成 `await`，在 0.20 的 Node、Bun 上也成立（`await` 一个不是 Promise 的值原样给出它）；Python 上 0.20 的 `f(...)` 同步返回值，`await` 一个普通值会失败，所以同一份 Python 插件不要在两种运行时上混用 |
 | 0.20 的宿主 + 0.21 的运行时 | 宿主不变；运行时按本稿（异步默认、同步调用里同步）。同步调用的等待环检查、`SyncWaitCycle` 都是宿主已有的，行为与今天相同 |
 | 0.21 的调用方调用 0.20 的运行时里的函数 | 调用方发的是异步调用（不在同步调用里时）：0.20 的运行时照常回答，`await` 得到结果；在同步调用里调用时照旧同步，与今天相同 |
 | 0.20 的调用方调用 0.21 的运行时里的函数 | 0.20 的调用方发同步调用（它的规则）；0.21 的运行时在同步调用里同步返回结果，与今天相同 |
@@ -433,7 +433,7 @@ $ npx rutis-host call commands.run '"count"'
 
 - **交来的函数默认异步（Node、Bun、Python）**：在 `apply`、`async` 方法、监听器、定时器里调用交来的函数，现在得到 Promise / 可 await 的对象。过去的写法（同步等结果）在同步调用里仍然成立；不在同步调用里等它、又把它当值的代码要改成 `await`：
   - TypeScript、Bun：`const text = f()` → `const text = await f()`（`await` 一个不是 Promise 的值原样给出它，所以改过的写法在 0.20 上也能运行）；
-  - Python：`text = f()` → `text = await f()`。
+  - Python：`text = f()` → `text = await f()`（`f.call_async(...)` 同一件事）；同步调用里保持 `f()`，它在那里同步返回结果、也没有别处可写。
 - **测试里的假服务可以写 `async`**：过去必须直接返回结果的地方现在两种都行。写成 `async` 而调用的地方又 `await` 的测试，在 0.21 上通过、在 0.20 上失败——按 0.21 的写法改，不要交叉使用。
 - **`SyncWaitCycle` 的文字**（Node、Bun）：按诊断设计采纳的说法（§四 4.3 的依赖）；`name` 与按它判断的代码不变。
 - **不兼容的只有一处**：上面第一条（交来的函数在异步上下文里改成异步）。其余都是行为不变或变宽松。
