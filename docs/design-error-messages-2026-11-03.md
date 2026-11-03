@@ -172,12 +172,16 @@ Issue：[#937](https://github.com/arcships/rutis/issues/937)，属于 [#663](htt
 
 ### 3.6 错误码
 
-| code | 什么时候 | `data` |
-| --- | --- | --- |
-| `already-provided` | 一个行提供一个已被别人提供的名字 | `{service, provider}`（`provider` 是行名，宿主提供时为 `null`） |
-| `no-method`（加一项） | 同前 | 加 `provider`（同上） |
+诊断设计 §4.3 的那张表由两份设计稿一起改：**本稿只动与服务名有关的两行**（新的一行 `already-provided`，`no-method` 的 `data` 加 `provider`），#936 动与值有关的两行（`bad-value` 的 `data` 加 `reason`，新的一行 `bad-result`）。两份最终落在同一张表上：后落地的一份 rebase 到另一份之上。本稿不重抄整张表。
 
-其余码不变（诊断设计 §4.3 的表按上面两行补）。码不出现在给人看的那一行文字里。
+本稿改完之后这两行是这样（其余列与别的行不变，见诊断设计 §4.3）：
+
+| code | `data` |
+| --- | --- |
+| `no-method` | `{service, method, methods, provider}`：`provider` 是提供者的行名，宿主自己提供时为 `null`；对象调用仍是 `{object, method, methods}`（对象不是哪一行的服务） |
+| `already-provided`（新） | `{service, provider}`（同上） |
+
+码给程序判断，不出现在给人看的那一行文字里（诊断设计 §4.3）。
 
 ## 四、开发者看到什么
 
@@ -341,27 +345,34 @@ services:
 - **状态与提示的文字**：`no row provides it` → `nothing provides it yet`（只在确实没人提供时）；`still waiting … for hang: it starts once that is provided` → `… for runtime py (down: …)`；`still stopping: rutis-loader` → `still stopping: the host`；`unloading` → `stopping`，`inactive` → `not running (its group is not running)`。按这些字匹配的脚本要改；`status` 的 `--json` 形状不变（状态词跟着变）。
 - **Rust**：`session::Error` 的 `Debug` 不再打印错误图（读结构用 `thrown()`）；`ErrorKind::ServiceExists` 的 `Display` 文本变了（变体与字段不变）。
 - **内置行要声明 `provides`**：不声明时，`check` 与 `status` 对它们提供的名字仍说"没人声明/还没人提供"。这是行为上的放宽（不再说错），不是收紧。
-- **协议**：不加字段、不升版本。`site`、`rethrown` 已在线上；本稿只是让运行时也开始填。旧的一端收到 `site` 照旧忽略（诊断设计 §4.1）。
+- **版本都不变**：
+  - 会话协议的版本仍是 4（`crates/rutis-bridge/src/session/mod.rs:14` 的 `ENDPOINT_PROTOCOL`）：本稿不加帧，也不加能力名；
+  - `rutis.json` 的格式仍是 1（`crates/rutis-host/src/config.rs:78` 的 `FORMAT`）：本稿不加配置字段；
+  - 插件 API 仍是 3（`node/rutis-runtime/src/leaf.mjs:16`、`bun/rutis-bun/src/plugin.ts:21`、`python/rutis/rutis/plugin.py:125`、`go/rutis/internal/runtime/version.go:9`、`swift/rutis/Sources/Rutis/Version.swift:28`、`kotlin/rutis/rutis/src/shared/kotlin/arcships/rutis/advanced/Versions.kt:7`）：插件不用重发。
+- **错误图不新增字段**：`site` 与 `rethrown` 从 0.18 起就是错误节点上的可选字段（读它们的地方：`crates/rutis-bridge/src/session/mod.rs:289`、`:228`）。`throw` 帧里带的是 `Failure { name, message, graph }`，`graph` 是 `serde_json::Value`（`crates/rutis-bridge/src/session/protocol.rs:88`）：`deny_unknown_fields` 只管 `Failure` 自己的三个键，图里的键它不看也不拒。所以本稿是让运行时开始填这两个字段，不是改协议。
+- **旧运行时配新宿主**：旧运行时不发 `site`，也不拆栈；宿主按今天的写法打印——跨出边界的那一跳仍有 `call to weather.tomorrow failed: …`（宿主自己填的 `site`），只是没有 `in llm:` 与 `called from:`。
+- **新运行时配旧宿主**：旧宿主把 `throw` 帧解成 `Failure`，图原样收下（`graph: Option<Value>`），不认也不丢；它没有 `report::whereabouts`，打印的是 `名字: 消息`，`site`/`rethrown` 不出现。旧的一端把这个错误再抛出去时图原样带着（Node 拼接口径 `node/rutis-runtime/src/errors.mjs:63`，Python 的 `python/rutis/rutis/peer.py:370`，Rust 的 `crates/rutis-bridge/src/exports.rs:104`），只是不追加自己那一段（诊断设计 §4.4 写的就是这个）。
 - **同一运行时里两行之间的调用仍然不出现在 `calls:`**：这一条写进指南（以前只在设计稿里）。
 
 ## 六、实施
 
-先做宿主与内核（错误码、同名、等待原因、在途调用），再按语言做归属与帧，最后是文档。每个 PR 自带逐字测试。
+先做宿主与内核（错误码、同名、等待原因、在途调用），再按语言做归属与帧，最后是文档。逐字用例写在各语言已有的文字测试与 `rutis-host` 的集成测试里，每行注明的就是那些文件；不另开一套按语言的用例表。测试工具那一列（#663 的调试评估在测试工具里也跑）用 #933 的 `specs/test-tool/cases.json`，同样不另建一份。
 
-| # | 内容 | 位置 | 完成条件 |
-| --- | --- | --- | --- |
-| E-1 内核与宿主 | `ServiceExists` 带完整句子（`crates/rutis/src/registry.rs`、`ctx.rs`、`crates/rutis/src/error.rs:144`）；`ErrorKind::ServiceExists` 的码与 `data`；`no-method` 的 `provider`（`crates/rutis-bridge/src/runtime/rows.rs:149`）；`provider()` 给行名（`marked.rs:110`，用 `crates/rutis-bridge/src/services.rs:154`）；`already-provided` 码进诊断设计 §4.3 的表 | 三个来源（运行时行、`#[rutis::service]` 行、宿主自己）各一条逐字用例；`rutis-bridge/tests/report.rs` 加两行 |
+| # | 内容（含位置） | 完成条件 |
+| --- | --- | --- |
+| E-1 内核与宿主 | `ServiceExists` 带完整句子（`crates/rutis/src/registry.rs`、`ctx.rs`、`crates/rutis/src/error.rs:144`）；`ErrorKind::ServiceExists` 的码与 `data`；`no-method` 的 `provider`（`crates/rutis-bridge/src/runtime/rows.rs:149`）；`provider()` 给行名（`marked.rs:110`，用 `crates/rutis-bridge/src/services.rs:154`）；`already-provided` 码进诊断设计 §4.3 的表 | 三个来源（运行时行、`#[rutis::service]` 行、宿主自己）各一条逐字用例，写在 `crates/rutis-bridge/src/report.rs` 的单元测试与 `crates/rutis-host/tests/clash.rs` 里；`site`/`rethrown` 经一次运行时往返不丢，加进 `crates/rutis-bridge/tests/error_shape.rs` |
 | E-2 等待与诊断 | 内置行 `Builtins::declare`（`rutis-host` 对它自己的行调用）；`describe_keys_with`（`crates/rutis/src/host.rs`）；`RuntimeDiagnostics` 的 `Display` 用描述者；`StillWaiting` 去掉尾巴；`status` 的运行时状态按进程判断（`crates/rutis-loader/src/loader/status.rs:278`，用 `crates/rutis-bridge/src/runtime/state.rs:180`）；`Cycle` 的说法（`status.rs:474`）；`NoProvider` 改说 `nothing provides it yet`（`status.rs:453`） | 互相 inject 的两个内置行在 `status` 与 `dev` 上都写 `they inject each other`；`check` 对同样两行报环；运行时退出后立刻 `status` 就是 down（一条不 sleep 的用例，靠关闭进程与读状态之间不等待）；`diagnostics()` 与 `status` 对同一个键说法一致（一条比对用例） |
 | E-3 `check` 与命令行 | `undeclared_line` 不再列行（`crates/rutis-host/src/main.rs:953`）；`clash_line` 改写（`:1001`）；`call.rs` 的 `failed` 不再需要自己补提供者（宿主已经写在错误里）；`still_running` 与 `describe`（`crates/rutis-host/src/host.rs:828`、`crates/rutis-host/src/status.rs:18`） | `rutis-host/tests/check.rs` 的两条改成新文字；`call` 的一条；停止超时的一条 |
 | E-4 在途调用 | 宿主把调用交给宿主自己的服务时登记（`crates/rutis-bridge/src/session/services.rs`）；`Loader::status` 合并两处（`crates/rutis-loader/src/loader/status.rs:313`） | 一条用例：宿主 → 运行时行 → 宿主服务（卡住），`status` 里两条都在，`from` 是行名 |
-| E-5 Python | 归属与拆栈（`runner.py` 的 `charged_row` 复用、`peer.py` 的 `encode_error`）；帧过滤用 `_plugin_frame`（`runner.py:1341`）；`not-declared` 的 did you mean（`runner.py:98`）；关闭时的监听器错误（`runner.py` 的 `charge`）；`no-method` 的 `provider` | 四条逐字用例（归属、did you mean、关闭时的监听器、`no-method`），外加一条"内部帧不出现"的禁用词用例 |
-| E-6 Node、Bun | 归属与拆栈（`node/rutis-runtime/src/unhandled.mjs`、`errors.mjs`；`bun/rutis-bun/src/errors.ts`）；`not-declared` 的 did you mean；`no-method` 的 `provider`；同名文字统一（`leaf.mjs:63`、`runner.ts:239`） | 同上 |
-| E-7 Go、Swift、Kotlin | 归属：Go 在 `localService`（`runtime.go:1201`）里写 `site`（行、服务、方法），接口目标写明边界；Swift、Kotlin 按栈判断（各自 `rows.load` 时拿到的入口）；panic 的帧过滤（`peer/peer.go:1712`）；`not-declared` 的 did you mean（`runtime.go:988`、`Runtime.swift:1075`、`Refusals.kt:144`）；同名文字统一（`runtime.go:435`、`:528`、`Runtime.kt:379-380`、`:497`、`:606`） | 每种语言同上四条；Go 另外一条"接口目标归不到提供者"的用例（输出与今天相同，写明在指南里） |
+| E-5 Python | 归属与拆栈（`runner.py` 的 `charged_row` 复用、`peer.py` 的 `encode_error`）；帧过滤用 `_plugin_frame`（`runner.py:1341`）；`not-declared` 的 did you mean（`runner.py:98`）；关闭时的监听器错误（`runner.py` 的 `charge`）；`no-method` 的 `provider` | `python/rutis/tests/test_plain_texts.py`（同名、同一运行时里的归属）、`test_undeclared_use.py`（did you mean）、`test_optional_deps.py`（`no-method` 的 `provider`）、`test_events_reports.py`（关闭时还在跑的监听器）；"内部帧不出现"由 `crates/rutis-loader/tests/fault_texts.rs` 跑 |
+| E-6 Node、Bun | 归属与拆栈（`node/rutis-runtime/src/unhandled.mjs`、`errors.mjs`；`bun/rutis-bun/src/errors.ts`）；`not-declared` 的 did you mean；`no-method` 的 `provider`；同名文字统一（`leaf.mjs:63`、`runner.ts:239`） | `node/rutis-runtime/test/texts.test.mjs` 与 `errors.test.mjs`（同名、did you mean、`no-method` 的 `provider`）、`runner-events.test.mjs`（监听器）、`bun/rutis-bun/test/errors.test.ts`；禁用词同上 |
+| E-7 Go、Swift、Kotlin | 归属：Go 在 `localService`（`runtime.go:1201`）里写 `site`（行、服务、方法），接口目标写明边界；Swift、Kotlin 按栈判断（各自 `rows.load` 时拿到的入口）；panic 的帧过滤（`peer/peer.go:1712`）；`not-declared` 的 did you mean（`runtime.go:988`、`Runtime.swift:1075`、`Refusals.kt:144`）；同名文字统一（`runtime.go:435`、`:528`、`Runtime.kt:379-380`、`:497`、`:606`） | `go/rutis/internal/runtime/errors_text_internal_test.go`（文字）、`errors_location_test.go` 与 `local_calls_test.go`（归属与位置）、`swift/rutis/Tests/SelfTest/ErrorTextTests.swift` 与 `ThrowSiteTests.swift`、`kotlin/rutis/rutis/src/jvmTest/kotlin/arcships/rutis/ErrorTextTest.kt`；Go 另外一条"接口目标归不到提供者"的用例（输出与今天相同，写明在指南里） |
 | E-8 文档 | [rutis-host](guide/rutis-host.md) 的 `status` 一节（状态词、`calls:` 列什么）、[插件 API](guide/plugin-api.md)（出错时的字、同一运行时里的归属与它的边界）、各语言指南（Go 的接口目标边界）、《迁移到 0.21》、[保证表](guarantees.md)（新条目 `bridge/error-ownership`、`loader/wait-words`） | 链接检查、两份同步 |
 
 完成条件（#937 在全部满足后关闭）：
 
-- [ ] §四 的每一条都有逐字测试；四种语言（Node、Python、Go、Rust 宿主）各一列；
+- [ ] §四 的每一条逐字输出，在 E-1 至 E-7 注明的那些文件里断言（各语言已有的文字测试与 `rutis-host` 的集成测试）；测试工具那一列由 #933 的 `specs/test-tool/cases.json` 覆盖；
+- [ ] 禁用词由 `crates/rutis-loader/tests/fault_texts.rs` 跑（新文字加进它那份清单）；
 - [ ] §3.6 的两个码在测试里按码断言，不按文字；
 - [ ] 逐条重跑 0.19.0 评估里 #937 点到的故障，输出与 §四 一致；
 - [ ] 《迁移到 0.21》与发布说明两份写好。
