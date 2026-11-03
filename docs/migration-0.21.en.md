@@ -28,7 +28,7 @@ A function passed by reference (a callback another plugin hands over, or a host'
 ### What to change
 
 - **TypeScript, Bun**: `const text = f()` → `const text = await f()`. The changed code also runs on a 0.20 Node or Bun (`await` of a value that is not a Promise gives the value).
-- **Python**: `text = f()` → `text = await f()` (the same as `f.call_async(...)`); inside a `sync` method keep `f()`, which returns the result there. On a 0.20 runtime awaiting a plain value fails (`TypeError: object str can't be used in 'await' expression`), so one Python plugin should not run on both.
+- **Python**: `text = f()` → `text = await f()` (the same as `f.call_async(...)`; a promise the function itself returns is settled too, as JavaScript's `await` does, so it is not awaited twice); inside a `sync` method keep `f()`, which returns the result there. On a 0.20 runtime awaiting a plain value fails (`TypeError: object str can't be used in 'await' expression`), so one Python plugin should not run on both.
 - **A test's fakes**: what had to return directly may now do either. A test whose fake is `async` and which awaits the plugin's function passes on 0.21 and fails on 0.20 — write it for 0.21 and do not mix.
 
 ### Who is affected

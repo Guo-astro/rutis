@@ -715,7 +715,13 @@ class RemoteFunction:
 
     async def call_async(self, *args: Any) -> Any:
         self._record.check()
-        return _plain(await self._peer._request_async("call", {"reference": self._record.id}, list(args)))
+        value = _plain(await self._peer._request_async("call", {"reference": self._record.id}, list(args)))
+        # A function may answer with a promise of its own (a session's
+        # `near.receive` hands its queue's promise back): awaiting here settles
+        # it, as awaiting does in JavaScript (#932).
+        while isinstance(value, RemoteFuture):
+            value = _plain(await value)
+        return value
 
     def __repr__(self) -> str:
         return "<function of another process>"

@@ -92,6 +92,39 @@ class PeerTests(background.IsolatedAsyncioTestCase):
         self.assertEqual(await answer, 2)
 
     # guarantee: bridge/function-refs
+    async def test_a_received_function_s_own_promise_is_settled(self):
+        # A function may answer with a promise of its own (a session's
+        # `near.receive` hands back its queue's): awaiting the call settles it,
+        # as awaiting does in JavaScript (#932).
+        captured = []
+
+        def dispatch(target, method, args):
+            captured.append(args[0])
+            return 0
+
+        self.peer._dispatch = dispatch
+        reference = {"type": "reference", "value": {"id": 9, "home": False, "kind": "function", "origin": []}}
+        self.peer._receive(
+            {"op": "invoke", "id": "main:1", "path": [], "target": "test", "method": "take",
+             "args": {"type": "list", "value": [reference]}}
+        )
+        await asyncio.sleep(0)
+        self.assertEqual(self.read()["op"], "return")
+        answer = asyncio.ensure_future(captured[0](1))
+        await asyncio.sleep(0)
+        call = self.read()
+        self.assertEqual(call["op"], "call")
+        promised = {"type": "reference", "value": {"id": 11, "home": False, "kind": "future", "origin": []}}
+        self.peer._receive({"op": "return", "id": call["id"], "value": promised})
+        # The await is a task of its own: a few turns to reach the wire.
+        for _ in range(5):
+            await asyncio.sleep(0)
+        waited = self.read()
+        self.assertEqual((waited["op"], waited["reference"]), ("await", 11))
+        self.peer._receive({"op": "return", "id": waited["id"], "value": {"type": "data", "value": 5}})
+        self.assertEqual(await answer, 5)
+
+    # guarantee: bridge/function-refs
     async def test_a_received_function_is_synchronous_inside_a_synchronous_call(self):
         # Inside a synchronous call the loop is held: `f(...)` returns the
         # result itself, and the far end answers from its own wait.

@@ -28,7 +28,7 @@
 ### 要改什么
 
 - **TypeScript、Bun**：`const text = f()` → `const text = await f()`。改过的写法在 0.20 的 Node、Bun 上也能运行（`await` 一个不是 Promise 的值原样给出它）。
-- **Python**：`text = f()` → `text = await f()`（`f.call_async(...)` 是同一件事）；同一条 `sync` 方法里保持 `f()`，它在那里同步返回结果。0.20 的运行时上 `await` 一个普通值会失败（`TypeError: object str can't be used in 'await' expression`），所以同一份 Python 插件不要在两种运行时上混用。
+- **Python**：`text = f()` → `text = await f()`（`f.call_async(...)` 是同一件事；函数自己返回的 Promise 一并等完，和 JavaScript 的 `await` 一样，不用再 `await` 一次）；同一条 `sync` 方法里保持 `f()`，它在那里同步返回结果。0.20 的运行时上 `await` 一个普通值会失败（`TypeError: object str can't be used in 'await' expression`），所以同一份 Python 插件不要在两种运行时上混用。
 - **测试里的假服务**：过去必须直接返回结果的地方，现在两种都行。写成 `async` 而调用的地方又 `await` 的测试，在 0.21 上通过、在 0.20 上失败 —— 按 0.21 的写法改，不要交叉使用。
 
 ### 影响
