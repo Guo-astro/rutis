@@ -177,7 +177,7 @@ class ObjectsTest {
         // A data parameter takes no object.
         val refused = assertFailsWith<RutisException> { host.call("t", "point", listOf(Native.fromNative(cache)), true) }
         assertTrue(
-            refused.message.endsWith("argument 1 should be a Point, got an object (an object is received only as a @RutisClient interface or Any?)"),
+            refused.message.endsWith("argument 1: expected a Point, got an object (an object is received only as a @RutisClient interface or Any?)"),
             refused.message,
         )
         assertEquals(null, runtime.error)

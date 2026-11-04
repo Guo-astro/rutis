@@ -130,10 +130,77 @@ where
             Some(serde_json::json!({
                 "service": name,
                 "method": method,
-                "expected": "a value of the declared type",
+                // The declared type, in the words a refused argument's
+                // `data.expected` uses (`a string`, `an integer`, `a
+                // Forecast`): the same vocabulary as Go's `Expected`.
+                "expected": expected_of::<T>(),
             })),
         )
     })
+}
+
+/// What `T` is, in the words `data.expected` uses elsewhere: the shared
+/// vocabulary of a refused argument (`a string`, `an integer`, `a number`,
+/// `a boolean`, `a list`, `an object`, `nothing`), else the type's own name
+/// with its article (`a Forecast`, `an Entry`) — what Go's `Expected` gives
+/// a plugin author, without a serde schema to ask.
+fn expected_of<T>() -> String {
+    fn of(name: &str) -> String {
+        // A reference is the type behind it: `&str` is a string, and so is
+        // `&'a str`.
+        let mut name = name.trim();
+        for prefix in ["&mut ", "&"] {
+            if let Some(rest) = name.strip_prefix(prefix) {
+                name = rest.trim();
+                break;
+            }
+        }
+        if name.starts_with('\'') {
+            if let Some((_, rest)) = name.split_once(' ') {
+                name = rest.trim();
+            }
+        }
+        if name == "()" || name.is_empty() {
+            return "nothing".into();
+        }
+        if name.starts_with('(') {
+            return "a list".into();
+        }
+        if name.starts_with('[') {
+            return "a list".into();
+        }
+        // The name without its module and its parameters:
+        // `alloc::string::String` is `String`, `BTreeMap<K, V>` a map.
+        let head = name.split('<').next().unwrap_or(name);
+        let bare = head.rsplit("::").next().unwrap_or(head).trim();
+        // What is between the outermost `<` and `>`.
+        let parameter = || {
+            let from = name.find('<')? + 1;
+            let to = name.rfind('>')?;
+            (from < to).then(|| &name[from..to])
+        };
+        match bare {
+            "Option" => format!("{} or null", of(parameter().unwrap_or("a value"))),
+            "String" | "str" | "char" | "Cow" | "OsString" | "PathBuf" | "Path" => {
+                "a string".into()
+            }
+            "u8" | "u16" | "u32" | "u64" | "u128" | "usize" | "i8" | "i16" | "i32" | "i64"
+            | "i128" | "isize" => "an integer".into(),
+            "f32" | "f64" => "a number".into(),
+            "bool" => "a boolean".into(),
+            "Vec" | "VecDeque" | "BTreeSet" | "HashSet" | "LinkedList" | "Bytes" => "a list".into(),
+            "HashMap" | "BTreeMap" | "Map" => "an object".into(),
+            "Value" => "a value".into(),
+            other => {
+                let article = match other.chars().next() {
+                    Some('a' | 'e' | 'i' | 'o' | 'u' | 'A' | 'E' | 'I' | 'O' | 'U') => "an",
+                    _ => "a",
+                };
+                format!("{article} {other}")
+            }
+        }
+    }
+    of(std::any::type_name::<T>())
 }
 
 /// The row a call into a [`HostDispatch`] comes from ([`caller_row`]): a
@@ -267,4 +334,38 @@ pub(crate) fn with_caller_row<R>(row: Option<CallerRow>, f: impl FnOnce() -> R) 
     }
     let _restore = Restore(CALLER_ROW.with(|current| current.replace(row)));
     f()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::expected_of;
+
+    /// What a result of `T` is called in `data.expected` (#936): the words a
+    /// refused argument's data uses, else the type's own name.
+    #[test]
+    fn the_expected_result_is_the_declared_type() {
+        assert_eq!(expected_of::<String>(), "a string");
+        assert_eq!(expected_of::<&str>(), "a string");
+        assert_eq!(expected_of::<u64>(), "an integer");
+        assert_eq!(expected_of::<f64>(), "a number");
+        assert_eq!(expected_of::<bool>(), "a boolean");
+        assert_eq!(expected_of::<Vec<u8>>(), "a list");
+        assert_eq!(expected_of::<(u8, u8)>(), "a list");
+        assert_eq!(
+            expected_of::<std::collections::BTreeMap<String, u8>>(),
+            "an object"
+        );
+        assert_eq!(expected_of::<()>(), "nothing");
+        assert_eq!(expected_of::<Option<String>>(), "a string or null");
+        assert_eq!(expected_of::<Forecast>(), "a Forecast");
+        assert_eq!(expected_of::<Entry>(), "an Entry");
+    }
+
+    struct Forecast {
+        _city: String,
+    }
+
+    struct Entry {
+        _id: u8,
+    }
 }

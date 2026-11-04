@@ -190,6 +190,6 @@ class PluginValuesTest {
         assertSame(part, table.invoke(parts, "maybe", listOf(part)))
         assertEquals(null, table.invoke(parts, "maybe", listOf(null)))
         val refused = assertFailsWith<RutisException> { table.serve(parts, "register", listOf("s", "not a plugin"), "parts") }
-        assertEquals("parts.register: argument 2 should be a plugin definition, got \"not a plugin\"", refused.message)
+        assertEquals("parts.register: argument 2: expected a plugin definition, got \"not a plugin\"", refused.message)
     }
 }

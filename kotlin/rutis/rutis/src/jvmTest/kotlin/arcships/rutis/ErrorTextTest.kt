@@ -57,7 +57,7 @@ class ErrorTextTest {
         assertEquals(mapOf("service" to "shapes", "method" to "aera", "methods" to listOf("adder", "area", "each", "echo", "inherited", "later", "touch")), error.data)
 
         error = assertFailsWith<RutisException> { table.serve(shapes, "adder", listOf(JsonPrimitive("x")), "shapes") }
-        assertEquals("shapes.adder: argument 1 should be an integer, got \"x\"", error.message)
+        assertEquals("shapes.adder: argument 1: expected an integer, got a string", error.message)
         assertEquals("bad-argument", error.code)
         assertEquals(mapOf("service" to "shapes", "method" to "adder", "argument" to 1, "expected" to "an integer"), error.data)
 
@@ -65,9 +65,9 @@ class ErrorTextTest {
         assertEquals("shapes.area: argument 1 is missing", error.message)
         assertEquals("bad-argument", error.code)
         error = assertFailsWith<RutisException> { table.serve(shapes, "area", listOf(JsonPrimitive(3)), "shapes") }
-        assertEquals("shapes.area: argument 1 should be a Point, got 3", error.message)
+        assertEquals("shapes.area: argument 1: expected an object, got a number", error.message)
         error = assertFailsWith<RutisException> { table.serve(shapes, "each", listOf(listOf("a"), JsonPrimitive(1)), "shapes") }
-        assertEquals("shapes.each: argument 2 should be a function, got 1", error.message)
+        assertEquals("shapes.each: argument 2: expected a function, got 1", error.message)
     }
 
     // guarantee: sdk/error-texts (an object passed by reference refuses a

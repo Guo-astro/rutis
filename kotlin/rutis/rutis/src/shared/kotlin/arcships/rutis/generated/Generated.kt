@@ -156,9 +156,17 @@ object Generated {
         } catch (e: Exception) {
             val expected = Refusals.expected(deserializer.descriptor)
             if (value === Undefined) throw ArgumentRefusal(method, i, expected, null)
-            // An object is taken only by a @RutisClient interface or Any? (#687).
-            val reason = if (value is RemoteObject) "an object is received only as a @RutisClient interface or Any?" else Refusals.reason(value, e)
-            throw ArgumentRefusal(method, i, expected, Refusals.shown(value) + (reason?.let { " ($it)" } ?: ""))
+            // The decoder's own sentence, only the position before it (design
+            // §4.5): no paraphrase, no summary of what it said.
+            val said = e.message ?: "expected $expected"
+            // An object is taken only by a @RutisClient interface or Any? (#687):
+            // that is this runtime's rule, not the decoder's, so it says so.
+            val why = if (value is RemoteObject) {
+                "expected $expected, got an object (an object is received only as a @RutisClient interface or Any?)"
+            } else {
+                said
+            }
+            throw ArgumentRefusal(method, i, expected, why)
         }
     }
 
@@ -191,7 +199,8 @@ object Generated {
     fun remote(args: List<Any?>, i: Int, method: String): RemoteFunction {
         val value = if (i < args.size) args[i] else Undefined
         return value as? RemoteFunction
-            ?: throw ArgumentRefusal(method, i, "a function", if (value === Undefined) null else Refusals.shown(value))
+            ?: throw ArgumentRefusal(method, i, "a function",
+                if (value === Undefined) null else "expected a function, got ${Refusals.shown(value)}")
     }
 
     /** A function result of the far end. */
@@ -216,15 +225,18 @@ object Generated {
         return when (value) {
             is Plugin, is RemotePlugin -> plugin(value, nullable) { "$method: argument ${i + 1}: $it" }
             null, Undefined, kotlinx.serialization.json.JsonNull ->
-                if (nullable) null else throw ArgumentRefusal(method, i, "a plugin definition", if (value === Undefined) null else "null")
-            else -> throw ArgumentRefusal(method, i, "a plugin definition", Refusals.shown(value))
+                if (nullable) null else throw ArgumentRefusal(method, i, "a plugin definition",
+                    if (value === Undefined) null else "expected a plugin definition, got null")
+            else -> throw ArgumentRefusal(method, i, "a plugin definition",
+                "expected a plugin definition, got ${Refusals.shown(value)}")
         }
     }
 
     /** Argument `i` of type `Any` (not null): missing or null is refused. */
     fun nativeArg(args: List<Any?>, i: Int, method: String): Any {
         val value = if (i < args.size) args[i] else Undefined
-        return Native.toNative(value) ?: throw ArgumentRefusal(method, i, "a value", if (value === Undefined) null else "null")
+        return Native.toNative(value) ?: throw ArgumentRefusal(method, i, "a value",
+            if (value === Undefined) null else "expected a value, got null")
     }
 
     /** A result, a plugin definition. */
@@ -246,9 +258,12 @@ object Generated {
         val value = if (i < args.size) args[i] else Undefined
         return when (value) {
             null, Undefined, kotlinx.serialization.json.JsonNull ->
-                if (nullable) null else throw ArgumentRefusal(method, i, Refusals.article(type.simpleName), if (value === Undefined) null else "null")
+                if (nullable) null else throw ArgumentRefusal(method, i, Refusals.article(type.simpleName),
+                    if (value === Undefined) null else "expected ${Refusals.article(type.simpleName)}, got null")
             else -> client(value, type)
-                ?: throw ArgumentRefusal(method, i, Refusals.article(type.simpleName), Refusals.shown(value) + if (value is RemoteObject) " (an object is received only as a @RutisClient interface or Any?)" else "")
+                ?: throw ArgumentRefusal(method, i, Refusals.article(type.simpleName),
+                    "expected ${Refusals.article(type.simpleName)}, got ${Refusals.shown(value)}" +
+                        if (value is RemoteObject) " (an object is received only as a @RutisClient interface or Any?)" else "")
         }
     }
 
