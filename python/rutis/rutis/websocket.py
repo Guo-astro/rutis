@@ -235,6 +235,27 @@ class Listener:
     def _serve(self) -> None:
         try:
             self._server.serve_forever()
+        except OSError as error:
+            # close() shuts the listening socket from its own thread. A serve
+            # loop that is selecting on it, or that has not registered it yet,
+            # then sees EBADF (macOS raises it out of the selector rather than
+            # returning, as Linux does): during a close that is the stop, not a
+            # failure (#1052).
+            with self._lock:
+                closing = self._closing
+            if not closing:
+                self._failed.append(error)
+                self._server.socket.close()
+                raise
+        except BaseException as error:
+            # serve_forever() itself returns when accept() fails with an
+            # OSError; anything it raises (its selector failing, say) means
+            # nothing accepts any more: refuse new connections, and let
+            # close() raise what went wrong.
+            self._failed.append(error)
+            self._server.socket.close()
+            raise
+        else:
             with self._lock:
                 closing = self._closing
             if not closing:
@@ -244,14 +265,6 @@ class Listener:
                     OSError("the WebSocket listener stopped: accepting a connection failed (for example, out of file descriptors)")
                 )
                 self._server.socket.close()
-        except BaseException as error:
-            # serve_forever() itself returns when accept() fails with an
-            # OSError; anything it raises (its selector failing, say) means
-            # nothing accepts any more: refuse new connections, and let
-            # close() raise what went wrong.
-            self._failed.append(error)
-            self._server.socket.close()
-            raise
         finally:
             self._stopped.set()
             self._accepted.put(_STOPPED)
