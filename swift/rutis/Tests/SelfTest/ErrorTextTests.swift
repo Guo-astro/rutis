@@ -48,6 +48,24 @@ struct ErrorTextTests {
         return encoded.map(JSONWriter.string) ?? "?"
     }
 
+    // guarantee: sdk/error-texts (a name another provider has says who and
+    // what to do, and a method a service of this process lacks names its row
+    // in the message and data.provider: #937)
+    func aTakenNameAndAMissingMethodSayWhoseTheyAre() {
+        XCTAssertEqual(takenMessage("weather", "a"), "weather is already provided by a: rename one of them")
+        XCTAssertEqual(takenMessage("weather", "the host"), "weather is already provided by the host: rename it")
+
+        let error = Refusal.noMethod(Refusal.Callee(service: "weather", method: "tomorow"),
+                                     ["today", "wait"], provider: "a")
+        XCTAssertEqual(error.message, "weather has no method tomorow (methods: today, wait); it is provided by row a")
+        XCTAssertEqual(error.code, "no-method")
+        XCTAssertEqual(data(error), #"{"method":"tomorow","methods":["today","wait"],"provider":"a","service":"weather"}"#)
+
+        let own = Refusal.noMethod(Refusal.Callee(service: "weather", method: "tomorow"), ["today"])
+        XCTAssertEqual(own.message, "weather has no method tomorow (methods: today)")
+        XCTAssertEqual(data(own), #"{"method":"tomorow","methods":["today"],"service":"weather"}"#)
+    }
+
     // guarantee: sdk/error-texts (a call the Swift runtime refuses names the
     // service, method and 1-based argument, code no-method or bad-argument)
     func aRefusedCallNamesTheServiceMethodAndArgument() async throws {

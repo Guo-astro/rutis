@@ -9,6 +9,7 @@ import arcships.rutis.advanced.RutisFormat
 import arcships.rutis.advanced.Scope
 import arcships.rutis.noMethod
 import arcships.rutis.serve
+import arcships.rutis.takenMessage
 import arcships.rutis.generated.ServiceObject
 import arcships.rutis.advanced.ServiceShape
 import arcships.rutis.generated.ServiceTable
@@ -105,7 +106,9 @@ internal class Slot(val row: String, val name: String, var methods: Set<String>?
     var generation = 0
 }
 
-internal class HandleEntry(val id: String, val name: String, val obj: Any, val table: ServiceTable<Any>, val methods: Set<String>?) {
+internal class HandleEntry(val id: String, val name: String, val obj: Any, val table: ServiceTable<Any>, val methods: Set<String>?,
+    /** The row providing it: a method it lacks says whose the name is (#937). */
+    val row: String = "") {
     var current = true
     var released = false
     /** Its row unloaded (see `gone`). */
@@ -298,7 +301,7 @@ class RuntimeState(plugins: List<Plugin>, private val open: Boolean = false) {
             val handle = handleOf(id, slot.generation)
             slot.handle = handle
             if (slot.announced) slot.methods = provided.table.methods.toSet()
-            handles[handle] = HandleEntry(id, slot.name, provided.value, provided.table, slot.methods)
+            handles[handle] = HandleEntry(id, slot.name, provided.value, provided.table, slot.methods, slot.row)
         }
         version++
         val session = session ?: return
@@ -376,8 +379,10 @@ class RuntimeState(plugins: List<Plugin>, private val open: Boolean = false) {
                 // service would outlive its row and the next load find it
                 // taken.
             } else {
-                services[id]?.let { throw IllegalStateException("$name is already provided by ${rows[it.row]?.name ?: it.row}") }
-                if (row.own && far[id]?.methods != null) throw IllegalStateException("$name is already provided by rutis")
+                // The sentence every provider gives (#937): whose the name
+                // is, and what to do.
+                services[id]?.let { throw IllegalStateException(takenMessage(name, rows[it.row]?.name ?: it.row)) }
+                if (row.own && far[id]?.methods != null) throw IllegalStateException(takenMessage(name, "the host"))
                 val entry = Provided(row.key, value, shape, table)
                 registered = entry
                 services[id] = entry
@@ -494,7 +499,7 @@ class RuntimeState(plugins: List<Plugin>, private val open: Boolean = false) {
             reconcile()
             return@synchronized
         }
-        services[name]?.let { throw IllegalStateException("$name is already provided here by plugin ${rows[it.row]?.name ?: it.row}") }
+        services[name]?.let { throw IllegalStateException(takenMessage(name, rows[it.row]?.name ?: it.row)) }
         val methods = (fields["shape"] as? Map<*, *>).orEmpty().entries.associate { (k, v) -> k.toString() to (v as? String ?: "async") }
         val functions = (fields["service"] as? Map<*, *>).orEmpty().entries
             .mapNotNull { (k, v) -> (v as? arcships.rutis.advanced.RemoteFunction)?.let { k.toString() to it } }.toMap()
@@ -603,7 +608,7 @@ class RuntimeState(plugins: List<Plugin>, private val open: Boolean = false) {
             for ((service, label) in isolate) scopedId(service, label, true)
             for (service in exports.keys) {
                 if ('#' in service) throw IllegalArgumentException("service name $service cannot be projected")
-                slots[row.id(service)]?.let { throw IllegalStateException("$service is already provided by ${rows[it.row]?.name ?: it.row}") }
+                slots[row.id(service)]?.let { throw IllegalStateException(takenMessage(service, rows[it.row]?.name ?: it.row)) }
             }
             loaded++
             row.order = loaded
@@ -922,7 +927,8 @@ class RuntimeState(plugins: List<Plugin>, private val open: Boolean = false) {
         val entry = synchronized(lock) { handles[target]?.also(::current) } ?: throw IllegalArgumentException("unknown or released service object ${printable(target)}")
         val methods = entry.methods
         if ((methods != null && method !in methods) || method !in entry.table.methods) {
-            throw noMethod(entry.name, method, methods ?: entry.table.methods)
+            throw noMethod(entry.name, method, methods ?: entry.table.methods,
+                provider = rows[entry.row]?.name ?: entry.row.ifEmpty { null })
         }
         return entry.table.serve(entry.obj, method, args, entry.name)
     }

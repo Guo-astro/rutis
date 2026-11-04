@@ -432,7 +432,9 @@ func (rt *runtimeState) provide(r *row, name string, value any) func() {
 	if existing, ok := rt.services[id]; ok {
 		owner := rt.rowName(existing.row)
 		rt.mu.Unlock()
-		panic(fmt.Sprintf("%s is already provided by %s", name, owner))
+		// The sentence every provider gives (#937): who holds it, and what
+		// to do.
+		panic(fmt.Sprintf("%s is already provided by %s: rename one of them", name, owner))
 	}
 	rt.services[id] = providedService{row: r.key, value: value, shape: shape, token: new(int)}
 	r.provided = append(r.provided, id)
@@ -525,7 +527,7 @@ func (rt *runtimeState) loadNamed(ctx context.Context, key, name string, entry a
 		if existing := rt.slots[r.id(name)]; existing != nil {
 			owner := rt.rowName(existing.row)
 			rt.mu.Unlock()
-			return fmt.Errorf("%s is already provided by %s", name, owner)
+			return fmt.Errorf("%s is already provided by %s: rename one of them", name, owner)
 		}
 	}
 	// The row's context outlives the rows.load call, keeping its chain.
@@ -1051,7 +1053,7 @@ func (c *Ctx) service(name string) *Service {
 	c.rt.mu.Unlock()
 	switch {
 	case isLocal:
-		return localService(name, local)
+		return localService(name, local, c.rt.rowName(local.row))
 	case isHost:
 		return c.rt.hostService(name, id, methods)
 	}
@@ -1127,7 +1129,11 @@ type Service struct {
 	name    string
 	methods map[string]string
 	local   *providedService
-	call    func(ctx context.Context, method string, args []any) (any, error)
+	// row: the name of the row providing it in this process, "" when this
+	// process does not provide it: a method it lacks says whose the name is
+	// (#937).
+	row  string
+	call func(ctx context.Context, method string, args []any) (any, error)
 	// object: the far end's object this is, if it is one.
 	object *peer.RemoteObject
 }
@@ -1148,7 +1154,11 @@ func (s *Service) Call(ctx context.Context, method string, result any, args ...a
 	}
 	// An object has no method table: one it lacks is its process's to say.
 	if _, ok := s.methods[method]; !ok && s.object == nil {
-		return convert.NoMethod(convert.Callee{Service: s.name, Method: method}, sortedKeys(s.methods))
+		return convert.NoMethodOf(
+			convert.Callee{Service: s.name, Method: method},
+			sortedKeys(s.methods),
+			s.row,
+		)
 	}
 	converted, err := convert.ToPeerArgs(args)
 	if err != nil {
@@ -1198,7 +1208,7 @@ func lacking(object reflect.Value, want reflect.Type) string {
 	return "missing method"
 }
 
-func localService(name string, local providedService) *Service {
+func localService(name string, local providedService, row string) *Service {
 	value := reflect.ValueOf(local.value)
 	methods := map[string]string{}
 	for wire := range local.shape.wires(value) {
@@ -1213,11 +1223,12 @@ func localService(name string, local providedService) *Service {
 		name:    name,
 		methods: methods,
 		local:   &local,
+		row:     row,
 		call: func(ctx context.Context, method string, args []any) (any, error) {
 			fn, ok := local.shape.method(value, method)
 			callee := convert.Callee{Service: name, Method: method}
 			if !ok {
-				return nil, convert.NoMethod(callee, sortedKeys(methods))
+				return nil, convert.NoMethodOf(callee, sortedKeys(methods), row)
 			}
 			return convert.CallAs(ctx, fn, args, callee)
 		},

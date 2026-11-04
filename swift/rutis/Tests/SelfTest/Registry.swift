@@ -97,6 +97,7 @@ private let everywhere: [(String, () async throws -> Void)] = [
 #if os(macOS)
 private let onTheTestHost: [(String, () async throws -> Void)] = [
     ("ErrorTextTests.aRefusedCallNamesTheServiceMethodAndArgument", { try await ErrorTextTests().aRefusedCallNamesTheServiceMethodAndArgument() }),
+    ("ErrorTextTests.aTakenNameAndAMissingMethodSayWhoseTheyAre", { try ErrorTextTests().aTakenNameAndAMissingMethodSayWhoseTheyAre() }),
     ("EventsConformanceTests.rutisTestMeetsTheEventExpectations", { try await EventsConformanceTests().rutisTestMeetsTheEventExpectations() }),
     ("ConfigSchemaTests.aRowsConfigIsFilledAndValidatedBeforeItIsDecoded", { try await ConfigSchemaTests().aRowsConfigIsFilledAndValidatedBeforeItIsDecoded() }),
     ("ConfigSchemaTests.aLiteralInitialValueIsTheDefault", { try await ConfigSchemaTests().aLiteralInitialValueIsTheDefault() }),

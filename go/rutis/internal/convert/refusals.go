@@ -100,6 +100,15 @@ func shownJSONArg(arg any) string {
 // no-method, for a service; for an object `<Type> has no method …`, or
 // `the object has no method …` when its type has no name.
 func NoMethod(c Callee, methods []string) error {
+	return NoMethodOf(c, methods, "")
+}
+
+// NoMethodOf is [NoMethod] for a service another row provides: it says
+// whose the name is (`weather has no method today (methods: ask); it is
+// provided by row store`) and puts the row in `data.provider` (#937), so a
+// developer looking for their own service sees the name is taken.
+// `provider`: the providing row's name; "" when this side does not know it.
+func NoMethodOf(c Callee, methods []string, provider string) error {
 	sorted := append([]string(nil), methods...)
 	sort.Strings(sorted)
 	listed := "no methods"
@@ -119,7 +128,12 @@ func NoMethod(c Callee, methods []string) error {
 			data["object"] = c.Object
 		}
 	}
-	return peer.NewCoded("BindingError", "no-method", data, "%s has no method %s (%s)", owner, c.Method, listed)
+	message := fmt.Sprintf("%s has no method %s (%s)", owner, c.Method, listed)
+	if provider != "" {
+		message += "; it is provided by row " + provider
+		data["provider"] = provider
+	}
+	return peer.NewCoded("BindingError", "no-method", data, "%s", message)
 }
 
 func plural(n int, word string) string {

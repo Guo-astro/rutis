@@ -53,13 +53,30 @@ internal fun refused(refusal: ArgumentRefusal, owner: String, isObject: Boolean)
 /**
  * `<service> has no method <method> (methods: a, b)`, code no-method; for an
  * object, `<Type> has no method …` with `{object, method, methods}`.
+ * `provider`: the row providing the service, when this side knows it, which
+ * the message names and `data.provider` carries (#937).
  */
-internal fun noMethod(owner: String?, method: String, methods: Collection<String>, isObject: Boolean = false): RutisException {
+internal fun noMethod(owner: String?, method: String, methods: Collection<String>, isObject: Boolean = false,
+    provider: String? = null): RutisException {
     val sorted = methods.sorted()
     val listed = if (sorted.isEmpty()) "no methods" else "methods: " + sorted.joinToString(", ")
     val data = linkedMapOf<String, Any?>(if (isObject) "object" to owner else "service" to owner, "method" to method, "methods" to sorted)
-    return RutisException(RutisException.BINDING_ERROR, "${owner ?: "the object"} has no method $method ($listed)", "no-method", data)
+    var message = "${owner ?: "the object"} has no method $method ($listed)"
+    if (provider != null) {
+        message += "; it is provided by row $provider"
+        data["provider"] = provider
+    }
+    return RutisException(RutisException.BINDING_ERROR, message, "no-method", data)
 }
+
+/**
+ * A name another provider has: `<name> is already provided by <row>: rename
+ * one of them`, and `: rename it` for a name the host holds itself (#937) --
+ * the same sentence rutis and every other runtime give.
+ */
+internal fun takenMessage(name: String, holder: String): String =
+    if (holder == "the host") "$name is already provided by the host: rename it"
+    else "$name is already provided by $holder: rename one of them"
 
 /**
  * Calls `method` of `target` through its method table, as the service (or
