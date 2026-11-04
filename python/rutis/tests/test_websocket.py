@@ -1,6 +1,7 @@
 """The WebSocket binding of the Python runtime: authentication, the
 subprotocol, close codes, the size limit and heartbeats."""
 
+import errno
 import functools
 import inspect
 import os
@@ -16,7 +17,7 @@ import background
 from support import HANG_GUARD, blocking_within, eventually_blocking
 
 try:
-    from websockets.exceptions import ConnectionClosed, InvalidStatus
+    from websockets.exceptions import ConnectionClosed, InvalidMessage, InvalidStatus
     from websockets.sync.client import connect
 
     from rutis import websocket
@@ -53,6 +54,38 @@ def dial(address, token="secret", protocol=PROTOCOL, **options):
     return connect(address, additional_headers=headers, subprotocols=[protocol], **options)
 
 
+def refused(address) -> None:
+    """Assert that nothing serves `address`: the listener behind it stopped.
+
+    A listener that stopped answers in one of two ways, and both mean the
+    same. Linux refuses the connection (`ConnectionRefusedError`: the socket
+    is gone, and the kernel sends RST). BSD, macOS included, completes the
+    handshake of a connection that was already queued when the listening
+    socket was closed, and then ends it at once: the dial gets EOF while
+    reading the status line (`EOFError`) or no valid HTTP response at all
+    (`InvalidMessage`). CI runs Linux, so it takes the first branch; a
+    developer on macOS takes the second. Anything else — a connection this
+    serves, or another error — is not a refusal and is raised.
+    """
+    try:
+        client = dial(address)
+    except ConnectionRefusedError:
+        return
+    except (EOFError, InvalidMessage):
+        return
+    except ConnectionResetError:
+        # The same end seen from the client's socket, when the listener's
+        # side went away mid-handshake (and `errno` is not always set).
+        return
+    except OSError as error:
+        # A reset or an aborted connection on the way in is a refusal too.
+        if error.errno in (errno.ECONNRESET, errno.ECONNABORTED, errno.EPIPE):
+            return
+        raise
+    client.close()
+    raise AssertionError(f"{address} served a connection after its listener stopped")
+
+
 @unittest.skipIf(websocket is None, "needs the websockets package (rutis[network])")
 class WebSocketTest(background.TestCase):
     def test_messages_cross_and_an_orderly_close_is_a_normal_end(self):
@@ -73,8 +106,8 @@ class WebSocketTest(background.TestCase):
         first, second = dial(listener.address), dial(listener.address)
         channels = [listener.accept(), listener.accept()]
         listener.close()
-        with self.assertRaises(ConnectionRefusedError):
-            dial(listener.address)
+        # Linux refuses; macOS completes the queued connection and ends it.
+        refused(listener.address)
         for client, channel in zip((first, second), channels):
             client.send("{}")
             self.assertEqual(blocking_within("the message", channel.recv), b"{}")
@@ -82,6 +115,78 @@ class WebSocketTest(background.TestCase):
             self.assertEqual(client.recv(timeout=HANG_GUARD), "[]")
             client.close()
             self.assertIsNone(blocking_within("the end", channel.recv))
+
+    def test_a_listener_closed_right_after_it_starts_stops_cleanly(self):
+        # #1052: close() runs while the serving thread is still getting
+        # going. Fifty rounds, no retry: each one closes at once and expects
+        # the listener to be closed — not failed — afterwards.
+        for _ in range(50):
+            listener = websocket.listen("ws://127.0.0.1:0/rutis", PROTOCOL, "secret", announce=lambda _: None)
+            listener.close()
+            with self.assertRaises(ConnectionError):
+                listener.accept()
+            self.assertEqual(listener._failed, [])
+
+    def test_a_serve_loop_whose_socket_was_closed_first_is_the_stop(self):
+        # #1052, the macOS shape of the race: close() shuts the listening
+        # socket, and serve_forever() — handed that closed descriptor — raises
+        # EBADF out of the selector. During a close that is the stop, not a
+        # failure: close() returns, accept() says closed, and no exception is
+        # left in the serving thread (which `background` would report).
+        # Fifty rounds, each with that interleaving forced.
+        for _ in range(50):
+            real_serve = websocket.serve
+            shut = threading.Event()
+
+            def serving(*args, **kwargs):
+                server = real_serve(*args, **kwargs)
+                shutdown, socket = server.shutdown, server.socket
+
+                # functools.wraps keeps the signature close() probes.
+                @functools.wraps(shutdown)
+                def shut_socket(*args, **kwargs):
+                    # Only the socket part of shutdown(): websockets 17's
+                    # shutdown() also waits for serve_forever() to end, and
+                    # the loop below is waiting for this — the two would
+                    # deadlock, and the interleaving needs the closed socket
+                    # alone.
+                    socket.close()
+                    shut.set()
+
+                def serve_forever():
+                    # Only once the socket is closed: what the two threads do
+                    # when the close wins the race.
+                    assert shut.wait(HANG_GUARD), "close() never shut the listening socket"
+                    raise OSError(errno.EBADF, "Bad file descriptor")
+
+                server.shutdown = shut_socket
+                server.serve_forever = serve_forever
+                return server
+
+            websocket.serve = serving
+            try:
+                listener = websocket.listen("ws://127.0.0.1:0/rutis", PROTOCOL, "secret", announce=lambda _: None)
+            finally:
+                websocket.serve = real_serve
+            raised: list[BaseException] = []
+
+            def close():
+                try:
+                    listener.close()
+                except BaseException as error:  # noqa: BLE001 - what the test checks
+                    raised.append(error)
+
+            closer = threading.Thread(target=close, name="test-close")
+            closer.start()
+            try:
+                self.assertTrue(shut.wait(HANG_GUARD), "close() never shut the listening socket")
+            finally:
+                closer.join(HANG_GUARD)
+            self.assertFalse(closer.is_alive(), "close() did not return")
+            self.assertEqual(raised, [])
+            self.assertEqual(listener._failed, [])
+            with self.assertRaises(ConnectionError):
+                listener.accept()
 
     def test_closing_twice_stops_once(self):
         listener = websocket.listen("ws://127.0.0.1:0/rutis", PROTOCOL, "secret", announce=lambda _: None)
@@ -100,8 +205,7 @@ class WebSocketTest(background.TestCase):
         listener.close()
         takes_argument = "close_connections" in inspect.signature(shutdown).parameters
         self.assertEqual(stops, [{"close_connections": False} if takes_argument else {}])
-        with self.assertRaises(ConnectionRefusedError):
-            dial(listener.address)
+        refused(listener.address)
 
     def test_a_listener_whose_serving_failed_refuses_and_close_raises(self):
         # Review of #197: an exception out of serve_forever() (its selector
@@ -138,8 +242,7 @@ class WebSocketTest(background.TestCase):
         try:
             with self.assertRaisesRegex(RuntimeError, "the selector failed"):
                 listener.close()
-            with self.assertRaises(ConnectionRefusedError):
-                dial(listener.address)
+            refused(listener.address)
             # No thread is left behind.
             for thread in (listener._serving, listener._stopping):
                 if thread is not None:
@@ -186,8 +289,7 @@ class WebSocketTest(background.TestCase):
             listener.accept()
         with self.assertRaisesRegex(OSError, "stopped"):
             listener.close()
-        with self.assertRaises(ConnectionRefusedError):
-            dial(listener.address)
+        refused(listener.address)
 
     def test_accept_after_close_raises(self):
         listener = websocket.listen("ws://127.0.0.1:0/rutis", PROTOCOL, "secret", announce=lambda _: None)
