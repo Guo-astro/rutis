@@ -1108,7 +1108,7 @@ impl HostDispatch for Settings {
             "tenant" => Ok(json!(self.0.tenant).into()),
             "greeting" => Ok(json!(self.0.greeting).into()),
             "quota" => Ok(json!(self.0.quota).into()),
-            other => Err(CallError::Value(format!("settings has no method {other}"))),
+            other => Err(CallError::value(format!("settings has no method {other}"))),
         }
     }
 

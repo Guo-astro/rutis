@@ -68,7 +68,7 @@ mod tests {
         assert_eq!(counter.current().unwrap(), 15.0);
         assert!(matches!(
             counter.add(f64::NAN),
-            Err(rutis_bridge::session::Error::Value(_))
+            Err(rutis_bridge::session::Error::Value { .. })
         ));
         assert_eq!(counter.current().unwrap(), 15.0);
         let error = counter.fail().unwrap_err();

@@ -166,7 +166,7 @@ impl HostDispatch for Calendar {
                 None => json!(null),
             }
             .into()),
-            other => Err(CallError::Value(format!("calendar has no method {other}"))),
+            other => Err(CallError::value(format!("calendar has no method {other}"))),
         }
     }
 

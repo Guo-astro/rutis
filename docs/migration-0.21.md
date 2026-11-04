@@ -7,8 +7,52 @@
 不兼容的改动按类列在这里，每类的改法见对应一节：
 
 - **交来的函数默认异步**：不在同步调用里时，调用另一个进程交来的函数现在是异步的（Node、Bun 返回 Promise，Python 可 `await`），旧的写法要加 `await`（[交来的函数默认异步](#交来的函数默认异步932)）。
+- **Rust 的 `rutis::Error::Value` 变成带 `reason` 的结构体变体**：`Value(String)` → `Value { message, reason }`，按变体匹配的宿主与以前构造它的代码要改（[Rust 的值错误带上 reason](#rust-的值错误带上-reason936)）。
 
 其余都是行为不变，或者只放宽。
+
+## Rust 的值错误带上 reason（#936）
+
+设计：[值传不过去时的报错统一](design-value-errors-2026-11-03.md)。只有 Rust 的宿主代码受影响：插件的写法不变。
+
+### 改了什么
+
+`rutis::Error::Value` 从元组变体变成结构体变体，多带一个 `reason`：它是「值为什么传不过去」的名字，会出现在错误的 `data.reason` 里（`non-finite`、`cycle`、`too-deep`、`type`、`tag`、`limit` 之一）。同时新增两个构造器 `Error::value(message)` 与 `Error::why(reason, message)`。
+
+| 0.20 | 0.21 |
+| --- | --- |
+| `Error::Value(String::from("…"))` | `Error::value("…")`（不带 reason），或 `Error::why("too-deep", "…")` |
+| `match error { Error::Value(text) => … }` | `match error { Error::Value { message, .. } => … }` |
+| `error.data()` 只有 `{part, argument?, limit?}` | 值传不过去时多一个 `reason` |
+
+### 要改什么
+
+- **构造**：把 `Error::Value(text)` 换成 `Error::value(text)`；原样保留 `text` 的那个变量，类型仍是 `String`。要给出 reason 的地方用 `Error::why("non-finite", text)`，名字只能取上面那六个。
+- **匹配**：`Error::Value(text) =>` 换成 `Error::Value { message, .. } =>`；需要 reason 时写 `Error::Value { message, reason } =>`，`reason` 是 `Option<&'static str>`，不传的时候是 `None`。
+- **读 `data`**：程序按名读 `data.reason` 的新值；不读它的代码不受影响（多一个键）。跨进程的码与帧都没变，旧宿主收到新运行时的错误照旧只看它认识的键。
+
+```rust
+// 0.20
+let error = Error::Value(format!("{call}: …"));
+match error {
+    Error::Value(text) => eprintln!("{text}"),
+    _ => {}
+}
+
+// 0.21
+let error = Error::value(format!("{call}: …"));
+let error = Error::why("too-deep", format!("{call}: …"));
+match error {
+    Error::Value { message, .. } => eprintln!("{message}"),
+    _ => {}
+}
+```
+
+### 影响
+
+- 插件作者：看不到变化，插件的写法与插件 API（3）都不变。
+- 宿主持有者：Rust 宿主里构造或匹配 `rutis::Error::Value` 的地方要改（上面的两行）；别的语言没有这个变体。
+- 部署的人：看不到变化。会话协议（4）、`rutis.json` 格式（1）、清单格式（1）都不变。
 
 ## 交来的函数默认异步（#932）
 

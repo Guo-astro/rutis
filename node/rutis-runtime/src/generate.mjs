@@ -752,10 +752,10 @@ export function generate(plugins, nodePackage, options = {}) {
     return `&${rustType}`
   }
   function finite(name, rustType) {
-    if (rustType === 'f64') return `if !${name}.is_finite() { return Err(::rutis_bridge::cordis::Error::Value("non-finite number".into())); }`
-    if (rustType === 'Option<f64>') return `if ${name}.is_some_and(|value| !value.is_finite()) { return Err(::rutis_bridge::cordis::Error::Value("non-finite number".into())); }`
-    if (rustType === 'Option<Option<f64>>') return `if ${name}.flatten().is_some_and(|value| !value.is_finite()) { return Err(::rutis_bridge::cordis::Error::Value("non-finite number".into())); }`
-    if (rustType === 'Vec<f64>') return `if ${name}.iter().any(|value| !value.is_finite()) { return Err(::rutis_bridge::cordis::Error::Value("non-finite number".into())); }`
+    if (rustType === 'f64') return `if !${name}.is_finite() { return Err(::rutis_bridge::cordis::Error::value("non-finite number")); }`
+    if (rustType === 'Option<f64>') return `if ${name}.is_some_and(|value| !value.is_finite()) { return Err(::rutis_bridge::cordis::Error::value("non-finite number")); }`
+    if (rustType === 'Option<Option<f64>>') return `if ${name}.flatten().is_some_and(|value| !value.is_finite()) { return Err(::rutis_bridge::cordis::Error::value("non-finite number")); }`
+    if (rustType === 'Vec<f64>') return `if ${name}.iter().any(|value| !value.is_finite()) { return Err(::rutis_bridge::cordis::Error::value("non-finite number")); }`
     return ''
   }
   function serviceStruct(serviceName, structName, methods, getters, unavailable) {
@@ -926,7 +926,7 @@ export function generate(plugins, nodePackage, options = {}) {
       const attributes = [`rename = ${literal(property.getName())}`, ...absentField(shape, true)]
       fields.push(`#[serde(${attributes.join(', ')})] pub ${field}: ${fieldType},`)
       const check = finite(`${accessor}.${field}`, fieldType)
-      if (check) checks.push(check.replace('::rutis_bridge::cordis::Error::Value("non-finite number".into())', '::rutis_bridge::cordis::Error::Value("non-finite number".into()).into()'))
+      if (check) checks.push(check.replace('::rutis_bridge::cordis::Error::value("non-finite number")', '::rutis_bridge::cordis::Error::value("non-finite number").into()'))
     }
     return {
       code: `#[derive(Debug, Clone, ${defaultable ? 'Default, ' : ''}::rutis_bridge::cordis::serde::Serialize, ::rutis_bridge::cordis::serde::Deserialize)]\n#[serde(crate = "rutis_bridge::cordis::serde")]\npub struct ${structName} { ${fields.join('\n')} }`,
