@@ -188,7 +188,7 @@ struct ObjectTests {
             _ = try ValueCodec.encodeAny(Unmarked())
             XCTFail("an unmarked class does not cross")
         } catch {
-            XCTAssertTrue("\(error)".contains("a Unmarked cannot cross: mark it @RutisService to pass it by reference, or make it Codable to copy it"), "\(error)")
+            XCTAssertTrue("\(error)".contains("a Unmarked cannot cross between processes: mark it @RutisService to pass it by reference, or make it Codable to copy it"), "\(error)")
         }
     }
 

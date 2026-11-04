@@ -45,7 +45,7 @@ where
 
 fn nothing() -> Arc<dyn Dispatch> {
     Arc::new(Serve(|_: &Connection, _: &str, method: &str, _: Value| {
-        Err(Error::Value(format!("{method} is not served here")))
+        Err(Error::value(format!("{method} is not served here")))
     }))
 }
 
@@ -354,7 +354,7 @@ impl HostDispatch for Clock {
                     std::future::pending::<Reply>().await
                 }))
             }
-            _ => Err(Error::Value(method.into())),
+            _ => Err(Error::value(method)),
         }
     }
     fn methods(&self) -> Option<Json> {
@@ -456,8 +456,7 @@ async fn interleaved_replies_reach_their_own_calls() {
             let polled = polled.clone();
             Ok(Value::future(async move {
                 let _ = polled.send(n);
-                gate.await
-                    .map_err(|_| Error::Value("gate dropped".into()))?;
+                gate.await.map_err(|_| Error::value("gate dropped"))?;
                 Ok(Value::Data(json!({ "call": n, "square": n * n })))
             }))
         }
@@ -609,7 +608,8 @@ async fn a_value_too_deep_fails_its_call_and_the_session_goes_on() {
     ] {
         let failed = within(case, caller.invoke_async("", "echo", args)).await;
         match &failed {
-            Err(Error::Value(message)) => {
+            Err(Error::Value { message, reason }) => {
+                assert_eq!(*reason, Some("too-deep"), "{case}");
                 assert!(message.contains("64 levels"), "{case}: {message}")
             }
             other => panic!("{case}: a value too deep fails its call as a value error: {other:?}"),
@@ -738,8 +738,8 @@ async fn over_websocket_a_value_near_the_limit_passes_and_one_over_it_fails() {
     )
     .await;
     assert!(
-        matches!(&failed, Err(Error::Value(message))
-            if message.starts_with("echo: argument 1 cannot be sent: the message would be ")
+        matches!(&failed, Err(Error::Value { message, reason }) if reason == &Some("limit")
+            && message.starts_with("echo: argument 1 cannot be sent: the message would be ")
                 && message.ends_with(" bytes, over the limit of 65536 bytes")),
         "a value over the limit fails explicitly: {:?}",
         failed.as_ref().map(|_| "a reply")

@@ -76,7 +76,10 @@ fun keyOf(value: Any?, what: String): String = when (value) {
     is Byte, is Short, is Int, is Long -> integerKey(BigInteger.valueOf((value as Number).toLong()), what)
     is Float, is Double -> {
         val f = (value as Number).toDouble()
-        if (f.isNaN() || f.isInfinite()) throw ValueException("a $what cannot be ${describe(value)} that is not finite")
+        if (f.isNaN() || f.isInfinite()) {
+            val shown = if (f.isNaN()) "NaN" else if (f > 0) "Infinity" else "-Infinity"
+            throw ValueException("the number $shown is not finite", reason = "non-finite")
+        }
         floatKey(f)
     }
     is JsonPrimitive -> when {

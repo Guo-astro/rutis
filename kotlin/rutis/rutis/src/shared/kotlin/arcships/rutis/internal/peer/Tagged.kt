@@ -62,8 +62,13 @@ open class ValueException(
     message: String,
     /** bad-value when it is of a part of a call (#677); null otherwise. */
     val code: String? = null,
-    /** `{argument?, part, limit?}` with [code]. */
+    /** `{argument?, part, reason, limit?}` with [code]. */
     val data: Map<String, Any?>? = null,
+    /**
+     * Why the value cannot cross, when this side knows (design §4.2): one of
+     * `non-finite`, `cycle`, `too-deep`, `type`, `tag`, `limit`.
+     */
+    var reason: String? = null,
 ) : RuntimeException(message)
 
 private fun quoted(text: String): String {

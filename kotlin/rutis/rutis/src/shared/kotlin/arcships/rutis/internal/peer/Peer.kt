@@ -62,7 +62,17 @@ fun validId(id: String): Boolean = endpointId.matches(id)
 
 /** The error of a call whose value nests deeper than [MAX_DEPTH]. */
 fun tooDeep(): ValueException =
-    ValueException("value nested deeper than $MAX_DEPTH levels, the most a value crossing processes may nest")
+    ValueException("the value nests deeper than $MAX_DEPTH levels", reason = "too-deep")
+
+/** The error of a value that holds itself (design D3): a cycle. */
+fun cyclic(): ValueException =
+    ValueException("the value holds itself (a cycle)", reason = "cycle")
+
+/** The error of a number that is not finite (design §4.2). */
+fun notFinite(value: Double): ValueException {
+    val shown = if (value.isNaN()) "NaN" else if (value > 0) "Infinity" else "-Infinity"
+    return ValueException("the number $shown is not finite", reason = "non-finite")
+}
 
 /** The far end greeted in a way this side cannot speak: retrying cannot fix it. */
 open class IncompatibleException(message: String) : IOException(message)
@@ -786,7 +796,7 @@ class Peer(private val channel: Channel, private val opts: Options) {
                 true
             }
             rollback(scratch)
-            if (failed) return ofArgument(error.message, index, call)
+            if (failed) return ofArgument(error.message, index, call, why = error.reason)
         }
         return ValueException("the arguments of $call: ${error.message}")
     }
@@ -795,7 +805,7 @@ class Peer(private val channel: Channel, private val opts: Options) {
     private fun tooLarge(size: Int, args: JsonElement?, call: String): ValueException {
         val items = (args as? JsonObject)?.get("value") as? JsonArray
         val index = items?.indices?.maxByOrNull { compact(items[it]).size }
-        return if (index != null) ofArgument(overLimit(size), index, call, MAX_MESSAGE) else ofArguments(overLimit(size), call, MAX_MESSAGE)
+        return if (index != null) ofArgument(overLimit(size), index, call, MAX_MESSAGE, why = "limit") else ofArguments(overLimit(size), call, MAX_MESSAGE, why = "limit")
     }
 
     /** Gives up waiting for call `id`; an asynchronous one hears so. */
@@ -1321,14 +1331,14 @@ class Peer(private val channel: Channel, private val opts: Options) {
                     val wire = try {
                         encode(value, grants, chain, 0)
                     } catch (e: ValueException) {
-                        throw ofResult(e.message, described)
+                        throw ofResult(e.message, described, why = e.reason)
                     }
                     val bytes = compact(buildJsonObject {
                         put("op", "return")
                         put("id", id)
                         put("value", wire)
                     })
-                    if (bytes.size > MAX_MESSAGE) throw ofResult(overLimit(bytes.size), described, MAX_MESSAGE)
+                    if (bytes.size > MAX_MESSAGE) throw ofResult(overLimit(bytes.size), described, MAX_MESSAGE, why = "limit")
                     encoded = bytes
                 } catch (e: Throwable) {
                     rollback(grants)
@@ -1379,8 +1389,8 @@ fun plain(value: Any?): JsonElement = when (value) {
     is String -> JsonPrimitive(value)
     is Char -> JsonPrimitive(value.toString())
     is Boolean -> JsonPrimitive(value)
-    is Double -> if (value.isNaN() || value.isInfinite()) throw ValueException("a number that is not finite ($value) cannot cross") else JsonPrimitive(value)
-    is Float -> if (value.isNaN() || value.isInfinite()) throw ValueException("a number that is not finite ($value) cannot cross") else JsonPrimitive(value.toDouble())
+    is Double -> if (value.isNaN() || value.isInfinite()) throw notFinite(value) else JsonPrimitive(value)
+    is Float -> if (value.isNaN() || value.isInfinite()) throw notFinite(value.toDouble()) else JsonPrimitive(value.toDouble())
     is Long -> if (value > MAX_SAFE || value < -MAX_SAFE) throw ValueException("the integer $value is beyond ±(2^53-1): it crosses as a bigint") else JsonPrimitive(value)
     is Int, is Short, is Byte -> JsonPrimitive(value as Number)
     is List<*> -> JsonArray(value.map(::plain))

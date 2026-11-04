@@ -116,7 +116,7 @@ impl HostDispatch for Wire {
                     .lock()
                     .unwrap()
                     .send(&message)
-                    .map_err(|error| rutis_bridge::session::Error::Value(error.to_string()))?;
+                    .map_err(|error| rutis_bridge::session::Error::value(error.to_string()))?;
                 Ok(RpcValue::Undefined)
             }
             ("subscribe", Some(listener)) => {
@@ -145,7 +145,7 @@ impl HostDispatch for Wire {
                 });
                 Ok(RpcValue::Undefined)
             }
-            (method, args) => Err(rutis_bridge::session::Error::Value(format!(
+            (method, args) => Err(rutis_bridge::session::Error::value(format!(
                 "wire.{method}({args:?})"
             ))),
         }

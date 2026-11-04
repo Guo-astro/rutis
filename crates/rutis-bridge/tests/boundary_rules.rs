@@ -64,10 +64,10 @@ impl HostDispatch for Log {
         match method {
             "push" => {
                 let (tag,): (String,) = serde_json::from_value(args.json()?)
-                    .map_err(|error| Error::Value(error.to_string()))?;
+                    .map_err(|error| Error::value(error.to_string()))?;
                 Ok(json!(self.mark(&tag)).into())
             }
-            _ => Err(Error::Value(format!("log.{method} is not implemented"))),
+            _ => Err(Error::value(format!("log.{method} is not implemented"))),
         }
     }
 }

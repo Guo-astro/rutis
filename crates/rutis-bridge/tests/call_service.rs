@@ -49,7 +49,7 @@ impl HostDispatch for Clock {
         match method {
             "now" => Ok(json!(42).into()),
             "broken" => panic!("the clock broke"),
-            other => Err(rutis_bridge::session::Error::Value(format!(
+            other => Err(rutis_bridge::session::Error::value(format!(
                 "no method {other}"
             ))),
         }

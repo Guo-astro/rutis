@@ -734,12 +734,12 @@ package final class Peer: @unchecked Sendable {
             if future.record.released { throw RutisError(name: "Error", message: "reference released") }
             return homeReference(future.record)
         case .signal:
-            throw ValueError("a signal cannot cross processes")
+            throw ValueError("a signal cannot cross between processes", reason: "type")
         }
     }
 
     private var tooDeep: ValueError {
-        ValueError("value nested deeper than \(maxDepth) levels, the most a value crossing processes may nest")
+        ValueError("the value nests deeper than \(maxDepth) levels", reason: "too-deep")
     }
 
     private func homeReference(_ record: Imported) -> JSON {
@@ -990,7 +990,7 @@ package final class Peer: @unchecked Sendable {
                     do {
                         encoded.append(try encode(arg, &grants, chain, 0))
                     } catch let error as ValueError {
-                        throw ofArgument(error.description, index, describe(op: op, fields: fields))
+                        throw ofArgument(error.description, index, describe(op: op, fields: fields), why: error.reason)
                     }
                 }
                 frame.append(("args", .object([("type", .string("list")), ("value", .array(encoded))])))
@@ -1008,10 +1008,10 @@ package final class Peer: @unchecked Sendable {
             let sizes = encoded.map { JSONWriter.write($0).count }
             let call = describe(op: op, fields: fields)
             if let index = sizes.indices.max(by: { sizes[$0] < sizes[$1] }) {
-                throw ofArgument(overLimit(data.count), index, call, limit: maxMessage)
+                throw ofArgument(overLimit(data.count), index, call, limit: maxMessage, why: "limit")
             }
             throw ValueError("\(call): the arguments cannot be sent: \(overLimit(data.count))",
-                             data: ["part": "arguments", "limit": maxMessage])
+                             data: ["part": "arguments", "limit": maxMessage, "reason": "limit"])
         }
         let waiter = Pending(id: id, answered: answered)
         pending[id] = waiter
@@ -1383,12 +1383,12 @@ package final class Peer: @unchecked Sendable {
                 data = JSONWriter.write(.object([("op", .string("return")), ("id", .string(id)), ("value", encoded)]))
                 if data.count > maxMessage {
                     rollback(grants)
-                    failure = ofResult(overLimit(data.count), call, limit: maxMessage)
+                    failure = ofResult(overLimit(data.count), call, limit: maxMessage, why: "limit")
                     data = []
                 }
             } catch let error as ValueError {
                 rollback(grants)
-                failure = ofResult(error.description, call)
+                failure = ofResult(error.description, call, why: error.reason)
                 data = []
             } catch {
                 rollback(grants)

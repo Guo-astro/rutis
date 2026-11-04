@@ -61,7 +61,7 @@ fn quoted(text: &str) -> String {
 }
 
 fn invalid(what: &str, text: &str, expected: &str) -> Error {
-    Error::Value(format!(
+    Error::value(format!(
         "invalid {what} {}: expected {expected}",
         quoted(text)
     ))
@@ -221,7 +221,7 @@ impl Date {
             || day == 0
             || day > days_in_month(year, month)
         {
-            return Err(Error::Value(format!(
+            return Err(Error::value(format!(
                 "invalid date {year:04}-{month:02}-{day:02}: no such day in years 0001–9999"
             )));
         }
@@ -247,13 +247,13 @@ impl Date {
         // 0001-01-01 and 9999-12-31: checked first, so the arithmetic
         // below never overflows.
         if !(-719_162..=2_932_896).contains(&days) {
-            return Err(Error::Value(format!(
+            return Err(Error::value(format!(
                 "{days} days from 1970 leave years 0001–9999"
             )));
         }
         let (year, month, day) = civil_from_days(days);
         u16::try_from(year)
-            .map_err(|_| Error::Value(format!("{days} days from 1970 leave years 0001–9999")))
+            .map_err(|_| Error::value(format!("{days} days from 1970 leave years 0001–9999")))
             .and_then(|year| Self::new(year, month, day))
     }
 }
@@ -290,7 +290,7 @@ impl TimeOfDay {
     /// leap second.
     pub fn new(hour: u8, minute: u8, second: u8, nanosecond: u32) -> Result<Self, Error> {
         if hour > 23 || minute > 59 || second > 59 || nanosecond >= 1_000_000_000 {
-            return Err(Error::Value(format!(
+            return Err(Error::value(format!(
                 "invalid time {hour:02}:{minute:02}:{second:02} (+{nanosecond} ns)"
             )));
         }
@@ -418,7 +418,7 @@ impl Instant {
         if !(Self::MIN_SECONDS..=Self::MAX_SECONDS).contains(&seconds)
             || nanosecond >= 1_000_000_000
         {
-            return Err(Error::Value(format!(
+            return Err(Error::value(format!(
                 "instant {seconds} s + {nanosecond} ns since 1970 is outside years 0001–9999"
             )));
         }
@@ -430,7 +430,7 @@ impl Instant {
     /// Nanoseconds since 1970-01-01T00:00:00Z.
     pub fn from_unix_nanos(nanos: i128) -> Result<Self, Error> {
         let seconds = i64::try_from(nanos.div_euclid(1_000_000_000))
-            .map_err(|_| Error::Value(format!("instant {nanos} ns is outside years 0001–9999")))?;
+            .map_err(|_| Error::value(format!("instant {nanos} ns is outside years 0001–9999")))?;
         Self::from_unix(seconds, nanos.rem_euclid(1_000_000_000) as u32)
     }
     /// Whole seconds since 1970-01-01T00:00:00Z, rounded toward negative
@@ -482,7 +482,7 @@ impl Instant {
 impl TryFrom<SystemTime> for Instant {
     type Error = Error;
     fn try_from(time: SystemTime) -> Result<Self, Error> {
-        let out_of_range = || Error::Value("the time is outside years 0001–9999".into());
+        let out_of_range = || Error::value("the time is outside years 0001–9999");
         let nanos = match time.duration_since(UNIX_EPOCH) {
             Ok(after) => i128::try_from(after.as_nanos()).map_err(|_| out_of_range())?,
             Err(before) => {
@@ -745,7 +745,7 @@ pub(crate) fn base64_encode(bytes: &[u8]) -> String {
 /// no whitespace, padding only at the end, unused bits zero.
 pub(crate) fn base64_decode(text: &str) -> Result<Vec<u8>, Error> {
     let refused = || {
-        Error::Value(format!(
+        Error::value(format!(
             "invalid bytes ({} characters): expected base64 (RFC 4648 §4) with padding",
             text.len()
         ))
@@ -872,7 +872,7 @@ fn key(value: &Value, what: &str) -> Result<Key, Error> {
                 } else {
                     // Not exact: in JavaScript 2^53 and 2^53+1 are one
                     // number, so two such keys may be one there.
-                    return Err(Error::Value(format!(
+                    return Err(Error::value(format!(
                         "a {what} cannot be the float {number}: a whole number beyond \
                          ±(2^53-1) written as a float is not exact in every language"
                     )));
@@ -886,7 +886,7 @@ fn key(value: &Value, what: &str) -> Result<Key, Error> {
         Value::Decimal(value) => Key::Decimal(value.0.clone()),
         Value::Uuid(value) => Key::Uuid(*value),
         other => {
-            return Err(Error::Value(format!(
+            return Err(Error::value(format!(
                 "a {what} cannot be {}: only strings, finite numbers, booleans, bigint, \
                  datetime, date, time, decimal and uuid values can (an instant, bytes, null, \
                  an array, an object, a map, a set or a reference cannot)",
@@ -906,7 +906,7 @@ pub(crate) fn check_keys<'a>(
     let mut seen = HashSet::new();
     for value in keys {
         if !seen.insert(key(value, what)?) {
-            return Err(Error::Value(format!(
+            return Err(Error::value(format!(
                 "duplicate {what} {}: a map or set whose keys collide would lose entries",
                 shown(value)
             )));

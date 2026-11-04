@@ -109,7 +109,7 @@ impl Connection {
         };
         if import.kind != expected {
             // The owner would fail its whole session on a mismatched kind.
-            return self.respond(id, Err(Error::Value("reference kind mismatch".into())));
+            return self.respond(id, Err(Error::value("reference kind mismatch")));
         }
         let target = match import.connection() {
             Ok(target) => target,

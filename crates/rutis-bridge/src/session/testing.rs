@@ -53,7 +53,7 @@ pub struct Fixture {
 impl Dispatch for Fixture {
     fn invoke(&self, peer: &Connection, target: &str, method: &str, args: Value) -> Reply {
         if target != TARGET {
-            return Err(Error::Value(format!("no target {target}")));
+            return Err(Error::value(format!("no target {target}")));
         }
         let mut args = args.list()?.into_iter();
         let mut next = || args.next().unwrap_or(Value::Undefined);
@@ -85,7 +85,7 @@ impl Dispatch for Fixture {
             }
             "fire" => {
                 let held = self.held.lock().unwrap().clone();
-                held.ok_or_else(|| Error::Value("nothing held".into()))?
+                held.ok_or_else(|| Error::value("nothing held"))?
                     .call(Value::List(vec![next()]))
             }
             "drop" => {
@@ -140,7 +140,7 @@ impl Dispatch for Fixture {
                 let callback = next().reference()?;
                 callback.call(Value::List(vec![]))
             }
-            _ => Err(Error::Value(format!("no method {method}"))),
+            _ => Err(Error::value(format!("no method {method}"))),
         }
     }
 }

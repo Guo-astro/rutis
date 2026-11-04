@@ -227,6 +227,32 @@ class PeerTest {
         assertEquals(JsonPrimitive("after"), host.call("t", "echo", listOf(JsonPrimitive("after")), true))
     }
 
+    // guarantee: bridge/bad-values
+    /**
+     * What a value that cannot cross says (design §5.6, docs/design-value-
+     * errors-2026-11-03.md): one sentence of reason, `bad-value`, and
+     * `data.reason` for a program.
+     */
+    @Test
+    fun aValueThatCannotCrossSaysWhy() {
+        start()
+        val deep = (0 until 65).fold(JsonPrimitive(1) as Any) { inner, _ -> listOf(inner) }
+        for ((value, says, reason) in listOf(
+            Triple(Double.NaN, "the number NaN is not finite", "non-finite"),
+            Triple(Double.NEGATIVE_INFINITY, "the number -Infinity is not finite", "non-finite"),
+            Triple(deep, "the value nests deeper than 64 levels", "too-deep"),
+        )) {
+            val refused = assertFailsWith<ValueException> { host.call("host:t", "echo", listOf(value), true) }
+            assertEquals("t.echo: argument 1 cannot be sent: $says", refused.message)
+            assertEquals("bad-value", refused.code)
+            assertEquals("argument", refused.data?.get("part"))
+            assertEquals(1, refused.data?.get("argument"))
+            assertEquals(reason, refused.data?.get("reason"))
+        }
+        assertEquals(null, host.error)
+        assertEquals(null, runtime.error)
+    }
+
     /**
      * #675: a message over 16 MiB fails only its call, on the side that would
      * send it, naming the call, the argument (or the result), the size and the
@@ -245,7 +271,7 @@ class PeerTest {
         assertTrue(sent.message!!.endsWith(limit), sent.message)
         // guarantee: sdk/error-texts (code bad-value, data {argument, part, limit}: #677)
         assertEquals("bad-value", sent.code)
-        assertEquals(mapOf("part" to "argument", "argument" to 2, "limit" to MAX_MESSAGE), sent.data)
+        assertEquals(mapOf("part" to "argument", "argument" to 2, "limit" to MAX_MESSAGE, "reason" to "limit"), sent.data)
         // A result the far end would send.
         val result = assertFailsWith<RutisException> { host.call("t", "big", listOf(over.toLong()), true) }
         assertTrue(result.message.startsWith("t.big: the result cannot be sent: the message would be "), result.message)

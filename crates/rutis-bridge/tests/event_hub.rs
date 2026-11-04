@@ -59,7 +59,7 @@ impl Dispatch for Fake {
                 let key: String = match first()? {
                     Value::Data(Json::String(key)) => key,
                     other => {
-                        return Err(Error::Value(format!(
+                        return Err(Error::value(format!(
                             "rows.unload takes a row key, not {other:?}"
                         )))
                     }
@@ -78,7 +78,7 @@ impl Dispatch for Fake {
             ("", "ping") => Ok(Value::Data(json!("pong"))),
             ("", "events.call") => {
                 let Value::Record(fields) = first()? else {
-                    return Err(Error::Value("events.call needs a record".into()));
+                    return Err(Error::value("events.call needs a record"));
                 };
                 let listener = fields["listener"].clone().json()?;
                 let behavior = self
@@ -97,7 +97,7 @@ impl Dispatch for Fake {
                     }),
                 }
             }
-            _ => Err(Error::Value(format!("no method {method}"))),
+            _ => Err(Error::value(format!("no method {method}"))),
         }
     }
 }

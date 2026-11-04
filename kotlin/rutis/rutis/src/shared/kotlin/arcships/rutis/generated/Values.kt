@@ -106,7 +106,11 @@ class ValueEncoder internal constructor(private val sink: (Any?) -> Unit) : Abst
     override fun encodeLong(value: Long) = sink(if (value > MAX_SAFE || value < -MAX_SAFE) BigInteger.valueOf(value) else value)
     override fun encodeFloat(value: Float) = encodeDouble(value.toDouble())
     override fun encodeDouble(value: Double) {
-        if (value.isNaN() || value.isInfinite()) throw ValueException("a number that is not finite ($value) cannot cross")
+        // A number that is not finite has no wire form (design §4.2, D5).
+        if (value.isNaN() || value.isInfinite()) {
+            val shown = if (value.isNaN()) "NaN" else if (value > 0) "Infinity" else "-Infinity"
+            throw ValueException("the number $shown is not finite", reason = "non-finite")
+        }
         sink(value)
     }
     override fun encodeChar(value: Char) = sink(value.toString())

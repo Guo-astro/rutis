@@ -42,7 +42,7 @@ impl HostDispatch for Clock {
                     Ok(Value::Undefined)
                 }))
             }
-            _ => Err(Error::Value(format!("clock.{method} is not implemented"))),
+            _ => Err(Error::value(format!("clock.{method} is not implemented"))),
         }
     }
 }

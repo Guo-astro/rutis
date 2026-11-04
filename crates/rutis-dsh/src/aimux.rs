@@ -117,7 +117,7 @@ enum PartReason {
 pub(crate) fn convert<T: Serialize, U: serde::de::DeserializeOwned>(value: &T) -> Result<U, Error> {
     serde_json::to_value(value)
         .and_then(serde_json::from_value)
-        .map_err(|error| Error::Value(error.to_string()))
+        .map_err(|error| Error::value(error.to_string()))
 }
 
 /// Implements a mount's generated `AimuxHost` trait for [`AimuxBridge`].
@@ -290,7 +290,7 @@ impl AimuxBridge {
             let models = service
                 .list_models(&provider, api_key.as_deref())
                 .await
-                .map_err(|error| Error::Value(error.to_string()))?;
+                .map_err(|error| Error::value(error.to_string()))?;
             Ok(models.into_iter().map(|model| model.id).collect())
         })
     }

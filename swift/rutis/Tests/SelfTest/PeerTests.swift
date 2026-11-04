@@ -93,7 +93,7 @@ struct PeerTests {
             _ = try await host.call(target: "t", method: "echo", args: [.data(deep)], sync: true)
             XCTFail("expected an error")
         } catch {
-            XCTAssertTrue("\(error)".contains("nested deeper than 64"), "\(error)")
+            XCTAssertTrue("\(error)".contains("the value nests deeper than 64 levels"), "\(error)")
         }
         let fine = try await host.call(target: "t", method: "echo", args: [.data(.string("ok"))], sync: true)
         XCTAssertEqual(fine.plainJSON, .string("ok"))

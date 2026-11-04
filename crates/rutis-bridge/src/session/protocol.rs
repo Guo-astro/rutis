@@ -290,7 +290,7 @@ mod tests {
             Some(serde_json::json!({ "service": "weather", "method": "tomorow" }))
         );
         for (error, expected) in [
-            (Error::Value("a sparse array".into()), "bad-value"),
+            (Error::value("a sparse array"), "bad-value"),
             (
                 Error::Transport("the runtime py exited".into()),
                 "peer-gone",

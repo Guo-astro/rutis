@@ -108,13 +108,13 @@ pub(crate) async fn read(
     reference: Reference,
     row: Option<CallerRow>,
 ) -> Result<Definition, Error> {
-    let not_one = || Error::Value("expected a plugin definition of the runtime that calls".into());
+    let not_one = || Error::value("expected a plugin definition of the runtime that calls");
     if !(reference.is_plugin() || reference.is_function() || reference.is_object()) {
         return Err(not_one());
     }
     if !reference.is_from(process.connection()) {
-        return Err(Error::Value(
-            "a plugin definition can only be handed over by the runtime that defined it".into(),
+        return Err(Error::value(
+            "a plugin definition can only be handed over by the runtime that defined it",
         ));
     }
     let (identity, home) = reference
@@ -162,11 +162,11 @@ pub fn returned(
         .map(|service| (service.process().clone(), service.owner().cloned()));
     Box::pin(async move {
         let (process, owner) = service.ok_or_else(|| {
-            Error::Value("only a service of a language runtime returns plugin definitions".into())
+            Error::value("only a service of a language runtime returns plugin definitions")
         })?;
         let RpcValue::Reference(reference) = value else {
-            return Err(Error::Value(
-                "the service did not return a plugin definition".into(),
+            return Err(Error::value(
+                "the service did not return a plugin definition",
             ));
         };
         read(process, reference, owner).await

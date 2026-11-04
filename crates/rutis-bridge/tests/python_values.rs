@@ -25,7 +25,7 @@ fn repo() -> PathBuf {
 struct Nothing;
 impl rutis_bridge::session::Dispatch for Nothing {
     fn invoke(&self, _: &Connection, _: &str, _: &str, _: Value) -> rutis_bridge::session::Reply {
-        Err(Error::Value("main serves nothing".into()))
+        Err(Error::value("main serves nothing"))
     }
 }
 
