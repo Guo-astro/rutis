@@ -355,6 +355,18 @@ fn plain_json<T: Serialize + ?Sized>(value: &T) -> Result<Json, String> {
 /// Serializes as `serde_json::to_value` does, except that an `i128` or
 /// `u128` beyond 64 bits, which JSON data cannot hold, becomes a bigint
 /// (design V6); used while an argument is encoded.
+///
+/// On a cycle, design D3 asks each runtime to say "the value holds itself"
+/// before it says "too deep". This side cannot: `arg<T: Serialize>` reaches
+/// a value only through `Serialize`, and serde's `Serializer` is handed one
+/// field, element or key at a time with nothing saying which container it
+/// came from — there is no identity to compare, so an `Rc` that points at
+/// itself is seen only as a value that keeps going, and the depth is what
+/// stops it. What reaches here is mostly `serde_json::Value`, a tree that
+/// cannot hold itself by construction, and a host's own `Serialize` type,
+/// where the same holds unless it uses `Rc`/`Arc` deliberately. So
+/// `too-deep` is the one refusal this side can give a cycle, and it gives it
+/// at 64 levels rather than recursing.
 struct Exact;
 
 // How deep the value being written nests (design §4.4), and why the last
@@ -381,7 +393,8 @@ fn why(reason: &'static str, message: impl std::fmt::Display) -> serde_json::Err
     ser::Error::custom(message)
 }
 
-/// One level deeper, or the error that says the value nests too far.
+/// One level deeper, or the error that says the value nests too far. A
+/// cycle reaches this one, never the `cycle` reason: see [`Exact`].
 fn enter() -> Result<(), serde_json::Error> {
     let depth = DEPTH.with(|depth| {
         depth.set(depth.get() + 1);

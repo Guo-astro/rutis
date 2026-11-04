@@ -119,6 +119,24 @@ package enum ValueCodec {
             guard let wrapped = mirror.children.first?.value else { return .null }
             return try encodeAny(wrapped, depth: depth)
         }
+        // Arrays, dictionaries and sets are values: none of them can hold
+        // itself. A class instance can — its `Codable` fields, or the value
+        // it carries, may lead back to it — so a class already on this path
+        // is a value that holds itself (design D3), said before the depth
+        // says "too deep". Two places holding one instance are not a cycle:
+        // the path is left as the walk comes back.
+        let identity = type(of: value) is AnyClass ? ObjectIdentifier(value as AnyObject) : nil
+        if let identity {
+            var path = classPath()
+            if path.contains(identity) { throw cyclic }
+            path.insert(identity)
+            setClassPath(path)
+            defer {
+                var left = classPath()
+                left.remove(identity)
+                setClassPath(left)
+            }
+        }
         if let special = try encodeSpecial(value, depth: depth) { return special }
         if let encodable = value as? Encodable { return try encodeEncodable(encodable, depth: depth) }
         switch value {
@@ -152,6 +170,18 @@ package enum ValueCodec {
     /// not a value nested too far.
     private static var cyclic: ValueError {
         ValueError("the value holds itself (a cycle)", reason: "cycle")
+    }
+
+    /// The class instances on the path being encoded, for the thread doing
+    /// it (a call encodes on one thread, start to finish).
+    private static let classPathKey = "rutis.valuecodec.classPath"
+
+    private static func classPath() -> Set<ObjectIdentifier> {
+        Thread.current.threadDictionary[classPathKey] as? Set<ObjectIdentifier> ?? []
+    }
+
+    private static func setClassPath(_ path: Set<ObjectIdentifier>) {
+        Thread.current.threadDictionary[classPathKey] = path
     }
 
     /// The values the encoder takes as they are, before Codable.

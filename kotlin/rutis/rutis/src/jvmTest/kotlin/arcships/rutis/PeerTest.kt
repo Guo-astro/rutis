@@ -229,6 +229,32 @@ class PeerTest {
 
     // guarantee: bridge/bad-values
     /**
+     * A value that holds itself says so (design D3): the cycle is found
+     * before the depth, and a value in two places is not a cycle.
+     */
+    @Test
+    fun aValueThatHoldsItselfSaysSo() {
+        start()
+        val list = mutableListOf<Any>()
+        list.add(list)
+        val map = mutableMapOf<String, Any>()
+        map["self"] = map
+        for (value in listOf(list, map)) {
+            val refused = assertFailsWith<ValueException> { host.call("host:t", "echo", listOf(value), true) }
+            assertEquals("t.echo: argument 1 cannot be sent: the value holds itself (a cycle)", refused.message)
+            assertEquals("bad-value", refused.code)
+            assertEquals("cycle", refused.data?.get("reason"))
+            assertEquals("argument", refused.data?.get("part"))
+        }
+        // The same list in two places is not a cycle.
+        val shared = mutableListOf<Any>(1)
+        assertEquals("[[1],[1]]", host.call("t", "echo", listOf(listOf(shared, shared)), true).toString())
+        assertEquals(null, host.error)
+        assertEquals(null, runtime.error)
+    }
+
+    // guarantee: bridge/bad-values
+    /**
      * What a value that cannot cross says (design §5.6, docs/design-value-
      * errors-2026-11-03.md): one sentence of reason, `bad-value`, and
      * `data.reason` for a program.
