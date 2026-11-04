@@ -73,6 +73,10 @@ def refused(address) -> None:
         return
     except (EOFError, InvalidMessage):
         return
+    except ConnectionResetError:
+        # The same end seen from the client's socket, when the listener's
+        # side went away mid-handshake (and `errno` is not always set).
+        return
     except OSError as error:
         # A reset or an aborted connection on the way in is a refusal too.
         if error.errno in (errno.ECONNRESET, errno.ECONNABORTED, errno.EPIPE):
@@ -136,15 +140,18 @@ class WebSocketTest(background.TestCase):
 
             def serving(*args, **kwargs):
                 server = real_serve(*args, **kwargs)
-                shutdown = server.shutdown
+                shutdown, socket = server.shutdown, server.socket
 
                 # functools.wraps keeps the signature close() probes.
                 @functools.wraps(shutdown)
-                def counted(*args, **kwargs):
-                    try:
-                        return shutdown(*args, **kwargs)
-                    finally:
-                        shut.set()
+                def shut_socket(*args, **kwargs):
+                    # Only the socket part of shutdown(): websockets 17's
+                    # shutdown() also waits for serve_forever() to end, and
+                    # the loop below is waiting for this — the two would
+                    # deadlock, and the interleaving needs the closed socket
+                    # alone.
+                    socket.close()
+                    shut.set()
 
                 def serve_forever():
                     # Only once the socket is closed: what the two threads do
@@ -152,7 +159,7 @@ class WebSocketTest(background.TestCase):
                     assert shut.wait(HANG_GUARD), "close() never shut the listening socket"
                     raise OSError(errno.EBADF, "Bad file descriptor")
 
-                server.shutdown = counted
+                server.shutdown = shut_socket
                 server.serve_forever = serve_forever
                 return server
 
