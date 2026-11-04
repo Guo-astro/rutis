@@ -8,6 +8,7 @@
 
 - **交来的函数默认异步**：不在同步调用里时，调用另一个进程交来的函数现在是异步的（Node、Bun 返回 Promise，Python 可 `await`），旧的写法要加 `await`（[交来的函数默认异步](#交来的函数默认异步932)）。
 - **Rust 的 `rutis::Error::Value` 变成带 `reason` 的结构体变体**：`Value(String)` → `Value { message, reason }`，按变体匹配的宿主与以前构造它的代码要改（[Rust 的值错误带上 reason](#rust-的值错误带上-reason936)）。
+- **出错文字变了**：这一版改的就是「出错时看得懂」，rutis 自己造的那些句子几乎都换了。`code` 与 `data` 的键稳定，**按文字匹配的代码要改成按码匹配**（[出错文字变了](#出错文字变了933-936-937)）。
 
 其余都是行为不变，或者只放宽。
 
@@ -53,6 +54,48 @@ match error {
 - 插件作者：看不到变化，插件的写法与插件 API（3）都不变。
 - 宿主持有者：Rust 宿主里构造或匹配 `rutis::Error::Value` 的地方要改（上面的两行）；别的语言没有这个变体。
 - 部署的人：看不到变化。会话协议（4）、`rutis.json` 格式（1）、清单格式（1）都不变。
+
+## 出错文字变了（#933 #936 #937）
+
+设计：[出错信息](design-error-messages-2026-11-03.md)、[值传不过去时的一个样子](design-value-errors-2026-11-03.md)、[测试工具出错时](design-test-tool-errors-2026-11-03.md)，以及[诊断设计](design-diagnostics-2026-10-26.md) §4.3、§4.5 的码与文字约定。
+
+这一版的主题就是「出错时看得懂」，所以 rutis 自己造的那些句子几乎都换了：更短、说清是谁、并把「为什么」放进 `data` 让程序读。**码与 `data` 的键是契约，文字不是**——按文字匹配的代码要改成按码匹配。
+
+### 最常看见的几句
+
+| 0.20 | 0.21 |
+| --- | --- |
+| `waiting for lmm (no row provides it; did you mean llm?)` | `waiting for lmm (nothing provides it yet; did you mean llm?)` |
+| `row b waits for weather from this row: they inject each other` | `row b waits for weather too: they inject each other` |
+| `weather is already provided by store` | `weather is already provided by store: rename one of them`；宿主自己持有这个名字时是 `… is already provided by the host: rename it` |
+| `weather has no method today (methods: ask)` | 同一句；这一侧知道是谁提供的时候后面多 `; it is provided by row store`，并且 `data.provider` 是 `store` |
+| `a number that is not finite (NaN) cannot cross` | `the number NaN is not finite`，`data.reason` 是 `non-finite` |
+| `value nested deeper than 64 levels, the most a value crossing processes may nest (a cyclic reference?)` | `the value nests deeper than 64 levels`（`data.reason` 是 `too-deep`），或 `the value holds itself (a cycle)`（`cycle`） |
+| `argument 1 should be a string, got 3` | `argument 1: <解码器自己的那句>`（Rust、Go、Kotlin 已改；Swift、Python、Node 仍是旧形状） |
+| `await requires the Node thread occupied by its parent synchronous call; path: test:5 -> …` | `<那次调用> would wait on itself: it is awaited inside the synchronous call that produces it (synchronous calls)` |
+| 状态词 `unloading`、`inactive` | `stopping`、`not running (its group is not running)` |
+| `[remote object]`、`<remote object>` | `<object of another process>` |
+
+返回值解不开现在有单独的码 `bad-result`，消息是 `<服务>.<方法>: the result: <解码器自己的那句>`，`data.expected` 是声明的那个类型（`a string`、`a Forecast`，不再是一句笼统的话）。
+
+### 改法
+
+按码匹配，不按文字：
+
+| 语言 | 怎么读 |
+| --- | --- |
+| TypeScript / Bun | `error.code`、`error.data`（插件自己抛的错误同样带） |
+| Python | `error.code`、`error.data` |
+| Go | `err.Code()`、`err.Data()`；`errors.Is(err, advanced.ErrBinding)` 只判断「这是一次拒绝」 |
+| Swift | `error.code`、`error.data` |
+| Kotlin | `error.code`、`error.data` |
+| Rust | `error.code()`、`error.data()` |
+
+码是 `not-declared`、`unavailable`、`no-method`、`bad-argument`、`bad-value`、`bad-result`（新）、`peer-gone`、`bad-config`。`SyncWaitCycle`、`AggregateError` 不带码，按类型名判断（Rust 里是 `Error::SyncWaitCycle` 这个变体）。
+
+`data` 这一版多了两个键：`bad-value` 的 `reason`（`non-finite`、`cycle`、`too-deep`、`type`、`tag`、`limit`）与 `no-method` 的 `provider`；`bad-argument`、`bad-result` 的 `expected` 现在是真的类型。读 `data` 的代码按名取，多出来的键不影响它。
+
+只把错误原样显示给开发者看的代码**什么都不用改**：新句子更短、更准，而且不该露出的内部编号（`path: test:5 -> …`）没有了。
 
 ## 交来的函数默认异步（#932）
 
