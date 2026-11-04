@@ -50,6 +50,15 @@ func handleOf(_ id: String, _ generation: Int) -> String {
 
 func printable(_ id: String) -> String { id.replacingOccurrences(of: "\0", with: "@") }
 
+/// A name another provider has: `<name> is already provided by <row>: rename
+/// one of them`, and `: rename it` for a name the host holds itself (#937) —
+/// the same sentence rutis and every other runtime give.
+func takenMessage(_ name: String, _ holder: String) -> String {
+    holder == "the host"
+        ? "\(name) is already provided by the host: rename it"
+        : "\(name) is already provided by \(holder): rename one of them"
+}
+
 /// Whether two service values are the same object.
 func same(_ a: RutisExportable?, _ b: RutisExportable?) -> Bool {
     guard let a, let b else { return a == nil && b == nil }
@@ -531,15 +540,18 @@ final class Runtime: @unchecked Sendable {
             fail(row, RutisError(name: "Error", message: "row \(row.name) is not active"))
             return {}
         }
+        // The sentence every provider gives (#937): whose the name is, and
+        // what to do. A name the host holds itself says `the host`, never a
+        // name inside rutis.
         if let existing = services[id] {
             let owner = rows[existing.row]?.name ?? existing.row
             lock.unlock()
-            fail(row, RutisError(name: "Error", message: "\(name) is already provided by \(owner)"))
+            fail(row, RutisError(name: "Error", message: takenMessage(name, owner)))
             return {}
         }
         if row.own, far[id]?.methods != nil {
             lock.unlock()
-            fail(row, RutisError(name: "Error", message: "\(name) is already provided by rutis"))
+            fail(row, RutisError(name: "Error", message: takenMessage(name, "the host")))
             return {}
         }
         let entry = Provided(row: row.key, value: value, shape: shape)
@@ -776,7 +788,8 @@ final class Runtime: @unchecked Sendable {
             for service in exports.keys {
                 if service.contains("#") { throw RutisError(name: "Error", message: "service name \(service) cannot be projected") }
                 if let existing = slots[row.id(service)] {
-                    throw RutisError(name: "Error", message: "\(service) is already provided by \(rows[existing.row]?.name ?? existing.row)")
+                    throw RutisError(name: "Error",
+                                     message: takenMessage(service, rows[existing.row]?.name ?? existing.row))
                 }
             }
             loaded += 1
@@ -1097,8 +1110,12 @@ final class Runtime: @unchecked Sendable {
         // One whose row is unloading is that row's still, and no other's: as
         // Rust's read_binding_as, where a provider out of Active hides what it
         // provides from every reader but its own subtree.
-        let (local, host, remote) = lock.withLock {
-            (services[id].flatMap { !$0.unloading || $0.row == row.key ? $0 : nil }, hosts[id], far[id])
+        // The provider's name comes with it, read under the same lock: a
+        // method the service lacks says whose the name is (#937).
+        let (local, provider, host, remote) = lock.withLock {
+            let local = services[id].flatMap { !$0.unloading || $0.row == row.key ? $0 : nil }
+            let provider = local.map { rows[$0.row]?.name ?? $0.row }
+            return (local, provider, hosts[id], far[id])
         }
         if let local {
             let table = local.value.rutisMethods()
@@ -1110,7 +1127,9 @@ final class Runtime: @unchecked Sendable {
             }
             let client = Rutis.Advanced.Client(name: name, methods: methods) { method, args, _ in
                 let callee = Refusal.Callee(service: name, method: method)
-                guard let body = table[method] else { throw Refusal.noMethod(callee, methods.keys) }
+                guard let body = table[method] else {
+                    throw Refusal.noMethod(callee, methods.keys, provider: provider)
+                }
                 return try await body(Rutis._Generated.Arguments(args, callee: callee)).value
             }
             return (client, local.value)

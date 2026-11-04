@@ -26,6 +26,25 @@ import arcships.rutis.generated.Tables
 class ErrorTextTest {
     private val table = Tables.serviceTable(Shapes::class.java)!!
 
+    // guarantee: sdk/error-texts (a name another provider has says who and
+    // what to do, and a method a service of this process lacks names its row
+    // in the message and data.provider: #937)
+    @Test
+    fun aTakenNameAndAMissingMethodSayWhoseTheyAre() {
+        assertEquals("weather is already provided by a: rename one of them", takenMessage("weather", "a"))
+        assertEquals("weather is already provided by the host: rename it", takenMessage("weather", "the host"))
+
+        val error = noMethod("weather", "tomorow", listOf("today", "wait"), provider = "a")
+        assertEquals("weather has no method tomorow (methods: today, wait); it is provided by row a", error.message)
+        assertEquals("no-method", error.code)
+        assertEquals(mapOf("service" to "weather", "method" to "tomorow", "methods" to listOf("today", "wait"),
+            "provider" to "a"), error.data)
+
+        val own = noMethod("weather", "tomorow", listOf("today"))
+        assertEquals("weather has no method tomorow (methods: today)", own.message)
+        assertEquals(mapOf("service" to "weather", "method" to "tomorow", "methods" to listOf("today")), own.data)
+    }
+
     // guarantee: sdk/error-texts (a call the Kotlin runtime refuses names the
     // service, method and 1-based argument, code no-method or bad-argument)
     @Test

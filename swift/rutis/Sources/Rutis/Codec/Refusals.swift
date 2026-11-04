@@ -43,13 +43,21 @@ package enum Refusal {
     }
 
     /// `<service> has no method <method> (methods: a, b)`, code no-method;
-    /// for an object `<Type> has no method …`.
-    package static func noMethod(_ callee: Callee, _ methods: some Sequence<String>) -> RutisError {
+    /// for an object `<Type> has no method …`. `provider`: the row providing
+    /// the service, when this side knows it, which the message names and
+    /// `data.provider` carries (#937).
+    package static func noMethod(_ callee: Callee, _ methods: some Sequence<String>,
+                                  provider: String? = nil) -> RutisError {
         let sorted = methods.sorted()
         let listed = sorted.isEmpty ? "no methods" : "methods: " + sorted.joined(separator: ", ")
         let owner = callee.service ?? callee.object ?? "the object"
-        return binding("no-method", "\(owner) has no method \(callee.method) (\(listed))",
-                       callee.data(["methods": sorted]))
+        var message = "\(owner) has no method \(callee.method) (\(listed))"
+        var data = callee.data(["methods": sorted])
+        if let provider {
+            message += "; it is provided by row \(provider)"
+            data["provider"] = provider
+        }
+        return binding("no-method", message, data)
     }
 
     /// `<service>.<method>: argument <i> is missing` (i from 1), code

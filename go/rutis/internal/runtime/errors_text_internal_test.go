@@ -185,11 +185,68 @@ func TestADuplicateProviderIsNamedByItsRow(t *testing.T) {
 	rt.rows[a.key], rt.rows[b.key] = a, b
 	rt.provide(a, "forecast", textWeather{})
 	defer func() {
-		if got := fmt.Sprint(recover()); got != "forecast is already provided by a" {
+		if got := fmt.Sprint(recover()); got != "forecast is already provided by a: rename one of them" {
 			t.Fatal(got)
 		}
 	}()
 	rt.provide(b, "forecast", textWeather{})
+}
+
+// guarantee: sdk/error-texts (a row loading a name another row exports says
+// who has it and what to do: `<name> is already provided by <row>: rename one
+// of them`, #937)
+func TestARowLoadingATakenNameSaysWhoHasIt(t *testing.T) {
+	defB := Define(Plugin[NoConfig]{Name: "b", Apply: func(c *Ctx, _ NoConfig) error { return nil }})
+	rt := newRuntime([]*Definition{defB})
+	first := &row{key: "row:1.0", name: "a", def: &Definition{}}
+	rt.rows[first.key] = first
+	rt.slots[first.id("forecast")] = &slot{row: first.key, name: "forecast"}
+	err := rt.load(context.Background(), "b", "b", nil,
+		map[string]map[string]string{"forecast": {"today": "sync"}}, nil, nil)
+	want := "forecast is already provided by a: rename one of them"
+	if err == nil || err.Error() != want {
+		t.Fatalf("got %v, want %q", err, want)
+	}
+}
+
+// guarantee: sdk/error-texts (a method a service of this process lacks says
+// whose the name is: `; it is provided by row <row>`, with data.provider,
+// #937)
+func TestAMethodALocalServiceLacksNamesItsRow(t *testing.T) {
+	var user *Ctx
+	provider := Define(Plugin[NoConfig]{Name: "weather", Apply: func(c *Ctx, _ NoConfig) error {
+		c.Provide("weather", textWeather{})
+		return nil
+	}})
+	using := Define(Plugin[NoConfig]{Name: "chat", Inject: []string{"weather"}, Apply: func(c *Ctx, _ NoConfig) error {
+		user = c
+		return nil
+	}})
+	rt := newRuntime([]*Definition{provider, using})
+	ctx := context.Background()
+	t.Cleanup(func() { _ = rt.dispose(ctx) })
+	if err := rt.load(ctx, "w", "weather", nil, nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := rt.load(ctx, "c", "chat", nil, nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	var service *Service
+	if err := user.Use("weather", &service); err != nil {
+		t.Fatal(err)
+	}
+	var out string
+	err := service.Call(ctx, "tomorow", &out)
+	want := "weather has no method tomorow (methods: forecast, today, tomorrow); it is provided by row w"
+	if err == nil || err.Error() != want {
+		t.Fatalf("got %v, want %q", err, want)
+	}
+	sameData(t, coded(t, err, "BindingError", "no-method"), map[string]any{
+		"service":  "weather",
+		"method":   "tomorow",
+		"methods":  []string{"forecast", "today", "tomorrow"},
+		"provider": "w",
+	})
 }
 
 // guarantee: sdk/optional-deps (Get reads a service in Optional: bound and
