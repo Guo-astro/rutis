@@ -20,7 +20,7 @@ Out of scope:
 
 | Case | What a test shows | What `dev` / `check` shows |
 | --- | --- | --- |
-| injecting a service nobody provides | TS: `the plugin does not provide weather (now)`; Go: `timed out (10s): the service weather`; Rust: `(&plugin).await` returns `Ok`, then `root.get::<Weather>()` panics | `waiting for lmm (no row provides it; did you mean llm?)` |
+| injecting a service nobody provides | TS: `the plugin does not provide weather (now)`; Go: `timed out (10s): the service weather`; Rust: `(&plugin).await` returns `Ok`, then `root.get::<Weather>()` panics | `waiting for lmm (nothing provides it yet; did you mean llm?)` (as #937 landed it) |
 | two plugins injecting each other | Go, TS: a timeout and nothing else | `they inject each other`, and `check` tells you to `break the cycle` |
 | a service call that never returns | TS: after `node:test`'s timeout the test process did not exit (CI hangs); Python: the test hangs with no output at all | `status` lists the calls in flight |
 | `apply` fails | Python: `PluginTestError: plugin: KeyError: 'town'`, no stack; TS: no source position | with a stack, pointing at the `apply` line |

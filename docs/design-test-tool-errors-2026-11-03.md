@@ -20,7 +20,7 @@ Issue：[#933](https://github.com/arcships/rutis/issues/933)（属于 [#663](htt
 
 | 情形 | 测试里看到的 | `dev` / `check` 里看到的 |
 | --- | --- | --- |
-| inject 一个没人提供的服务 | TS：`the plugin does not provide weather (now)`；Go：`timed out (10s): the service weather`；Rust：`(&plugin).await` 返回 `Ok`，接着 `root.get::<Weather>()` panic | `waiting for lmm (no row provides it; did you mean llm?)` |
+| inject 一个没人提供的服务 | TS：`the plugin does not provide weather (now)`；Go：`timed out (10s): the service weather`；Rust：`(&plugin).await` 返回 `Ok`，接着 `root.get::<Weather>()` panic | `waiting for lmm (nothing provides it yet; did you mean llm?)`（#937 落地的说法） |
 | 两个插件互相 inject | Go、TS：只有超时 | `they inject each other`，check 让你 `break the cycle` |
 | 服务调用不返回 | TS：`node:test` 超时后测试进程不退出（CI 会挂住）；Python：测试一直挂着，没有任何输出 | `status` 列出在途调用 |
 | `apply` 出错 | Python：`PluginTestError: plugin: KeyError: 'town'`，没有堆栈；TS：没有源码位置 | 带堆栈、指到 `apply` 那一行 |
