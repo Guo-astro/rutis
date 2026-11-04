@@ -88,7 +88,7 @@ One table says which sentence is whose:
 | `the message would be <n> bytes, over the limit of <limit> bytes (<n> MiB)` | rutis | unchanged from today |
 | `argument 1 is missing`, `<service>.<method> takes 1 argument, got 2` | rutis (no underlying error) | unchanged from today |
 | `the value holds a function that its Rust type cannot represent`, `the value holds a tagged value (…) that its Rust type cannot represent`, Swift's `cannot decode … into …` | rutis (no underlying error) | unchanged from today, only `live Cordis` goes |
-| a synchronous wait cycle's `… path: test:5 -> …`, `row <x> is not loaded in this runtime`, a bare `non-finite number` and the runtime's own lines like them | rutis | not this design's (the diagnostics design and their own designs) |
+| a synchronous wait cycle's `<that call> would wait on itself: it is awaited inside the synchronous call that produces it (synchronous calls)`, `row <x> is not loaded in this runtime`, a bare `non-finite number` and the runtime's own lines like them | rutis | not this design's (the diagnostics design and their own designs) |
 
 ### 4.1 The frame
 

@@ -23,11 +23,13 @@ Issue：[#932](https://github.com/arcships/rutis/issues/932)（属于 [#663](htt
 
 > open-host.md 第 5 节给插件作者的 TypeScript 测试例子，原样运行就失败。例子里插件把处理函数登记给宿主（`commands.register(name, handler)`），测试用假的宿主服务调用这个处理函数；处理函数里再调用另一个假服务时报 `SyncWaitCycle`。
 
-今天照指南原样做，`npm test` 里的测试失败，打印的是：
+今天照指南原样做，`npm test` 里的测试失败，报的是那个等待环。它该说的话说开发者写的哪次调用，不带链上的调用编号：
 
 ```text
-SyncWaitCycle: await requires the Node thread occupied by its parent synchronous call; path: test:5 -> rutis-test:3 -> rutis-test:4
+test.pending would wait on itself: it is awaited inside the synchronous call that produces it (synchronous calls)
 ```
+
+（这句已由[诊断设计](design-diagnostics-2026-10-26.md) §4.3 采纳，2026-11-04。0.20 打的是同一件事，只把 `path: test:5 -> rutis-test:3 -> rutis-test:4` 这样的内部编号写进了文字。）
 
 原因在运行时里，与例子无关：
 
@@ -346,7 +348,7 @@ $ npx rutis-host call commands.run '"count"'
 | 两个运行时经交来的函数互相同步调用 | A 在同步调用里调用 B 交来的函数，B 在它的同步调用里又调用 A 的 | 发出这次同步调用的行 | 改用 `async` 方法，或换个时机（[插件 API](guide/plugin-api.md)「同步调用与可重入」）；不要立刻重试同一个调用 |
 
 - 两种失败都以 `SyncWaitCycle` 结束，`name` 与今天相同；它的码与句子按[诊断设计](design-diagnostics-2026-10-26.md)。今天 Node、Bun 那条带内部的调用编号（原样见 §一 1.1），宿主那条带走过哪些行。
-- **依赖**：本稿提议诊断设计在 §4.3 加一行、在 §4.5 的措辞里写成一句运行时自己发现时的说法 —— 本稿提议的那句是 `SyncWaitCycle: <what> would wait on itself: it is awaited inside the synchronous call that produces it (synchronous calls)`（`<what>` 是这次调用：`a function`、`the method get`、`weather.tomorrow`）。采纳与措辞由那份设计稿的负责人决定。改这一句正是 §三 3.7 的最后一条：`SyncWaitCycle` 是 rutis 自己造的错，今天那句里带 rutis 的内部编号；插件抛出的错误、Python 的 `TypeError`、Go 编码器的错误都是底层错误，照原样，本稿不改它们的文字。
+- **依赖，已采纳（2026-11-04）**：诊断设计在 §4.3 加了两行、在 §4.5 的措辞里写了一句运行时自己发现时的说法，用的就是本稿提议的那句 `SyncWaitCycle: <what> would wait on itself: it is awaited inside the synchronous call that produces it (synchronous calls)`（`<what>` 是这次调用：`a function`、`the method get`、`weather.tomorrow`；拿不到时 `awaiting a result`）。改这一句正是 §三 3.7 的最后一条：`SyncWaitCycle` 是 rutis 自己造的错，今天那句里带 rutis 的内部编号；插件抛出的错误、Python 的 `TypeError`、Go 编码器的错误都是底层错误，照原样，本稿不改它们的文字。
 - 其余错误照旧（`bad-value`、`no-method`、`peer-gone`，见那份设计稿 §4.3）。
 - 正常时（§4.1、§4.2）没有任何新的输出：调用照常返回，测试照常通过。
 

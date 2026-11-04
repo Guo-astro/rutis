@@ -1808,8 +1808,8 @@ class Peer:
                     # Said with what the plugin wrote, not the call ids.
                     awaited = entry.described or "awaiting a result"
                     cycle = SyncWaitCycle(
-                        f"{awaited} would wait on itself: its result is awaited while the synchronous "
-                        "call waiting for it holds this Python process (synchronous calls)"
+                        f"{awaited} would wait on itself: it is awaited inside the synchronous call "
+                        "that produces it (synchronous calls)"
                     )
                     self._respond(call, (False, cycle), business)
                 else:

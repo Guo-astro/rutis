@@ -124,6 +124,49 @@ test('a received function is called synchronously inside a synchronous call (#93
   peer.close()
 })
 
+// #1067, diagnostics §4.3: a cycle says which call the developer wrote, and
+// never the ids the chain is made of.
+test('a wait cycle names the call, not the chain (#1067)', async () => {
+  const { Session, ENDPOINT_PROTOCOL } = require('../src/session.ts')
+  const sent: any[] = [], pending: string[] = []
+  let proxy: any, future: number | undefined
+  let asked = false
+  const peer = new Session({
+    dispatch: (_: string, method: string, args: any[]) => {
+      if (method === 'take') return (proxy = args[0])
+      if (method === 'pending') return new Promise(() => {})
+      return proxy()
+    },
+    send: (line: string) => {
+      const frame = JSON.parse(line)
+      sent.push(frame)
+      if (frame.op === 'call') pending.push(frame.id)
+    },
+    pump: () => {
+      // On the waiting chain, as the far end's own await of it is.
+      if (!asked) { asked = true; peer.receive({ op: 'await', id: 'main:9', path: [pending[0]], reference: future }); return }
+      peer.receive({ op: 'return', id: pending.shift(), value: { type: 'data', value: 3 } })
+    },
+    abort: () => {},
+    endpoint: { local: 'bun' },
+  })
+  peer.receive({ op: 'hello', version: ENDPOINT_PROTOCOL, endpoint: 'main', capabilities: [] })
+  const reference = { type: 'reference', value: { id: 9, home: false, kind: 'function', origin: [] } }
+  peer.receive({ op: 'invoke', id: 'main:1', path: [], target: 'test', method: 'take', args: { type: 'list', value: [reference] } })
+  peer.receive({ op: 'invoke', id: 'main:2', path: [], target: 'test', method: 'pending', args: { type: 'data', value: [] } })
+  await Promise.resolve()
+  future = sent.filter((frame: any) => frame.op === 'return' && frame.id === 'main:2').at(-1)?.value?.value?.id
+  expect(typeof future).toBe('number')
+  peer.receive({ op: 'invoke', id: 'main:4', path: [], target: 'test', method: 'call it', args: { type: 'data', value: [] }, sync: true })
+  await Promise.resolve()
+  const refusal = sent.filter((frame: any) => frame.op === 'throw').at(-1)
+  expect(refusal?.error?.name).toBe('SyncWaitCycle')
+  expect(refusal?.error?.message).toBe(
+    'test.pending would wait on itself: it is awaited inside the synchronous call that produces it (synchronous calls)',
+  )
+  peer.close()
+})
+
 // Events protocol §5.5: an emit's reply is taken as its frame is read,
 // before the next frame is handled, not on a later tick.
 test('invokeAnswered tells the reply as its frame is read, before the next frame', () => {
