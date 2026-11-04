@@ -57,10 +57,11 @@ class PeerTests(background.IsolatedAsyncioTestCase):
         self.assertEqual(reply["op"], "throw")
         self.assertEqual(reply["error"]["name"], "SyncWaitCycle")
         # Without the call ids (#680): the result is not of a known call here.
+        # #1067: the adopted sentence, and no ids of the chain in it.
         self.assertEqual(
             reply["error"]["message"],
-            "awaiting a result would wait on itself: its result is awaited while the synchronous call waiting for it "
-            "holds this Python process (synchronous calls)",
+            "awaiting a result would wait on itself: it is awaited inside the synchronous call that produces it "
+            "(synchronous calls)",
         )
         future.cancel()
 

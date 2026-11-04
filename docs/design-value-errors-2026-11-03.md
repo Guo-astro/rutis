@@ -88,7 +88,7 @@ Issue：[#936](https://github.com/arcships/rutis/issues/936)（属于 [#663](htt
 | `the message would be <n> bytes, over the limit of <limit> bytes (<n> MiB)` | rutis | 照今天的句子不动 |
 | `argument 1 is missing`、`<服务>.<方法> takes 1 argument, got 2` | rutis（没有底层错误） | 照今天的句子不动 |
 | `the value holds a function that its Rust type cannot represent`、`the value holds a tagged value (…) that its Rust type cannot represent`、Swift 的 `cannot decode … into …` | rutis（没有底层错误） | 照今天的句子不动，只把 `live Cordis` 去掉 |
-| 同步等待成环的 `… path: test:5 -> …`、`row <x> is not loaded in this runtime`、`non-finite number` 这类运行时自己的行 | rutis | 不归这份设计（诊断设计与它自己的设计管） |
+| 同步等待成环的 `<那次调用> would wait on itself: it is awaited inside the synchronous call that produces it (synchronous calls)`、`row <x> is not loaded in this runtime`、`non-finite number` 这类运行时自己的行 | rutis | 不归这份设计（诊断设计与它自己的设计管） |
 
 ### 4.1 框架
 

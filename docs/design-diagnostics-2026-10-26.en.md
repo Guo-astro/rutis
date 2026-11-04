@@ -106,6 +106,13 @@ An error a plugin throws itself keeps whatever `code` it has. `BindingError`s th
 
 `SyncWaitCycle` and `AggregateError` already have their own type names and get no code. Codes are for programs and do not appear in the line of text meant for people. Rows can be added to the table during implementation; existing rows do not change.
 
+A wait cycle a runtime finds by itself (the sentence [function references](design-function-refs-2026-11-03.en.md) §4.3 asked for, adopted 2026-11-04) names no internal number: it names the call the developer wrote.
+
+| Name | When | Text | Numeric code |
+| --- | --- | --- | --- |
+| `SyncWaitCycle` | Awaiting, inside a synchronous call, a Promise / coroutine that only that call can settle (found by Node, Bun and Python themselves; the host's own `Future` alike) | `<the call the developer wrote> would wait on itself: it is awaited inside the synchronous call that produces it (synchronous calls)`; `awaiting a result` when that call is not known, e.g. `test.pending would wait on itself: it is awaited inside the synchronous call that produces it (synchronous calls)`, `awaiting a result would wait on itself: …` | none |
+| `SyncWaitCycle` | Forwarding a synchronous call would make runtimes wait for each other | `<the call the developer wrote> would wait on itself: a → b (synchronous calls)` (rows by row name, §4.5; §8 row 9 is how it looks) | none |
+
 On the Rust side (decided during implementation, 2026-10-26): `rutis_bridge::session::Error` has a new variant, `Binding { code: Option<&'static str>, message, data }`, used when rutis refuses a call: a method that does not exist, wrong arguments and a service that is not there carry a code; protocol refusals (one end not keeping to the protocol) carry none. `Error::Value` now means only a value that cannot cross. On the wire both `Binding` and `Value` are `BindingError`s with a code (`bad-value` for `Value`), and a `Transport` error during a call is `peer-gone`; `Error::code()` gives the same code on this side. A Rust host that matches every variant of `session::Error` needs the new arm (incompatible, in the migration guide).
 
 ### 4.4 Locations across languages
@@ -137,6 +144,7 @@ Rule: speak only in terms the developer wrote.
 
 - Never appears: rutis, Cordis, Rust (unless the plugin is written in Rust), binding, session, the raw error text of WireValue and serde, internal ids (`row:23.2`, `PluginId(3)`, labels containing NUL), internal plugins (`runtime-rows`, `rutis-bridge/link#py`), `<root>` / `<leaf>`, the host's private Rust type paths, SDK internal types (`HostProxy`, `RemoteFuture`, `e.graph`, `UNDEFINED`), `rollback failed`, `cannot resolve row … again`, `ThrownValue`.
 - Rows are written by row name, runtimes by their name (`py`), and the host as "host".
+- **A wait cycle a runtime finds by itself** names the call the developer wrote, not the call ids of the chain: `<that call> would wait on itself: it is awaited inside the synchronous call that produces it (synchronous calls)` (the table in §4.3).
 - Rewrite every item listed in the body of #677 and in its "merged #680" section, each locked by a test on the new text; several of them must state the reason: say plainly when the default export is not the result of `definePlugin`; `entry file is gone` names the file; when a string or object is thrown, show it as is (`"just a string"`, `{code: 3}`), not `ThrownValue`; an unhandled rejection prints only the plugin's own frames.
 - Compile errors from Rust macros and traits speak plainly through `#[diagnostic::on_unimplemented]`.
 

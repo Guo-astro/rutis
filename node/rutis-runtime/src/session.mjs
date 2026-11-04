@@ -794,7 +794,10 @@ export class Session {
         if (frame.op === 'await') {
           if (entry.call) this.#awaits.set(frame.id, entry.call)
           if (entry.result) this.#respond(frame.id, entry.result, business, call)
-          else if (this.#waiting.length) this.#respond(frame.id, { ok: false, value: Object.assign(new Error(`await requires the Node thread occupied by its parent synchronous call; path: ${path.join(' -> ')}`), { name: 'SyncWaitCycle' }) }, business)
+          // The developer's call, never the ids the chain is made of (#1067,
+          // diagnostics §4.3): the promise settles only when the loop runs,
+          // which the synchronous call it belongs to holds.
+          else if (this.#waiting.length) this.#respond(frame.id, { ok: false, value: Object.assign(new Error(`${call ?? 'awaiting a result'} would wait on itself: it is awaited inside the synchronous call that produces it (synchronous calls)`), { name: 'SyncWaitCycle' }) }, business)
           else entry.value.then(value => this.#respond(frame.id, { ok: true, value }, business, call), value => this.#respond(frame.id, { ok: false, value }, business, call))
           return
         }

@@ -106,6 +106,13 @@ site: {
 
 `SyncWaitCycle`、`AggregateError` 已有自己的类型名，不另设码。码给程序判断，不出现在给人看的那一行文字里。表在实施时可以加行，不改已有的行。
 
+一个运行时自己发现的同步等待成环（[交来的函数](design-function-refs-2026-11-03.md) §四 4.3 请求采纳的那句，2026-11-04 采纳）不说内部编号，说开发者写的那次调用：
+
+| 名字 | 什么时候 | 文字 | 数值码 |
+| --- | --- | --- | --- |
+| `SyncWaitCycle` | 同步调用里 await 一个只有这条调用返回后才会有结果的 Promise / 协程（Node、Bun、Python 自己发现的，宿主自己那个 `Future` 同理） | `<开发者写的那次调用> would wait on itself: it is awaited inside the synchronous call that produces it (synchronous calls)`；拿不到那个调用时写 `awaiting a result`，例如 `test.pending would wait on itself: it is awaited inside the synchronous call that produces it (synchronous calls)`、`awaiting a result would wait on itself: …` | 无 |
+| `SyncWaitCycle` | 宿主转发一次同步调用会让几个运行时互相等 | `<开发者写的那次调用> would wait on itself: a → b (synchronous calls)`（行名按 §4.5 写；§八 第 9 行是它给人的样子） | 无 |
+
 Rust 一侧（实施时定，2026-10-26）：`rutis_bridge::session::Error` 新增分支 `Binding { code: Option<&'static str>, message, data }`，rutis 拒绝一次调用时用它：方法不存在、参数不对、服务不在带码，协议层面的拒绝（一端没按约定办事）不带码。`Error::Value` 只表示值传不过去。发到线上时 `Binding` 与 `Value` 都是带码的 `BindingError`（`Value` 为 `bad-value`），会话中途结束的 `Transport` 为 `peer-gone`；`Error::code()` 在本端给出同样的码。对 `session::Error` 逐个分支匹配的 Rust 宿主要加上这一支（不兼容，写进迁移指南）。
 
 ### 4.4 位置与跨语言
@@ -137,6 +144,7 @@ Rust 一侧（实施时定，2026-10-26）：`rutis_bridge::session::Error` 新�
 
 - 不出现：rutis、Cordis、Rust（插件是 Rust 写的除外）、binding、session、WireValue 与 serde 的报错原文、内部 id（`row:23.2`、`PluginId(3)`、带 NUL 的标签）、内部插件（`runtime-rows`、`rutis-bridge/link#py`）、`<root>` / `<leaf>`、宿主私有的 Rust 类型路径、SDK 的内部类型（`HostProxy`、`RemoteFuture`、`e.graph`、`UNDEFINED`）、`rollback failed`、`cannot resolve row … again`、`ThrownValue`。
 - 行写行名，运行时写它的名字（`py`），宿主写"宿主"。
+- **运行时自己发现的同步等待成环**说开发者写的那次调用，不说链上的调用编号：`<那次调用> would wait on itself: it is awaited inside the synchronous call that produces it (synchronous calls)`（§4.3 的表）。
 - 按 #677 正文与"并入 #680"一节列出的每一条改写，各有测试锁住新文字；其中几条要说出原因：默认导出不是 `definePlugin` 的结果时直说；`entry file is gone` 写出是哪个文件；抛出字符串或对象时显示它本身（`"just a string"`、`{code: 3}`），不显示 `ThrownValue`；没处理的 rejection 只打印插件自己的帧。
 - Rust 宏与 trait 的编译错误用 `#[diagnostic::on_unimplemented]` 说人话。
 

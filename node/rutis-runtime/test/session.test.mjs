@@ -118,6 +118,58 @@ test('a received function is called synchronously inside a synchronous call (#93
   peer.close()
 })
 
+// #1067, diagnostics §4.3: a cycle says which call the developer wrote, and
+// never the ids the chain is made of.
+test('a wait cycle names the call, not the chain (#1067)', async () => {
+  const sent = [], pending = []
+  let proxy, promise
+  let asked = false
+  const peer = new Session({
+    endpoint: { local: 'node' },
+    dispatch: (target, method, args) => {
+      if (method === 'take') return (proxy = args[0])
+      if (method === 'pending') return (promise = new Promise(() => {}))
+      return proxy()
+    },
+    send: line => {
+      const frame = JSON.parse(line)
+      sent.push(frame)
+      if (frame.op === 'call') pending.push(frame.id)
+    },
+    pump: () => {
+      // The far end, inside the synchronous call of ours, awaits the promise
+      // this process made: its loop cannot run, so it is a cycle.
+      // On the waiting chain, as the far end's own await of it is.
+      if (!asked) { asked = true; peer.receive({ op: 'await', id: 'rust:9', path: [pending[0]], reference: future }); return }
+      peer.receive({ op: 'return', id: pending.shift(), value: data(3) })
+    },
+    abort: () => {},
+  })
+  peer.receive({ op: 'hello', version: ENDPOINT_PROTOCOL, endpoint: 'rust', capabilities: [] })
+  const reference = { type: 'reference', value: { id: 9, home: false, kind: 'function', origin: [] } }
+  peer.receive({ op: 'invoke', id: 'rust:1', path: [], target: 'test', method: 'take', args: { type: 'list', value: [reference] } })
+  peer.receive({ op: 'invoke', id: 'rust:2', path: [], target: 'test', method: 'pending', args: data([]) })
+  await Promise.resolve()
+  const exported = sent.findLast(frame => frame.op === 'return' && frame.id === 'rust:2')
+  const future = exported?.value?.value?.id
+  assert.equal(typeof future, 'number', `a future goes out: ${JSON.stringify(exported)}`)
+  // The promise's reference, made by the far end's await of it.
+  peer.receive({ op: 'await', id: 'rust:3', path: [], reference: future })
+  await Promise.resolve()
+  // A synchronous call of ours keeps the loop held; the await above arrives
+  // inside it through `pump`.
+  peer.receive({ op: 'invoke', id: 'rust:4', path: [], target: 'test', method: 'call it', args: data([]), sync: true })
+  await Promise.resolve()
+  const refusal = sent.find(frame => frame.op === 'throw')
+  assert.equal(refusal?.error?.name, 'SyncWaitCycle')
+  assert.equal(
+    refusal?.error?.message,
+    'test.pending would wait on itself: it is awaited inside the synchronous call that produces it (synchronous calls)',
+    'the call the developer wrote, and no ids of the chain',
+  )
+  peer.close()
+})
+
 test('invokeAnswered tells the reply as its frame is read, before the next frame', async () => {
   const seen = []
   const { peer, sent, fault } = harness((_, method) => { seen.push(method); return null }, { inline: ['plugins.read'] })

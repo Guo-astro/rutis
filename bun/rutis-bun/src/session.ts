@@ -773,7 +773,10 @@ export class Session {
           if (entry.result) this.#respond(frame.id, entry.result, business, call)
           // The future settles only when the event loop runs, which the
           // synchronous call it belongs to holds.
-          else if (this.#waiting.length && this.#related({ frame })) this.#respond(frame.id, { ok: false, value: Object.assign(new Error(`await requires the Bun thread occupied by its parent synchronous call; path: ${path.join(' -> ')}`), { name: 'SyncWaitCycle' }) }, business)
+          // The developer's call, never the ids the chain is made of (#1067,
+          // diagnostics §4.3): the future settles only when the loop runs,
+          // which the synchronous call it belongs to holds.
+          else if (this.#waiting.length && this.#related({ frame })) this.#respond(frame.id, { ok: false, value: Object.assign(new Error(`${call ?? 'awaiting a result'} would wait on itself: it is awaited inside the synchronous call that produces it (synchronous calls)`), { name: 'SyncWaitCycle' }) }, business)
           else entry.value.then(value => this.#respond(frame.id, { ok: true, value }, business, call), value => this.#respond(frame.id, { ok: false, value }, business, call))
           return
         }

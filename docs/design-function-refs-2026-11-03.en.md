@@ -23,11 +23,13 @@ In [#663](https://github.com/arcships/rutis/issues/663)'s 0.19.0 evaluation (O2,
 
 > The TypeScript test example open-host.md §5 gives plugin authors fails as written. The plugin registers a handler with the host (`commands.register(name, handler)`), the test calls that handler through a fake host service, and calling another fake service from inside the handler reports `SyncWaitCycle`.
 
-Following the guide as written today, the test under `npm test` fails and prints:
+Following the guide as written today, the test under `npm test` fails with that wait cycle. It should name the call the developer wrote, not the call ids of the chain:
 
 ```text
-SyncWaitCycle: await requires the Node thread occupied by its parent synchronous call; path: test:5 -> rutis-test:3 -> rutis-test:4
+test.pending would wait on itself: it is awaited inside the synchronous call that produces it (synchronous calls)
 ```
+
+(The [diagnostics design](design-diagnostics-2026-10-26.en.md) §4.3 adopted this sentence on 2026-11-04. 0.20 said the same thing, only with internal ids such as `path: test:5 -> rutis-test:3 -> rutis-test:4` inside the text.)
 
 The cause is in the runtime, not in the example:
 
@@ -347,7 +349,7 @@ This design writes neither error codes nor the wording people read: those belong
 | Two runtimes calling each other's received functions synchronously | A calls B's received function inside a synchronous call, and B calls A's inside its own | the row that sent the synchronous call | Use an `async` method, or another moment ([plugin API](guide/plugin-api.en.md) "Synchronous calls and re-entrancy"); do not retry the same call at once |
 
 - Both failures end as `SyncWaitCycle`, with the `name` it has today; its code and its sentence follow the [diagnostics design](design-diagnostics-2026-10-26.en.md). Today the Node and Bun line carries internal call ids (quoted as it is in §1.1), and the host's line names the rows the call went through.
-- **Dependency**: this draft proposes that the diagnostics design add a row to its §4.3 and a sentence to its §4.5 for the case the runtime notices itself — the sentence this draft proposes is `SyncWaitCycle: <what> would wait on itself: it is awaited inside the synchronous call that produces it (synchronous calls)` (`<what>` is the call: `a function`, `the method get`, `weather.tomorrow`). Whether to take it, and its wording, are that design's owner's decision. Rewriting this one is exactly §3.7's last item: `SyncWaitCycle` is an error rutis made up, and today's line carries rutis's internal ids; an error a plugin threw, Python's `TypeError` and a Go encoder's error are underlying errors and stay as they are — this draft does not re-word them.
+- **Dependency, adopted (2026-11-04)**: the diagnostics design added two rows to its §4.3 and a sentence to its §4.5 for the case the runtime notices itself, using the sentence this draft proposed: `SyncWaitCycle: <what> would wait on itself: it is awaited inside the synchronous call that produces it (synchronous calls)` (`<what>` is the call: `a function`, `the method get`, `weather.tomorrow`; `awaiting a result` when it is not known). Rewriting this one is exactly §3.7's last item: `SyncWaitCycle` is an error rutis made up, and today's line carries rutis's internal ids; an error a plugin threw, Python's `TypeError` and a Go encoder's error are underlying errors and stay as they are — this draft does not re-word them.
 - Every other error is as before (`bad-value`, `no-method`, `peer-gone`; that design's §4.3).
 - In the normal case (§4.1, §4.2) there is no new output at all: calls return, tests pass.
 
