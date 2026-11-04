@@ -3137,6 +3137,9 @@ pub(crate) const MAX_FRAME_DEPTH: usize = 3 * MAX_DEPTH + 16;
 /// frame [`MAX_FRAME_DEPTH`] deep, whatever `RUST_MIN_STACK` says.
 pub(crate) const READER_STACK: usize = 2 << 20;
 
+/// The refusal of a value nested too far. A value that holds itself gets
+/// this one on this side: serde's `Serializer` gives no container identity
+/// to tell the two apart (see `session::objects::Exact`).
 fn too_deep() -> Error {
     Error::why(
         "too-deep",

@@ -411,12 +411,26 @@ class Peer(private val channel: Channel, private val opts: Options) {
     private fun supportsLocked(capability: String) = capability in declared
 
     /** Whether `value` holds a reference, a tagged value or undefined, so it crosses as a list or record. */
-    private fun marked(value: Any?): Boolean = when (value) {
+    /**
+     * Whether `value` holds a reference or a tagged value, so it crosses as
+     * a list or record of parts rather than as data. `seen` is the
+     * containers on the path by identity: one that holds itself is walked no
+     * further here (its cycle is the refusal `plain` makes, design D3).
+     */
+    private fun marked(value: Any?, seen: MutableList<Any> = mutableListOf()): Boolean = when (value) {
         is JsonElement -> false
         is Exported, is ExportedObject, is RemoteFunction, is RemoteFuture, is RemoteObject, is Plugin, is RemotePlugin, SignalArgument, Undefined -> true
         is Long -> value > MAX_SAFE || value < -MAX_SAFE
-        is List<*> -> value.any(::marked)
-        is Map<*, *> -> value.values.any(::marked)
+        is List<*>, is Map<*, *> -> if (seen.any { it === value }) {
+            false
+        } else {
+            seen.add(value as Any)
+            try {
+                if (value is List<*>) value.any { marked(it, seen) } else (value as Map<*, *>).values.any { marked(it, seen) }
+            } finally {
+                seen.removeAt(seen.lastIndex)
+            }
+        }
         else -> tagOf(value) != null
     }
 
@@ -425,7 +439,40 @@ class Peer(private val channel: Channel, private val opts: Options) {
      * it granted, for a rollback; `depth` counts the lists and records around
      * the value (an argument list starts at -1: it is not a level).
      */
-    private fun encode(value: Any?, grants: MutableList<Long>, origin: List<String>, depth: Int): JsonObject {
+    private fun encode(
+        value: Any?,
+        grants: MutableList<Long>,
+        origin: List<String>,
+        depth: Int,
+        // The containers on this path, by identity: a list or map that holds
+        // itself says so (design D3), and a value shared by two places is
+        // not a cycle. Empty for a new value.
+        seen: MutableList<Any> = mutableListOf(),
+    ): JsonObject {
+        // A container walked here (one that holds references or tagged
+        // values) is put on the path: one already there holds itself, said
+        // before the depth, which a cycle would otherwise reach as "too
+        // deep". Plain data is walked by `plain`, which guards the same way.
+        val guarded = value is WireMap || value is WireSet ||
+            ((value is List<*> || value is Map<*, *>) && marked(value))
+        if (guarded) {
+            if (seen.any { it === value }) throw cyclic()
+            seen.add(value!!)
+        }
+        try {
+            return encodeInside(value, grants, origin, depth, seen)
+        } finally {
+            if (guarded) seen.removeAt(seen.lastIndex)
+        }
+    }
+
+    private fun encodeInside(
+        value: Any?,
+        grants: MutableList<Long>,
+        origin: List<String>,
+        depth: Int,
+        seen: MutableList<Any>,
+    ): JsonObject {
         when (value) {
             is List<*>, is Map<*, *>, is Throwable, is WireMap, is WireSet -> if (depth >= MAX_DEPTH) throw tooDeep()
         }
@@ -437,12 +484,12 @@ class Peer(private val channel: Channel, private val opts: Options) {
             is WireMap -> {
                 checkKeys(value.entries.map { it.first }, "map key")
                 wire("map", JsonArray(value.entries.map { (key, item) ->
-                    JsonArray(listOf(encode(key, grants, origin, depth + 1), encode(if (item === Undefined) null else item, grants, origin, depth + 1)))
+                    JsonArray(listOf(encode(key, grants, origin, depth + 1, seen), encode(if (item === Undefined) null else item, grants, origin, depth + 1, seen)))
                 }))
             }
             is WireSet -> {
                 checkKeys(value.elements, "set element")
-                wire("set", JsonArray(value.elements.map { encode(it, grants, origin, depth + 1) }))
+                wire("set", JsonArray(value.elements.map { encode(it, grants, origin, depth + 1, seen) }))
             }
             Undefined -> buildJsonObject { put("type", "undefined") }
             SignalArgument -> buildJsonObject { put("type", "signal") }
@@ -475,23 +522,23 @@ class Peer(private val channel: Channel, private val opts: Options) {
                 exportValue(value, "object", value.original, grants, origin)
             }
             is Long -> if (value > MAX_SAFE || value < -MAX_SAFE) {
-                encode(BigInteger.valueOf(value), grants, origin, depth)
+                encode(BigInteger.valueOf(value), grants, origin, depth, seen)
             } else {
                 data(JsonPrimitive(value), depth)
             }
             is List<*> -> if (marked(value)) {
                 // Undefined inside a value is null (#687 §七); an argument
                 // list (depth -1) keeps it, as an omitted argument.
-                wire("list", JsonArray(value.map { encode(if (it === Undefined && depth >= 0) null else it, grants, origin, depth + 1) }))
+                wire("list", JsonArray(value.map { encode(if (it === Undefined && depth >= 0) null else it, grants, origin, depth + 1, seen) }))
             } else {
-                data(plain(value), depth)
+                data(plain(value, seen), depth)
             }
             is Map<*, *> -> if (marked(value)) {
                 wire("record", JsonObject(value.entries.associate { (key, item) ->
-                    (key as? String ?: throw ValueException("a record key is not a string")) to encode(if (item === Undefined) null else item, grants, origin, depth + 1)
+                    (key as? String ?: throw ValueException("a record key is not a string")) to encode(if (item === Undefined) null else item, grants, origin, depth + 1, seen)
                 }))
             } else {
-                data(plain(value), depth)
+                data(plain(value, seen), depth)
             }
             is Throwable -> data(buildJsonObject {
                 put("name", errorName(value))
@@ -504,7 +551,7 @@ class Peer(private val channel: Channel, private val opts: Options) {
                     throw e
                 }
             } else {
-                data(plain(value), depth)
+                data(plain(value, seen), depth)
             }
         }
     }
@@ -1382,8 +1429,25 @@ fun jsonDepth(value: JsonElement): Int = when (value) {
     else -> 0
 }
 
+/** `write` of `value` once it is on the path, or the cycle that it is. */
+private inline fun inside(value: Any, seen: MutableList<Any>, write: () -> JsonElement): JsonElement {
+    if (seen.any { it === value }) throw cyclic()
+    seen.add(value)
+    try {
+        return write()
+    } finally {
+        seen.removeAt(seen.lastIndex)
+    }
+}
+
 /** A plain value as JSON data: undefined inside data becomes null (design V10). */
-fun plain(value: Any?): JsonElement = when (value) {
+fun plain(value: Any?): JsonElement = plain(value, mutableListOf())
+
+/**
+ * `value` as data, `seen` being the containers on the path by identity: a
+ * list or map that holds itself says so (design D3) instead of recursing.
+ */
+private fun plain(value: Any?, seen: MutableList<Any>): JsonElement = when (value) {
     null, Undefined -> JsonNull
     is JsonElement -> value
     is String -> JsonPrimitive(value)
@@ -1393,8 +1457,12 @@ fun plain(value: Any?): JsonElement = when (value) {
     is Float -> if (value.isNaN() || value.isInfinite()) throw notFinite(value.toDouble()) else JsonPrimitive(value.toDouble())
     is Long -> if (value > MAX_SAFE || value < -MAX_SAFE) throw ValueException("the integer $value is beyond ±(2^53-1): it crosses as a bigint") else JsonPrimitive(value)
     is Int, is Short, is Byte -> JsonPrimitive(value as Number)
-    is List<*> -> JsonArray(value.map(::plain))
-    is Map<*, *> -> JsonObject(value.entries.associate { (k, v) -> (k as? String ?: throw ValueException("a record key is not a string")) to plain(v) })
+    is List<*> -> inside(value, seen) { JsonArray(value.map { plain(it, seen) }) }
+    is Map<*, *> -> inside(value, seen) {
+        JsonObject(value.entries.associate { (k, v) ->
+            (k as? String ?: throw ValueException("a record key is not a string")) to plain(v, seen)
+        })
+    }
     is Throwable -> buildJsonObject {
         put("name", errorName(value))
         put("message", errorMessage(value))

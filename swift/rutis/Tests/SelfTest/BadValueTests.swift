@@ -91,6 +91,42 @@ struct BadValueTests {
     }
 
     // guarantee: bridge/bad-values
+    // A value that holds itself says so (design D3): found before the depth,
+    // and an instance in two places is not a cycle.
+    func testAValueThatHoldsItselfSaysSo() throws {
+        final class Node: Codable {
+            var name: String
+            var next: Node?
+            init(name: String, next: Node? = nil) {
+                self.name = name
+                self.next = next
+            }
+        }
+        let looped = Node(name: "a")
+        looped.next = looped
+        do {
+            _ = try ValueCodec.encodeAny(looped)
+            XCTFail("a value that holds itself crossed")
+        } catch let error as ValueError {
+            XCTAssertEqual(error.description, "the value holds itself (a cycle)")
+            XCTAssertEqual(error.reason, "cycle")
+        }
+        // The same instance in two places is not a cycle.
+        let shared = Node(name: "b")
+        let both = [shared, shared]
+        let encoded = try ValueCodec.encodeAny(both)
+        guard case let .list(items) = encoded, items.count == 2 else {
+            return XCTFail("a list of two expected, got \(encoded)")
+        }
+        for item in items {
+            guard case let .record(fields) = item else { return XCTFail("\(item)") }
+            XCTAssertEqual(fields.map(\.0), ["name", "next"], "\(item)")
+        }
+        // The path is left behind: a second value encodes as the first did.
+        _ = try ValueCodec.encodeAny(shared)
+    }
+
+    // guarantee: bridge/bad-values
     // What a value that cannot cross says (design §5.5, docs/design-value-
     // errors-2026-11-03.md): one sentence of reason, `bad-value`, and
     // `data.reason` for a program. The sentences are rutis's own; the reasons
