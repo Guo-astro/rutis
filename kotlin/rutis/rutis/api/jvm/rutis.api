@@ -657,8 +657,10 @@ public final class arcships/rutis/internal/peer/Peer {
 public final class arcships/rutis/internal/peer/PeerKt {
 	public static final field ENDPOINT_PROTOCOL I
 	public static final field MAX_DEPTH I
+	public static final fun cyclic ()Larcships/rutis/internal/peer/ValueException;
 	public static final fun getSESSION_CAPABILITIES ()Ljava/util/List;
 	public static final fun jsonDepth (Lkotlinx/serialization/json/JsonElement;)I
+	public static final fun notFinite (D)Larcships/rutis/internal/peer/ValueException;
 	public static final fun plain (Ljava/lang/Object;)Lkotlinx/serialization/json/JsonElement;
 	public static final fun tooDeep ()Larcships/rutis/internal/peer/ValueException;
 	public static final fun validId (Ljava/lang/String;)Z
@@ -724,10 +726,12 @@ public final class arcships/rutis/internal/peer/Undefined {
 }
 
 public class arcships/rutis/internal/peer/ValueException : java/lang/RuntimeException {
-	public fun <init> (Ljava/lang/String;Ljava/lang/String;Ljava/util/Map;)V
-	public synthetic fun <init> (Ljava/lang/String;Ljava/lang/String;Ljava/util/Map;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun <init> (Ljava/lang/String;Ljava/lang/String;Ljava/util/Map;Ljava/lang/String;)V
+	public synthetic fun <init> (Ljava/lang/String;Ljava/lang/String;Ljava/util/Map;Ljava/lang/String;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public final fun getCode ()Ljava/lang/String;
 	public final fun getData ()Ljava/util/Map;
+	public final fun getReason ()Ljava/lang/String;
+	public final fun setReason (Ljava/lang/String;)V
 }
 
 public final class arcships/rutis/internal/peer/WireMap {

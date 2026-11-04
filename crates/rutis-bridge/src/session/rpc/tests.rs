@@ -18,7 +18,7 @@ fn hello(version: u32) -> Frame {
 struct NoExports;
 impl Dispatch for NoExports {
     fn invoke(&self, _: &Connection, _: &str, _: &str, _: Value) -> Reply {
-        Err(Error::Value("no exports".into()))
+        Err(Error::value("no exports"))
     }
 }
 /// The far end of a session's memory channel, scripted by a test. Clones
@@ -1924,7 +1924,12 @@ impl Dispatch for EchoArgs {
 }
 fn assert_too_deep(result: Reply) {
     match result {
-        Err(Error::Value(message)) => assert!(message.contains("64 levels"), "{message}"),
+        Err(Error::Value { message, reason }) => {
+            // This side's own refusal names the reason; a frame the far
+            // end nested too far is the protocol's, without one.
+            assert!(reason.is_none() || reason == Some("too-deep"), "{reason:?}");
+            assert!(message.contains("64 levels"), "{message}")
+        }
         other => panic!("a value error naming the limit expected: {other:?}"),
     }
 }
@@ -2248,7 +2253,10 @@ async fn map_keys_and_set_elements_are_checked_before_sending() {
         let peer = peer.clone();
         async move {
             match peer.invoke_async("t", "m", Value::List(vec![value])).await {
-                Err(Error::Value(message)) => message,
+                Err(Error::Value {
+                    message,
+                    reason: None,
+                }) => message,
                 other => panic!("a value error expected, got {other:?}"),
             }
         }
@@ -2374,7 +2382,10 @@ async fn integers_beyond_2_53_cross_as_bigints() {
         let peer = peer.clone();
         async move {
             match peer.invoke_async("t", "m", Value::List(vec![value])).await {
-                Err(Error::Value(message)) => message,
+                Err(Error::Value {
+                    message,
+                    reason: None,
+                }) => message,
                 other => panic!("a value error expected, got {other:?}"),
             }
         }
@@ -2418,7 +2429,7 @@ async fn integers_beyond_2_53_cross_as_bigints() {
         )
         .await
     {
-        Err(Error::Value(message)) => assert_eq!(
+        Err(Error::Value { message, reason: None }) => assert_eq!(
             message,
             "t.m: argument 1 cannot be sent: cannot send the integer 18446744073709551615, beyond \
              ±(2^53-1) and so a bigint: the far end does not take bigint values (it did not declare the capability \
@@ -2557,7 +2568,7 @@ async fn a_tagged_value_to_a_far_end_without_its_capability_fails_only_that_call
         .invoke_async("t", "m", Value::List(vec![Value::Bytes(vec![1, 2])]))
         .await
     {
-        Err(Error::Value(message)) => assert_eq!(
+        Err(Error::Value { message, reason: None }) => assert_eq!(
             message,
             "t.m: argument 1 cannot be sent: cannot send bytes: the far end does not take bytes values \
              (it did not declare the capability value-bytes)"
@@ -2677,7 +2688,10 @@ async fn received_tagged_values_are_checked_and_only_their_call_fails() {
     peer.ready().await.unwrap();
     calls.await.unwrap();
     match peer.invoke_async("t", "m", Value::Undefined).await {
-        Err(Error::Value(message)) => {
+        Err(Error::Value {
+            message,
+            reason: None,
+        }) => {
             assert!(message.contains("duplicate set element \"x\""), "{message}")
         }
         other => panic!("a value error expected, got {other:?}"),
@@ -2998,11 +3012,14 @@ async fn a_message_over_the_limit_fails_only_its_call() {
         Value::Data(json!("y".repeat(2048))),
     ]);
     match peer.invoke_async("svc", "m", args).await {
-        Err(Error::Value(message)) => assert!(
-            message.starts_with("svc.m: argument 2 cannot be sent: the message would be ")
-                && message.ends_with(" bytes, over the limit of 1024 bytes"),
-            "{message}"
-        ),
+        Err(Error::Value { message, reason }) => {
+            assert_eq!(reason, Some("limit"));
+            assert!(
+                message.starts_with("svc.m: argument 2 cannot be sent: the message would be ")
+                    && message.ends_with(" bytes, over the limit of 1024 bytes"),
+                "{message}"
+            )
+        }
         other => panic!("a value error expected, got {other:?}"),
     }
     assert!(
@@ -3026,6 +3043,43 @@ async fn a_message_over_the_limit_fails_only_its_call() {
         "{awaited}"
     );
     assert!(peer.close_reason().is_none());
+}
+
+// What a value that cannot cross says (design §5.4, docs/design-value-errors-
+// 2026-11-03.md): one sentence of reason, `bad-value`, and `data.reason` for a
+// program. The sentences are rutis's own; the reasons are the closed names.
+#[test]
+fn a_value_that_cannot_cross_says_why() {
+    let check = |error: Error, reason: &'static str, says: &str| {
+        let Error::Value {
+            message,
+            reason: carried,
+        } = &error
+        else {
+            panic!("a value error expected, got {error:?}");
+        };
+        assert_eq!(message, says);
+        assert_eq!(carried, &Some(reason));
+        assert_eq!(error.code(), Some("bad-value"));
+        let data = error.data().expect("data");
+        assert_eq!(data["reason"].as_str(), Some(reason));
+    };
+    check(
+        crate::session::objects::arg(&f64::NAN).expect_err("NaN crossed"),
+        "non-finite",
+        "the number NaN is not finite",
+    );
+    check(
+        crate::session::objects::arg(&f64::NEG_INFINITY).expect_err("-Infinity crossed"),
+        "non-finite",
+        "the number -Infinity is not finite",
+    );
+    let deep = (0..MAX_DEPTH + 1).fold(json!(1), |inner, _| json!([inner]));
+    check(
+        crate::session::objects::arg(&deep).expect_err("a deep value crossed"),
+        "too-deep",
+        "the value nests deeper than 64 levels",
+    );
 }
 
 #[test]

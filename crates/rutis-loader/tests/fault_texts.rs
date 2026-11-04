@@ -339,7 +339,7 @@ async fn fault_messages_hold_none_of_the_platforms_words() {
         (
             "wrong argument",
             json!(["x", "n"]),
-            "adder.add: argument 1 should be an integer, got \"x\"",
+            "adder.add: argument 1: invalid type: string \"x\", expected u32",
         ),
         (
             "missing argument",

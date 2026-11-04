@@ -353,8 +353,8 @@ reference by a marker object `{"\u0000rutis:reference": <index>}` (`objects.rs:1
 `Signal` become `null`), stores the references in a thread-local, and deserializes; `ObjectRef` /
 `RemoteFunction` deserialize a marker back to the reference (checking it is an object / function,
 `objects.rs:51-59, 89-97`). Afterwards the decoded value is re-serialized in "encoding mode" to collect the
-references it actually holds; every occurrence must be held, else `Error::Value("the value holds a live Cordis
-object or function that its Rust type cannot represent")`. `arg()` does the reverse for arguments
+references it actually holds; every occurrence must be held, else `Error::value("the value holds a function
+that its Rust type cannot represent")`. `arg()` does the reverse for arguments
 (`objects.rs:232-273`), producing `Record`/`List`/`Reference` where needed. This is entirely internal to Rust;
 runners only see ordinary wire values.
 

@@ -1211,7 +1211,7 @@ impl HostDispatch for EventsLogService {
                         graph: None,
                     })
             }
-            other => Err(Error::Value(format!("events-log has no method {other}"))),
+            other => Err(Error::value(format!("events-log has no method {other}"))),
         }
     }
 

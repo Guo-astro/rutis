@@ -430,13 +430,17 @@ extension Rutis.Advanced {
 /// and the session goes on. It crosses named `Error`.
 struct ValueError: Error, CustomStringConvertible, @unchecked Sendable {
     let description: String
-    /// bad-value, with `{argument?, part, limit?}`, when it is of a part of
-    /// a call (#677): read as any error's `code` and `data` are.
+    /// bad-value, with `{argument?, part, reason, limit?}`, when it is of a
+    /// part of a call (#677): read as any error's `code` and `data` are.
     let code: String?
     let data: [String: Any]?
-    init(_ description: String, data: [String: Any]? = nil) {
+    /// Why the value cannot cross, when this side knows (design §4.2): one
+    /// of `non-finite`, `cycle`, `too-deep`, `type`, `tag`, `limit`.
+    var reason: String?
+    init(_ description: String, data: [String: Any]? = nil, reason: String? = nil) {
         self.description = description
         self.data = data
+        self.reason = reason
         code = data == nil ? nil : "bad-value"
     }
 }

@@ -697,7 +697,7 @@ $ rutis-host call forecast.week '{"days": 3}'
 | 没有这个服务 | `rutis-host: no row provides forcast; did you mean forecast? (services: forecast, llm, rutis/loader, rutis/sessions)` |
 | 提供它的行没在运行 | `rutis-host: forecast is not available (row weather waits for its runtime go-weather)` |
 | 没有这个方法 | `rutis-host: forecast has no method tomorow (methods: today, week)` |
-| 参数类型不对（提供方是 Rust 的 `#[rutis::service]`、Go、Swift、Kotlin；TypeScript、JavaScript、Bun、Python 写的方法不检查参数类型，收到的就是传来的值，类型注解只给编辑器看） | `rutis-host: forecast.today: argument 1 should be a string, got 3` |
+| 参数类型不对（提供方是 Rust 的 `#[rutis::service]`、Go、Swift、Kotlin；TypeScript、JavaScript、Bun、Python 写的方法不检查参数类型，收到的就是传来的值，类型注解只给编辑器看） | `rutis-host: forecast.today: argument 1: invalid type: integer `3`, expected a string`（Rust 的服务照搬 serde 那句；Go 的是 `json: cannot unmarshal number into Go value of type string`；Swift、Kotlin 仍是 `argument 1 should be a string, got 3`。前缀只说位置，原文不改，见[值怎样传递](plugin-api.md#值怎样传递)） |
 | 方法抛错 | `rutis-host: call to forecast.today failed: KeyError: 'region'`，下面是出错的行（`in weather:`）与它的堆栈 |
 | 方法要调用方那一行的 `&Ctx` | `rutis-host: tools.register needs a calling row; call it from a plugin, not from rutis-host call` |
 | 没有宿主回答（没有在运行的，或它在别的环境下运行，见 [查看当前状态](#查看当前状态)） | `rutis-host: no rutis-host answers for /work/weather at /run/user/1000/rutis-host-1000/9b0e4d2a7c13f865.sock (XDG_RUNTIME_DIR=/run/user/1000): a host started in another environment (a service, another user) has its socket where that environment says, so run `rutis-host call` as its user with its XDG_RUNTIME_DIR; if none runs, start one with `rutis-host run` or `rutis-host dev`, or name its configuration with --config` |

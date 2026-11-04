@@ -265,7 +265,7 @@ impl Dispatch for Runtime {
                 Ok(json!(format!("b's work, with {}", echo.as_str().unwrap_or("?"))).into())
             }
             (Role::A, "echo") => Ok(json!("a's echo").into()),
-            _ => Err(Error::Value(format!("unknown method {method}"))),
+            _ => Err(Error::value(format!("unknown method {method}"))),
         }
     }
 }

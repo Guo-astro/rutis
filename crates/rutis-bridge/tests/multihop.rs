@@ -40,7 +40,7 @@ impl HostDispatch for Clock {
                 Ok(Value::Data(Json::Array(days)))
             }
             "later" => Ok(Value::future(async { Ok(json!("later").into()) })),
-            _ => Err(Error::Value(method.into())),
+            _ => Err(Error::value(method)),
         }
     }
     fn methods(&self) -> Option<Json> {

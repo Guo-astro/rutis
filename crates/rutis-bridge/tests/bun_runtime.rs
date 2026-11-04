@@ -287,7 +287,7 @@ async fn incoming_calls_run_while_a_synchronous_call_waits() {
                 .lock()
                 .unwrap()
                 .recv_timeout(scaled(HANG_GUARD))
-                .map_err(|_| rutis_bridge::session::Error::Value("never opened".into()))?;
+                .map_err(|_| rutis_bridge::session::Error::value("never opened"))?;
             Ok(json!("opened").into())
         }
         fn methods(&self) -> Option<Value> {

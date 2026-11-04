@@ -460,7 +460,8 @@ enum BadArgument {
     Wrong {
         argument: usize,
         expected: String,
-        actual: String,
+        /// The decoder's own sentence, verbatim (design §4.5).
+        why: String,
     },
     /// Argument `argument` (from 1) not valid for another reason, said
     /// in `why`.
@@ -511,12 +512,11 @@ impl BadArgument {
                 format!(" takes {expected} argument{plural}, got {received}")
             }
             Self::Missing { argument, .. } => format!(": argument {argument} is missing"),
-            Self::Wrong {
-                argument,
-                expected,
-                actual,
-            } => format!(": argument {argument} should be {expected}, got {actual}"),
-            Self::Invalid { argument, why } => format!(": argument {argument} is not valid: {why}"),
+            // The decoder's own sentence, with only the position before it
+            // (design §4.5): no paraphrase, no summary.
+            Self::Wrong { argument, why, .. } | Self::Invalid { argument, why } => {
+                format!(": argument {argument}: {why}")
+            }
         }
     }
 
@@ -580,10 +580,10 @@ impl BadArgument {
             .and_then(|rest| rest.rsplit_once(", expected "))
             .map(|(actual, _)| actual);
         match (expected, unexpected) {
-            (Some(expected), Some(actual)) => Self::Wrong {
+            (Some(expected), Some(_)) => Self::Wrong {
                 argument,
                 expected,
-                actual: tagged_in_words(value).unwrap_or_else(|| actual_in_words(actual)),
+                why: why.to_owned(),
             },
             _ => Self::Invalid {
                 argument,
@@ -621,48 +621,6 @@ fn expected_in_words(expected: &str) -> String {
     }
 }
 
-/// A value as serde names it (`string "x"`, `integer `5``, `map`), shown
-/// short: `"x"`, `5`, `an object`.
-fn actual_in_words(actual: &str) -> String {
-    let actual = actual.trim();
-    if let Some(text) = actual.strip_prefix("string ") {
-        return text.to_owned();
-    }
-    if let (Some(start), Some(end)) = (actual.find('`'), actual.rfind('`')) {
-        if start < end {
-            return actual[start + 1..end].to_owned();
-        }
-    }
-    match actual {
-        "map" => "an object".into(),
-        "sequence" => "a list".into(),
-        "null" | "unit value" | "unit" | "Option value" => "null".into(),
-        other => other.to_owned(),
-    }
-}
-
-/// A value of a kind not every language has, named (`a bigint`, `bytes`).
-fn tagged_in_words(value: &Value) -> Option<String> {
-    Some(
-        match value {
-            Value::BigInt(_) => "a bigint",
-            Value::Bytes(_) => "bytes",
-            Value::Instant(_) => "a point in time",
-            Value::DateTime(_) => "a date and time",
-            Value::Date(_) => "a date",
-            Value::Time(_) => "a time of day",
-            Value::Decimal(_) => "a decimal",
-            Value::Uuid(_) => "a UUID",
-            Value::Map(_) => "a map",
-            Value::Set(_) => "a set",
-            Value::Reference(reference) if reference.is_function() => "a function",
-            Value::Reference(_) => "an object reference",
-            _ => return None,
-        }
-        .to_owned(),
-    )
-}
-
 /// An argument of a call, as [`BridgeWire::arguments`] hands it out: its
 /// position (from 1) kept for messages.
 struct Argument {
@@ -682,9 +640,7 @@ fn definition(value: Value) -> BoxFuture<'static, Result<rutis::Definition, Erro
             )
         })?;
         let Value::Reference(reference) = value else {
-            return Err(Error::Value(
-                "expected a plugin definition, received data".into(),
-            ));
+            return Err(Error::value("expected a plugin definition, received data"));
         };
         crate::runtime::read_definition(process, reference, row).await
     })
@@ -724,9 +680,9 @@ fn error_of(error: CallError) -> Error {
                 bad.text().trim_start_matches(": ").trim().to_owned(),
                 None,
             ),
-            Err(_) => Error::Value(message),
+            Err(_) => Error::value(message),
         },
-        None => Error::Value(message),
+        None => Error::value(message),
     }
 }
 
@@ -806,7 +762,10 @@ impl Wire for BridgeWire {
         });
         match decoded {
             Ok(()) => Ok(()),
-            Err(Error::Value(why)) => {
+            Err(Error::Value {
+                message: why,
+                reason: None,
+            }) => {
                 // An object is refused before the parameter's type is seen:
                 // what that type is, serde says of a value it does not take
                 // (`true`; a boolean parameter takes it).
@@ -840,7 +799,7 @@ impl Wire for BridgeWire {
             Value::Reference(reference) if reference.is_function() => {
                 Ok(Arc::new(Passed(reference)))
             }
-            _ => Err(call_error(Error::Value("expected a function".into()))),
+            _ => Err(call_error(Error::value("expected a function"))),
         }
     }
 
@@ -883,7 +842,7 @@ impl Wire for BridgeWire {
                 ));
             }
         }
-        call_error(Error::Value(message))
+        call_error(Error::value(message))
     }
 
     fn failure(
@@ -987,13 +946,13 @@ mod tests {
             (
                 "add",
                 vec![serde_json::json!("x").into(), serde_json::json!("n").into()],
-                "adder.add: argument 1 should be an integer, got \"x\"",
+                "adder.add: argument 1: invalid type: string \"x\", expected u32",
                 "bad-argument",
             ),
             (
                 "add",
                 vec![Value::Bytes(vec![1]), serde_json::json!("n").into()],
-                "adder.add: argument 1 should be an integer, got bytes",
+                "adder.add: argument 1: invalid type: map, expected u32",
                 "bad-argument",
             ),
             (
@@ -1005,7 +964,7 @@ mod tests {
             (
                 "add",
                 vec![serde_json::json!(1).into(), serde_json::json!(2).into()],
-                "adder.add: argument 2 should be a string, got 2",
+                "adder.add: argument 2: invalid type: integer `2`, expected a string",
                 "bad-argument",
             ),
             (

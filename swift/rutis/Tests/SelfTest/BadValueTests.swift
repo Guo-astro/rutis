@@ -90,6 +90,50 @@ struct BadValueTests {
         XCTAssertNil(runtime.error)
     }
 
+    // guarantee: bridge/bad-values
+    // What a value that cannot cross says (design §5.5, docs/design-value-
+    // errors-2026-11-03.md): one sentence of reason, `bad-value`, and
+    // `data.reason` for a program. The sentences are rutis's own; the reasons
+    // are the closed names.
+    func testAValueThatCannotCrossSaysWhy() throws {
+        func refused(_ value: Any) -> ValueError? {
+            do {
+                _ = try ValueCodec.encodeAny(value)
+                return nil
+            } catch let error as ValueError {
+                return error
+            } catch {
+                XCTFail("a ValueError expected, got \(error)")
+                return nil
+            }
+        }
+        for (value, says, reason) in [
+            (Double.nan as Any, "the number NaN is not finite", "non-finite"),
+            (-Double.infinity as Any, "the number -Infinity is not finite", "non-finite"),
+        ] {
+            guard let error = refused(value) else { return XCTFail("a number that is not finite crossed") }
+            XCTAssertEqual(error.description, says)
+            XCTAssertEqual(error.reason, reason)
+        }
+        var deep: Any = 1
+        for _ in 0..<(maxDepth + 1) { deep = [deep] }
+        guard let error = refused(deep) else { return XCTFail("a deep value crossed") }
+        XCTAssertEqual(error.description, "the value nests deeper than \(maxDepth) levels")
+        XCTAssertEqual(error.reason, "too-deep")
+        // The reason reaches `data` when the value is an argument or a result
+        // (design §4.3).
+        let argument = ofArgument(error.description, 0, "t.echo", why: error.reason)
+        XCTAssertEqual(argument.description, "t.echo: argument 1 cannot be sent: the value nests deeper than \(maxDepth) levels")
+        XCTAssertEqual(argument.code, "bad-value")
+        XCTAssertEqual(argument.data?["reason"] as? String, "too-deep")
+        XCTAssertEqual(argument.data?["part"] as? String, "argument")
+        XCTAssertEqual(argument.data?["argument"] as? Int, 1)
+        let result = ofResult(error.description, "t.echo", why: error.reason)
+        XCTAssertEqual(result.description, "t.echo: the result cannot be sent: the value nests deeper than \(maxDepth) levels")
+        XCTAssertEqual(result.data?["reason"] as? String, "too-deep")
+        XCTAssertEqual(result.data?["part"] as? String, "result")
+    }
+
     // guarantee: bridge/object-refs
     // objects-case(swift): receiver-releases
     // objects-case(swift): undefined-nested-null

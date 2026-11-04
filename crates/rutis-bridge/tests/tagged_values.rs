@@ -73,7 +73,7 @@ impl Dispatch for Downstream {
                 .remove(0)
                 .reference()?
                 .call(Value::List(vec![])),
-            _ => Err(Error::Value(format!("no method {method}"))),
+            _ => Err(Error::value(format!("no method {method}"))),
         }
     }
 }
@@ -81,7 +81,7 @@ impl Dispatch for Downstream {
 struct Nothing;
 impl Dispatch for Nothing {
     fn invoke(&self, _: &Connection, _: &str, _: &str, _: Value) -> Reply {
-        Err(Error::Value("nothing here".into()))
+        Err(Error::value("nothing here"))
     }
 }
 
@@ -393,7 +393,10 @@ async fn rust_integers_beyond_2_53_cross_as_bigints() {
     old.ready().await.unwrap();
     let args = Value::List(vec![arg(&(1u64 << 60)).unwrap()]);
     match old.invoke_async("t", "echo", args).await {
-        Err(Error::Value(message)) => assert!(
+        Err(Error::Value {
+            message,
+            reason: None,
+        }) => assert!(
             message.contains("did not declare the capability value-bigint"),
             "{message}"
         ),

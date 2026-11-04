@@ -135,17 +135,23 @@ package enum ValueCodec {
             // A class instance is passed by reference once marked, copied once
             // Codable (#687 §八).
             if value is Rutis.Advanced.Client {
-                throw ValueError("a client of a service used by name cannot be passed on: pass the object it came from, or a function")
+                throw ValueError("a client of a service used by name cannot be passed on: pass the object it came from, or a function", reason: "type")
             }
             if type(of: value) is AnyClass {
-                throw ValueError("a \(type(of: value)) cannot cross: mark it @RutisService to pass it by reference, or make it Codable to copy it")
+                throw ValueError("a \(type(of: value)) cannot cross between processes: mark it @RutisService to pass it by reference, or make it Codable to copy it", reason: "type")
             }
-            throw ValueError("a \(type(of: value)) cannot cross processes: it is neither Codable, a @RutisService instance, nor a value rutis knows")
+            throw ValueError("a \(type(of: value)) cannot cross between processes: it is neither Codable, a @RutisService instance, nor a value rutis knows", reason: "type")
         }
     }
 
     private static var tooDeep: ValueError {
-        ValueError("value nested deeper than \(maxDepth) levels, the most a value crossing processes may nest (a cyclic reference?)")
+        ValueError("the value nests deeper than \(maxDepth) levels", reason: "too-deep")
+    }
+
+    /// A value a level down the same container again (design D3): a cycle,
+    /// not a value nested too far.
+    private static var cyclic: ValueError {
+        ValueError("the value holds itself (a cycle)", reason: "cycle")
     }
 
     /// The values the encoder takes as they are, before Codable.
@@ -208,7 +214,8 @@ package enum ValueCodec {
 
     static func number(_ value: Double) throws -> Value {
         guard let json = JSON.double(value) else {
-            throw ValueError("a number that is not finite (\(value)) cannot cross")
+            let shown = value.isNaN ? "NaN" : value > 0 ? "Infinity" : "-Infinity"
+            throw ValueError("the number \(shown) is not finite", reason: "non-finite")
         }
         return .data(json)
     }

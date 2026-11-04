@@ -45,7 +45,7 @@ struct Gate;
 
 impl HostDispatch for Gate {
     fn invoke(&self, method: &str, _args: RpcValue) -> Reply {
-        Err(rutis_bridge::session::Error::Value(format!(
+        Err(rutis_bridge::session::Error::value(format!(
             "gate has no {method}"
         )))
     }

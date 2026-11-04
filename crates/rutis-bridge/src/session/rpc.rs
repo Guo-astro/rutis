@@ -102,7 +102,7 @@ impl Value {
         match self {
             Self::List(values) => Ok(values),
             Self::Data(Json::Array(values)) => Ok(values.into_iter().map(Self::Data).collect()),
-            _ => Err(Error::Value("expected argument array".into())),
+            _ => Err(Error::value("expected argument array")),
         }
     }
     /// The value as JSON data: lists and records as arrays and objects,
@@ -122,16 +122,17 @@ impl Value {
                 .map(|(key, value)| value.json().map(|value| (key, value)))
                 .collect::<Result<serde_json::Map<_, _>, _>>()
                 .map(Json::Object),
-            Self::Reference(_) => Err(Error::Value("expected data, received a reference".into())),
-            Self::Signal => Err(Error::Value("expected data, received a signal".into())),
+            Self::Reference(_) => Err(Error::value("expected data, received a reference")),
+            Self::Signal => Err(Error::value("expected data, received a signal")),
             // An integer beyond ±(2^53−1) sent as data comes back a bigint
             // (design V6): as data, it is the number again.
-            Self::BigInt(value) => value.to_json_number().map(Json::Number).ok_or_else(|| {
-                Error::Value("expected data, received a bigint beyond 64 bits".into())
-            }),
+            Self::BigInt(value) => value
+                .to_json_number()
+                .map(Json::Number)
+                .ok_or_else(|| Error::value("expected data, received a bigint beyond 64 bits")),
             // Not JSON: as text it would be a string the receiver takes for
             // one (decode it with `decode_value` into its type instead).
-            other => Err(Error::Value(format!(
+            other => Err(Error::value(format!(
                 "expected data, received {}",
                 crate::session::values::describe(&other)
             ))),
@@ -140,7 +141,7 @@ impl Value {
     pub fn reference(self) -> Result<Reference, Error> {
         match self {
             Self::Reference(value) => Ok(value),
-            _ => Err(Error::Value("expected a reference".into())),
+            _ => Err(Error::value("expected a reference")),
         }
     }
     pub fn future(future: impl Future<Output = Reply> + Send + 'static) -> Self {
@@ -331,7 +332,7 @@ impl Reference {
     fn remote_object(&self) -> Result<&Arc<Import>, Error> {
         match &self.0 {
             ReferenceInner::Remote(import) if import.kind == Kind::Object => Ok(import),
-            _ => Err(Error::Value("reference is not a remote object".into())),
+            _ => Err(Error::value("reference is not a remote object")),
         }
     }
     /// Call a method of a remote object and wait for it to return.
@@ -389,8 +390,7 @@ impl Reference {
             }
             ReferenceInner::Local(_) => {
                 Err(Error::refused(
-                "the result is not ready yet and cannot be waited for synchronously: await it instead"
-                    .into(),
+                "the result is not ready yet and cannot be waited for synchronously: await it instead".into(),
             ))
             }
             ReferenceInner::Home(_) => Err(not_callable()),
@@ -400,12 +400,12 @@ impl Reference {
 
 /// A plugin definition held to be loaded is not called.
 fn not_callable() -> Error {
-    Error::Value("a plugin definition is loaded, not called".into())
+    Error::value("a plugin definition is loaded, not called")
 }
 
 /// What sending a plugin definition anywhere but home fails with.
 pub(crate) fn not_home() -> Error {
-    Error::Value("a plugin definition can only go back to the runtime that defined it".into())
+    Error::value("a plugin definition can only go back to the runtime that defined it")
 }
 
 #[derive(Clone)]
@@ -544,12 +544,12 @@ impl Object {
     fn call(&self, args: Value) -> Reply {
         match &self.body {
             Body::Function(callback) => protected(|| callback(args)),
-            _ => Err(Error::Value("reference is not callable".into())),
+            _ => Err(Error::value("reference is not callable")),
         }
     }
     fn ready_on_blocked_executor(&self) -> Reply {
         let Body::Future(state) = &self.body else {
-            return Err(Error::Value("reference is not awaitable".into()));
+            return Err(Error::value("reference is not awaitable"));
         };
         if let Some(result) = state.result.borrow().clone() {
             return result;
@@ -597,7 +597,7 @@ impl Object {
         source: Option<Connection>,
     ) -> Reply {
         let Body::Future(state) = &self.body else {
-            return Err(Error::Value("reference is not awaitable".into()));
+            return Err(Error::value("reference is not awaitable"));
         };
         {
             let mut pending = state.future.lock().unwrap();
@@ -2206,7 +2206,7 @@ impl Connection {
         if self.supports(&capability) {
             return Ok(());
         }
-        Err(Error::Value(format!(
+        Err(Error::value(format!(
             "cannot send {}: the far end does not take {tag} values \
              (it did not declare the capability {capability})",
             what()
@@ -2277,7 +2277,7 @@ impl Connection {
         for value in values {
             match self.decode(value) {
                 Ok(value) => decoded.push(value),
-                Err(error @ Error::Value(_)) => {
+                Err(error @ Error::Value { .. }) => {
                     refused.get_or_insert(error);
                 }
                 Err(error) => return Err(error),
@@ -2299,7 +2299,7 @@ impl Connection {
         let refused = value.tag().and_then(|tag| {
             let capability = format!("value-{tag}");
             (!self.declares(&capability)).then(|| {
-                Error::Value(format!(
+                Error::value(format!(
                     "received a {tag} value, which this side does not take \
                      (it did not declare the capability {capability})"
                 ))
@@ -2536,7 +2536,13 @@ impl Connection {
                     return Err(transport("request before protocol handshake"));
                 }
                 if let Some(waiting) = self.reply_target(&id)? {
-                    finish(waiting, Err(Error::Value(message)));
+                    finish(
+                        waiting,
+                        Err(Error::Value {
+                            message,
+                            reason: None,
+                        }),
+                    );
                 }
                 Ok(())
             }
@@ -2547,7 +2553,7 @@ impl Connection {
             {
                 let _ = self.write(Frame::Throw {
                     id,
-                    error: Error::Value(message).into(),
+                    error: Error::value(message).into(),
                 });
                 Ok(())
             }
@@ -2567,7 +2573,7 @@ impl Connection {
         };
         match decoded {
             Ok(args) => Ok(Some(args)),
-            Err(error @ Error::Value(_)) => {
+            Err(error @ Error::Value { .. }) => {
                 if !id.starts_with(self.remote_prefix()) {
                     return Err(transport("invalid invocation identity/path"));
                 }
@@ -2616,7 +2622,7 @@ impl Connection {
                 // references it granted when its values drop. A value this
                 // side cannot take fails the call waiting for it.
                 let value = match self.decode(value) {
-                    Err(error @ Error::Value(_)) => Err(error),
+                    Err(error @ Error::Value { .. }) => Err(error),
                     value => Ok(value?),
                 };
                 if let Some(waiting) = self.reply_target(&id)? {
@@ -3132,9 +3138,10 @@ pub(crate) const MAX_FRAME_DEPTH: usize = 3 * MAX_DEPTH + 16;
 pub(crate) const READER_STACK: usize = 2 << 20;
 
 fn too_deep() -> Error {
-    Error::Value(format!(
-        "value nested deeper than {MAX_DEPTH} levels, the most a value crossing a session may nest"
-    ))
+    Error::why(
+        "too-deep",
+        format!("the value nests deeper than {MAX_DEPTH} levels"),
+    )
 }
 
 /// Whether `value` nests at most `levels` arrays and objects deep.

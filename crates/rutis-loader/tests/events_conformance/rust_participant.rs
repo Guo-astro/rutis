@@ -325,7 +325,7 @@ async fn dispatch(ctx: &Ctx, log: &Arc<EventsLog>, spec: &Json, args: Option<Vec
     tokio::select! {
         result = dispatch_now(ctx, log, spec, args) => result,
         waited = log.wait(when, Duration::from_secs(30)) => {
-            waited.map_err(Error::Value)?;
+            waited.map_err(Error::value)?;
             Err(Error::Remote {
                 name: "Cancelled".into(),
                 message: "the emitter gave up the dispatch".into(),
@@ -432,7 +432,7 @@ async fn dispatch_now(
             .events()
             .dispatch_sync(ctx, erased(rutis::events::Mode::Bail, filter))
             .and_then(decoded),
-        (mode, _) => return Err(Error::Value(format!("unknown mode {mode}"))),
+        (mode, _) => return Err(Error::value(format!("unknown mode {mode}"))),
     };
     result.map_err(|e| rutis_bridge::events::to_session_error(&e))
 }

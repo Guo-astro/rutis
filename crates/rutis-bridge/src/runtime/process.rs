@@ -564,7 +564,7 @@ impl Dispatch for Imports {
                 }
                 // Nothing fails rows here (an embedder without the
                 // loader), or the row is gone: the runtime writes why.
-                None => Err(Error::Value(format!(
+                None => Err(Error::value(format!(
                     "rows.failed: nothing fails row {key} here"
                 ))),
             };

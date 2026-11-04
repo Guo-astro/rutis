@@ -32,9 +32,7 @@ impl rutis_bridge::session::Dispatch for Nothing {
         _: &str,
         _: rutis_bridge::session::Value,
     ) -> rutis_bridge::session::Reply {
-        Err(rutis_bridge::session::Error::Value(
-            "main serves nothing".into(),
-        ))
+        Err(rutis_bridge::session::Error::value("main serves nothing"))
     }
 }
 

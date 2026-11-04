@@ -361,7 +361,7 @@ mod tests {
     /// plugin.
     #[test]
     fn a_method_that_needs_a_calling_row_says_so() {
-        let error = session::Error::Value(format!("register {NO_CALLER}"));
+        let error = session::Error::value(format!("register {NO_CALLER}"));
         assert_eq!(
             failed("tools", "register", error),
             "tools.register needs a calling row; call it from a plugin, not from rutis-host call"

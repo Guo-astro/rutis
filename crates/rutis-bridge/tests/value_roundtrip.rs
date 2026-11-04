@@ -61,9 +61,7 @@ fn repo() -> PathBuf {
 struct Nothing;
 impl rutis_bridge::session::Dispatch for Nothing {
     fn invoke(&self, _: &Connection, _: &str, _: &str, _: Value) -> rutis_bridge::session::Reply {
-        Err(rutis_bridge::session::Error::Value(
-            "main serves nothing".into(),
-        ))
+        Err(rutis_bridge::session::Error::value("main serves nothing"))
     }
 }
 
@@ -358,11 +356,10 @@ fn round_trip(far: &Connection, name: &str, numbers: Numbers) {
         // a far end that takes them.
         if has_unsafe_integer(&sent) && !far.supports("value-bigint") {
             return match echoed {
-                Err(Error::Value(message))
-                    if message.contains("did not declare the capability value-bigint") =>
-                {
-                    Ok(())
-                }
+                Err(Error::Value {
+                    message,
+                    reason: None,
+                }) if message.contains("did not declare the capability value-bigint") => Ok(()),
                 other => Err(TestCaseError::fail(format!(
                     "an error naming value-bigint expected, got {other:?}"
                 ))),
@@ -751,7 +748,13 @@ fn tagged_refused(far: &Connection, name: &str) {
         let tagged = holds_tagged(&sent);
         let echoed = far.invoke("conformance", "echo", Value::List(vec![sent.clone()]));
         match (tagged, echoed) {
-            (true, Err(Error::Value(message))) => {
+            (
+                true,
+                Err(Error::Value {
+                    message,
+                    reason: None,
+                }),
+            ) => {
                 prop_assert!(
                     message.contains("did not declare the capability value-"),
                     "{}",
@@ -796,7 +799,7 @@ fn list_depth(value: &Value) -> usize {
 /// was the side sending the value.
 fn too_deep(result: Result<Value, Error>, remote: bool, what: &str) {
     match (&result, remote) {
-        (Err(Error::Value(message)), false) | (Err(Error::Remote { message, .. }), true)
+        (Err(Error::Value { message, .. }), false) | (Err(Error::Remote { message, .. }), true)
             if message.contains("64 levels") => {}
         _ => panic!("{what}: an error naming the limit expected, got {result:?}"),
     }
@@ -910,9 +913,11 @@ fn bad_values(far: &Connection, name: &str) {
     let call =
         |method: &str, args: Vec<Value>| far.invoke("conformance", method, Value::List(args));
     match call("echo", vec![Value::Data(json!("x".repeat(LIMIT)))]) {
-        Err(Error::Value(message))
-            if message.starts_with("conformance.echo: argument 1 cannot be sent: ")
-                && over_the_limit(&message) => {}
+        Err(Error::Value {
+            message,
+            reason: Some("limit"),
+        }) if message.starts_with("conformance.echo: argument 1 cannot be sent: ")
+            && over_the_limit(&message) => {}
         other => panic!("{name}: this side's argument over the limit: {other:?}"),
     }
     match call("big", vec![Value::Data(json!(LIMIT + 10))]) {

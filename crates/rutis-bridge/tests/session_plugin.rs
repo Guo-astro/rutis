@@ -1043,7 +1043,7 @@ impl Dispatch for Runtime {
             }
             ("", _) => Ok(Value::Undefined),
             (_, "whoami") => Ok(json!("rt").into()),
-            (target, method) => Err(SessionError::Value(format!("no {target}.{method}"))),
+            (target, method) => Err(SessionError::value(format!("no {target}.{method}"))),
         }
     }
 }
@@ -1204,7 +1204,7 @@ impl Dispatch for Eager {
                 Ok(Value::Undefined)
             }
             ("", _) => Ok(Value::Undefined),
-            (target, method) => Err(SessionError::Value(format!("no {target}.{method}"))),
+            (target, method) => Err(SessionError::value(format!("no {target}.{method}"))),
         }
     }
 }

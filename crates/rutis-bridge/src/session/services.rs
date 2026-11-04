@@ -97,8 +97,8 @@ where
         RpcValue::Data(Value::Null) => RpcValue::List(Vec::new()),
         args @ (RpcValue::Data(Value::Array(_)) | RpcValue::List(_)) => args,
         _ => {
-            return Err(Error::Value(
-                "the arguments of a call are a tuple or a list: (\"Oslo\",), or () for none".into(),
+            return Err(Error::value(
+                "the arguments of a call are a tuple or a list: (\"Oslo\",), or () for none",
             ))
         }
     };
@@ -120,7 +120,20 @@ where
     } else {
         service.invoke(method, args)
     }?;
-    crate::session::decode_value(crate::session::settle(reply).await?)
+    let value = crate::session::settle(reply).await?;
+    crate::session::decode_value(value).map_err(|error| {
+        // The decoder's own sentence, with the call's name before it (design
+        // §4.5): `weather.today: the result: invalid type: …`.
+        Error::binding(
+            crate::session::code::BAD_RESULT,
+            format!("{name}.{method}: the result: {error}"),
+            Some(serde_json::json!({
+                "service": name,
+                "method": method,
+                "expected": "a value of the declared type",
+            })),
+        )
+    })
 }
 
 /// The row a call into a [`HostDispatch`] comes from ([`caller_row`]): a

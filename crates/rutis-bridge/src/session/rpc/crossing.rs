@@ -33,11 +33,14 @@ impl Operation {
 /// says which; any other error is as it was.
 pub(super) fn of_argument(error: Error, index: usize, call: &dyn Fn() -> String) -> Error {
     match error {
-        Error::Value(reason) => Error::Value(format!(
-            "{}: argument {} cannot be sent: {reason}",
-            call(),
-            index + 1
-        )),
+        Error::Value { message, reason } => Error::Value {
+            message: format!(
+                "{}: argument {} cannot be sent: {message}",
+                call(),
+                index + 1
+            ),
+            reason,
+        },
         error => error,
     }
 }
@@ -45,10 +48,13 @@ pub(super) fn of_argument(error: Error, index: usize, call: &dyn Fn() -> String)
 /// `error` as one of the result of `call` (when known).
 pub(super) fn of_result(error: Error, call: Option<&str>) -> Error {
     match error {
-        Error::Value(reason) => Error::Value(match call {
-            Some(call) => format!("{call}: the result cannot be sent: {reason}"),
-            None => format!("the result cannot be sent: {reason}"),
-        }),
+        Error::Value { message, reason } => Error::Value {
+            message: match call {
+                Some(call) => format!("{call}: the result cannot be sent: {message}"),
+                None => format!("the result cannot be sent: {message}"),
+            },
+            reason,
+        },
         error => error,
     }
 }
@@ -62,6 +68,7 @@ pub(crate) fn value_data(message: &str) -> serde_json::Value {
     let mut data = serde_json::Map::new();
     let parts = [
         ("argument", ": argument "),
+        ("payload", "the payload of "),
         ("result", "the result cannot be sent: "),
         ("arguments", "the arguments cannot be sent: "),
         ("error", "the error "),
@@ -191,10 +198,10 @@ impl Connection {
             args => {
                 self.encode_inner(args, MAX_DEPTH + 1, &mut grants)
                     .map_err(|error| match error {
-                        Error::Value(reason) => Error::Value(format!(
-                            "{}: the arguments cannot be sent: {reason}",
-                            call()
-                        )),
+                        Error::Value { message, reason } => Error::Value {
+                            message: format!("{}: the arguments cannot be sent: {message}", call()),
+                            reason,
+                        },
                         error => error,
                     })
             }
@@ -224,14 +231,17 @@ impl Connection {
         let reason = over_limit(bytes.len(), limit);
         let args = match frame {
             Frame::Invoke { args, .. } | Frame::Call { args, .. } => args,
-            _ => return Err(Error::Value(format!("{}: {reason}", call()))),
+            _ => return Err(Error::why("limit", format!("{}: {reason}", call()))),
         };
         Err(match largest(args) {
-            Some(index) => of_argument(Error::Value(reason), index, call),
-            None => Error::Value(format!(
-                "{}: the arguments cannot be sent: {reason}",
-                call()
-            )),
+            Some(index) => of_argument(Error::why("limit", reason.as_str()), index, call),
+            None => {
+                let call = call();
+                Error::why(
+                    "limit",
+                    format!("{call}: the arguments cannot be sent: {reason}"),
+                )
+            }
         })
     }
 }
@@ -249,7 +259,7 @@ mod tests {
         let data = |error: Error| error.data().unwrap();
         assert_eq!(
             data(of_argument(
-                Error::Value("NaN cannot cross processes".into()),
+                Error::value("NaN cannot cross processes"),
                 1,
                 &call
             )),
@@ -257,15 +267,15 @@ mod tests {
         );
         assert_eq!(
             data(of_result(
-                Error::Value(over_limit(2048, 1024)),
+                Error::value(over_limit(2048, 1024)),
                 Some("svc.m")
             )),
             json!({ "part": "result", "limit": 1024 })
         );
         assert_eq!(
-            data(of_result(Error::Value("x".into()), None)),
+            data(of_result(Error::value("x"), None)),
             json!({ "part": "result" })
         );
-        assert_eq!(Error::Value("x".into()).code(), Some("bad-value"));
+        assert_eq!(Error::value("x").code(), Some("bad-value"));
     }
 }

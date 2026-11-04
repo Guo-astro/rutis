@@ -276,7 +276,7 @@ impl Dispatch for Service {
                 .call(json!([]).into())?
                 .reference()?
                 .wait(),
-            _ => Err(Error::Value(method.into())),
+            _ => Err(Error::value(method)),
         }
     }
 }

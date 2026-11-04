@@ -51,8 +51,14 @@ pub enum Error {
     /// is `bad-value`, its [`data`](Error::data) `{part, argument?,
     /// limit?}`. A call this side refused for another reason is
     /// [`Error::Binding`].
-    #[error("{0}")]
-    Value(String),
+    #[error("{message}")]
+    Value {
+        message: String,
+        /// Why the value cannot cross, when this side knows (design
+        /// §4.2): one of `non-finite`, `cycle`, `too-deep`, `type`, `tag`,
+        /// `limit`, or `None` for a refusal that is not about a value.
+        reason: Option<&'static str>,
+    },
     /// The session could not be established: see [`Handshake`].
     #[error("{0}")]
     Handshake(Handshake),
@@ -112,6 +118,10 @@ pub mod code {
     pub const BAD_ARGUMENT: &str = "bad-argument";
     /// A value that cannot cross, or a message over the limit.
     pub const BAD_VALUE: &str = "bad-value";
+    /// A result that arrived and does not decode into its declared type
+    /// (design value errors §4.3): its message is the decoder's own
+    /// sentence, `<call>: the result: …`.
+    pub const BAD_RESULT: &str = "bad-result";
     /// The far end's runtime ended or went away during the call.
     pub const PEER_GONE: &str = "peer-gone";
     /// A row's config does not match its plugin's schema (config schema
@@ -131,6 +141,25 @@ impl Error {
             code: Some(code),
             message,
             data,
+        }
+    }
+
+    /// A value that cannot cross, failing only its call (design §5.3):
+    /// `message` says which call, which argument or result, and why; its
+    /// code is `bad-value`.
+    pub fn value(message: impl Into<String>) -> Self {
+        Self::Value {
+            message: message.into(),
+            reason: None,
+        }
+    }
+
+    /// [`Error::value`] saying why in `data.reason` (design §4.2): the
+    /// reason is one of the six names, the sentence its own.
+    pub(crate) fn why(reason: &'static str, message: impl Into<String>) -> Self {
+        Self::Value {
+            message: message.into(),
+            reason: Some(reason),
         }
     }
 
@@ -213,7 +242,7 @@ impl Error {
         match self {
             Self::Remote { graph, .. } => graph_root(graph.as_ref()?)?.get("code")?.as_str(),
             Self::Binding { code, .. } => *code,
-            Self::Value(_) => Some(code::BAD_VALUE),
+            Self::Value { .. } => Some(code::BAD_VALUE),
             Self::Transport(_) => Some(code::PEER_GONE),
             Self::SyncWaitCycle(_) | Self::Handshake(_) => None,
         }
@@ -225,8 +254,14 @@ impl Error {
         if let Self::Binding { data, .. } = self {
             return data.clone();
         }
-        if let Self::Value(message) = self {
-            return Some(rpc::crossing::value_data(message));
+        if let Self::Value { message, reason } = self {
+            // The part, argument and limit are read from the text (one place
+            // writes it); the reason was carried, not guessed (design §6).
+            let mut data = rpc::crossing::value_data(message);
+            if let (Some(reason), Some(object)) = (reason, data.as_object_mut()) {
+                object.insert("reason".into(), (*reason).into());
+            }
+            return Some(data);
         }
         let Self::Remote { graph, .. } = self else {
             return None;
@@ -447,7 +482,7 @@ pub fn native_error(error: impl std::fmt::Display) -> Error {
 }
 
 pub fn decode<T: serde::de::DeserializeOwned>(value: serde_json::Value) -> Result<T, Error> {
-    serde_json::from_value(value).map_err(|error| Error::Value(error.to_string()))
+    serde_json::from_value(value).map_err(|error| Error::value(error.to_string()))
 }
 
 /// Deserialize a field that TypeScript declares both optional and nullable

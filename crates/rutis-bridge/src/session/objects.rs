@@ -357,6 +357,61 @@ fn plain_json<T: Serialize + ?Sized>(value: &T) -> Result<Json, String> {
 /// (design V6); used while an argument is encoded.
 struct Exact;
 
+// How deep the value being written nests (design §4.4), and why the last
+// refusal said so (design §4.2): serde hands a serializer no context, so
+// both live here while `Exact` writes one value.
+thread_local! {
+    static DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static WHY: std::cell::Cell<Option<&'static str>> = const { std::cell::Cell::new(None) };
+}
+
+/// The most a value may nest (the same as every runtime, design §4.2).
+const MAX_DEPTH: usize = 64;
+
+/// Why the last refusal of this thread said so, taken: `arg` puts it in
+/// `data.reason` (design §4.3).
+fn take_reason() -> Option<&'static str> {
+    WHY.with(std::cell::Cell::take)
+}
+
+/// The error of a value that cannot be written, with the reason a program
+/// reads in `data.reason`.
+fn why(reason: &'static str, message: impl std::fmt::Display) -> serde_json::Error {
+    WHY.with(|why| why.set(Some(reason)));
+    ser::Error::custom(message)
+}
+
+/// One level deeper, or the error that says the value nests too far.
+fn enter() -> Result<(), serde_json::Error> {
+    let depth = DEPTH.with(|depth| {
+        depth.set(depth.get() + 1);
+        depth.get()
+    });
+    if depth > MAX_DEPTH {
+        return Err(why(
+            "too-deep",
+            format!("the value nests deeper than {MAX_DEPTH} levels"),
+        ));
+    }
+    Ok(())
+}
+
+fn leave() {
+    DEPTH.with(|depth| depth.set(depth.get().saturating_sub(1)));
+}
+
+/// A number that is not finite, as design §4.2 writes it.
+fn not_finite(value: f64) -> serde_json::Error {
+    let shown = if value.is_nan() {
+        "NaN"
+    } else if value > 0.0 {
+        "Infinity"
+    } else {
+        "-Infinity"
+    };
+    why("non-finite", format!("the number {shown} is not finite"))
+}
+
 /// Scalars as `serde_json::to_value` makes them.
 macro_rules! as_json {
     ($($method:ident($type:ty);)*) => {$(
@@ -387,12 +442,24 @@ impl Serializer for Exact {
         serialize_u16(u16);
         serialize_u32(u32);
         serialize_u64(u64);
-        serialize_f32(f32);
-        serialize_f64(f64);
         serialize_char(char);
         serialize_str(&str);
         serialize_bytes(&[u8]);
         serialize_unit_struct(&'static str);
+    }
+    /// A number that is not finite has no wire form (design §4.2, D5):
+    /// `serde_json` would write `null`, which is another value.
+    fn serialize_f32(self, value: f32) -> Result<Json, serde_json::Error> {
+        if !value.is_finite() {
+            return Err(not_finite(f64::from(value)));
+        }
+        serde_json::value::Serializer.serialize_f32(value)
+    }
+    fn serialize_f64(self, value: f64) -> Result<Json, serde_json::Error> {
+        if !value.is_finite() {
+            return Err(not_finite(value));
+        }
+        serde_json::value::Serializer.serialize_f64(value)
     }
     fn serialize_i128(self, value: i128) -> Result<Json, serde_json::Error> {
         match i64::try_from(value) {
@@ -443,6 +510,7 @@ impl Serializer for Exact {
         )])))
     }
     fn serialize_seq(self, len: Option<usize>) -> Result<Items, serde_json::Error> {
+        enter()?;
         Ok(Items(Vec::with_capacity(len.unwrap_or(0))))
     }
     fn serialize_tuple(self, len: usize) -> Result<Items, serde_json::Error> {
@@ -465,6 +533,7 @@ impl Serializer for Exact {
         Ok(Variant(variant, self.serialize_seq(Some(len))?))
     }
     fn serialize_map(self, _: Option<usize>) -> Result<Fields, serde_json::Error> {
+        enter()?;
         Ok(Fields(Map::new(), None))
     }
     fn serialize_struct(self, _: &'static str, _: usize) -> Result<Fields, serde_json::Error> {
@@ -495,6 +564,7 @@ impl ser::SerializeSeq for Items {
         Ok(())
     }
     fn end(self) -> Result<Json, serde_json::Error> {
+        leave();
         Ok(Json::Array(self.0))
     }
 }
@@ -552,6 +622,7 @@ impl ser::SerializeMap for Fields {
         Ok(())
     }
     fn end(self) -> Result<Json, serde_json::Error> {
+        leave();
         Ok(Json::Object(self.0))
     }
 }
@@ -776,7 +847,7 @@ pub fn decode_value<T: de::DeserializeOwned + Serialize>(value: Value) -> Result
     let json = marked(value, &keys, &mut references, &mut tagged);
     if references.is_empty() && tagged.is_empty() {
         return with_keys(&keys, || serde_json::from_value(json))
-            .map_err(|error| Error::Value(error.to_string()));
+            .map_err(|error| Error::value(error.to_string()));
     }
     let count = tagged.len();
     let previous = DECODING.with(|current| current.replace(references.clone()));
@@ -784,16 +855,18 @@ pub fn decode_value<T: de::DeserializeOwned + Serialize>(value: Value) -> Result
     let result = with_keys(&keys, || serde_json::from_value::<T>(json));
     DECODING.with(|current| current.replace(previous));
     DECODING_TAGGED.with(|current| current.replace(previous_tagged));
-    let value = result.map_err(|error| Error::Value(error.to_string()))?;
+    let value = result.map_err(|error| Error::Value {
+        message: error.to_string(),
+        reason: take_reason(),
+    })?;
     // Per occurrence: the same object may appear several times, and a typed
     // occurrence must not cover one that landed in JSON.
     let (mut held, typed) = held(&value)?;
     // Each tagged value in a type records itself again; one in JSON does not.
     if typed < count {
-        return Err(Error::Value(
+        return Err(Error::value(
             "the value holds a tagged value (an instant, bytes, a map, ...) that its Rust type \
-             cannot represent"
-                .into(),
+             cannot represent",
         ));
     }
     let unheld = references.iter().any(|reference| {
@@ -806,9 +879,8 @@ pub fn decode_value<T: de::DeserializeOwned + Serialize>(value: Value) -> Result
         }
     });
     if unheld {
-        return Err(Error::Value(
-            "the value holds a live Cordis object or function that its Rust type cannot represent"
-                .into(),
+        return Err(Error::value(
+            "the value holds a function that its Rust type cannot represent",
         ));
     }
     Ok(value)
@@ -831,14 +903,14 @@ pub(crate) fn decode_data_with(
     let mut tagged = Vec::new();
     let json = marked(value, &keys, &mut references, &mut tagged);
     if !references.is_empty() {
-        return Err(Error::Value(
-            "a function or object reference was passed where data is expected".into(),
+        return Err(Error::value(
+            "a function or object reference was passed where data is expected",
         ));
     }
     let previous = DECODING_TAGGED.with(|current| current.replace(tagged));
     let result = with_keys(&keys, || consume(json));
     DECODING_TAGGED.with(|current| current.replace(previous));
-    result.map_err(Error::Value)
+    result.map_err(Error::value)
 }
 
 /// Serialize `value` as an argument is encoded: the references it holds in
@@ -849,6 +921,9 @@ fn encoding<T: Serialize + ?Sized>(
 ) -> (serde_json::Result<Json>, Vec<Reference>, Vec<Tagged>) {
     let previous = ENCODING.with(|current| current.replace(Some(Vec::new())));
     let previous_tagged = ENCODING_TAGGED.with(|current| current.replace(Some(Vec::new())));
+    // A refusal part way left the count and the reason for the next value.
+    DEPTH.with(|depth| depth.set(0));
+    WHY.with(|why| why.set(None));
     let json = with_keys(keys, || value.serialize(Exact));
     let references = ENCODING
         .with(|current| current.replace(previous))
@@ -865,7 +940,10 @@ fn held<T: Serialize>(value: &T) -> Result<(Vec<Reference>, usize), Error> {
     // Only what is recorded counts here, so any keys do.
     let keys = Keys::new(NONCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
     let (result, references, tagged) = encoding(value, &keys);
-    result.map_err(|error| Error::Value(error.to_string()))?;
+    result.map_err(|error| Error::Value {
+        message: error.to_string(),
+        reason: take_reason(),
+    })?;
     // A bigint that fits 64 bits was decoded as a number (see `marked`).
     let typed = tagged
         .iter()
@@ -1000,7 +1078,10 @@ pub fn arg<T: Serialize + ?Sized>(value: &T) -> Result<Value, Error> {
     // does not use. Serialized again, the same data uses the same keys.
     for _ in 0..3 {
         let (json, references, tagged) = encoding(value, &keys);
-        let json = json.map_err(|error| Error::Value(error.to_string()))?;
+        let json = json.map_err(|error| Error::Value {
+            message: error.to_string(),
+            reason: take_reason(),
+        })?;
         if references.is_empty() && tagged.is_empty() {
             return Ok(Value::Data(json));
         }
@@ -1023,9 +1104,8 @@ pub fn arg<T: Serialize + ?Sized>(value: &T) -> Result<Value, Error> {
         }
         keys = Keys::avoiding(&taken);
     }
-    Err(Error::Value(
-        "the value serializes differently each time, so its markers cannot be told from its data"
-            .into(),
+    Err(Error::value(
+        "the value serializes differently each time, so its markers cannot be told from its data",
     ))
 }
 
@@ -1094,7 +1174,7 @@ pub(crate) fn encode_with(produce: impl FnOnce() -> Result<Json, String>) -> Res
     let tagged = ENCODING_TAGGED
         .with(|current| current.replace(previous_tagged))
         .unwrap_or_default();
-    let json = json.map_err(Error::Value)?;
+    let json = json.map_err(Error::value)?;
     if references.is_empty() && tagged.is_empty() {
         return Ok(Value::Data(json));
     }
@@ -1115,7 +1195,7 @@ pub(crate) fn decode_with<R>(
     let mut references = Vec::new();
     let mut tagged = Vec::new();
     let json = marked(value, &keys, &mut references, &mut tagged);
-    decoding(&keys, references, tagged, || consume(json)).map_err(Error::Value)
+    decoding(&keys, references, tagged, || consume(json)).map_err(Error::value)
 }
 
 /// Run `operation` as a decode with `keys` and these tables.
