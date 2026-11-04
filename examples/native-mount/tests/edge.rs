@@ -94,7 +94,7 @@ async fn generated_bindings_keep_null_names_and_live_unions() {
     );
     let error = service.loose().unwrap_err();
     assert!(
-        error.to_string().contains("live Cordis object or function"),
+        error.to_string().contains("the value holds a function that its Rust type cannot represent"),
         "{error}"
     );
     drop((first, second));
@@ -104,7 +104,7 @@ async fn generated_bindings_keep_null_names_and_live_unions() {
     for same in [false, true] {
         let error = service.pair(same).unwrap_err();
         assert!(
-            error.to_string().contains("live Cordis object or function"),
+            error.to_string().contains("the value holds a function that its Rust type cannot represent"),
             "{same}: {error}"
         );
     }
@@ -113,7 +113,7 @@ async fn generated_bindings_keep_null_names_and_live_unions() {
     // returning the internal marker as data.
     let error = service.dynamic().unwrap_err();
     assert!(
-        error.to_string().contains("live Cordis object or function"),
+        error.to_string().contains("the value holds a function that its Rust type cannot represent"),
         "{error}"
     );
 
