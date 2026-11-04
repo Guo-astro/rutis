@@ -32,20 +32,28 @@ import arcships.rutis.generated.ServiceTable
 internal class ArgumentRefusal(
     val method: String,
     val index: Int,
+    /** What the parameter takes, for `data.expected`. */
     val expected: String,
-    /** The argument as shown; null when it is missing. */
-    val actual: String?,
-) : ValueException(if (actual == null) "$method: argument ${index + 1} is missing" else "$method: argument ${index + 1} should be $expected, got $actual")
+    /**
+     * Why it is refused, in the words of whoever refused it: the decoder's
+     * own sentence for a serialized type (`expected a string, got 3`), or
+     * this runtime's for a value no decoder reads (design §4.5: rutis adds
+     * only the position). Null when the argument is missing.
+     */
+    val why: String?,
+) : ValueException(if (why == null) "$method: argument ${index + 1} is missing" else "$method: argument ${index + 1}: $why")
 
 /** The refusal of `refusal` by the service (or object) `owner`. */
 internal fun refused(refusal: ArgumentRefusal, owner: String, isObject: Boolean): RutisException {
     val label = "$owner.${refusal.method}"
     val data = linkedMapOf<String, Any?>(if (isObject) "object" to owner else "service" to owner, "method" to refusal.method,
         "argument" to refusal.index + 1, "expected" to refusal.expected)
-    val message = if (refusal.actual == null) {
+    // The refusal's own words, with only the position and the call before
+    // them (design §4.5).
+    val message = if (refusal.why == null) {
         "$label: argument ${refusal.index + 1} is missing"
     } else {
-        "$label: argument ${refusal.index + 1} should be ${refusal.expected}, got ${refusal.actual}"
+        "$label: argument ${refusal.index + 1}: ${refusal.why}"
     }
     return RutisException(RutisException.BINDING_ERROR, message, "bad-argument", data)
 }

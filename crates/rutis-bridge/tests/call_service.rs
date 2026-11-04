@@ -138,3 +138,47 @@ async fn what_fails_is_an_error() {
     assert!(error.to_string().contains("a tuple or a list"), "{error}");
     root.shutdown().await.unwrap();
 }
+
+/// A result that arrived and does not decode: the decoder's own sentence,
+/// code `bad-result`, with the declared type in `data.expected` (#936).
+/// guarantee: bridge/call-service
+#[tokio::test]
+async fn a_result_that_does_not_decode_says_the_type_it_wanted() {
+    let root = Ctx::root().unwrap();
+    root.provide(Weather).unwrap();
+    // A struct where a string was declared.
+    let error = call_service::<String>(&root, "weather", "forecast", ("Oslo", 3))
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), Some("bad-result"), "{error}");
+    assert!(
+        error
+            .to_string()
+            .starts_with("weather.forecast: the result: "),
+        "{error}"
+    );
+    assert_eq!(
+        error.data(),
+        Some(
+            serde_json::json!({ "service": "weather", "method": "forecast", "expected": "a string" })
+        ),
+        "{error}"
+    );
+    // A struct result decodes, and a number where one was declared says so.
+    let forecast: Forecast = call_service(&root, "weather", "forecast", ("Oslo", 3))
+        .await
+        .unwrap();
+    assert_eq!(forecast.city, "Oslo");
+    let error = call_service::<Forecast>(&root, "weather", "today", ("Oslo",))
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), Some("bad-result"), "{error}");
+    assert_eq!(
+        error.data(),
+        Some(
+            serde_json::json!({ "service": "weather", "method": "today", "expected": "a Forecast" })
+        ),
+        "{error}"
+    );
+    root.shutdown().await.unwrap();
+}
