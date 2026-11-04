@@ -311,7 +311,7 @@ impl HostDispatch for Clock {
     fn invoke(&self, method: &str, _args: Value) -> Reply {
         match method {
             "now" => Ok(json!(42).into()),
-            other => Err(rutis_bridge::session::Error::Value(format!("no method {other}"))),
+            other => Err(rutis_bridge::session::Error::value(format!("no method {other}"))),
         }
     }
     // The plugin uses this method shape to decide whether to call synchronously or asynchronously.
