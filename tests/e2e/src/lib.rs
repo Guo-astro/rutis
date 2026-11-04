@@ -205,6 +205,16 @@ pub enum Lang {
     Python,
 }
 
+/// The gate's own packages a scenario installs from
+/// ([`Scenario::installed_with_artifacts`]).
+struct Artifacts {
+    /// What every program of the scenario gets: the local npm registry, the
+    /// simple index over the wheels, and PyPI behind it.
+    env: Vec<(String, String)>,
+    /// The registry's process, stopped by [`Scenario::finish`].
+    registry: std::process::Child,
+}
+
 /// One scenario's directory and everything it started.
 ///
 /// ```text
@@ -214,16 +224,6 @@ pub enum Lang {
 ///   probes/    one request directory per probe
 ///   logs/      on failure: each host's output, the residue found
 /// ```
-/// The gate's own packages a scenario installs from
-/// ([`Scenario::installed_with_artifacts`]).
-struct Artifacts {
-    /// What every program of the scenario gets: the local npm registry, the
-    /// wheels, and an empty index for uv and pip.
-    env: Vec<(String, String)>,
-    /// The registry's process, stopped by [`Scenario::finish`].
-    registry: std::process::Child,
-}
-
 pub struct Scenario {
     name: String,
     /// Unique among the scenarios running on the machine: the directory's
@@ -241,6 +241,87 @@ pub struct Scenario {
     proxies: RefCell<Vec<Arc<proxy::Shared>>>,
     secrets: RefCell<Vec<String>>,
     finished: Cell<bool>,
+}
+
+/// A wheel's project name, normalized as a simple index's directory is
+/// (PEP 503): lower case, runs of `-`, `_` and `.` as one `-`.
+fn project_name(wheel: &str) -> String {
+    let name = wheel.split('-').next().unwrap_or_default();
+    let mut out = String::with_capacity(name.len());
+    let mut dash = false;
+    for letter in name.chars() {
+        if matches!(letter, '-' | '_' | '.') {
+            if !dash {
+                out.push('-');
+                dash = true;
+            }
+        } else {
+            out.extend(letter.to_lowercase());
+            dash = false;
+        }
+    }
+    out
+}
+
+/// Write a simple index (PEP 503) over the wheels in `wheels` into `out`: one
+/// page listing the projects, one per project listing its files. The links
+/// point at the wheels where they are, so nothing is copied.
+fn write_wheel_index(wheels: &Path, out: &Path) {
+    let mut projects: std::collections::BTreeMap<String, Vec<String>> =
+        std::collections::BTreeMap::new();
+    match std::fs::read_dir(wheels) {
+        Ok(entries) => {
+            for entry in entries.flatten() {
+                let file = entry.file_name().to_string_lossy().into_owned();
+                if !file.ends_with(".whl") {
+                    continue;
+                }
+                projects.entry(project_name(&file)).or_default().push(file);
+            }
+        }
+        // No wheels built: an index with nothing in it, so every name comes
+        // from PyPI.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => panic!("{}: {error}", wheels.display()),
+    }
+    let _ = std::fs::remove_dir_all(out);
+    std::fs::create_dir_all(out).expect("the index directory");
+    let links = |items: Vec<(String, String)>| {
+        format!(
+            "<!DOCTYPE html><html><body>{}</body></html>\n",
+            items
+                .into_iter()
+                .map(|(href, text)| format!("<a href=\"{href}\">{text}</a>"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        )
+    };
+    let root = format!("file://{}", wheels.display()).replace(' ', "%20");
+    std::fs::write(
+        out.join("index.html"),
+        links(
+            projects
+                .keys()
+                .map(|name| (format!("{name}/"), name.clone()))
+                .collect(),
+        ),
+    )
+    .expect("the index's front page");
+    for (name, mut files) in projects {
+        files.sort();
+        let dir = out.join(&name);
+        std::fs::create_dir_all(&dir).expect("the project's directory");
+        std::fs::write(
+            dir.join("index.html"),
+            links(
+                files
+                    .iter()
+                    .map(|file| (format!("{root}/{file}"), file.clone()))
+                    .collect(),
+            ),
+        )
+        .expect("the project's page");
+    }
 }
 
 impl Scenario {
@@ -287,10 +368,17 @@ impl Scenario {
     /// A scenario in installed mode whose packages are the ones a release
     /// gate built (`RUTIS_E2E_ARTIFACTS`, tools/install/local-artifacts.sh or
     /// package.yml), before they are published: a local npm registry serves
-    /// the tarballs in `<built>/npm`, the wheels in `<built>/wheels` are what
-    /// uv and pip install from, and every other name a project asks for comes
-    /// from the public registry, so a guide's commands run as written
-    /// (docs/design-function-refs-2026-11-03.md §6).
+    /// the tarballs in `<built>/npm`, a local simple index the wheels in
+    /// `<built>/wheels`, and every other name a project asks for comes from
+    /// the public registry, so a guide's commands run as written
+    /// (docs/design-function-refs-2026-11-03.md §6, #1067).
+    ///
+    /// The wheels have to be an *index*, not a `--find-links` with no index:
+    /// a Python example is a project of its own, and building it needs its
+    /// build backend (`hatchling`) from PyPI. uv's `first-index` (its
+    /// default) stops at the first index that has a name, so the local index
+    /// comes first and PyPI is the default index: `rutis` is the gate's own
+    /// build, `hatchling` comes from PyPI.
     pub fn installed_with_artifacts(name: &str, built: &Path) -> Self {
         let scenario = Self::installed(name);
         let npm = built.join("npm");
@@ -311,18 +399,24 @@ impl Scenario {
             url.starts_with("http://127.0.0.1:"),
             "the npm registry said {url:?}"
         );
-        // An index with nothing in it (uv before 0.7 has no UV_NO_INDEX), and
-        // the wheels beside it, as tests/e2e/tests/plugin_install.rs does.
+        // The gate's wheels as a simple index, first; PyPI behind it.
+        let wheels = built.join("wheels");
         let index = scenario.dir.join("index");
-        std::fs::create_dir_all(&index).expect("the index directory");
+        write_wheel_index(&wheels, &index);
         let index = format!("file://{}", index.display());
-        let wheels = built.join("wheels").display().to_string();
         let env = vec![
             ("npm_config_registry".to_owned(), url),
-            ("UV_FIND_LINKS".to_owned(), wheels.clone()),
-            ("UV_INDEX_URL".to_owned(), index.clone()),
-            ("UV_DEFAULT_INDEX".to_owned(), index),
-            ("PIP_FIND_LINKS".to_owned(), wheels),
+            ("UV_INDEX".to_owned(), index),
+            (
+                "UV_DEFAULT_INDEX".to_owned(),
+                "https://pypi.org/simple".to_owned(),
+            ),
+            // pip has no `first-index`: given both, it takes the best version
+            // of a name across them, and the gate's `rutis` and the published
+            // one share a version. The guides' Python examples install with uv,
+            // so pip keeps the gate's wheels alone (a name only PyPI has fails
+            // loudly rather than installing another build).
+            ("PIP_FIND_LINKS".to_owned(), wheels.display().to_string()),
             ("PIP_NO_INDEX".to_owned(), "1".to_owned()),
         ];
         *scenario.artifacts.borrow_mut() = Some(Artifacts { env, registry });

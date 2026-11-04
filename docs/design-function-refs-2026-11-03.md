@@ -448,7 +448,7 @@ $ npx rutis-host call commands.run '"count"'
 
 决策（F7）：
 
-1. **新增本地包源**：`tools/install/artifact-registry.mjs` 把 `RUTIS_E2E_ARTIFACTS/npm` 里的 tarball 当成本地 npm registry：包名 → packument（一个版本，`dist.tarball` 指向它自己），tarball 原样发出。示例里的 `npx @arcships/rutis-host new …`、`npm install`、`npx rutis-host …` 都照写，靠环境变量 `npm_config_registry` 指过来。Python 用已有的做法：`UV_FIND_LINKS` 指 `RUTIS_E2E_ARTIFACTS/wheels`，索引指一个空目录，`UV_INDEX_URL` / `PIP_NO_INDEX` 同 `tests/e2e/tests/plugin_install.rs:385`。
+1. **新增本地包源**：`tools/install/artifact-registry.mjs` 把 `RUTIS_E2E_ARTIFACTS/npm` 里的 tarball 当成本地 npm registry：包名 → packument（一个版本，`dist.tarball` 指向它自己），tarball 原样发出。示例里的 `npx @arcships/rutis-host new …`、`npm install`、`npx rutis-host …` 都照写，靠环境变量 `npm_config_registry` 指过来。Python 那边把 `RUTIS_E2E_ARTIFACTS/wheels` 写成 `file://` 的[简单索引](https://peps.python.org/pep-0503/)（`Scenario::installed_with_artifacts` 生成），排在前面（`UV_INDEX`），`UV_DEFAULT_INDEX` 指 PyPI：uv 默认的 `first-index` 只在第一个有这个包名的索引里挑，所以 `rutis` 一定来自本地，示例项目自己的构建后端（`hatchling`）照常从 PyPI 取（只有空索引 + `--find-links` 时 `uv sync` 装不上 `hatchling`，夜间运行因此红过：这条实现的回归）。pip 没有这种先后，仍是 `PIP_FIND_LINKS` + `PIP_NO_INDEX`（示例不经过 pip）。
 2. **示例照原样跑**：`Scenario::installed`（`tests/e2e/src/lib.rs:265`）加一个用本构建的包的变体：新的 home、npm 与 uv 的缓存在里面，npm / uv 的环境指向第 1 条，其余步骤与发布后的那次完全相同（例子里的命令一行不改）。
 3. **哪些示例在发布门里跑**：只装 npm、PyPI 包的示例——`jot-command`、`jot-command-python`（两份指南各自的 `-en` 名字）、`plugin-api-ts`、`plugin-api-py`、`typescript`、`bun`、`python`、`rutis-host`，在 Linux 上跑；需要 crates.io 或 Go 模块代理的（`jot`、`rust`、`go`、`swift`）仍在发布后用注册表上的包跑，因为发布门里没有这些包。
 4. **发布后照旧**：`install.yml:263`–`270` 的那一步不变，跑全部示例。
