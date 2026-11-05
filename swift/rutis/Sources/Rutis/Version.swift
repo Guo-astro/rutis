@@ -21,7 +21,7 @@ public enum Rutis {
 extension Rutis.Advanced {
     /// This SDK's version: the runtime's implementation version and the
     /// manifest's `sdk`. The release train checks it (scripts/train.mjs).
-    public static let sdkVersion = "0.20.1"
+    public static let sdkVersion = "0.21.0"
 
     /// The plugin API this SDK writes plugins against and its runtime
     /// supports.
