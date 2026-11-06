@@ -937,11 +937,11 @@ OK
 
 <!-- example: jot-command-python-en run until="count: running" -->
 ```bash
-npx rutis-host dev
+npx @arcships/rutis-host dev
 ```
 
 ```console
-$ npx rutis-host call commands.run '"count"'
+$ npx @arcships/rutis-host call commands.run '"count"'
 "2 notes, 5 words"
 ```
 
