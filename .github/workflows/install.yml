@@ -181,7 +181,17 @@ jobs:
       # The npm cell's Bun row (not on Windows, Bun design §10) and the
       # binary cell's Go row; oldest on Linux, latest elsewhere (§9 of
       # docs/ci.md). Go's build cache comes with it (same key as ci.yml).
-      - if: runner.os != 'Windows'
+      # On a self-hosted runner the instances share ~/.bun/bin and the jobs
+      # there fill it at the same time (docs/ci.md §10): a home of its own, as
+      # every one of them has.
+      - if: runner.os != 'Windows' && runner.environment == 'self-hosted'
+        uses: oven-sh/setup-bun@v2
+        env:
+          HOME: ${{ runner.temp }}/bun-home
+        with:
+          bun-version: ${{ runner.os == 'Linux' && '1.4.0' || 'latest' }}
+          no-cache: true
+      - if: runner.os != 'Windows' && runner.environment != 'self-hosted'
         uses: oven-sh/setup-bun@v2
         with:
           bun-version: ${{ runner.os == 'Linux' && '1.4.0' || 'latest' }}
