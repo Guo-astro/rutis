@@ -1405,9 +1405,19 @@ jobs:
       - run: cargo build -p rutis-host
       - run: RUTIS_HOST="${CARGO_TARGET_DIR:-$GITHUB_WORKSPACE/target}/debug/rutis-host" python3 -m unittest discover -s tests
         working-directory: python/rutis
+      # setup-bun installs into ~/.bun/bin, which the instances of a
+      # self-hosted Mac share (one user's home) and the jobs that need Bun
+      # fill at the same time — `install` with the same latest, a full run's
+      # `runtimes-bun` with 1.4.0 in a home of its own. Two of them writing
+      # the same directory at once leave one job executing a half-replaced
+      # binary ("the Bun runtime needs Bun: bun does not run"); each gets a
+      # home of its own in this job's temporary directory, and no cache.
       - uses: oven-sh/setup-bun@v2
+        env:
+          HOME: ${{ runner.temp }}/bun-home
         with:
           bun-version: latest
+          no-cache: true
       - uses: actions/setup-go@v5
         with:
           go-version: stable
