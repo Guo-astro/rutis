@@ -368,7 +368,31 @@ async fn a_channel_that_is_already_fd_3_is_handed_over() {
         });
     }
     with_fd3(&mut host, 3);
-    let host = host.spawn().unwrap();
+    let mut host = host.spawn().unwrap();
+    // The host greets before it reads (#239), and that greeting is what it
+    // sends on fd 3. Read it here, then close: a peer that closes with bytes
+    // still unread in its own queue resets the socket on Linux, and the
+    // host's next read would fail with `Connection reset by peer (os error
+    // 104)` instead of hearing its end close — the same close, said
+    // differently, depending on which side the kernel schedules first.
+    theirs
+        .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+        .unwrap();
+    let mut hello = Vec::new();
+    let mut buffer = [0u8; 256];
+    let mut peer = &theirs;
+    while !hello.contains(&b'\n') {
+        match std::io::Read::read(&mut peer, &mut buffer) {
+            Ok(0) => break,
+            Ok(read) => hello.extend_from_slice(&buffer[..read]),
+            Err(error) => panic!("reading the host's greeting: {error}"),
+        }
+    }
+    assert!(
+        String::from_utf8_lossy(&hello).contains("\"hello\""),
+        "the host greeted on fd 3: {}",
+        String::from_utf8_lossy(&hello)
+    );
     drop(theirs);
     let output = COLD
         .within("the host's exit", host.wait_with_output())

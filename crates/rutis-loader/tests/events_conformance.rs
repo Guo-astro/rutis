@@ -1431,7 +1431,15 @@ async fn conformance(x: &str) {
         for combo in combos {
             placements += 1;
             host.state.lock().unwrap().y = combo.y.clone();
-            let result = events::run_keeping(&host, &log, case, &combo).await;
+            // A case that hangs fails here, naming itself and the
+            // placement, instead of holding the job until the runner's own
+            // timeout (which leaves the log with nothing to go on): no case
+            // takes anywhere near a minute, and the guard only catches hangs.
+            let what = format!("case {} [{}]", case.case, combo.describe());
+            let result =
+                rutis_test_support::Guard(rutis_test_support::scaled(Duration::from_secs(60)))
+                    .within(&what, events::run_keeping(&host, &log, case, &combo))
+                    .await;
             if let Err(why) = &result {
                 eprintln!(
                     "FAIL {} [{}]: {why}\n{}",
