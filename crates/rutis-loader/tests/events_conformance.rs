@@ -1393,7 +1393,13 @@ async fn conformance(x: &str) {
     }
     let started = std::time::Instant::now();
     let log = EventsLog::new();
-    let host = Host::start(x, &log).await;
+    // Every phase of the loop is guarded: a hang must name itself here, not
+    // hold the job until the runner's own timeout (a hung `events
+    // conformance, X Swift` left a job for five hours with nothing in the
+    // log about which wait it was in).
+    let host = rutis_test_support::Guard(rutis_test_support::scaled(Duration::from_secs(120)))
+        .within(&format!("the host with X={x}"), Host::start(x, &log))
+        .await;
     let all_ys = events::y_languages(&expected, x);
     let ys: Vec<&str> = all_ys.iter().copied().filter(|l| available(l)).collect();
     let only = std::env::var("RUTIS_EVENTS_CASE").unwrap_or_default();
@@ -1448,7 +1454,14 @@ async fn conformance(x: &str) {
                     host.stderr()
                 );
             }
-            if let Err(why) = events::finish(&host, &log).await {
+            let reset =
+                rutis_test_support::Guard(rutis_test_support::scaled(Duration::from_secs(60)))
+                    .within(
+                        &format!("the world reset after {what}"),
+                        events::finish(&host, &log),
+                    )
+                    .await;
+            if let Err(why) = reset {
                 panic!("the world could not be reset after {}: {why}", case.case);
             }
             tally.record(case, &combo, &result);
@@ -1462,7 +1475,13 @@ async fn conformance(x: &str) {
         "events conformance, X={x}, {coverage:?}: {placements} placements in {:?}\n{tally}",
         started.elapsed()
     );
-    host.root.shutdown().await.unwrap();
+    rutis_test_support::Guard(rutis_test_support::scaled(Duration::from_secs(60)))
+        .within(
+            &format!("the host with X={x} shutting down"),
+            host.root.shutdown(),
+        )
+        .await
+        .unwrap();
     assert_eq!(tally.failed(), 0, "X={x}:\n{tally}");
 }
 
