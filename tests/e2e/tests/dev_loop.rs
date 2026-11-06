@@ -511,9 +511,21 @@ fn dev_loop(kind: Kind) {
     // this also fills the build cache the first dev build uses.
     prepare(&s, kind);
     let mut tests = template_tests(&s, kind);
+    let status = tests.wait_exit_within(build_guard());
+    // What they printed, as the host's own failures say: a bare "failed"
+    // left a Windows run with nothing to go on.
+    let tail: Vec<String> = tests
+        .lines()
+        .iter()
+        .rev()
+        .take(40)
+        .rev()
+        .map(|line| line.text.clone())
+        .collect();
     assert!(
-        tests.wait_exit_within(build_guard()).success(),
-        "the template's tests failed"
+        status.success(),
+        "the template's tests failed ({status}):\n  {}",
+        tail.join("\n  ")
     );
 
     // 3. check, on the template project as generated.

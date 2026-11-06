@@ -245,6 +245,21 @@ struct Fixture {
 /// Node and Python, and the runtime `other` (`bun`, `go`, `swift` or
 /// `kt`) when there is one.
 async fn fixture(other: Option<&str>) -> Fixture {
+    fixture_with_idle(other, false).await
+}
+
+/// [`fixture`], saying whether the compiled runtime (`go`, `swift`) stops two
+/// seconds after its last row is gone.
+///
+/// Only when that runtime is the **owner** whose row the test removes on
+/// purpose: the idle stop is then the `peer-gone` the test expects. A
+/// runtime whose rows the test keeps using must not have a two-second idle —
+/// the sweep counts a runtime as used while an entry resolves to it, and a
+/// `reconcile` lasting longer than that (a loaded CI machine) stops it under
+/// the test's feet: the next call fails with `runtime swift-multilang exited
+/// during the call` (`objects_cross.rs:413`), which is not the case under
+/// test.
+async fn fixture_with_idle(other: Option<&str>, idle: bool) -> Fixture {
     let dir = tempfile::tempdir().unwrap();
     let sdk = repo()
         .join("node/rutis/src/index.mjs")
@@ -368,7 +383,7 @@ async fn fixture(other: Option<&str>) -> Fixture {
                 dir.path(),
                 common::runtimes::spawner(),
             )
-            .idle(Some(std::time::Duration::from_secs(2))),
+            .idle(idle.then_some(std::time::Duration::from_secs(2))),
         )
         .await
         .unwrap();
@@ -381,7 +396,7 @@ async fn fixture(other: Option<&str>) -> Fixture {
                 dir.path(),
                 common::runtimes::spawner(),
             )
-            .idle(Some(std::time::Duration::from_secs(2))),
+            .idle(idle.then_some(std::time::Duration::from_secs(2))),
         )
         .await
         .unwrap();
@@ -464,7 +479,9 @@ async fn objects_cross(owner: &str, holder: &str) {
     if !enabled(other.unwrap_or("node")) {
         return;
     }
-    let fixture = fixture(other).await;
+    // The idle stop is the expectation only when the compiled runtime is the
+    // owner (its row goes on purpose); a holder's runtime must stay up.
+    let fixture = fixture_with_idle(other, matches!(owner, "go" | "swift")).await;
     let report = fixture
         .loader
         .reconcile(layer(rows(&fixture, owner, holder, true)), None)
