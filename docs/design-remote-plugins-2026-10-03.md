@@ -81,7 +81,7 @@
 
 ## 3. 共享连接与会话
 
-> 本节的 `link`、`Peer#<id>`、`Identity`、`Registration` 是 0.18 及更早的模型；0.19 起连接由 `rutis-host/dial` / `rutis-host/listen` 行实现（[连接节点](guide/nodes.md)）。其中“Session 按运行时实例或节点 link 建立、不按插件建立”“插件的装卸不创建或关闭共享 Session”“资源按插件实例区分、只清理该实例的资源”仍现行；其余按历史记录阅读。
+> 本节的 `link`、`Peer#<id>`、`Identity`、`Registration` 是 0.18 及更早的模型；0.19 起连接由 `rutis-host/dial` / `rutis-host/listen` 行实现（[连接节点](guide/nodes.md)）。其中“Session 按运行时实例或每条连接建立、不按插件建立”“插件的装卸不创建或关闭共享 Session”“资源按插件实例区分、只清理该实例的资源”仍现行；其余按历史记录阅读。
 
 ### 3.1 服务与依赖
 

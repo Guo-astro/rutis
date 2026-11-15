@@ -85,7 +85,7 @@
 
 - 连接：每条连接一行 `rutis-host/dial`（本端去连）或 `rutis-host/listen`（等对面连进来）。没有 `runtimes.remote`，没有接入点，也没有按连接创建的实例。
 - 键：连接在握手里自报的 id 就是它的键；对面运行的插件注册为 `<对面自报的 id>:<插件>`（约定与连接行 id 相同），应用托管的插件注册为 `<应用 id>:<插件>`。远程连接不再创建 `instanced` 实例，也没有按连接区分的运行时键；`host_key_in` 仍是实例内服务的通用机制（本地 `instanced` 分组照旧），远程连接的服务全局可见，同名按内核规则后注册的被拒绝。
-- 监听与接管：`rutis-host/listen` 的一条新连接完成握手后，旧 session 先卸载（对远端的全部插件），旧通道以 4002 关闭，然后才装上新的 session；握手失败的连接不影响任何东西（`crates/rutis-host/src/connect/listen.rs:1-10`）。运行时自己监听时，被新控制方接替会打印 `rutis: session ended (replaced by a new connection)`。
+- 监听与接管：`rutis-host/listen` 的一条新连接完成握手后，旧 session 先卸载（对远端的全部插件），旧通道以 4002 关闭，然后才装上新的 session；握手失败的连接不影响任何东西（`crates/rutis-host/src/connect/listen.rs:1-10`）。Python 运行时自己监听时，被新控制方接替会打印 `rutis: session ended (replaced by a new connection)`。
 - 端口：运行时二进制（Python、Node、Bun、Go、Swift）开始监听后在 stderr 打印实际绑定地址 `rutis: listening on <地址>`；地址写 `0` 时由系统挑端口，脚本从这一行读出。Swift 的 `RutisApp` 在监听模式下记下第一次绑定的端口，`stop()` 后再 `start()` 仍绑同一个端口（`swift/rutis/Tests/SelfTest/AppTests.swift::aListeningAppStartsAgainRightAfterItStopped`、`crates/rutis-host/tests/swift_app.rs::an_app_that_listens_is_dialed_and_comes_back_after_stop_and_start`）；Kotlin 的 `RutisApp` 是否保留端口：未确认。
 - 重连：仍按 §六；每次重连是新 session，重新装载，不沿用旧实例或旧引用。
 

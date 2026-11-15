@@ -80,7 +80,7 @@ Using core alone must not pull in extensions; using only a local runtime must no
 
 ## 3. Shared connections and sessions
 
-> This section's `link`, `Peer#<id>`, `Identity` and `Registration` are the model of 0.18 and earlier; since 0.19 connections are `rutis-host/dial` / `rutis-host/listen` rows ([Connect Nodes](guide/nodes.en.md)). These parts remain current: a Session is established per runtime instance or per node link, not per plugin; loading or unloading a plugin does not create or close the shared Session; resources are owned per plugin instance and only that instance's resources are cleaned. Read the rest as history.
+> This section's `link`, `Peer#<id>`, `Identity` and `Registration` are the model of 0.18 and earlier; since 0.19 connections are `rutis-host/dial` / `rutis-host/listen` rows ([Connect Nodes](guide/nodes.en.md)). These parts remain current: a Session is established per runtime instance or per connection, not per plugin; loading or unloading a plugin does not create or close the shared Session; resources are owned per plugin instance and only that instance's resources are cleaned. Read the rest as history.
 
 ### 3.1 Services and dependencies
 
