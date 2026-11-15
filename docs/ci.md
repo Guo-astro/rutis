@@ -39,7 +39,7 @@
 - 没改 `specs/**`，也没改模型点名的实现：通过（只改文档、工具，或模型不覆盖的代码）。
 - 改了模型点名的实现：描述里要有一行 `模型：<目录> 不涉及（理由）`，例如 `模型：specs/events 不涉及（只改了错误文字）`。缺这一行、没写“不涉及”、括号里没有理由，都失败；失败的输出列出它看到的路径。
 
-“模型点名的实现”从 `specs/<目录>/README.md` 的“对应的设计和代码”表里取：表里写的、本仓库里确实存在的代码文件就是。模型 README 补了路径，检查范围自己跟着变，不另维护一份清单。看这份清单：`node tools/check-model-pr.mjs --list`；自测：`node tools/check-model-pr.mjs --self-test`；本地跑一次：`node tools/check-model-pr.mjs --body-file <描述文件> --files-from-git origin/main`。
+“模型点名的实现”从 `specs/<目录>/README.md` 的“对应的设计和代码”表里取：表里写的代码文件就是（标了“不在本仓库”的行不算，现在只有 Cordis 的 `bridge/link.mjs`）。模型 README 补了路径，检查范围自己跟着变，不另维护一份清单。表里点名的文件不在了（改名、删除）也失败，提示去改模型 README 或代码。看这份清单：`node tools/check-model-pr.mjs --list`；自测：`node tools/check-model-pr.mjs --self-test`；本地跑一次：`node tools/check-model-pr.mjs --body-file <描述文件> --files-from-git origin/main`。
 
 ### 每晚的 `nightly.yml`
 

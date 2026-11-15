@@ -39,7 +39,7 @@ A change to code a model stands for either changes that model or says in the des
 - Neither `specs/**` nor any code a model stands for changed: pass (documentation, tools, or code no model covers).
 - Code a model stands for changed: the description needs a line `模型：<directory> 不涉及（reason）`, for example `模型：specs/events 不涉及（只改了错误文字）`. A missing line, one without 不涉及, or one without a reason in parentheses fails, and the failure lists the paths it saw.
 
-"Code a model stands for" is taken from the "对应的设计和代码" table of each `specs/<directory>/README.md`: what that table names, and what exists in this repository, is the list. A README that gains paths widens the check on its own; no second list is kept. To see it: `node tools/check-model-pr.mjs --list`; self-test: `node tools/check-model-pr.mjs --self-test`; to run it locally: `node tools/check-model-pr.mjs --body-file <description> --files-from-git origin/main`.
+"Code a model stands for" is taken from the "对应的设计和代码" table of each `specs/<directory>/README.md`: the code files that table names are the list (rows marked "not in this repository" are not; today only Cordis's `bridge/link.mjs` is). A README that gains paths widens the check on its own; no second list is kept. A file the table names that is no longer there (renamed, deleted) fails too, and says to update the model README or the code. To see it: `node tools/check-model-pr.mjs --list`; self-test: `node tools/check-model-pr.mjs --self-test`; to run it locally: `node tools/check-model-pr.mjs --body-file <description> --files-from-git origin/main`.
 
 ### The nightly `nightly.yml`
 

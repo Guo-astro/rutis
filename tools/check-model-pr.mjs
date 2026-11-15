@@ -35,7 +35,9 @@ const SECTION = /^## +(对应的设计和代码|对应的实现|corresponding im
 const NOTE = /^模型\s*[：:]/;
 
 // The paths the models stand for: the code spans of every specs/<dir>/README.md
-// "对应的设计和代码" table that name a file of this repository.
+// "对应的设计和代码" table that name a file of this repository. A path whose
+// file is gone stays in the list (a change that deletes or moves it still has
+// to say why the model is not affected); `missing()` names those.
 export function modelledPaths() {
   const specs = join(root, 'specs');
   const paths = new Set();
@@ -50,16 +52,25 @@ export function modelledPaths() {
         continue;
       }
       if (!inside) continue;
+      // A row that says its file is not in this repository (the Cordis node
+      // link) names no path of ours to check.
+      if (/不在本仓库|not in this repository/i.test(line)) continue;
       for (const [, span] of line.matchAll(/`([^`]+)`/g)) {
         // `path:12`, `path:12-34`, `path:12-34,56`: the file, not the lines.
         const path = span.replace(/:\d[\d,\-]*$/, '');
         if (!ROOTS.some((prefix) => path.startsWith(prefix))) continue;
-        if (!exists(path)) continue;
+        if (!/^[\w./-]+\.[a-z0-9]+$/.test(path)) continue;
         paths.add(path);
       }
     }
   }
   return paths;
+}
+
+// The paths above that are not files of this repository: the model READMEs
+// name code that moved or went away.
+function missing(paths) {
+  return [...paths].filter((path) => !exists(path)).sort();
 }
 
 // Whether the change needs a `模型：` line, and why. `body` is the pull
@@ -120,12 +131,17 @@ function selfTest() {
     }
   }
   // The list comes from the model READMEs: it has to be more than a few paths,
-  // each one a file, and a path a model is built on has to be in it.
+  // and a path a model is built on has to be in it.
   const paths = modelledPaths();
   if (paths.size < 20) { bad += 1; console.error(`self-test: only ${paths.size} modelled paths; the README tables are not read`) }
-  for (const path of paths) if (!exists(path)) { bad += 1; console.error(`self-test: ${path} is listed but not there`) }
   for (const path of ['crates/rutis-bridge/src/session/rpc.rs', 'node/rutis-runtime/src/serve.mjs']) {
     if (!paths.has(path)) { bad += 1; console.error(`self-test: ${path} is not in the modelled paths`) }
+  }
+  // A path whose file is gone stays in the list, and is named as missing.
+  const gone = missing(new Set(['crates/rutis/src/bus.rs', 'crates/rutis/src/not-there.rs']));
+  if (gone.length !== 1 || gone[0] !== 'crates/rutis/src/not-there.rs') {
+    bad += 1;
+    console.error(`self-test: a missing path is not named: ${JSON.stringify(gone)}`);
   }
   if (bad) {
     console.error(`self-test: ${bad} problem(s)`);
@@ -147,8 +163,9 @@ function main() {
   if (args.includes('--self-test')) return selfTest();
   if (args.includes('--list')) {
     const paths = [...modelledPaths()].sort();
+    const gone = new Set(missing(paths));
     console.log(`${paths.length} paths the models stand for:`);
-    for (const path of paths) console.log(`  ${path}`);
+    for (const path of paths) console.log(`  ${path}${gone.has(path) ? ' (not there)' : ''}`);
     return;
   }
   const bodyFile = option('--body-file');
@@ -162,7 +179,16 @@ function main() {
     console.error('check-model-pr: give --files-from-git BASE, --files FILE or --self-test');
     process.exit(2);
   }
-  const result = check(body, files, modelledPaths());
+  const modelled = modelledPaths();
+  // A model README that names a file of the repository has to name one that is
+  // there: a path that moved is a model that did not follow the code.
+  const gone = missing(modelled);
+  if (gone.length) {
+    console.error(`check-model-pr: fail — the model READMEs name ${gone.length} file(s) that are not there. Update specs/<directory>/README.md with the move, or the code:`);
+    for (const path of gone) console.error(`  ${path}`);
+    process.exit(1);
+  }
+  const result = check(body, files, modelled);
   if (!result.ok) {
     console.error(`check-model-pr: fail — ${result.reason}`);
     process.exit(1);
