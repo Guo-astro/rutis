@@ -49,11 +49,11 @@
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | [protocol-registry-1.md](rules/protocol-registry-1.md) | #634 · registry-1 | 156 | 4 | 48 | 62 | 6 | 24 | 9 | 12 | 0 | 7 |
 | [protocol-registry-2.md](rules/protocol-registry-2.md) | #634 · registry-2 | 218 | 8 | 29 | 126 | 5 | 36 | 0 | 14 | 0 | 47 |
-| [protocol-events.md](rules/protocol-events.md) | #634 · events | 253 | 74 | 93 | 52 | 1 | 19 | 9 | 14 | 0 | 0 |
+| [protocol-events.md](rules/protocol-events.md) | #634 · events | 253 | 75 | 92 | 52 | 1 | 19 | 9 | 14 | 0 | 0 |
 | [protocol-session.md](rules/protocol-session.md) | #634 · session 上/下 | 246 | 13 | 99 | 86 | 7 | 27 | 104 | 14 | 161 | 2 |
 | [protocol-runtime.md](rules/protocol-runtime.md) | #634 · runtime | 264 | 8 | 38 | 140 | 10 | 63 | 45 | 5 | 0 | 68 |
 | [protocol-remote.md](rules/protocol-remote.md) | #634 · remote | 231 | 4 | 69 | 71 | 13 | 32 | 17 | 42 | 0 | 137 |
-| 合计 | — | 1368 | 111 | 376 | 537 | 42 | 201 | 184 | 101 | 161 | 261 |
+| 合计 | — | 1368 | 112 | 375 | 537 | 42 | 201 | 184 | 101 | 161 | 261 |
 <!-- recheck-index:end -->
 
 状态怎么变：
@@ -61,9 +61,9 @@
 | 快照映射状态 | 复核后状态 | 条数 |
 | --- | --- | --- |
 | 未验证 | 未验证 | 537 |
-| 部分验证 | 部分验证 | 375 |
+| 部分验证 | 部分验证 | 374 |
 | 不单独计数 | 不单独计数 | 201 |
-| 已验证 | 已验证 | 111 |
+| 已验证 | 已验证 | 112 |
 | 未验证 | 已撤回 | 46 |
 | 明确不保证 | 明确不保证 | 42 |
 | 部分验证 | 已撤回 | 34 |
@@ -727,7 +727,7 @@
 | EVP-15.29-1 | 未验证 | 未验证 | 事件协议规格（§15.29（2026-10-21 修订）） | — | 无具名证据 | 现行来源：事件协议规格（§15.29（2026-10-21 修订））；没有会话规格锚点；无具名证据 |
 | EVP-15.29-2 | 不单独计数 | 不单独计数 | 事件协议规格（§15.29） | — | 无具名证据 | — |
 | EVP-15.33-1 | 部分验证 | 部分验证 | 事件协议规格（§15.33） | — | 具名证据是模块/用例名，不是文件路径；按原文保留 | 现行来源：事件协议规格（§15.33）；没有会话规格锚点 |
-| EVP-15.33-2 | 部分验证 | 部分验证 | 事件协议规格（§15.33） | — | 具名证据是模块/用例名，不是文件路径；按原文保留 | 现行来源：事件协议规格（§15.33）；没有会话规格锚点 |
+| EVP-15.33-2 | 已验证 | 已验证 | 事件协议规格（§15.33） | — | 2/2 个具名引用解析 | 现行来源：事件协议规格（§15.33）；没有会话规格锚点 |
 | EVD-1-1 | 部分验证 | 部分验证 | 统一事件设计（设计 §一） | — | 无具名证据 | 现行来源：统一事件设计（设计 §一）；没有会话规格锚点；无具名证据 |
 | EVD-1-2 | 部分验证 | 部分验证 | 统一事件设计（设计 §一、§四） | — | 具名证据是模块/用例名，不是文件路径；按原文保留 | 现行来源：统一事件设计（设计 §一、§四）；没有会话规格锚点 |
 | EVD-3.1-1 | 部分验证 | 部分验证 | 统一事件设计（设计 §三.1） | — | 无具名证据 | 现行来源：统一事件设计（设计 §三.1）；没有会话规格锚点；无具名证据 |
@@ -2727,7 +2727,7 @@
 | EVP-15.29-1 | 未验证 | design-events-protocol-2026-10-18.md §15.29 | EVP §15.29、events/hub-dispatch | — | 决定 29（2026-10-21 修订）让宿主按顺序处理一个会话的 emit 而不阻塞读线程：能马上开始的在有序任务上作答，选择器要从同一会话回来的进入队列；实现在 `crates/rutis-bridge/src/events/hub.rs` 的 `run_emit` / `next_emit`，没有用例；#634 快照记「未覆盖」 |
 | EVP-15.29-2 | 不单独计数 | design-events-protocol-2026-10-18.md §15.29 | EVP §15.29、bridge/cross-version-meetings | — | 决定 29 保留对 0.13 宿主的兼容：以 future 作答的 emit 回复运行时仍等待；这要 0.13 的宿主，只能跨版本；#634 快照记「不适用」 |
 | EVP-15.33-1 | 部分验证 | design-events-protocol-2026-10-18.md §15.33 | EVP §15.33、events/framework | `crates/rutis-bridge/src/runtime/testing/events.expected.json`（`rutis/row`、`rutis/row-failed`、`rutis/row-host-row`） | 决定 33 让 `rutis/row` 在加载器生成该行时发 `pending`、之后按每次状态变化发（`loading` 算 `pending`，`unloading` 与销毁算 `stopped`）；三个 K 用例覆盖配置行与失败；#634 快照记「部分」，组行（`plugin` 为 `group`）没有用例 |
-| EVP-15.33-2 | 部分验证 | design-events-protocol-2026-10-18.md §15.33 | EVP §15.33、events/framework | `crates/rutis-bridge/src/runtime/testing/events.expected.json`（`rutis/service`、`rutis/service-of-rust`） | 决定 33 让 `rutis/service` 针对每个宿主服务发出、不论提供方是 Rust 插件、运行时的行还是节点导入，并带提供它的行的 id；两个 K 用例覆盖 Rust 与运行时的行；#634 快照记「部分」，节点导入的服务没有用例 |
+| EVP-15.33-2 | 已验证 | design-events-protocol-2026-10-18.md §15.33 | EVP §15.33、events/framework | K `rutis/service`、`rutis/service-of-rust`；`crates/rutis-bridge/tests/session_plugin.rs::a_node_imported_service_is_announced_with_its_row`、`crates/rutis-bridge/tests/session_plugin.rs::a_node_imported_service_without_a_row_announces_none` | 决定 33 让 `rutis/service` 针对每个宿主服务发出、不论提供方是 Rust 插件、运行时的行还是节点导入，并带提供它的行的 id；两个 K 用例覆盖 Rust 与运行时的行；#1171 让节点导入的服务带提供方的行 id（无行时不带），两个会话用例覆盖有行与无行；#634 快照记「部分」，当时节点导入的服务没有用例 |
 | EVD-1-1 | 部分验证 | design-events-2026-10-18.md §一 | EVD §一、events/one-bus | `crates/rutis-loader/tests/events_conformance.rs`（全部用例在全部放置下比对同一份期望） | 设计 §一 要求一个事件在哪里发出、监听器在哪里，结果都和所有监听器在同一个进程里一样；K 在全部放置下比对同一份期望；#634 快照记「部分」，字面上不成立：两个运行时在 elsewhere 更新前各走快速路径时排不出一致的全序，同一进程并发的发出也没有先后，按 Q5.1.1 应在协议 §4.4 写明不保证 |
 | EVD-1-2 | 部分验证 | design-events-2026-10-18.md §一；design-events-2026-10-18.md §四 | EVD §一、EVD §四、events/serial-bail、events/hub-bail | `crates/rutis-bridge/src/runtime/testing/events.expected.json`（`bail/wait-cycle`、`disconnect/bail-in-flight`、`bail/async-listener`） | 设计 §一 与 §四 只允许物理上做不到的情形失败（同步等待成环、已断开的对端、同步方式遇到异步监听器），且明确报错；三个 K 用例覆盖三种；#634 快照记「部分」，协议另有值发不出、过滤答案数不符等失败，Node / Bun / Python 把返回 Promise / 协程的过滤谓词悄悄当作保留 |
 | EVD-3.1-1 | 部分验证 | design-events-2026-10-18.md §三.1 | EVD §三.1、sdk/leaf-events、events/one-bus | `crates/rutis-loader/tests/events_conformance.rs`（各语言夹具都不声明事件，照样登记监听器） | 设计 §三.1 让登记是自动的：插件照常写 `ctx.on(name, listener)`，不需要声明；K 的各语言夹具都不声明事件，套件依赖这一点；#634 快照记「已覆盖」，复核记部分验证：没有用例单独断言“未声明的监听器也生效” |

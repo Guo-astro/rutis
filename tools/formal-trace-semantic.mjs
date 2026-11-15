@@ -8953,10 +8953,10 @@ export const SEMANTIC_EVENTS = {
     'EVP-15.33-2': {
       source: 'design-events-protocol-2026-10-18.md §15.33',
       anchors: ['EVP §15.33', 'events/framework'],
-      evidence: '`crates/rutis-bridge/src/runtime/testing/events.expected.json`（`rutis/service`、`rutis/service-of-rust`）',
-      status: '部分验证',
-      why: '决定 33 让 `rutis/service` 针对每个宿主服务发出、不论提供方是 Rust 插件、运行时的行还是节点导入，并带提供它的行的 id；两个 K 用例覆盖 Rust 与运行时的行；#634 快照记「部分」，节点导入的服务没有用例',
-      whyEn: 'Decision 33 emits `rutis/service` for every host service whatever provides it — a Rust plugin, a runtime row or a node import — with the providing row\'s id; two K cases cover a Rust and a runtime row; the issue marked it partial: a node-imported service has no case.',
+      evidence: 'K `rutis/service`、`rutis/service-of-rust`；`crates/rutis-bridge/tests/session_plugin.rs::a_node_imported_service_is_announced_with_its_row`、`crates/rutis-bridge/tests/session_plugin.rs::a_node_imported_service_without_a_row_announces_none`',
+      status: '已验证',
+      why: '决定 33 让 `rutis/service` 针对每个宿主服务发出、不论提供方是 Rust 插件、运行时的行还是节点导入，并带提供它的行的 id；两个 K 用例覆盖 Rust 与运行时的行；#1171 让节点导入的服务带提供方的行 id（无行时不带），两个会话用例覆盖有行与无行；#634 快照记「部分」，当时节点导入的服务没有用例',
+      whyEn: 'Decision 33 emits `rutis/service` for every host service whatever provides it — a Rust plugin, a runtime row or a node import — with the providing row\'s id; two K cases cover a Rust and a runtime row; #1171 makes a node-imported service carry the providing row\'s id (none when it has none), and two session cases cover one with a row and one without; the issue marked it partial: a node-imported service had no case then.',
     },
     'EVD-1-1': {
       source: 'design-events-2026-10-18.md §一',

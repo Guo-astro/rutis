@@ -85,7 +85,7 @@ rutis-host
 - **session → 远程插件**：对面的插件有两种来源，都注册为 `<id>:<插件>`，结束或 session 卸载时卸载：
   - 本端让它运行：行 `<连接行>:<插件>`，loader 找到 session 调 `run`；
   - 对面自己装着、提供着服务的插件（对面是 rutis 节点，或自己装插件的设备应用）。
-- **服务**：经 session 两边都全局可见。对面插件 `inject` 的服务从本端借（现在本机运行时就是这样）；对面提供的服务由它的远程插件在本端 `provide`。同名按内核规则：后注册的被拒绝。经同一个 session 来的服务不再发回这个 session。做法：session 监听内核的 `ServiceChanged`（服务提供与撤下时发），把本端可共享的服务（`host_key(<名>)`、不在实例里、不是 `isolate` 的、提供者不是平台插件）经 `services.announce` 发给对面，提供者是本 session 自己的远程插件的不发；对面发来的全部收下。`services.announce` 带 `plugin` 字段（提供它的插件名，rutis 节点发提供者所在的行 id），本端注册为远程插件 `<对面 id>:<plugin>`。
+- **服务**：经 session 两边都全局可见。对面插件 `inject` 的服务从本端借（现在本机运行时就是这样）；对面提供的服务由它的远程插件在本端 `provide`。同名按内核规则：后注册的被拒绝。经同一个 session 来的服务不再发回这个 session。做法：session 监听内核的 `ServiceChanged`（服务提供与撤下时发），把本端可共享的服务（`host_key(<名>)`、不在实例里、不是 `isolate` 的、提供者不是平台插件）经 `services.announce` 发给对面，提供者是本 session 自己的远程插件的不发；对面发来的全部收下。`services.announce` 带 `plugin` 字段（提供它的插件名，rutis 节点发提供者所在的行 id），本端注册为远程插件 `<对面 id>:<plugin>`；提供方有行时另带 `row`（行 id），本端把该远程插件标记为那一行，它在这里提供的服务就带这个行 id。
 - **事件**：一条平的总线。对面的监听器是本端总线上的条目，与现在的运行时相同。
 - **远程插件 ↔ 本地插件**：与普通插件相同（`inject` / `provide`），生命周期全部用内核原有的。
 - **顶替**：只在 `rutis-host/listen` 内部（§4.2）。session 核心不记 id，不做顶替。
