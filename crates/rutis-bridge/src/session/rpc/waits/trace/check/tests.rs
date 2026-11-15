@@ -4,6 +4,12 @@
 
 use super::*;
 
+/// [`check`] on a trace whose table was empty when it began: what these
+/// hand-written traces are.
+fn replay(events: &[Event]) -> Result<Vec<String>, Box<Violation>> {
+    check(&Trace::new(events.to_vec()))
+}
+
 fn profile(session: &str) -> Event {
     Event::Profile {
         session: session.into(),
@@ -96,7 +102,7 @@ const REFUSAL: usize = 5;
 /// and the operations that end them.
 #[test]
 fn the_counterexample_is_refused() {
-    let notes = check(&two()).expect("the refusal the model makes");
+    let notes = replay(&two()).expect("the refusal the model makes");
     assert_eq!(notes, Vec::<String>::new());
 }
 
@@ -116,7 +122,7 @@ fn a_cycle_forwarded_is_reported() {
             entry: false,
         },
     );
-    let broken = check(&events).expect_err("a call that waits on itself");
+    let broken = replay(&events).expect_err("a call that waits on itself");
     assert!(broken.why.contains("waits on itself"), "{broken}");
     assert_eq!(broken.at, REFUSAL);
 }
@@ -136,7 +142,7 @@ fn a_refusal_must_name_a_cycle() {
             calls: vec!["n1/rust:2".into(), "n2/node:1".into()],
         },
     );
-    let broken = check(&events).expect_err("a cycle it is not");
+    let broken = replay(&events).expect_err("a cycle it is not");
     assert!(broken.why.contains("not the cycle"), "{broken}");
 }
 
@@ -160,7 +166,7 @@ fn an_entry_is_not_a_hop() {
             },
         ),
     );
-    let broken = check(&events).expect_err("a hop nobody waits for");
+    let broken = replay(&events).expect_err("a hop nobody waits for");
     assert!(broken.why.contains("hop nobody waits for"), "{broken}");
 }
 
@@ -184,7 +190,7 @@ fn an_entry_with_nothing_marked_is_allowed() {
             },
         ),
     );
-    check(&events).expect("an entry nobody waits for");
+    replay(&events).expect("an entry nobody waits for");
 }
 
 /// What a runtime does while it waits is a constant of the model: a second
@@ -200,7 +206,7 @@ fn a_profile_does_not_change() {
             reentrant: true,
         },
     );
-    let broken = check(&events).expect_err("a profile that changes");
+    let broken = replay(&events).expect_err("a profile that changes");
     assert!(broken.why.contains("profile"), "{broken}");
 }
 
@@ -215,7 +221,7 @@ fn a_session_does_not_end_with_a_call_out() {
             session: "n1".into(),
         },
     );
-    let broken = check(&events).expect_err("a session ending while it waits");
+    let broken = replay(&events).expect_err("a session ending while it waits");
     assert!(broken.why.contains("ends while"), "{broken}");
 }
 
@@ -238,6 +244,54 @@ fn the_call_numbers_grow() {
             },
         ),
     );
-    let broken = check(&events).expect_err("a call number that does not grow");
+    let broken = replay(&events).expect_err("a call number that does not grow");
     assert!(broken.why.contains("do not grow"), "{broken}");
+}
+
+/// A capture can begin after the process's table had calls in it: another
+/// run of the test binary greeted the runtimes and forwarded a call. The
+/// replay starts from the table's state then, not from the model's empty
+/// one; without it, the refusal below names a call the graph does not have
+/// and looks like a cycle the model does not allow (`NoFalseCycle`, #1175).
+#[test]
+fn a_capture_starts_from_the_tables_state() {
+    let profiles = ["n1", "n2"]
+        .into_iter()
+        .map(|session| {
+            (
+                session.to_owned(),
+                Profile {
+                    stacked: true,
+                    reentrant: false,
+                },
+            )
+        })
+        .collect();
+    // The hop the first run recorded before this capture began: n1's call
+    // into n2, waiting for n2's answer.
+    let hop = Call {
+        dst: "n2".into(),
+        id: "rust:1".into(),
+        seq: 1,
+        src: Some("n1".into()),
+        sid: Some("node:1".into()),
+        chain: vec![
+            ("n1".into(), "node:1".into()),
+            ("n2".into(), "rust:1".into()),
+        ],
+        entry: false,
+    };
+    let initial = Initial {
+        profiles,
+        marked: Default::default(),
+        hops: vec![hop],
+        last: [("n2".to_owned(), 1)].into_iter().collect(),
+    };
+    // What the capture recorded: n2's far end calls back, and n1's call to
+    // it closes the cycle through the hop the table already held.
+    let events = two()[4..].to_vec();
+    let broken = check(&Trace::new(events.clone())).expect_err("a cycle the graph cannot see");
+    assert!(broken.why.contains("NoFalseCycle"), "{broken}");
+    let notes = check(&Trace::of(initial, events)).expect("the refusal the model makes");
+    assert_eq!(notes, Vec::<String>::new());
 }

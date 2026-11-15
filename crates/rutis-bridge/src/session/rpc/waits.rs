@@ -1404,6 +1404,56 @@ mod tests {
         );
     }
 
+    /// A capture begins with the table as it stands: a hop and a profile
+    /// another run of the test binary left there are in the trace's initial
+    /// state, so a refusal that closes a cycle through them replays as the
+    /// model allows. Replayed from the model's empty state, the same trace
+    /// names a cycle the graph does not have (#1175).
+    #[cfg(feature = "testing")]
+    #[test]
+    fn a_capture_starts_from_the_table() {
+        profile(
+            "cap_n1",
+            Profile {
+                stacked: true,
+                reentrant: false,
+            },
+        );
+        profile(
+            "cap_n2",
+            Profile {
+                stacked: true,
+                reentrant: false,
+            },
+        );
+        // n1's call into n2, in the table before the capture begins.
+        marked("cap_n1", "node:1");
+        assert!(forward("cap_n2", "rust:1", 1, &["cap_n1/node:1".to_owned()], true).unwrap());
+        let capture = trace::capture();
+        // n2's far end calls back; the call into n1 closes the cycle through
+        // the hop and the mark the table held when recording began.
+        marked("cap_n2", "node:1");
+        assert!(
+            forward("cap_n1", "rust:2", 2, &["cap_n2/node:1".to_owned()], true).is_err(),
+            "the call would wait on itself"
+        );
+        let trace = capture.trace();
+        let notes = trace::check(&trace).expect("the refusal the model makes");
+        assert_eq!(notes, Vec::<String>::new());
+        // From the model's empty state the graph has neither the hop nor the
+        // profiles, so the refusal names a call that is not there.
+        let empty = trace::Trace::new(trace.events().to_vec());
+        assert!(
+            trace::check(&empty).is_err(),
+            "the cycle needs the table's state"
+        );
+        returned("cap_n2", "rust:1");
+        answered("cap_n2", "node:1");
+        answered("cap_n1", "node:1");
+        ended("cap_n1");
+        ended("cap_n2");
+    }
+
     /// Item 12 of #613: for a wait graph of up to 20 hops, `cycle_among` finds
     /// a cycle exactly when a depth-first search of the model's `RustSucc`
     /// graph (`specs/cross-runtime-sync/CrossRuntimeSync.tla`) does, and the

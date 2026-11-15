@@ -8,11 +8,14 @@
 //! test [`capture`]s it, so a run that captures nothing pays an atomic read
 //! per operation and no allocation.
 //!
-//! [`check`] replays what was recorded as the model does: the profiles are
-//! the runtimes' constants (`stacked`, `reentrant`), a marked call is one a
-//! far end waits for, and a hop is a call this process forwarded. It rebuilds
-//! the model's graph (`RustSucc`: chain, put aside, stack order) before each
-//! forward and asks whether the decision was one the model allows there.
+//! A capture also takes the table's state at that moment: a process's table
+//! outlives it, and the tests of a binary share the table, so a capture can
+//! begin while another run's calls are in flight. [`check`] replays from that
+//! state as the model does: the profiles are the runtimes' constants
+//! (`stacked`, `reentrant`), a marked call is one a far end waits for, and a
+//! hop is a call this process forwarded. It rebuilds the model's graph
+//! (`RustSucc`: chain, put aside, stack order) before each forward and asks
+//! whether the decision was one the model allows there.
 //!
 //! An operation that finds the table empty (`answered` with nothing marked,
 //! `returned` with no hop) changes nothing and is not recorded: the replay
@@ -25,7 +28,7 @@ use super::Hop;
 
 mod check;
 
-pub use check::{check, Violation};
+pub use check::{check, Trace, Violation};
 
 /// One operation of the wait table, in the order it happened.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -89,18 +92,24 @@ pub enum Decision {
     Refused { calls: Vec<String> },
 }
 
-/// A run's record: what the wait table did while the [`Capture`] was alive.
+/// A run's record: what the wait table did while the [`Capture`] was alive,
+/// and the state it began in.
 ///
 /// Events of other runs of the same test binary are recorded too; the
 /// process gives each session a tag of its own (`rpc.rs`, `next_tag`), so a
-/// replay keeps them apart by session and neither sees the other.
+/// replay keeps them apart by session and neither sees the other. A session
+/// another run started before this capture began has its profile, marks and
+/// hops in the trace's initial state, so the replay still starts from what
+/// the table held.
 #[derive(Debug)]
 pub struct Capture {
     inner: Arc<Recorder>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct Recorder {
+    /// The table when recording began: where the replay starts.
+    initial: check::Initial,
     events: Mutex<Vec<Event>>,
 }
 
@@ -108,6 +117,12 @@ impl Capture {
     /// What was recorded so far, in the order it happened.
     pub fn events(&self) -> Vec<Event> {
         self.inner.events.lock().unwrap().clone()
+    }
+
+    /// The run: the table's state when recording began, and what was
+    /// recorded after.
+    pub fn trace(&self) -> Trace {
+        Trace::of(self.inner.initial.clone(), self.events())
     }
 }
 
@@ -129,9 +144,17 @@ static CAPTURES: AtomicUsize = AtomicUsize::new(0);
 /// Record what the wait table does until the returned [`Capture`] is
 /// dropped.
 pub fn capture() -> Capture {
-    let inner = Arc::new(Recorder::default());
+    // The state and the recorder are taken under the table's lock: an
+    // operation between the two would be neither in the state nor in the
+    // events, and the replay would start from a table it cannot have.
+    let waits = super::WAITS.lock().unwrap();
+    let inner = Arc::new(Recorder {
+        initial: check::Initial::of(&waits),
+        events: Mutex::default(),
+    });
     RECORDERS.lock().unwrap().push(Arc::downgrade(&inner));
     CAPTURES.fetch_add(1, Ordering::SeqCst);
+    drop(waits);
     Capture { inner }
 }
 

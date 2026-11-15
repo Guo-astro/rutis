@@ -2,6 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use super::super::Hop;
 use super::{Decision, Event, Forward};
 
 /// One thing a recorded trace did that the model does not allow: the event,
@@ -24,22 +25,112 @@ impl std::fmt::Display for Violation {
 
 impl std::error::Error for Violation {}
 
-/// Replay `events` as the model does
+/// One run's record: the wait table's state when the capture began, and the
+/// operations recorded after.
+///
+/// A capture need not start with an empty table: a process's table outlives
+/// one capture, and the tests of a binary share it, so a capture that starts
+/// later inherits calls and profiles another run made. The replay starts from
+/// that state; without it, a refusal that names a call the table had before
+/// the capture began would look like a cycle the model's graph does not have.
+#[derive(Clone, Debug, Default)]
+pub struct Trace {
+    initial: Initial,
+    events: Vec<Event>,
+}
+
+impl Trace {
+    /// The operations of a run that began with an empty table, the model's
+    /// initial state: what a hand-written trace in the tests is.
+    pub fn new(events: Vec<Event>) -> Self {
+        Self {
+            initial: Initial::default(),
+            events,
+        }
+    }
+
+    /// The same trace with `events` in place of the recorded ones: for the
+    /// tests that break one decision and replay it.
+    pub fn with_events(&self, events: Vec<Event>) -> Self {
+        Self {
+            initial: self.initial.clone(),
+            events,
+        }
+    }
+
+    /// The operations recorded after the capture began.
+    pub fn events(&self) -> &[Event] {
+        &self.events
+    }
+
+    /// `initial` from before the capture, and what it recorded.
+    pub(super) fn of(initial: Initial, events: Vec<Event>) -> Self {
+        Self { initial, events }
+    }
+}
+
+/// The wait table when a capture began: the calls it already held, and what
+/// it knew of the sessions. What the replay starts from.
+#[derive(Clone, Debug, Default)]
+pub(super) struct Initial {
+    profiles: HashMap<String, Profile>,
+    /// Calls a far end sent with `sync`, not answered yet.
+    marked: HashSet<(String, String)>,
+    /// Hops in progress, by session and sequence.
+    hops: Vec<Call>,
+    /// The last call number recorded on each session, as far as the hops
+    /// still in the table show.
+    last: HashMap<String, u64>,
+}
+
+impl Initial {
+    /// The table as it stands, under its lock.
+    pub(super) fn of(waits: &super::super::Waits) -> Self {
+        let mut hops: Vec<Call> = waits.hops.values().map(Call::of_hop).collect();
+        hops.sort_unstable_by(|a, b| (&a.dst, a.seq).cmp(&(&b.dst, b.seq)));
+        let mut last: HashMap<String, u64> = HashMap::new();
+        for call in &hops {
+            let at = last.entry(call.dst.clone()).or_insert(0);
+            *at = (*at).max(call.seq);
+        }
+        let profiles = waits
+            .profiles
+            .iter()
+            .map(|(session, profile)| {
+                (
+                    session.clone(),
+                    Profile {
+                        stacked: profile.stacked,
+                        reentrant: profile.reentrant,
+                    },
+                )
+            })
+            .collect();
+        Self {
+            profiles,
+            marked: waits.marked.clone(),
+            hops,
+            last,
+        }
+    }
+}
+
+/// Replay `trace` as the model does
 /// (`specs/cross-runtime-sync/CrossRuntimeSync.tla`): each profile is a
 /// runtime's constant (`sync-stack`, `reentrant-sync`), each marked call one
-/// a far end waits for, and each forward a call this side sends. Before a
-/// hop is recorded the model's graph is rebuilt (`RustSucc`: chain, put
-/// aside, stack order) and asked whether the call would wait on itself; a
-/// record it would not allow, or a decision it would not make, is a
-/// [`Violation`].
+/// a far end waits for, and each forward a call this side sends. The replay
+/// starts from the table's state when the capture began; before a hop is
+/// recorded the model's graph is rebuilt (`RustSucc`: chain, put aside, stack
+/// order) and asked whether the call would wait on itself. A record it would
+/// not allow, or a decision it would not make, is a [`Violation`].
 ///
 /// The model allows some events it does not guarantee; those come back as
 /// notes, one per event, and the run still passes. A run meant to be fully
 /// checked asserts no notes.
-pub fn check(events: &[Event]) -> Result<Vec<String>, Box<Violation>> {
-    let mut table = Table::default();
+pub fn check(trace: &Trace) -> Result<Vec<String>, Box<Violation>> {
+    let mut table = Table::of(&trace.initial);
     let mut notes = Vec::new();
-    for (at, event) in events.iter().enumerate() {
+    for (at, event) in trace.events.iter().enumerate() {
         let broken = |why: String| {
             Box::new(Violation {
                 at,
@@ -90,6 +181,21 @@ struct Call {
     entry: bool,
 }
 
+impl Call {
+    /// A hop the table holds (`waits::Hop`).
+    fn of_hop(hop: &Hop) -> Self {
+        Self {
+            dst: hop.dst.clone(),
+            id: hop.did.clone(),
+            seq: hop.seq,
+            src: (!hop.src.is_empty()).then(|| hop.src.clone()),
+            sid: (!hop.sid.is_empty()).then(|| hop.sid.clone()),
+            chain: hop.chain.clone(),
+            entry: hop.entry,
+        }
+    }
+}
+
 /// What the model says a call is (`RustForward`'s `kind`).
 enum Expected {
     /// A hop: `under` is the marked call it was made under (`None` for the
@@ -118,6 +224,17 @@ struct Table {
 }
 
 impl Table {
+    /// The replay of a trace that starts from `initial`.
+    fn of(initial: &Initial) -> Self {
+        Self {
+            profiles: initial.profiles.clone(),
+            marked: initial.marked.clone(),
+            hops: initial.hops.clone(),
+            ended: HashSet::new(),
+            last: initial.last.clone(),
+        }
+    }
+
     fn profile(&mut self, session: &str, stacked: bool, reentrant: bool) -> Result<(), String> {
         if self.ended.contains(session) {
             return Err(format!("{session} greets after it ended"));
@@ -209,10 +326,10 @@ impl Table {
             return Err(format!("a call into {dst} after it ended"));
         }
         if !self.profiles.contains_key(dst) {
-            // Noted nowhere on purpose: another run of this test binary may
-            // have greeted the session before this capture started, and the
-            // table treats a session it has no profile for as `default()`
-            // (`waits.rs`), as the replay does.
+            // Noted nowhere on purpose: a session that greeted before this
+            // capture started has its profile in the trace's initial state,
+            // and a session with none is one the table has no profile for
+            // either: both treat it as `default()` (`waits.rs`).
         }
         let chain = decode(&forward.path, dst);
         let caller = chain

@@ -66,12 +66,13 @@ impl Waits {
         #[cfg(feature = "testing")]
         {
             use rutis_bridge::session::waits_trace::{check, Decision, Event};
-            let events = self.0.events();
+            let trace = self.0.trace();
+            let events = trace.events();
             assert!(
                 !events.is_empty(),
                 "the wait table recorded nothing: the run made no synchronous calls"
             );
-            match check(&events) {
+            match check(&trace) {
                 Ok(notes) => assert!(
                     notes.is_empty(),
                     "the model allows these but does not guarantee them:\n{}",

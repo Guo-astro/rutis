@@ -202,12 +202,12 @@ B 实现时需要满足的条件（模型的前提）：
 
 记录的是 `profile`（会话的 `sync-stack` / `reentrant-sync`）、`marked`、`answered`、`returned`、`ended`，以及 `forward` 的每次判定：记为一条跳（谁发起的、是不是 `entry`）、回到调用方自己的链上（不记）、没人同步等待（不记），或拒绝（环上的调用，新的一个在前）。一次运行用 `capture()` 开始记录，结束时 `check()`（`trace/check.rs`）重放：
 
-- 一个会话的 `profile` 是模型的常量：第二次说的不是同一套就报；没有记录到的会话按 `Profile::default()`，和 `waits.rs` 读到的一样。
+- 一个会话的 `profile` 是模型的常量：第二次说的不是同一套就报。`capture()` 开始记录时先取一份表的状态（已有会话的 profile、未回答的标记、未返回的跳），重放从这份状态开始：同一个测试二进制里的用例同时跑，晚开始的 capture 会继承别的用例先前的状态，不取状态就会把表里已有的跳当成不存在（#1175）。初始状态里也没有 profile 的会话，`waits.rs` 同样按 `Profile::default()` 读。
 - `marked` 的调用不能重复标记，也不能是表里自己发出的调用；`answered` 不能回答自己发出的调用；`ended` 要求该会话没有调用在外（`End` 的前提），结束时它的标记、profile 和两侧的跳一起消失，之后不再有它的事件。
 - 每次 `forward` 先按 `RustSucc` 重建图（链、放到一边、栈顺序），再对照判定：链的最后一跳已被标记、且在另一个会话上，就必须记为一条跳，`src` 是那次调用；在同步等待而链上没有标记的记为宿主的调用（`src` 为空）；异步且没有标记的是 `entry`。记为跳的调用本身不能成环（成环时模型不转发）；拒绝必须指向图里真实的环；同一会话的调用号递增。
 - 模型的明确不保证的情况（同步调用没有被记下，SYN-9-26）作为注记返回；测试断言没有注记。
 
-跑过的运行：`sync_cycles.rs` 的 `two_node_runtimes_calling_each_other`（反例 1）和 `one_node_and_two_python_runtimes`（反例 2：放到一边、栈顺序、可重入的 Python），`rpc_callbacks.rs` 的 `a_function_forwarded_between_two_node_runtimes_calls_back_its_waiting_owner`（转发的调用回到调用方的链上）。同一个测试二进制里的其他用例同时跑，日志里也有它们的事件（测试先 `capture`，别的用例的操作照样落到记录里）；每个会话的标签由进程分配（`rpc.rs` 的 `next_tag`），重放按会话分开，互不影响。
+跑过的运行：`sync_cycles.rs` 的 `two_node_runtimes_calling_each_other`（反例 1）和 `one_node_and_two_python_runtimes`（反例 2：放到一边、栈顺序、可重入的 Python），`rpc_callbacks.rs` 的 `a_function_forwarded_between_two_node_runtimes_calls_back_its_waiting_owner`（转发的调用回到调用方的链上）。同一个测试二进制里的其他用例同时跑，日志里也有它们的事件（测试先 `capture`，别的用例的操作照样落到记录里）；每个会话的标签由进程分配（`rpc.rs` 的 `next_tag`），重放按会话分开，互不影响。`capture()` 取的初始状态让记录开始得晚也重放得准：表在这之前就有的 profile、标记和跳都在重放的起点里。
 
 不是空跑：`sync_cycles.rs` 的 `must_report` 把真实日志里的一个判定改坏（拒绝改成记跳、去掉调用方、去掉一次标记），重放必须报出来；`waits/trace/check/tests.rs` 用手写的追踪覆盖允许的追踪、转发成环、拒绝指错环、`entry` 记成跳、`profile` 改变、带着调用结束、调用号不递增。
 
@@ -253,4 +253,4 @@ java -cp /tmp/tla2tools.jar tlc2.TLC -workers auto -config bail-policy-b.cfg Cro
 
 ## 维护
 
-多语言设计 §五、§九 或 M1 §七 修改时，或 `rpc.rs`、`waits.rs`、`events/hub.rs`、`session.mjs`、`peer.py` 改变同步等待期间执行哪些调用、哪些调用记进等待图的规则时，同步修改这个模型和 `expected.txt`（规范 Q11.2.3），并跑 `sync_cycles.rs`、`rpc_callbacks.rs` 的追踪验证（"追踪验证"）；`waits.rs` 多出一种操作或判定时，`trace.rs` 的记录点和 `trace/check.rs` 的重放一起改；改 `cycle_among` 或它用的边时跑 `waits.rs` 的 `cycle_among_agrees_with_the_models_graph`（`PROPTEST_CASES`，失败用 `RUTIS_PROPTEST_SEED` 重跑）。宿主执行、`Workers`、异步分发和 `cancel` 的规则分别跟 `rpc.rs` 的 `receive`、`events/hub.rs` 的 `dispatch`、`waits.rs` 的 `marked` / `answered` / `returned` 对齐。
+多语言设计 §五、§九 或 M1 §七 修改时，或 `rpc.rs`、`waits.rs`、`events/hub.rs`、`session.mjs`、`peer.py` 改变同步等待期间执行哪些调用、哪些调用记进等待图的规则时，同步修改这个模型和 `expected.txt`（规范 Q11.2.3），并跑 `sync_cycles.rs`、`rpc_callbacks.rs` 的追踪验证（"追踪验证"）；`waits.rs` 多出一种操作或判定时，`trace.rs` 的记录点和 `trace/check.rs` 的重放一起改；表里多出一种重放要用的状态时，`capture()` 取的初始状态也要带上；改 `cycle_among` 或它用的边时跑 `waits.rs` 的 `cycle_among_agrees_with_the_models_graph`（`PROPTEST_CASES`，失败用 `RUTIS_PROPTEST_SEED` 重跑）。宿主执行、`Workers`、异步分发和 `cancel` 的规则分别跟 `rpc.rs` 的 `receive`、`events/hub.rs` 的 `dispatch`、`waits.rs` 的 `marked` / `answered` / `returned` 对齐。
