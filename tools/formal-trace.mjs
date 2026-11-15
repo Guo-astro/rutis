@@ -1032,7 +1032,7 @@ ${registrySections.join('\n\n')}
 
 - The ${protocolCurrent - reExtractedCurrent} current protocol rules and the ${protocolReplaced - reExtractedReplaced} replaced rows of \`rules/protocol-*.md\`, except ${registries.map(list => `\`${list.partition.id}\``).join(' and ')}: the re-check maps them onto sources, anchors, evidence and status; it does not rewrite them. Their per-rule table is Chinese only.
 - The rule wording of the ${registries.map(list => `${list.rows.length} \`${list.partition.id}\``).join(' and ')} rows: source, anchor, evidence and status are re-extracted, the wording is the issue snapshot's, and the tables above do not translate it.
-- The 211 guarantee-register rows: generated from \`docs/guarantees.md\`, so the register's wording is the source, not a re-extraction.
+- The ${registerRows.length} guarantee-register rows: generated from \`docs/guarantees.md\`, so the register's wording is the source, not a re-extraction.
 - The 10 \`ECA-*\` rows: hand-written proposals of the event-close admission design, with no current specification behind them yet.
 - The English table of the remaining protocol partitions: a gap (#634).
 `
@@ -1105,7 +1105,7 @@ ${PROTOCOL.map(meta => `### ${meta.label}\n\n${recheckTable(rows, meta)}`).join(
 
 ## 5. 语义重抽（${semantic.length} 行，${SEMANTIC_PAGE.date}，基准 \`${SEMANTIC_PAGE.baseline}\`）
 
-${1 + registryLists.length} 个分区已按 0.22 现行来源重抽（TRC、${registryLists.map(list => `\`${list.partition.id}\``).join('、')}）；**其余分区没有重抽**：协议清单其余 ${total - semanticCurrent} 条现行规则仍是 issue 快照的十列原文（状态按本页复核；${registryLists.map(list => `\`${list.partition.id}\``).join('、')} 另含 ${semanticReplaced} 条 issue 快照已取代行，也一并重抽），保证登记表 211 行由登记表生成，\`ECA\` 10 行仍是手写的设计提案。语义重抽的下一批是会话分区（SES、VAL、TAG、M1、CHN），事件、运行时、远程随后。
+${1 + registryLists.length} 个分区已按 0.22 现行来源重抽（TRC、${registryLists.map(list => `\`${list.partition.id}\``).join('、')}）；**其余分区没有重抽**：协议清单其余 ${total - semanticCurrent} 条现行规则仍是 issue 快照的十列原文（状态按本页复核；${registryLists.map(list => `\`${list.partition.id}\``).join('、')} 另含 ${semanticReplaced} 条 issue 快照已取代行，也一并重抽），保证登记表 ${registerRows.length} 行由登记表生成，\`ECA\` 10 行仍是手写的设计提案。语义重抽的下一批是会话分区（SES、VAL、TAG、M1、CHN），事件、运行时、远程随后。
 
 ${semanticSections.join('\n\n')}
 
@@ -1405,7 +1405,7 @@ if (!process.argv.includes('--check')) {
   }
   const reExtractedCurrent = SEMANTIC_PARTITIONS.filter(partition => !partition.translate)
     .reduce((total, partition) => total + semanticsOf(partition).filter(row => row.issueStatus !== '已取代').length, 0)
-  console.log(`not semantically re-extracted: ${protocolCurrent - reExtractedCurrent} protocol rules, 211 register rows, 10 ECA rows\n`)
+  console.log(`not semantically re-extracted: ${protocolCurrent - reExtractedCurrent} protocol rules, ${registerRows.length} register rows, 10 ECA rows\n`)
 }
 
 if (process.argv.includes('--check') && (protocolCounts.unresolved || protocolCounts.ambiguous)) {

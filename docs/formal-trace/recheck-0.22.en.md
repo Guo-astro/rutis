@@ -485,6 +485,6 @@ The rule wording of these 218 rows is the issue snapshot's (Chinese, `rules/prot
 
 - The 994 current protocol rules and the 175 replaced rows of `rules/protocol-*.md`, except `registry-1` and `registry-2`: the re-check maps them onto sources, anchors, evidence and status; it does not rewrite them. Their per-rule table is Chinese only.
 - The rule wording of the 165 `registry-1` and 218 `registry-2` rows: source, anchor, evidence and status are re-extracted, the wording is the issue snapshot's, and the tables above do not translate it.
-- The 211 guarantee-register rows: generated from `docs/guarantees.md`, so the register's wording is the source, not a re-extraction.
+- The 219 guarantee-register rows: generated from `docs/guarantees.md`, so the register's wording is the source, not a re-extraction.
 - The 10 `ECA-*` rows: hand-written proposals of the event-close admission design, with no current specification behind them yet.
 - The English table of the remaining protocol partitions: a gap (#634).
