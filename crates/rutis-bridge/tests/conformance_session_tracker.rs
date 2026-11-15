@@ -6081,8 +6081,20 @@ impl HostDispatch for Says {
     }
 }
 
-/// The catalog plugin `contacts`, providing the service `contacts`.
-struct Contacts;
+/// The catalog plugin `contacts`: it provides the service `service`,
+/// answering `get` with `answer`.
+///
+/// Both catalogs of a node link hold a plugin by this name (each end asks
+/// the other for `contacts`, and the kernel that runs it looks it up in its
+/// own catalog), but each end's provides a name of its own: a kernel has
+/// one provider per service name, and the services of a row run there are
+/// also provided here as that row's, so a second provider of one name on the
+/// same kernel is refused (`already provided`). The answers differ, so a
+/// call says which plugin answered.
+struct Contacts {
+    service: &'static str,
+    answer: &'static str,
+}
 
 impl PluginFactory<Json> for Contacts {
     fn name(&self) -> &str {
@@ -6091,8 +6103,8 @@ impl PluginFactory<Json> for Contacts {
 
     fn build(&self, _: &Json) -> Result<Box<dyn DynPlugin>, RutisError> {
         Ok(Box::new(Provides {
-            service: "contacts",
-            answer: "office",
+            service: self.service,
+            answer: self.answer,
         }))
     }
 }
@@ -6527,8 +6539,13 @@ async fn json_conversion_is_lossless_or_refused_with_its_reason() {
 async fn a_node_link_keeps_each_kernels_own_plugins() {
     let main = kernel("main");
     let office = kernel("office");
-    let catalog: Arc<dyn PluginCatalog> =
-        Arc::new(StaticCatalog::new().with("contacts", Installed::new(Contacts)));
+    let catalog: Arc<dyn PluginCatalog> = Arc::new(StaticCatalog::new().with(
+        "contacts",
+        Installed::new(Contacts {
+            service: "contacts",
+            answer: "office",
+        }),
+    ));
     let _catalog = office.provide_at(catalog_key(), catalog).unwrap();
     let own = office.plugin(Provides {
         service: "clock",
@@ -8214,21 +8231,31 @@ mod carrier {
     }
 
     /// Node features do not depend on who dialed (CHN-1-5): over one
-    /// WebSocket connection the listener runs a plugin on the dialer and
-    /// the dialer runs one on the listener, each from its own catalog. (The
-    /// old feature plugins are the session's families now; the checked part
-    /// is that both ends offer the node bridge, whichever accepted.)
+    /// WebSocket connection the listener runs a plugin at the dialer and
+    /// the dialer runs one at the listener, each from the catalog of the
+    /// kernel that runs it, and each end also gets the plugin it runs there
+    /// as that row's service here.
     /// rule: CHN-1-5
     #[tokio::test(flavor = "multi_thread")]
     async fn node_features_do_not_depend_on_who_dialed() {
         let (listener, address, mut delivered) = listening();
         let a = kernel("a");
         let b = kernel("b");
-        let catalog: Arc<dyn PluginCatalog> =
-            Arc::new(StaticCatalog::new().with("contacts", Installed::new(Contacts)));
+        let catalog: Arc<dyn PluginCatalog> = Arc::new(StaticCatalog::new().with(
+            "contacts",
+            Installed::new(Contacts {
+                service: "contacts",
+                answer: "office",
+            }),
+        ));
         let _ca = a.provide_at(catalog_key(), catalog).unwrap();
-        let catalog: Arc<dyn PluginCatalog> =
-            Arc::new(StaticCatalog::new().with("contacts", Installed::new(Contacts)));
+        let catalog: Arc<dyn PluginCatalog> = Arc::new(StaticCatalog::new().with(
+            "contacts",
+            Installed::new(Contacts {
+                service: "directory",
+                answer: "desk",
+            }),
+        ));
         let _cb = b.provide_at(catalog_key(), catalog).unwrap();
         let dialed = dial(&address, Some("good"), &Trust::default())
             .await
@@ -8257,30 +8284,47 @@ mod carrier {
             at_a.loaded().await.unwrap();
         })
         .await;
-        until(
-            || a.get_at(&host_key("contacts")).is_some(),
-            "the contacts service at a",
-        )
-        .await;
-        until(
-            || b.get_at(&host_key("contacts")).is_some(),
-            "the contacts service at b",
-        )
-        .await;
-        assert_eq!(
-            call_service::<String>(&a, "contacts", "get", ())
-                .await
-                .unwrap(),
-            "office",
-            "the listener runs the dialer's plugin"
-        );
-        assert_eq!(
-            call_service::<String>(&b, "contacts", "get", ())
-                .await
-                .unwrap(),
-            "office",
-            "the dialer runs the listener's plugin"
-        );
+        // Each plugin runs at the kernel the other end asked, in that
+        // kernel's catalog: `contacts` at a, `directory` at b. The row it
+        // runs there is also provided here as that row's service, so each
+        // end sees both, and the answers say which one answered.
+        for (ctx, name, answer, why) in [
+            (
+                &a,
+                "contacts",
+                "office",
+                "the plugin b asked for, run at the listener",
+            ),
+            (
+                &b,
+                "directory",
+                "desk",
+                "the plugin a asked for, run at the dialer",
+            ),
+            (
+                &a,
+                "directory",
+                "desk",
+                "the row a runs at the dialer, seen at the listener",
+            ),
+            (
+                &b,
+                "contacts",
+                "office",
+                "the row b runs at the listener, seen at the dialer",
+            ),
+        ] {
+            until(
+                || ctx.get_at(&host_key(name)).is_some(),
+                &format!("the {name} service: {why}"),
+            )
+            .await;
+            assert_eq!(
+                call_service::<String>(ctx, name, "get", ()).await.unwrap(),
+                answer,
+                "{why}"
+            );
+        }
         drop(listener);
     }
 }
