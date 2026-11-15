@@ -4,8 +4,10 @@
 (* the reply frame read in place, later emits of the same name (from the wait     *)
 (* chain and from another row), a filter that may answer late or never, the host's *)
 (* per-session queue whose items remember their row, a row that unloads while its *)
-(* emits wait, and the receiver's rule a (overlapping calls) or b (one call per    *)
-(* listener at a time).                                                           *)
+(* emits wait, the receiver's rule a (overlapping calls) or b (one call per       *)
+(* listener at a time), a receiver that starts a call only on a later turn        *)
+(* (Python's `loop.call_soon`), and a host that replies before the calls started  *)
+(* (c2c1b7e8 before, #513).                                                       *)
 (*                                                                                    *)
 (* Design: docs/design-events-protocol-2026-10-18.md §5.2 (fast path), §5.4 (`emit`  *)
 (* starts every call after the one before started; the reply after that), §5.5 (the *)
@@ -17,7 +19,8 @@
 (* the backlog), crates/rutis-bridge/src/events/hub.rs (`SessionEvents::dispatch`,  *)
 (* `run_emit`, `next_emit`, `let_go_of_its_emits`, `cancelling`), and the runtimes' *)
 (* emit queues (node/rutis-runtime/src/events.mjs, python/rutis/rutis/runner.py,    *)
-(* go/rutis/internal/runtime/events.go).                                            *)
+(* go/rutis/internal/runtime/events.go) and Python's frame dispatch                 *)
+(* (python/rutis/rutis/peer.py `_dispatch`: `loop.call_soon`).                      *)
 (*                                                                                    *)
 (* The scenario (README.md, "Simplified"): R1's row A emits E1 through the host    *)
 (* while its listener L1 is inside a synchronous wait (a service call), so E1's     *)
@@ -37,8 +40,9 @@ CONSTANTS
     Filter2,      \* E2's filter
     Filter3,      \* E3's filter
     R2Rule,       \* "a" (starts a call when the frame is read) | "b" (one at a time)
+    Defer,        \* "none" | "nextRound" (R2 starts a call on a later turn, FIFO)
     Mutation      \* "none" | "replyAsync" | "heldEmit" | "unloadQueue" |
-                  \* "deadListener"
+                  \* "deadListener" | "futureReply"
 
 ASSUME L1 # L2
 ASSUME RowA # RowB
@@ -46,8 +50,9 @@ ASSUME Filter1 \in {"none", "late", "never"}
 ASSUME Filter2 \in {"none", "late", "never"}
 ASSUME Filter3 \in {"none", "late", "never"}
 ASSUME R2Rule \in {"a", "b"}
+ASSUME Defer \in {"none", "nextRound"}
 ASSUME Mutation \in {"none", "replyAsync", "heldEmit", "unloadQueue",
-                     "deadListener"}
+                     "deadListener", "futureReply"}
 
 Listeners == {L1, L2}
 
@@ -104,6 +109,8 @@ VARIABLES
     marked,       \* emit -> R1 recorded the reply (only replyAsync separates them)
     wait,         \* R1 is in a synchronous wait (a service call, not this emit)
     held,         \* calls held at R1, in arrival order: <<emit, listener>>
+    deferred,     \* calls at R2 whose frame was read, to start on a later turn,
+                  \* in arrival order: <<emit, listener>> (only Defer = "nextRound")
     started,      \* emit -> the listeners whose call started, in order (ghost)
     starts,       \* all calls in the order they started (ghost)
     l1Starts,     \* the emits whose L1 call started, in order (ghost)
@@ -116,19 +123,25 @@ VARIABLES
     afterRead,    \* emit -> it was issued after E1's reply was read (ghost)
     deadListener  \* a call to an unloaded row's listener started (ghost)
 
-vars == <<phase, path, kept, left, read, marked, wait, held, started, starts,
-          l1Starts, issueOrder, hostQ, running, rowDown, atUnload, atUnloadL1,
-          afterRead, deadListener>>
+vars == <<phase, path, kept, left, read, marked, wait, held, deferred, started,
+          starts, l1Starts, issueOrder, hostQ, running, rowDown, atUnload,
+          atUnloadL1, afterRead, deadListener>>
 
 IssuedBefore(f, e) ==
     \E i, j \in 1..Len(issueOrder):
         issueOrder[i] = f /\ issueOrder[j] = e /\ i < j
 
 (* A listener's call for `f` has not started, or `f` may still keep it.       *)
+(* `futureReply` is the case where that is no longer true: R1 was told the    *)
+(* emit is over while the host still owes its calls, so its later emits do    *)
+(* not queue behind them (#513).                                              *)
+HostRepliedEarly(f) ==
+    Mutation = "futureReply" /\ read[f]
+
 PendingAt(f, l) ==
-    \/ l \in Elements(left[f])
+    \/ l \in Elements(left[f]) /\ ~HostRepliedEarly(f)
     \/ \E h \in Elements(held): h[1] = f /\ h[2] = l
-    \/ phase[f] \in {"queued", "filtering"}
+    \/ phase[f] \in {"queued", "filtering"} /\ ~HostRepliedEarly(f)
 
 EarlierPending(e, l) ==
     \E f \in Emits: IssuedBefore(f, e) /\ PendingAt(f, l)
@@ -155,8 +168,9 @@ Issue(e, fast) ==
           /\ kept' = [kept EXCEPT ![e] = IF fast THEN Listeners ELSE {}]
           /\ left' = [left EXCEPT ![e] = IF fast THEN <<L1>> ELSE <<>>]
           /\ hostQ' = IF fast THEN hostQ ELSE Append(hostQ, e)
-          /\ UNCHANGED <<read, marked, wait, held, started, starts, l1Starts,
-                         running, rowDown, atUnload, atUnloadL1, deadListener>>
+          /\ UNCHANGED <<read, marked, wait, held, deferred, started, starts,
+                         l1Starts, running, rowDown, atUnload, atUnloadL1,
+                         deadListener>>
 
 (* E1 is emitted by row A, through the host (L2 is outside R1).               *)
 Emit1 ==
@@ -166,9 +180,9 @@ Emit1 ==
 BeginWait ==
     /\ ~wait
     /\ wait' = TRUE
-    /\ UNCHANGED <<phase, path, kept, left, read, marked, held, started, starts,
-                   l1Starts, issueOrder, hostQ, running, rowDown, atUnload,
-                   atUnloadL1, afterRead, deadListener>>
+    /\ UNCHANGED <<phase, path, kept, left, read, marked, held, deferred, started,
+                   starts, l1Starts, issueOrder, hostQ, running, rowDown,
+                   atUnload, atUnloadL1, afterRead, deadListener>>
 
 (* §5.5: the reply frame is read in place and the emit recorded as replied;    *)
 (* `replyAsync` records it one step later (#513, c2c1b7e8).                  *)
@@ -177,7 +191,22 @@ ReadReply(e) ==
     /\ ~read[e]
     /\ read' = [read EXCEPT ![e] = TRUE]
     /\ marked' = [marked EXCEPT ![e] = Mutation # "replyAsync"]
-    /\ UNCHANGED <<phase, path, kept, left, wait, held, started, starts,
+    /\ UNCHANGED <<phase, path, kept, left, wait, held, deferred, started, starts,
+                   l1Starts, issueOrder, hostQ, running, rowDown, atUnload,
+                   atUnloadL1, afterRead, deadListener>>
+
+(* c2c1b7e8 before, the host's half (#513): the reply to an emit still        *)
+(* queued, its calls not started, is written anyway, and R1 reads that frame  *)
+(* in place. From then on R1 counts the name as done: its later emits take    *)
+(* the fast path and do not queue behind the calls the host still owes        *)
+(* (`PendingAt`).                                                             *)
+ReplyEarly(e) ==
+    /\ Mutation = "futureReply"
+    /\ phase[e] \in {"queued", "filtering", "starting"}
+    /\ ~read[e]
+    /\ read' = [read EXCEPT ![e] = TRUE]
+    /\ marked' = [marked EXCEPT ![e] = TRUE]
+    /\ UNCHANGED <<phase, path, kept, left, wait, held, deferred, started, starts,
                    l1Starts, issueOrder, hostQ, running, rowDown, atUnload,
                    atUnloadL1, afterRead, deadListener>>
 
@@ -186,9 +215,9 @@ MarkReply(e) ==
     /\ read[e]
     /\ ~marked[e]
     /\ marked' = [marked EXCEPT ![e] = TRUE]
-    /\ UNCHANGED <<phase, path, kept, left, read, wait, held, started, starts,
-                   l1Starts, issueOrder, hostQ, running, rowDown, atUnload,
-                   atUnloadL1, afterRead, deadListener>>
+    /\ UNCHANGED <<phase, path, kept, left, read, wait, held, deferred, started,
+                   starts, l1Starts, issueOrder, hostQ, running, rowDown,
+                   atUnload, atUnloadL1, afterRead, deadListener>>
 
 (* R1's wait chain emits E2. Once E1's reply is read, the name is no longer on *)
 (* the via-host path (§5.5); `replyAsync` still counts it as unreplied.        *)
@@ -214,15 +243,19 @@ EndWait ==
     /\ l1Starts' = l1Starts \o EmitsOfHeld(held)
     /\ UNCHANGED <<phase, path, kept, left, read, marked, issueOrder, hostQ,
                    running, rowDown, atUnload, atUnloadL1, afterRead,
-                   deadListener>>
+                   deadListener, deferred>>
 
 (* §9 / §5.5: an emit's call starts, in registration order. At L1, while R1    *)
 (* waits, the call is held; L2's call starts at once (rule a) or when L2 has  *)
 (* no running call (rule b). `deadListener` calls a listener of an unloaded    *)
-(* row, which the fixed code skips.                                          *)
+(* row, which the fixed code skips. With `Defer = "nextRound"` an L2 call     *)
+(* starts only from the head of `deferred`: Python reads the frame and runs   *)
+(* the call a turn later, in the order the frames were read (`DeferCall`).    *)
 StartCall(e) ==
     /\ phase[e] = "starting"
     /\ left[e] /= <<>>
+    /\ (Defer = "none" \/ Head(left[e]) # L2
+        \/ (deferred /= <<>> /\ Head(deferred) = <<e, L2>>))
     /\ LET l == Head(left[e])
            keep == l \in kept[e]
            alive == ListenerAlive(l)
@@ -247,19 +280,39 @@ StartCall(e) ==
                          THEN running \cup {<<e, l>>}
                          ELSE running
           /\ deadListener' = (deadListener \/ (keep /\ ~alive /\ Mutation = "deadListener"))
+          /\ deferred' = IF Defer = "nextRound" /\ l = L2
+                         THEN Tail(deferred)
+                         ELSE deferred
           /\ phase' = [phase EXCEPT ![e] =
                          IF Tail(left[e]) = <<>> THEN "replied" ELSE "starting"]
           /\ UNCHANGED <<path, kept, read, marked, wait, issueOrder, hostQ,
                          rowDown, atUnload, atUnloadL1, afterRead>>
+
+(* Python reads a call's frame and runs it on the next turn of the loop        *)
+(* (`peer.py` `_dispatch`: `self.loop.call_soon(self._run, job)`), in the      *)
+(* order the frames were read. `nextRound` models that: the call at L2 waits   *)
+(* in `deferred` and starts from its head, so it starts later than the frame   *)
+(* was read, never out of order.                                               *)
+DeferCall(e) ==
+    /\ Defer = "nextRound"
+    /\ phase[e] = "starting"
+    /\ left[e] /= <<>>
+    /\ Head(left[e]) = L2
+    /\ EarlierPending(e, L2) = FALSE
+    /\ \A i \in 1..Len(deferred): deferred[i] # <<e, L2>>
+    /\ deferred' = Append(deferred, <<e, L2>>)
+    /\ UNCHANGED <<phase, path, kept, left, read, marked, wait, held, started,
+                   starts, l1Starts, issueOrder, hostQ, running, rowDown,
+                   atUnload, atUnloadL1, afterRead, deadListener>>
 
 (* The receiver of rule b ends a call; rule a also allows this, but does not  *)
 (* require it.                                                                *)
 EndCall(e) ==
     /\ <<e, L2>> \in running
     /\ running' = running \ {<<e, L2>>}
-    /\ UNCHANGED <<phase, path, kept, left, read, marked, wait, held, started,
-                   starts, l1Starts, issueOrder, hostQ, rowDown, atUnload,
-                   atUnloadL1, afterRead, deadListener>>
+    /\ UNCHANGED <<phase, path, kept, left, read, marked, wait, held, deferred,
+                   started, starts, l1Starts, issueOrder, hostQ, rowDown,
+                   atUnload, atUnloadL1, afterRead, deadListener>>
 
 (* §7.1 / §5.5: a row unloads. Its queued emit is dropped from the host queue, *)
 (* its filtering/starting emit is let go (an answer then starts nothing), the *)
@@ -274,8 +327,8 @@ UnloadRow(r) ==
     /\ atUnloadL1' = l1Starts
     /\ hostQ' = SelectSeq(hostQ, LAMBDA e: RowOf[e] # r)
     /\ IF Mutation = "unloadQueue"
-       THEN UNCHANGED <<phase, left, held, path, kept, read, marked, wait,
-                         started, starts, running, l1Starts, issueOrder,
+       THEN UNCHANGED <<phase, left, held, deferred, path, kept, read, marked,
+                         wait, started, starts, running, l1Starts, issueOrder,
                          afterRead, deadListener>>
        ELSE /\ phase' = [e \in Emits |->
                             IF RowOf[e] = r
@@ -284,6 +337,7 @@ UnloadRow(r) ==
             /\ left' = [e \in Emits |-> IF RowOf[e] = r THEN <<>> ELSE left[e]]
             /\ held' = SelectSeq(held, LAMBDA h:
                                     RowOf[h[1]] # r /\ (r # RowA \/ h[2] # L1))
+            /\ deferred' = SelectSeq(deferred, LAMBDA q: RowOf[q[1]] # r)
             /\ running' = { c \in running :
                               RowOf[c[1]] # r /\ (r # RowA \/ c[2] # L1) }
             /\ UNCHANGED <<path, kept, read, marked, wait, started, starts,
@@ -311,7 +365,7 @@ HostTake ==
           /\ left' = [left EXCEPT ![e] =
                         IF Filter(e) = "none" THEN <<L1, L2>> ELSE <<>>]
           /\ hostQ' = Tail(hostQ)
-          /\ UNCHANGED <<path, read, marked, wait, held, started, starts,
+          /\ UNCHANGED <<path, read, marked, wait, held, deferred, started, starts,
                          l1Starts, issueOrder, running, rowDown, atUnload,
                          atUnloadL1, afterRead, deadListener>>
 
@@ -324,7 +378,7 @@ FilterAnswer(e) ==
          /\ kept' = [kept EXCEPT ![e] = keep]
          /\ phase' = [phase EXCEPT ![e] = "starting"]
          /\ left' = [left EXCEPT ![e] = <<L1, L2>>]
-         /\ UNCHANGED <<path, read, marked, wait, held, started, starts,
+         /\ UNCHANGED <<path, read, marked, wait, held, deferred, started, starts,
                         l1Starts, issueOrder, hostQ, running, rowDown,
                         atUnload, atUnloadL1, afterRead, deadListener>>
 
@@ -333,19 +387,23 @@ Next ==
     \/ BeginWait
     \/ \E e \in Emits: ReadReply(e)
     \/ \E e \in Emits: MarkReply(e)
+    \/ \E e \in Emits: ReplyEarly(e)
     \/ Emit2
     \/ Emit3
     \/ EndWait
     \/ \E e \in Emits: StartCall(e)
+    \/ \E e \in Emits: DeferCall(e)
     \/ \E e \in Emits: EndCall(e)
     \/ \E r \in Rows: UnloadRow(r)
     \/ HostTake
     \/ \E e \in Emits: FilterAnswer(e)
 
-(* No work left: no queued emit, no filter or calls in flight, no held call.  *)
+(* No work left: no queued emit, no filter or calls in flight, no held or     *)
+(* deferred call.                                                             *)
 Done ==
     /\ hostQ = <<>>
     /\ held = <<>>
+    /\ deferred = <<>>
     /\ running = {}
     /\ ~wait
     /\ \A e \in Emits:
@@ -361,6 +419,7 @@ Init ==
     /\ marked = [e \in Emits |-> FALSE]
     /\ wait = FALSE
     /\ held = <<>>
+    /\ deferred = <<>>
     /\ started = [e \in Emits |-> <<>>]
     /\ starts = <<>>
     /\ l1Starts = <<>>
