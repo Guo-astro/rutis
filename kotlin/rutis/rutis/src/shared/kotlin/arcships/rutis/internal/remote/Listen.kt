@@ -259,9 +259,10 @@ class WebSocketServer(
 /**
  * Serves one controller at a time on [server]: a newer connection takes
  * over (the older closed with 4002), and is greeted only once the old
- * lease is gone. Runs until [stop] (the rows go, then the connection and
- * the listener close) or a controller is incompatible (it refused the
- * host, older than 0.13).
+ * lease is gone. Its heartbeat starts at that hello, not at the accept: a
+ * cleanup longer than the heartbeat timeout does not close it. Runs until
+ * [stop] (the rows go, then the connection and the listener close) or a
+ * controller is incompatible (it refused the host, older than 0.13).
  */
 class Listening(
     private val server: WebSocketServer,
@@ -328,6 +329,8 @@ class Listening(
                             event.connection.closeWith(CloseCode.GOING_AWAY, e.message ?: "the session did not start")
                             null
                         }
+                        // The session's hello went out: from here silence counts (#1102).
+                        if (started != null) event.connection.startHeartbeat()
                         current = started
                         connection = if (started != null) event.connection else null
                         started?.peer?.readyFuture?.thenRun {
