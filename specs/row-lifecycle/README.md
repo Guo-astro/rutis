@@ -16,7 +16,7 @@
 | 装载中结束的行：装载成功之后才报它的结束（54a7e824） | 远程会话 §4.3 | `crates/rutis-bridge/src/runtime/process.rs` 的 `on_row_ended`（登记在装载之前，回复之后才发）；`node/rutis-runtime/src/runner.mjs` 的 `endRow` 等 apply 结束 |
 | `rows.failed`：行的代码失败，宿主重启它（卸载旧代、装载新代），运行时保留这一行 | 远程会话 §4.3；#688 | `crates/rutis-bridge/src/runtime/process.rs:543-568`；`node/rutis-runtime/src/runner.mjs:1120-1135`（`rows.failed` 之后行仍加载） |
 | `rows.unload` 幂等：行已不在就只回答 | 行契约 `rows.v2` | `crates/rutis-bridge/src/session/plugin/rows.rs:197-207`；`node/rutis-runtime/src/runner.mjs:743-746`（`unloadRow` 找不到就返回） |
-| 运行时顶替：关闭旧会话、不再读它的帧、清理旧会话的全部行、然后回答新 hello | 远程插件 §4.4；远程会话 §4.2 | 运行时监听端（Python `serve`、Go `listen.go`、Node `serve.mjs` 同一顺序）；模型按 Node 的行处理建（`runner.mjs`） |
+| 运行时顶替：关闭旧会话、不再读它的帧、清理旧会话的全部行、然后回答新 hello | 远程插件 §4.4；远程会话 §4.2 | 运行时监听端（Python `serve`、Go `go/rutis/internal/runtime/listen.go`、Node `node/rutis-runtime/src/serve.mjs` 同一顺序）；模型按 Node 的行处理建（`node/rutis-runtime/src/runner.mjs`） |
 | 会话结束（断线或顶替）时清理它的全部行，每行一次 | 远程插件 §4.4；`loader/remote-runtime-rows`、`loader/row-unload-leaves-nothing` | 运行时的 `serve`/`listen`；`crates/rutis-bridge/src/session/plugin/rows.rs` 的 `Server`（每个会话一张已装载表） |
 | 两阶段放行：进程起来先提供 `<语言>Runtime`；宿主用它刷新这些行的解析结果；再提供 `<语言>RuntimeRows`，行才按完整依赖等待和启动 | 多语言运行时 §四、§六；M1 §6.2；#625 `NoProvisional` | `crates/rutis-loader/src/runtime/sessions.rs` 开头的两阶段（`SessionRowsPlugin` 先等待、重新解析、再提供 `SessionRows`）；各语言运行时插件提供两个服务；刷新用 loader 的 `entries()` + `reload(id)` |
 | 刷新是独立任务：运行时重启打断它，重启之后重做（REM-4.3-3） | 多语言运行时 §六；#625 | `crates/rutis-loader/src/runtime/sessions.rs` 的刷新任务（不在进行中的 reconcile 里同步等待） |

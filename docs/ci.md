@@ -29,6 +29,17 @@
 | `install.yml` | 每晚由 `nightly.yml` 调用（改了打包路径或周一五个平台，否则只有 linux-x64）；发布时由 `release.yml` 调用；手动 | 用 `package.yml` 构建这次提交的包并安装运行：npm、PyPI、release 二进制。发布前五个平台（linux-x64、linux-arm64、darwin-x64、darwin-arm64、win32-x64），手动运行默认三个平台（linux-x64、darwin-arm64、win32-x64）。linux-x64 上接着跑开发者体验场景（`tests/e2e/tests/devx.rs`，#690）：每种语言从模板写一个插件、测试、`dev` 下重载、打包，两种语言的插件组装、运行、改配置、停止；一个小的 Rust 宿主开放扩展点、装进用模板写的插件、插件出错时拿到带错误码的结构化错误；每晚和发布门都跑，不通过不发版，几分钟；同一格还用这次构建的包跑只装 npm、PyPI 包的指南示例（`doc_examples.rs` 在设了 `RUTIS_E2E_ARTIFACTS` 时只跑这几份，含 open-host 第 5 节，见[函数引用](design-function-refs-2026-11-03.md) §六） |
 | `release.yml` | 打 `v*` tag；手动（`dry-run` 默认打开：只跑发布门，不发布） | 发布门（调用 `ci.yml`（`all=true`）、`package.yml`、`install.yml`（五个平台）、`dylib-windows.yml`）、发布、发布后验证（[发布](release.md)） |
 | `release-cli.yml` | 打 `cli-v*` tag | 发布 rutis-cli |
+| `model-pr.yml` | 每个 PR 的打开、改描述、推送、重新打开（`pull_request` 的 `opened`、`edited`、`synchronize`、`reopened`） | 改了模型点名的实现时，PR 描述里要有一行 `模型：<目录> 不涉及（理由）`（规范 Q9.1.1 第 5 条，`tools/check-model-pr.mjs`，几秒）。不在 `ci-ok` 里 |
+
+### 模型说明的检查（`model-pr.yml`）
+
+改了模型点名的实现，要么改模型，要么在 PR 描述里说明为什么不用改（规范 Q9.1.1 第 5 条）。单独一个 workflow，不放进 `ci.yml`：改描述（`edited`）要让它重跑，而 `ci.yml` 的其他任务不该因为改描述重跑。它现在不在 `ci-ok` 里。
+
+- 改了 `specs/**`：通过，模型就在这次改动里。
+- 没改 `specs/**`，也没改模型点名的实现：通过（只改文档、工具，或模型不覆盖的代码）。
+- 改了模型点名的实现：描述里要有一行 `模型：<目录> 不涉及（理由）`，例如 `模型：specs/events 不涉及（只改了错误文字）`。缺这一行、没写“不涉及”、括号里没有理由，都失败；失败的输出列出它看到的路径。
+
+“模型点名的实现”从 `specs/<目录>/README.md` 的“对应的设计和代码”表里取：表里写的代码文件就是（标了“不在本仓库”的行不算，现在只有 Cordis 的 `bridge/link.mjs`）。模型 README 补了路径，检查范围自己跟着变，不另维护一份清单。表里点名的文件不在了（改名、删除）也失败，提示去改模型 README 或代码。看这份清单：`node tools/check-model-pr.mjs --list`；自测：`node tools/check-model-pr.mjs --self-test`；本地跑一次：`node tools/check-model-pr.mjs --body-file <描述文件> --files-from-git origin/main`。
 
 ### 每晚的 `nightly.yml`
 

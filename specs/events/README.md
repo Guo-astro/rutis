@@ -15,18 +15,18 @@
 
 `EventsHost.tla` 不是一份可执行的规格：三个有状态的模块 `EXTENDS` 它，各自的配置只用到其中一部分。`host-defs` 的检查方式是 `ASSUME`：规格第四、五、六、九节的例子必须算得出文档写的答案，然后在唯一的状态里停住。它不检查那些定义在任意输入上都成立，只检查它们和规格写的例子一致。
 
-## 对应的实现
+## 对应的设计和代码
 
-| 模型部分 | 实现 |
-| --- | --- |
-| 宿主表、位置、`prepend`、前缀、存活检查 | `crates/rutis/src/bus/table.rs`（`select`、`insert`、`Entry::start`） |
-| 快照、过滤、五种方式、emit 的尾巴与 backlog | `crates/rutis/src/bus.rs`（`emit_erased`、`snapshot`、`start`）、`crates/rutis/src/bus/run.rs` |
-| 会话的 `events.on` / `events.off` / `events.dispatch`、行撤下、`events.on` 回复与 elsewhere 的先后、emit 队列 | `crates/rutis-bridge/src/events/hub.rs`（`SessionEvents::on`、`off`、`dispatch`、`run_emit`、`next_emit`、`row_unloading`、`row_ended`、`let_go_of_its_emits`） |
-| 帧序（`events.*`、`rows.ended`） | `crates/rutis-bridge/src/session/rpc.rs` |
-| 跨进程调用的因果（§4.4 第 3 条） | 登记路径（`hub.rs` 的 `SessionEvents::on`）与回复/elsewhere 的先后；调用帧经会话转发 |
-| 行的结束、卸载与重装 | `hub.rs` 的 `row_unloading` / `row_ended`；重装的监听器以新的登记 id 进表，模型用 `MaxLoads` 区分同一行的两次登记 |
-| 节点连接、接受、撤下、不转发 | `crates/rutis-bridge/src/events/link.rs`（`accept`、`announced_under`、`peer_offer`、`offer_now`、`older_than`） |
-| `link.offers` 的版本与 `since` | `crates/rutis-bridge/src/peer.rs`（`Offers`、`next_offers`、`send_if_modified`） |
+| 模型部分 | 设计 | 实现 |
+| --- | --- | --- |
+| 宿主表、位置、`prepend`、前缀、存活检查 | §4.2、§4.3、§5.1 | `crates/rutis/src/bus/table.rs`（`select`、`insert`、`Entry::start`） |
+| 快照、过滤、五种方式、emit 的尾巴与 backlog | §5.1、§5.4、§5.5、§6 | `crates/rutis/src/bus.rs`（`emit_erased`、`snapshot`、`start`）、`crates/rutis/src/bus/run.rs` |
+| 会话的 `events.on` / `events.off` / `events.dispatch`、行撤下、`events.on` 回复与 elsewhere 的先后、emit 队列 | §4.4、§4.5、§5.3、§7.1 | `crates/rutis-bridge/src/events/hub.rs`（`SessionEvents::on`、`off`、`dispatch`、`run_emit`、`next_emit`、`row_unloading`、`row_ended`、`let_go_of_its_emits`） |
+| 帧序（`events.*`、`rows.ended`） | §4.3、§7.1 | `crates/rutis-bridge/src/session/rpc.rs` |
+| 跨进程调用的因果（§4.4 第 3 条） | §4.4 | 登记路径（`crates/rutis-bridge/src/events/hub.rs` 的 `SessionEvents::on`）与回复/elsewhere 的先后；调用帧经会话转发 |
+| 行的结束、卸载与重装 | §7.1 | `crates/rutis-bridge/src/events/hub.rs` 的 `row_unloading` / `row_ended`；重装的监听器以新的登记 id 进表，模型用 `MaxLoads` 区分同一行的两次登记 |
+| 节点连接、接受、撤下、不转发 | §9 | `crates/rutis-bridge/src/events/link.rs`（`accept`、`announced_under`、`peer_offer`、`offer_now`、`older_than`） |
+| `link.offers` 的版本与 `since` | §9 | `crates/rutis-bridge/src/peer.rs`（`Offers`、`next_offers`、`send_if_modified`） |
 
 ## 简化
 

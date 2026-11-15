@@ -18,23 +18,23 @@
 | 模型部分 | 设计 | 实现 |
 | --- | --- | --- |
 | 调用号每端每会话从 1 严格递增，一个号只属于一次调用；已有号再次出现不是新调用 | 会话协议 §5.1（`SESS-32`、`SESS-33`、`SESS-34`） | `crates/rutis-bridge/src/session/rpc.rs` 的 `Calls::admit` 与 `Calls::received` |
-| 一次调用恰好结算一次：回复到达时先从等待表摘除 | 会话协议 §5.4（`SESS-41`、`SESS-42`） | `rpc.rs:2494`（`reply_target`） |
-| 取消只作用于一次调用：还在排队的被丢掉、不回复；已经在运行的照常完成并回复；取消不关闭会话 | 会话协议 §7（`SESS-56`、`SESS-57`、`SESS-60`） | `rpc.rs:2693`（`Frame::Cancel`）、`rpc.rs:2038`（`Connection::cancel`） |
-| 对已取消调用的迟到答复被丢弃并计数，不当协议错误 | 会话协议 §7（`SESS-57` 第三条）、追踪契约 §3.4 | `reply_target` 的 `cancelled`/`orphans`（`rpc.rs:2494`） |
-| 对不存在的调用发 `cancel` 被忽略（取消越过它要取消的回复） | 会话协议 §7（`SESS-58`） | `rpc.rs:2693`；测试 `a_cancel_for_an_unknown_call_is_ignored` |
-| 取消不撤销已经提交的引用授予；本地代理释放时接收方照常发 `release` | 会话协议 §7（`SESS-59`）、§6.1（`SESS-47`） | `Import` 的 `Drop`（`rpc.rs:992`）写出 `Frame::Release` |
-| 答复里带的值先解码再判断：被丢弃的迟到答复也会释放它带来的引用 | 追踪契约 §3.4；`SESS-44` 的回滚规则 | `rpc.rs:2675`（`Frame::Return` 的 “Decode first”） |
-| 会话关闭：等待中的调用以会话错误结算，导出表和导入表清空，未写出的帧随会话消失 | 会话协议 §5.4、§6.1（`SESS-42`、`SESS-51`）、追踪契约 §4“引用守恒” | `rpc.rs:1634`（`Connection::close`） |
-| 一端关闭后，另一端从通道结束得知并同样结束 | 追踪契约 §3.0（会话结束先 dispose 再谈别的） | 读线程在通道结束后关闭本端（`rpc.rs` 的读循环与 `closed()`） |
-| 关闭之后仍在通道上的帧：读线程读到它时先看 `closed`，整个帧被拒绝，不结算、不授予 | 会话协议 §5.4、§6.1（`SESS-51`） | `receive` 开头 `calls.closed` 的检查（`rpc.rs:2652`）；`close` 先 `closer.close(Close::Done)` 再清表（`rpc.rs:1634-1668`） |
-| 读线程的写回交给写线程：`throw`（解码失败、过深）、丢弃迟到答复的 `release`、丢掉排队调用时参数引用的 `release` 都由读线程产生，读线程不等对端；在通道的 `send` 上按背压等待的是写线程 | 会话协议 §10（`SESS-75`、`SESS-76`）；[远程会话设计](../../docs/design-remote-session-2026-10-28.md) §三、§七（#1005） | `Connection::write` 与 `Outbound::push`（`rpc.rs:1825-1840,1387-1404`）、`write_frames`（`rpc.rs:1411-1444`） |
-| 被调方在取消后是否回复：两种实现都允许。Rust 对排队中的调用不回复，已在运行的同步调用照常回复；模型把两种都跑通 | 会话协议 §7（`SESS-57`、`SESS-61`“明确不保证”） | `Frame::Cancel`（`rpc.rs:2693`）、`respond_to`（`rpc.rs:3083`） |
-| 本地放弃的同步调用不发 `cancel`：调用方保留等待表项到回复，读线程读回复时清等待图的边；把表项和边一起丢掉而不发 `cancel`，回复就成了“未知调用”并结束会话 | 会话协议 §5.4（`SESS-41`）；追踪契约 §3.4 | `request_sync`（`rpc.rs:2004-2035`，没有 Drop 守卫）、`CancelOnDrop`（`rpc.rs:1115`，只有异步调用有）、`reply_target` 的 `waits::returned` |
-| 被调方丢掉还在排队的调用时，参数里的引用随 `Accepted` 一起丢掉：每个 `Import` 的 `Drop` 向同一个会话写 `release`，写回点在读线程上 | 会话协议 §6.1（`SESS-47`）；§8.2（只让所属调用失败） | `Frame::Cancel` 里 `calls.incoming.remove`（`rpc.rs:2696-2699`）、`Import` 的 `Drop`（`rpc.rs:992-1009`） |
-| `PinnedTarget`：已接纳的调用持有目标对象（`Accepted` 里的 `Arc<Object>`），调用方的 `release` 让导出表项消失也不影响它；授予按计数释放，旧的 `release` 不拿走新的授予，超出授予的 `release` 结束会话 | 会话协议 §6.1（`SESS-47`、`SESS-48`） | `export_object` 与 `Accepted`（`rpc.rs:2753`、`relay.rs:79-87`）、`Frame::Release` 的计数检查（`rpc.rs:2709-2729`） |
-| 宿主 `outbound_limit`：写线程队列在达到上限且通道写不进去时结束会话（`the far end is not reading`），而不是继续排队 | 会话协议 §10（`SESS-75`、`SESS-76`） | `Outbound::push`（`rpc.rs:1387-1404`）、`write_frames`（`rpc.rs:1411-1444`） |
-| 多跳中继：中继把另一个会话的引用导出成本会话的中继，调用按链改写后转发；取消把被丢弃的转发请求的 `cancel` 发给下一跳；释放沿中继链传递，计数用原引用的计数 | 会话协议 §6.2（`SESS-54`）、§7（`SESS-59`）；`docs/guarantees.md` 的 `bridge/multihop-cancel-and-release`；追踪规则 M1-7.1-1、M1-7.1-2 | `rpc/relay.rs` 的 `relay` 与 `encode_import`（`relay.rs:19-78,93-175`）、`CancelOnDrop`（`rpc.rs:1115`）、`Awaiting` 的 `_cancel`（`rpc.rs:1060-1064`）、`Import` 的 `Drop` |
-| 取消表与取消后的回复规则未定（#1099）：调用方的 `calls.cancelled` 只由迟到回复清理，排队中被取消的调用没有任何实现会回复 | 会话协议 §7（`SESS-57`、`SESS-61`）、G3 | `calls.cancelled`、`orphans`（`rpc.rs:1072-1080`）、`Connection::cancel`（`rpc.rs:2038-2053`） |
+| 一次调用恰好结算一次：回复到达时先从等待表摘除 | 会话协议 §5.4（`SESS-41`、`SESS-42`） | `crates/rutis-bridge/src/session/rpc.rs:2494`（`reply_target`） |
+| 取消只作用于一次调用：还在排队的被丢掉、不回复；已经在运行的照常完成并回复；取消不关闭会话 | 会话协议 §7（`SESS-56`、`SESS-57`、`SESS-60`） | `crates/rutis-bridge/src/session/rpc.rs:2693`（`Frame::Cancel`）、`:2038`（`Connection::cancel`） |
+| 对已取消调用的迟到答复被丢弃并计数，不当协议错误 | 会话协议 §7（`SESS-57` 第三条）、追踪契约 §3.4 | `reply_target` 的 `cancelled`/`orphans`（`crates/rutis-bridge/src/session/rpc.rs:2494`） |
+| 对不存在的调用发 `cancel` 被忽略（取消越过它要取消的回复） | 会话协议 §7（`SESS-58`） | `crates/rutis-bridge/src/session/rpc.rs:2693`；测试 `a_cancel_for_an_unknown_call_is_ignored` |
+| 取消不撤销已经提交的引用授予；本地代理释放时接收方照常发 `release` | 会话协议 §7（`SESS-59`）、§6.1（`SESS-47`） | `Import` 的 `Drop`（`crates/rutis-bridge/src/session/rpc.rs:992`）写出 `Frame::Release` |
+| 答复里带的值先解码再判断：被丢弃的迟到答复也会释放它带来的引用 | 追踪契约 §3.4；`SESS-44` 的回滚规则 | `crates/rutis-bridge/src/session/rpc.rs:2675`（`Frame::Return` 的 “Decode first”） |
+| 会话关闭：等待中的调用以会话错误结算，导出表和导入表清空，未写出的帧随会话消失 | 会话协议 §5.4、§6.1（`SESS-42`、`SESS-51`）、追踪契约 §4“引用守恒” | `crates/rutis-bridge/src/session/rpc.rs:1634`（`Connection::close`） |
+| 一端关闭后，另一端从通道结束得知并同样结束 | 追踪契约 §3.0（会话结束先 dispose 再谈别的） | 读线程在通道结束后关闭本端（`crates/rutis-bridge/src/session/rpc.rs` 的读循环与 `closed()`） |
+| 关闭之后仍在通道上的帧：读线程读到它时先看 `closed`，整个帧被拒绝，不结算、不授予 | 会话协议 §5.4、§6.1（`SESS-51`） | `receive` 开头 `calls.closed` 的检查（`crates/rutis-bridge/src/session/rpc.rs:2652`）；`close` 先 `closer.close(Close::Done)` 再清表（`:1634-1668`） |
+| 读线程的写回交给写线程：`throw`（解码失败、过深）、丢弃迟到答复的 `release`、丢掉排队调用时参数引用的 `release` 都由读线程产生，读线程不等对端；在通道的 `send` 上按背压等待的是写线程 | 会话协议 §10（`SESS-75`、`SESS-76`）；[远程会话设计](../../docs/design-remote-session-2026-10-28.md) §三、§七（#1005） | `Connection::write` 与 `Outbound::push`（`crates/rutis-bridge/src/session/rpc.rs:1825-1840,1387-1404`）、`write_frames`（`:1411-1444`） |
+| 被调方在取消后是否回复：两种实现都允许。Rust 对排队中的调用不回复，已在运行的同步调用照常回复；模型把两种都跑通 | 会话协议 §7（`SESS-57`、`SESS-61`“明确不保证”） | `Frame::Cancel`（`crates/rutis-bridge/src/session/rpc.rs:2693`）、`respond_to`（`:3083`） |
+| 本地放弃的同步调用不发 `cancel`：调用方保留等待表项到回复，读线程读回复时清等待图的边；把表项和边一起丢掉而不发 `cancel`，回复就成了“未知调用”并结束会话 | 会话协议 §5.4（`SESS-41`）；追踪契约 §3.4 | `request_sync`（`crates/rutis-bridge/src/session/rpc.rs:2004-2035`，没有 Drop 守卫）、`CancelOnDrop`（`:1115`，只有异步调用有）、`reply_target` 的 `waits::returned` |
+| 被调方丢掉还在排队的调用时，参数里的引用随 `Accepted` 一起丢掉：每个 `Import` 的 `Drop` 向同一个会话写 `release`，写回点在读线程上 | 会话协议 §6.1（`SESS-47`）；§8.2（只让所属调用失败） | `Frame::Cancel` 里 `calls.incoming.remove`（`crates/rutis-bridge/src/session/rpc.rs:2696-2699`）、`Import` 的 `Drop`（`:992-1009`） |
+| `PinnedTarget`：已接纳的调用持有目标对象（`Accepted` 里的 `Arc<Object>`），调用方的 `release` 让导出表项消失也不影响它；授予按计数释放，旧的 `release` 不拿走新的授予，超出授予的 `release` 结束会话 | 会话协议 §6.1（`SESS-47`、`SESS-48`） | `export_object` 与 `Accepted`（`crates/rutis-bridge/src/session/rpc.rs:2753`、`crates/rutis-bridge/src/session/rpc/relay.rs:79-87`）、`Frame::Release` 的计数检查（`crates/rutis-bridge/src/session/rpc.rs:2709-2729`） |
+| 宿主 `outbound_limit`：写线程队列在达到上限且通道写不进去时结束会话（`the far end is not reading`），而不是继续排队 | 会话协议 §10（`SESS-75`、`SESS-76`） | `Outbound::push`（`crates/rutis-bridge/src/session/rpc.rs:1387-1404`）、`write_frames`（`:1411-1444`） |
+| 多跳中继：中继把另一个会话的引用导出成本会话的中继，调用按链改写后转发；取消把被丢弃的转发请求的 `cancel` 发给下一跳；释放沿中继链传递，计数用原引用的计数 | 会话协议 §6.2（`SESS-54`）、§7（`SESS-59`）；`docs/guarantees.md` 的 `bridge/multihop-cancel-and-release`；追踪规则 M1-7.1-1、M1-7.1-2 | `crates/rutis-bridge/src/session/rpc/relay.rs` 的 `relay` 与 `encode_import`（`:19-78,93-175`）、`CancelOnDrop`（`crates/rutis-bridge/src/session/rpc.rs:1115`）、`Awaiting` 的 `_cancel`（`:1060-1064`）、`Import` 的 `Drop` |
+| 取消表与取消后的回复规则未定（#1099）：调用方的 `calls.cancelled` 只由迟到回复清理，排队中被取消的调用没有任何实现会回复 | 会话协议 §7（`SESS-57`、`SESS-61`）、G3 | `calls.cancelled`、`orphans`（`crates/rutis-bridge/src/session/rpc.rs:1072-1080`）、`Connection::cancel`（`:2038-2053`） |
 
 ## 模型：一个会话（`CallLifecycle.tla`）
 

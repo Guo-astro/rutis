@@ -15,18 +15,18 @@ One directory, four modules:
 
 `EventsHost.tla` is not a runnable spec: the three stateful modules `EXTENDS` it and each configuration uses a part of it. `host-defs` checks by `ASSUME`: the examples of §4, §5, §6 and §9 must evaluate to the answers the spec writes, and then the run stays in one state. It does not check those definitions for arbitrary inputs, only that they agree with the examples.
 
-## Corresponding implementation
+## Design and code it corresponds to
 
-| Model part | Implementation |
-| --- | --- |
-| host table, positions, `prepend`, prefixes, liveness | `crates/rutis/src/bus/table.rs` (`select`, `insert`, `Entry::start`) |
-| snapshot, filters, the five modes, the emit tail and backlog | `crates/rutis/src/bus.rs` (`emit_erased`, `snapshot`, `start`), `crates/rutis/src/bus/run.rs` |
-| a session's `events.on` / `events.off` / `events.dispatch`, row withdrawal, the `events.on` reply before elsewhere, the emit queue | `crates/rutis-bridge/src/events/hub.rs` (`SessionEvents::on`, `off`, `dispatch`, `run_emit`, `next_emit`, `row_unloading`, `row_ended`, `let_go_of_its_emits`) |
-| frame order (`events.*`, `rows.ended`) | `crates/rutis-bridge/src/session/rpc.rs` |
-| cross-process causality (§4.4 step 3) | the registration path (`SessionEvents::on` in `hub.rs`) and the order of the reply and elsewhere; the call frame is relayed by the session |
-| a row ending, unloading and loading again | `hub.rs` `row_unloading` / `row_ended`; a re-registration enters with a new id, the model distinguishes the two registrations with `MaxLoads` |
-| node link, accepting, withdrawal, not forwarding | `crates/rutis-bridge/src/events/link.rs` (`accept`, `announced_under`, `peer_offer`, `offer_now`, `older_than`) |
-| versions and `since` of `link.offers` | `crates/rutis-bridge/src/peer.rs` (`Offers`, `next_offers`, `send_if_modified`) |
+| Model part | Design | Implementation |
+| --- | --- | --- |
+| host table, positions, `prepend`, prefixes, liveness | §4.2, §4.3, §5.1 | `crates/rutis/src/bus/table.rs` (`select`, `insert`, `Entry::start`) |
+| snapshot, filters, the five modes, the emit tail and backlog | §5.1, §5.4, §5.5, §6 | `crates/rutis/src/bus.rs` (`emit_erased`, `snapshot`, `start`), `crates/rutis/src/bus/run.rs` |
+| a session's `events.on` / `events.off` / `events.dispatch`, row withdrawal, the `events.on` reply before elsewhere, the emit queue | §4.4, §4.5, §5.3, §7.1 | `crates/rutis-bridge/src/events/hub.rs` (`SessionEvents::on`, `off`, `dispatch`, `run_emit`, `next_emit`, `row_unloading`, `row_ended`, `let_go_of_its_emits`) |
+| frame order (`events.*`, `rows.ended`) | §4.3, §7.1 | `crates/rutis-bridge/src/session/rpc.rs` |
+| cross-process causality (§4.4 step 3) | §4.4 | the registration path (`SessionEvents::on` in `crates/rutis-bridge/src/events/hub.rs`) and the order of the reply and elsewhere; the call frame is relayed by the session |
+| a row ending, unloading and loading again | §7.1 | `crates/rutis-bridge/src/events/hub.rs` `row_unloading` / `row_ended`; a re-registration enters with a new id, the model distinguishes the two registrations with `MaxLoads` |
+| node link, accepting, withdrawal, not forwarding | §9 | `crates/rutis-bridge/src/events/link.rs` (`accept`, `announced_under`, `peer_offer`, `offer_now`, `older_than`) |
+| versions and `since` of `link.offers` | §9 | `crates/rutis-bridge/src/peer.rs` (`Offers`, `next_offers`, `send_if_modified`) |
 
 ## Simplified
 

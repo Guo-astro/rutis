@@ -23,21 +23,21 @@
 | 模型部分 | 设计 | 实现 |
 | --- | --- | --- |
 | 每个控制会话有自己的已装载表；同一个键在一个会话里只装载一次 | 远程插件 §4.4（每个运行时实例只有一个活动会话） | `crates/rutis-bridge/src/session/plugin/rows.rs:61`（`Server.loaded`）、`:110-112`（已装载则拒绝） |
-| 行按实例键装载，键跨重启不变；代次是模型给一次装载起的名字 | 远程插件 §5.3；issue #613 的疑点；#1100 | 旧 `PeerRow` 用 `ctx.instance()`；当前 `run` 行用 `plugin#n`（`run.rs:168`），`rows.rs` 按 key 记 |
-| `rows.ended` 只由这一代还没被对端卸载的行发出；会话取消后不发 | 远程会话 §4.3 | `rows.rs:138-175`（`follow`：`loaded.remove(&key)`，`ended && !cancelled`） |
-| `rows.failed` 每代一次，宿主保留这一行，由对端卸载后重装 | 远程插件 §4.2；#688 | `crates/rutis-bridge/src/runtime/process.rs:1400-1418`；`run.rs:171-175` |
-| `rows.unload` 幂等：行已不在就只回答 | 行契约 `rows.v2` | `rows.rs:197-209`（“Already gone: unloading is idempotent”） |
-| 顶替：关旧会话、不再读它的帧、清理旧租约的行和服务，再回答新 `hello` | 远程插件 §4.4；远程会话 §4.2 | 运行时监听端的顺序；`rows.rs` 每个会话一个 `Server`；`crates/rutis-bridge/src/session/plugin/mod.rs:334-430` |
-| 行随会话停止、下一个会话再装载 | 远程会话 §4.3、§7 | `run.rs` 的 `RowHandle`/`RunRow`；`crates/rutis-loader/tests/session_rows.rs::rows_run_on_the_session_of_their_connection_row`、`::a_far_session_unloading_first_leaves_the_row_waiting` |
-| 服务的导入随行：行卸载、结束或会话没了就撤销 | 远程插件 §2.6 决定 1、§5.3 | `crates/rutis-bridge/src/session/plugin/services.rs:232-378`（每个会话的 `Imports`）；`process.rs:1306-1314`（`forget_exports`）、`:1356-1366`（`unload_row` 之后 `forget_exports`/`imports.forget_row`） |
+| 行按实例键装载，键跨重启不变；代次是模型给一次装载起的名字 | 远程插件 §5.3；issue #613 的疑点；#1100 | 旧 `PeerRow` 用 `ctx.instance()`；当前 `run` 行用 `plugin#n`（`crates/rutis-bridge/src/session/plugin/run.rs:168`），`crates/rutis-bridge/src/session/plugin/rows.rs` 按 key 记 |
+| `rows.ended` 只由这一代还没被对端卸载的行发出；会话取消后不发 | 远程会话 §4.3 | `crates/rutis-bridge/src/session/plugin/rows.rs:138-175`（`follow`：`loaded.remove(&key)`，`ended && !cancelled`） |
+| `rows.failed` 每代一次，宿主保留这一行，由对端卸载后重装 | 远程插件 §4.2；#688 | `crates/rutis-bridge/src/runtime/process.rs:1400-1418`；`crates/rutis-bridge/src/session/plugin/run.rs:171-175` |
+| `rows.unload` 幂等：行已不在就只回答 | 行契约 `rows.v2` | `crates/rutis-bridge/src/session/plugin/rows.rs:197-209`（“Already gone: unloading is idempotent”） |
+| 顶替：关旧会话、不再读它的帧、清理旧租约的行和服务，再回答新 `hello` | 远程插件 §4.4；远程会话 §4.2 | 运行时监听端的顺序；`crates/rutis-bridge/src/session/plugin/rows.rs` 每个会话一个 `Server`；`crates/rutis-bridge/src/session/plugin/mod.rs:334-430` |
+| 行随会话停止、下一个会话再装载 | 远程会话 §4.3、§7 | `crates/rutis-bridge/src/session/plugin/run.rs` 的 `RowHandle`/`RunRow`；`crates/rutis-loader/tests/session_rows.rs::rows_run_on_the_session_of_their_connection_row`、`::a_far_session_unloading_first_leaves_the_row_waiting` |
+| 服务的导入随行：行卸载、结束或会话没了就撤销 | 远程插件 §2.6 决定 1、§5.3 | `crates/rutis-bridge/src/session/plugin/services.rs:232-378`（每个会话的 `Imports`）；`crates/rutis-bridge/src/runtime/process.rs:1306-1314`（`forget_exports`）、`:1356-1366`（`unload_row` 之后 `forget_exports`/`imports.forget_row`） |
 | 旧会话的迟到指令不作用于新租约 | 远程插件 §4.4 | 会话各自一个处理器；`PeerRows.tla` 用代次匹配写它 |
 | `link.offers` 版本递增、旧宣告被忽略；每个族带登记编号 `since`，撤回后重新登记是新的一次提供 | 远程插件 §5.2（`link.offers`、`since`） | `crates/rutis-bridge/src/peer.rs:44-67`（`Offers`、`epoch`）、`:131-153`（`announce`）、`:160-178`（旧版本忽略）、`:253-289`（`register` 把 handler 与 `since` 一起记）；回归用例 `:309` `a_family_is_announced_only_with_its_offer` |
-| 对端宣告 `plugins` 后查 schema、刷新解析再提供 `PeerRows`；行在声明完整前不启动；离线时等待而不是 Unresolved；撤回 `plugins` 时撤销 `PeerRows`，Peer 与其他功能照常 | 远程插件 §5.3 | 当前等价路径是 `run` 行：`run.rs:89` 先 `describe`，`:168` 换新键，`:186` 装载；`session/plugin/mod.rs:432-461` 等对端提供 `rows` 后才建立进程；`peer.rs` 的 `offers` 观察 `plugins` 的 epoch |
-| `plugins.describe`/`rows.schema` 返回插件声明，未安装为 NotFound；`load` 按 `isolate`/`inject` 装载；`update`、`unload` 只作用于已装载的键 | 远程插件 §5.2 | `rows.rs:83-97`（`schema`）、`:99-135`（`load`）、`:177-195`（`update`）、`:197-209`（`unload`） |
-| 装载中被取消、或卸载先于装载到达时，不留下没人管的插件（#625 疑点） | 远程插件 §5.1、§5.3 | `rows.rs:99-135`（先插入表再等 apply；失败时移除并 dispose）、`:197-209`（卸载幂等）；`run.rs:42-51`（`RowHandle::drop` 中止装载并 dispose 已挂上的 fiber） |
-| 服务公告/撤销的版本取自会话级单一递增序列；导入方保留撤销的版本，旧公告不恢复 | 远程插件 §5.2 | `crates/rutis-bridge/src/services.rs:33-135`（`ExportOne`、`next_version`）；`session/plugin/services.rs:239-245`（版本不增则忽略）、`:335-378`（撤回与墓碑） |
-| 两个节点互相代装；功能插件只依赖会话就绪，不等待远程行 | 远程插件 §5.1 第 1 条、§10 | `session/plugin/mod.rs:334-430`（`mount` 先登记 rows 再回答）、`rows.rs:318-333`（每个会话的 `Rows`） |
-| 断开时本链接代装的行停下等待；重连后重新装载 | 远程插件 §3.2、§5.3 | `session_rows.rs` 的两个用例；`run.rs` 的行随会话 |
+| 对端宣告 `plugins` 后查 schema、刷新解析再提供 `PeerRows`；行在声明完整前不启动；离线时等待而不是 Unresolved；撤回 `plugins` 时撤销 `PeerRows`，Peer 与其他功能照常 | 远程插件 §5.3 | 当前等价路径是 `run` 行：`crates/rutis-bridge/src/session/plugin/run.rs:89` 先 `describe`，`:168` 换新键，`:186` 装载；`crates/rutis-bridge/src/session/plugin/mod.rs:432-461` 等对端提供 `rows` 后才建立进程；`crates/rutis-bridge/src/peer.rs` 的 `offers` 观察 `plugins` 的 epoch |
+| `plugins.describe`/`rows.schema` 返回插件声明，未安装为 NotFound；`load` 按 `isolate`/`inject` 装载；`update`、`unload` 只作用于已装载的键 | 远程插件 §5.2 | `crates/rutis-bridge/src/session/plugin/rows.rs:83-97`（`schema`）、`:99-135`（`load`）、`:177-195`（`update`）、`:197-209`（`unload`） |
+| 装载中被取消、或卸载先于装载到达时，不留下没人管的插件（#625 疑点） | 远程插件 §5.1、§5.3 | `crates/rutis-bridge/src/session/plugin/rows.rs:99-135`（先插入表再等 apply；失败时移除并 dispose）、`:197-209`（卸载幂等）；`crates/rutis-bridge/src/session/plugin/run.rs:42-51`（`RowHandle::drop` 中止装载并 dispose 已挂上的 fiber） |
+| 服务公告/撤销的版本取自会话级单一递增序列；导入方保留撤销的版本，旧公告不恢复 | 远程插件 §5.2 | `crates/rutis-bridge/src/services.rs:33-135`（`ExportOne`、`next_version`）；`crates/rutis-bridge/src/session/plugin/services.rs:239-245`（版本不增则忽略）、`:335-378`（撤回与墓碑） |
+| 两个节点互相代装；功能插件只依赖会话就绪，不等待远程行 | 远程插件 §5.1 第 1 条、§10 | `crates/rutis-bridge/src/session/plugin/mod.rs:334-430`（`mount` 先登记 rows 再回答）、`crates/rutis-bridge/src/session/plugin/rows.rs:318-333`（每个会话的 `Rows`） |
+| 断开时本链接代装的行停下等待；重连后重新装载 | 远程插件 §3.2、§5.3 | `crates/rutis-loader/tests/session_rows.rs` 的两个用例；`crates/rutis-bridge/src/session/plugin/run.rs` 的行随会话 |
 
 ## 模型
 
