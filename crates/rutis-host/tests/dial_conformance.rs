@@ -229,11 +229,36 @@ struct Rutis {
 impl Rutis {
     /// Listening on `port` (0: any free one).
     async fn start(port: u16) -> Self {
+        Self::listen(port, None).await
+    }
+
+    /// The same, with TLS on the `localhost` certificate of the Python TLS
+    /// fixtures: that CA is in no system's roots, so a dialer reaches the
+    /// listener only with it in `RUTIS_CA`.
+    async fn start_tls(port: u16) -> Self {
+        let tls = repo().join("python/rutis/tests/tls");
+        Self::listen(
+            port,
+            Some((tls.join("localhost.pem"), tls.join("localhost.key"))),
+        )
+        .await
+    }
+
+    async fn listen(port: u16, tls: Option<(PathBuf, PathBuf)>) -> Self {
         // Every host here has this token: set by any test, it is the same.
         std::env::set_var("RUTIS_TOKEN_PHONE", TOKEN);
+        let listener = match tls {
+            Some((cert, key)) => json!({
+                "name": "public",
+                "address": format!("127.0.0.1:{port}"),
+                "cert": cert,
+                "key": key
+            }),
+            None => json!({ "name": "public", "address": format!("127.0.0.1:{port}") }),
+        };
         let config: HostConfig = serde_json::from_value(json!({
             "id": "main",
-            "listen": [{ "name": "public", "address": format!("127.0.0.1:{port}") }],
+            "listen": [listener],
             "rows": [{ "id": "phone", "name": "rutis-host/listen", "config": { "listener": "public" } }]
         }))
         .unwrap();
@@ -245,6 +270,11 @@ impl Rutis {
 
     fn address(&self) -> String {
         format!("ws://127.0.0.1:{}/rutis", self.port)
+    }
+
+    /// The TLS listener's name, the one its certificate is for.
+    fn tls_address(&self) -> String {
+        format!("wss://localhost:{}/rutis", self.port)
     }
 
     /// The far ends `phone` has connected now.
@@ -280,10 +310,37 @@ struct Dialer {
 
 impl Dialer {
     fn start(language: Language, address: &str, who: &str, token: &str) -> Self {
+        Self::start_with(language, address, who, &[("RUTIS_TOKEN", token)])
+    }
+
+    /// A dialer that trusts the CA in `ca` besides the system's roots.
+    fn start_trusting(
+        language: Language,
+        address: &str,
+        who: &str,
+        token: &str,
+        ca: &Path,
+    ) -> Self {
+        Self::start_with(
+            language,
+            address,
+            who,
+            &[("RUTIS_TOKEN", token), ("RUTIS_CA", ca.to_str().unwrap())],
+        )
+    }
+
+    fn start_with(
+        language: Language,
+        address: &str,
+        who: &str,
+        environment: &[(&str, &str)],
+    ) -> Self {
         let project = tempfile::tempdir().unwrap();
-        let mut child = language
-            .dialer(address, who, project.path())
-            .env("RUTIS_TOKEN", token)
+        let mut command = language.dialer(address, who, project.path());
+        for (name, value) in environment {
+            command.env(name, value);
+        }
+        let mut child = command
             .env("RUTIS_RETRY", RETRY)
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true)
@@ -357,6 +414,19 @@ async fn connects_with_its_id(language: Language) {
     let mut pixel = Dialer::start(language, &rutis.address(), "pixel", TOKEN);
     let line = pixel.expect("rutis: connected to ").await;
     assert!(line.contains(&rutis.address()), "{line}");
+    rutis.until_connected(&["pixel"]).await;
+}
+
+/// The credential comes from `RUTIS_TOKEN` and an extra CA from `RUTIS_CA`:
+/// a TLS listener whose certificate is signed by a CA no system trusts is
+/// reachable only with it in `RUTIS_CA`.
+/// rule: DIA-6-11
+async fn connects_trusting_the_ca_in_rutis_ca(language: Language) {
+    let rutis = Rutis::start_tls(0).await;
+    let ca = repo().join("python/rutis/tests/tls/ca.pem");
+    let mut pixel = Dialer::start_trusting(language, &rutis.tls_address(), "pixel", TOKEN, &ca);
+    let line = pixel.expect("rutis: connected to ").await;
+    assert!(line.contains(&rutis.tls_address()), "{line}");
     rutis.until_connected(&["pixel"]).await;
 }
 
@@ -490,6 +560,11 @@ macro_rules! column {
             #[tokio::test(flavor = "multi_thread")]
             async fn connects_with_its_id() {
                 super::connects_with_its_id($language).await;
+            }
+
+            #[tokio::test(flavor = "multi_thread")]
+            async fn connects_trusting_the_ca_in_rutis_ca() {
+                super::connects_trusting_the_ca_in_rutis_ca($language).await;
             }
 
             #[tokio::test(flavor = "multi_thread")]

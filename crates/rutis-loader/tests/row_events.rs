@@ -12,6 +12,8 @@ use rutis::internal::CtxInternal;
 use rutis::Event;
 use rutis_loader::report::RowEventState;
 use rutis_loader::RowEvent;
+#[cfg(feature = "runtimes")]
+use rutis_loader::{Chain, LoaderOptions, LoaderPlugin};
 use rutis_test_support::eventually;
 use serde_json::json;
 
@@ -449,4 +451,98 @@ async fn a_restarted_loader_still_listens_once() {
         "the listener left with the loader",
     )
     .await;
+}
+
+/// guarantee: events/framework (rutis/row)
+///
+/// A row of another language's runtime reports the same states as a host
+/// row, `pending` then `running` then `stopped`, at its own scope: the
+/// follower follows any row the loader runs, wherever it runs.
+/// rule: events/framework a
+#[cfg(feature = "runtimes")]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_runtime_rows_states_are_at_its_scope() {
+    use common::runtimes::{greet_as_main, rows_stage, TestRuntime};
+    use rutis_loader::runtime::SessionResolver;
+
+    if !rutis_test_support::runtimes::enabled("python") {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("quiet.py"),
+        "def apply(ctx, config):\n    pass\n",
+    )
+    .unwrap();
+    let root = rutis::Ctx::root().unwrap();
+    greet_as_main(&root);
+    let python = TestRuntime::python(dir.path());
+    let store = MemStore::default();
+    let options = LoaderOptions {
+        persist: Arc::new(store.clone()),
+        ..LoaderOptions::default()
+    };
+    let sessions = Arc::new(SessionResolver::new(&options.catalog));
+    sessions.runtime(python.handle());
+    root.plugin(python).await.unwrap();
+    let plugin = LoaderPlugin::new(Chain::new().with_shared(sessions.clone()), options);
+    let loader = plugin.handle();
+    sessions.attach(&loader);
+    root.plugin(plugin).await.unwrap();
+    rows_stage(&root, &sessions, "py").await;
+
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let seen = events.clone();
+    root.on::<RowEvent>(move |event, _| {
+        seen.lock().unwrap().push((*event).clone());
+        std::future::ready(Ok(None))
+    })
+    .unwrap();
+    reconcile(
+        &loader,
+        patches(json!([{ "insert": [
+            { "id": "doc", "group": true, "instanced": true, "config": [
+                { "id": "inner", "name": "py:quiet", "config": {} }
+            ] }
+        ] }])),
+        &store,
+    )
+    .await;
+    let instance = loader.create_instance(&root, "doc").await.unwrap();
+    eventually(
+        || {
+            states(&events, "inner")
+                .contains(&RowEventState::Running)
+                .then_some(())
+        },
+        "the runtime row running",
+    )
+    .await;
+    let running = events
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|event| event.row == "inner" && event.state == RowEventState::Running)
+        .cloned()
+        .unwrap();
+    assert_eq!(running.plugin, "py:quiet");
+    assert_eq!(running.scope.len(), 1, "{running:?}");
+    assert_eq!(running.scope[0].group, "doc");
+    assert_eq!(
+        states(&events, "inner")[0],
+        RowEventState::Pending,
+        "pending comes first, as for a host row"
+    );
+
+    loader.remove_instance(instance.plugin).await.unwrap();
+    eventually(
+        || {
+            states(&events, "inner")
+                .contains(&RowEventState::Stopped)
+                .then_some(())
+        },
+        "the runtime row stopped",
+    )
+    .await;
+    root.shutdown().await.unwrap();
 }

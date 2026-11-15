@@ -155,6 +155,33 @@ export default definePlugin({
 })
 "#;
 
+// JS string-keyed Map ↔ Python dict: the Map reaches Python as a dict
+// subclass and goes back as a Map; a Python plain dict stays an object.
+const JS_MAPS: &str = r#"
+import { definePlugin } from 'PLUGIN'
+export default definePlugin({
+  provides: { js_maps: { give: 'sync', kind: 'sync' } },
+  apply(ctx) {
+    ctx.provide('js_maps', {
+      give() { return new Map([['a', 1], ['b', 2]]) },
+      kind(value) { return value instanceof Map ? 'Map' : typeof value },
+    })
+  },
+})
+"#;
+
+const PY_MAPS: &str = r#"
+inject = ["js_maps", "probe"]
+
+
+def apply(ctx, config):
+    probe = ctx.use("probe")
+    js = ctx.use("js_maps")
+    value = js.give()
+    probe.record(f"py map: {type(value).__name__} {isinstance(value, dict)} {js.kind(value)}")
+    probe.record(f"py dict: {js.kind({'a': 1})}")
+"#;
+
 // ── Harness ─────────────────────────────────────────────────────
 
 /// Plugin files: Python modules in `py/`, JavaScript in `js/`.
@@ -169,6 +196,7 @@ fn write_plugins(dir: &Path) -> (PathBuf, PathBuf) {
         ("py_local", PY_LOCAL),
         ("py_gated", PY_GATED),
         ("py_round_trip", PY_ROUND_TRIP),
+        ("py_maps", PY_MAPS),
     ] {
         std::fs::write(py.join(format!("{name}.py")), text).unwrap();
     }
@@ -183,6 +211,7 @@ fn write_plugins(dir: &Path) -> (PathBuf, PathBuf) {
         ("js_local", JS_LOCAL),
         ("js_gated", JS_GATED),
         ("js_relay", JS_RELAY),
+        ("js_maps", JS_MAPS),
     ] {
         std::fs::write(
             js.join(format!("{name}.mjs")),
@@ -219,6 +248,7 @@ async fn fixture() -> Fixture {
         "py_weather",
         "js_weather",
         "js_relay",
+        "js_maps",
         "py_forecast",
         "js_forecast",
     ] {
@@ -331,6 +361,36 @@ async fn python_awaits_node_that_awaits_python() {
         .wait_for("py round trip: js relays py later")
         .await;
     assert_eq!(fixture.node.state().state, FiberState::Active);
+    fixture.root.shutdown().await.unwrap();
+}
+
+/// A JS string-keyed `Map` is a Python `dict` subclass there, and going back
+/// to JS it is a `Map` again; a Python plain string-key `dict` is a plain
+/// object to JS (design value types §二, Map).
+/// rule: VAL-2-9
+#[tokio::test(flavor = "multi_thread")]
+async fn maps_and_dicts_keep_their_kinds_across_node_and_python() {
+    if !rutis_test_support::runtimes::all_enabled(&["node", "python"]) {
+        return;
+    }
+    let fixture = fixture().await;
+    let report = fixture
+        .loader
+        .reconcile(
+            layer(vec![
+                js_row(&fixture, "jm", "js_maps"),
+                py_row("pm", "py_maps"),
+            ]),
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(report.failures.is_empty(), "{report:?}");
+    // `Map` is the internal dict subclass, `True` the isinstance check; the
+    // same value forwarded back to JS is a Map there. A Python dict is an
+    // object there.
+    fixture.probe.wait_for("py map: Map True Map").await;
+    fixture.probe.wait_for("py dict: object").await;
     fixture.root.shutdown().await.unwrap();
 }
 
