@@ -6944,7 +6944,7 @@ async fn a_rows_use_of_its_own_runtime_is_native() {
         "inject": ["weather"],
         "provides": {},
     });
-    let runtime = Scripted::with_features(&["rows.v2", "hosts", "leaf"], schema);
+    let runtime = Scripted::with_features(&["rows.v2", "hosts", "leaf"], schema.clone());
     let (root, process, far) = runtime_rig(runtime.clone()).await;
     // Another row of the same runtime provides `weather`.
     let provides = json!({ "weather": { "today": "sync" } });
@@ -6986,6 +6986,31 @@ async fn a_rows_use_of_its_own_runtime_is_native() {
         runtime.loads.lock().unwrap().last().unwrap()[4],
         json!([]),
         "the row's inject list carries no lease"
+    );
+    assert!(far.close_reason().is_none(), "the session goes on");
+
+    // A service from outside that runtime is leased: the same row injects
+    // `weather`, and this time the provider is not this session's own.
+    let runtime = Scripted::with_features(&["rows.v2", "hosts", "leaf"], schema);
+    let (root, _process, far) = runtime_rig(runtime.clone()).await;
+    root.provide_at(host_key("weather"), Arc::new(RustWeather))
+        .unwrap();
+    let handle = root.get_at(&session_key("rt")).expect("the session handle");
+    let row = handle.run("user", json!({})).unwrap();
+    within("the run", row.loaded()).await.unwrap();
+    let hosts = runtime.hosts.lock().unwrap();
+    assert_eq!(
+        hosts.len(),
+        2,
+        "a provider outside the runtime is leased, shared and for the row"
+    );
+    assert_eq!(hosts[0][0], json!("weather"));
+    assert_eq!(hosts[1][0], json!("weather"));
+    assert!(
+        hosts[1][2]
+            .as_str()
+            .is_some_and(|label| label.starts_with('\u{1}')),
+        "the row's own lease carries its label: {hosts:?}"
     );
     assert!(far.close_reason().is_none(), "the session goes on");
 }
