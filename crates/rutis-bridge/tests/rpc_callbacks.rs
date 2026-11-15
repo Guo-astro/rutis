@@ -39,6 +39,82 @@ async fn launch() -> (tempfile::NamedTempFile, Arc<Process>) {
 fn number(value: Value) -> f64 {
     value.json().unwrap().as_f64().unwrap()
 }
+
+/// What the wait table did during a run, replayed as the model does
+/// (`specs/cross-runtime-sync/CrossRuntimeSync.tla`): each of its operations
+/// allowed there, each forward the decision the model makes there (feature
+/// `testing`; with it off nothing is recorded and there is nothing to check).
+struct Waits(#[cfg(feature = "testing")] rutis_bridge::session::waits_trace::Capture);
+
+impl Waits {
+    /// Start recording the wait table of this run.
+    fn start() -> Self {
+        #[cfg(feature = "testing")]
+        return Self(rutis_bridge::session::waits_trace::capture());
+        #[cfg(not(feature = "testing"))]
+        return Self();
+    }
+
+    /// Replay what was recorded as the model does: panics with the first
+    /// operation it does not allow, or the first decision it does not make
+    /// there. The tests of this binary run at once, so the record holds their
+    /// events too: every session has a tag of its own (`rpc.rs`, `next_tag`),
+    /// and the replay keeps them apart by it.
+    fn check(&self) {
+        #[cfg(not(feature = "testing"))]
+        let _ = self;
+        #[cfg(feature = "testing")]
+        {
+            use rutis_bridge::session::waits_trace::{check, Decision, Event};
+            let events = self.0.events();
+            assert!(
+                !events.is_empty(),
+                "the wait table recorded nothing: the run made no synchronous calls"
+            );
+            match check(&events) {
+                Ok(notes) => assert!(
+                    notes.is_empty(),
+                    "the model allows these but does not guarantee them:\n{}",
+                    notes.join("\n")
+                ),
+                Err(broken) => panic!(
+                    "the wait table did what the model does not allow: {broken}\n  {:#?}",
+                    broken.event
+                ),
+            }
+            // The run this test is meant to cover: the operations the model
+            // has, and the decisions of a call forwarded between two
+            // runtimes that comes back on its caller's chain. `Of` tells
+            // whether an event is the one a case names.
+            type Of = fn(&Event) -> bool;
+            let cases: [(&str, Of); 7] = [
+                ("profile", |event| matches!(event, Event::Profile { .. })),
+                ("marked call", |event| matches!(event, Event::Marked { .. })),
+                ("answered call", |event| {
+                    matches!(event, Event::Answered { .. })
+                }),
+                ("returned call", |event| {
+                    matches!(event, Event::Returned { .. })
+                }),
+                ("ended session", |event| {
+                    matches!(event, Event::Ended { .. })
+                }),
+                (
+                    "hop",
+                    |event| matches!(event, Event::Forward(forward) if matches!(forward.decision, Decision::Hop { entry: false, .. })),
+                ),
+                (
+                    "call back on its caller's chain",
+                    |event| matches!(event, Event::Forward(forward) if matches!(forward.decision, Decision::SameChain { .. })),
+                ),
+            ];
+            for (what, of) in cases {
+                assert!(events.iter().any(of), "the run recorded no {what}");
+            }
+        }
+    }
+}
+
 fn args(values: Vec<Value>) -> Value {
     Value::List(values)
 }
@@ -491,6 +567,7 @@ async fn a_function_forwarded_between_two_node_runtimes_calls_back_its_waiting_o
     if !rutis_test_support::runtimes::enabled("node") {
         return;
     }
+    let waits = Waits::start();
     use rutis_bridge::runtime::Host;
     use rutis_bridge::session::HostDispatch;
     use rutis_bridge::session::{Connection, Reply};
@@ -579,4 +656,7 @@ async fn a_function_forwarded_between_two_node_runtimes_calls_back_its_waiting_o
     );
     a.dispose().await.unwrap();
     b.dispose().await.unwrap();
+    // The run, as the wait table recorded it: every operation the model
+    // allows, and every forward the decision it makes there.
+    waits.check();
 }

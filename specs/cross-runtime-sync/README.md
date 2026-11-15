@@ -26,6 +26,7 @@
 | Python 运行时：可重入；从别的线程发同步调用 | 同上 | `python/rutis/rutis/peer.py` `_call_sync`、`_run`；`run_coroutine_threadsafe` |
 | 本地放弃同步调用（不发 `cancel`） | 多语言设计 §九（#561 后） | Go 的 context、Swift 的 Task、Kotlin 的中断 |
 | 策略 B（A 不采用） | 多语言设计 §九 | `crates/rutis-bridge/src/session/rpc/waits.rs`（#228）；调用帧的 `sync` 字段见 `node/rutis-runtime/src/session.mjs`、`python/rutis/rutis/peer.py`、`bun/rutis-bun/src/session.ts` |
+| 等待图的 trace validation（#613） | 本文件"追踪验证" | `crates/rutis-bridge/src/session/rpc/waits/trace.rs`（记录六种操作与 `forward` 的判定）、`crates/rutis-bridge/src/session/rpc/waits/trace/check.rs`（按 `RustSucc` 重放）；运行见 `crates/rutis-loader/tests/sync_cycles.rs`、`crates/rutis-bridge/tests/rpc_callbacks.rs` |
 
 ## 模型
 
@@ -75,7 +76,7 @@
 - 宿主执行只有两种来源：一次来自运行时的同步服务调用，或宿主自己发起的一次同步调用（`HostRoot`）。宿主的 `Workers` 有界，读线程不算；异步分发等待监听器时不占线程。运行时发往宿主的调用只建同步的 `call`（`acall` / `hcall` 到宿主不建：异步回复没有节点可落）。
 - 取消建两种：带 `cancel` 的（`Cancellers`）和不发 `cancel`、本地放弃的（`Abandoners`，只对 `Threaded` 运行时开放，Go / Swift / Kotlin 的实际情形）。`cancel` 到达一个还没开始执行的调用时，模型让它照常执行并丢掉迟到的回复；`ret` 堵住读线程不建。
 - 会话结束只在该会话没有发出调用、也没有参与分发、并且没有宿主执行时发生（`Ends`）；结束时进入它的调用以错误回复。断开、重连、`rows.ended` 不建。
-- **未建**：Node 的按键扣住（同键的 emit 调用不越过更早的），behind 任务按 `deferred` 建（栈空才跑、会话结束丢弃）；Cordis connector 的"原地处理 / 扣住"细节只建成"共用一泵"；跨主机的环用 `Remote` 建了抽象（一段等待不在本表里），两台宿主的真实拓扑不建；`cycle_among` 的差分属性测试和等待图的 trace validation 见"待定与未覆盖"。
+- **未建**：Node 的按键扣住（同键的 emit 调用不越过更早的），behind 任务按 `deferred` 建（栈空才跑、会话结束丢弃）；Cordis connector 的"原地处理 / 扣住"细节只建成"共用一泵"；跨主机的环用 `Remote` 建了抽象（一段等待不在本表里），两台宿主的真实拓扑不建；`cycle_among` 的差分属性测试见"待定与未覆盖"，等待图的 trace validation 见"追踪验证"（#613）。
 - 每个活动默认只发起一次调用；`policy-b-2node-seq` 允许先后两次。
 - 规模：3 个运行时，调用链 ≤ 3 跳（`async-policy-b` 到 4 跳），同时存在的顶层活动 ≤ 2，投递 / 分发 ≤ 1。
 
@@ -194,6 +195,27 @@ B 实现时需要满足的条件（模型的前提）：
 5. 只把**同步**等待算进图（见"待定"）。
 6. 宿主自己执行 Rust 代码的线程数要有界（`Workers`）；B 不为宿主的线程建边，这些线程上的阻塞不在检测内（反例 12）。
 
+## 追踪验证（#613）
+
+`waits.rs` 的六个操作与每次判定在测试模式下记录下来，逐条对照本模型。记录点在 `crates/rutis-bridge/src/session/rpc/waits/trace.rs`，只在特征 `testing` 下编译；没有测试捕获时每个操作多一次原子读，不分配，也不改行为。
+
+记录的是 `profile`（会话的 `sync-stack` / `reentrant-sync`）、`marked`、`answered`、`returned`、`ended`，以及 `forward` 的每次判定：记为一条跳（谁发起的、是不是 `entry`）、回到调用方自己的链上（不记）、没人同步等待（不记），或拒绝（环上的调用，新的一个在前）。一次运行用 `capture()` 开始记录，结束时 `check()`（`trace/check.rs`）重放：
+
+- 一个会话的 `profile` 是模型的常量：第二次说的不是同一套就报；没有记录到的会话按 `Profile::default()`，和 `waits.rs` 读到的一样。
+- `marked` 的调用不能重复标记，也不能是表里自己发出的调用；`answered` 不能回答自己发出的调用；`ended` 要求该会话没有调用在外（`End` 的前提），结束时它的标记、profile 和两侧的跳一起消失，之后不再有它的事件。
+- 每次 `forward` 先按 `RustSucc` 重建图（链、放到一边、栈顺序），再对照判定：链的最后一跳已被标记、且在另一个会话上，就必须记为一条跳，`src` 是那次调用；在同步等待而链上没有标记的记为宿主的调用（`src` 为空）；异步且没有标记的是 `entry`。记为跳的调用本身不能成环（成环时模型不转发）；拒绝必须指向图里真实的环；同一会话的调用号递增。
+- 模型的明确不保证的情况（同步调用没有被记下，SYN-9-26）作为注记返回；测试断言没有注记。
+
+跑过的运行：`sync_cycles.rs` 的 `two_node_runtimes_calling_each_other`（反例 1）和 `one_node_and_two_python_runtimes`（反例 2：放到一边、栈顺序、可重入的 Python），`rpc_callbacks.rs` 的 `a_function_forwarded_between_two_node_runtimes_calls_back_its_waiting_owner`（转发的调用回到调用方的链上）。同一个测试二进制里的其他用例同时跑，日志里也有它们的事件（测试先 `capture`，别的用例的操作照样落到记录里）；每个会话的标签由进程分配（`rpc.rs` 的 `next_tag`），重放按会话分开，互不影响。
+
+不是空跑：`sync_cycles.rs` 的 `must_report` 把真实日志里的一个判定改坏（拒绝改成记跳、去掉调用方、去掉一次标记），重放必须报出来；`waits/trace/check/tests.rs` 用手写的追踪覆盖允许的追踪、转发成环、拒绝指错环、`entry` 记成跳、`profile` 改变、带着调用结束、调用号不递增。
+
+没有验证到的：
+
+- **调用方在同步等待、但链上没有已标记的调用**：模型记 `src = s`（发出这次调用的会话），`waits.rs` 记成宿主的（`src` 为空，#597），记录里只有目标会话，看不出是哪种。模型自己那句注释也写成"宿主的调用"，和 `RustForward` 里的 `src |-> s` 不一致，两处需要对齐后再决定要不要查。
+- **取消**：模型把被取消的跳留在表里（`real = FALSE`，迟到的回复丢掉），表在取消时把它删掉（`returned`）。这几次运行不取消，没有覆盖。
+- `End` 关于分发和宿主执行的前提（`hosts = {}`、没有经过该会话的分发）、`Ends`、`Workers`、`Linked`、`Remote` 都不在这几次运行的范围里。
+
 ## 待定与未覆盖
 
 - **区分同步和异步调用（已定，模型已建）**：调用帧的 `sync` 字段标明调用方在同步等待；只有带这个字段的调用、以及链尾已标记的调用计入等待图（#228、854bef5d）。模型显示"链尾已标记的异步调用也记一跳"会误报（反例 8），要修实现，或者只把 `sync` 的调用计入。
@@ -203,7 +225,7 @@ B 实现时需要满足的条件（模型的前提）：
 - **`Workers` 的前提**：模型假设 Rust 代码里的一次同步等待占着一个工作线程（Rust 服务在调用它的线程上执行、同步调用阻塞该线程）。实现里若 Rust 服务跑在异步执行器上、等待不占线程，`policy-b-workers1` 改为预期通过，`Workers` 那条边删掉。异步分发在等监听器时不占线程是同一判断的另一半。
 - **运行时一侧的有界线程池未建**：Kotlin 的 IO 池（64）、Swift 的协作池不是宿主能看到的资源；`Threaded` 的运行时假设每个进来的调用都能立刻拿到线程或任务。线程池满住时运行时会自己排队，宿主看不见，和 `policy-b-workers1` 的宿主线程问题同类。
 - **`cycle_among` 的差分属性测试（未做，Rust 测试以后补）**：做法是按模型 `RustSucc` 的定义建全部边（链、放到一边、栈顺序、入口边界）再做 DFS，与 `waits.rs` 的 `cycle_among`（按 (dst, seq) 排序、只沿链的最近一跳和"下一个已开始的调用"建边）在随机图上比较：约 20 跳、随机 `Profile`（`stacked` / `reentrant`），两边给出的环（或没有环）要一致。它属于 `waits.rs` 的测试，这次只动 `specs/`，没有写。
-- **等待图的 trace validation（未做）**：记录 `waits.rs` 的六个操作（`profile`、`marked`、`answered`、`returned`、`ended`、`forward`）与每次判定，在 `rutis-loader/tests/sync_cycles.rs`、`rpc_callbacks.rs` 的运行上对照模型（做法同 #616、#624）。依赖测试侧先有记录点；这次没有动 crates。
+- **等待图的 trace validation（已做，#613）**：`waits.rs` 的六个操作与每次判定在 `testing` 特征下记录，在 `sync_cycles.rs`、`rpc_callbacks.rs` 的真实运行上逐事件对照模型，负例改坏同一份日志后必须报出。见"追踪验证"；没覆盖到的（同步等待的 `src`、取消、`End` 关于分发的前提）也列在那里。
 - **异步分发只在 Rust 服务的执行里建**：顶层活动上的 `serial` / `parallel`（例如 Cordis 插件的 `ctx.parallel`）没有建；一个分发只有一个监听器，`next`、过滤器的否决和异常不建。
 - **Rust 自己发起的同步调用**建成了宿主的执行（`host-call`、`before-host-call`），并占一个 `Workers` 线程；读线程和异步执行不占。
 - **B 的开销**：每次同步转发都要在全局表上做一次可达性检查；表的大小等于正在进行的同步调用数。模型不测时间。
@@ -230,4 +252,4 @@ java -cp /tmp/tla2tools.jar tlc2.TLC -workers auto -config bail-policy-b.cfg Cro
 
 ## 维护
 
-多语言设计 §五、§九 或 M1 §七 修改时，或 `rpc.rs`、`waits.rs`、`events/hub.rs`、`session.mjs`、`peer.py` 改变同步等待期间执行哪些调用、哪些调用记进等待图的规则时，同步修改这个模型和 `expected.txt`（规范 Q11.2.3）。宿主执行、`Workers`、异步分发和 `cancel` 的规则分别跟 `rpc.rs` 的 `receive`、`events/hub.rs` 的 `dispatch`、`waits.rs` 的 `marked` / `answered` / `returned` 对齐。
+多语言设计 §五、§九 或 M1 §七 修改时，或 `rpc.rs`、`waits.rs`、`events/hub.rs`、`session.mjs`、`peer.py` 改变同步等待期间执行哪些调用、哪些调用记进等待图的规则时，同步修改这个模型和 `expected.txt`（规范 Q11.2.3），并跑 `sync_cycles.rs`、`rpc_callbacks.rs` 的追踪验证（"追踪验证"）；`waits.rs` 多出一种操作或判定时，`trace.rs` 的记录点和 `trace/check.rs` 的重放一起改。宿主执行、`Workers`、异步分发和 `cancel` 的规则分别跟 `rpc.rs` 的 `receive`、`events/hub.rs` 的 `dispatch`、`waits.rs` 的 `marked` / `answered` / `returned` 对齐。
