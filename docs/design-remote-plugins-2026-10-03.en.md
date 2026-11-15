@@ -2,7 +2,16 @@
 
 > Package structure updated (2026-10-06): `rutis-channel`, `rutis-interop`, `rutis-transport-*`, and `rutis-runtime-local` were merged into modules of `rutis-bridge` (`channel`, `session`, `runtime`, `transport::*`, `cordis`); see [Packages, Tools, and Workflow for Developers](design-developer-packages-2026-10-06.en.md). The crate names below are retained from the original design.
 
-Status: remote-capability design; not implemented. Updated 2026-10-05.
+Status: design; runtime integration implemented; node interconnection and the compatibility format were superseded in 0.19 by [Remote connections: one session plugin](design-remote-session-2026-10-28.en.md). Updated 2026-11-15.
+
+Current boundaries (checked 2026-11-15):
+
+- The session protocol is 4 (`ENDPOINT_PROTOCOL`; Rust, Node, Bun, Python, Go, Swift and Kotlin use the same constant; the WebSocket subprotocol is `rutis.4`), and there is one wire format, the endpoint format. §6.1–§6.2's "two formats" and `sync-wait` / `events-v2` / `objects` are the wording of 0.18 and earlier; protocol 4 has none of them ([session protocol specification](protocol-session.en.md) `SESS-12`–`SESS-16`).
+- The current protocol-4 capabilities are `value-<tag>` (ten tagged value kinds, every implementation), `reentrant-sync` (Rust, Python, Go, Swift, Kotlin), `sync-stack` (Node, Bun, Python), `node`, `plugins` and `runtime`; see the current paragraph in §6.2 and `SESS-15`.
+- Runtime integration (§4) is implemented; remote runtimes connect through `rutis-host/dial` / `rutis-host/listen` rows rather than `runtimes.remote`, and rows plus listeners decide whether there is one or many.
+- The node feature families of §5 (`export` / `import` / `host` / `events`) were removed in 0.19: services on both sides are visible to each other, events are one bus, and a plugin run on the far side is written `<connection row>:<plugin>` ([Connect Nodes](guide/nodes.en.md)).
+- The `Identity` / `Registration` of §3.2 and the `peer:` rows and `runtimes.remote` configuration of §8 are historical; current connections are in [Connect Nodes](guide/nodes.en.md), and the 0.19 decisions are in [Remote connections](design-remote-session-2026-10-28.en.md).
+- Evidence: `crates/rutis-bridge/src/session/mod.rs` (protocol 4), the seven session implementations, and CI's `runtime_conformance`, `session_matrix` and `dial_conformance` matrices (`docs/ci.en.md` "Conformance matrix").
 
 Related specifications: [network stack](design-protocol-channel-decoupling-2026-10-03.en.md), [compatibility layer](design-protocol-plugin-mount.en.md), and [loader](design-rutis-loader-2026-10-02.en.md). Multilingual baseline: [overall design #121](https://github.com/arcships/rutis/pull/121), [M1 design #127](https://github.com/arcships/rutis/pull/127), [M1a #129](https://github.com/arcships/rutis/pull/129), [M1b #128](https://github.com/arcships/rutis/pull/128), [M1c #130](https://github.com/arcships/rutis/pull/130), and [M2 #131](https://github.com/arcships/rutis/pull/131). The local runtime implementation in those PRs does not mean network deployment is supported.
 
@@ -48,7 +57,7 @@ Local rutis + loader
 - A leaf execution endpoint implements the required transport, session, and runtime handlers; it need not implement a full plugin framework or a node bridge plugin group. The leaf side has no link, so the existing leaf SDK provides the corresponding responsibilities:
   - Existing (`interop/python/rutis_runtime`): local session, `rows.*` / `hosts.*` runtime handlers, and cleanup of every row followed by exit on disconnect. The parent starts the process with `<socket> <project>`; it calls back to the parent over a Unix socket. One process serves one session.
   - New for network access: listener and transport authentication (configure the controller identity and validation rules; accept only authenticated controllers). The process remains running and serves multiple controller sessions in sequence, with only one active session at a time; takeover order is in §4.4. On disconnect it clears leases and continues listening.
-  - Over a network transport, a leaf only listens and does not own reconnect backoff; the controller's link reconnects. A local child process continues to call back or use an inherited fd as before.
+  - Over a network transport, a leaf may listen (a controller dials in) or dial out (the runtime connects to the controller's access point); a dialing leaf owns its reconnect backoff, while on the listening side the controller's link reconnects. A local child process continues to call back or use an inherited fd as before.
 
 ### Crate ownership and dependencies
 
@@ -70,6 +79,8 @@ Composites use a shared Transport service to reference a concrete transport. Con
 Using core alone must not pull in extensions; using only a local runtime must not pull in WebSocket; connecting only to a remote execution endpoint must not require a local Node/Python installation. Memory is selected only by tests or explicitly configured applications. A new external transport crate implements the same contract and requires no bridge changes.
 
 ## 3. Shared connections and sessions
+
+> This section's `link`, `Peer#<id>`, `Identity` and `Registration` are the model of 0.18 and earlier; since 0.19 connections are `rutis-host/dial` / `rutis-host/listen` rows ([Connect Nodes](guide/nodes.en.md)). These parts remain current: a Session is established per runtime instance or per connection, not per plugin; loading or unloading a plugin does not create or close the shared Session; resources are owned per plugin instance and only that instance's resources are cleaned. Read the rest as history.
 
 ### 3.1 Services and dependencies
 
@@ -98,6 +109,8 @@ Using core alone must not pull in extensions; using only a local runtime must no
 - Sharing a Session among plugins is the management model for runtime and node integration. Sharing one physical connection across multiple logical Channels is a transport-adapter policy; the two are independent.
 
 ### 3.2 Connection registration and retry
+
+> This section describes the `link` / `Identity` / `Registration` model of 0.18 and earlier; 0.19 removed those layers, and connections are now `rutis-host/dial` / `rutis-host/listen` rows ([Connect Nodes](guide/nodes.en.md)). It is kept as design history; the conclusions for three of its rules are in §11.
 
 - Each Session uses one logical Channel. Physical connection pooling, reuse, multiplexing, and maintenance belong to the Transport adapter; link does not require a session-exclusive physical connection.
 - Each connector call returns one logical Channel establishment result. The dialing-side link is the sole owner of session-recreation backoff state. An adapter must not run another session retry loop, revive a terminated Channel, or replay a call whose result is unknown.
@@ -139,7 +152,7 @@ Reuse multilingual runtime operations; do not rename them as node operations.
 | `hosts.provide / withdraw` | Register and withdraw a host-service proxy in the runtime |
 | Row service notification and invocation | Project row-provided services into rutis and access them through the runtime contract |
 
-- Row services use `host_key(name)` / `dyn HostDispatch`; `methods()` supplies method shapes and `origin()` identifies the source runtime. `origin()` currently returns `Option<&Process>`; N2 changes it to a runtime-independent identity (runtime instance name + current session generation), and same-runtime checks use that identity rather than a local process object.
+- Row services use `host_key(name)` / `dyn HostDispatch`; `methods()` supplies method shapes and `origin()` identifies the source runtime. `origin()` returns a runtime identity independent of the session source (`Option<&str>`), and same-runtime checks use that identity rather than a local process object (`crates/rutis-bridge/src/runtime/rows.rs:175`).
 - Runtime features (`rows.v2`, `hosts`, `leaf`, etc.) are exposed by the Runtime service after contract validation. Loader-side row integration reads them from Runtime rather than accessing `Process` directly.
 - Host services are leased by consuming rows: the first lease registers the proxy; the final release withdraws it. Operations are serialized and registration finishes before the lease is returned.
 - Do not register a duplicate proxy for a native service in the same runtime; duplicate service exports fail with a conflict.
@@ -161,10 +174,12 @@ Run resolution refresh in a separate task; do not synchronously wait for `reload
 - Loaded rows, injected proxies, and exported references all belong to that session lease. When the controller session disconnects, the execution endpoint cleans every row and proxy in the lease; a remote rutis deployment is not required.
 - A runtime daemon may continue listening. A child process started by a local parent cleans up and exits after disconnect. Neither process restarts automatically.
 - End the old lease before a new controller session takes over; late instructions from the old session cannot affect the new lease. The execution endpoint handles a new connection in this order: transport authentication → close the old session channel and stop reading its subsequent frames → clean all rows and proxies in the old lease → reply to the new session's `hello`. Do not reply to the new session until cleanup finishes, so old and new leases never overlap.
-- Over network transports, a remote leaf runtime only listens; the controller's link dials and owns reconnect. Use a reverse proxy or tunnel to traverse NAT; this design does not add leaf-initiated dialing.
+- Over network transports, a runtime may listen (a controller dials in) or dial out (it connects to the controller's access point); both directions are supported, and which one to use is a deployment choice ([Dialing out and dynamic connections](design-remote-runtime-dial-2026-10-14.en.md)).
 - After reconnect, query declarations again and load the desired state. Do not restore old references or replay calls with unknown results.
 
 ## 5. Full node interconnection
+
+> The current model since 0.19: a node is one connection — one side writes a `rutis-host/dial` row, the other a `rutis-host/listen` row. Once connected, services on both sides are visible to each other, events are one bus, and either side can run plugins on the far side (`<connection row>:<plugin>`). There are no `export` / `import` / `host` / `events` feature families and no `PeerRows` / `peer:` rows. This section and §5.1–§5.3 are kept as design history; current rules are in [Connect Nodes](guide/nodes.en.md); the removal list is in [Remote connections](design-remote-session-2026-10-28.en.md) §2.6 decisions 1 and §12.
 
 ### 5.1 Node feature plugins
 
@@ -220,25 +235,20 @@ Use the same two-stage readiness as §4.3:
 
 ### 6.1 Contract isolation
 
-- Sharing a session mechanism does not mean sharing control operations or authorization. Runtimes use rows/hosts; nodes use plugins/services/events.
-- Configure the endpoint contract explicitly. Validate version and capabilities at startup; do not guess the endpoint type from a failed call or silently switch modes.
-- The existing multilingual implementation's `PROTOCOL = 2` is not the proposed node-session format in this design. A new endpoint-identity handshake and call-ID format are breaking changes and require a different major version; choose the exact release version before implementation.
-- The WebSocket subprotocol follows the actual session major version. Do not label the new format as the existing `rutis.2`.
-- Preserve the existing runtime operations and wire format on the local compatibility path. New network sessions use an explicitly negotiated format and fail as incompatible if the old endpoint does not support it.
-- During transition, both formats coexist: Rust interop and the Node/Python SDKs support `PROTOCOL = 2` and the new major version. The session source selects the format (2 for local compatibility, new version for network); handshake determines it, and it never changes within a session. Whether the local path later migrates is a separate decision outside this design.
-- Identity on a local compatibility session: `PROTOCOL = 2` `hello` contains only the version, not an endpoint ID. When link connects to a local child process through the `local` transport, take endpoint identity from launcher-supplied `ChannelInfo.peer` without checking a `hello` endpoint ID. This exception applies only to an inherited fd or private socket owned by the launcher; network sessions always validate identity.
+- Sharing a session mechanism does not mean sharing control operations or authorization. Runtimes use rows/hosts; nodes use plugins/services.
+- Configure the endpoint contract explicitly. Validate the version at startup; capabilities are handled where they are used, with no "required capability" refusal (`SESS-25`); do not guess the endpoint type from a failed call or silently switch modes.
+- Design-time transition (no longer applies): the plan was for the existing `PROTOCOL = 2` implementations and the new major version to coexist; the local compatibility path would keep the old runtime operations and wire format, network sessions would use the new format, the WebSocket subprotocol would follow the major version, and an old endpoint would fail as incompatible. `PROTOCOL = 2` `hello` contained only the version, with local endpoint identity taken from launcher-supplied `ChannelInfo.peer`, while network sessions validated identity. Since 0.19 there is one format: protocol 4, `hello` always carries an endpoint ID, call IDs are always `<endpoint id>:<n>`, the WebSocket subprotocol is `rutis.4`, and implementations of 0.18 and earlier are refused at the handshake; local and network follow the same checks (`SESS-12`, `SESS-13`, `SESS-79`; [Migrating to 0.19](migration-0.19.en.md)).
 
 ### 6.2 Target session capabilities
 
 - The handshake declares session version, endpoint ID, implementation name/version, and capabilities on both sides. Node and runtime implementations can use it; framework objects are not required.
-- A network endpoint ID must match the identity validated in ChannelInfo. A local ID is supplied by the parent process. Endpoint IDs must be unique within a deployment and contain only lowercase letters, digits, and `-`.
-- New-format call IDs are `<endpoint id>:<n>`; validate the prefix and increasing sequence. Reference origin and call-path values must agree.
-- The compatibility runtime path retains existing session tags and call-path `rebase`; changing call IDs alone must not lose cross-session routing.
-- Conversion of references and call paths between formats happens only in the rutis relay (`rpc/relay.rs`): during forwarding it rewrites a compatibility session's tagged path to endpoint IDs for the new format, and vice versa. Execution endpoints need not know the other format. Network multi-hop (N4) is defined only between new-format sessions.
-- Declare functions, async results, and object references by capability. Grant an object's shape on first access. Node/Python must not declare object-receive support until implemented.
+- A network endpoint ID must match the identity validated when the connection was established. A local ID is supplied by the parent process. Endpoint IDs must be unique within a deployment and contain only lowercase letters, digits, and `-`.
+- Call IDs are `<endpoint id>:<n>`; validate the prefix and increasing sequence. Reference origin and call-path values must agree.
+- Historical wording (0.18 and earlier, no longer applicable): conversion of references and call paths between two formats happened only in the rutis relay (`rpc/relay.rs`), and the compatibility runtime path kept session tags and call-path `rebase`. Protocol 4 has one format; cross-session routing uses the session tags of `SESS-36`.
+- Functions, async results and object references pass by reference; an object's shape is granted on first access. Every protocol-4 implementation receives object references; there is no `objects` capability (`SESS-16`, `SESS-46`).
 - Map cancellation to AbortSignal, Rust cancellation tokens, or language equivalents; dropping a future sends cancellation.
 - Preserve identity by `(session, reference ID)` during forwarding and propagate release along the relay chain. Reuse M1a's relay mechanism and add network multi-hop contracts and tests.
-- Session capabilities are `objects`, `signals`, `reentrant-sync`, `forwarding`, `sync-wait` and `sync-stack`, declared per implementation (Rust: `objects`, `signals`, `reentrant-sync`, `forwarding`, `sync-wait`; Node: `signals`, `sync-wait`, `sync-stack`; Python and Bun: `signals`, `reentrant-sync`, `sync-wait`, `sync-stack`; Go: `signals`, `reentrant-sync`, `sync-wait`). `sync-wait`: call frames of synchronous calls carry `sync: true`, and the field is accepted; the host uses it to detect wait cycles across runtimes (#228, [multi-language design](design-multilang-runtimes-2026-10-03.en.md) §9). `sync-stack`: one thread, one stack; calls run during a synchronous wait are stacked above it. A compat-format handshake may declare `sync-wait`, `sync-stack` and `reentrant-sync` too; older implementations ignore them. Endpoint contracts declare `runtime` or `node`; link checks them after handshake using `require` and stops as incompatible if one is missing. Feature families such as plugins, events, and volatile are declared through `link.offers`, not as session capabilities. Capabilities do not grant permissions; reject use when a required capability is missing.
+- Session capabilities are declared for protocol 4 (`hello.capabilities`, `SESS-15`): `value-<tag>` (ten tagged value kinds; every implementation: Rust, Node, Bun, Python, Go, Swift, Kotlin), `reentrant-sync` (Rust, Python, Go, Swift, Kotlin), `sync-stack` (Node, Bun, Python), `node` (the host side of a session plugin), `plugins` (plugin definitions: Rust, and Node/Bun as a host) and `runtime` (Node, Bun, Python, Go, Swift and Kotlin runtime processes). A capability is a declaration, not a permission, and there is no "required capability": only the layer that uses a missing capability fails (`SESS-25`). `sync-wait`, `events-v2` and `objects` are negotiations of 0.18 and earlier; protocol 4 has none of them (`SESS-16`), and 0.19 also removed `require` and the feature-family announcements of `link.offers`.
 - If synchronous reentrancy is unsupported, a same-chain reverse call during synchronous wait returns `SyncWaitCycle` immediately; it must not be queued.
 
 ### 6.3 Service shape and sync behavior
@@ -251,6 +261,8 @@ Use the same two-stage readiness as §4.3:
 - Independent call chains that cross-wait synchronously between two Node runtimes can still deadlock; a shared transport does not remove this limitation. Use async methods for such calls.
 
 ## 7. Lifecycle and security
+
+> The "Node interconnection" column is the model of 0.18 and earlier (Peer, feature plugins, PeerRows); since 0.19, disconnecting unloads all of the far side's plugins and reconnecting loads them again, see [Connect Nodes](guide/nodes.en.md).
 
 | Event | Runtime integration | Node interconnection |
 | --- | --- | --- |
@@ -271,6 +283,8 @@ Use the same two-stage readiness as §4.3:
 - Each transport configures message-size limits and closes a channel when exceeded. This design adds no call-count or reference-count quotas.
 
 ## 8. Placement and configuration
+
+> Since 0.19 there is no `runtimes.remote` and no `peer:` row: each connection is one `rutis-host/dial` or `rutis-host/listen` row, a plugin run on the far side is written `<connection row>:<plugin>`, and an app-hosted plugin registers as `<app id>:<plugin>`. The table below is the design-time placement, kept as a record; current syntax is in [Connect Nodes](guide/nodes.en.md).
 
 | Scenario | Configuration |
 | --- | --- |
@@ -314,7 +328,7 @@ Keep the old reverse-direction `server.rs` and `build/rust.rs` frozen; removal n
 - Link has no loader dependency and can establish a session while rows remain unresolved.
 - Revoking link / Identity prevents old registrations and late handshakes from attaching, without affecting other links on a shared listener.
 - Half-open connections are cleaned up within the heartbeat deadline; old references fail; a local process crash does not automatically restart.
-- Rust, Node, and Python pass session tests under both `PROTOCOL = 2` and the new major version. Reference round trips through the rutis relay preserve identity and call paths across formats.
+- All seven implementations (Rust, Node, Bun, Python, Go, Swift, Kotlin) pass the protocol-4 session conformance tests (`runtime_conformance`, `session_matrix`); references and call paths across implementations follow `SESS-36` and `SESS-46`.
 - Synchronous callbacks can progress on a blocked `current_thread`; supported references, cancellation, and error object graphs pass cross-language tests, and unsupported capabilities are rejected explicitly.
 
 ### Remote runtimes
@@ -334,3 +348,10 @@ Keep the old reverse-direction `server.rs` and `build/rust.rs` frozen; removal n
 - Simultaneous cold start and reconnect during mutual remote installation do not deadlock; host does not wait for rows to become ready.
 - Disconnect cleans only plugins and services owned by that link; independently managed node plugins keep running.
 - Composite and separate assembly have the same permissions and behavior; changing export configuration retains the session and unrelated features.
+
+## 11. Rule check conclusions (#636, 2026-11-15)
+
+- `REM-3.2-10` ("stopping or revoking a link does not close a shared physical connection used by other links"): **removed**. 0.19 deleted `Identity`, `Registration`, `Revocations` and the `link` plugin; this repository has no multiplexing adapter for shared physical connections (`crates/rutis-bridge/tests/conformance_session_tracker.rs:2930-2931`: the crate has no multiplexing adapter), so the rule has nothing to check.
+- `REM-3.2-11` ("when revoking an underlying credential invalidates a physical connection, the Adapter notifies every affected channel"): **removed**. There is no Adapter notification mechanism and no test for it; `Identity` and transport reuse were removed in 0.19.
+- `REM-3.2-12` ("identity and authorization bind to the logical Channel; reusing a physical connection cannot share permissions"): **removed**. There is no physical-connection reuse, so there is no cross-Channel permission surface; a current connection presents its row's token when it is established and is told apart by the endpoint ID in the handshake.
+- The trace table rows in `rules/protocol-remote.md` and `recheck-0.22.md` still say "partial / not covered"; this PR does not change generated pages or the trace table. They need to be synced to "withdrawn" with this reason afterwards.

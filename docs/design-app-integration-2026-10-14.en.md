@@ -2,7 +2,7 @@
 
 [中文](design-app-integration-2026-10-14.md)
 
-Status: final, not implemented. Date: 2026-10-14. Baseline: `main` `a763cdc` (0.10.0).
+Status: final; the Swift and Kotlin `RutisApp` are implemented, with end-to-end tests for `start` / `stop` order and for a start after a stop being a new round. Date: 2026-10-14; status updated: 2026-11-15. Baseline: `main` `a763cdc` (0.10.0).
 From 0.19, D2, D5, D6, D8 and §5 are rewritten by decisions 2 and 3 of [Remote connections: one session plugin](design-remote-session-2026-10-28.en.md) §2.6: the plugins on the device are installed and configured by the app itself, and rutis does not create an instance per connection.
 Based on: [Remote runtimes: dialing out and dynamic connections](design-remote-runtime-dial-2026-10-14.en.md) (how apps connect), [the multilingual design](design-multilang-runtimes-2026-10-03.en.md), [remote plugins](design-remote-plugins-2026-10-03.en.md), [the plugin API](guide/plugin-api.en.md).
 Per platform: [the Swift SDK](design-swift-sdk-2026-10-12.en.md) §7 (iOS / iPadOS / macOS apps), [Android app hosting](design-android-runtime-2026-10-12.en.md) (Kotlin).
@@ -59,6 +59,15 @@ rutis (desktop / server)                        App on the device
 | --- | --- |
 | `start()` | Connect to rutis, install the plugins in order (each with its configuration) and report the services they provide; reconnect automatically after disconnection until `stop()` |
 | `stop()` | Clean up all plugins in reverse order, then disconnect; `start()` may be called again |
+
+Order of `start()` and `stop()` (both the Swift and the Kotlin `RutisApp` work this way):
+
+- The two calls take effect in the order they are called, also when each runs in its own thread or `Task`: a `start()` called while a stop is under way starts once that stop is done; a `stop()` called while a start is under way undoes that start, which does not keep dialing in the background; `start()` while already started does nothing.
+- `stop()` withdraws services, cleans up every plugin in reverse order (rutis is still connected and receives these unloads), then closes the connection; `start()` may follow once it returns.
+- A following `start()` is a new round: a new session, the app installs its plugins again in `plugins` order and announces their services again, with no plugin instances, references or state from the previous connection. The same holds for every reconnect after a disconnection.
+- In listening mode with port `0`, the Swift `RutisApp` keeps the port it bound first and binds it again after a stop; whether Kotlin keeps it: unconfirmed.
+
+Evidence: `crates/rutis-host/tests/swift_app.rs::an_apps_start_and_stop_take_effect_in_call_order`, `::an_app_that_listens_is_dialed_and_comes_back_after_stop_and_start`, `rutis-host/tests/kotlin.rs::an_application_stops_and_starts_again`; [Swift apps](guide/swift-app.en.md) §3, [Kotlin apps](guide/kotlin-app.en.md) §3; `swift/app-start-stop` in `docs/guarantees.en.md`.
 
 The SDK guarantees:
 

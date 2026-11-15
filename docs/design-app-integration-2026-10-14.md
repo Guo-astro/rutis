@@ -2,7 +2,7 @@
 
 [English](design-app-integration-2026-10-14.en.md)
 
-状态：定稿，未实现。日期：2026-10-14。基准：`main` `a763cdc`（0.10.0）。
+状态：定稿；Swift 与 Kotlin 的 `RutisApp` 已实现，`start` / `stop` 的顺序与新一轮行为有端到端测试。日期：2026-10-14；状态更新：2026-11-15。基准：`main` `a763cdc`（0.10.0）。
 0.19 起 D2、D5、D6、D8 与 §五按 [远程连接：只留一个会话插件](design-remote-session-2026-10-28.md) §2.6 决定 2、决定 3 改写：设备上的插件由应用自己装、自己配置，rutis 不为每条连接建实例。
 依据：[远程运行时：拨出与动态接入](design-remote-runtime-dial-2026-10-14.md)（连接方式）、[多语言总体稿](design-multilang-runtimes-2026-10-03.md)、[远程插件](design-remote-plugins-2026-10-03.md)、[插件 API](guide/plugin-api.md)。
 各平台：[Swift SDK](design-swift-sdk-2026-10-12.md) §七（iOS / iPadOS / macOS 应用）、[Android 应用托管](design-android-runtime-2026-10-12.md)（Kotlin）。
@@ -59,6 +59,15 @@ rutis（桌面 / 服务器）                          设备上的应用
 | --- | --- |
 | `start()` | 连上 rutis，按顺序装上插件（各带配置），报出它们提供的服务；断线自动重连，直到 `stop()` |
 | `stop()` | 全部插件逆序清理，然后断开；可再次 `start()` |
+
+`start()` 与 `stop()` 的先后（Swift 与 Kotlin 的 `RutisApp` 都这样实现）：
+
+- 两次调用按调用顺序生效，各在自己的线程或 `Task` 里调用也一样：停止进行中调用的 `start()` 等这次停止完成后再开始；开始进行中调用的 `stop()` 撤销这次开始，不会在后台继续拨出；已经开始时再调用 `start()` 什么也不做。
+- `stop()` 撤回服务、按逆序清理全部插件（此时 rutis 仍连着，能收到这些卸载），然后关闭连接；完成后可以再 `start()`。
+- 再 `start()` 是新一轮：新 session，应用重新按 `plugins` 的顺序装上插件、重新报出服务，不沿用上一次连接的插件实例、引用或状态。每次断线重连同样如此。
+- 监听模式下地址写端口 `0` 时，Swift `RutisApp` 记下第一次绑定到的端口，停止后再开始仍绑同一个端口；Kotlin 是否保留该端口：未确认。
+
+证据：`crates/rutis-host/tests/swift_app.rs::an_apps_start_and_stop_take_effect_in_call_order`、`::an_app_that_listens_is_dialed_and_comes_back_after_stop_and_start`、`rutis-host/tests/kotlin.rs::an_application_stops_and_starts_again`；[Swift 应用](guide/swift-app.md) §3、[Kotlin 应用](guide/kotlin-app.md) §3；`docs/guarantees.md` 的 `swift/app-start-stop`。
 
 SDK 保证：
 

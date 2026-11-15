@@ -4,7 +4,7 @@
 
 > Revised (2026-10-26): the rule in §4 that `listen` together with `instances` means dynamic connections is replaced by §4 of [Remote runtime consistency](design-remote-runtime-consistency-2026-10-26.en.md): the `dial`, `listen` and `instances` fields of a `runtimes.remote` entry are independent, and `listen` without `instances` is one connection. Everything else is unchanged.
 
-Status: final; R-P1 (the Rust side) and R-P2 (Python dialing out) implemented, the rest in §7. Date: 2026-10-14. Baseline: `main` `a763cdc` (0.10.0).
+Status: final; the dial-out and reconnection rules of §6 and both directions in all seven implementations are implemented (Swift #387, Kotlin #391; both pass `dial_conformance` and `session_matrix`). §4's "a connection is an instance" and `runtimes.remote` were superseded in 0.19 (see the top of §4). Date: 2026-10-14; status updated: 2026-11-15. Baseline: `main` `a763cdc` (0.10.0).
 Based on: [remote plugins](design-remote-plugins-2026-10-03.en.md) (this document revises how runtimes connect in its §4), [Connect Nodes](guide/nodes.en.md) (link), [creating plugin instances on demand](design-loader-instance-mounts-and-services-2026-10-07.en.md), [service names inside instances](design-instance-services-2026-10-08.en.md), [the Go plugin runtime](design-go-runtime-2026-10-10.en.md), [the Bun runtime](design-bun-runtime-2026-10-09.en.md).
 Used by: [app integration](design-app-integration-2026-10-14.en.md), [the Swift SDK](design-swift-sdk-2026-10-12.en.md), [Android app hosting](design-android-runtime-2026-10-12.en.md).
 
@@ -48,6 +48,8 @@ New:      rutis (access point, the only TLS server) ◀──dial out── runt
 
 ## 4. Dynamic connections are instances
 
+> This section no longer applies since 0.19: `runtimes.remote`, access points and "one `instanced` instance per connection" were removed. The current form is one `rutis-host/dial` or `rutis-host/listen` row per connection; the id a connection reports in its handshake is its key, a plugin on the far side registers as `<id>:<plugin>`, services are globally visible, and there is no instance key ([Connect Nodes](guide/nodes.en.md) "Language runtimes on other machines"; [Remote connections](design-remote-session-2026-10-28.en.md) decisions 2 and 3). This section is kept as design history.
+
 - One access point corresponds to one `instanced` group: the rows in the group describe "which plugins to load in a runtime connection, and with what configuration".
 - A connection arrives → an instance is created with the connection id; it drops → that instance is closed, all services in it are withdrawn, and consumers stop.
 - The runtime reports the plugins it carries in the `mount` reply (`plugins`, each entry the same as a `rows.schema` reply); when a row in the group points, in some instance, to a plugin that connection does not carry, the row fails in that instance with "this connection does not contain plugin X", without affecting other instances. Adding fields such as `engine` to the `mount` reply is not a protocol change (precedent: Bun §3.3).
@@ -79,12 +81,19 @@ New:      rutis (access point, the only TLS server) ◀──dial out── runt
   - "This connection does not contain plugin X" is a per-copy `Unavailable`: only that copy fails; an edit's dry run is not refused for it, and reconcile does not count it as a new failure to roll back.
   - A `<runtime name>:` row outside the group fails, saying it runs only in that group.
 
+### 4.1 Current (2026-11-15)
+
+- Connection: one `rutis-host/dial` row (this side dials) or `rutis-host/listen` row (waiting for the far side) per connection. There is no `runtimes.remote`, no access point, and no instance created per connection.
+- Key: the id a connection reports in its handshake is its key; a plugin run on the far side registers as `<the id the far side reports>:<plugin>` (by convention the same as the connection row id), and an app-hosted plugin as `<app id>:<plugin>`. A remote connection no longer creates an `instanced` instance and has no per-connection runtime key; `host_key_in` remains the general mechanism for services inside an instance (local `instanced` groups are unchanged), while a remote connection's services are globally visible, and a later registration of the same name is refused by the kernel rule.
+- Listening and takeover: after a new connection on a `rutis-host/listen` row completes its handshake, the old session unloads first (all of the far side's plugins), its channel is closed with 4002, and only then is the new session installed; a connection whose handshake fails touches nothing (`crates/rutis-host/src/connect/listen.rs:1-10`). A Python runtime that listens itself prints `rutis: session ended (replaced by a new connection)` when a new controller takes over.
+- Port: a runtime binary (Python, Node, Bun, Go, Swift) prints the address it actually bound on stderr once it listens, `rutis: listening on <address>`; with `0` the system picks a port and scripts read it from that line. A Swift `RutisApp` in listening mode remembers the port it bound first and binds the same one again on a later `start()` after `stop()` (`swift/rutis/Tests/SelfTest/AppTests.swift::aListeningAppStartsAgainRightAfterItStopped`, `crates/rutis-host/tests/swift_app.rs::an_app_that_listens_is_dialed_and_comes_back_after_stop_and_start`); whether the Kotlin `RutisApp` keeps it: unconfirmed.
+- Reconnection: still §6; every reconnect is a new session, loaded again, with no instance or reference from the previous one.
+
 ## 5. Identity layer
 
 - On the rutis side, "authenticate and give a connection id" is factored into a layer: input is the credentials and self-reported id from the handshake; output is accept (connection id) or reject (reason).
-- Transitional implementation: accept if the credential equals the shared token (environment variable `RUTIS_TOKEN_<runtime name>`, consistent with existing naming), with connection id = self-reported id; the self-reported id must be non-empty and contain only `[a-z0-9-]`. The self-reported id is only used to tell connections apart and name instances, never as an identity credential.
-- Future implementation: a management service verifies the credentials and gives the id; access points, instances and configuration do not change.
-- The existing static link with a per-peer token (R6) is another implementation of this layer and is kept.
+- Transitional implementation: accept if the credential equals the shared token (on the rutis side `RUTIS_TOKEN_<row id>`, on the runtime side `RUTIS_TOKEN`), with connection id = self-reported id; the self-reported id must be non-empty and contain only `[a-z0-9-]`. The self-reported id is only used to tell connections apart, never as an identity credential.
+- Future implementation: a management service verifies the credentials and gives the id; connections and configuration do not change.
 - Revocation hook (#273): removed in 0.19 (`Revocations` / `Revocable` had no production caller; see the [session design](design-remote-session-2026-10-28.en.md) §8); existing connections are disconnected by stopping that row.
 
 ## 6. Dial-out and reconnection specification
@@ -96,9 +105,9 @@ Language-independent; every language implements it:
 | Backoff | Retryable failures start at 0.5 seconds and double up to 30 seconds, reset once the connection is stable (same as the existing link) |
 | Credentials rejected | Retry every 30 seconds. The dialer tells this from 401 / 403 at the upgrade, or from the access point refusing the id after the hello (WebSocket close code 4003) |
 | Incompatible protocol | Stop and report. A hello with no id or an invalid one (`[a-z0-9-]+`) belongs here: retrying cannot fix it |
-| Disconnect | The rutis side closes that connection's instance; the runtime side unloads all rows (cleanup runs in reverse order), then reconnects with backoff |
-| Reconnect | New session, new instance, load again, independent of any state from the previous connection |
-| Takeover by the same id | When a new connection arrives the old one is closed; the old instance finishes cleanup before the new connection is admitted |
+| Disconnect | The rutis side closes that connection (the 0.18 "instance" no longer exists); the runtime side unloads all rows (cleanup runs in reverse order), then reconnects with backoff |
+| Reconnect | New session, load again, independent of any state from the previous connection |
+| Takeover by the same id | After the new connection completes its handshake, the old session unloads (all of the far side's plugins), its channel is closed with 4002, and the new session is installed (`crates/rutis-host/src/connect/listen.rs:1-10`) |
 | Deliberate stop | The runtime side stops (e.g. the SDK's `stop()`): unload all rows, then close the connection; no reconnect |
 
 Conformance tests: `rutis-bridge/tests/dial_conformance.rs`, shaped like `websocket_conformance`: the rutis side starts an access point, launches the dialing side per language, and checks each row of the table above.
@@ -116,18 +125,18 @@ Conformance tests: `rutis-bridge/tests/dial_conformance.rs`, shaped like `websoc
 
 | Party | Work | Status |
 | --- | --- | --- |
-| Rust side | Access point accepting many connections, connection-as-instance, per-instance runtime keys, the identity layer and its transitional implementation, `plugins` in the `mount` reply, rutis-host configuration (`listen` / `instances`), `runtimes.remote[].language` accepting `swift`, `kotlin` / `kt` | Implemented (#396, #399); `swift` and `kotlin` come with app integration |
+| Rust side | Access point accepting many connections, connection-as-instance, per-instance runtime keys, the identity layer and its transitional implementation, `plugins` in the `mount` reply, rutis-host configuration (`listen` / `instances`), `runtimes.remote[].language` accepting `swift`, `kotlin` / `kt` | Was #396, #399; this R-P1 design was removed in 0.19, see §4.1 for the current form |
 | Python | Dial-out client (`dial:`); the first existing language (its TLS server has the most problems, so dialing out helps it most) | Implemented (#383); the Python column of `dial_conformance` passes |
 | Node | Dial-out client, right after Python | Implemented (#384); the `dial_conformance` Node column passes |
 | Go | Dial-out client, right after Python | Implemented (#384); the Go column of `dial_conformance` passes |
 | Bun | Both listening and dialing out, right after Python | Implemented (#384); the `dial_conformance` Bun column and `session_matrix::bun_listening_on_a_websocket` pass |
-| Swift | Both listening and dialing out (Swift SDK §6) | Not implemented |
+| Swift | Both listening and dialing out (Swift SDK §6) | Implemented (#387); the Swift column of `dial_conformance` and `session_matrix::swift_listening_on_a_websocket` pass |
 | Kotlin | Both listening and dialing out (Android design §5) | Implemented (#391); the Kotlin column of `dial_conformance` and `session_matrix::kotlin_listening_on_a_websocket` pass |
-| Docs | Add dialing out and dynamic connections to the Connect Nodes guide; change the recommended approach to dialing out | Dialing out and dynamic connections written (Python, Node, Bun); the recommendation changes once every language dials out |
+| Docs | Add dialing out and dynamic connections to the Connect Nodes guide; change the recommended approach to dialing out | Dialing out and dynamic connections written (Python, Node, Bun, Go, Swift, Kotlin); the guide recommends dialing out |
 
 ## 8. Compatibility
 
-- Existing configuration (`runtimes.remote` + link `dial` + `runtime`) behaves the same.
+- 0.19 removed `runtimes.remote` and `peer` / link rows; the current form is `rutis-host/dial` / `rutis-host/listen` rows (§4.1). See [Migrating to 0.19](migration-0.19.en.md).
 - Runtime-side `listen:` is one of the two directions and is kept long term.
 
 ## 9. Phases
@@ -137,4 +146,4 @@ Conformance tests: `rutis-bridge/tests/dial_conformance.rs`, shaped like `websoc
 | R-P0 | Test the current state of a listening-side link + `runtime` | Findings written back into §3 |
 | R-P1 | Rust side: the Rust work in §7; the `dial_conformance` framework | Two connections carry same-named plugins, and consumers in each instance only use their own connection's services; dropping one connection closes only its instance; existing remote runtime tests all pass |
 | R-P2 | Python dialing out | The Python runtime dials out and connects; the Python column of `dial_conformance` passes |
-| R-P3 | Node and Go dialing out; Bun listening and dialing out; Swift and Kotlin connect with apps (Swift A1, Android K-P2) | Every language passes `dial_conformance` (dialing out) and `websocket_conformance` (listening) |
+| R-P3 | Node and Go dialing out; Bun listening and dialing out; Swift and Kotlin listening and dialing out (Swift A1, Android K-P2) | Every language passes `dial_conformance` (dialing out) and `websocket_conformance` (listening); Swift and Kotlin are done |

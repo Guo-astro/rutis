@@ -3,7 +3,16 @@
 > 包结构已调整（2026-10-06）：`rutis-channel`、`rutis-interop`、`rutis-transport-*`、`rutis-runtime-local` 合并为 `rutis-bridge` 的模块（`channel`、`session`、`runtime`、`transport::*`、`cordis`），见 [面向开发者的包、工具与流程](design-developer-packages-2026-10-06.md)。下文保留设计时的 crate 名。
 
 
-状态：远程能力设计稿，未实现。更新：2026-10-05。
+状态：设计稿；运行时接入已实现，节点互联与兼容格式部分由 0.19 的[远程连接：只留一个会话插件](design-remote-session-2026-10-28.md)取代。更新：2026-11-15。
+
+现行边界（2026-11-15 核对）：
+
+- 会话协议是 4（`ENDPOINT_PROTOCOL`，Rust、Node、Bun、Python、Go、Swift、Kotlin 同一个常量，WebSocket 子协议 `rutis.4`），只有端点格式一种线格式。§6.1–§6.2 的“两种格式并存”和 `sync-wait` / `events-v2` / `objects` 是 0.18 及更早的写法，协议 4 已取消（[会话协议规格](protocol-session.md) `SESS-12`–`SESS-16`）。
+- 协议 4 的现行能力是 `value-<tag>`（十种带标记值，所有实现）、`reentrant-sync`（Rust、Python、Go、Swift、Kotlin）、`sync-stack`（Node、Bun、Python）、`node`、`plugins`、`runtime`；见 §6.2 的现行段落与 `SESS-15`。
+- 运行时接入（§4）已实现；远程运行时连接改为 `rutis-host/dial` / `rutis-host/listen` 的行，不再用 `runtimes.remote`，一台或多台由行与监听器决定。
+- 节点互联（§5）的 `export` / `import` / `host` / `events` 功能族在 0.19 删除：两边的服务互相可见，事件是一条总线，对面运行的插件写成 `<连接行>:<插件>`（[连接节点](guide/nodes.md)）。
+- §3.2 的 `Identity` / `Registration`、§8 的 `peer:` 行与 `runtimes.remote` 配置均为历史；现行连接写法见 [连接节点](guide/nodes.md)，0.19 的取舍见[远程连接：只留一个会话插件](design-remote-session-2026-10-28.md)。
+- 实现证据：`crates/rutis-bridge/src/session/mod.rs`（协议 4）、七种实现的会话代码，CI 的 `runtime_conformance`、`session_matrix`、`dial_conformance` 矩阵（`docs/ci.md`「一致性矩阵」）。
 
 配套规范：[网络栈](design-protocol-channel-decoupling-2026-10-03.md)、[兼容层](design-protocol-plugin-mount.md)、[loader](design-rutis-loader-2026-10-02.md)。多语言基线：[总体设计 #121](https://github.com/arcships/rutis/pull/121)、[M1 设计 #127](https://github.com/arcships/rutis/pull/127)、[M1a #129](https://github.com/arcships/rutis/pull/129)、[M1b #128](https://github.com/arcships/rutis/pull/128)、[M1c #130](https://github.com/arcships/rutis/pull/130)、[M2 #131](https://github.com/arcships/rutis/pull/131)。PR 中的本机运行时实现不代表已支持网络部署。
 
@@ -49,7 +58,7 @@
 - 叶子执行端实现所需的承载、会话和运行时处理器，不要求实现完整插件框架或节点桥插件组。叶子侧没有 link，相应职责在既有叶子 SDK 内补齐：
   - 已有（`interop/python/rutis_runtime`）：本机会话、`rows.*` / `hosts.*` 运行时处理器、断链后清理全部行并退出；进程由父进程以 `<socket> <project>` 拉起，回拨父进程 Unix socket，一个进程只服务一个会话。
   - 网络接入新增：监听与承载鉴权（配置控制方身份及验证规则，只接受验证通过的控制方连接）；进程常驻，依次服务多个控制会话，同一时刻只有一个活动会话，接管顺序见 §4.4；断链清理租约后继续监听，不退出。
-  - 网络承载下叶子只监听，不持有重连退避，重连由控制方 link 负责；本机子进程仍按既有方式回拨或使用继承 fd。
+  - 网络承载下叶子可以监听（控制方拨入）或拨出（运行时连到控制方的接入点）；拨出侧持有自己的重连退避，监听侧由控制方 link 负责重连。本机子进程仍按既有方式回拨或使用继承 fd。
 
 ### crate 归属与依赖
 
@@ -71,6 +80,8 @@
 只用核心不带入扩展；只用本机运行时不带入 WebSocket；只接远端执行端不要求安装本机 Node/Python 环境。memory 默认仅由测试或明确配置的应用选用。新增外部承载 crate 实现同一契约，无需修改 bridge。
 
 ## 3. 共享连接与会话
+
+> 本节的 `link`、`Peer#<id>`、`Identity`、`Registration` 是 0.18 及更早的模型；0.19 起连接由 `rutis-host/dial` / `rutis-host/listen` 行实现（[连接节点](guide/nodes.md)）。其中“Session 按运行时实例或每条连接建立、不按插件建立”“插件的装卸不创建或关闭共享 Session”“资源按插件实例区分、只清理该实例的资源”仍现行；其余按历史记录阅读。
 
 ### 3.1 服务与依赖
 
@@ -99,6 +110,8 @@
 - 插件共享 Session 是运行时与节点接入的管理模型；多个逻辑 Channel 共享物理连接是 Adapter 的承载策略，二者独立。
 
 ### 3.2 连接注册与重试
+
+> 本节描述 0.18 及更早的 `link` / `Identity` / `Registration` 模型；0.19 删除了这几层，连接由 `rutis-host/dial` / `rutis-host/listen` 行实现（[连接节点](guide/nodes.md)）。本节保留为设计记录；其中三条规则的核对结论见 §11。
 
 - 每个 Session 使用一个逻辑 Channel。物理连接的池化、复用、多路复用与维护归 Transport Adapter；link 不要求会话独占物理连接。
 - 连接器每次调用只返回一次逻辑 Channel 建立结果；拨号侧 link 唯一持有会话重建的退避状态。Adapter 不另起会话重试循环，不能恢复已终止的 Channel 或重放结果未知的调用。
@@ -140,7 +153,7 @@
 | `hosts.provide / withdraw` | 在运行时中注册、撤销宿主服务代理 |
 | 行服务通知与调用 | 将行提供的服务投到 rutis，按运行时契约访问 |
 
-- 行服务使用 `host_key(name)` / `dyn HostDispatch`，方法形状由 `methods()` 提供，`origin()` 标记来源运行时。`origin()` 现返回 `Option<&Process>`；N2 改为与会话来源无关的运行时标识（运行时实例名 + 当前会话代次），同运行时判断按该标识进行，不依赖本机进程对象。
+- 行服务使用 `host_key(name)` / `dyn HostDispatch`，方法形状由 `methods()` 提供，`origin()` 标记来源运行时。`origin()` 返回与会话来源无关的运行时标识（`Option<&str>`），同运行时判断按该标识进行，不依赖本机进程对象（`crates/rutis-bridge/src/runtime/rows.rs:175`）。
 - 运行时功能（`rows.v2`、`hosts`、`leaf` 等）由 Runtime 服务在契约校验后公开；loader 侧行集成从 Runtime 读取，不再直接访问 `Process`。
 - 宿主服务按消费行租用：首个租用注册，最后一个释放撤销；操作串行，租用返回前注册完成。
 - 同运行时原生服务不重复注册代理；重复服务导出按冲突失败。
@@ -162,10 +175,12 @@
 - 装载行、注入代理、导出引用均属于该会话租约。控制会话断开后，执行端清理租约内全部行和代理，不要求部署远端 rutis。
 - 运行时守护进程可保持监听；本机父进程拉起的执行端断链后清理并退出。均不自动重启进程。
 - 新控制会话接管前先结束旧租约；迟到旧会话指令不能作用于新租约。执行端按以下顺序处理新连接：承载鉴权 → 关闭旧会话通道，不再读取其后续帧 → 清理旧租约内全部行和代理 → 回应新会话 `hello`。清理完成前不回应新会话，因此新租约不会与旧租约并存。
-- 网络承载下远程叶子运行时只作为监听方，由控制方 link 拨号并负责重连；需要穿越 NAT 时使用反向代理或隧道，本设计不提供叶子主动拨号。
+- 网络承载下运行时可以监听（控制方拨入）或拨出（运行时连到控制方的接入点），两个方向都支持，用哪个是部署选择（[拨出与动态接入](design-remote-runtime-dial-2026-10-14.md)）。
 - 重连后重新查询声明并按期望状态装载，不恢复旧引用，不重放结果未知的调用。
 
 ## 5. 完整节点互联
+
+> 0.19 起的现行模型：节点是一条连接，一端写一行 `rutis-host/dial`，另一端写一行 `rutis-host/listen`；连上后两边的服务互相可见，事件是一条总线，每一端都可以让对面运行插件（`<连接行>:<插件>`），不再有 `export` / `import` / `host` / `events` 功能族，也没有 `PeerRows` / `peer:` 行。本节及 §5.1–§5.3 保留为设计记录，现行规则见 [连接节点](guide/nodes.md)；删除清单见[远程连接：只留一个会话插件](design-remote-session-2026-10-28.md) §2.6 决定 1、§十二。
 
 ### 5.1 节点功能插件
 
@@ -221,25 +236,20 @@
 
 ### 6.1 契约隔离
 
-- 共享会话机制，不等于共享控制操作或授权。运行时使用 rows/hosts，节点使用 plugins/services/events。
-- 配置明确端点契约；启动时校验版本和能力，不靠调用失败猜测端点种类，不静默切换模式。
-- 现有多语言实现的 `PROTOCOL = 2` 不等于本文拟扩展的节点会话格式。新增端点身份握手与调用号格式属于不兼容变更，必须分配不同主版本；具体发布版本号在实施前确定。
-- WebSocket 子协议随实际会话主版本变化；不能把新格式继续标记为既有 `rutis.2`。
-- 本机兼容路径保留现有运行时操作与线格式；新网络会话使用明确协商的格式，旧执行端不支持时直接报不兼容。
-- 两种格式在过渡期并存：Rust interop 与 Node/Python SDK 需同时支持 `PROTOCOL = 2` 与新主版本；格式由会话来源决定（本机兼容路径用 2，网络会话用新版本），握手时确定，会话内不切换。本机路径迁移到新格式另行决定，不在本设计内。
-- 本机兼容会话的身份：`PROTOCOL = 2` 的 `hello` 只含版本，不含端点 id。link 经 `local` 承载接入本机子进程时，端点身份取自启动方指定的 `ChannelInfo.peer`，不核对 `hello` 端点 id；该豁免仅限启动方持有的继承 fd 或私有 socket，网络会话一律核对。
+- 共享会话机制，不等于共享控制操作或授权。运行时使用 rows/hosts，节点使用 plugins/services。
+- 配置明确端点契约；启动时校验版本，能力按使用它的地方判断，缺少时不按“必需能力”拦截（`SESS-25`），不靠调用失败猜测端点种类，不静默切换模式。
+- 设计时的过渡安排（已不适用）：曾计划让现有实现的 `PROTOCOL = 2` 与新主版本在过渡期并存，本机兼容路径保留旧运行时操作与线格式，网络会话用新格式，WebSocket 子协议随主版本变化，旧执行端不支持时直接报不兼容；`PROTOCOL = 2` 的 `hello` 只含版本、不含端点 id，本机端点身份取自启动方指定的 `ChannelInfo.peer`，网络会话一律核对。0.19 起只有一种格式：协议 4、`hello` 总是带端点 id、调用号总是 `<端点 id>:<n>`、WebSocket 子协议是 `rutis.4`，0.18 及更早的实现握手时被拒；本机与网络同一套核对（`SESS-12`、`SESS-13`、`SESS-79`；[迁移到 0.19](migration-0.19.md)）。
 
 ### 6.2 目标会话能力
 
 - 双方握手声明会话版本、端点 ID、实现名称/版本及能力；节点实现与运行时实现均可使用，不要求 framework 对象。
-- 网络端点 ID 必须匹配 ChannelInfo 中验证过的身份；本机 ID 由父进程指定。部署内端点 ID 唯一，仅含小写字母、数字、`-`。
-- 新格式调用号为 `<端点 id>:<n>`，校验前缀和递增序号；引用 origin 与调用链 path 保持一致。
-- 兼容运行时路径保留现有会话标签和调用链 rebase，不能仅替换调用号而丢失跨会话路由。
-- 两种格式间的引用与调用链转换只发生在 rutis 中继（`rpc/relay.rs`）：中继在转发时把兼容会话的标签路径改写为新格式的端点 id 路径，反之亦然。执行端不感知另一种格式；网络多跳（N4）只在新格式会话之间定义。
-- 函数、异步结果、对象引用按能力声明；对象首次授予附形状。Node/Python 未实现对象接收时不得宣告支持。
+- 网络端点 ID 必须匹配连接建立时验证过的身份；本机 ID 由父进程指定。部署内端点 ID 唯一，仅含小写字母、数字、`-`。
+- 调用号为 `<端点 id>:<n>`，校验前缀和递增序号；引用 origin 与调用链 path 保持一致。
+- 历史写法（0.18 及更早，已不适用）：两种格式间的引用与调用链转换只发生在 rutis 中继（`rpc/relay.rs`）；兼容运行时路径保留会话标签与调用链 rebase。协议 4 只有一种格式，跨会话路由按 `SESS-36` 的会话标签进行。
+- 函数、异步结果、对象引用按引用传递；对象首次授予附形状。协议 4 的所有实现都收对象引用，没有 `objects` 能力（`SESS-16`、`SESS-46`）。
 - 取消双向落到 AbortSignal、Rust 取消令牌或语言等价物；丢弃 future 发送取消。
 - 转发按（会话，引用号）保持身份，释放沿中继链传递；复用 M1a 的中继机制，补充网络多跳契约与测试。
-- 会话能力为 objects、signals、reentrant-sync、forwarding、sync-wait、sync-stack，按实现宣告（Rust 为 objects、signals、reentrant-sync、forwarding、sync-wait；Node 为 signals、sync-wait、sync-stack；Python、Bun 为 signals、reentrant-sync、sync-wait、sync-stack；Go 为 signals、reentrant-sync、sync-wait）。`sync-wait`：同步调用的调用帧带 `sync: true`，也接受这个字段，宿主据此检测跨运行时的等待环（#228，[多语言设计](design-multilang-runtimes-2026-10-03.md) §九）；`sync-stack`：一个线程、一个栈，同步等待期间执行的调用压在等待的调用之上；compat 格式的握手里也可以宣告 `sync-wait`、`sync-stack`、`reentrant-sync`，旧实现忽略它们；端点契约以能力 `runtime`、`node` 宣告，link 以 `require` 在握手后校验，缺少即按不兼容停止。plugins、events、volatile 等功能族经 `link.offers` 宣告，不作为会话能力。能力不授予权限，缺少必需能力时使用前拒绝。
+- 会话能力按协议 4 声明（`hello.capabilities`，`SESS-15`）：`value-<tag>`（十种带标记值；Rust、Node、Bun、Python、Go、Swift、Kotlin 全部实现）、`reentrant-sync`（Rust、Python、Go、Swift、Kotlin）、`sync-stack`（Node、Bun、Python）、`node`（会话插件的宿主一侧）、`plugins`（收插件定义：Rust，Node/Bun 作为宿主时）、`runtime`（Node、Bun、Python、Go、Swift、Kotlin 运行时进程）。能力是声明，不授予权限，也没有“必需能力”：缺少能力时只有用到它的那一层失败（`SESS-25`）。`sync-wait`、`events-v2`、`objects` 是 0.18 及更早的协商，协议 4 已取消（`SESS-16`）；0.19 也删除了 `require` 与 `link.offers` 的功能族宣告。
 - 不支持同步重入时，同步等待期间的同链反向调用立即返回 SyncWaitCycle，不得排队。
 
 ### 6.3 服务形状与同步
@@ -252,6 +262,8 @@
 - 两个 Node 运行时的无关调用链交叉同步等待仍有死锁限制；共享承载不解除该限制，此类调用使用异步方法。
 
 ## 7. 生命周期与安全
+
+> “节点互联”一列是 0.18 及更早的模型（Peer、功能插件、PeerRows）；0.19 起连接断开时对面的插件全部卸载、重连后重新装载，见 [连接节点](guide/nodes.md)。
 
 | 事件 | 运行时接入 | 节点互联 |
 | --- | --- | --- |
@@ -272,6 +284,8 @@
 - 消息大小上限由各承载配置，超限时承载关闭通道；本设计不增加调用数和引用数配额。
 
 ## 8. 放置与配置
+
+> 0.19 起不用 `runtimes.remote`，也不用 `peer:` 行：每条连接写一行 `rutis-host/dial` 或 `rutis-host/listen`，对面运行的插件写成 `<连接行>:<插件>`，应用托管的插件注册为 `<应用 id>:<插件>`。下表是设计时的放置方式，保留作记录；现行写法见 [连接节点](guide/nodes.md)。
 
 | 场景 | 配置 |
 | --- | --- |
@@ -315,7 +329,7 @@
 - link 不依赖 loader，任何行未解析时仍可建立会话。
 - link / Identity 撤销阻止旧注册和迟到握手接入，不影响共享监听器的其他链接。
 - 半开连接在心跳期限内清理；旧引用失效；本机进程崩溃不自动重启。
-- Rust、Node、Python 同时通过 `PROTOCOL = 2` 与新主版本的会话测试；跨格式引用经 rutis 中继往返后身份与调用链保持。
+- 七种实现（Rust、Node、Bun、Python、Go、Swift、Kotlin）通过协议 4 的会话一致性测试（`runtime_conformance`、`session_matrix`）；跨实现传引用与调用链按 `SESS-36`、`SESS-46` 保持。
 - 同步回调在阻塞的 current_thread 上仍可推进；支持的引用、取消、错误对象图通过跨语言测试，不支持的能力明确拒绝。
 
 ### 远程运行时
@@ -335,3 +349,10 @@
 - 双方互相代装同时冷启动、重连不死锁；host 不等待行就绪。
 - 断链只清理链接拥有的插件和服务，节点独立插件保持运行。
 - 组合与单独装配权限和行为一致；修改导出配置保留原会话与无关功能。
+
+## 11. 规则核对结论（#636，2026-11-15）
+
+- `REM-3.2-10`（“link 停止或吊销不关闭其他链接使用的共享物理连接”）：**删去**。0.19 删除了 `Identity`、`Registration`、`Revocations` 与 `link` 插件；本仓库没有共享物理连接的多路复用实现（`crates/rutis-bridge/tests/conformance_session_tracker.rs:2930-2931`：该 crate 没有 multiplexing adapter），这条没有可核对的对象。
+- `REM-3.2-11`（“底层凭据撤销使物理连接整体失效时，Adapter 通知所有受影响通道”）：**删去**。没有 Adapter 通知机制，也没有对应测试；`Identity` 与承载复用都在 0.19 删除。
+- `REM-3.2-12`（“身份与授权绑定逻辑 Channel，复用物理连接不能串用权限”）：**删去**。没有物理连接复用，因此没有跨 Channel 的权限串用面；现行连接在建立时出示所属行的 token，并按握手里的端点 id 区分。
+- 追踪表 `rules/protocol-remote.md`、`recheck-0.22.md` 里这三条仍是“部分/未覆盖”；本 PR 不改生成页与追踪表，需在后续同步为“已撤回”并写明理由。
