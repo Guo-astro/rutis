@@ -1,7 +1,9 @@
 //! Wire-level conformance for the session and value rules the tracking
 //! table still marks partial or unverified (#639): a far end scripted frame
 //! by frame on a memory channel, so what is checked is the frames and the
-//! errors themselves, not an internal helper.
+//! errors themselves, not an internal helper. The runtime-contract rules
+//! (`rows.*`, `hosts.*`) use a fake runtime mounted as a row through
+//! `common::runtime`, which answers what the test scripts it to.
 //!
 //! Rules whose gap names an implementation other than Rust (Node, Python,
 //! Go, Bun, Swift, Kotlin) stay open: these checks close the Rust column
@@ -47,21 +49,42 @@
 //! rule: CHN-4-11
 //! rule: TAG-2-1
 //! rule: TAG-5-1
+//! rule: M1-4-2
+//! rule: M1-5.1-1
 //! rule: M1-7.1-1
 //! rule: M1-13-3
+//! rule: SYN-5-2
+//! rule: SYN-5-4
+//! rule: REM-4.2-2
+//! rule: DIA-4-1
+//! rule: INS-4.2-3
+//! rule: CHN-2-5
+//! rule: VAL-2-8
+//! rule: MNT-2-8n
+//! rule: MNT-3-6
+//! rule: MNT-5-4
+//! rule: bridge/error-code-and-data a
+//! rule: bridge/exported-services b
+//! rule: bridge/exported-services c
 //! guarantee: bridge/value-tags
 //! guarantee: bridge/object-refs
 //! guarantee: bridge/unknown-fields
 
+use std::path::Path;
 use std::sync::{mpsc, Arc, Mutex};
 
+use rutis::events::Scope;
+use rutis::Ctx;
 use rutis_bridge::channel::{Channel, PeerId};
+use rutis_bridge::runtime::Process;
 use rutis_bridge::session::{
-    BigInt, Connection, Decimal, Dispatch, Endpoint, Error, Instant, Reply, Uuid, Value,
-    ENDPOINT_PROTOCOL,
+    settle, BigInt, Connection, Decimal, Dispatch, Endpoint, Error, HostDispatch, Instant, Reply,
+    Uuid, Value, ENDPOINT_PROTOCOL,
 };
 use rutis_test_support::within;
 use serde_json::{json, Value as Json};
+
+mod common;
 
 /// The capabilities of every tagged value, as a far end declares them when
 /// it takes all of them.
@@ -2991,4 +3014,865 @@ async fn a_session_speaks_on_its_own_channel() {
         second_session.close_reason().is_none(),
         "the second session goes on"
     );
+}
+
+// ── Fourth batch: the runtime contract, callbacks and errors (#639) ──────
+
+/// A far end that hands out a function of the host's (`svc.give`) and echoes
+/// its arguments (`svc.echo`).
+struct Offering;
+
+impl Dispatch for Offering {
+    fn invoke(&self, _: &Connection, target: &str, method: &str, args: Value) -> Reply {
+        match (target, method) {
+            ("svc", "give") => Ok(Value::callback(|argument| {
+                Ok(Value::Data(json!(argument.list()?.len())))
+            })),
+            ("svc", "echo") => Ok(args),
+            _ => Err(Error::value(format!("no method {method}"))),
+        }
+    }
+}
+
+/// A host service that calls the function the far end passed it, and waits
+/// for its promise before answering.
+struct Applying;
+
+impl Dispatch for Applying {
+    fn invoke(&self, _: &Connection, target: &str, method: &str, args: Value) -> Reply {
+        match (target, method) {
+            ("svc", "apply") => {
+                let mut arguments = args.list()?.into_iter();
+                let callback = arguments.next().unwrap_or(Value::Undefined).reference()?;
+                let argument = arguments.next().unwrap_or(Value::Undefined);
+                // As any host service that calls a plugin back: not on the
+                // reader's thread, and the promise, if any, is awaited.
+                Ok(Value::future(async move {
+                    let called = callback.call_async(Value::List(vec![argument])).await?;
+                    settle(called).await
+                }))
+            }
+            _ => Err(Error::value(format!("no method {method}"))),
+        }
+    }
+}
+
+/// A host service that refuses with a code and data of its own.
+struct Failing;
+
+impl Dispatch for Failing {
+    fn invoke(&self, _: &Connection, _: &str, _: &str, _: Value) -> Reply {
+        Err(Error::binding(
+            "kaboom",
+            "the host failed".into(),
+            Some(json!({ "why": "here" })),
+        ))
+    }
+}
+
+/// The next frame of `op`, checking the `release`s met before it: a test
+/// that holds references may see one at any point.
+fn expect(far: &mut Channel, op: &str, releases: &mut Vec<u64>) -> Json {
+    loop {
+        let frame = read(far);
+        if frame["op"] == json!(op) {
+            return frame;
+        }
+        assert_eq!(frame["op"], json!("release"), "{frame}");
+        assert_eq!(frame["count"], json!(1), "{frame}");
+        releases.push(frame["reference"].as_u64().expect("a reference id"));
+    }
+}
+
+/// A session reads and writes on threads of its own (CHN-2-5): a
+/// synchronous call made inside a `current_thread` runtime — its only thread
+/// blocked until the reply — is still written and answered, and so is the
+/// next one.
+///
+/// The other implementations' sides of the rule (Node's I/O worker while its
+/// main thread waits) stay open.
+/// rule: CHN-2-5
+#[tokio::test(flavor = "multi_thread")]
+async fn the_channel_advances_while_the_callers_runtime_is_blocked() {
+    within(
+        "calls from a blocked current-thread runtime",
+        tokio::task::spawn_blocking(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let (peer, mut far) = runtime.block_on(async { session(Arc::new(Echo)) });
+            greet(&mut far, "node", &[]);
+            runtime.block_on(peer.ready()).unwrap();
+            let far = std::thread::spawn(move || {
+                for text in ["one", "two"] {
+                    let call = read(&mut far);
+                    assert_eq!(
+                        call["args"],
+                        one(&json!({ "type": "data", "value": text })),
+                        "{call}"
+                    );
+                    send(
+                        &mut far,
+                        json!({ "op": "return", "id": frame_id(&call),
+                                "value": { "type": "data", "value": text } }),
+                    );
+                }
+                far
+            });
+            // The runtime's only thread waits for the reply here: the
+            // session's reader and writer are not tasks of its runtime.
+            runtime.block_on(async {
+                for (n, text) in ["one", "two"].into_iter().enumerate() {
+                    let reply = peer
+                        .invoke("svc", "echo", Value::List(vec![Value::Data(json!(text))]))
+                        .unwrap();
+                    assert_eq!(reply.json().unwrap(), json!(text), "call {}", n + 1);
+                }
+            });
+            let _far = far.join().unwrap();
+        }),
+    )
+    .await
+    .unwrap();
+}
+
+/// A `bigint` stays a `bigint` at every size (VAL-2-8): one within
+/// ±(2^53−1) crosses as `{"type":"bigint"}` and comes back a `BigInt`, not
+/// a JSON number, so sending it on keeps the tag; a JSON number stays one.
+///
+/// Python's and Go's own sides of the rule (an `int` subclass, a
+/// `*big.Int`) stay open.
+/// rule: VAL-2-8
+#[tokio::test(flavor = "multi_thread")]
+async fn a_small_bigint_keeps_its_tag() {
+    let (peer, mut far) = session(Arc::new(Echo));
+    greet(&mut far, "node", &VALUE_CAPABILITIES);
+    peer.ready().await.unwrap();
+    // What arrives tagged is a BigInt here, and goes on tagged.
+    for (n, text) in ["5", "-7", "0", "9007199254740991"].into_iter().enumerate() {
+        accepted(
+            &mut far,
+            &format!("node:{}", n + 1),
+            &json!({ "type": "bigint", "value": text }),
+        );
+    }
+    // What goes out as a BigInt crosses tagged, whatever its size; a JSON
+    // number crosses as data.
+    let end = std::thread::spawn(move || {
+        for text in ["5", "-7", "0"] {
+            let call = read(&mut far);
+            assert_eq!(
+                call["args"],
+                one(&json!({ "type": "bigint", "value": text })),
+                "{call}"
+            );
+            send(
+                &mut far,
+                json!({ "op": "return", "id": frame_id(&call), "value": { "type": "data", "value": "ok" } }),
+            );
+        }
+        let call = read(&mut far);
+        assert_eq!(
+            call["args"],
+            one(&json!({ "type": "data", "value": 5 })),
+            "a JSON number is no bigint: {call}"
+        );
+        send(
+            &mut far,
+            json!({ "op": "return", "id": frame_id(&call), "value": { "type": "data", "value": "ok" } }),
+        );
+        far
+    });
+    for text in ["5", "-7", "0"] {
+        let value = Value::BigInt(text.parse::<BigInt>().unwrap());
+        assert_eq!(
+            peer.invoke("svc", "echo", Value::List(vec![value]))
+                .unwrap()
+                .json()
+                .unwrap(),
+            json!("ok"),
+            "a small bigint sent"
+        );
+    }
+    assert_eq!(
+        peer.invoke("svc", "echo", Value::List(vec![Value::Data(json!(5))]))
+            .unwrap()
+            .json()
+            .unwrap(),
+        json!("ok")
+    );
+    let _far = far_end(end).await;
+    assert!(peer.close_reason().is_none(), "the session goes on");
+}
+
+/// A property of a live object is read live (MNT-3-6): every read is a
+/// `get` frame naming the reference and the property, and the value is the
+/// owner's at that moment, never a copy kept here.
+/// rule: MNT-3-6
+#[tokio::test(flavor = "multi_thread")]
+async fn a_property_read_is_live() {
+    let (peer, mut far) = session(Arc::new(Nothing));
+    greet(&mut far, "node", &[]);
+    peer.ready().await.unwrap();
+    let end = std::thread::spawn(move || {
+        let call = read(&mut far);
+        send(
+            &mut far,
+            json!({ "op": "return", "id": frame_id(&call), "value": {
+                "type": "list", "value": [reference(7, "object")],
+            } }),
+        );
+        for text in ["first", "second"] {
+            let read_back = read(&mut far);
+            assert_eq!(read_back["op"], json!("get"), "{read_back}");
+            assert!(
+                read_back["id"].as_str().unwrap().starts_with("main:"),
+                "{read_back}"
+            );
+            assert!(read_back["path"].is_array(), "{read_back}");
+            assert_eq!(read_back["reference"], json!(7), "{read_back}");
+            assert_eq!(read_back["property"], json!("name"), "{read_back}");
+            send(
+                &mut far,
+                json!({ "op": "return", "id": frame_id(&read_back),
+                        "value": { "type": "data", "value": text } }),
+            );
+        }
+        assert_eq!(
+            read(&mut far),
+            json!({ "op": "release", "reference": 7, "count": 1 })
+        );
+        far
+    });
+    let object = peer
+        .invoke("svc", "give", Value::Undefined)
+        .unwrap()
+        .list()
+        .unwrap()
+        .remove(0)
+        .reference()
+        .unwrap();
+    assert_eq!(object.get("name").unwrap().json().unwrap(), json!("first"));
+    assert_eq!(
+        object.get("name").unwrap().json().unwrap(),
+        json!("second"),
+        "a second read asks the owner again"
+    );
+    drop(object);
+    let _far = far_end(end).await;
+    assert!(peer.close_reason().is_none(), "the session goes on");
+}
+
+/// A host service may answer with `rpc::Value::callback` (MNT-5-4): the far
+/// end gets a function reference, calls it with its own arguments, and the
+/// closure here runs for each call; the session goes on after its release.
+/// rule: MNT-5-4
+#[tokio::test(flavor = "multi_thread")]
+async fn a_host_returned_callback_is_callable_by_the_far_end() {
+    let (peer, mut far) = session(Arc::new(Offering));
+    greet(&mut far, "node", &[]);
+    peer.ready().await.unwrap();
+    send(
+        &mut far,
+        invoke("node:1", "svc", "give", json!({ "type": "undefined" })),
+    );
+    let reply = read(&mut far);
+    let value = &reply["value"]["value"];
+    assert_eq!(value["kind"], json!("function"), "{reply}");
+    assert_eq!(value["home"], json!(false), "{reply}");
+    let reference = value["id"].as_u64().expect("a reference id");
+    for (id, arguments, answer) in [
+        ("node:2", json!([{ "type": "data", "value": 1 }]), json!(1)),
+        (
+            "node:3",
+            json!([
+                { "type": "data", "value": 1 },
+                { "type": "data", "value": 2 }
+            ]),
+            json!(2),
+        ),
+    ] {
+        send(
+            &mut far,
+            json!({ "op": "call", "id": id, "path": [], "reference": reference,
+                    "args": { "type": "list", "value": arguments } }),
+        );
+        assert_eq!(
+            read(&mut far),
+            json!({ "id": id, "op": "return", "value": { "type": "data", "value": answer } }),
+            "the host's callback ran with the far end's arguments"
+        );
+    }
+    send(
+        &mut far,
+        json!({ "op": "release", "reference": reference, "count": 1 }),
+    );
+    send(
+        &mut far,
+        invoke(
+            "node:4",
+            "svc",
+            "echo",
+            one(&json!({ "type": "data", "value": "after" })),
+        ),
+    );
+    assert_eq!(
+        read(&mut far),
+        json!({ "id": "node:4", "op": "return",
+                "value": { "type": "list", "value": [{ "type": "data", "value": "after" }] } })
+    );
+    assert!(peer.close_reason().is_none(), "the session goes on");
+}
+
+/// A function the far end returns is called synchronously by `call` and
+/// awaited by `call_async` (MNT-2-8n): the first frame says `sync: true`,
+/// the second is asynchronous (no `sync` field) and its promise is awaited,
+/// and both reach the far end that returned the reference.
+/// rule: MNT-2-8n
+#[tokio::test(flavor = "multi_thread")]
+async fn a_returned_function_is_called_sync_and_its_promise_awaited() {
+    let (peer, mut far) = session(Arc::new(Nothing));
+    greet(&mut far, "node", &[]);
+    peer.ready().await.unwrap();
+    let end = std::thread::spawn(move || {
+        let mut releases = Vec::new();
+        let call = read(&mut far);
+        send(
+            &mut far,
+            json!({ "op": "return", "id": frame_id(&call), "value": {
+                "type": "list", "value": [reference(7, "function")],
+            } }),
+        );
+        // `call`: the caller waits for this answer.
+        let called = expect(&mut far, "call", &mut releases);
+        assert_eq!(called["reference"], json!(7), "{called}");
+        assert_eq!(called["sync"], json!(true), "a synchronous call: {called}");
+        assert_eq!(
+            called["args"],
+            json!({ "type": "list", "value": [{ "type": "data", "value": "sync" }] }),
+            "{called}"
+        );
+        send(
+            &mut far,
+            json!({ "op": "return", "id": frame_id(&called), "value": { "type": "data", "value": "done" } }),
+        );
+        // `call_async`: the answer is a promise, awaited by reference.
+        let called = expect(&mut far, "call", &mut releases);
+        assert_eq!(
+            called.get("sync"),
+            None,
+            "an asynchronous call waits for a promise, not a frame: {called}"
+        );
+        send(
+            &mut far,
+            json!({ "op": "return", "id": frame_id(&called), "value": reference(8, "future") }),
+        );
+        let awaited = expect(&mut far, "await", &mut releases);
+        assert_eq!(awaited["reference"], json!(8), "{awaited}");
+        send(
+            &mut far,
+            json!({ "op": "return", "id": frame_id(&awaited),
+                    "value": { "type": "data", "value": "settled" } }),
+        );
+        far
+    });
+    let function = peer
+        .invoke("svc", "give", Value::Undefined)
+        .unwrap()
+        .list()
+        .unwrap()
+        .remove(0)
+        .reference()
+        .unwrap();
+    assert!(function.is_function(), "a function reference");
+    assert_eq!(
+        function
+            .call(Value::List(vec![Value::Data(json!("sync"))]))
+            .unwrap()
+            .json()
+            .unwrap(),
+        json!("done")
+    );
+    let answer = function
+        .call_async(Value::List(vec![Value::Data(json!("async"))]))
+        .await
+        .unwrap();
+    let Value::Reference(promise) = &answer else {
+        panic!("the function answered a promise: {answer:?}");
+    };
+    assert!(promise.is_future(), "a future reference");
+    assert_eq!(
+        settle(answer).await.unwrap().json().unwrap(),
+        json!("settled"),
+        "the promise's value"
+    );
+    drop(function);
+    let _far = far_end(end).await;
+    assert!(peer.close_reason().is_none(), "the session goes on");
+}
+
+/// A function passed by reference is called by the native side during the
+/// call (bridge/exported-services c), which waits for its promise before it
+/// answers; a callback that throws fails the call it was called in, and the
+/// session goes on.
+/// rule: bridge/exported-services c
+#[tokio::test(flavor = "multi_thread")]
+async fn a_passed_function_is_called_by_the_native_side() {
+    let (peer, mut far) = session(Arc::new(Applying));
+    greet(&mut far, "node", &[]);
+    peer.ready().await.unwrap();
+    let end = std::thread::spawn(move || {
+        let mut releases = Vec::new();
+        // A promise the host's answer is awaited through.
+        send(
+            &mut far,
+            invoke(
+                "node:1",
+                "svc",
+                "apply",
+                json!({ "type": "list", "value": [
+                    reference(7, "function"),
+                    { "type": "data", "value": "x" },
+                ] }),
+            ),
+        );
+        let answer = expect(&mut far, "return", &mut releases);
+        let promise = answer["value"]["value"]["id"]
+            .as_u64()
+            .expect("the host's promise");
+        send(
+            &mut far,
+            json!({ "op": "await", "id": "node:2", "path": [], "reference": promise }),
+        );
+        // The host calls the function while the call waits.
+        let called = expect(&mut far, "call", &mut releases);
+        assert_eq!(called["reference"], json!(7), "{called}");
+        assert_eq!(
+            called["args"],
+            json!({ "type": "list", "value": [{ "type": "data", "value": "x" }] }),
+            "{called}"
+        );
+        send(
+            &mut far,
+            json!({ "op": "return", "id": frame_id(&called),
+                    "value": { "type": "data", "value": "during" } }),
+        );
+        let done = expect(&mut far, "return", &mut releases);
+        assert_eq!(done["id"], json!("node:2"), "{done}");
+        assert_eq!(
+            done["value"],
+            json!({ "type": "data", "value": "during" }),
+            "the host answered after the callback's promise settled: {done}"
+        );
+        send(
+            &mut far,
+            json!({ "op": "release", "reference": promise, "count": 1 }),
+        );
+        // A callback that throws fails the call it was called in.
+        send(
+            &mut far,
+            invoke(
+                "node:3",
+                "svc",
+                "apply",
+                json!({ "type": "list", "value": [
+                    reference(8, "function"),
+                    { "type": "data", "value": "y" },
+                ] }),
+            ),
+        );
+        let answer = expect(&mut far, "return", &mut releases);
+        let promise = answer["value"]["value"]["id"]
+            .as_u64()
+            .expect("the host's promise");
+        send(
+            &mut far,
+            json!({ "op": "await", "id": "node:4", "path": [], "reference": promise }),
+        );
+        let called = expect(&mut far, "call", &mut releases);
+        assert_eq!(called["reference"], json!(8), "{called}");
+        send(
+            &mut far,
+            json!({ "op": "throw", "id": frame_id(&called),
+                    "error": { "name": "Boom", "message": "no" } }),
+        );
+        let failed = expect(&mut far, "throw", &mut releases);
+        assert_eq!(failed["id"], json!("node:4"), "{failed}");
+        assert_eq!(failed["error"]["name"], json!("Boom"), "{failed}");
+        assert_eq!(failed["error"]["message"], json!("no"), "{failed}");
+        send(
+            &mut far,
+            json!({ "op": "release", "reference": promise, "count": 1 }),
+        );
+        // The function references the far end passed: released here.
+        for reference in [7, 8] {
+            assert!(
+                releases.contains(&reference),
+                "{reference} was not released: {releases:?}"
+            );
+        }
+        far
+    });
+    let _far = far_end(end).await;
+    assert!(peer.close_reason().is_none(), "the session goes on");
+}
+
+/// An error's `code` and `data` cross with it both ways
+/// (bridge/error-code-and-data a), and a service's `Err` reaches the far end
+/// as a `throw` carrying them (bridge/exported-services b): the far end's
+/// error graph is read here, and this side's error is written there.
+/// rule: bridge/error-code-and-data a
+/// rule: bridge/exported-services b
+#[tokio::test(flavor = "multi_thread")]
+async fn an_errors_code_and_data_cross_both_ways() {
+    // The far end throws: its code and data are readable here.
+    let (peer, mut far) = session(Arc::new(Nothing));
+    greet(&mut far, "node", &[]);
+    peer.ready().await.unwrap();
+    let end = std::thread::spawn(move || {
+        let call = read(&mut far);
+        send(
+            &mut far,
+            json!({ "op": "throw", "id": frame_id(&call), "error": {
+                "name": "Boom",
+                "message": "the far end failed",
+                "graph": {
+                    "root": { "type": "reference", "value": 0 },
+                    "nodes": [{
+                        "type": "error",
+                        "name": "Boom",
+                        "message": "the far end failed",
+                        "code": "kaboom",
+                        "data": { "type": "data", "value": { "why": "because" } },
+                    }],
+                },
+            } }),
+        );
+        far
+    });
+    let error = peer
+        .invoke("svc", "echo", Value::Undefined)
+        .expect_err("the far end failed");
+    assert_eq!(error.code(), Some("kaboom"), "{error}");
+    assert_eq!(error.data(), Some(json!({ "why": "because" })), "{error}");
+    assert_eq!(
+        error.to_string(),
+        "Boom: the far end failed",
+        "the name and message cross too"
+    );
+    let _far = far_end(end).await;
+    assert!(peer.close_reason().is_none(), "the session goes on");
+
+    // This side throws: the far end reads its code and data.
+    let (peer, mut far) = session(Arc::new(Failing));
+    greet(&mut far, "node", &[]);
+    peer.ready().await.unwrap();
+    send(
+        &mut far,
+        invoke("node:1", "svc", "echo", json!({ "type": "undefined" })),
+    );
+    let (name, message, code, data) = thrown(&read(&mut far));
+    assert_eq!(name, "BindingError");
+    assert_eq!(message, "the host failed");
+    assert_eq!(code.as_deref(), Some("kaboom"));
+    assert_eq!(data, Some(json!({ "why": "here" })));
+    // Only that call failed: the session takes the next one.
+    send(
+        &mut far,
+        invoke(
+            "node:2",
+            "svc",
+            "echo",
+            one(&json!({ "type": "data", "value": "after" })),
+        ),
+    );
+    let (name, _, code, _) = thrown(&read(&mut far));
+    assert_eq!(name, "BindingError");
+    assert_eq!(code.as_deref(), Some("kaboom"));
+    assert!(peer.close_reason().is_none(), "the session goes on");
+}
+
+/// A runtime that answers the row and host contract as the test scripts it.
+struct Scripted {
+    mount: Json,
+    schema: Json,
+    schemas: Mutex<Vec<Json>>,
+    loads: Mutex<Vec<Json>>,
+    hosts: Mutex<Vec<Json>>,
+}
+
+impl Scripted {
+    fn new(schema: Json) -> Arc<Self> {
+        Arc::new(Self {
+            mount: json!({ "services": {}, "features": ["rows.v2", "hosts"] }),
+            schema,
+            schemas: Mutex::default(),
+            loads: Mutex::default(),
+            hosts: Mutex::default(),
+        })
+    }
+
+    /// A runtime whose `mount` reply lists `plugin` as described by `schema`.
+    fn listing(plugin: &str, schema: Json) -> Arc<Self> {
+        Arc::new(Self {
+            mount: json!({ "services": {}, "features": ["rows.v2", "hosts"],
+                           "plugins": { plugin: schema.clone() } }),
+            schema,
+            schemas: Mutex::default(),
+            loads: Mutex::default(),
+            hosts: Mutex::default(),
+        })
+    }
+}
+
+impl Dispatch for Scripted {
+    fn invoke(&self, _: &Connection, target: &str, method: &str, args: Value) -> Reply {
+        match (target, method) {
+            ("", "mount") => Ok(Value::Data(self.mount.clone())),
+            ("", "rows.schema") => {
+                self.schemas.lock().unwrap().push(args.json()?);
+                Ok(Value::Data(self.schema.clone()))
+            }
+            ("", "rows.load") => {
+                self.loads.lock().unwrap().push(args.json()?);
+                Ok(Value::Undefined)
+            }
+            ("", "rows.unload") => Ok(Value::Undefined),
+            ("", "hosts.provide") => {
+                self.hosts.lock().unwrap().push(args.json()?);
+                Ok(Value::Undefined)
+            }
+            ("", "hosts.withdraw") => Ok(Value::Undefined),
+            _ => Err(Error::value(format!("no method {method}"))),
+        }
+    }
+}
+
+/// The root, the process and the far end of a session where `runtime` is the
+/// far end's row `rt`.
+async fn runtime_rig(runtime: Arc<Scripted>) -> (Ctx, Arc<Process>, Connection) {
+    let root = common::runtime::root();
+    let (ours, theirs) = rutis_bridge::memory::pair();
+    let mut endpoint = Endpoint::rust(id("rt"));
+    endpoint.capabilities.push("runtime".into());
+    let far = Connection::open(theirs, runtime, endpoint).unwrap();
+    let process = common::runtime::attached(&root, "rt", ours).await.unwrap();
+    (root, process, far)
+}
+
+/// A host service that answers `today` and says what it was asked.
+struct Today(Arc<Mutex<Vec<String>>>);
+
+impl HostDispatch for Today {
+    fn invoke(&self, method: &str, _: Value) -> Reply {
+        self.0.lock().unwrap().push(method.to_owned());
+        match method {
+            "today" => Ok(Value::Data(json!("sunny"))),
+            other => Err(Error::no_method("weather", other, vec!["today"])),
+        }
+    }
+}
+
+/// A row is loaded with the row contract's arguments (SYN-5-2): its key,
+/// the entry the runtime itself interprets, its config, the isolate pairs,
+/// the injected names, and the scope and id it is named by.
+/// rule: SYN-5-2
+#[tokio::test(flavor = "multi_thread")]
+async fn a_row_is_loaded_with_the_row_contracts_arguments() {
+    let runtime = Scripted::new(json!({}));
+    let (_root, process, _far) = runtime_rig(runtime.clone()).await;
+    process
+        .load_row(
+            "chat",
+            Path::new("plugin.js"),
+            json!({ "room": "lobby" }),
+            &[("weather".to_owned(), "tenant".to_owned())],
+            &["db".to_owned()],
+            &[Scope {
+                id: "17".into(),
+                group: "tenant".into(),
+            }],
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        *runtime.loads.lock().unwrap(),
+        vec![json!([
+            "chat",
+            "plugin.js",
+            { "room": "lobby" },
+            [["weather", "tenant"]],
+            ["db"],
+            {},
+            { "scope": [{ "id": "17", "group": "tenant" }], "id": "chat" }
+        ])]
+    );
+}
+
+/// The host reads all of what `rows.schema` reports a plugin declares
+/// (M1-5.1-1, SYN-5-4, REM-4.2-2): its config schema, the services it
+/// injects and uses optionally, the services and method shapes it provides,
+/// its version, and whether it announces what it did not declare and is a
+/// Cordis plugin.
+/// rule: M1-5.1-1
+/// rule: SYN-5-4
+/// rule: REM-4.2-2
+#[tokio::test(flavor = "multi_thread")]
+async fn a_row_schema_reports_what_the_plugin_declares() {
+    let schema = json!({
+        "config": { "type": "object", "properties": { "room": { "type": "string" } } },
+        "inject": ["db"],
+        "optional": ["cache"],
+        "provides": { "weather": { "today": "async", "now": "sync" } },
+        "version": "1.2.3",
+        "announces": true,
+        "cordis": true,
+    });
+    let runtime = Scripted::new(schema.clone());
+    let (_root, process, _far) = runtime_rig(runtime.clone()).await;
+    let described = process.describe_row(Path::new("plugin.js")).await.unwrap();
+    assert_eq!(
+        *runtime.schemas.lock().unwrap(),
+        vec![json!(["plugin.js"])],
+        "the entry is what the runtime is asked about"
+    );
+    assert_eq!(described.config, Some(schema["config"].clone()));
+    assert_eq!(described.inject, ["db"]);
+    assert_eq!(described.optional, ["cache"]);
+    assert_eq!(
+        described.provides.get("weather"),
+        Some(&json!({ "today": "async", "now": "sync" }))
+    );
+    assert_eq!(described.version.as_deref(), Some("1.2.3"));
+    assert!(described.announces);
+    assert!(described.cordis);
+}
+
+/// A runtime's `mount` reply lists the plugins it has (DIA-4-1), each
+/// described as `rows.schema` describes it: the host reads the same fields
+/// either way, and no device information travels in them.
+/// rule: DIA-4-1
+#[tokio::test(flavor = "multi_thread")]
+async fn a_mount_lists_its_plugins_like_rows_schema() {
+    let schema = json!({
+        "config": { "type": "object" },
+        "inject": ["db"],
+        "provides": { "weather": { "today": "async" } },
+        "version": "1.0.0",
+    });
+    let runtime = Scripted::listing("plugin.js", schema.clone());
+    let (_root, process, _far) = runtime_rig(runtime).await;
+    let listed = process
+        .plugins()
+        .expect("the mount listed its plugins")
+        .get("plugin.js")
+        .expect("the listed plugin");
+    let described = process.describe_row(Path::new("plugin.js")).await.unwrap();
+    assert_eq!(listed.config, described.config);
+    assert_eq!(listed.inject, described.inject);
+    assert_eq!(listed.optional, described.optional);
+    assert_eq!(listed.provides, described.provides);
+    assert_eq!(listed.version, described.version);
+    assert_eq!(listed.announces, described.announces);
+    assert_eq!(listed.cordis, described.cordis);
+    assert_eq!(listed.config, Some(schema["config"].clone()));
+}
+
+/// A runtime's row calls a host service by name (M1-4-2): `host:<name>`
+/// finds the provider leased now and calls it here, and a name with no
+/// provider fails that call with `unavailable`; the session goes on. (A
+/// provider in another session, forwarded to, stays open.)
+/// rule: M1-4-2
+#[tokio::test(flavor = "multi_thread")]
+async fn a_runtime_calls_a_host_service_by_name() {
+    let runtime = Scripted::new(json!({}));
+    let (_root, process, far) = runtime_rig(runtime.clone()).await;
+    let seen: Arc<Mutex<Vec<String>>> = Arc::default();
+    let _lease = process
+        .lease_host(
+            "weather",
+            Arc::new(Today(seen.clone())),
+            Some(json!({ "today": "async" })),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        *runtime.hosts.lock().unwrap(),
+        vec![json!(["weather", { "today": "async" }])],
+        "the lease is announced with its method shapes"
+    );
+    let answer = far
+        .invoke_async("host:weather", "today", Value::List(Vec::new()))
+        .await
+        .unwrap();
+    assert_eq!(answer.json().unwrap(), json!("sunny"));
+    assert_eq!(*seen.lock().unwrap(), ["today"]);
+    // A name nobody provides fails only that call.
+    let refused = far
+        .invoke_async("host:missing", "today", Value::List(Vec::new()))
+        .await
+        .unwrap_err();
+    assert_eq!(refused.code(), Some("unavailable"), "{refused}");
+    assert_eq!(
+        refused.data(),
+        Some(json!({ "service": "missing" })),
+        "{refused}"
+    );
+    assert_eq!(
+        refused.to_string(),
+        "service missing is not available",
+        "{refused}"
+    );
+    let answer = far
+        .invoke_async("host:weather", "today", Value::List(Vec::new()))
+        .await
+        .unwrap();
+    assert_eq!(
+        answer.json().unwrap(),
+        json!("sunny"),
+        "the session goes on"
+    );
+}
+
+/// A scoped host service is registered and called by its scoped id
+/// (INS-4.2-3): with the label `tenant`, the lease is announced with it and
+/// the runtime's call target is `weather\0tenant`, while the same name
+/// outside the scope is another service, not there.
+/// rule: INS-4.2-3
+#[tokio::test(flavor = "multi_thread")]
+async fn a_scoped_host_service_is_called_by_its_scoped_id() {
+    let runtime = Scripted::new(json!({}));
+    let (_root, process, far) = runtime_rig(runtime.clone()).await;
+    let seen: Arc<Mutex<Vec<String>>> = Arc::default();
+    let _lease = process
+        .lease_host_in(
+            "weather",
+            Some("tenant"),
+            Arc::new(Today(seen.clone())),
+            Some(json!({ "today": "sync" })),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        *runtime.hosts.lock().unwrap(),
+        vec![json!(["weather", { "today": "sync" }, "tenant"])],
+        "the lease names its scope label"
+    );
+    let answer = far
+        .invoke_async("host:weather\u{0}tenant", "today", Value::List(Vec::new()))
+        .await
+        .unwrap();
+    assert_eq!(answer.json().unwrap(), json!("sunny"));
+    let refused = far
+        .invoke_async("host:weather", "today", Value::List(Vec::new()))
+        .await
+        .unwrap_err();
+    assert_eq!(refused.code(), Some("unavailable"), "{refused}");
+    assert_eq!(
+        refused.data(),
+        Some(json!({ "service": "weather" })),
+        "the name outside the label is another service: {refused}"
+    );
+    assert!(far.close_reason().is_none(), "the session goes on");
 }
