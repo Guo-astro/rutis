@@ -52,21 +52,21 @@
 | [protocol-events.md](rules/protocol-events.md) | #634 · events | 253 | 74 | 93 | 52 | 1 | 19 | 9 | 14 | 0 | 0 |
 | [protocol-session.md](rules/protocol-session.md) | #634 · session 上/下 | 246 | 13 | 99 | 86 | 7 | 27 | 104 | 14 | 161 | 2 |
 | [protocol-runtime.md](rules/protocol-runtime.md) | #634 · runtime | 264 | 8 | 38 | 140 | 10 | 63 | 45 | 5 | 0 | 68 |
-| [protocol-remote.md](rules/protocol-remote.md) | #634 · remote | 231 | 4 | 70 | 73 | 13 | 32 | 17 | 39 | 0 | 137 |
-| 合计 | — | 1368 | 111 | 377 | 539 | 42 | 201 | 184 | 98 | 161 | 261 |
+| [protocol-remote.md](rules/protocol-remote.md) | #634 · remote | 231 | 4 | 69 | 71 | 13 | 32 | 17 | 42 | 0 | 137 |
+| 合计 | — | 1368 | 111 | 376 | 537 | 42 | 201 | 184 | 101 | 161 | 261 |
 <!-- recheck-index:end -->
 
 状态怎么变：
 
 | 快照映射状态 | 复核后状态 | 条数 |
 | --- | --- | --- |
-| 未验证 | 未验证 | 539 |
-| 部分验证 | 部分验证 | 376 |
+| 未验证 | 未验证 | 537 |
+| 部分验证 | 部分验证 | 375 |
 | 不单独计数 | 不单独计数 | 201 |
 | 已验证 | 已验证 | 111 |
-| 未验证 | 已撤回 | 44 |
+| 未验证 | 已撤回 | 46 |
 | 明确不保证 | 明确不保证 | 42 |
-| 部分验证 | 已撤回 | 33 |
+| 部分验证 | 已撤回 | 34 |
 | 不单独计数 | 已撤回 | 13 |
 | 已验证 | 已撤回 | 4 |
 | 明确不保证 | 已撤回 | 4 |
@@ -1450,9 +1450,9 @@
 | REM-3.2-7 | 已撤回 | 部分验证 | 远程插件设计（REM §3.2；§10 公共机制） | — | — | 已取代：0.19 删除 `Transport`、`Identity`、`Registration`、接入点、`Revocations`、`PeerRows`、`peer:` 行、`runtimes.remote`、compat 格式与节点 export / import（`design-remote-session-2026-10-28.md` §八、§十二；`migration-0.19.md`） |
 | REM-3.2-8 | 部分验证 | 部分验证 | 远程插件设计（REM §3.2；§10 公共机制） | — | 只有模型或手段不含实现检查 | 无现行锚点：远程插件设计（0.17 前）已被 0.19 的远程会话设计取代；可用部分见 `design-remote-session-2026-10-28.md`；`Transport` / `Identity` / `Registration` 已删；link 停止时取消重试、关闭会话仍现行 |
 | REM-3.2-9 | 已撤回 | 已撤回 | 远程插件设计（REM §3.2（英文版 "when … Identity is revoked"））（issue 快照：已取代） | — | — | issue 快照：已取代，不重抽 |
-| REM-3.2-10 | 部分验证 | 部分验证 | 远程插件设计（REM §3.2） | — | 只有模型或手段不含实现检查 | 无现行锚点：远程插件设计（0.17 前）已被 0.19 的远程会话设计取代；可用部分见 `design-remote-session-2026-10-28.md`；吊销已删；“一条 link 停止不关闭别的 link 用的共享物理连接”仍现行 |
-| REM-3.2-11 | 未验证 | 未验证 | 远程插件设计（REM §3.2） | — | 无具名证据 | 无现行锚点：远程插件设计（0.17 前）已被 0.19 的远程会话设计取代；可用部分见 `design-remote-session-2026-10-28.md`；无具名证据 |
-| REM-3.2-12 | 未验证 | 未验证 | 远程插件设计（REM §3.2） | — | 无具名证据 | 无现行锚点：远程插件设计（0.17 前）已被 0.19 的远程会话设计取代；可用部分见 `design-remote-session-2026-10-28.md`；无具名证据 |
+| REM-3.2-10 | 已撤回 | 部分验证 | 远程插件设计（REM §3.2） | — | — | 已取代：0.19 删除 `Identity`、`Registration`、`Revocations` 与 link 插件，本仓库没有共享物理连接的多路复用，也没有 Adapter 通知；远程插件设计 §11（#636）的复核结论是「删去」，这三条没有可核对的对象 |
+| REM-3.2-11 | 已撤回 | 未验证 | 远程插件设计（REM §3.2） | — | — | 已取代：0.19 删除 `Identity`、`Registration`、`Revocations` 与 link 插件，本仓库没有共享物理连接的多路复用，也没有 Adapter 通知；远程插件设计 §11（#636）的复核结论是「删去」，这三条没有可核对的对象 |
+| REM-3.2-12 | 已撤回 | 未验证 | 远程插件设计（REM §3.2） | — | — | 已取代：0.19 删除 `Identity`、`Registration`、`Revocations` 与 link 插件，本仓库没有共享物理连接的多路复用，也没有 Adapter 通知；远程插件设计 §11（#636）的复核结论是「删去」，这三条没有可核对的对象 |
 | REM-3.2-13 | 未验证 | 未验证 | 远程插件设计（REM §3.2） | — | 无具名证据 | 无现行锚点：远程插件设计（0.17 前）已被 0.19 的远程会话设计取代；可用部分见 `design-remote-session-2026-10-28.md`；无具名证据 |
 | REM-3.3-1 | 不单独计数 | 不单独计数 | 远程插件设计（REM §3.3；§10 节点互联末条） | — | 无具名证据 | — |
 | REM-3.3-2 | 已撤回 | 未验证 | 远程插件设计（REM §3.3；§10 节点互联末条；NOD「在 link 上做什么」） | — | — | 已取代：0.19 删除 `Transport`、`Identity`、`Registration`、接入点、`Revocations`、`PeerRows`、`peer:` 行、`runtimes.remote`、compat 格式与节点 export / import（`design-remote-session-2026-10-28.md` §八、§十二；`migration-0.19.md`） |
@@ -3099,9 +3099,9 @@
 | REM-3.2-7 | 已撤回 | 0.22 无此条 | —（承载握手结束、移交前复核身份与注册代次：`Registration` 与注册代次在 0.19 删除，交接改为监听行内按 id 顶替（`design-remote-session-2026-10-28.md` §4.2）） | — | 没有移交前的代次复核：同一 id 的新连接等握手完成后顶替旧连接，旧会话先卸载、旧通道以 4002 关闭（`crates/rutis-host/src/connect/listen.rs`）；issue 快照记「已取代」 |
 | REM-3.2-8 | 部分验证 | design-remote-plugins-2026-10-03.md §3.2 | —（远程插件设计 §3.2 规定 link 停止时取消重试、撤销注册、关闭所属会话；0.19 起 `Transport` 与 `Identity` 服务已删，现行实现是拨出行停止不重连、监听行卸载关闭它的会话（`crates/rutis-host/src/connect/dial.rs`、`crates/rutis-host/src/connect/listen.rs`）） | `crates/rutis-host/tests/dial_conformance.rs::python::stopping_ends_without_reconnecting`；`crates/rutis-host/src/connect/listen.rs::tests::a_far_end_leaving_is_said_and_unloading_the_row_unloads_its_sessions`；TLA：`specs/remote-lease/RemoteLease.tla::StoppedStaysDown` | link 停止时取消重试、关闭所属会话，由拨出与监听两行的用例和租约模型的 `StoppedStaysDown` 覆盖；撤销注册的对象（接入点与代次）已删；issue 快照记「部分」 |
 | REM-3.2-9 | 已撤回 | 0.22 无此条 | —（`Identity` 与 `Revocations` 在 0.19 删除（`design-remote-session-2026-10-28.md` §八）：断开现有连接靠停掉那一行） | — | 没有身份吊销这个动作，也没有吊销时要取消的重试与注册；issue 快照记「已取代」 |
-| REM-3.2-10 | 部分验证 | design-remote-plugins-2026-10-03.md §3.2 | —（远程插件设计 §3.2 要求停止一个 link 不关闭别的 link 用的共享物理连接；本仓库没有共享物理连接的多路复用实现（`crates/rutis-bridge/tests/conformance_session_tracker.rs`），也没有可核对象） | `crates/rutis-bridge/tests/conformance_session_tracker.rs`（没有 mux adapter） | 远程插件设计 §11 的复核结论（#636）是「删去」：0.19 删除了 `Identity`、`Registration`、`Revocations` 与 link 插件，本仓库没有共享物理连接的多路复用，这条没有可核对的对象；状态沿用复核结论（部分验证），下一轮按 §11 改为「已撤回」 |
-| REM-3.2-11 | 未验证 | design-remote-plugins-2026-10-03.md §3.2 | —（远程插件设计 §3.2 要求底层凭据撤销使连接整体失效时由 Adapter 通知受影响的通道；没有 Adapter 机制，`Identity` 与承载复用都在 0.19 删除） | — | 远程插件设计 §11（#636）记「删去」：没有 Adapter 通知机制，也没有对应测试；状态沿用复核结论（未验证），下一轮改为「已撤回」 |
-| REM-3.2-12 | 未验证 | design-remote-plugins-2026-10-03.md §3.2 | —（远程插件设计 §3.2 要求身份与授权绑定逻辑通道、复用物理连接不串用权限；没有物理连接复用，就没有跨通道的权限串用面） | — | 远程插件设计 §11（#636）记「删去」：现行连接在建立时出示所属行的 token，并按握手里自报的端点 id 区分，没有跨通道的权限面；状态沿用复核结论（未验证），下一轮改为「已撤回」 |
+| REM-3.2-10 | 已撤回 | 0.22 无此条 | —（0.19 删除了 `Identity`、`Registration`、`Revocations` 与 link 插件，本仓库没有共享物理连接的多路复用（`crates/rutis-bridge/tests/conformance_session_tracker.rs` 写明本 crate 没有 mux adapter），「link 停止不关闭别的 link 用的共享物理连接」没有可核对的对象） | — | 远程插件设计 §11（#636）的复核结论是「删去」：0.19 删除了 `Identity`、`Registration`、`Revocations` 与 link 插件，本仓库没有共享物理连接的多路复用，这条没有可核对的对象；issue 快照记「部分」，本轮按 §11 改「已撤回」 |
+| REM-3.2-11 | 已撤回 | 0.22 无此条 | —（没有 Adapter 通知机制：远程插件设计 §3.2 描述的「凭据撤销使连接整体失效时 Adapter 通知受影响的通道」随 `Identity` 与承载复用在 0.19 删除） | — | 远程插件设计 §11（#636）记「删去」：没有 Adapter 通知机制，也没有对应测试；issue 快照记「未覆盖」，本轮按 §11 改「已撤回」 |
+| REM-3.2-12 | 已撤回 | 0.22 无此条 | —（没有物理连接复用，就没有跨通道的权限串用面：远程插件设计 §3.2 的这条随 `Identity` 与承载复用在 0.19 删除，现行连接在建立时出示所属行的 token，并按握手里自报的端点 id 区分） | — | 远程插件设计 §11（#636）记「删去」：没有物理连接复用，也没有跨通道的权限面；issue 快照记「未覆盖」，本轮按 §11 改「已撤回」 |
 | REM-3.2-13 | 未验证 | design-remote-plugins-2026-10-03.md §3.2 | —（远程插件设计 §3.2 规定物理连接故障终止受影响的通道、关闭单个通道不影响同一连接的其他通道；现行每条连接只有一个会话通道，没有第二个通道可比） | — | 没有共享物理连接与多条逻辑通道，这条的两种情形（连接故障终止受影响通道、单通道关闭不影响其他）都没有现行对象；issue 快照记「未覆盖」 |
 | REM-3.3-1 | 不单独计数 | guarantees.md §14 | loader/peer-rows | — | 组合入口只组合已有实现，自建实例归组合子树，引用的共享承载与身份不归：登记表 `loader/peer-rows`（§14）覆盖相邻的节点行；「组合」本身在 peer 设计恢复前按 #612 不建模，没有具名用例；issue 快照记「不适用」，不单独计数 |
 | REM-3.3-2 | 已撤回 | 0.22 无此条 | —（导出 / 导入名单在 0.19 删除（`design-remote-session-2026-10-28.md` §八、§十二）：节点之间是一条总线、每个名字都在，没有「只改名单」这个操作） | — | 没有导出 / 导入名单，也就没有「只改名单保留 link 与原会话」；issue 快照记「已取代」 |
@@ -3328,7 +3328,7 @@
 
 ## 7. 这一轮改了什么、还剩什么
 
-- **已撤回**：issue 快照的 184 条之外，本轮按 0.19 / 0.22 删除的机制追加了 98 条（见 §3 的「已撤回（本轮）」列与 §4 的缺口）。它们仍在 `rules/protocol-*.md` 里，统计不计入。
+- **已撤回**：issue 快照的 184 条之外，本轮按 0.19 / 0.22 删除的机制追加了 101 条（见 §3 的「已撤回（本轮）」列与 §4 的缺口）。它们仍在 `rules/protocol-*.md` 里，统计不计入。
 - **未完成**：没有一行重写规则文字——协议清单的 1368 条现行规则仍是 issue 快照原文；远程没有对应的新规格，只有设计稿与指南（0.19 之后的连接行为在 `design-remote-session-2026-10-28.md`）。§6 按原因列出没有锚点的规则；写规格是 #635 的后续，不是这一轮能补的。
 - **证据**：只核对 `现有形式化` 列的具名引用；备注列里的旧路径（如 `crates/rutis-bridge/src/cordis/server.rs`）没有逐条清，重抽时一并处理。
 - **语义**：TRC 分区（规则文字整体重写）与协议清单 `registry-1`、`registry-2`、`session`、`events`、`runtime`、`remote`（来源、锚点、证据、状态）已在 §5 全部重抽，协议清单没有剩下的分区；规则文字仍是 issue 快照原文。规则的「已撤回 / 明确不保证 / 未验证 / 部分验证 / 已验证」按上面的四件事定，不按记忆。
