@@ -26,7 +26,7 @@
 | Python 运行时：可重入；从别的线程发同步调用 | 同上 | `python/rutis/rutis/peer.py` `_call_sync`、`_run`；`run_coroutine_threadsafe` |
 | 本地放弃同步调用（不发 `cancel`） | 多语言设计 §九（#561 后） | Go 的 context、Swift 的 Task、Kotlin 的中断 |
 | 策略 B（A 不采用） | 多语言设计 §九 | `crates/rutis-bridge/src/session/rpc/waits.rs`（#228）；调用帧的 `sync` 字段见 `node/rutis-runtime/src/session.mjs`、`python/rutis/rutis/peer.py`、`bun/rutis-bun/src/session.ts` |
-| 等待图的 trace validation（#613） | 本文件"追踪验证" | `crates/rutis-bridge/src/session/rpc/waits/trace.rs`（记录六种操作与 `forward` 的判定）、`crates/rutis-bridge/src/session/rpc/waits/trace/check.rs`（按 `RustSucc` 重放）；运行见 `crates/rutis-loader/tests/sync_cycles.rs`、`crates/rutis-bridge/tests/rpc_callbacks.rs` |
+| 等待图的 trace validation（#613） | 本文件"追踪验证" | `crates/rutis-bridge/src/session/rpc/waits/trace.rs`（记录六种操作与 `forward` 的判定）、`crates/rutis-bridge/src/session/rpc/waits/trace/check.rs`（按 `RustSucc` 重放）；`waits.rs` 的 `cycle_among` 与模型的差分属性测试 `cycle_among_agrees_with_the_models_graph`；运行见 `crates/rutis-loader/tests/sync_cycles.rs`、`crates/rutis-bridge/tests/rpc_callbacks.rs` |
 
 ## 模型
 
@@ -76,7 +76,8 @@
 - 宿主执行只有两种来源：一次来自运行时的同步服务调用，或宿主自己发起的一次同步调用（`HostRoot`）。宿主的 `Workers` 有界，读线程不算；异步分发等待监听器时不占线程。运行时发往宿主的调用只建同步的 `call`（`acall` / `hcall` 到宿主不建：异步回复没有节点可落）。
 - 取消建两种：带 `cancel` 的（`Cancellers`）和不发 `cancel`、本地放弃的（`Abandoners`，只对 `Threaded` 运行时开放，Go / Swift / Kotlin 的实际情形）。`cancel` 到达一个还没开始执行的调用时，模型让它照常执行并丢掉迟到的回复；`ret` 堵住读线程不建。
 - 会话结束只在该会话没有发出调用、也没有参与分发、并且没有宿主执行时发生（`Ends`）；结束时进入它的调用以错误回复。断开、重连、`rows.ended` 不建。
-- **未建**：Node 的按键扣住（同键的 emit 调用不越过更早的），behind 任务按 `deferred` 建（栈空才跑、会话结束丢弃）；Cordis connector 的"原地处理 / 扣住"细节只建成"共用一泵"；跨主机的环用 `Remote` 建了抽象（一段等待不在本表里），两台宿主的真实拓扑不建；`cycle_among` 的差分属性测试见"待定与未覆盖"，等待图的 trace validation 见"追踪验证"（#613）。
+- **未建**：Node 的按键扣住（同键的 emit 调用不越过更早的），behind 任务按 `deferred` 建（栈空才跑、会话结束丢弃）；Cordis connector 的"原地处理 / 扣住"细节只建成"共用一泵"；跨主机的环用 `Remote` 建了抽象（一段等待不在本表里），两台宿主的真实拓扑不建。
+- 模型之外的证据：`cycle_among` 的差分属性测试和等待图的 trace validation 都已补上（#613），见"待定与未覆盖"的已做项和"追踪验证"。
 - 每个活动默认只发起一次调用；`policy-b-2node-seq` 允许先后两次。
 - 规模：3 个运行时，调用链 ≤ 3 跳（`async-policy-b` 到 4 跳），同时存在的顶层活动 ≤ 2，投递 / 分发 ≤ 1。
 
@@ -224,7 +225,7 @@ B 实现时需要满足的条件（模型的前提）：
 - **跨主机的环建成了一段**：`Remote` 把"这个会话的等待在另一张表里"建成入口，`path` 也不带它的调用号；`cross-host` 是反例。真实的两台宿主拓扑、节点连接上的路径改写和另一边的拒绝不建。多语言设计 §九 与 `bridge/sync-wait-cycle-refused` 里写成明确不保证。
 - **`Workers` 的前提**：模型假设 Rust 代码里的一次同步等待占着一个工作线程（Rust 服务在调用它的线程上执行、同步调用阻塞该线程）。实现里若 Rust 服务跑在异步执行器上、等待不占线程，`policy-b-workers1` 改为预期通过，`Workers` 那条边删掉。异步分发在等监听器时不占线程是同一判断的另一半。
 - **运行时一侧的有界线程池未建**：Kotlin 的 IO 池（64）、Swift 的协作池不是宿主能看到的资源；`Threaded` 的运行时假设每个进来的调用都能立刻拿到线程或任务。线程池满住时运行时会自己排队，宿主看不见，和 `policy-b-workers1` 的宿主线程问题同类。
-- **`cycle_among` 的差分属性测试（未做，Rust 测试以后补）**：做法是按模型 `RustSucc` 的定义建全部边（链、放到一边、栈顺序、入口边界）再做 DFS，与 `waits.rs` 的 `cycle_among`（按 (dst, seq) 排序、只沿链的最近一跳和"下一个已开始的调用"建边）在随机图上比较：约 20 跳、随机 `Profile`（`stacked` / `reentrant`），两边给出的环（或没有环）要一致。它属于 `waits.rs` 的测试，这次只动 `specs/`，没有写。
+- **`cycle_among` 的差分属性测试（已做，#613）**：`waits.rs` 的 `cycle_among_agrees_with_the_models_graph` 在最多 20 跳的随机图上，把 `cycle_among`（按 (dst, seq) 排序、只沿链的最近一跳和"下一个已开始的调用"建边）与按 `RustSucc` 建全部边（链、放到一边、栈顺序、入口边界）再 DFS 的结果比较：两边要么都有环、要么都没有，找到的环从新调用起、每一对相邻的调用在图里都有边；随机 `Profile`（`stacked` / `reentrant`）、随机入口。用例数由 `PROPTEST_CASES` 定（默认 256），失败时打印种子，用 `RUTIS_PROPTEST_SEED=<种子>` 重跑（Q7.2）。`the_model_check_agrees_on_the_small_graphs` 另把几种形状逐条钉住：空图、链成环、链里有自己、入口截断的链、链名指向已返回的调用。
 - **等待图的 trace validation（已做，#613）**：`waits.rs` 的六个操作与每次判定在 `testing` 特征下记录，在 `sync_cycles.rs`、`rpc_callbacks.rs` 的真实运行上逐事件对照模型，负例改坏同一份日志后必须报出。见"追踪验证"；没覆盖到的（同步等待的 `src`、取消、`End` 关于分发的前提）也列在那里。
 - **异步分发只在 Rust 服务的执行里建**：顶层活动上的 `serial` / `parallel`（例如 Cordis 插件的 `ctx.parallel`）没有建；一个分发只有一个监听器，`next`、过滤器的否决和异常不建。
 - **Rust 自己发起的同步调用**建成了宿主的执行（`host-call`、`before-host-call`），并占一个 `Workers` 线程；读线程和异步执行不占。
@@ -252,4 +253,4 @@ java -cp /tmp/tla2tools.jar tlc2.TLC -workers auto -config bail-policy-b.cfg Cro
 
 ## 维护
 
-多语言设计 §五、§九 或 M1 §七 修改时，或 `rpc.rs`、`waits.rs`、`events/hub.rs`、`session.mjs`、`peer.py` 改变同步等待期间执行哪些调用、哪些调用记进等待图的规则时，同步修改这个模型和 `expected.txt`（规范 Q11.2.3），并跑 `sync_cycles.rs`、`rpc_callbacks.rs` 的追踪验证（"追踪验证"）；`waits.rs` 多出一种操作或判定时，`trace.rs` 的记录点和 `trace/check.rs` 的重放一起改。宿主执行、`Workers`、异步分发和 `cancel` 的规则分别跟 `rpc.rs` 的 `receive`、`events/hub.rs` 的 `dispatch`、`waits.rs` 的 `marked` / `answered` / `returned` 对齐。
+多语言设计 §五、§九 或 M1 §七 修改时，或 `rpc.rs`、`waits.rs`、`events/hub.rs`、`session.mjs`、`peer.py` 改变同步等待期间执行哪些调用、哪些调用记进等待图的规则时，同步修改这个模型和 `expected.txt`（规范 Q11.2.3），并跑 `sync_cycles.rs`、`rpc_callbacks.rs` 的追踪验证（"追踪验证"）；`waits.rs` 多出一种操作或判定时，`trace.rs` 的记录点和 `trace/check.rs` 的重放一起改；改 `cycle_among` 或它用的边时跑 `waits.rs` 的 `cycle_among_agrees_with_the_models_graph`（`PROPTEST_CASES`，失败用 `RUTIS_PROPTEST_SEED` 重跑）。宿主执行、`Workers`、异步分发和 `cancel` 的规则分别跟 `rpc.rs` 的 `receive`、`events/hub.rs` 的 `dispatch`、`waits.rs` 的 `marked` / `answered` / `returned` 对齐。
