@@ -4,7 +4,7 @@
 
 本文件把 #634 的 `session` 分区的上下两条评论（[评论 6384933233](https://github.com/arcships/rutis/issues/634#issuecomment-6384933233) · [评论 6384933561](https://github.com/arcships/rutis/issues/634#issuecomment-6384933561)）里的 Markdown 表格导出到仓库。表格内容原样保留；单元格里的 `|` 按 Markdown 表格规则转义为 `\|`，渲染后文字不变。列的含义见 #634 正文：编号、来源、规则、参与方、手段、对应、现有形式化、状态、归属 issue、备注。
 
-抽取基线：`main` `3496669b`（issue 正文的统计口径）。**这批行没有按 0.22 的现行规格复核**：状态列仍是 issue 的词汇，`node tools/formal-trace.mjs` 在统计时按 `README.md` §3 的映射换成追踪表状态；映射只降不升，不改写本文件。
+抽取基线：`main` `3496669b`（issue 正文的统计口径）。表格保持 issue 原文；这 350 行已按 0.22 现行来源复核，并在追踪表的语义重抽里逐行重抽来源、锚点、证据与状态（见 `README.md` §1 与[复核表](../recheck-0.22.md) §5）。状态列仍是 issue 的词汇，`node tools/formal-trace.mjs` 在统计时按 `README.md` §3 的映射换成追踪表状态；映射与复核都只降不升，不改写本文件。
 
 分区合计：现行 246 条，已取代 104 条，共 350 行；两条评论合起来与 issue 正文的统计表一致。
 

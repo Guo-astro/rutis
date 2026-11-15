@@ -2,7 +2,7 @@
 
 [中文索引](README.md) · [英文复核页](recheck-0.22.en.md) · [保证登记表](../guarantees.md) · [会话协议规格](../protocol-session.md) · 议题：[#634](https://github.com/arcships/rutis/issues/634)
 
-状态：第一版。日期：2026-11-14。基准：`origin/main` `b41e3904`。
+状态：第一版。日期：2026-11-15。基准：`origin/main` `ca959915`。
 
 本文件由 `node tools/formal-trace.mjs --write` 生成，`--check` 检查它是否与 `rules/protocol-*.md` 及现行来源一致。它复核的是 `rules/protocol-*.md` 里的 1368 条现行规则（另 184 条 issue 快照里已取代的规则不重抽）。**状态是这一轮复核的结论；`rules/protocol-*.md` 保持 issue 的十列原文不改。**
 
@@ -15,7 +15,7 @@
 3. **证据是否解析**：用 `现有形式化` 列里的具名路径、用例名与行号核对当前树；解析不了的降级，只有模型或没有实现检查的记「部分验证」。
 4. **状态只降不升**：以 issue 的十列映射为上限；本轮只把来源被删、登记表删行、证据不解析或来源已历史化的行降级。**没有一条因为“规格说是当前”就升为「已验证」**：规格的「当前」说的是规则现行，不是实现验证过。
 
-复核不判断规则文字的语义是否正确：它核对来源、锚点、证据路径和状态。**TRC 分区的 44 行与协议清单 `registry-1` 的 165 行、`registry-2` 的 218 行已在 §5 语义重抽**；协议清单其余 994 条现行规则仍是 issue 快照原文，逐条语义重抽尚未完成。
+复核不判断规则文字的语义是否正确：它核对来源、锚点、证据路径和状态。**TRC 分区的 44 行与协议清单 `registry-1` 的 165 行、`registry-2` 的 218 行、`session` 的 350 行已在 §5 语义重抽**；协议清单其余 748 条现行规则仍是 issue 快照原文，逐条语义重抽尚未完成。
 
 ## 2. 现行来源（0.22）
 
@@ -40,7 +40,7 @@
 | `APP` | 应用接入设计 | [design-app-integration-2026-10-14.md](../design-app-integration-2026-10-14.md) | 设计 | 定稿，未实现；0.19 改写了 D2、D6（每个应用自己装插件） |
 | `NOD` | 连接节点指南 | [guide/nodes.md](../guide/nodes.md) | 指南 | 现行用户指南；0.19 起节点也是一条 `rutis-host/dial` / `listen` 的行，事件是一条总线，没有 export / import |
 
-登记表分区（`registry-1`、`registry-2`）的规则是保证登记表的行：现行来源就是登记表当前那一行；登记表 0.22 已删的行记「已撤回」。
+登记表分区（`registry-1`、`registry-2`）的规则是保证登记表的行：现行来源就是登记表当前那一行；登记表 0.22 已删的行记「已撤回」。`session` 分区的行按四种现行来源重抽：会话规格 §11 的 `SESS-*` 规则、保证登记表的行、仍现行的设计（多语言 M1、网络栈、值类型、会话标签、事件协议、远程会话、挂载），以及写明「`0.22 无此条`」的行（机制已删、没有替代规则）。
 
 ## 3. 结果
 
@@ -1656,9 +1656,9 @@
 | NOD-5-3 | 不单独计数 | 不单独计数 | 连接节点指南（NOD「别的机器上的语言运行时」） | — | 无具名证据 | — |
 | NOD-6-1 | 部分验证 | 部分验证 | 连接节点指南（NOD「连进来的运行时」） | — | 无具名证据 | 现行来源：连接节点指南（NOD「连进来的运行时」）；没有会话规格锚点；无具名证据 |
 
-## 5. 语义重抽（427 行，2026-11-14，基准 `b41e3904`）
+## 5. 语义重抽（777 行，2026-11-15，基准 `ca959915`）
 
-3 个分区已按 0.22 现行来源重抽（TRC、`registry-1`、`registry-2`）；**其余分区没有重抽**：协议清单其余 994 条现行规则仍是 issue 快照的十列原文（状态按本页复核；`registry-1`、`registry-2` 另含 9 条 issue 快照已取代行，也一并重抽），保证登记表 219 行由登记表生成，`ECA` 10 行仍是手写的设计提案。语义重抽的下一批是会话分区（SES、VAL、TAG、M1、CHN），事件、运行时、远程随后。
+4 个分区已按 0.22 现行来源重抽（TRC、`registry-1`、`registry-2`、`session`）；**其余分区没有重抽**：协议清单其余 748 条现行规则仍是 issue 快照的十列原文（状态按本页复核；`registry-1`、`registry-2`、`session` 另含 113 条 issue 快照已取代行，也一并重抽），保证登记表 219 行由登记表生成，`ECA` 10 行仍是手写的设计提案。语义重抽的下一批是事件分区（EVP、EVD），运行时、远程随后。
 
 ### 会话追踪契约 TRC（44 行）
 
@@ -2108,6 +2108,363 @@
 | events/waterfall-sync | 未验证 | guarantees.md §7 | —（登记表没有这一行：测试里用了，登记表未登记（#634 快照记「未登记」）） | `rutis/tests/events.rs`（#634 快照指第 685 行；登记表没有这一行） | 登记表未登记；#634 快照记「未登记」并注明 K 已覆盖，但没有登记表证据，状态保持未验证 |
 | events/withdrawn | 未验证 | guarantees.md §7 | —（登记表没有这一行：测试里用了，登记表未登记（#634 快照记「未登记」）） | `go/rutis/internal/runtime/events_test.go`（#634 快照指的 go/rutis/events_test.go 已不在；登记表没有这一行） | 登记表未登记；#634 快照记「未登记」，已撤下的监听器回复失败有 Go 用例，`WithdrawnStaysOut` 归 #613，状态保持未验证 |
 
+### 协议清单 session（350 行）
+
+这些行是 #634 的会话分区（SES、VAL、TAG、M1、CHN）导出的 350 行，规则文字仍是 issue 快照原文，没有重写。每行重抽四件事：现行来源（会话规格 §11 的 `SESS-*`、保证登记表的行、仍现行的设计章节，或「`0.22 无此条`」）、现行锚点（`SESS-*` 或登记表的行）、承载这条规则的现行证据、以及状态与理由。状态沿用复核结论，只降不升。`--check` 核对：350 行一一对应、`SESS-*` 在会话规格里、登记表行在它所在的节里、来源章节在文档里存在、证据里的路径与用例名在当前树里、状态与复核结论一致，以及两个生成页一致。
+
+| 编号 | 状态 | 现行来源 | 现行锚点 | 证据 | 来源与状态说明 |
+| --- | --- | --- | --- | --- | --- |
+| SES-1-1 | 部分验证 | protocol-session.md §11 | SESS-52、SESS-46 | `crates/rutis-bridge/src/session/testing.rs::session`（hold / fire / drop） | 会话规格 `SESS-52` 规定带方法的对象按引用传、`SESS-46` 规定引用的线格式与身份；#634 快照记「部分」，只有函数引用的跨实现用例，对象引用（`Kind::Object`）没有一致性用例 |
+| SES-1-2 | 部分验证 | protocol-session.md §11 | SESS-46、SESS-52 | `crates/rutis-bridge/tests/value_roundtrip.rs::rust_releases_balance`、`::node_releases_balance`、`::python_releases_balance`（返回值里的函数） | `SESS-46`/`SESS-52` 让引用出现在参数、返回值与事件载荷里；#634 快照记「部分」，Future 与对象引用在返回值与事件里没有形式化用例 |
+| SES-1-3 | 已撤回 | 0.22 无此条 | —（0.22 没有 Rust runner：Rust 插件直接在宿主进程里，没有“两种 runner”这回事） | — | 多语言运行时设计的 runner 方案没有实现（#121）；#634 快照记「已取代」 |
+| SES-1-4 | 已撤回 | design-multilang-m1-2026-10-04.md §十四 | —（会话规格不覆盖：未声明就提供的服务由 M1 §十四 自动投到 rutis，不再需要“零修改”的例外） | — | M1 §十四 与值类型设计 V0 让插件不必为跨进程改写；#634 快照记「已取代」，0.22 不再声明这条限制 |
+| SES-1-5 | 已撤回 | design-events-protocol-2026-10-18.md §十 | —（会话规格不覆盖事件：事件的值与对象规则在事件协议规格第十节） | — | 统一事件协议接管事件的值与对象，SES §十一 自述已取代；#634 快照记「已取代」 |
+| SES-2-1 | 已撤回 | protocol-session.md §11 | SESS-38 | — | 0.22 允许同步等待：调用帧带 `sync`，等待方阻塞并泵帧（`SESS-38`），不再“一律异步”；#634 快照记「已取代」 |
+| SES-2-2 | 未验证 | protocol-session.md §11 | SESS-52 | — | `SESS-52` 规定带方法的对象按引用传、不序列化；#634 快照记「未覆盖」，Node 与 Python 的对象、dataclass 行为只有散落的普通测试，没有一致性用例 |
+| SES-2-3 | 已撤回 | protocol-session.md §11 | SESS-6 | — | `get` 是活读取、可带 `sync`（`SESS-6` 的帧字段），不再有“不变快照或异步 getter”的限制；#634 快照记「已取代」 |
+| SES-2-4 | 已撤回 | protocol-session.md §11 | SESS-46 | — | 没有权限视图：引用身份按（会话，引用号）与 `home` 复用（`SESS-46`），跨视图比较这条要求没有对象；#634 快照记「已取代」 |
+| SES-2-5 | 已验证 | protocol-session.md §11 | SESS-52 | `crates/rutis-bridge/src/session/testing.rs::session`（apply：回调在原进程执行） | `SESS-52` 规定函数与对象按引用传、不发送源码；#634 快照记「已覆盖」，七种实现的 apply 用例在上 |
+| SES-2-6 | 已撤回 | protocol-session.md §11 | SESS-51 | — | 会话层只在会话结束时清空引用表（`SESS-51`），行卸载由 loader 的行规则管；#634 快照记「已取代」 |
+| SES-2-7 | 部分验证 | protocol-session.md §11 | SESS-52、SESS-6 | `crates/rutis-bridge/src/session/testing.rs::malformed`（未知 op 结束会话） | 帧只有 `call` / `get` / `await`（`SESS-6`），代理不暴露字段写入、原型链与 `instanceof`（`SESS-52`）；#634 快照记「部分」，`instanceof` 不成立只有普通测试 |
+| SES-2-8 | 已撤回 | protocol-session.md §11 | SESS-6 | — | 没有接口描述符与物化，`get` 就是活读取（`SESS-6`）；#634 快照记「已取代」 |
+| SES-4-1 | 已撤回 | design-multilang-m1-2026-10-04.md §五 | —（会话规格不覆盖：0.22 的托管插件是 loader 的行加运行时里的行（M1 §五），没有代理 fiber 与 runner 顶层 fiber） | — | 托管插件改为 loader 的行与运行时里的行（M1 §五）；#634 快照记「已取代」 |
+| SES-4-2 | 已撤回 | guarantees.md §14 | loader/announced-services、loader/rows-gate-on-services | — | 服务槽位的换值与撤下按 M1 §5.3，依赖它的行由 loader 的门控规则停下（`loader/announced-services`、`loader/rows-gate-on-services`）；#634 快照记「已取代」 |
+| SES-4-3 | 已撤回 | 0.22 无此条 | —（没有 activation 与执行门控：装载是 `rows.load` / `rows.unload`，没有“宿主 start 才打开”的阶段） | — | `rows.load` / `rows.unload` 取代 activation；#634 快照记「已取代」 |
+| SES-4-4 | 已撤回 | 0.22 无此条 | —（没有 activation：按代次装载与迟到的 `rows.ended` 取代它（#625）） | — | 本地刷新不再有“旧 activation”这层；代次与迟到的 `rows.ended` 见 #625；#634 快照记「已取代」 |
+| SES-4-5 | 已撤回 | guarantees.md §14 | loader/rows-gate-on-services | — | 依赖失效时行自己停下由 loader 的门控规则规定，`rows.ended` 上报；#634 快照记「已取代」 |
+| SES-5-1 | 已撤回 | 0.22 无此条 | —（没有 runner 组：一种语言一个运行时，隔离按需多开（多语言运行时设计 §四）） | — | 一种语言一个运行时，没有“共享 runner”这层；#634 快照记「已取代」 |
+| SES-5-2 | 已撤回 | guarantees.md §14 | loader/reload-all-or-nothing | — | 没有 runner 组：reload 的语义由 `loader/reload-all-or-nothing` 规定，不删模块缓存假装卸载；#634 快照记「已取代」 |
+| SES-5-3 | 已撤回 | 0.22 无此条 | —（没有 Rust runner 与工厂表，`factory` 缺失这条要求没有对象） | — | 没有 Rust runner 与工厂表；#634 快照记「已取代」 |
+| SES-5-4 | 已撤回 | design-multilang-m1-2026-10-04.md §5.1 | —（会话规格不覆盖：`rows.schema` 由运行时加载模块读 `inject`，不执行插件（M1 §5.1）） | — | `rows.schema` 与 M1 §5.1 取代 prepare / build 两阶段；#634 快照记「已取代」 |
+| SES-5-5 | 已撤回 | 0.22 无此条 | —（没有 runner 的包目录：行直接指 npm 包、子路径或 `file://` 绝对路径） | — | 路径规则随 runner 一起消失；行直接指包或路径；#634 快照记「已取代」 |
+| SES-5-6 | 已撤回 | guarantees.md §14 | loader/rows-gate-on-services | — | 依赖的静态化、等待与查环由 M1 §5.2 与 `loader/rows-gate-on-services` 规定；#634 快照记「已取代」 |
+| SES-6-1 | 已撤回 | design-multilang-m1-2026-10-04.md §十四 | —（会话规格不覆盖：没有接口描述符，服务形状来自 `rows.schema` 的 `provides` 或推断（M1 §十四）） | — | 接口描述符没有实现，形状由 M1 §十四 的 `provides` 或推断给出；#634 快照记「已取代」 |
+| SES-6-2 | 未验证 | protocol-session.md §11 | SESS-52、SESS-74 | — | 带环的对象图靠引用断开（`SESS-52`），值受 64 层深度上限约束（`SESS-74`）；#634 快照记「未覆盖」，各语言没有随机检查 |
+| SES-6-3 | 已撤回 | protocol-session.md §11 | SESS-9 | — | 受限 schema 被 `WireValue` 的标签集合取代，超出范围的整数走 `bigint`（`SESS-9`）；#634 快照记「已取代」 |
+| SES-6-4 | 已撤回 | design-multilang-m1-2026-10-04.md §十四 | —（会话规格不覆盖：没有接口 bundle 与准入校验，形状由 `rows.schema` 与 `provides` 决定（M1 §十四）） | — | 接口身份与 bundle 校验没有实现；#634 快照记「已取代」 |
+| SES-6.1-1 | 部分验证 | protocol-session.md §11 | SESS-9、SESS-10、SESS-11 | `crates/rutis-bridge/tests/value_roundtrip.rs::rust_values_round_trip`、`fuzz/fuzz_targets/session_frame.rs` | 标签集合与 `undefined` 规则见 `SESS-9`、`SESS-10`，能力见 `SESS-11`；#634 快照记「部分」，fuzz 只查 Rust 的解析与重写稳定 |
+| SES-6.1-2 | 部分验证 | protocol-session.md §11 | SESS-9 | `crates/rutis-bridge/tests/value_roundtrip.rs::rust_tagged_values_round_trip` | 十种标记与 `reference` 同级由 `SESS-9` 的标签表规定；#634 快照记「部分」，没有 Python 的带标记值列 |
+| SES-6.1-3 | 部分验证 | protocol-session.md §11 | SESS-9 | `crates/rutis-bridge/src/session/objects.rs::data_shaped_like_a_marker_stays_data` | `SESS-9` 只有带 `type` 的联合才算标记，普通 JSON 字段不被解释；#634 快照记「部分」，随机生成很少造出形如标记的对象 |
+| SES-6.1-4 | 部分验证 | design-value-types-2026-10-15.md §三 | SESS-9 | `fuzz/fuzz_targets/session_frame.rs`、`crates/rutis-bridge/tests/value_roundtrip.rs::rust_tagged_values_round_trip` | `instant` 是 `SESS-9` 的标签之一，格式在值类型设计 §三；#634 快照记「部分」，没有把接受的文本与规格正则做差分，拒绝一侧只有单元测试 |
+| SES-6.1-5 | 部分验证 | design-value-types-2026-10-15.md §三 | SESS-9 | `fuzz/fuzz_targets/session_frame.rs`、`crates/rutis-bridge/tests/value_roundtrip.rs::rust_tagged_values_round_trip` | `datetime` 的格式与“原样保留、不与 `instant` 互转”在值类型设计 §三；#634 快照记「部分」，Python 收发只有一个 weather 样本 |
+| SES-6.1-6 | 部分验证 | design-value-types-2026-10-15.md §三 | SESS-9 | `fuzz/fuzz_targets/session_frame.rs`、`crates/rutis-bridge/tests/value_roundtrip.rs::rust_tagged_values_round_trip` | `date` 的格式与“必须是存在的日子”在值类型设计 §三；#634 快照记「部分」，同 `instant`：没有与规格正则的差分，拒绝只有单元测试 |
+| SES-6.1-7 | 部分验证 | design-value-types-2026-10-15.md §三 | SESS-9 | `fuzz/fuzz_targets/session_frame.rs`、`crates/rutis-bridge/tests/value_roundtrip.rs::rust_tagged_values_round_trip` | `time` 的格式在值类型设计 §三；#634 快照记「部分」，同 `instant`：没有与规格正则的差分，拒绝只有单元测试 |
+| SES-6.1-8 | 部分验证 | design-value-types-2026-10-15.md §三 | SESS-9 | `fuzz/fuzz_targets/session_frame.rs`、`crates/rutis-bridge/tests/value_roundtrip.rs::rust_tagged_values_round_trip` | `bytes` 的标准 base64 与“只收规范形式”在值类型设计 §三；#634 快照记「部分」，其他实现的接收只经合法值往返，非规范文本是否拒绝没有检查 |
+| SES-6.1-9 | 部分验证 | design-value-types-2026-10-15.md §三 | SESS-9 | `crates/rutis-bridge/tests/value_roundtrip.rs::rust_tagged_values_round_trip`、`crates/rutis-bridge/src/runtime/testing/weather.expected.json`（`node/value-map`） | `map` 的 `[[键, 值], …]` 与迭代顺序在值类型设计 §三；#634 快照记「部分」，没有 Python 的 PT 列 |
+| SES-6.1-10 | 部分验证 | design-value-types-2026-10-15.md §三 | SESS-9 | `crates/rutis-bridge/tests/value_roundtrip.rs::rust_tagged_values_round_trip`、`crates/rutis-bridge/src/runtime/testing/events.expected.json`（`values/set`） | `set` 的编码与迭代顺序在值类型设计 §三；#634 快照记「部分」，同 `map`：没有 Python 的 PT 列 |
+| SES-6.1-11 | 部分验证 | design-value-types-2026-10-15.md §三 | SESS-9 | `fuzz/fuzz_targets/session_frame.rs`、`crates/rutis-bridge/tests/value_roundtrip.rs::rust_tagged_values_round_trip` | `bigint` 的十进制、无前导零、4300 位上限在值类型设计 §三；#634 快照记「部分」，fuzz 抓不到“接受了 `007`”一类错误 |
+| SES-6.1-12 | 部分验证 | design-value-types-2026-10-15.md §三 | SESS-9 | `fuzz/fuzz_targets/session_frame.rs`、`crates/rutis-bridge/tests/value_roundtrip.rs::rust_tagged_values_round_trip` | `decimal` 的正则、末尾零与 4300 位在值类型设计 §三；#634 快照记「部分」，同 `bigint`：fuzz 只查往返稳定 |
+| SES-6.1-13 | 部分验证 | design-value-types-2026-10-15.md §三 | SESS-9 | `fuzz/fuzz_targets/session_frame.rs`、`crates/rutis-bridge/tests/value_roundtrip.rs::rust_tagged_values_round_trip` | `uuid` 的小写 8-4-4-4-12 在值类型设计 §三；#634 快照记「部分」，大写的被拒只有单元测试 |
+| SES-6.1-14 | 部分验证 | design-value-types-2026-10-15.md §五 | SESS-9 | `crates/rutis-bridge/tests/value_roundtrip.rs::rust_tagged_values_round_trip`、`crates/rutis-bridge/src/runtime/testing/weather.expected.json`（`node/value-date-key`） | Map 键与 Set 元素允许的种类在值类型设计 §五；#634 快照记「部分」，不允许的种类没有随机生成，只有个别样本 |
+| SES-6.1-15 | 部分验证 | design-value-types-2026-10-15.md §五 | SESS-9 | `crates/rutis-bridge/src/runtime/testing/weather.expected.json`（`node/value-unsafe-key`、`go/big-int-keys`） | 超出 ±(2^53−1) 的整数作键按 `bigint` 在值类型设计 §五；#634 快照记「部分」，整数值浮点数作键被拒只有单元测试 |
+| SES-6.1-16 | 部分验证 | design-value-types-2026-10-15.md §五 | SESS-9 | `crates/rutis-bridge/src/runtime/testing/weather.expected.json`（`node/value-duplicate-elements`） | 相等的键（`1` 与 `1.0`、`0` 与 `-0`）在值类型设计 §五；#634 快照记「部分」，PT 生成器用 `distinct` 滤掉重复，从不造相等的键 |
+| SES-6.1-17 | 部分验证 | design-value-types-2026-10-15.md §五 | SESS-9 | `crates/rutis-bridge/src/session/rpc/tests.rs::map_keys_and_set_elements_are_checked_before_sending`、`crates/rutis-bridge/src/runtime/testing/weather.expected.json` | 发送前检查键的种类与相等在值类型设计 §五；#634 快照记「部分」，Rust 发送方只有单元测试 |
+| SES-6.1-18 | 部分验证 | design-value-types-2026-10-15.md §五 | SESS-9 | `crates/rutis-bridge/tests/value_roundtrip.rs::node_tagged_values_round_trip`、`::bun_tagged_values_round_trip` | 接收方转成本语言类型后键相等时这次调用失败在值类型设计 §五；#634 快照记「部分」，Python 没有 PT 列 |
+| SES-6.1-19 | 部分验证 | design-value-types-2026-10-15.md §三 | SESS-10 | `crates/rutis-bridge/src/runtime/testing/weather.expected.json`（`node/value-map`） | 值内部的 `undefined` 是 `null`（`SESS-10`），map 条目同此；#634 快照记「部分」，PT 生成器不产生 `Undefined` 值 |
+| SES-6.1-20 | 未验证 | protocol-session.md §11 | SESS-74 | — | `map`、`set` 各算一层、计入 64 层上限由 `SESS-74` 规定；#634 快照记「未覆盖」，`*_depth_limit` 是固定用例且只用 list 与 data |
+| SES-6.1-21 | 部分验证 | protocol-session.md §11 | SESS-74 | `fuzz/fuzz_targets/session_frame.rs`、`crates/rutis-bridge/src/session/rpc.rs::deeper_than` | 帧深度上限 208 层由 `SESS-74` 与 §10 规定；#634 快照记「部分」，没有检查“64 层内的值写成帧不超过 208 层” |
+| SES-6.1-22 | 部分验证 | protocol-session.md §11 | SESS-11、SESS-15 | `crates/rutis-bridge/tests/value_roundtrip.rs::rust_tagged_values_refused_without_capabilities` | 每种标记一个 `value-<tag>` 能力、可只声明一部分由 `SESS-15` 规定，发送时检查由 `SESS-11` 规定；#634 快照记「部分」，只查了 Rust 作发送方、对端什么都不声明 |
+| SES-6.1-23 | 已撤回 | protocol-session.md §11 | SESS-12 | — | 协议 4 只有端点格式，没有 compat 格式（`SESS-12`、`SESS-13`）；#634 快照记「未覆盖」，本行记「已撤回」因为规则的主体已不存在 |
+| SES-6.1-24 | 部分验证 | protocol-session.md §11 | SESS-11 | `crates/rutis-bridge/tests/value_roundtrip.rs::rust_tagged_values_refused_without_capabilities` | 未声明能力时发出前失败、错误说明缺哪个能力、会话继续由 `SESS-11` 规定；#634 快照记「部分」，返回值情形与其他实现作发送方没有形式化检查 |
+| SES-6.1-25 | 未验证 | protocol-session.md §11 | SESS-11 | `crates/rutis-bridge/tests/tagged_values.rs`（普通测试，没有针对性用例） | 宿主转发按下游对端的能力再检查属于 `SESS-11` 的“只发给声明了的对端”；#634 快照记「未覆盖」，只有普通测试 |
+| SES-6.1-26 | 未验证 | guarantees.md §10 | bridge/value-tags | `crates/rutis-bridge/src/session/rpc/tests.rs::received_tagged_values_are_checked_and_only_their_call_fails` | 登记表 `bridge/value-tags` 记「已验证」，收到未声明或格式不对的值只让该调用失败的用例在上；#634 快照记「未覆盖」，因为它要的随机检查（#631）还没建 |
+| SES-6.1-27 | 部分验证 | protocol-session.md §11 | SESS-63 | `crates/rutis-bridge/src/session/testing.rs::malformed` | 值的 JSON 形状不对是格式错误的帧，按 `SESS-63` 结束会话；#634 快照记「部分」，`MALFORMED` 里没有形状错误的用例 |
+| SES-6.1-28 | 部分验证 | design-value-types-2026-10-15.md §七 | —（会话规格不覆盖各语言的时间精度；值类型设计 §七.3 规定向负无穷截断） | `crates/rutis-bridge/tests/value_roundtrip.rs::node_tagged_values_round_trip`、`::bun_tagged_values_round_trip`、`::rust_tagged_values_round_trip` | 截断规则在值类型设计 §七.3；#634 快照记「部分」，Python 与 Swift 的截断没有 PT |
+| SES-6.1-29 | 部分验证 | design-value-types-2026-10-15.md §七 | —（会话规格只列 `bigint` 标签（`SESS-9`）；自动转换与能力检查在值类型设计 §七.4 与登记表 `bridge/value-tags`） | `crates/rutis-bridge/tests/value_roundtrip.rs::rust_values_round_trip`、`crates/rutis-bridge/src/runtime/testing/weather.expected.json`（`python/big-int`、`go/big-int-in-struct`） | 超出 ±(2^53−1) 的整数自动按 `bigint` 发由值类型设计 §七.4 规定；#634 快照记「部分」，其他语言作发送方只有固定样本 |
+| SES-6.1-30 | 已验证 | design-value-types-2026-10-15.md §七 | —（会话规格不覆盖浮点的边界；值类型设计 §七 规定浮点照旧是 `data`） | `crates/rutis-bridge/tests/value_roundtrip.rs::rust_values_round_trip`、`::node_values_round_trip` | 浮点照旧是 `data`、逐位相同在值类型设计 §七；#634 快照记「已覆盖」，往返用例在上 |
+| SES-6.1-31 | 部分验证 | design-value-types-2026-10-15.md §二 | —（会话规格不覆盖接收方把 `bigint` 转成本语言整数；值类型设计 §二 给默认对应） | `crates/rutis-bridge/tests/value_roundtrip.rs::rust_tagged_values_round_trip` | 默认对应在值类型设计 §二；#634 快照记「部分」，“旧实现的 `data` 里超范围整数照旧按数字读”没有形式化检查 |
+| SES-6.1-32 | 已撤回 | design-events-protocol-2026-10-18.md §十 | —（会话规格不覆盖节点之间的事件值；事件协议第十节规定值） | — | 0.13 起节点之间的事件承载全部值（事件协议第十节）；#634 快照记「已取代」 |
+| SES-7.1-1 | 已撤回 | protocol-session.md §11 | SESS-46 | — | 引用是会话导出表的号加 `home`、`kind`、`origin`（`SESS-46`），没有 owner epoch 与 activation；#634 快照记「已取代」 |
+| SES-7.1-2 | 部分验证 | protocol-session.md §11 | SESS-46 | `crates/rutis-bridge/src/session/rpc.rs`（`identities` 映射；属性测试不断言号相同） | `SESS-46` 规定同一个对象是同一个引用；#634 快照记「部分」，`*_releases_balance` 只数表的大小，不断言号相同 |
+| SES-7.1-3 | 未验证 | protocol-session.md §11 | —（会话规格只规定引用 id 的范围、分配与耗尽（`SESS-49`），不写“不复用”；不复用是实现的单调分配） | — | 代码单调分配（`crates/rutis-bridge/src/session/rpc.rs`），#626 的 `PinnedTarget` 计划中；#634 快照记「未覆盖」 |
+| SES-7.1-4 | 已撤回 | guarantees.md §10 | bridge/object-refs | — | 没有权限视图与 `sameObject`：同一个对象交出几次是同一个代理由登记表 `bridge/object-refs` 规定；#634 快照记「已取代」 |
+| SES-7.1-5 | 已撤回 | protocol-session.md §11 | SESS-50 | — | `home: true` 解回原对象本身（`SESS-50`），没有“仍是受门控的 facade”这层；#634 快照记「已取代」 |
+| SES-7.1-6 | 未验证 | guarantees.md §10 | bridge/reference-release-count | — | 登记表 `bridge/reference-release-count` 记「已验证」，释放按次数计；#634 快照记「未覆盖」，“`release` 不调用任何业务方法”没有具名用例 |
+| SES-7.2-1 | 已撤回 | protocol-session.md §11 | SESS-47 | — | 没有 broker 与 delivery id：按收到的次数授予、按次数释放（`SESS-47`）；#634 快照记「已取代」 |
+| SES-7.2-2 | 已撤回 | protocol-session.md §11 | SESS-48 | — | 对象 id 不作凭证这一点仍在，但每次调用不校验调用者、grant、接口与方法：只按号查导出表（`SESS-48`）；#634 快照记「已取代」 |
+| SES-7.2-3 | 已撤回 | design-multilang-m1-2026-10-04.md §十四 | —（会话规格不覆盖同组调用：同一运行时的 Cordis 行互用原生对象（M1 §十四）） | — | 同组调用不再经 broker：Cordis 行之间是原生对象（M1 §十四）；#634 快照记「已取代」 |
+| SES-7.2-4 | 已撤回 | protocol-session.md §11 | SESS-54 | — | 经中继的第三方转交已实现（`SESS-54`、M1 §7.1），不再返回 `UnsupportedCapability`；#634 快照记「已取代」 |
+| SES-7.2-5 | 部分验证 | protocol-session.md §11 | SESS-48 | `crates/rutis-bridge/src/session/testing.rs::session`（drop 之后 fire 失败） | 对已释放引用的操作按 `SESS-48` 结束会话；#634 快照记「部分」，会话结束后的旧引用（`session closed`）没有一致性用例 |
+| SES-7.2-6 | 已撤回 | guarantees.md §14 | loader/rows-gate-on-services | — | 命名服务的提供者失效走 loader 的依赖门控（`loader/rows-gate-on-services`），回调对象失效不驱逐服务图；#634 快照记「已取代」 |
+| SES-7.3-1 | 已撤回 | design-multilang-m1-2026-10-04.md §十四 | —（会话规格不覆盖接口声明：服务形状来自 `rows.schema` 的 `provides` 或推断（M1 §十四）） | — | 没有接口声明与物化快照；Python dataclass 按 dict 序列化；#634 快照记「已取代」 |
+| SES-7.3-2 | 已撤回 | design-multilang-m1-2026-10-04.md §十四 | —（会话规格只规定 `get` 帧读属性（`SESS-6`），不规定拒绝哪些属性名；Cordis 行的方法取公开方法（M1 §十四）） | — | 没有 `__proto__` 等反射入口这层校验：`get` 可读任意属性名，中继不检查；#634 快照记「已取代」 |
+| SES-7.3-3 | 已撤回 | protocol-session.md §11 | SESS-38 | — | 同步等待就是阻塞调用方线程并泵帧（`SESS-38`），不再把阻塞式 getter 当成要避免的形状；#634 快照记「已取代」 |
+| SES-8-1 | 明确不保证 | protocol-session.md §11 | —（会话规格不写分布式收集：只有 `SESS-51`（会话结束清空引用表）兜底，“跨会话的引用环不回收”没有写成明确不保证） | — | 登记表 `bridge/reference-release-count` 与 `SESS-51` 只承诺计数与会话结束清表；#634 快照记「不适用」，本行按明确不保证计 |
+| SES-8-2 | 已撤回 | protocol-session.md §11 | SESS-51 | — | 引用属于会话，会话结束整表清空（`SESS-51`）；没有 activation、子资源与调用 scope 三层；#634 快照记「已取代」 |
+| SES-8-3 | 已撤回 | protocol-session.md §11 | SESS-47 | — | 引用按次数计，释放前一直有效，没有“borrow 只在调用期间有效”这层（`SESS-47`）；#634 快照记「已取代」 |
+| SES-8-4 | 已撤回 | protocol-session.md §11 | SESS-47 | — | scope 对象所有权与独占 disposer 没有实现：接收方按次数持有、`release {reference, count}` 归还（`SESS-47`）；#634 快照记「已取代」 |
+| SES-8-5 | 已撤回 | guarantees.md §10 | bridge/in-flight-call-fails-once | — | owner 失活即在途调用以传输错误失败、不重试，由 `bridge/in-flight-call-fails-once` 规定；#634 快照记「已取代」 |
+| SES-8-6 | 未验证 | guarantees.md §10 | bridge/reference-release-count | — | 登记表 `bridge/reference-release-count` 记「已验证」，已收下的调用不受之后的释放影响；#634 快照记「未覆盖」，`PinnedTarget` 模型在 #626 |
+| SES-8.1-1 | 已撤回 | protocol-session.md §11 | SESS-47 | — | 没有 delivery id：每出现一次授予一次、按次数释放（`SESS-47`）；#634 快照记「已取代」 |
+| SES-8.1-2 | 已撤回 | 0.22 无此条 | —（没有交付 token 与 accept 帧：授予按次数计（`SESS-47`），没有“物化后 accept(d)”这一步） | — | 没有 accept 帧与物化路径；#634 快照记「已取代」 |
+| SES-8.1-3 | 已撤回 | guarantees.md §10 | bridge/reference-release-count | — | “旧的 release 不扣新授予”作为计数性质保留在登记表 `bridge/reference-release-count`；#634 快照记「已取代」 |
+| SES-8.1-4 | 已撤回 | protocol-session.md §11 | SESS-47 | — | 没有每变量 / 每 Arc 的持有者计数：Rust 以 `Import` 的 `Drop` 写计数释放（`SESS-47`）；#634 快照记「已取代」 |
+| SES-8.2-1 | 已撤回 | 0.22 无此条 | —（没有交付状态 Offered / Accepted / Released：计数为 0 或超额的 `release` 结束会话（`SESS-47`、`SESS-48`）） | — | 交付状态随 broker 一起删除；#634 快照记「已取代」 |
+| SES-8.2-2 | 已撤回 | 0.22 无此条 | —（没有 scope 卸载与交付准入：会话关闭清空引用表（`SESS-51`）） | — | 全 scope 卸载与“未确认记录”没有实现；#634 快照记「已取代」 |
+| SES-8.2-3 | 未验证 | protocol-session.md §11 | —（会话规格不写迟到回复里的引用怎样登记与释放；相邻的是 `SESS-44`（失败回滚授予）） | — | #634 快照记「未覆盖」：代码 `crates/rutis-bridge/src/session/rpc.rs` 登记并释放，但只有 #626 的 `BoundedTables` 计划 |
+| SES-8.2-4 | 未验证 | protocol-session.md §11 | SESS-51 | — | 会话结束时两端的导出表与导入表整表清空由 `SESS-51` 规定；#634 快照记「未覆盖」，只有 #628 的模型计划（`close()` 之后 `respond()` 仍会加入导出） |
+| SES-8.2-5 | 已撤回 | 0.22 无此条 | —（没有 token 与确认序号：未知引用结束会话（`SESS-48`），没有“未知旧 token”这回事） | — | 回收按确认序号与 epoch 关闭没有实现；#634 快照记「已取代」 |
+| SES-8.2-6 | 未验证 | protocol-session.md §11 | SESS-59、SESS-47 | — | 取消逐跳传播、不撤销已提交的授予（`SESS-59`），释放按次数计（`SESS-47`）；#634 快照记「未覆盖」，`call/finished` 已不存在 |
+| SES-8.2-7 | 已撤回 | 0.22 无此条 | —（没有 StopUnconfirmed 状态：行卸载即清理，会话关闭即清表（`SESS-51`）） | — | owner 卸载的闸门与未确认状态没有实现；#634 快照记「已取代」 |
+| SES-9.1-1 | 已撤回 | guarantees.md §14 | loader/runtimes-do-not-wait-for-each-other | — | 运行时作为行启动，不等任何宿主服务就绪（`loader/runtimes-do-not-wait-for-each-other`）；#634 快照记「已取代」 |
+| SES-9.1-2 | 已撤回 | design-multilang-m1-2026-10-04.md §十四 | —（会话规格不覆盖发布屏障：行提供的服务在 `rows.load` 返回前投出（M1 §十四）） | — | 没有 Active 发布屏障：服务随行装载投出（M1 §十四、`loader/announced-services`）；#634 快照记「已取代」 |
+| SES-9.1-3 | 已撤回 | guarantees.md §14 | loader/runtimes-do-not-wait-for-each-other | — | 不要求整组 Ready，运行时互不等待（`loader/runtimes-do-not-wait-for-each-other`）；#634 快照记「已取代」 |
+| SES-9.1-4 | 已撤回 | design-multilang-m1-2026-10-04.md §十四 | —（会话规格不覆盖：同名服务由后提供的一方失败处理（M1 §十四）） | — | 同名导出由后提供的一方失败处理（M1 §十四），没有整组 activation 回滚；#634 快照记「已取代」 |
+| SES-9.1-5 | 已撤回 | design-multilang-m1-2026-10-04.md §5.4 | —（会话规格不覆盖宿主服务租用：新租约换掉表里的 dispatch（M1 §5.4）） | — | 宿主服务按行租用，新租约换掉表里的 dispatch，运行时里的代理随之调到新提供者（M1 §5.4）；#634 快照记「已取代」 |
+| SES-9.2-1 | 已撤回 | 0.22 无此条 | —（没有 Closing 阶段：`rows.unload` 先撤服务再卸载，没有“仍收完成控制消息”的阶段） | — | 失活闸门与 Closing 阶段没有实现；#634 快照记「已取代」 |
+| SES-9.2-2 | 已撤回 | 0.22 无此条 | —（没有 activation 换代：行自己结束并上报 `rows.ended`（#625）） | — | 本地框架失败不再“撤销后上报”；行结束走 `rows.ended`（#625）；#634 快照记「已取代」 |
+| SES-9.2-3 | 已撤回 | 0.22 无此条 | —（没有 StopUnconfirmed：运行时到截止就放弃清理并退出（`RUTIS_SHUTDOWN_TIMEOUT`），也不自动重试） | — | 截止后放弃清理、不自动重试这一行为仍在，但不再有未确认状态命名；#634 快照记「已取代」 |
+| SES-9.2-4 | 已撤回 | protocol-session.md §11 | SESS-45 | — | 协议不设调用超时，超时与并发顺序都列为明确不保证（`SESS-45`），“普通 RPC 超时不强杀整组”没有对象；#634 快照记「已取代」 |
+| SES-9.3-1 | 已撤回 | guarantees.md §14 | loader/runtime-down-stops-its-rows | — | 运行时进程结束时它的行停下（`loader/runtime-down-stops-its-rows`）；#634 快照记「已取代」 |
+| SES-9.3-2 | 已撤回 | 0.22 无此条 | —（没有 epoch 恢复与 RecoveryBlocked / Quarantined：不自动重启（`loader/runtime-down-stops-its-rows`）） | — | 不恢复旧对象或请求、不自动重启；#634 快照记「已取代」 |
+| SES-10-1 | 已撤回 | protocol-session.md §11 | SESS-32、SESS-33 | — | 调用号是端点前缀加会话内计数（`SESS-32`、`SESS-33`），没有 epoch 与 activation；跨会话靠标签（`SESS-36`）；#634 快照记「已取代」 |
+| SES-10-2 | 明确不保证 | protocol-session.md §11 | SESS-45 | — | `SESS-45` 把并发调用的顺序列为明确不保证；#634 快照记「不适用」，本行按明确不保证计 |
+| SES-10-3 | 已撤回 | protocol-session.md §11 | SESS-18、SESS-19 | — | 只有事件操作与 `rows.ended` 按帧序（`SESS-19`），其余调用各自 spawn，开始顺序不保证（`SESS-18`）；#634 快照记「已取代」 |
+| SES-10-4 | 部分验证 | protocol-session.md §11 | SESS-18、SESS-38、SESS-39 | `crates/rutis-bridge/src/session/testing.rs::session`（reenter）、`specs/cross-runtime-sync/README.md`（模型） | 读帧一次一帧、调用可并发（`SESS-18`），同步等待成环被拒（`SESS-39`）；#634 快照记「部分」，模型不含读线程的写回与通道背压（#626） |
+| SES-10-5 | 已撤回 | protocol-session.md §11 | SESS-38、SESS-39 | — | 同步调用阻塞调用方并泵帧，成环时报 `SyncWaitCycle`（`SESS-38`、`SESS-39`），不再把同步 API 适配成异步；#634 快照记「已取代」 |
+| SES-10-6 | 已撤回 | guarantees.md §10 | bridge/caller-row | — | 回调按引用计数，调用方是哪一行由 `bridge/caller-row` 规定；#634 快照记「已取代」 |
+| SES-10-7 | 已撤回 | protocol-session.md §11 | SESS-45 | — | 协议没有截止时间，超时是明确不保证（`SESS-45`）；#634 快照记「已取代」 |
+| SES-10-8 | 部分验证 | protocol-session.md §11 | SESS-56 | `crates/rutis-bridge/src/session/testing.rs::session`（丢弃异步调用使对端的 signal 中止） | 调用方放弃异步等待时发 `cancel` 由 `SESS-56` 规定；#634 快照记「部分」，只一跳、异步，“未发送时移出队列”不适用 |
+| SES-10-9 | 未验证 | protocol-session.md §11 | SESS-41 | — | 每次调用恰好结算一次、未知回复结束会话由 `SESS-41` 规定；#634 快照记「未覆盖」，`SettlesOnce` 模型在 #626 |
+| SES-10-10 | 已撤回 | 0.22 无此条 | —（没有 `call/finished` 帧：取消之后是否回复见 `SESS-61`） | — | 没有 finished 确认；取消后的回复规则仍未定（`SESS-61`、#626）；#634 快照记「已取代」 |
+| SES-10-11 | 已撤回 | 0.22 无此条 | —（没有完成的确认帧：迟到的回复与未知回复见 `SESS-41`、`SESS-58`） | — | 幂等完成与取消没有对应机制；#634 快照记「已取代」 |
+| SES-10-12 | 未验证 | protocol-session.md §11 | SESS-59 | — | 取消逐跳传播由 `SESS-59` 规定；#634 快照记「未覆盖」，两跳模型（#626 的 `CancelReaches`）未建 |
+| SES-10-13 | 未验证 | protocol-session.md §11 | SESS-42 | — | 会话层不自动重试由 `SESS-42` 规定；#634 快照记「未覆盖」，`RemoteLease` 只说旧指令不作用于新租约 |
+| SES-10-14 | 已撤回 | 0.22 无此条 | —（协议没有流：`SESS-6` 的九种帧里没有流） | — | 服务端流没有实现；#634 快照记「已取代」 |
+| SES-10.1-1 | 已撤回 | design-multilang-m1-2026-10-04.md §7.1 | —（会话规格不覆盖中继：跨运行时调用经宿主中转（M1 §7.1）） | — | 没有 promise pipelining 与路径缩短，跨运行时调用经宿主中转（M1 §7.1）；#634 快照记「已取代」 |
+| SES-11-1 | 已撤回 | design-events-protocol-2026-10-18.md §四 | —（会话规格不覆盖事件：事件的声明、作用域与错误规则在事件协议规格第四、五节） | — | SES §十一 自述被统一事件协议取代（事件协议第四、五节）；#634 快照记「已取代」 |
+| SES-11-2 | 已撤回 | design-events-protocol-2026-10-18.md §5.1 | —（会话规格不覆盖事件分发：每个分发方走同一算法（事件协议 §5.1）） | — | broker 的唯一监听列表没有实现，改为每个分发方按同一算法分发（事件协议 §5.1）；#634 快照记「已取代」 |
+| SES-11-3 | 已撤回 | design-events-protocol-2026-10-18.md §5.4 | —（会话规格不覆盖事件：`emit` 的跨界方式在事件协议 §5.4） | — | 通知式 emit 迁为 `parallel` 的规则由事件协议 §5.4 规定；#634 快照记「已取代」 |
+| SES-11-4 | 已撤回 | design-events-protocol-2026-10-18.md §5.4 | —（会话规格不覆盖事件：`parallel` 与 `serial` 的规则在事件协议 §5.4） | — | `parallel` 快照、等待全部、汇总错误与 `serial` 的 Continue / Return 由事件协议 §5.4 规定；#634 快照记「已取代」 |
+| SES-11-5 | 已撤回 | design-events-protocol-2026-10-18.md §5.4 | —（会话规格不覆盖事件：`waterfall` 与同步 `bail` 的规则在事件协议 §5.4、§5.6） | — | `waterfall` 已实现、同步 `bail` 跨界的规则由事件协议 §5.4、§5.6 规定；#634 快照记「已取代」 |
+| SES-11-6 | 已撤回 | design-events-protocol-2026-10-18.md §7.1 | —（会话规格不覆盖事件的监听器生命周期：监听属于登记它的行，卸载见事件协议 §7.1） | — | 监听属于行而不是 activation；注销与 `once` 的摘除由事件协议 §7.1 规定；#634 快照记「已取代」 |
+| SES-11-7 | 已撤回 | design-events-protocol-2026-10-18.md §4.4 | —（会话规格不覆盖事件：分发快照与执行前的检查在事件协议 §4.4） | — | 派发用快照、执行前查闸门由事件协议 §4.4 规定（闸门现为行的生命周期）；#634 快照记「已取代」 |
+| SES-11-8 | 已撤回 | design-events-protocol-2026-10-18.md §三 | —（会话规格不覆盖事件的作用域授权：事件协议第三节规定作用域） | — | 事件 scope 由事件协议第三节规定，不再由宿主逐项授权；#634 快照记「已取代」 |
+| SES-11-9 | 已撤回 | design-events-protocol-2026-10-18.md §4.2 | —（会话规格不覆盖事件订阅：登记的确认在事件协议 §4.2） | — | 订阅的确认由事件协议 §4.2 规定（登记在行的装载里）；#634 快照记「已取代」 |
+| SES-11-10 | 已撤回 | design-events-protocol-2026-10-18.md §十 | —（会话规格不覆盖事件载荷：事件协议第十节规定值） | — | 事件载荷里的对象按引用传由事件协议第十节与 `SESS-52` 规定；#634 快照记「已取代」 |
+| SES-12-1 | 已撤回 | protocol-session.md §11 | SESS-2 | — | 分帧改为换行分隔的紧凑 JSON 或一条 WebSocket 文本消息（`SESS-2`），不再有 `u32` 长度前缀；#634 快照记「已取代」 |
+| SES-12-2 | 已撤回 | design-protocol-channel-decoupling-2026-10-03.md §本机子进程端点与兼容接口 | —（会话规格不覆盖进程的标准流；网络栈设计 §本机子进程端点与兼容接口 规定 stdout 不承载协议帧） | — | 规则本身仍现行，但已从会话规格移出：stdout 可供插件输出（网络栈设计 §本机子进程端点与兼容接口）；#634 快照记「已取代」 |
+| SES-12-3 | 部分验证 | protocol-session.md §11 | SESS-70、SESS-74 | `fuzz/fuzz_targets/session_frame.rs`、`fuzz/fuzz_targets/local_lines.rs` | 解析前检查长度与深度由 `SESS-70`、`SESS-74` 规定；#634 快照记「部分」，“不越读”只有单元测试 |
+| SES-12-4 | 已撤回 | protocol-session.md §11 | SESS-6 | — | 帧词汇是 `SESS-6` 的九种，事件走 `events.*` 控制调用；#634 快照记「已取代」 |
+| SES-12-5 | 已撤回 | protocol-session.md §11 | SESS-9 | — | 载荷是 `SESS-9` 的带标记值，形似标记的普通 JSON 不被解释（`SES-6.1-3`）；#634 快照记「已取代」 |
+| SES-12-6 | 已撤回 | 0.22 无此条 | —（这是流程要求，不是规则；会话规格 §2 是它要求冻结的结果） | — | 编码、引用表、版本与错误形状已冻结在会话规格 §2、§6、§13，本行作为“要冻结”的过程要求撤回；#634 快照记「已取代」 |
+| SES-12-7 | 已撤回 | design-protocol-channel-decoupling-2026-10-03.md §装饰器；design-protocol-channel-decoupling-2026-10-03.md §WebSocket 绑定 | —（会话规格不覆盖日志：trace 只记方向、长度与关闭原因（网络栈设计 §装饰器），token 不进日志（§WebSocket 绑定）） | — | 规则现由网络栈设计的 trace 装饰器与 WebSocket 鉴权两节规定，不再写在会话协议里；#634 快照记「已取代」 |
+| SES-12-8 | 未验证 | protocol-session.md §11 | SESS-6 | — | `method` / `property` 是单个名字（`SESS-6` 的帧字段）；#634 快照记「未覆盖」，缺各实现对含 `.` 名字的一致性用例 |
+| SES-12-9 | 已撤回 | protocol-session.md §11 | SESS-28、SESS-22 | — | 握手成功不挂载（`SESS-28`），重复 `hello` 结束会话（`SESS-22`）；#634 快照记「已取代」 |
+| SES-12-10 | 已撤回 | 0.22 无此条 | —（没有组管理命令：生命周期是 `rows.load` / `rows.unload`，普通成员发不了组命令） | — | 组管理命令与“宿主授权”这层没有实现；#634 快照记「已取代」 |
+| SES-12-11 | 已验证 | protocol-session.md §11 | SESS-43 | `crates/rutis-bridge/src/session/testing.rs::session`（`fail` 之后同一会话继续） | 业务错误只影响该调用、会话继续由 `SESS-43` 规定；#634 快照记「已覆盖」，七种实现的用例在上 |
+| SES-12-12 | 已撤回 | protocol-session.md §11 | SESS-63 | — | 损坏帧按 `SESS-63` 结束会话，迟到的释放与完成不属于故障；#634 快照记「已取代」 |
+| SES-12-13 | 已撤回 | protocol-session.md §11 | SESS-6 | — | 错误只有 `{name, message, graph}`（`SESS-6` 的 `throw`），没有那套错误分类；#634 快照记「已取代」 |
+| SES-12-14 | 已撤回 | protocol-session.md §11 | SESS-6 | — | 错误作为值原样传，`graph` 里可以有堆栈，没有“不回显堆栈”的规则；#634 快照记「已取代」 |
+| SES-13-1 | 明确不保证 | protocol-session.md §11 | —（会话规格只写能力不授予权限（`SESS-17`）；OS 沙箱与共享地址空间这段明确不保证没有写进规格） | — | 能力不授予权限（`SESS-17`）；协议授权不是 OS 沙箱这一点在本行保留为明确不保证；#634 快照记「不适用」 |
+| SES-13-2 | 不单独计数 | protocol-session.md §11 | SESS-46 | — | 引用的线上形式只有号、`home`、`kind`、`origin`（`SESS-46`），不暴露指针、`TypeId` 或原型；#634 快照记「不适用」，这是代码审查项，不单独计数 |
+| SES-13-3 | 已撤回 | guarantees.md §14 | loader/row-unload-leaves-nothing | — | 单插件停止只处理它的作用域由行的卸载规则保证（`loader/row-unload-leaves-nothing`），晚到的运行时不自动重启；#634 快照记「已取代」 |
+| SES-14-1 | 已撤回 | protocol-session.md §11 | SESS-12、SESS-79 | — | 协议 4 只与协议 4 通信，旧握手与 compat 格式在握手时被拒（`SESS-12`、`SESS-79`）；#634 快照记「已取代」 |
+| SES-14-2 | 已撤回 | design-multilang-m1-2026-10-04.md §十四 | —（会话规格只规定值的能力检查（`SESS-11`）；接口层的提供与推断由 M1 §十四 规定） | — | 能力子集拒绝相应接口没有实现：对象与函数对所有协议 4 实现都可传（`SESS-52`），服务形状由 M1 §十四 推断；#634 快照记「已取代」 |
+| VAL-1-V0 | 已验证 | design-value-types-2026-10-15.md §一 | —（会话规格不覆盖 SDK 怎样构造本语言没有的值；值类型设计 §一 V0 规定用构造函数） | `crates/rutis-bridge/src/runtime/testing/weather.expected.json`（`node/value-constructed`、`go/value-constructed`） | SDK 构造函数造出的带标记值在值类型设计 §一 V0 与 weather 样本里成立；#634 快照记「已覆盖」，样本在上 |
+| VAL-1-V2 | 部分验证 | design-value-types-2026-10-15.md §二 | —（会话规格不覆盖各语言的默认转换；值类型设计 §二 给对应表，§七.1 给“会丢信息才失败”） | `crates/rutis-bridge/src/runtime/testing/weather.expected.json`（`node/value-typed-array`） | “会丢信息才失败”的判定逐语言写在值类型设计 §二、§六；#634 快照记「部分」，没有随机检查 |
+| VAL-1-V9 | 部分验证 | design-value-types-2026-10-15.md §六 | —（会话规格不覆盖 Go 结构体与会话层的对应；值类型设计 §六 的 Go 段规定逐个检查） | `crates/rutis-bridge/src/runtime/testing/weather.expected.json`（`go/value-struct-bytes`、`go/value-struct-time`、`go/big-int-in-struct`） | Go 结构体、切片与 map 经同一编码器逐个检查在值类型设计 §六；#634 快照记「部分」，只有固定样本，#630 的 Go fuzz 没有指向编码器 |
+| VAL-1-V10 | 已验证 | design-value-types-2026-10-15.md §七 | SESS-10 | `crates/rutis-bridge/src/runtime/testing/weather.expected.json`（`node/undefined-in-data`、`python/undefined-in-data`） | 值里的 `undefined` 是 `null`（`SESS-10`），所有语言统一；#634 快照记「已覆盖」，只有 JS 与 Python 有 undefined |
+| VAL-1-V11 | 不单独计数 | design-value-types-2026-10-15.md §一 | —（会话规格不覆盖 Rust 的编译期约定；值类型设计 §一 V11 规定 `#[non_exhaustive]`） | — | `Value` 的新变体标 `#[non_exhaustive]`（`crates/rutis-bridge/src/session/rpc.rs`），编译期即检查；#634 快照记「不适用」，不单独计数 |
+| VAL-1-V12 | 部分验证 | design-value-types-2026-10-15.md §九 | —（会话规格不覆盖测试工具；值类型设计 §九 规定与真实运行时比对同一份期望文件） | `crates/rutis-bridge/src/runtime/testing/weather.expected.json`（66 个样本，0 个 pending） | 测试工具与运行时比对同一份期望文件在值类型设计 §九；#634 快照记「部分」，与运行时共用代码的工具可能同错（#624） |
+| VAL-2-1 | 已验证 | design-value-types-2026-10-15.md §二 | —（会话规格只列标签（`SESS-9`），不写 JS 收到什么类型；值类型设计 §二 给 JS 的对应） | `crates/rutis-bridge/tests/value_roundtrip.rs::node_tagged_values_round_trip`、`::bun_tagged_values_round_trip` | JS 的收到类型在值类型设计 §二；#634 快照记「已覆盖」，按 JS 对应计算期望的往返用例在上 |
+| VAL-2-2 | 部分验证 | design-value-types-2026-10-15.md §二 | —（会话规格不覆盖 Python 收到的类型；值类型设计 §二 给对应） | `crates/rutis-bridge/src/runtime/testing/events.expected.json`（`values/every-tag`、`values/set`） | Python 的收到类型在值类型设计 §二；#634 快照记「部分」，没有 Python 的带标记值 PT 列 |
+| VAL-2-3 | 部分验证 | design-value-types-2026-10-15.md §二 | —（会话规格不覆盖 Go 收到的类型；值类型设计 §二 的 Go 段给对应） | `crates/rutis-bridge/tests/value_roundtrip.rs::go_tagged_values_round_trip`、`crates/rutis-bridge/src/runtime/testing/events.expected.json`（`values/set`） | Go 的收到类型在值类型设计 §二；#634 快照记「部分」，PT 只看往返结果，不看 Go 一侧的类型 |
+| VAL-2-4 | 已验证 | design-value-types-2026-10-15.md §二 | —（会话规格不覆盖 Rust 收到的类型；值类型设计 §二 给对应） | `crates/rutis-bridge/tests/value_roundtrip.rs::rust_tagged_values_round_trip` | Rust 的收到类型在值类型设计 §二；#634 快照记「已覆盖」，往返用例在上 |
+| VAL-2-5 | 部分验证 | design-value-types-2026-10-15.md §二 | —（会话规格不覆盖 Kotlin 收到的类型；值类型设计 §二 给对应） | `crates/rutis-bridge/tests/value_roundtrip.rs::kotlin_tagged_values_round_trip` | Kotlin 的收到类型在值类型设计 §二；#634 快照记「部分」，用例只看往返不变 |
+| VAL-2-6 | 部分验证 | design-value-types-2026-10-15.md §二 | —（会话规格不覆盖 Swift 收到的类型；值类型设计 §二 的 Swift 段给对应） | `crates/rutis-bridge/tests/value_roundtrip.rs::swift_tagged_values_round_trip` | Swift 的收到类型与 Decimal 38 位的失败在值类型设计 §二；#634 快照记「部分」，38 位的失败没有用例 |
+| VAL-2-7 | 明确不保证 | design-value-types-2026-10-15.md §二 | —（会话规格不覆盖经 JS 转发时类型是否保留；值类型设计 §二 把它列为明确不保证） | — | 经 JS 原样转发时 `datetime`、`date`、`time`、`decimal`、`uuid` 的类型不保留是值类型设计 §二 的明确不保证，`values/every-tag` 的 except 记着这一差异；#634 快照记「不适用」 |
+| VAL-2-8 | 部分验证 | design-value-types-2026-10-15.md §二 | —（会话规格不覆盖 Python、Go 用什么类型接 `bigint`；值类型设计 §二 给对应） | `crates/rutis-bridge/src/runtime/testing/events.expected.json`（`values/every-tag`） | Python 的 `bigint` 是 `int` 子类、原样发回仍是 `bigint` 在值类型设计 §二；#634 快照记「部分」，±(2^53−1) 以内的 bigint 经 Python / Go 转回没有用例 |
+| VAL-2-9 | 未验证 | design-value-types-2026-10-15.md §二 | —（会话规格不覆盖 JS `Map` 与 Python `dict` 的对应；值类型设计 §二 的 Map 段给对应） | — | JS 字符串键 `Map` 到 Python 是 `dict` 子类、原样转发仍是 Map 在值类型设计 §二；#634 快照记「未覆盖」 |
+| VAL-6-1 | 部分验证 | design-value-types-2026-10-15.md §六 | —（会话规格只列标签（`SESS-9`）；JS 的发送规则在值类型设计 §六） | `crates/rutis-bridge/src/runtime/testing/weather.expected.json`（`node/value-instant`、`node/value-bytes`、`node/value-map`、`node/value-set`、`node/value-bigint`、`node/value-constructed`） | JS 的发送对应在值类型设计 §六；#634 快照记「部分」，`ArrayBuffer`、`DataView`、`Buffer` 无样本，Bun 无单独样本 |
+| VAL-6-2 | 部分验证 | design-value-types-2026-10-15.md §六 | —（会话规格只列标签（`SESS-9`）；Python 的发送规则在值类型设计 §六） | `crates/rutis-bridge/src/runtime/testing/weather.expected.json`（`python/value-instant`、`python/big-int`、`python/set`、`python/bytes`） | Python 的发送对应在值类型设计 §六；#634 快照记「部分」，“收到的 Map / 大整数原样发回”无样本 |
+| VAL-6-3 | 部分验证 | design-value-types-2026-10-15.md §六 | —（会话规格只列标签（`SESS-9`）；Go 的发送规则在值类型设计 §六） | `crates/rutis-bridge/src/runtime/testing/weather.expected.json`（`go/value-struct-bytes`、`go/big-int-in-struct`）、`crates/rutis-bridge/tests/value_roundtrip.rs::go_tagged_values_round_trip` | Go 的发送对应在值类型设计 §六；#634 快照记「部分」，`big.Int`（非指针）无样本 |
+| VAL-6-4 | 已撤回 | 0.22 无此条 | —（这条限制已撤销：64 位内的 `BigInt` 由 `Value::json()` 还原成数字（`crates/rutis-bridge/src/session/rpc.rs`）） | — | V6 修订后 `Value::json()` 接受 64 位内的 `BigInt`，其余新值才报错；#634 快照记「已取代」 |
+| VAL-6-5 | 未验证 | design-value-types-2026-10-15.md §六 | —（会话规格不覆盖 Cordis 代码生成；值类型设计 §六 规定生成的映射） | — | 生成器把 JS 类型映射到 Rust 类型的规则在值类型设计 §六，代码生成只有单元测试；#634 快照记「未覆盖」 |
+| VAL-6-6 | 部分验证 | design-value-types-2026-10-15.md §六 | —（会话规格不覆盖 Kotlin、Swift 的编码器；值类型设计 §六 规定用 SDK 自己的编码器） | `crates/rutis-bridge/src/runtime/testing/weather.expected.json`（`kotlin/value-data-class`、`swift/value-struct`） | Kotlin、Swift 用 SDK 自己的编码器在值类型设计 §六；#634 快照记「部分」，只有固定样本 |
+| VAL-7-4 | 明确不保证 | design-value-types-2026-10-15.md §七 | —（会话规格不覆盖 JS 数字精度；值类型设计 §七 把超界整数与 `-0` 列为明确不保证） | — | JS 自己的 `number` 超出 ±(2^53−1) 时不精确是 JS 的限制，值类型设计 §七 与登记表 `bridge/value-limits` 都列为明确不保证；#634 快照记「不适用」 |
+| TAG-2-1 | 未验证 | protocol-session.md §11 | SESS-33、SESS-63 | — | `path` 含本帧 `id` 是非法帧、调用号自指检查由 `SESS-33` 规定，按 `SESS-63` 结束会话；#634 快照记「未覆盖」，`session::testing::malformed` 没有这一用例 |
+| TAG-2-2 | 已撤回 | design-session-tags-2026-10-12.md §二 | SESS-46 | — | compat 格式的 origin 语法随协议 4 删除，只剩端点格式；引用的 `origin` 条目由 `SESS-46` 规定；#634 快照记「未覆盖」，本行按已撤回计因为规则的另一半已不存在 |
+| TAG-3-R1 | 部分验证 | design-session-tags-2026-10-12.md §三 | SESS-8、SESS-36 | `specs/cross-runtime-sync/README.md`（`RoutingSound`，单进程） | 条目唯一指出（会话，调用号）由标签设计 §三 R1 规定，`SESS-8`、`SESS-36` 给出条目与改写；#634 快照记「部分」，多进程模型没有 |
+| TAG-3-R2 | 部分验证 | design-session-tags-2026-10-12.md §三 | SESS-8、SESS-36 | `specs/cross-runtime-sync/README.md`（`RoutingSound`，单进程） | 回到所属会话还原为原生调用号由标签设计 §三 R2 与 `SESS-36` 的 `rebase` 规定；#634 快照记「部分」，模型检查设计、不检查实现 |
+| TAG-3-R3 | 未验证 | design-session-tags-2026-10-12.md §三 | SESS-8、SESS-39 | — | 每个宿主只为本进程的会话建等待图由标签设计 §三 R3 规定，成环拒绝见 `SESS-39`；#634 快照记「未覆盖」，`waits.rs` 的 `decode` 只有单元测试（#631） |
+| TAG-4-1 | 未验证 | design-session-tags-2026-10-12.md §四 | SESS-37 | `crates/rutis-bridge/src/session/rpc/tests.rs::sessions_have_distinct_tags_and_forward_rebases_the_current_chain` | 同一进程内确定地唯一由标签设计 §四规定，标签的唯一性见 `SESS-37`；#634 快照记「未覆盖」，只有单元测试 |
+| TAG-4-2 | 明确不保证 | design-session-tags-2026-10-12.md §四 | SESS-37 | `crates/rutis-bridge/tests/session_tags.rs` | 不同进程的标签只在 15 位随机数相等时可能相同，标签设计 §四与 `SESS-37` 都把它列为概率性；#634 快照记「不适用」 |
+| TAG-4-3 | 不单独计数 | design-session-tags-2026-10-12.md §四 | —（会话规格不覆盖随机源；标签设计 §四规定取不到系统随机数时退回 `RandomState`、进程号与时间的哈希） | — | 退回哈希仍随进程不同是标签设计 §四的实现细节，没有测试也没有 issue；#634 快照记「不适用」 |
+| TAG-4-4 | 未验证 | design-session-tags-2026-10-12.md §四 | SESS-37 | — | 旧计数器标签与新标签不会相等由标签设计 §四规定；#634 快照记「未覆盖」，“旧标签最多十几位”只是对计数器大小的假设 |
+| TAG-5-1 | 未验证 | design-session-tags-2026-10-12.md §五 | SESS-8、SESS-36 | `crates/rutis-bridge/tests/session_tags.rs`、`tests/e2e/tests/migration.rs` | 线格式、字段、握手与能力不变、标签只锁定 `s[0-9]+` 由标签设计 §五与 `SESS-8`、`SESS-36` 规定；#634 快照记「未覆盖」，一致性套件没有带标签 origin 的用例 |
+| TAG-5-2a | 未验证 | design-session-tags-2026-10-12.md §五 | SESS-8、SESS-36 | — | 另一个进程的调用不因被当成本进程的调用而结束会话由标签设计 §五的行为表规定；#634 快照记「未覆盖」 |
+| TAG-5-2b | 部分验证 | design-session-tags-2026-10-12.md §五 | SESS-8、SESS-38 | `specs/cross-runtime-sync/README.md`（`RoutingSound`，单进程） | 另一个进程的调用不被投到本进程正在同步等待的线程由标签设计 §五规定，路由见 `SESS-38`；#634 快照记「部分」，模型只有单进程 |
+| TAG-5-2c | 未验证 | design-session-tags-2026-10-12.md §五 | SESS-8、SESS-39 | — | 另一个进程的调用不进入本进程的等待图由标签设计 §五规定，等待图与成环拒绝见 `SESS-39`；#634 快照记「未覆盖」 |
+| TAG-5-3 | 明确不保证 | guarantees.md §10 | bridge/sync-wait-not-covered | — | 跨进程的等待环不在检测范围内，登记表 `bridge/sync-wait-not-covered` 与标签设计 §五都列为明确不保证；#634 快照记「不适用」 |
+| M1-4-1 | 未验证 | design-multilang-m1-2026-10-04.md §四 | —（会话规格不覆盖宿主服务：按名字跨语言共享的服务只有 `host_key(name)` 一种表示（M1 §四）） | — | `host_key(name)` 与 `dyn HostDispatch` 在 M1 §四；#634 快照记「未覆盖」 |
+| M1-4-2 | 未验证 | design-multilang-m1-2026-10-04.md §四 | —（会话规格不覆盖 `host:<name>` 的查找；M1 §四 规定按名字查当前提供者） | — | 按名字查当前提供者、查不到报“没有这个宿主服务”在 M1 §四；#634 快照记「未覆盖」 |
+| M1-4.1-1 | 未验证 | design-multilang-m1-2026-10-04.md §4.1 | —（会话规格不覆盖 `HostDispatch::methods`；M1 §4.1 规定方法形状跟着服务走） | — | `methods` 与 `host` 声明补形状在 M1 §4.1；#634 快照记「未覆盖」，代码里 `host` 声明优先于 `methods()`，与设计相反（`crates/rutis-loader/src/runtime/process.rs`） |
+| M1-4.1-2 | 未验证 | design-multilang-m1-2026-10-04.md §4.1 | —（会话规格不覆盖 Cordis 插件的宿主声明；M1 §4.1 与 §八 规定只登记形状） | — | `CordisRuntimePlugin::host(name, methods)` 只登记形状、运行时不等这个服务在 M1 §4.1；#634 快照记「未覆盖」 |
+| M1-4.1-3 | 不单独计数 | design-multilang-m1-2026-10-04.md §4.1 | —（会话规格不覆盖行服务的形状；M1 §4.1 规定行服务的 `HostDispatch` 总带形状） | — | 构造即保证（`crates/rutis-loader/src/runtime/rows.rs`）；#634 快照记「不适用」，不单独计数 |
+| M1-4.2-1 | 已撤回 | design-multilang-m1-2026-10-04.md §4.2 | —（会话规格不覆盖 catalog：M1 §十四 把 catalog 默认按名字共享一切，`share_registered_only` 才只认登记的） | — | `register_shared` 白名单被 catalog 默认共享取代（M1 §十四、`crates/rutis-loader/src/runtime.rs`）；#634 快照记「已取代」 |
+| M1-5.1-1 | 未验证 | design-multilang-m1-2026-10-04.md §5.1 | —（会话规格不覆盖 `rows.schema`：M1 §5.1 规定它报出依赖和服务） | — | `rows.schema` 返回 `{config, inject, provides}` 加 `announces` 与 `cordis` 在 M1 §5.1；#634 快照记「未覆盖」 |
+| M1-5.1-2 | 已撤回 | design-multilang-m1-2026-10-04.md §5.1 | —（会话规格不覆盖 `inject` 的形状；M1 §十三 规定它是名字列表、没有可选依赖） | — | Cordis 4 的 `inject` 是名字列表、全部按必需（M1 §十三）；#634 快照记「已取代」 |
+| M1-5.1-3 | 部分验证 | design-multilang-m1-2026-10-04.md §5.1 | —（会话规格不覆盖 `rutis.provides`；M1 §5.1 规定它按声明的形状投到 rutis） | `crates/rutis-bridge/src/runtime/testing/weather.expected.json`（`methods`、`undeclared`） | 写了 `rutis.provides` 的名字按声明投出在 M1 §5.1；#634 快照记「部分」，weather 的样本只覆盖一部分形状 |
+| M1-5.1-4 | 已撤回 | design-multilang-m1-2026-10-04.md §5.1 | —（会话规格不覆盖未声明服务的可见性；M1 §十四 把全部服务投到 rutis） | — | 没有 `rutis.provides` 的服务也全部投到 rutis（M1 §十四）；#634 快照记「已取代」 |
+| M1-5.1-5 | 未验证 | design-multilang-m1-2026-10-04.md §5.1 | —（会话规格不覆盖旧 runner 的 `Schema`；M1 §5.1 与 §八 规定凭 `features` 区分） | — | 旧 runner 返回裸 `Schema`、Rust 凭 `features` 区分在 M1 §5.1；#634 快照记「未覆盖」，握手判定表只含会话 hello，不含 mount 的 `features` |
+| M1-5.2-1 | 未验证 | design-multilang-m1-2026-10-04.md §5.2 | —（会话规格不覆盖行的依赖；M1 §5.2 规定依赖 = `RuntimeRows` + 门控的 `inject` 名字） | — | 行的依赖 = `RuntimeRows` + 由 rutis 门控的 `inject` 名字在 M1 §5.2；#634 快照记「未覆盖」，门控的名字现为 catalog 共享的名字 |
+| M1-5.2-2 | 未验证 | design-multilang-m1-2026-10-04.md §5.2 | —（会话规格不覆盖依赖的解析时机；M1 §5.2 规定依赖在解析时固定） | — | 依赖在解析时固定、声明变了要重新解析在 M1 §5.2；#634 快照记「未覆盖」 |
+| M1-5.3-1 | 未验证 | design-multilang-m1-2026-10-04.md §5.3 | —（会话规格不覆盖行服务的槽位；M1 §5.3 规定 `rows.load` 带服务名与形状） | — | `rows.load` 带服务名与形状、每个名字一个槽位、exporter fiber 随行卸载在 M1 §5.3；#634 快照记「未覆盖」 |
+| M1-5.3-2 | 未验证 | design-multilang-m1-2026-10-04.md §5.3 | —（会话规格不覆盖槽位通知；M1 §5.3 规定经 `service(...)` 报给 Rust） | — | 槽位变化经 `service(name, handle, version[, {row, methods}])` 通知 Rust 在 M1 §5.3；#634 快照记「未覆盖」 |
+| M1-5.3-3 | 未验证 | design-multilang-m1-2026-10-04.md §5.3 | —（会话规格不覆盖 `provide_as`；M1 §5.3 规定行收到通知时在自己的 Ctx 上提供 `RowService`） | — | 行收到 handle 时 `provide_as` `host_key(name)` 的 `RowService`、收到 None 时撤销在 M1 §5.3；#634 快照记「未覆盖」 |
+| M1-5.3-4 | 部分验证 | design-multilang-m1-2026-10-04.md §5.3 | —（会话规格不覆盖 `RowService::invoke`；M1 §5.3 规定它在提供方会话上调用并改写调用链） | `crates/rutis-loader/tests/sync_cycles.rs::function_references_calling_each_other`、`specs/cross-runtime-sync/README.md`（`RustForward`） | `RowService::invoke` 在提供方会话上调用、跨运行时经 `forward` 改写链在 M1 §5.3；#634 快照记「部分」，未知方法报错没有模型 |
+| M1-5.3-5 | 未验证 | design-multilang-m1-2026-10-04.md §5.3 | —（会话规格不覆盖服务注册在哪个 fiber；M1 §5.3 规定注册在行或叶子插件的 fiber 上） | — | 服务注册在行的 fiber 上、卸载时自动撤销、依赖它的行按原生规则停下在 M1 §5.3；#634 快照记「未覆盖」 |
+| M1-5.3-6 | 已撤回 | design-multilang-m1-2026-10-04.md §十四 | —（会话规格不覆盖同名服务；M1 §十四 规定后提供的一方失败） | — | 两行声明同一个名字时不再只报诊断：后提供的一方失败（M1 §十四）；#634 快照记「已取代」 |
+| M1-5.4-1 | 未验证 | design-multilang-m1-2026-10-04.md §5.4 | —（会话规格不覆盖运行时插件的依赖；M1 §5.4 规定运行时不等任何宿主服务） | — | 运行时的 `injects` 与 `Mount::hosts` 为空、所有等待落在行上在 M1 §5.4；#634 快照记「未覆盖」 |
+| M1-5.4-2 | 未验证 | design-multilang-m1-2026-10-04.md §5.4 | —（会话规格不覆盖 `hosts.provide`；M1 §5.4 规定 runner 注册代理并保存撤销函数） | — | `hosts.provide` / `hosts.withdraw` 在 M1 §5.4；#634 快照记「未覆盖」，标签参数是后加的（`crates/rutis-loader/src/runtime/process.rs`） |
+| M1-5.4-3 | 未验证 | design-multilang-m1-2026-10-04.md §5.4 | —（会话规格不覆盖宿主服务的租用计数；M1 §5.4 规定按名字计数） | — | 宿主服务表按名字计数、第一个租用写表、最后一个释放撤下在 M1 §5.4；#634 快照记「未覆盖」，`lease()` 被丢弃的疑点在 #625 |
+| M1-5.4-4 | 未验证 | design-multilang-m1-2026-10-04.md §5.4 | —（会话规格不覆盖 `JsRow::apply` 的租用；M1 §5.4 规定装载前取 `host_key(n)`） | — | `JsRow::apply` 装载前取 `host_key(n)`、同源时跳过、否则租用一次并在行清理时释放（M1 §5.4）；#634 快照记「未覆盖」 |
+| M1-5.4-5 | 未验证 | design-multilang-m1-2026-10-04.md §5.4 | —（会话规格不覆盖行的卸载顺序；M1 §5.4 规定先 `rows.unload` 再释放租约） | — | 清理顺序：先 `rows.unload` 再释放宿主服务租约、装载失败的行归还租约在 M1 §5.4；#634 快照记「未覆盖」 |
+| M1-5.4-6 | 未验证 | design-multilang-m1-2026-10-04.md §5.4 | —（会话规格不覆盖提供者替换；M1 §5.4 规定依赖它的行按原生规则重启） | — | 提供者被替换时依赖它的行按原生规则重启在 M1 §5.4；#634 快照记「未覆盖」，仍有别的行持租约时 dispatch 被新租约换掉（`crates/rutis-loader/src/runtime/process.rs`） |
+| M1-6.1-1 | 未验证 | design-multilang-m1-2026-10-04.md §6.1 | —（会话规格不覆盖第二段放行；M1 §6.1 说明为什么需要它） | — | 运行时启动前解析的行返回“没有 schema、只依赖运行时”的结果、不缓存在 M1 §6.1；#634 快照记「未覆盖」 |
+| M1-6.2-1 | 未验证 | design-multilang-m1-2026-10-04.md §6.2 | —（会话规格不覆盖 `RuntimeRowsPlugin`；M1 §6.2 规定刷新后才提供 `RuntimeRows`） | — | `RuntimeRowsPlugin` 刷新行的解析结果后才提供 `RuntimeRows`、`reload` 不会让行启动在 M1 §6.2；#634 快照记「未覆盖」 |
+| M1-6.2-2 | 未验证 | design-multilang-m1-2026-10-04.md §6.2 | —（会话规格不覆盖刷新哪些行；M1 §6.2 规定运行时不在时解析的与版本变了的） | — | 要刷新的行 = 运行时不在时解析的 + `package.json` 的 `version` 变了的（`take_stale`）在 M1 §6.2；#634 快照记「未覆盖」 |
+| M1-6.2-3 | 未验证 | design-multilang-m1-2026-10-04.md §6.2 | —（会话规格不覆盖刷新的取消；M1 §6.2 规定刷新登记为插件的清理） | — | 刷新在一个任务里做、卸载或重启时取消、`apply` 立即返回在 M1 §6.2；#634 快照记「未覆盖」 |
+| M1-6.2-4 | 未验证 | design-multilang-m1-2026-10-04.md §6.2 | —（会话规格不覆盖刷新失败的隔离；M1 §6.2 规定其余行照常放行） | — | 某一行刷新失败时它按 loader 规则报失败、其余行照常放行在 M1 §6.2；#634 快照记「未覆盖」 |
+| M1-7.1-1 | 部分验证 | design-multilang-m1-2026-10-04.md §7.1 | SESS-54 | `crates/rutis-loader/tests/sync_cycles.rs::function_references_calling_each_other` | 编码另一个会话的远程引用时在本会话导出同种类的本地中继在 M1 §7.1，`SESS-54` 给出中继转发；#634 快照记「部分」，Future 与对象的中继没有一致性用例 |
+| M1-7.1-2 | 未验证 | design-multilang-m1-2026-10-04.md §7.1 | SESS-54、SESS-47 | — | 中继持有原引用、计数归零时一起丢掉并向原会话发 `release` 在 M1 §7.1，计数见 `SESS-47`；#634 快照记「未覆盖」，`*_releases_balance` 只有两方 |
+| M1-7.1-3 | 未验证 | design-multilang-m1-2026-10-04.md §7.1 | SESS-46、SESS-54 | — | 同一引用多次转交到同一会话复用同一中继（按（会话，引用））在 M1 §7.1，身份见 `SESS-46`；#634 快照记「未覆盖」，引用计数 PT 扩到中继三方（#631） |
+| M1-7.1-4 | 部分验证 | design-multilang-m1-2026-10-04.md §7.1 | SESS-50、SESS-54 | `crates/rutis-bridge/tests/value_roundtrip.rs::rust_releases_balance`（Bounce：把对端的函数传回对端） | 转回原会话以 `home: true` 发回、接收方得到原对象在 M1 §7.1 与 `SESS-50`；#634 快照记「部分」，只两方，没有三方用例 |
+| M1-7.1-5 | 未验证 | design-multilang-m1-2026-10-04.md §7.1 | SESS-54 | — | 中继的中继解开到最内层再判断在 M1 §7.1，中继行为见 `SESS-54`；#634 快照记「未覆盖」，只有实现 |
+| M1-7.2-1 | 部分验证 | design-multilang-m1-2026-10-04.md §7.2 | SESS-36 | `specs/cross-runtime-sync/README.md`（`current-norebase`） | 每个会话一个标签、调用链改写只在中继与 `RowService` 处在 M1 §7.2，改写见 `SESS-36`；#634 快照记「部分」 |
+| M1-7.2-2 | 部分验证 | design-multilang-m1-2026-10-04.md §7.2 | SESS-36 | `specs/cross-runtime-sync/README.md`（`RebasePath`） | `rebase(path, from, to)` 的三条规则在 M1 §7.2，`SESS-36` 给出转发时的标签改写；#634 快照记「部分」，模型不检查实现 |
+| M1-7.2-3 | 部分验证 | design-multilang-m1-2026-10-04.md §7.2 | SESS-36 | `specs/cross-runtime-sync/README.md`（`RoutingSound`） | 转发前把当前调用链从源会话改写到目标会话在 M1 §7.2，见 `SESS-36`；#634 快照记「部分」，模型不建 await、get 与中继转发的 origin |
+| M1-7.2-4 | 部分验证 | design-multilang-m1-2026-10-04.md §7.2 | SESS-8、SESS-33 | `specs/cross-runtime-sync/README.md`（`RoutingSound`，单进程） | 带标签的条目对不上任何会话里的原生调用号在 M1 §7.2 与 `SESS-8`、`SESS-33`；#634 快照记「部分」，模型单进程 |
+| M1-7.2-5 | 部分验证 | design-multilang-m1-2026-10-04.md §7.2 | SESS-38 | `crates/rutis-bridge/src/session/testing.rs::session`（reenter）、`specs/cross-runtime-sync/README.md`（`RoutingSound`） | 回到原会话时在等待它的线程上嵌套执行、不死锁在 M1 §7.2 与 `SESS-38`；#634 快照记「部分」，每个调用一个线程的运行时不在模型里 |
+| M1-7.2-6 | 部分验证 | design-multilang-m1-2026-10-04.md §7.2 | SESS-8、SESS-38 | `specs/cross-runtime-sync/README.md`（`RoutingSound`，只建 path 一支） | Rust 收到调用后按 `path`、再按等待者 origin 找等待线程、都没有则 spawn 在 M1 §7.2 与 `SESS-8`、`SESS-38`；#634 快照记「部分」 |
+| M1-7.2-7 | 未验证 | design-multilang-m1-2026-10-04.md §7.2 | SESS-38 | — | 同步等待开始时把已在排队、属于这条链的调用按调用号顺序交给等待线程在 M1 §7.2，等待见 `SESS-38`；#634 快照记「未覆盖」，只有 #628 的模型计划 |
+| M1-8-1 | 未验证 | design-multilang-m1-2026-10-04.md §八 | —（会话规格不覆盖本机挂载的版本；M1 §八 规定本机会话帧格式不变） | — | 本机运行时会话帧格式不变、`PROTOCOL` 仍是 2 在 M1 §八；#634 快照记「未覆盖」，一致性套件只跑端点格式 |
+| M1-8-2 | 未验证 | design-multilang-m1-2026-10-04.md §八 | —（会话规格不覆盖 `mount` 的 `features`；M1 §八 规定 runner 在回复里报它） | — | `mount` 回复里报 `features`、缺 `rows.v2` 时报运行时版本过旧在 M1 §八；#634 快照记「未覆盖」 |
+| M1-8-3 | 未验证 | design-multilang-m1-2026-10-04.md §八 | —（会话规格不覆盖静态挂载；M1 §八 规定构建期生成的挂载不用 `rows.*`） | — | 构建期生成的静态挂载不用 `rows.*`、仍可在 `Mount::hosts` 注册宿主服务在 M1 §八；#634 快照记「未覆盖」 |
+| M1-8-4 | 不单独计数 | design-multilang-m1-2026-10-04.md §八 | —（会话规格不覆盖装载等待的诊断；M1 §八 规定诊断的等待原因指向 `RuntimeRows`） | — | 没挂 `RuntimeRowsPlugin` 时行一直等、诊断指向它是 M1 §八 的诊断文字；#634 快照记「不适用」，没有找到测试 |
+| M1-11.1-1 | 未验证 | design-multilang-m1-2026-10-04.md §11.1 | —（会话规格不覆盖叶子插件的标记；M1 §11.1 规定用 `definePlugin`） | — | 叶子插件必须用 `definePlugin` 标记、只看形状分不出 Cordis 函数插件在 M1 §11.1；#634 快照记「未覆盖」 |
+| M1-11.1-2 | 未验证 | design-multilang-m1-2026-10-04.md §11.1 | —（会话规格不覆盖叶子插件的写法；M1 §11.1 规定 `apply` 与 `provides` 的形状） | — | `apply` 可 async、清理函数可 async 或不返回、`provides` 写在代码里、`config` 是 JSON Schema 在 M1 §11.1；#634 快照记「未覆盖」 |
+| M1-11.2-1 | 未验证 | design-multilang-m1-2026-10-04.md §11.2 | —（会话规格不覆盖叶子插件装在哪里；M1 §11.2 规定装进同一个 Node 运行时） | — | 叶子插件包成 Cordis 插件装进同一个 Node 运行时、与 Cordis 插件互用服务不走进程间通信在 M1 §11.2；#634 快照记「未覆盖」 |
+| M1-11.2-2 | 已撤回 | design-multilang-m1-2026-10-04.md §11.2 | —（会话规格不覆盖叶子插件的 `ctx`；插件 API 3 已加了 `ctx.on` 与五种发出方式） | — | 插件 API 3 加了 `ctx.on` 与五种发出方式，`ctx` 不再只有 `use` 与 `provide`；#634 快照记「已取代」 |
+| M1-11.2-3 | 未验证 | design-multilang-m1-2026-10-04.md §11.2 | —（会话规格不覆盖 `use` 拿到什么；M1 §11.2 规定插件分不出原生对象与代理） | — | `use` 拿到同进程的原生对象或宿主服务代理、插件分不出在 M1 §11.2；#634 快照记「未覆盖」 |
+| M1-11.2-4 | 未验证 | design-multilang-m1-2026-10-04.md §11.2 | —（会话规格不覆盖配置变化；M1 §11.2 规定叶子插件一律重启） | — | 叶子插件配置变化一律重启、没有 volatile 字段在 M1 §11.2；#634 快照记「未覆盖」 |
+| M1-11.2-5 | 未验证 | design-multilang-m1-2026-10-04.md §11.2 | —（会话规格不覆盖 `rows.schema` 对叶子插件的读取；M1 §11.2 规定直接读 `definePlugin` 对象） | — | `rows.schema` 遇到叶子插件直接读 `inject`、`provides`、`config`，没声明 `provides` 时报 `announces: true` 在 M1 §11.2；#634 快照记「未覆盖」 |
+| M1-13-1 | 已撤回 | design-multilang-m1-2026-10-04.md §十三 | —（会话规格不覆盖同名服务；M1 §十四 已把它推广到任何已有提供者） | — | 被 M1 §十四 推广到任何已有提供者（`M1-14-4`）；#634 快照记「已取代」 |
+| M1-13-2 | 已撤回 | design-multilang-m1-2026-10-04.md §十三 | —（会话规格不覆盖 `RowService::invoke`；M1 §5.3 已改为经 `forward`） | — | “留到 M2 不经 `forward`”已做（`crates/rutis-loader/src/runtime/rows.rs`），见 `M1-5.3-4`；#634 快照记「已取代」 |
+| M1-13-3 | 未验证 | design-multilang-m1-2026-10-04.md §十三 | —（会话规格只规定对象引用对所有协议 4 实现都可传（`SESS-52`）；经中继转给 Node 侧的结果不在会话规格里） | — | 对象引用经中继转给 Node 侧时 Node 解码抛错、`receive` 的 catch 结束整个会话（`node/rutis-runtime/src/session.mjs`），比“不接受”更重；#634 快照记「未覆盖」 |
+| M1-14-1 | 部分验证 | design-multilang-m1-2026-10-04.md §十四 | —（会话规格不覆盖 Cordis 行提供什么；M1 §十四 规定服务全部投到 rutis，方法都是 async） | `crates/rutis-bridge/src/runtime/testing/weather.expected.json`（`undeclared`） | Cordis 行的服务全部投到 rutis、方法取自身与原型链上的函数在 M1 §十四；#634 快照记「部分」，weather 的插件是叶子插件，Cordis 行推断方法的规则没有一致性用例 |
+| M1-14-2 | 未验证 | design-multilang-m1-2026-10-04.md §十四 | —（会话规格不覆盖槽位建立；M1 §十四 规定行为行的 fiber 建槽位） | — | 行为行（含子 fiber）提供、在行作用域可见、尚无槽位的服务建槽位、每次换对象发带 `{row, methods}` 的 `service` 在 M1 §十四；#634 快照记「未覆盖」 |
+| M1-14-3 | 未验证 | design-multilang-m1-2026-10-04.md §十四 | —（会话规格不覆盖 `host_key(n)` 门控；M1 §十四 规定同一运行时别的行提供的服务也在那里） | — | 门控仍按 `host_key(n)`、同一运行时别的 Cordis 行提供的服务也出现在那里、依赖它的行在服务出现时放行在 M1 §十四；#634 快照记「未覆盖」 |
+| M1-14-4 | 未验证 | design-multilang-m1-2026-10-04.md §十四 | —（会话规格不覆盖同名服务；M1 §十四 规定后提供的一方失败） | — | 同名时后提供的一方失败、错误写明双方在 M1 §十四；#634 快照记「未覆盖」 |
+| M1-14-5 | 未验证 | design-multilang-m1-2026-10-04.md §十四 | —（会话规格不覆盖 `isolate`；M1 §十四 规定它留在行自己的作用域） | — | 行配置 `isolate` 的名字留在行自己的作用域、不投到 rutis、实例的作用域照旧（`host_key_in`）在 M1 §十四；#634 快照记「未覆盖」 |
+| M1-14-6 | 不单独计数 | design-multilang-m1-2026-10-04.md §十四 | —（会话规格不覆盖 `check` 的输出；M1 §十四 规定 `may be provided at runtime by …`） | — | `check` 对只可能由这类行提供的服务报 `may be provided at runtime by …`、不算失败（`Supply::Announced`）是诊断文字；#634 快照记「不适用」，不单独计数 |
+| M1-14-7 | 未验证 | design-multilang-m1-2026-10-04.md §十四 | —（会话规格不覆盖 `rows.announce`；M1 §十四 规定 runner 与宿主的能力协商） | — | runner 在 `features` 加 `rows.announce`、宿主在 `mount` 参数加 `announce: true`、混用时各自如前在 M1 §十四；#634 快照记「未覆盖」，e2e `cross_version.rs` 是普通测试 |
+| M1-14-8 | 未验证 | design-multilang-m1-2026-10-04.md §十四 | —（会话规格不覆盖装载前的服务通知；M1 §十四 规定行在回复 `rows.load` 前等宿主处理完） | — | 带推断服务的行在回复 `rows.load` 前等宿主处理完这些通知、所以重名在装载时失败在 M1 §十四；#634 快照记「未覆盖」 |
+| M1-14-9 | 部分验证 | design-multilang-m1-2026-10-04.md §十四 | —（会话规格不覆盖叶子插件的 `ctx.provide`；M1 §十四 规定它自动对外） | `crates/rutis-bridge/src/runtime/testing/weather.expected.json`（`undeclared`） | 四种 SDK 的叶子插件 `ctx.provide` 都自动对外、方法取公开方法、`provides` 可选在 M1 §十四；#634 快照记「部分」 |
+| CHN-0-1 | 部分验证 | design-protocol-channel-decoupling-2026-10-03.md §范围与边界 | SESS-1 | `crates/rutis-bridge/src/channel/testing.rs::contract`（memory_mux.rs 已不在当前树，复用 Adapter 的契约用例随它删除） | 一个 Session 用一个逻辑 Channel 由 `SESS-1` 规定，连接池与复用不进会话协议在网络栈设计 §范围与边界；#634 快照记「部分」，复用 Adapter 只有普通测试 |
+| CHN-0-2 | 部分验证 | design-protocol-channel-decoupling-2026-10-03.md §本机子进程端点与兼容接口 | SESS-1 | `crates/rutis-bridge/src/session/testing.rs::session`（叶子运行时不装节点功能即通过） | 两种远程端点共用承载、身份、link 与 Session 在网络栈设计 §本机子进程端点与兼容接口，会话跑在一条通道上见 `SESS-1`；#634 快照记「部分」 |
+| CHN-1-1 | 不单独计数 | design-protocol-channel-decoupling-2026-10-03.md §分层与插件结构 | SESS-1、SESS-2 | — | 通道只搬字节、codec 不依赖通道种类是编译期的依赖结构（D1 验收：`rpc.rs`、`protocol.rs` 不引用 `std::os::unix`），会话规则见 `SESS-1`、`SESS-2`；#634 快照记「不适用」 |
+| CHN-1-2 | 已撤回 | design-protocol-channel-decoupling-2026-10-03.md §分层与插件结构 | —（会话规格不覆盖 crate 划分；网络栈设计 §分层与插件结构 的独立 crate 已在 2026-10-06 合并） | — | `rutis-channel` 已合并为 `rutis-bridge` 的模块；#634 快照记「已取代」 |
+| CHN-1-3 | 不单独计数 | design-protocol-channel-decoupling-2026-10-03.md §分层与插件结构 | —（会话规格不覆盖 link 的职责；网络栈设计 §分层与插件结构 规定它只做连接、身份与握手） | — | 编译期：`rutis-loader` 依赖 `rutis-bridge`，反向没有；#634 快照记「不适用」 |
+| CHN-1-4 | 已撤回 | design-protocol-channel-decoupling-2026-10-03.md §分层与插件结构 | —（会话规格不覆盖吊销；0.19 删除吊销，断开连接靠停掉那一行（`design-remote-session-2026-10-28.md` §八）） | — | 0.19 删除吊销与接入点，静态 link 的监听端也没有单独建模；#634 快照记「部分」，本行按已撤回计 |
+| CHN-1-5 | 未验证 | design-protocol-channel-decoupling-2026-10-03.md §分层与插件结构 | —（会话规格不覆盖节点桥功能的权限；网络栈设计 §分层与插件结构 规定由两端为对方安装的功能插件决定） | — | 方向无关的权限没有断言：`node_conformance.rs`、`websocket_conformance.rs` 不在当前树；#634 快照记「未覆盖」 |
+| CHN-1-6 | 已撤回 | design-protocol-channel-decoupling-2026-10-03.md §分层与插件结构 | —（会话规格不覆盖承载插件；0.19 改为连接插件的行（`design-remote-session-2026-10-28.md` §八）） | — | 承载插件与其清理随 0.19 的连接插件改；#634 快照记「未覆盖」，本行按已撤回计 |
+| CHN-1-7 | 不单独计数 | design-protocol-channel-decoupling-2026-10-03.md §分层与插件结构 | —（会话规格不覆盖 feature 与承载；网络栈设计 §分层与插件结构 规定不用网络时不引入 WebSocket） | — | 编译期 feature（`crates/rutis-bridge/Cargo.toml` 的 `websocket`）；#634 快照记「不适用」 |
+| CHN-2-1 | 部分验证 | design-protocol-channel-decoupling-2026-10-03.md §Channel 契约 | SESS-1、SESS-18 | `crates/rutis-bridge/src/channel/testing.rs::contract`（`order_and_boundaries`、`nothing_lost_while_the_receiver_lags`） | 按发送顺序交付、不丢不重是通道契约，会话看到的顺序见 `SESS-1`、`SESS-18`；#634 快照记「部分」，契约是固定时序 |
+| CHN-2-2 | 已验证 | design-protocol-channel-decoupling-2026-10-03.md §Channel 契约 | SESS-2 | `crates/rutis-bridge/src/channel/testing.rs::contract`（`order_and_boundaries`、`large_messages`） | 一帧一条消息、不拆分合并由 `SESS-2` 与通道契约规定；#634 快照记「已覆盖」，各承载的契约用例在上 |
+| CHN-2-3 | 部分验证 | design-protocol-channel-decoupling-2026-10-03.md §Channel 契约 | SESS-18、SESS-38 | `crates/rutis-bridge/src/session/testing.rs::session`（apply、reenter） | 全双工、同步等待期间仍能接反向调用由 `SESS-18`、`SESS-38` 规定；#634 快照记「部分」，通道层的契约测试没有这一项 |
+| CHN-2-4 | 部分验证 | design-protocol-channel-decoupling-2026-10-03.md §Channel 契约 | SESS-75 | `crates/rutis-bridge/src/channel/testing.rs::contract`（`nothing_lost_while_the_receiver_lags`） | 有界缓冲与发送方在背压下等待，出站积压上限见 `SESS-75`；#634 快照记「部分」，有界没有断言 |
+| CHN-2-5 | 未验证 | design-protocol-channel-decoupling-2026-10-03.md §Channel 契约 | —（会话规格不覆盖通道由谁推进；网络栈设计 §Channel 契约 规定通道独立于调用方执行器） | — | “调用方 `current_thread` 被阻塞时通道仍推进”不在 `channel::testing::contract` 里；#634 快照记「未覆盖」 |
+| CHN-2-6 | 不单独计数 | design-protocol-channel-decoupling-2026-10-03.md §Channel 契约 | —（会话规格不覆盖失联检测；网络栈设计 §Channel 契约 规定静默失效的介质在有限时间内被发现） | `crates/rutis-bridge/tests/websocket.rs::heartbeats_find_a_half_open_connection` | 计时；心跳用例在上；#634 快照记「不适用」，不单独计数 |
+| CHN-2-7 | 已撤回 | design-protocol-channel-decoupling-2026-10-03.md §Channel 契约 | SESS-24 | — | 身份只经 `ChannelInfo` 交付这层没了：身份在握手里核对（`SESS-24`）；#634 快照记「不适用」，本行按已撤回计 |
+| CHN-2-8 | 未验证 | design-protocol-channel-decoupling-2026-10-03.md §Channel 契约 | SESS-24 | — | `hello` 的端点 id 必须与连接器确认的对端身份一致由 `SESS-24` 规定；#634 快照记「未覆盖」，握手判定表见 #631 |
+| CHN-2-9 | 未验证 | design-protocol-channel-decoupling-2026-10-03.md §Channel 契约 | SESS-42 | — | 通道结束可观察、在途调用以传输错误失败由 `SESS-42` 与 `bridge/in-flight-call-fails-once` 规定；#634 快照记「未覆盖」，`SettlesOnce` 在 #626 |
+| CHN-2-10 | 不单独计数 | design-protocol-channel-decoupling-2026-10-03.md §Channel 契约 | —（会话规格不覆盖关闭原因的用法；网络栈设计 §Channel 契约 规定原因只供诊断） | — | 代码性质：分支只看结构化类别（`crates/rutis-host/src/connect`）；#634 快照记「不适用」 |
+| CHN-2-11 | 已验证 | design-protocol-channel-decoupling-2026-10-03.md §Rust 接口 | —（会话规格不覆盖通道的 Rust 接口；网络栈设计 §Rust 接口 规定 `recv` 与 `Ok(None)`） | `crates/rutis-bridge/src/channel/testing.rs::contract`（`the_far_end_closing_ends_the_channel`） | `recv` 阻塞到下一条、`Ok(None)` 表示对端正常结束在网络栈设计 §Rust 接口；#634 快照记「已覆盖」，契约用例在上 |
+| CHN-2-12 | 部分验证 | design-protocol-channel-decoupling-2026-10-03.md §Rust 接口 | —（会话规格不覆盖 `close`；网络栈设计 §Rust 接口 规定它幂等并唤醒阻塞的 send 与 recv） | `crates/rutis-bridge/src/channel/testing.rs::contract`（`close_is_idempotent_and_wakes_a_blocked_receive`、`close_wakes_a_blocked_send`） | `close` 幂等并唤醒阻塞在 `send` 与 `recv` 上的线程在网络栈设计 §Rust 接口；#634 快照记「部分」，固定时序不是可控调度 |
+| CHN-2-13 | 已撤回 | design-protocol-channel-decoupling-2026-10-03.md §Rust 接口 | —（会话规格不覆盖 `ChannelError`；0.19 已给它加 `Rejected` 与 `Closer::replaced`） | — | `ChannelError` 不再只有 `Closed`：另加 `Rejected` 与 `Closer::replaced` / `rejected`（`crates/rutis-bridge/src/channel/mod.rs`）；#634 快照记「已取代」 |
+| CHN-2-14 | 未验证 | design-protocol-channel-decoupling-2026-10-03.md §Rust 接口 | —（会话规格不覆盖发送锁；网络栈设计 §Rust 接口 规定编码与发送在同一个发送锁内） | — | 会话在发送锁内完成编码和发送、引用表变化与发送顺序一致在网络栈设计 §Rust 接口；#634 快照记「未覆盖」 |
+| CHN-2-15 | 未验证 | design-protocol-channel-decoupling-2026-10-03.md §Rust 接口 | —（会话规格不覆盖 `close` 与发送锁的顺序；网络栈设计 §Rust 接口 规定先在锁外打断发送） | — | `close` 先在发送锁外打断阻塞的发送、再取锁清表在网络栈设计 §Rust 接口；#634 快照记「未覆盖」，#623 的“本端关闭 × 被阻塞的发送” |
+| CHN-2-16 | 不单独计数 | design-protocol-channel-decoupling-2026-10-03.md §Rust 接口 | —（会话规格不覆盖错误映射与文字；网络栈设计 §Rust 接口 规定把 `Closed` 映射为传输错误） | — | 错误映射与文字是诊断文字（`crates/rutis-bridge/src/session/rpc.rs` 另把 `Rejected` 映射为 `Handshake::IdentityMismatch`）；#634 快照记「不适用」 |
+| CHN-2-17 | 未验证 | design-protocol-channel-decoupling-2026-10-03.md §Rust 接口 | SESS-27 | — | 缺少已确认对端身份的通道不被标为会话就绪，就绪门见 `SESS-27`；#634 快照记「未覆盖」，本机 compat 会话按远程插件设计 §6.1 豁免 |
+| CHN-2.2-1 | 部分验证 | design-protocol-channel-decoupling-2026-10-03.md §Node 与其他语言 | —（会话规格不覆盖 Node 的建立失败类别；网络栈设计 §Node 与其他语言 规定返回结构化类别） | `crates/rutis-host/tests/dial_conformance.rs` | 建立失败返回结构化类别在网络栈设计 §Node 与其他语言；#634 快照记「部分」，查的是拨出方的行为，不是 JS 通道接口本身 |
+| CHN-2.2-2 | 未验证 | design-protocol-channel-decoupling-2026-10-03.md §Node 与其他语言 | —（会话规格不覆盖通道规格字符串；网络栈设计 §Node 与其他语言 列 `unix:`、`fd:`、`ws://` 等） | — | 通道规格与环境变量在网络栈设计 §Node 与其他语言；#634 快照记「未覆盖」 |
+| CHN-2.2-3 | 已撤回 | guarantees.md §10 | bridge/dial-out-rules | — | “`listen:` 接受第一条连接”被一次服务一个控制方、新连接接管取代（`bridge/dial-out-rules`）；#634 快照记「已取代」 |
+| CHN-2.2-4 | 不单独计数 | design-protocol-channel-decoupling-2026-10-03.md §Node 与其他语言 | —（会话规格不覆盖凭据从哪里传入；网络栈设计 §Node 与其他语言 规定经环境变量） | — | 凭据经环境变量传入（现为 `RUTIS_TOKEN`、`RUTIS_CA`、`RUTIS_CERT`、`RUTIS_KEY`）是外部输入方式；#634 快照记「不适用」 |
+| CHN-3-1 | 部分验证 | design-protocol-channel-decoupling-2026-10-03.md §分帧与编码 | SESS-2 | `crates/rutis-bridge/tests/value_roundtrip.rs::rust_values_round_trip`（字符串含 `\n`、`\r\n`） | 紧凑 JSON、字符串里的换行转义由 `SESS-2` 与网络栈设计 §分帧与编码 规定；#634 快照记「部分」，带原始换行被拒只有单元测试 |
+| CHN-3-2 | 部分验证 | design-protocol-channel-decoupling-2026-10-03.md §分帧与编码 | SESS-2 | `fuzz/fuzz_targets/local_lines.rs` | Unix socket 与继承 fd 按换行分帧由 `SESS-2` 与网络栈设计 §分帧与编码 规定；#634 快照记「部分」，Node、Python 的行分帧没有 fuzz |
+| CHN-3-3 | 部分验证 | design-protocol-channel-decoupling-2026-10-03.md §分帧与编码 | SESS-70 | `fuzz/fuzz_targets/local_lines.rs`、`crates/rutis-bridge/src/channel/testing.rs::size_limit` | 每条消息至多 16 MiB 由 `SESS-70` 与网络栈设计 §分帧与编码 规定；#634 快照记「部分」，Node、Python 只有各自的单元测试 |
+| CHN-3-4 | 部分验证 | design-protocol-channel-decoupling-2026-10-03.md §分帧与编码 | SESS-71 | `crates/rutis-bridge/src/channel/testing.rs::size_limit` | 发送超限拒绝并关闭通道在网络栈设计 §分帧与编码，`SESS-71` 说超限只让该调用失败；#634 快照记「部分」，关闭通道即整个会话结束，与登记表的“这次调用失败”不一致 |
+| CHN-3-5 | 部分验证 | design-protocol-channel-decoupling-2026-10-03.md §分帧与编码 | SESS-70 | `fuzz/fuzz_targets/local_lines.rs` | 接收超限即关闭通道、不再读下去在网络栈设计 §分帧与编码，上限见 `SESS-70`；#634 快照记「部分」，“不再读下去”只有单元测试 |
+| CHN-3-6 | 已验证 | design-protocol-channel-decoupling-2026-10-03.md §分帧与编码 | SESS-72 | `crates/rutis-bridge/src/channel/testing.rs::size_limit`（对端看到结束而不是消息） | 行分帧没有关闭码、对端看到连接结束在网络栈设计 §分帧与编码，`SESS-72` 说承载层超限结束通道与会话；#634 快照记「已覆盖」 |
+| CHN-3-7 | 部分验证 | design-protocol-channel-decoupling-2026-10-03.md §分帧与编码 | SESS-2 | `fuzz/fuzz_targets/local_lines.rs` | 流在一条消息中间结束算失败在网络栈设计 §分帧与编码，帧边界见 `SESS-2`；#634 快照记「部分」，只 Rust |
+| CHN-3-8 | 部分验证 | design-protocol-channel-decoupling-2026-10-03.md §分帧与编码 | SESS-2 | `fuzz/fuzz_targets/local_lines.rs`（只按 `\n` 切分） | 只有 `\n` 分隔消息、它前面的 `\r` 计入上限在网络栈设计 §分帧与编码；#634 快照记「部分」，“三边一致”没有检查 |
+| CHN-4-1 | 部分验证 | design-protocol-channel-decoupling-2026-10-03.md §畸形帧 | SESS-63 | `crates/rutis-bridge/src/session/testing.rs::malformed`（13 种消息，7 种实现） | 收到的每条消息必须是一帧、所指的调用与引用存在，否则结束会话由 `SESS-63` 与网络栈设计 §畸形帧 规定；#634 快照记「部分」，缺的情形见 4-4、4-6、4-7、4-8 |
+| CHN-4-2 | 已验证 | design-protocol-channel-decoupling-2026-10-03.md §畸形帧 | SESS-63 | `crates/rutis-bridge/src/session/testing.rs::malformed`（malformed JSON、empty、BOM、invalid UTF-8） | 不是 JSON（含空帧与不合法 UTF-8）按 `SESS-63` 结束会话；#634 快照记「已覆盖」，矩阵用例在上 |
+| CHN-4-3 | 已验证 | design-protocol-channel-decoupling-2026-10-03.md §畸形帧 | SESS-63 | `crates/rutis-bridge/src/session/testing.rs::malformed`（not an object、unknown op） | 不是对象或 `op` 未知按 `SESS-63` 结束会话（未知 `op` 见 `SESS-6` 的帧词汇）；#634 快照记「已覆盖」 |
+| CHN-4-4 | 部分验证 | design-protocol-channel-decoupling-2026-10-03.md §畸形帧 | SESS-63 | `crates/rutis-bridge/src/session/testing.rs::malformed`（wrong field type、missing field，都是 invoke） | 字段缺失或类型不对是格式错误的帧，按 `SESS-63` 结束会话；#634 快照记「部分」，cancel、throw 的字段错误不在用例 |
+| CHN-4-5 | 已验证 | design-protocol-channel-decoupling-2026-10-03.md §畸形帧 | SESS-63、SESS-9 | `crates/rutis-bridge/src/session/testing.rs::malformed`（unknown wire value） | 值的标签未知是格式错误的帧（`SESS-9` 的标签表），按 `SESS-63` 结束会话；#634 快照记「已覆盖」 |
+| CHN-4-6 | 部分验证 | design-protocol-channel-decoupling-2026-10-03.md §畸形帧 | SESS-48、SESS-63 | `crates/rutis-bridge/src/session/testing.rs::malformed`（未知引用的 call、await、release） | 引用不存在或已释放、`release` 计数为 0 或超额按 `SESS-48`、`SESS-63` 结束会话；#634 快照记「部分」，`get`、已释放引用、计数为 0 或超额都不在用例 |
+| CHN-4-7 | 部分验证 | design-protocol-channel-decoupling-2026-10-03.md §畸形帧 | SESS-41 | `crates/rutis-bridge/src/session/testing.rs::malformed`（只有 return） | 回复不属于任何调用按 `SESS-41` 结束会话；#634 快照记「部分」，`throw` 的用例缺 |
+| CHN-4-8 | 未验证 | design-protocol-channel-decoupling-2026-10-03.md §畸形帧 | SESS-21、SESS-22 | — | 握手顺序错（握手前的请求、重复 `hello`）由 `SESS-21`、`SESS-22` 规定；#634 快照记「未覆盖」，`MALFORMED` 都在 hello 之后发 |
+| CHN-4-9 | 未验证 | design-protocol-channel-decoupling-2026-10-03.md §畸形帧 | SESS-57 | — | 对本端已取消的调用的迟到回复被丢弃由 `SESS-57` 规定；#634 快照记「未覆盖」，被调方不回复时 `cancelled` 只增不减（#626） |
+| CHN-4-10 | 未验证 | design-protocol-channel-decoupling-2026-10-03.md §畸形帧 | SESS-58 | `crates/rutis-bridge/src/session/rpc/tests.rs::a_cancel_for_an_unknown_call_is_ignored` | 对本端没有的调用的 `cancel` 被忽略由 `SESS-58` 规定，用例在上；#634 快照记「未覆盖」，因为它要的是矩阵里的一项 |
+| CHN-4-11 | 已撤回 | protocol-session.md §11 | SESS-66、SESS-67 | — | 未知字段现在七种实现都在调用级拒绝（`SESS-66`、`SESS-67`），“Node 与 Python 忽略”不再成立；#634 快照记「未覆盖」，本行按已撤回计 |
+| CHN-5-1 | 未验证 | design-protocol-channel-decoupling-2026-10-03.md §逻辑通道与物理连接 | SESS-1 | — | 一个运行时实例的多个插件共用一个控制 Session 在网络栈设计 §逻辑通道与物理连接，会话见 `SESS-1`；#634 快照记「未覆盖」 |
+| CHN-5-2 | 不单独计数 | design-protocol-channel-decoupling-2026-10-03.md §逻辑通道与物理连接 | —（会话规格不覆盖 Adapter；网络栈设计 §逻辑通道与物理连接 规定 Adapter 决定逻辑 Channel 独占还是共享） | — | 结构性：Session 与 link 不碰物理连接句柄；#634 快照记「不适用」 |
+| CHN-5-3 | 部分验证 | design-protocol-channel-decoupling-2026-10-03.md §逻辑通道与物理连接 | SESS-1 | `crates/rutis-bridge/src/channel/testing.rs::contract`（memory_mux.rs 已不在当前树） | send/recv、顺序、背压与 close 以逻辑 Channel 为单位在网络栈设计 §逻辑通道与物理连接；#634 快照记「部分」，隔离与流控只有普通测试 |
+| CHN-5-4 | 未验证 | design-protocol-channel-decoupling-2026-10-03.md §逻辑通道与物理连接 | SESS-1 | — | 关闭或替换会话只释放它的逻辑 Channel在网络栈设计 §逻辑通道与物理连接；#634 快照记「未覆盖」 |
+| CHN-5-5 | 部分验证 | design-protocol-channel-decoupling-2026-10-03.md §逻辑通道与物理连接 | SESS-42 | `specs/remote-lease/README.md`（`OldCommandsStayOld`、`OldCallsStayOld`） | 物理连接故障通知全部受影响的 Channel、终止后不复活在网络栈设计 §逻辑通道与物理连接，会话不重试见 `SESS-42`；#634 快照记「部分」，Adapter 一层不在模型里 |
+| CHN-5-6 | 部分验证 | design-protocol-channel-decoupling-2026-10-03.md §逻辑通道与物理连接 | SESS-42 | `specs/remote-lease/README.md`（link 退避重连，每次新会话） | Channel 失败后由 link 重新申请逻辑 Channel 并建新 Session在网络栈设计 §逻辑通道与物理连接；#634 快照记「部分」，Adapter 一层的重试不在模型里 |
+| CHN-5-7 | 已撤回 | design-protocol-channel-decoupling-2026-10-03.md §逻辑通道与物理连接 | SESS-24 | — | 0.19 删除 `ChannelInfo` 与接收注册，身份来自握手的端点 id（`SESS-24`），没有生产用的复用 Adapter；#634 快照记「未覆盖」，本行按已撤回计 |
+| CHN-5-8 | 已撤回 | design-remote-session-2026-10-28.md §八 | —（会话规格不覆盖吊销与复用连接：0.19 删除注册与吊销，复用连接不在模型里） | — | 0.19 删除吊销，复用连接的 Adapter 没有生产实现；#634 快照记「部分」，本行按已撤回计 |
+| CHN-6-1 | 不单独计数 | design-protocol-channel-decoupling-2026-10-03.md §连接器 | —（会话规格不覆盖进程启动；网络栈设计 §连接器 规定 `spawn` 的 fd 3 与临时目录 socket） | `crates/rutis-bridge/tests/concurrent_launch.rs` | 操作系统细节，用例在上；#634 快照记「不适用」 |
+| CHN-6-2 | 已撤回 | design-protocol-channel-decoupling-2026-10-03.md §连接器 | —（会话规格不覆盖 `ChannelInfo.peer`；0.19 的连接插件见远程会话设计，一次 `dial` 只尝试一次） | — | `ChannelInfo.peer` 与“每次连接产出 Channel”随连接插件改；#634 快照记「部分」，本行按已撤回计 |
+| CHN-6-3 | 部分验证 | design-protocol-channel-decoupling-2026-10-03.md §连接器 | —（会话规格不覆盖连接器的重试；网络栈设计 §连接器 规定连接器只报告一次建立结果） | `specs/remote-lease/README.md`（link 是唯一的重试方） | 连接器每次只报告一次建立结果、不重试、不决定会话就绪在网络栈设计 §连接器；#634 快照记「部分」 |
+| CHN-6-4 | 未验证 | design-protocol-channel-decoupling-2026-10-03.md §连接器 | —（会话规格不覆盖连接池；网络栈设计 §连接器 规定单次建立必须可取消） | — | Adapter 可内部管理连接池、单次建立可取消在网络栈设计 §连接器；#634 快照记「未覆盖」 |
+| CHN-6-5 | 部分验证 | design-protocol-channel-decoupling-2026-10-03.md §连接器 | SESS-28 | `specs/remote-lease/README.md`（`ReadyIsCurrent`） | link 完成身份核对与握手后才就绪、就绪不等于行就绪在网络栈设计 §连接器，握手不挂载见 `SESS-28`；#634 快照记「部分」 |
+| CHN-6-6 | 部分验证 | design-protocol-channel-decoupling-2026-10-03.md §连接器 | —（会话规格不覆盖承载或身份依赖的卸载；网络栈设计 §连接器 规定 link 按原生门控停止） | `specs/remote-lease/README.md`（`StoppedStaysDown`） | 卸载承载或身份依赖时 link 停止、撤销注册并清理连接在网络栈设计 §连接器；#634 快照记「部分」，配套插件清理行不在模型里 |
+| CHN-7-1 | 部分验证 | design-protocol-channel-decoupling-2026-10-03.md §建立阶段错误 | —（会话规格不覆盖建立阶段的类别；网络栈设计 §建立阶段错误 规定三个结构化类别） | `crates/rutis-host/tests/dial_conformance.rs` | `Retryable` / `AuthRejected` / `Incompatible` 三个类别在网络栈设计 §建立阶段错误；#634 快照记「部分」，Rust 拨号的 link 一侧只有普通测试 |
+| CHN-7-2 | 部分验证 | design-protocol-channel-decoupling-2026-10-03.md §建立阶段错误 | —（会话规格不覆盖“没有 link 监听它”；网络栈设计 §建立阶段错误 把它归为 `Retryable`） | `specs/remote-lease/README.md`（AccessPoint 路由：无注册可重试） | 凭据有效但没有 link 监听它属 `Retryable`、拨号侧指数退避后再单次 `dial` 在网络栈设计 §建立阶段错误；#634 快照记「部分」 |
+| CHN-7-3 | 部分验证 | design-protocol-channel-decoupling-2026-10-03.md §建立阶段错误 | —（会话规格不覆盖重试节奏；网络栈设计 §建立阶段错误 规定 `AuthRejected` 每 30 秒慢重试） | `specs/remote-lease/README.md`（被拒后按认证失败等待） | `AuthRejected` 每 30 秒慢重试、不绕过验证在网络栈设计 §建立阶段错误；#634 快照记「部分」，30 秒是计时 |
+| CHN-7-4 | 部分验证 | design-protocol-channel-decoupling-2026-10-03.md §建立阶段错误 | —（会话规格不覆盖停止重试；网络栈设计 §建立阶段错误 规定 `Incompatible` 停止自动重试） | `crates/rutis-host/tests/dial_conformance.rs::an_incompatible_listener_stops_the_dialer` | `Incompatible` 停止自动重试、等配置修正或显式重启 link 在网络栈设计 §建立阶段错误；#634 快照记「部分」，控制方 link 一侧不在模型里 |
+| CHN-7-5 | 不单独计数 | design-protocol-channel-decoupling-2026-10-03.md §建立阶段错误 | —（会话规格不覆盖类别从哪里生成；网络栈设计 §建立阶段错误 规定从类型与验证结果生成） | — | 类别从类型与验证结果生成、`reason` 不含凭据是代码性质与文字；#634 快照记「不适用」 |
+| CHN-7-6 | 未验证 | design-protocol-channel-decoupling-2026-10-03.md §建立阶段错误 | SESS-23 | — | 会话握手的身份拒绝与协议不兼容以结构化结果交给 link 在网络栈设计 §建立阶段错误，版本拒绝见 `SESS-23`；#634 快照记「未覆盖」 |
+| CHN-7-7 | 部分验证 | design-protocol-channel-decoupling-2026-10-03.md §建立阶段错误 | SESS-42 | `specs/remote-lease/README.md`（断线后退避重连） | 运行期断线按 link 策略恢复、本地子进程不自动重启在网络栈设计 §建立阶段错误；#634 快照记「部分」，本机运行时监督不在模型里（#627） |
+| CHN-7-8 | 部分验证 | design-protocol-channel-decoupling-2026-10-03.md §建立阶段错误 | —（会话规格不覆盖 link 停止后的重试；网络栈设计 §建立阶段错误 规定停止后不再安排重试） | `specs/remote-lease/README.md`（`StoppedStaysDown`、`ReadyIsCurrent`） | link 停止或依赖撤销后不再安排重试、已发起的连接结果不再交付为新会话在网络栈设计 §建立阶段错误；#634 快照记「已覆盖」但实现未经 TV，本表保持部分验证 |
+| CHN-8-1 | 已撤回 | design-remote-session-2026-10-28.md §八 | —（会话规格不覆盖注册；0.19 删除注册代次与 `ChannelInfo`，注册不再是这套结构（远程连接设计 §八）） | — | 0.19 删除注册代次、接入点与 `ChannelInfo`；#634 快照记「未覆盖」，本行按已撤回计 |
+| CHN-8-2 | 未验证 | design-protocol-channel-decoupling-2026-10-03.md §共享监听器注册与接收路由 | —（会话规格不覆盖注册验证；0.19 的接收授权由 `rutis-host/listen` 的 token 比对完成（远程连接设计 §六）） | — | link、承载与 Identity 的有效性与端点绑定在网络栈设计 §共享监听器注册与接收路由 的旧形状里；#634 快照记「未覆盖」 |
+| CHN-8-3 | 部分验证 | design-protocol-channel-decoupling-2026-10-03.md §共享监听器注册与接收路由 | —（会话规格不覆盖接收授权；网络栈设计 §共享监听器注册与接收路由 规定以验证得到的对端 id 查注册） | `specs/remote-lease/README.md`（AccessPoint 按凭据路由） | 以验证得到的对端 id 查注册、不以自报 id 选定授权目标在网络栈设计 §共享监听器注册与接收路由；#634 快照记「部分」，接入点按共享 token 加自报 id 准入（拨出稿 §五）与本条矛盾 |
+| CHN-8-4 | 部分验证 | design-protocol-channel-decoupling-2026-10-03.md §共享监听器注册与接收路由 | —（会话规格不覆盖接收授权与拒绝类别；网络栈设计 §共享监听器注册与接收路由 规定无注册为 `Retryable`、不能验证为 `AuthRejected`） | `specs/remote-lease/README.md`（AccessPoint：无注册可重试、共享 token 被吊销 403） | 只交给身份绑定匹配的有效注册、无注册或身份不符直接拒绝、不建隐式 link在网络栈设计 §共享监听器注册与接收路由；#634 快照记「部分」 |
+| CHN-8-5 | 已撤回 | design-remote-session-2026-10-28.md §八 | —（会话规格不覆盖移交复核：0.19 删除注册代次与接入点（远程连接设计 §八）） | — | 注册代次与移交复核查随 0.19 删除；#634 快照记「部分」，本行按已撤回计 |
+| CHN-8-6 | 已撤回 | design-remote-session-2026-10-28.md §八 | SESS-24 | — | `ChannelInfo.peer` 已删，link 再核对 `hello` 端点由握手完成（`SESS-24`）；#634 快照记「部分」，本行按已撤回计 |
+| CHN-8-7 | 已撤回 | design-remote-session-2026-10-28.md §八 | —（会话规格不覆盖注册撤销：0.19 删除注册句柄与注册代次（远程连接设计 §八）） | — | 注册句柄与旧代次清理随 0.19 删除；#634 快照记「部分」，本行按已撤回计 |
+| CHN-8-8 | 部分验证 | design-protocol-channel-decoupling-2026-10-03.md §共享监听器注册与接收路由 | —（会话规格不覆盖 link 的撤销；网络栈设计 §共享监听器注册与接收路由 规定撤销一个 link 不关闭共享监听器） | `specs/remote-lease/README.md`（`RevocationScoped`） | 撤销一个 link 不关闭共享监听器或其他 link在网络栈设计 §共享监听器注册与接收路由；#634 快照记「部分」，静态 link |
+| CHN-8-9 | 已撤回 | design-remote-session-2026-10-28.md §八 | —（会话规格不覆盖注册句柄：0.19 删除注册与接入点（远程连接设计 §八）） | — | 新 link 重新注册、承载卸载撤销全部注册随注册句柄删除；#634 快照记「部分」，本行按已撤回计 |
+| CHN-9-1 | 未验证 | design-protocol-channel-decoupling-2026-10-03.md §WebSocket 重连参数 | —（会话规格不覆盖重连参数；网络栈设计 §WebSocket 重连参数 规定退避与重置） | — | 指数退避 0.5 秒起、上限 30 秒、±20% 抖动、60 秒重置在网络栈设计 §WebSocket 重连参数；#634 快照记「未覆盖」，退避是纯逻辑（#631）、60 秒是计时（#633） |
+| CHN-10-1 | 不单独计数 | design-protocol-channel-decoupling-2026-10-03.md §WebSocket 绑定 | SESS-70 | — | 一条 WebSocket 连接对应一个逻辑 Channel、关闭码与心跳作用于它是承载细节，消息上限见 `SESS-70`；#634 快照记「不适用」 |
+| CHN-10-2 | 部分验证 | design-protocol-channel-decoupling-2026-10-03.md §WebSocket 绑定 | SESS-3、SESS-80 | `fuzz/fuzz_targets/websocket_upgrade.rs` | 子协议 `rutis.<会话协议主版本>`、不符即拒绝在网络栈设计 §WebSocket 绑定，版本规则见 `SESS-3`、`SESS-80`；#634 快照记「部分」，拒绝与类别不在 fuzz 里 |
+| CHN-10-3 | 不单独计数 | design-protocol-channel-decoupling-2026-10-03.md §WebSocket 绑定 | —（会话规格不覆盖 TLS；网络栈设计 §WebSocket 绑定 规定非回环必须 `wss`） | `crates/rutis-bridge/src/websocket/config.rs`、`crates/rutis-bridge/tests/websocket.rs` | 非回环必须 `wss`、反向代理终止 TLS 时后端只听回环；#634 快照记「不适用」 |
+| CHN-10-4 | 部分验证 | design-protocol-channel-decoupling-2026-10-03.md §WebSocket 绑定 | —（会话规格不覆盖升级请求的鉴权；网络栈设计 §WebSocket 绑定 规定 Bearer token 或客户端证书） | `fuzz/fuzz_targets/websocket_upgrade.rs` | 升级请求带 `Authorization: Bearer <token>` 或用客户端证书在网络栈设计 §WebSocket 绑定；#634 快照记「部分」，证书验证只能靠测试 |
+| CHN-10-5 | 不单独计数 | design-protocol-channel-decoupling-2026-10-03.md §WebSocket 绑定 | —（会话规格不覆盖 token 的存放；网络栈设计 §WebSocket 绑定 规定 token 不进 URL、诊断或日志） | — | token 不进 URL、诊断或日志是文字输出；#634 快照记「不适用」 |
+| CHN-10-6 | 部分验证 | design-protocol-channel-decoupling-2026-10-03.md §WebSocket 绑定 | SESS-2 | `crates/rutis-bridge/src/channel/testing.rs::contract`（WebSocket 的二进制消息处理只有普通测试） | 一条文本消息一帧、UTF-8 JSON、不带换行在网络栈设计 §WebSocket 绑定，帧规则见 `SESS-2`；#634 快照记「部分」，二进制消息的处理只有普通测试 |
+| CHN-10-7 | 部分验证 | design-protocol-channel-decoupling-2026-10-03.md §WebSocket 绑定 | SESS-70、SESS-72 | `crates/rutis-bridge/src/channel/testing.rs::size_limit`、`crates/rutis-bridge/tests/websocket.rs`（关闭码 1009 只有普通测试） | 默认 16 MiB、任一方向超限以 1009 关闭该通道在网络栈设计 §WebSocket 绑定，上限见 `SESS-70`、关闭见 `SESS-72`；#634 快照记「部分」，关闭码 1009 只有普通测试 |
+| CHN-10-8 | 不单独计数 | design-protocol-channel-decoupling-2026-10-03.md §WebSocket 绑定 | —（会话规格不覆盖心跳；网络栈设计 §WebSocket 绑定 规定 10 秒 ping、30 秒判失联） | `crates/rutis-bridge/tests/websocket.rs::heartbeats_find_a_half_open_connection` | 计时；心跳用例在上；#634 快照记「不适用」，不单独计数 |
+| CHN-10-9 | 不单独计数 | design-protocol-channel-decoupling-2026-10-03.md §WebSocket 绑定 | —（会话规格不覆盖关闭帧；网络栈设计 §WebSocket 绑定 规定 reason 至多 123 字节、有序关闭用 1001） | — | 关闭帧的协议细节：没找到断言 123 字节截断或 1001 的测试；#634 快照记「不适用」 |
+| CHN-10-10 | 部分验证 | design-protocol-channel-decoupling-2026-10-03.md §WebSocket 绑定 | —（会话规格不覆盖连接接管；网络栈设计 §WebSocket 绑定 规定同一端点 id 的新连接接管旧会话） | `specs/remote-lease/README.md`（`OneLease`、`OneInstancePerId`） | 同一端点 id 的新连接接管旧会话、以 4002 关闭在网络栈设计 §WebSocket 绑定；#634 快照记「部分」，关闭码与文字靠测试 |
+| CHN-10-11 | 已撤回 | guarantees.md §10 | bridge/dial-out-rules | — | 远程叶子运行时可以 `dial:` 拨出到接入点（`bridge/dial-out-rules`），不再只能监听；#634 快照记「已取代」 |
+| CHN-11-1 | 不单独计数 | design-protocol-channel-decoupling-2026-10-03.md §本机子进程端点与兼容接口 | —（会话规格不覆盖命令行；网络栈设计 §本机子进程端点与兼容接口 规定启动参数与 `--id`） | — | 启动参数是命令行（`crates/rutis-bridge/src/pipe/spawn.rs`）；#634 快照记「不适用」 |
+| CHN-11-2 | 不单独计数 | design-protocol-channel-decoupling-2026-10-03.md §本机子进程端点与兼容接口 | —（会话规格不覆盖继承 fd 的选择；网络栈设计 §本机子进程端点与兼容接口 规定由启动方声明） | — | 是否用继承 fd 由启动方决定，是打包与配置；#634 快照记「不适用」 |
+| CHN-11-3 | 不单独计数 | design-protocol-channel-decoupling-2026-10-03.md §本机子进程端点与兼容接口 | —（会话规格不覆盖 fd 继承；网络栈设计 §本机子进程端点与兼容接口 规定只继承该 fd、其余保持 `CLOEXEC`） | `crates/rutis-bridge/tests/concurrent_launch.rs::spawned_processes_started_at_once_hold_only_their_own_channel` | 只允许该 fd 作为通道被继承、其余 fd 保持 `CLOEXEC`，用例在上；#634 快照记「不适用」 |
+| CHN-11-4 | 不单独计数 | design-protocol-channel-decoupling-2026-10-03.md §本机子进程端点与兼容接口 | —（会话规格不覆盖标准流；网络栈设计 §本机子进程端点与兼容接口 规定 stdout 不承载协议帧） | `crates/rutis-bridge/tests/local_stdio.rs` | stdout 不承载协议帧、可供插件输出，普通测试在上；#634 快照记「不适用」 |
+| CHN-11-5 | 已撤回 | design-protocol-channel-decoupling-2026-10-03.md §本机子进程端点与兼容接口 | —（会话规格不覆盖子进程退出；网络栈设计 §本机子进程端点与兼容接口 的 1 秒等退出状态已被取代） | — | 1 秒等退出状态改为 2 秒 `GRACE` 与 10 秒 `HANG_GUARD`（`crates/rutis-bridge/src/pipe/spawn.rs`）；#634 快照记「已取代」 |
+| CHN-11-6 | 未验证 | design-protocol-channel-decoupling-2026-10-03.md §本机子进程端点与兼容接口 | —（会话规格不覆盖子进程怎样结束；网络栈设计 §本机子进程端点与兼容接口 规定通道的结束说明进程怎样结束） | — | 通道的结束说明进程怎样结束（退出状态或信号）在网络栈设计 §本机子进程端点与兼容接口；#634 快照记「未覆盖」 |
+| CHN-11-7 | 已撤回 | design-protocol-channel-decoupling-2026-10-03.md §本机子进程端点与兼容接口 | —（会话规格不覆盖退出诊断的文字；网络栈设计 §本机子进程端点与兼容接口 的逐字兼容说法已被取代） | — | 退出诊断现为 `the process exited with …`（`crates/rutis-bridge/src/pipe/spawn.rs`），不再逐字兼容旧文字；#634 快照记「已取代」 |
+| CHN-11-8 | 未验证 | design-protocol-channel-decoupling-2026-10-03.md §本机子进程端点与兼容接口 | SESS-42 | — | 子进程不自动重启在网络栈设计 §本机子进程端点与兼容接口，会话不重试见 `SESS-42`；#634 快照记「未覆盖」 |
+| CHN-11-9 | 不单独计数 | design-protocol-channel-decoupling-2026-10-03.md §本机子进程端点与兼容接口 | —（会话规格不覆盖冻结的兼容路径；网络栈设计 §本机子进程端点与兼容接口 保留监听后拉起） | `node/rutis-runtime/src/client.mjs`（`launch`） | 保留监听后拉起模式的兼容路径目前只剩 `node/rutis-runtime/src/client.mjs` 的 `launch`，Rust 侧的 `cordis/server.rs` 已不在当前树；#634 快照记「不适用」 |
+| CHN-12-1 | 不单独计数 | design-protocol-channel-decoupling-2026-10-03.md §装饰器 | —（会话规格不覆盖 trace；网络栈设计 §装饰器 规定它只记方向、长度与关闭原因） | — | `trace` 默认关闭、只记方向、长度与关闭原因（开关现为 `RUTIS_TRACE`，`crates/rutis-bridge/src/runtime/process.rs`）；#634 快照记「不适用」 |
+
 ## 6. 没有现行锚点的规则
 
 这些规则在 0.22 没有可引用的现行规格：来源是旧设计、设计说未实现、或会话规格写明不覆盖。它们保持原状态或降级，不当作已完成复核；下一轮要么写出对应的现行规格，要么把它们登记为明确不保证。
@@ -2132,6 +2489,6 @@
 ## 7. 这一轮改了什么、还剩什么
 
 - **已撤回**：issue 快照的 184 条之外，本轮按 0.19 / 0.22 删除的机制追加了 98 条（见 §3 的「已撤回（本轮）」列与 §4 的缺口）。它们仍在 `rules/protocol-*.md` 里，统计不计入。
-- **未完成**：协议分区（registry-1、registry-2 以外的 events、session、runtime、remote）没有逐条重写规则文字，仍是 issue 快照原文；会话层有 `protocol-session.md`（82 条 `SESS-*`），事件、运行时、挂载、远程没有对应的新规格，只有设计稿与指南。§6 按原因列出这些规则；写规格是 #635 的后续，不是这一轮能补的。
+- **未完成**：协议分区（registry-1、registry-2、session 以外的 events、session、runtime、remote）没有逐条重写规则文字，仍是 issue 快照原文；会话层有 `protocol-session.md`（82 条 `SESS-*`），事件、运行时、挂载、远程没有对应的新规格，只有设计稿与指南。§6 按原因列出这些规则；写规格是 #635 的后续，不是这一轮能补的。
 - **证据**：只核对 `现有形式化` 列的具名引用；备注列里的旧路径（如 `crates/rutis-bridge/src/cordis/server.rs`）没有逐条清，重抽时一并处理。
-- **语义**：TRC 分区（规则文字整体重写）与 `registry-1`、`registry-2`（来源、锚点、证据、状态）已在 §5 重抽；协议清单其余分区没有。规则的「已撤回 / 明确不保证 / 未验证 / 部分验证 / 已验证」按上面的四件事定，不按记忆。
+- **语义**：TRC 分区（规则文字整体重写）与 `registry-1`、`registry-2`、`session`（来源、锚点、证据、状态）已在 §5 重抽；协议清单其余分区没有。规则的「已撤回 / 明确不保证 / 未验证 / 部分验证 / 已验证」按上面的四件事定，不按记忆。
