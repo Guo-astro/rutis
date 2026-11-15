@@ -3,10 +3,28 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { Context } from '@deepseek-ai/cordis'
 import { definePlugin } from '../../rutis/src/index.mjs'
-import { supported, toCordis } from '../src/leaf.mjs'
+import { isLeaf, supported, toCordis } from '../src/leaf.mjs'
 import { Bus } from '../src/events.mjs'
 import { install } from '../src/cordis-events.mjs'
 import { fakePeer } from './fixtures/fake-peer.mjs'
+
+// M1 §11.1: a leaf plugin is marked by the symbol `definePlugin` stamps, not
+// by its shape. A Cordis function plugin has `apply` and `inject` too, so the
+// runtime tells the two apart by the mark alone.
+// rule: M1-11.1-1
+test('only the definePlugin symbol marks a leaf plugin; the shape alone does not', () => {
+  const leaf = definePlugin({ apply() {} })
+  assert.equal(leaf[Symbol.for('rutis.leaf-plugin')], true)
+  assert.ok(Object.isFrozen(leaf), 'the mark is on a frozen object')
+  assert.equal(isLeaf(leaf), true)
+  // Any copy of the SDK marks with this shared symbol: the runtime imports
+  // none of the SDK and knows a leaf plugin by it.
+  assert.equal(isLeaf({ [Symbol.for('rutis.leaf-plugin')]: true, inject: [], apply() {} }), true)
+  // A Cordis function plugin, with the same apply/inject shape, is not one.
+  assert.equal(isLeaf(function apply(ctx) {}), false)
+  assert.equal(isLeaf(Object.assign(function apply(ctx) {}, { inject: ['llm'] })), false)
+  assert.equal(isLeaf({ inject: ['llm'], apply() {} }), false)
+})
 
 test('leaf events delegate to the shared Cordis bus and leave with their fiber', async () => {
   // The runtime's logical bus on the root, as the runner installs it; its

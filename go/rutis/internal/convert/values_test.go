@@ -258,3 +258,92 @@ func TestMapsAndSetsDecodeIntoTheirDeclaredTypes(t *testing.T) {
 		t.Errorf("*time.Time: %v %v", pointer, err)
 	}
 }
+
+// rule: VAL-1-V9
+// A struct, a typed slice or map, and a top-level time.Time all go through
+// this one encoder, field by field and item by item (design V9): the wire
+// value holds the time, the bytes, the dates and the big integer themselves,
+// never the text or base64 `encoding/json` would write.
+func TestStructsSlicesMapsAndTopLevelTimesUseTheOneEncoder(t *testing.T) {
+	oslo := time.FixedZone("Oslo", 2*3600)
+	at := time.Date(2026, 10, 15, 5, 22, 15, 123456789, oslo)
+	day := values.Date{Year: 2026, Month: 10, Day: 15}
+
+	// A top-level time.Time.
+	value, err := ToPeer(at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := value.(time.Time); !ok || !got.Equal(at) || got.Location() != oslo {
+		t.Errorf("a top-level time.Time crosses as itself: %#v", value)
+	}
+
+	// A typed slice: every item through the same encoder.
+	value, err = ToPeer([]time.Time{at, at.Add(time.Second)})
+	items, ok := value.([]any)
+	if err != nil || !ok || len(items) != 2 {
+		t.Fatalf("a typed slice: %#v %v", value, err)
+	}
+	for i, item := range items {
+		if got, ok := item.(time.Time); !ok || !got.Equal(at.Add(time.Duration(i)*time.Second)) {
+			t.Errorf("slice item %d: %#v", i, item)
+		}
+	}
+
+	// A typed map: keys and values through the same encoder.
+	value, err = ToPeer(map[values.Date][]byte{day: []byte("hello")})
+	pairs, ok := value.(peer.Map)
+	if err != nil || !ok || len(pairs) != 1 {
+		t.Fatalf("a typed map: %#v %v", value, err)
+	}
+	if key, ok := pairs[0].Key.(values.Date); !ok || key != day {
+		t.Errorf("a map key: %#v", pairs[0].Key)
+	}
+	if raw, ok := pairs[0].Value.([]byte); !ok || !bytes.Equal(raw, []byte("hello")) {
+		t.Errorf("a map value: %#v", pairs[0].Value)
+	}
+
+	// A struct: every field through the same encoder.
+	type Payload struct {
+		At    time.Time
+		Raw   []byte
+		Days  []values.Date
+		ByDay map[values.Date][]byte
+		Big   *big.Int
+		N     int64
+	}
+	total, _ := new(big.Int).SetString("123456789012345678901234567890", 10)
+	value, err = ToPeer(Payload{
+		At:    at,
+		Raw:   []byte("hello"),
+		Days:  []values.Date{day},
+		ByDay: map[values.Date][]byte{day: []byte("hi")},
+		Big:   total,
+		N:     1 << 60,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, ok := value.(map[string]any)
+	if !ok {
+		t.Fatalf("a struct is a record: %#v", value)
+	}
+	if got, ok := record["At"].(time.Time); !ok || !got.Equal(at) {
+		t.Errorf("a struct's time.Time: %#v", record["At"])
+	}
+	if raw, ok := record["Raw"].([]byte); !ok || !bytes.Equal(raw, []byte("hello")) {
+		t.Errorf("a struct's []byte: %#v", record["Raw"])
+	}
+	if days, ok := record["Days"].([]any); !ok || len(days) != 1 || days[0] != day {
+		t.Errorf("a struct's []Date: %#v", record["Days"])
+	}
+	if pairs, ok := record["ByDay"].(peer.Map); !ok || len(pairs) != 1 || pairs[0].Key != day {
+		t.Errorf("a struct's map: %#v", record["ByDay"])
+	}
+	if got, ok := record["Big"].(*big.Int); !ok || got.Cmp(total) != 0 {
+		t.Errorf("a struct's *big.Int: %#v", record["Big"])
+	}
+	if got, ok := record["N"].(*big.Int); !ok || got.String() != "1152921504606846976" {
+		t.Errorf("a struct's int64 beyond 2^53 is a bigint: %#v", record["N"])
+	}
+}

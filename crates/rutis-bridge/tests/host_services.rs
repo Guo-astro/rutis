@@ -7,7 +7,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use rutis_bridge::runtime::{Host, Mount, Process};
+use rutis_bridge::runtime::{Host, Launcher, Mount, Process};
 use rutis_bridge::session::{Error, HostDispatch};
 use rutis_bridge::session::{Reply, Value};
 use serde_json::json;
@@ -91,5 +91,65 @@ async fn plugins_inject_and_call_host_services() {
     );
     process.dispose().await.unwrap();
     // Cordis cleanup called the disposer the host returned.
+    assert_eq!(watching.load(Ordering::SeqCst), 0);
+}
+
+/// A build-time (static) mount loads its plugins in `mount` itself and
+/// registers host services in `Mount::hosts` there: no `rows.*` control
+/// calls and no `hosts.provide` lease. `RUTIS_TEST_INSPECT` shows the
+/// runner holds no row and no leased host service; the plugin already used
+/// the host service when the mount answered.
+/// rule: M1-8-3
+#[tokio::test(flavor = "multi_thread")]
+async fn a_static_mount_registers_host_services_without_rows() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
+    let package = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../node/rutis-runtime");
+    let mut consumer = tempfile::Builder::new().suffix(".mjs").tempfile().unwrap();
+    consumer.write_all(CONSUMER.as_bytes()).unwrap();
+    let watching = Arc::new(AtomicUsize::new(0));
+    // The runtime's own test hook: what it holds after the mount.
+    let launcher = Launcher::new("node")
+        .arg("--import")
+        .arg("tsx")
+        .arg(package.join("src/runner.mjs"))
+        .cwd(&package)
+        .inherit_fd()
+        .env("RUTIS_TEST_INSPECT", "1");
+    let process = Process::mount(
+        &package,
+        Mount {
+            plugins: vec![(consumer.path(), json!({}))],
+            services: json!({ "reader": ["now", "later", "missing"] }),
+            hosts: vec![Host {
+                name: "clock".into(),
+                methods: json!({ "now": "sync", "later": "async", "watch": "sync" }),
+                dispatch: Arc::new(Clock {
+                    watching: watching.clone(),
+                }),
+            }],
+            launcher: Some(&launcher),
+            ..Mount::default()
+        },
+    )
+    .await
+    .unwrap();
+    // The plugin ran in `mount`, with the host service registered there.
+    assert_eq!(watching.load(Ordering::SeqCst), 1);
+    let inspect = process.call_async("", "inspect", json!([])).await.unwrap();
+    assert_eq!(inspect["rows"], json!([]), "a static mount loads no rows");
+    assert_eq!(
+        inspect["hosts"],
+        json!([]),
+        "Mount::hosts registered the service in mount, not through hosts.provide"
+    );
+    assert!(
+        inspect["fibers"].as_u64().unwrap() >= 1,
+        "the mount's plugin runs: {inspect}"
+    );
+    let reader = process.service("reader").unwrap();
+    assert_eq!(process.call(&reader, "now", json!([])).unwrap(), json!(42));
+    process.dispose().await.unwrap();
     assert_eq!(watching.load(Ordering::SeqCst), 0);
 }

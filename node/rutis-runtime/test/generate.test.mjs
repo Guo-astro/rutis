@@ -355,6 +355,25 @@ test('a host-provided service becomes a trait, a dispatcher and an injected depe
   })
 })
 
+// rule: M1-8-3
+test('a generated mount registers host services in Mount::hosts, with no rows.*', async () => {
+  await fixture(`import type { Context } from '@deepseek-ai/cordis'
+    declare module '@deepseek-ai/cordis' { interface Context { prompt: Prompt } }
+    export interface Prompt { render(): string }
+    export const inject = ['prompt']
+    class Service { ping(): number { return 1 } }
+    export function apply(ctx: Context) { ctx.provide('pinger', new Service()) }
+  `, file => {
+    const { rust } = generate(file, root, { provide: ['prompt'] })
+    // What the build generated is a static mount: its plugins and their host
+    // services in one Mount. It loads no rows, so no rows.* is generated.
+    assert.match(rust, /::rutis_bridge::cordis::Mount \{\s*plugins: vec!\[/)
+    assert.match(rust, /hosts,\s*\/\/ The plugins' listeners join/)
+    assert.match(rust, /::rutis_bridge::cordis::Host \{\s*name: "prompt"/)
+    assert.doesNotMatch(rust, /rows\.(load|unload|update|schema)/)
+  })
+})
+
 test('callback parameters take Rust closures and returned functions stay remote', async () => {
   await fixture(`import type { Context } from '@deepseek-ai/cordis'
     class Service {
