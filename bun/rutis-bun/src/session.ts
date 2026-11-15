@@ -328,7 +328,7 @@ export class Session {
   #closed; #handshake = false; #resolveReady; #rejectReady
   // Call id prefixes: `<endpoint>:`, this side's and the far end's.
   #endpoint; #local; #remote
-  #context = new AsyncLocalStorage(); #syncPath; #waiting = []; #queued = new Set()
+  #context = new AsyncLocalStorage(); #syncPath; #waiting = []; #unanswered: string[] = []; #queued = new Set()
   #active = 0; #draining = []
   // AbortControllers for incoming calls that received a signal argument.
   // A signal lives until the call's result settles: a returned Promise keeps
@@ -693,8 +693,14 @@ export class Session {
   }
   #requestSync(op, fields, args, described?) {
     let result
-    const id = this.#request(op, fields, args, value => { result = value }, [], true, callSite(), described)
+    const id = this.#request(op, fields, args, value => {
+      result = value
+      // A reply read during the drain answers its call at once: the frame
+      // behind it on the same drain is read on a thread about to be free.
+      this.#answered(id)
+    }, [], true, callSite(), described)
     this.#waiting.push(id)
+    this.#unanswered.push(id)
     blocking++
     try {
       for (const job of this.#queued) this.#run(job)
@@ -703,10 +709,15 @@ export class Session {
     finally {
       blocking--
       this.#waiting.pop()
+      this.#answered(id)
       if (!this.#waiting.length) for (const job of this.#queued) queueMicrotask(() => this.#run(job))
     }
     if (!result.ok) throw result.value
     return result.value
+  }
+  #answered(id: string) {
+    const at = this.#unanswered.lastIndexOf(id)
+    if (at >= 0) this.#unanswered.splice(at, 1)
   }
   #requestAsync(op, fields, args, origin, described?) {
     // Taken here, before the Promise's executor adds its frame.
@@ -830,7 +841,7 @@ export class Session {
       else queueMicrotask(() => this.#run(job))
     } catch (error) { this.#fault(error) }
   }
-  #related(job) { return this.#waiting.some(id => job.frame.path.includes(id)) }
+  #related(job) { return this.#unanswered.some(id => job.frame.path.includes(id)) }
   #run(job) {
     if (!this.#queued.has(job)) return
     this.#queued.delete(job)
@@ -857,8 +868,10 @@ export class Session {
           // synchronous call it belongs to holds.
           // The developer's call, never the ids the chain is made of (#1067,
           // diagnostics §4.3): the future settles only when the loop runs,
-          // which the synchronous call it belongs to holds.
-          else if (this.#waiting.length && this.#related({ frame })) this.#respond(frame.id, { ok: false, value: Object.assign(new Error(`${call ?? 'awaiting a result'} would wait on itself: it is awaited inside the synchronous call that produces it (synchronous calls)`), { name: 'SyncWaitCycle' }) }, business)
+          // which a synchronous call this side still waits for holds. A call
+          // whose reply was read on the pump's drain holds nothing (#639): the
+          // wait ends when the drain ends.
+          else if (this.#unanswered.length && this.#related({ frame })) this.#respond(frame.id, { ok: false, value: Object.assign(new Error(`${call ?? 'awaiting a result'} would wait on itself: it is awaited inside the synchronous call that produces it (synchronous calls)`), { name: 'SyncWaitCycle' }) }, business)
           else entry.value.then(value => this.#respond(frame.id, { ok: true, value }, business, call), value => this.#respond(frame.id, { ok: false, value }, business, call))
           return
         }
