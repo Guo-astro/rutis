@@ -6852,7 +6852,8 @@ mod carrier {
         let ca = ca_params.self_signed(&ca_key).unwrap();
         let issuer = Issuer::new(ca_params, ca_key);
         let key = KeyPair::generate().unwrap();
-        let mut params = CertificateParams::new(vec!["localhost".into()]).unwrap();
+        let mut params =
+            CertificateParams::new(vec!["localhost".into(), "127.0.0.1".into()]).unwrap();
         params
             .distinguished_name
             .push(rcgen::DnType::CommonName, "localhost");
@@ -7034,7 +7035,7 @@ mod carrier {
             admitting(),
         )
         .unwrap();
-        let address = format!("wss://localhost:{}/rutis", listener.local_addr().port());
+        let address = format!("wss://127.0.0.1:{}/rutis", listener.local_addr().port());
         match dial(&address, Some("good"), &Trust::default()).await {
             Err(ConnectError::AuthRejected { reason }) => {
                 assert!(
