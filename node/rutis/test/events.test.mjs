@@ -51,6 +51,18 @@ test('errors reach the test as from another process: by name, a built-in class a
   await t.unload()
 })
 
+// rule: EVP-12.2-5
+// `parallel` failures are the built-in `AggregateError`, not an error that
+// is only named so.
+test('parallel failures are a JavaScript AggregateError', async () => {
+  const t = await load(listener)
+  const parallel = await t.parallel('tick').catch(error => error)
+  assert.ok(parallel instanceof AggregateError)
+  assert.equal(parallel.errors.length, 1)
+  assert.ok(parallel.errors[0] instanceof Error)
+  await t.unload()
+})
+
 test('unload aborts ctx.signal and waits for running listeners', async () => {
   const t = await load(listener)
   const running = t.parallel('work')

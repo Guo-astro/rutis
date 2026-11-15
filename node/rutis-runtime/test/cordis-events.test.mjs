@@ -120,6 +120,99 @@ test('Context.filter sees the listener Context, which has ctx.rutis', async () =
   assert.throws(() => { chat.rutis = {} })
 })
 
+// rule: EVP-5.3-15
+// A dispatch from elsewhere (`own: false`) fires `internal/dispatch` once for
+// its id, before this process's first listener, with the dispatch's mode,
+// name and arguments and no `thisArg` (the fourth argument is `null`).
+test('a dispatch from elsewhere fires internal/dispatch once, before its first listener here', async () => {
+  const { root, bus, host, load } = setup()
+  const log = []
+  root.on('internal/dispatch', (mode, name, args, thisArg) => { log.push({ mode, name, args, thisArg }) })
+  await load('a', ctx => { ctx.on('x', (...args) => { log.push(`a:${args.join(',')}`) }) })
+  await load('b', ctx => { ctx.on('x', (...args) => { log.push(`b:${args.join(',')}`) }) })
+  const [first, second] = host.entries.filter(entry => entry.name === 'x')
+  const call = (entry, dispatch, args) => bus.call({ listener: entry.id, dispatch, own: false, name: 'x', mode: 'parallel', args })
+  // Two listeners of this process: one internal/dispatch for the id.
+  call(first, 'd1', [1, 2])
+  call(second, 'd1', [1, 2])
+  assert.deepEqual(log.splice(0), [
+    { mode: 'parallel', name: 'x', args: [1, 2], thisArg: null },
+    'a:1,2',
+    'b:1,2',
+  ])
+  // Another dispatch id: once more, with its own arguments.
+  call(first, 'd2', [3])
+  assert.deepEqual(log.splice(0), [
+    { mode: 'parallel', name: 'x', args: [3], thisArg: null },
+    'a:3',
+  ])
+  // This process's own dispatch fired it in Cordis already; the call back
+  // from the host does not fire it again.
+  bus.call({ listener: first.id, dispatch: 'd3', own: true, name: 'x', mode: 'parallel', args: [4] })
+  assert.deepEqual(log.splice(0), ['a:4'])
+})
+
+// rule: EVP-5.3-16
+// An event this process emits through Cordis's own dispatch fires
+// `internal/dispatch` here; a listener of it that throws fails that call.
+test('this process\'s own dispatch fires internal/dispatch, whose failure fails the call', async () => {
+  const { root, load } = setup()
+  const seen = []
+  root.on('internal/dispatch', (...args) => { seen.push(args) })
+  await load('a', ctx => { ctx.on('x', value => value) })
+  root.emit('x', 1)
+  await root.parallel('x', 2)
+  await root.serial('x', 3)
+  await root.waterfall('x', 4, () => 'end')
+  assert.equal(root.bail('x', 5), 5)
+  assert.deepEqual(seen, [
+    ['emit', 'x', [1], null],
+    ['parallel', 'x', [2], null],
+    ['serial', 'x', [3], null],
+    ['waterfall', 'x', [4], null],
+    ['bail', 'x', [5], null],
+  ])
+  const refused = Object.assign(new Error('no dispatch'), { name: 'DispatchRefused' })
+  root.on('internal/dispatch', () => { throw refused })
+  for (const call of [
+    () => root.emit('x', 6),
+    () => root.parallel('x', 6),
+    () => root.serial('x', 6),
+    () => root.waterfall('x', 6, () => 'end'),
+    () => root.bail('x', 6),
+  ]) assert.throws(call, error => error === refused)
+})
+
+// rule: EVP-5.3-17
+// Cordis's primitive `events.dispatch(type, args)` for a bus name gives one
+// callback: `emit` dispatches a parallel, `serial` serial, `bail` bail, with
+// the arguments the callback gets; internal/* stays Cordis's own.
+test('events.dispatch gives a callback that dispatches in emit\'s, serial\'s and bail\'s mode', async () => {
+  const { root, host, load } = setup()
+  const seen = []
+  await load('a', ctx => {
+    ctx.on('s', value => { seen.push(value); return value * 2 })
+    ctx.on('internal/kept', value => { seen.push(`internal:${value}`) })
+  })
+  const modes = [['emit', 'parallel', undefined, 2], ['serial', 'serial', 6, 3], ['bail', 'bail', 8, 4]]
+  for (const [type, mode, expected, value] of modes) {
+    const callbacks = root.events.dispatch(type, ['s'])
+    assert.equal(callbacks.length, 1)
+    const result = type === 'bail' ? callbacks[0](value) : await callbacks[0](value)
+    assert.equal(result, expected, type)
+    const fields = host.sent.filter(([method]) => method === 'events.dispatch').at(-1)[1][0]
+    assert.deepEqual([fields.mode, fields.name, fields.args], [mode, 's', [value]], type)
+  }
+  await host.settled()
+  assert.deepEqual(seen, [2, 3, 4])
+  const before = host.sent.filter(([method]) => method === 'events.dispatch').length
+  const internal = root.events.dispatch('emit', ['internal/kept'])
+  assert.equal(internal.length, 1)
+  internal[0]('v')
+  assert.equal(seen.at(-1), 'internal:v')
+  assert.equal(host.sent.filter(([method]) => method === 'events.dispatch').length, before, 'internal/* stays Cordis\'s')
+})
+
 test('internal/dispatch is fired once for each dispatch, before the listeners', async () => {
   const { root, bus, host, load } = setup()
   const log = []
@@ -262,4 +355,76 @@ test('events.dispatch gives one callback that dispatches through the host', asyn
   const dispatched = host.sent.filter(([method]) => method === 'events.dispatch').map(([, [fields]]) => [fields.name, fields.mode, fields.args])
   assert.deepEqual(dispatched, [['credentials/updated', 'parallel', ['b']]])
   assert.deepEqual(seen, ['b'], 'called back by the host, once')
+})
+
+// rule: EVP-6-12
+// `thisArg[Context.filter]` filters `emit` and the other four methods; a
+// listener here passes its own Cordis Context, one elsewhere `{ rutis }`.
+test('Context.filter filters every Cordis method, with the Context or { rutis }', async () => {
+  const modes = []
+  let localId
+  const descriptor = row => ({ name: 'm', prefix: false, plugin: row === 'chat' ? 'chat' : 'other', row, runtime: 'node', node: null, scope: [], global: false })
+  const contexts = []
+  const handle = (method, args) => {
+    const [fields] = args ?? []
+    if (method === 'events.on') { localId = fields.id; return undefined }
+    if (method !== 'events.dispatch') return undefined
+    modes.push(fields.mode)
+    if (fields.filter) contexts.push(fields.filter([{ ...descriptor('chat'), listener: localId }, descriptor('other')]))
+    return undefined
+  }
+  const host = {
+    call: (target, method, args) => handle(method, args),
+    callAsync: (target, method, args) => Promise.resolve(handle(method, args)),
+    callFunctionAsync() {}, callFunctionSync() {},
+  }
+  const { root, load } = setup({ peer: host })
+  let chat
+  await load('chat', ctx => { chat = ctx; ctx.on('m', () => 'mine') })
+  const seen = []
+  const self = Object.create(root)
+  self[Context.filter] = function (context) {
+    assert.equal(this, self)
+    seen.push(context)
+    return context.rutis.row === 'chat'
+  }
+  root.emit(self, 'm')
+  await root.parallel(self, 'm')
+  await root.serial(self, 'm')
+  assert.equal(root.waterfall(self, 'm', () => 'end'), undefined)
+  assert.equal(root.bail(self, 'm'), undefined)
+  assert.deepEqual(modes, ['emit', 'parallel', 'serial', 'waterfall', 'bail'])
+  assert.deepEqual(contexts, Array.from({ length: 5 }, () => [true, false]))
+  assert.equal(seen.length, 10)
+  for (let i = 0; i < seen.length; i += 2) {
+    assert.equal(seen[i], chat)
+    assert.deepEqual(seen[i + 1], { rutis: descriptor('other') })
+  }
+})
+
+// rule: EVP-6-13
+// Every Context (the root's, a plugin's) has a read-only `ctx.rutis`, and
+// `c => c.rutis.row === …` works as a filter for a Context here and a
+// `{ rutis }` from elsewhere alike.
+test('every Context has a read-only ctx.rutis, and c.rutis.row names its row', async () => {
+  const { root, host, load } = setup()
+  let child
+  root.on('x', () => {})
+  await load('chat', ctx => { child = ctx; ctx.on('x', () => {}) })
+  for (const [context, row] of [[root, null], [child, 'chat']]) {
+    assert.equal(context.rutis.row, row)
+    assert.equal(context.rutis.runtime, 'node')
+    assert.throws(() => { context.rutis = {} }, TypeError)
+  }
+  const rows = []
+  const self = Object.create(root)
+  self[Context.filter] = context => { rows.push(context.rutis.row); return true }
+  await root.parallel(self, 'x')
+  assert.deepEqual(rows, [null, 'chat'])
+  // The host asks the same predicate about a listener elsewhere: it gets a
+  // `{ rutis }`, whose row `c.rutis.row` reads too.
+  const fields = host.sent.filter(([method]) => method === 'events.dispatch').at(-1)[1][0]
+  const other = { name: 'x', prefix: false, plugin: 'other', row: 'other', runtime: 'node', node: null, scope: [], global: false }
+  assert.deepEqual(fields.filter([other]), [true])
+  assert.deepEqual(rows, [null, 'chat', 'other'])
 })
