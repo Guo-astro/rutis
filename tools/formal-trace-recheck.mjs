@@ -208,6 +208,11 @@ export const SUPERSEDED = [
     by: 'docs/design-remote-session-2026-10-28.md',
   },
   {
+    ids: ['REM-3.2-10', 'REM-3.2-11', 'REM-3.2-12'],
+    why: '0.19 删除 `Identity`、`Registration`、`Revocations` 与 link 插件，本仓库没有共享物理连接的多路复用，也没有 Adapter 通知；远程插件设计 §11（#636）的复核结论是「删去」，这三条没有可核对的对象',
+    by: 'docs/design-remote-plugins-2026-10-03.md',
+  },
+  {
     ids: ['SES-6.1-23', 'TAG-2-2', 'SYN-9-21', 'SYN-9-22'],
     why: '协议 4 只有端点格式，没有 compat 格式、`sync-wait` 能力或 `ChannelInfo`（`protocol-session.md` `SESS-12`、`SESS-13`、`SESS-16`）',
     by: 'docs/protocol-session.md',
