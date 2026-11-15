@@ -106,22 +106,47 @@
 //! rule: APP-1-5
 //! rule: APP-1-6
 //! rule: NOD-3-8
+//! rule: CHN-10-6
+//! rule: CHN-10-7
+//! rule: DIA-2-5
+//! rule: DIA-6-3
+//! rule: DIA-6-5
+//! rule: DIA-6-6
+//! rule: DIA-6-7
+//! rule: REM-2-2
+//! rule: CHN-1-5
+//! rule: REM-1-3
+//! rule: M1-14-1
+//! rule: M1-14-9
+//! rule: M1-5.4-1
+//! rule: INS-4.2-4
+//! rule: VAL-1-V2
+//! rule: SYN-2-10
+//! rule: M1-11.2-1
+//! rule: M1-11.2-3
+//! rule: APP-3-1
+//! rule: NOD-3-6
 //! guarantee: bridge/value-tags
 //! guarantee: bridge/object-refs
 //! guarantee: bridge/unknown-fields
 
 use std::collections::VecDeque;
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Condvar, Mutex};
 
-use rutis::events::Scope;
-use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, InstanceId};
-use rutis::{Ctx, Error as RutisError};
+use rutis::events::{Call, Scope};
+use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, InstanceId, PluginFactory};
+use rutis::internal::CtxInternal;
+use rutis::{Ctx, Error as RutisError, Event};
 use rutis_bridge::channel::{Channel, ChannelError, Close, Closer, PeerId, Receiver, Sender};
 use rutis_bridge::runtime::{row_projection, row_projection_of, Process};
 use rutis_bridge::session::{
     call_service, host_key, host_key_in, settle, BigInt, Connection, Decimal, Dispatch, Endpoint,
     Error, HostDispatch, Instant, Reference, Reply, Uuid, Value, ENDPOINT_PROTOCOL,
+};
+use rutis_bridge::{
+    catalog_key, session_key, Installed, LocalId, PluginCatalog, Session, StaticCatalog,
 };
 use rutis_test_support::{until, within};
 use serde_json::{json, Value as Json};
@@ -3641,6 +3666,8 @@ struct Scripted {
     mount: Json,
     schema: Json,
     schemas: Mutex<Vec<Json>>,
+    mounts: Mutex<usize>,
+    mount_args: Mutex<Vec<Json>>,
     loads: Mutex<Vec<Json>>,
     updates: Mutex<Vec<Json>>,
     unloads: Mutex<Vec<Json>>,
@@ -3648,7 +3675,6 @@ struct Scripted {
     withdraws: Mutex<Vec<Json>>,
     offers: Mutex<Vec<Json>>,
     calls: Mutex<Vec<(String, String)>>,
-    mounts: Mutex<usize>,
     sequence: Mutex<Vec<String>>,
 }
 
@@ -3666,6 +3692,7 @@ impl Scripted {
             offers: Mutex::default(),
             calls: Mutex::default(),
             mounts: Mutex::default(),
+            mount_args: Mutex::default(),
             sequence: Mutex::default(),
         })
     }
@@ -3697,6 +3724,7 @@ impl Dispatch for Scripted {
         match (target, method) {
             ("", "mount") => {
                 *self.mounts.lock().unwrap() += 1;
+                self.mount_args.lock().unwrap().push(args.json()?);
                 self.sequence.lock().unwrap().push("mount".into());
                 Ok(Value::Data(self.mount.clone()))
             }
@@ -5938,4 +5966,1353 @@ async fn capabilities_say_which_kinds_cross() {
         "this side declares no objects capability"
     );
     assert!(peer.close_reason().is_none(), "the session goes on");
+}
+
+// ── Fifth batch: carriers, dialing, node links and local services (#639) ──
+
+/// A kernel greeting as `name`: a root with the id its sessions greet with.
+fn kernel(name: &str) -> Ctx {
+    let root = Ctx::root().unwrap();
+    root.provide(LocalId(id(name))).unwrap();
+    root
+}
+
+/// A plugin providing one service that answers `get` with `answer`.
+struct Provides {
+    service: &'static str,
+    answer: &'static str,
+}
+
+impl DynPlugin for Provides {
+    fn name(&self) -> &str {
+        self.service
+    }
+
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, RutisError>> {
+        Box::pin(async move {
+            ctx.provide_at(host_key(self.service), Arc::new(Says(self.answer)))?;
+            Ok(Effect::Done)
+        })
+    }
+}
+
+/// A host service that answers `get` with its word, asynchronously.
+struct Says(&'static str);
+
+impl HostDispatch for Says {
+    fn invoke(&self, method: &str, _: Value) -> Reply {
+        match method {
+            "get" => Ok(Value::Data(json!(self.0))),
+            other => Err(Error::no_method(self.0, other, vec!["get"])),
+        }
+    }
+
+    fn methods(&self) -> Option<Json> {
+        Some(json!({ "get": "async" }))
+    }
+}
+
+/// The catalog plugin `contacts`, providing the service `contacts`.
+struct Contacts;
+
+impl PluginFactory<Json> for Contacts {
+    fn name(&self) -> &str {
+        "contacts"
+    }
+
+    fn build(&self, _: &Json) -> Result<Box<dyn DynPlugin>, RutisError> {
+        Ok(Box::new(Provides {
+            service: "contacts",
+            answer: "office",
+        }))
+    }
+}
+
+/// The plugin `user`, whose service calls the kernel's own `clock` plugin
+/// `n` times when the far end asks it to.
+struct User;
+
+impl PluginFactory<Json> for User {
+    fn name(&self) -> &str {
+        "user"
+    }
+
+    fn build(&self, _: &Json) -> Result<Box<dyn DynPlugin>, RutisError> {
+        Ok(Box::new(UserPlugin))
+    }
+}
+
+struct UserPlugin;
+
+impl DynPlugin for UserPlugin {
+    fn name(&self) -> &str {
+        "user"
+    }
+
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, RutisError>> {
+        Box::pin(async move {
+            ctx.provide_at(host_key("user"), Arc::new(Asks(ctx.clone())))?;
+            Ok(Effect::Done)
+        })
+    }
+}
+
+/// The service `user`: `use_now(n)` calls `clock` n times, natively.
+struct Asks(Ctx);
+
+impl HostDispatch for Asks {
+    fn invoke(&self, method: &str, args: Value) -> Reply {
+        match method {
+            "use_now" => {
+                let n = args
+                    .list()?
+                    .into_iter()
+                    .next()
+                    .unwrap_or(Value::Undefined)
+                    .json()?
+                    .as_u64()
+                    .unwrap_or(0);
+                let ctx = self.0.clone();
+                Ok(Value::future(async move {
+                    let mut answers = Vec::new();
+                    for _ in 0..n {
+                        answers.push(call_service::<String>(&ctx, "clock", "get", ()).await?);
+                    }
+                    Ok(Value::Data(json!(answers)))
+                }))
+            }
+            other => Err(Error::no_method("user", other, vec!["use_now"])),
+        }
+    }
+
+    fn methods(&self) -> Option<Json> {
+        Some(json!({ "use_now": "async" }))
+    }
+}
+
+/// The connection row `row`: mounts a session on its channel.
+struct RowSession {
+    row: &'static str,
+    channel: Mutex<Option<Channel>>,
+}
+
+impl DynPlugin for RowSession {
+    fn name(&self) -> &str {
+        self.row
+    }
+
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, RutisError>> {
+        Box::pin(async move {
+            ctx.mark_row(self.row)?;
+            let channel = self.channel.lock().unwrap().take().expect("one mount");
+            ctx.plugin(Session::new(channel));
+            Ok(Effect::Done)
+        })
+    }
+}
+
+/// A channel pair counting every message sent either way.
+struct Counting {
+    inner: Box<dyn Sender>,
+    count: Arc<AtomicUsize>,
+}
+
+impl Sender for Counting {
+    fn send(&mut self, message: &[u8]) -> Result<(), ChannelError> {
+        self.count.fetch_add(1, Ordering::SeqCst);
+        self.inner.send(message)
+    }
+
+    fn max_message(&self) -> Option<usize> {
+        self.inner.max_message()
+    }
+}
+
+fn counted(channel: Channel, count: Arc<AtomicUsize>) -> Channel {
+    Channel {
+        sender: Box::new(Counting {
+            inner: channel.sender,
+            count,
+        }),
+        receiver: channel.receiver,
+        closer: channel.closer,
+    }
+}
+
+/// Two ends of a counting memory channel, and the counter.
+fn counted_pair() -> (Channel, Channel, Arc<AtomicUsize>) {
+    let (ours, theirs) = rutis_bridge::memory::pair();
+    let count = Arc::new(AtomicUsize::new(0));
+    (
+        counted(ours, count.clone()),
+        counted(theirs, count.clone()),
+        count,
+    )
+}
+
+/// A Cordis row's services all reach rutis (M1-14-1), and a leaf plugin's
+/// `ctx.provide` has the same wire shape (M1-14-9): every name the runtime
+/// announces without declaring it is projected with the methods the
+/// `service` frame carries, all of them async; a name in the row's
+/// `provides` keeps the declared shape, sync methods included. (The
+/// runtime's own method extraction from a Cordis object or an SDK plugin
+/// is not visible here.)
+/// rule: M1-14-1
+/// rule: M1-14-9
+#[tokio::test(flavor = "multi_thread")]
+async fn announced_services_are_all_projected_with_their_methods() {
+    for (cordis, row, names) in [
+        (true, "cordis-row", ["store", "cache"]),
+        (false, "leaf-row", ["leaf-a", "leaf-b"]),
+    ] {
+        let runtime = Scripted::new(json!({ "cordis": cordis, "announces": true }));
+        let (root, process, far) = runtime_rig(runtime.clone()).await;
+        let declared = json!({ "weather": { "today": "sync" } });
+        let exports = declared.as_object().unwrap();
+        let projection = row_projection_of(row, exports, host_key);
+        projection.attach(&root, process.clone()).unwrap();
+        process
+            .load_row_exporting(
+                row,
+                Path::new("row.js"),
+                json!({}),
+                &[],
+                &[],
+                exports,
+                projection.clone(),
+                &[],
+            )
+            .await
+            .unwrap();
+        // The declared service gets its object first.
+        far.invoke_async("", "service", json!(["weather", "weather#1", 1]).into())
+            .await
+            .unwrap();
+        // Every announced name, with the methods the runtime gives it.
+        for (index, name) in names.iter().enumerate() {
+            far.invoke_async(
+                "",
+                "service",
+                json!([name, format!("{name}#1"), index as u64 + 1,
+                       { "row": row, "methods": { "get": "async" } }])
+                .into(),
+            )
+            .await
+            .unwrap();
+        }
+        // The declared name announced with another shape: the declaration
+        // stays what is projected.
+        far.invoke_async(
+            "",
+            "service",
+            json!(["weather", "weather#2", 2,
+                   { "row": row, "methods": { "get": "async" } }])
+            .into(),
+        )
+        .await
+        .unwrap();
+        for name in names {
+            let service = root
+                .get_at::<dyn HostDispatch>(&host_key(name))
+                .unwrap_or_else(|| panic!("{name} is projected"));
+            assert_eq!(service.methods(), Some(json!({ "get": "async" })), "{name}");
+            let answer = service.invoke("get", Value::List(Vec::new())).unwrap();
+            assert!(
+                matches!(&answer, Value::Reference(reference) if reference.is_future()),
+                "{name}: an announced method is async"
+            );
+            assert_eq!(
+                settle(answer).await.unwrap().json().unwrap(),
+                json!("sunny"),
+                "{name}"
+            );
+        }
+        let weather = root
+            .get_at::<dyn HostDispatch>(&host_key("weather"))
+            .unwrap();
+        assert_eq!(
+            weather.methods(),
+            Some(declared["weather"].clone()),
+            "the declaration is the shape"
+        );
+        assert_eq!(
+            call_service::<String>(&root, "weather", "today", ())
+                .await
+                .unwrap(),
+            "sunny"
+        );
+        assert!(
+            call_service::<String>(&root, "weather", "get", ())
+                .await
+                .is_err(),
+            "the announced shape does not replace the declaration"
+        );
+        assert!(far.close_reason().is_none(), "the session goes on");
+    }
+}
+
+/// A runtime mounts with no host service to wait for (M1-5.4-1): the
+/// `mount` call carries no `provided` service and no scope, a later lease
+/// is announced into the running process without mounting it again, and
+/// the wait for an inject lands on the row: `host:weather` is
+/// `unavailable` until it is leased. (The runtime plugin's own `injects`
+/// are on that plugin's side.)
+/// rule: M1-5.4-1
+#[tokio::test(flavor = "multi_thread")]
+async fn a_runtime_mounts_without_waiting_for_host_services() {
+    let runtime = Scripted::new(json!({}));
+    let (_root, process, far) = runtime_rig(runtime.clone()).await;
+    assert_eq!(
+        *runtime.mount_args.lock().unwrap(),
+        vec![json!({
+            "plugins": [],
+            "services": null,
+            "provided": {},
+            "announce": true,
+            "scope": [],
+            "runtime": "rt",
+        })],
+        "the mount has no host service and no scope"
+    );
+    assert!(
+        runtime.hosts.lock().unwrap().is_empty(),
+        "nothing is leased at the mount"
+    );
+    process
+        .load_row(
+            "w",
+            Path::new("w.js"),
+            json!({}),
+            &[],
+            &["weather".to_owned()],
+            &[],
+        )
+        .await
+        .unwrap();
+    let refused = far
+        .invoke_async("host:weather", "today", Value::List(Vec::new()))
+        .await
+        .unwrap_err();
+    assert_eq!(refused.code(), Some("unavailable"), "{refused}");
+    let _lease = process
+        .lease_host(
+            "weather",
+            Arc::new(Answers("sunny")),
+            Some(json!({ "today": "sync" })),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        *runtime.mounts.lock().unwrap(),
+        1,
+        "the lease does not mount the runtime again"
+    );
+    assert_eq!(
+        far.invoke_async("host:weather", "today", Value::List(Vec::new()))
+            .await
+            .unwrap()
+            .json()
+            .unwrap(),
+        json!("sunny")
+    );
+    assert!(far.close_reason().is_none(), "the session goes on");
+}
+
+/// A row sees the service name, and the isolate label is separate metadata
+/// (INS-4.2-4): `rows.load` carries `weather` in the inject list and
+/// `[weather, tenant]` in the isolate table; the lease is announced with
+/// the label, the bare name is no service, and only the scoped id reaches
+/// the provider. (The Node isolate symbol and the leaf runtimes' table
+/// lookup are on that runtime's side.)
+/// rule: INS-4.2-4
+#[tokio::test(flavor = "multi_thread")]
+async fn rows_see_service_names_and_keep_isolate_labels_apart() {
+    let runtime = Scripted::new(json!({}));
+    let (_root, process, far) = runtime_rig(runtime.clone()).await;
+    process
+        .load_row(
+            "w",
+            Path::new("w.js"),
+            json!({}),
+            &[("weather".to_owned(), "tenant".to_owned())],
+            &["weather".to_owned()],
+            &[],
+        )
+        .await
+        .unwrap();
+    let load = runtime.loads.lock().unwrap()[0].clone();
+    assert_eq!(
+        load[3],
+        json!([["weather", "tenant"]]),
+        "the isolate pair is its own"
+    );
+    assert_eq!(
+        load[4],
+        json!(["weather"]),
+        "the plugin sees the name, not the scoped id"
+    );
+    let _lease = process
+        .lease_host_in(
+            "weather",
+            Some("tenant"),
+            Arc::new(Answers("sunny")),
+            Some(json!({ "today": "sync" })),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        *runtime.hosts.lock().unwrap(),
+        vec![json!(["weather", { "today": "sync" }, "tenant"])],
+        "the label travels with the lease"
+    );
+    let bare = far
+        .invoke_async("host:weather", "today", Value::List(Vec::new()))
+        .await
+        .unwrap_err();
+    assert_eq!(bare.code(), Some("unavailable"), "{bare}");
+    assert_eq!(
+        far.invoke_async("host:weather\u{0}tenant", "today", Value::List(Vec::new()))
+            .await
+            .unwrap()
+            .json()
+            .unwrap(),
+        json!("sunny")
+    );
+    assert!(far.close_reason().is_none(), "the session goes on");
+}
+
+/// The default conversion to JSON loses nothing (VAL-1-V2): data, arrays
+/// and small bigints convert exactly; a value that would lose information
+/// fails that conversion alone, saying which value it was, inside a record
+/// too. (The languages' own conversions are on their side.)
+/// rule: VAL-1-V2
+#[tokio::test(flavor = "multi_thread")]
+async fn json_conversion_is_lossless_or_refused_with_its_reason() {
+    let (peer, mut far) = session(Arc::new(Nothing));
+    greet(&mut far, "node", &VALUE_CAPABILITIES);
+    peer.ready().await.unwrap();
+    let end = std::thread::spawn(move || {
+        let call = read(&mut far);
+        assert_eq!(call["op"], json!("invoke"), "{call}");
+        send(
+            &mut far,
+            json!({ "op": "return", "id": frame_id(&call), "value": {
+                "type": "list", "value": [
+                    { "type": "data", "value": { "a": 1 } },
+                    { "type": "bigint", "value": "9007199254740991" },
+                    { "type": "bigint", "value": "18446744073709551616" },
+                    { "type": "instant", "value": "1970-01-01T00:00:00.123456789Z" },
+                    { "type": "record", "value": {
+                        "n": { "type": "bigint", "value": "18446744073709551616" },
+                        "d": { "type": "data", "value": 1 } } },
+                    { "type": "list", "value": [{ "type": "data", "value": 0.1 }] }
+                ] } }),
+        );
+        far
+    });
+    let values = peer
+        .invoke("svc", "give", Value::Undefined)
+        .unwrap()
+        .list()
+        .unwrap();
+    assert_eq!(
+        values[0].clone().json().unwrap(),
+        json!({ "a": 1 }),
+        "data is itself"
+    );
+    assert_eq!(
+        values[1].clone().json().unwrap(),
+        json!(9_007_199_254_740_991u64),
+        "a bigint that fits a JSON number keeps its value"
+    );
+    let error = values[2].clone().json().unwrap_err().to_string();
+    assert!(
+        error.contains("bigint") && error.contains("beyond 64 bits"),
+        "{error}"
+    );
+    let error = values[3].clone().json().unwrap_err().to_string();
+    assert!(error.contains("instant"), "{error}");
+    let error = values[4].clone().json().unwrap_err().to_string();
+    assert!(
+        error.contains("bigint") && error.contains("beyond 64 bits"),
+        "a record fails as a whole: {error}"
+    );
+    let float = values[5].clone().json().unwrap()[0].as_f64().unwrap();
+    assert_eq!(float.to_bits(), 0.1f64.to_bits(), "a float is exact");
+    let _far = far_end(end).await;
+    assert!(peer.close_reason().is_none(), "the session goes on");
+}
+
+/// A node link lets each kernel manage its own plugins and the other only
+/// install through the host (REM-1-3): `office` keeps its own `clock`
+/// plugin while `main` loads and unloads a catalog plugin there, a plugin
+/// office does not have fails its load, and dropping the row stops it on
+/// both sides.
+/// rule: REM-1-3
+#[tokio::test(flavor = "multi_thread")]
+async fn a_node_link_keeps_each_kernels_own_plugins() {
+    let main = kernel("main");
+    let office = kernel("office");
+    let catalog: Arc<dyn PluginCatalog> =
+        Arc::new(StaticCatalog::new().with("contacts", Installed::new(Contacts)));
+    let _catalog = office.provide_at(catalog_key(), catalog).unwrap();
+    let own = office.plugin(Provides {
+        service: "clock",
+        answer: "noon",
+    });
+    within("office's clock", async { (&own).await.unwrap() }).await;
+    let (ours, theirs) = rutis_bridge::memory::pair();
+    let _at_office = office.plugin(Session::new(theirs));
+    let _row = main.plugin(RowSession {
+        row: "office",
+        channel: Mutex::new(Some(ours)),
+    });
+    let mut found = None;
+    until(
+        || {
+            found = main.get_at(&session_key("office"));
+            found.is_some()
+        },
+        "the session of the row office",
+    )
+    .await;
+    let handle = found.expect("the session handle");
+    until(
+        || handle.process().is_some(),
+        "office's process on the session",
+    )
+    .await;
+
+    let row = handle.run("contacts", json!({})).unwrap();
+    within("the load", row.loaded()).await.unwrap();
+    until(
+        || main.get_at(&host_key("contacts")).is_some(),
+        "the contacts service at main",
+    )
+    .await;
+    assert_eq!(
+        call_service::<String>(&main, "contacts", "get", ())
+            .await
+            .unwrap(),
+        "office"
+    );
+    assert_eq!(
+        call_service::<String>(&office, "clock", "get", ())
+            .await
+            .unwrap(),
+        "noon",
+        "office's own plugin is untouched"
+    );
+    let missing = handle.run("missing", json!({})).unwrap();
+    let error = within("the missing load", missing.loaded())
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("does not contain plugin missing"), "{error}");
+
+    drop(row);
+    until(
+        || main.get_at(&host_key("contacts")).is_none(),
+        "contacts gone at main",
+    )
+    .await;
+    until(
+        || office.get_at(&host_key("contacts")).is_none(),
+        "contacts gone at office",
+    )
+    .await;
+    assert_eq!(
+        call_service::<String>(&office, "clock", "get", ())
+            .await
+            .unwrap(),
+        "noon",
+        "the peer's load and unload leave office's own plugin alone"
+    );
+}
+
+/// Two rows of one runtime use services natively (SYN-2-10, M1-11.2-1,
+/// M1-11.2-3): a row the far end loaded into `office` calls office's own
+/// `clock` plugin, and the number of session frames for that call does not
+/// depend on how many times it calls it. The far end's by-name call to the
+/// row itself is the only thing on the wire (APP-3-1): the same app's
+/// plugins exchange the object itself, across a connection the name goes
+/// through rutis. (The Node runner's packaging and the SDKs' "cannot tell"
+/// are not visible; the checked part is the frame count.)
+/// rule: SYN-2-10
+/// rule: M1-11.2-1
+/// rule: M1-11.2-3
+/// rule: APP-3-1
+#[tokio::test(flavor = "multi_thread")]
+async fn rows_of_one_runtime_use_each_others_services_without_frames() {
+    let main = kernel("main");
+    let office = kernel("office");
+    let catalog: Arc<dyn PluginCatalog> =
+        Arc::new(StaticCatalog::new().with("user", Installed::new(User)));
+    let _catalog = office.provide_at(catalog_key(), catalog).unwrap();
+    let own = office.plugin(Provides {
+        service: "clock",
+        answer: "noon",
+    });
+    within("office's clock", async { (&own).await.unwrap() }).await;
+    let (ours, theirs, count) = counted_pair();
+    let _at_office = office.plugin(Session::new(theirs));
+    let _row = main.plugin(RowSession {
+        row: "office",
+        channel: Mutex::new(Some(ours)),
+    });
+    let mut found = None;
+    until(
+        || {
+            found = main.get_at(&session_key("office"));
+            found.is_some()
+        },
+        "the session of the row office",
+    )
+    .await;
+    let handle = found.expect("the session handle");
+    until(
+        || handle.process().is_some(),
+        "office's process on the session",
+    )
+    .await;
+    let row = handle.run("user", json!({})).unwrap();
+    within("the load", row.loaded()).await.unwrap();
+    until(
+        || main.get_at(&host_key("user")).is_some(),
+        "the user service at main",
+    )
+    .await;
+
+    // One call, then fifty: the frames on the session are the same.
+    count.store(0, Ordering::SeqCst);
+    let one = call_service::<Json>(&main, "user", "use_now", vec![1u64])
+        .await
+        .unwrap();
+    let frames_one = count.load(Ordering::SeqCst);
+    assert_eq!(one, json!(["noon"]), "the nested call answered");
+    count.store(0, Ordering::SeqCst);
+    let fifty = call_service::<Json>(&main, "user", "use_now", vec![50u64])
+        .await
+        .unwrap();
+    let frames_fifty = count.load(Ordering::SeqCst);
+    assert_eq!(fifty.as_array().unwrap().len(), 50);
+    assert!(
+        fifty
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|answer| answer == &json!("noon")),
+        "{fifty}"
+    );
+    assert!(
+        frames_fifty <= frames_one + 2 && frames_fifty < 20,
+        "one nested call: {frames_one} frames, fifty: {frames_fifty}"
+    );
+    assert!(
+        main.get_at(&host_key("user")).is_some(),
+        "the far end still calls the row by name"
+    );
+}
+
+/// A peer's listener is described with the node row's scope (NOD-3-6):
+/// the kernel that hears a listener of its node link sees the instance
+/// chain the link was mounted in, and `[]` outside an instance; the scope
+/// is a descriptor for filters, not a delivery rule.
+/// rule: NOD-3-6
+#[tokio::test(flavor = "multi_thread")]
+async fn a_node_links_listeners_carry_the_links_scope() {
+    #[derive(Clone, serde::Serialize, serde::Deserialize)]
+    struct Scoped(String);
+
+    impl Event for Scoped {
+        const NAME: &'static str = "t/scope";
+        type Value = ();
+    }
+
+    for instance in [false, true] {
+        let a = kernel("a");
+        let b = kernel("b");
+        let (at_a, at_b, expected) = match instance {
+            false => {
+                let (ours, theirs) = rutis_bridge::memory::pair();
+                let at_b = b.plugin(Session::new(theirs));
+                let at_a = a.plugin(Session::new(ours));
+                (at_a, at_b, Vec::new())
+            }
+            true => {
+                let (id, ctx) = tenant(&a).await;
+                let (ours, theirs) = rutis_bridge::memory::pair();
+                let at_b = b.plugin(Session::new(theirs));
+                let at_a = ctx.plugin(Session::new(ours));
+                (
+                    at_a,
+                    at_b,
+                    vec![Scope {
+                        id: id.to_string(),
+                        group: "tenant".into(),
+                    }],
+                )
+            }
+        };
+        let _ = b.on::<Scoped>(|_: Arc<Scoped>, _: Call<Scoped>| async { Ok(Some(())) });
+        within("both sessions", async {
+            (&at_a).await.unwrap();
+            (&at_b).await.unwrap();
+        })
+        .await;
+        let seen: Arc<Mutex<Vec<Vec<Scope>>>> = Arc::default();
+        let record = seen.clone();
+        until(
+            || {
+                let record = record.clone();
+                let _ = a
+                    .filter(move |info| {
+                        if info.node.as_deref() == Some("b") && info.name == "t/scope" {
+                            record.lock().unwrap().push(info.scope.clone());
+                        }
+                        true
+                    })
+                    .emit(Scoped("x".into()));
+                !seen.lock().unwrap().is_empty()
+            },
+            "the peer's listener description",
+        )
+        .await;
+        let scope = seen.lock().unwrap()[0].clone();
+        assert_eq!(
+            scope, expected,
+            "the listener's description carries the link's scope"
+        );
+    }
+}
+
+/// A peer greeting as another id than the one the dialer expects is an
+/// identity mismatch (DIA-6-6), not a transport failure: the connection is
+/// opened expecting `peer` (the dialer's `--peer`), and the sentence names
+/// both ids.
+/// rule: DIA-6-6
+#[tokio::test(flavor = "multi_thread")]
+async fn a_peer_greeting_as_another_id_is_an_identity_mismatch() {
+    let (peer, mut far) = session_with(
+        Arc::new(Echo),
+        Endpoint::rust(id("main")).expect(id("peer")),
+    );
+    assert_eq!(read(&mut far)["op"], json!("hello"));
+    send(
+        &mut far,
+        json!({ "op": "hello", "version": ENDPOINT_PROTOCOL, "endpoint": "other",
+                "capabilities": [] }),
+    );
+    match peer.ready().await {
+        Err(Error::Handshake(rutis_bridge::session::Handshake::IdentityMismatch(reason))) => {
+            assert!(reason.contains("other"), "{reason}");
+            assert!(reason.contains("peer"), "{reason}");
+            assert!(reason.contains("expected endpoint"), "{reason}");
+        }
+        other => panic!("an identity mismatch expected, got {other:?}"),
+    }
+}
+
+/// The WebSocket carrier and the dial-time categories (DIA-2-5, DIA-6-3,
+/// DIA-6-5, DIA-6-7), its framing and size limit (CHN-10-6, CHN-10-7), a
+/// listener that admits only a verified controller (REM-2-2), and the node
+/// bridge over a real dial and accept in both directions (CHN-1-5).
+///
+/// The binary-message half of CHN-10-6 has no entry point through the
+/// public channel API (the sender writes text only); it stays open. The
+/// certificate case covers loopback TLS; a non-loopback `wss://` deployment
+/// is the same classifier.
+#[cfg(feature = "websocket")]
+mod carrier {
+    use std::io::{Read, Write};
+    use std::net::{Shutdown, TcpListener as StdListener};
+    use std::sync::mpsc::{channel as std_channel, Sender as StdSender};
+    use std::time::Duration;
+
+    use rutis_bridge::session::Handshake;
+    use rutis_bridge::websocket::{
+        self, Admit, Admitted, Credential, Limits, Listener, ListenerConfig, Refused, ServerTls,
+        Trust, Upgrade,
+    };
+    use rutis_bridge::ConnectError;
+
+    use super::*;
+
+    /// The session protocol the WebSocket binding carries.
+    const PROTOCOL: &str = "rutis.4";
+
+    /// An admission that lets token `good` through and turns the rest away.
+    fn admitting() -> Admit {
+        Arc::new(|upgrade: Upgrade<'_>| match upgrade.bearer {
+            Some("good") => Ok(Admitted {
+                protocol: PROTOCOL.into(),
+                deliver: Box::new(|_| {}),
+            }),
+            Some(_) => Err(Refused::Forbidden("not this token".into())),
+            None => Err(Refused::Unavailable("credentials required".into())),
+        })
+    }
+
+    /// A listener letting `good` through, handing each channel over.
+    fn listening_with(
+        protocol: &'static str,
+        limits: Limits,
+    ) -> (
+        Listener,
+        String,
+        tokio::sync::mpsc::UnboundedReceiver<Channel>,
+    ) {
+        let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+        let admit: Admit = Arc::new(move |upgrade: Upgrade<'_>| match upgrade.bearer {
+            Some("good") => Ok(Admitted {
+                protocol: protocol.into(),
+                deliver: Box::new({
+                    let sender = sender.clone();
+                    move |channel| {
+                        let _ = sender.send(channel);
+                    }
+                }),
+            }),
+            Some(_) => Err(Refused::Forbidden("not this token".into())),
+            None => Err(Refused::Unavailable("credentials required".into())),
+        });
+        let config = ListenerConfig::new("public", "127.0.0.1:0".parse().unwrap());
+        let listener = websocket::listen(&config, &limits, admit).unwrap();
+        let address = format!("ws://{}/rutis", listener.local_addr());
+        (listener, address, receiver)
+    }
+
+    fn listening() -> (
+        Listener,
+        String,
+        tokio::sync::mpsc::UnboundedReceiver<Channel>,
+    ) {
+        listening_with(PROTOCOL, Limits::default())
+    }
+
+    async fn dial_with(
+        address: &str,
+        token: Option<&str>,
+        trust: &Trust,
+        limits: &Limits,
+    ) -> Result<Channel, ConnectError> {
+        let credential = token.map(|token| Credential::Bearer(token.into()));
+        websocket::dial(address, PROTOCOL, credential.as_ref(), trust, limits).await
+    }
+
+    async fn dial(
+        address: &str,
+        token: Option<&str>,
+        trust: &Trust,
+    ) -> Result<Channel, ConnectError> {
+        dial_with(address, token, trust, &Limits::default()).await
+    }
+
+    /// A raw HTTP listener answering one upgrade with `status`, then
+    /// closing: enough to check the dialer's status classification.
+    fn http_status(status: &str) -> String {
+        let listener = StdListener::bind("127.0.0.1:0").unwrap();
+        let address = format!("ws://{}/rutis", listener.local_addr().unwrap());
+        let status = status.to_owned();
+        std::thread::spawn(move || {
+            let (mut tcp, _) = listener.accept().unwrap();
+            let mut buffer = [0u8; 4096];
+            let _ = tcp.read(&mut buffer);
+            let _ = write!(
+                tcp,
+                "HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            );
+            let _ = tcp.shutdown(Shutdown::Both);
+        });
+        address
+    }
+
+    /// An address whose listener accepts the TCP connection and never
+    /// answers, and the sender that lets its thread go.
+    fn silent() -> (String, StdSender<()>) {
+        let listener = StdListener::bind("127.0.0.1:0").unwrap();
+        let address = format!("ws://{}/rutis", listener.local_addr().unwrap());
+        let (release, held) = std_channel();
+        std::thread::spawn(move || {
+            let (_tcp, _) = listener.accept().unwrap();
+            let _ = held.recv();
+        });
+        (address, release)
+    }
+
+    /// A CA and a certificate for localhost signed by it, as PEM.
+    fn pki() -> (String, String, String) {
+        use rcgen::{BasicConstraints, CertificateParams, IsCa, Issuer, KeyPair};
+        let ca_key = KeyPair::generate().unwrap();
+        let mut ca_params = CertificateParams::new(Vec::<String>::new()).unwrap();
+        ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+        ca_params
+            .distinguished_name
+            .push(rcgen::DnType::CommonName, "rutis test CA");
+        let ca = ca_params.self_signed(&ca_key).unwrap();
+        let issuer = Issuer::new(ca_params, ca_key);
+        let key = KeyPair::generate().unwrap();
+        let mut params = CertificateParams::new(vec!["localhost".into()]).unwrap();
+        params
+            .distinguished_name
+            .push(rcgen::DnType::CommonName, "localhost");
+        let certificate = params.signed_by(&key, &issuer).unwrap();
+        (ca.pem(), certificate.pem(), key.serialize_pem())
+    }
+
+    /// Each frame is one text message (CHN-10-6): the bytes the listener
+    /// receives are exactly the frame's UTF-8 JSON, with no newline, and a
+    /// second frame is a second message, not appended to the first. (The
+    /// binary message's close has no public entry point; it stays open.)
+    /// rule: CHN-10-6
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_frame_is_one_text_message_without_a_newline() {
+        let (_listener, address, mut delivered) = listening();
+        let mut dialed = dial(&address, Some("good"), &Trust::default())
+            .await
+            .unwrap();
+        let accepted = within("the accepted channel", delivered.recv())
+            .await
+            .unwrap();
+        let first = json!({ "op": "hello", "version": ENDPOINT_PROTOCOL,
+                            "endpoint": "main", "capabilities": [] });
+        let second = json!({ "op": "call", "id": "a:1", "reference": 1,
+                             "method": "get", "args": { "type": "list", "value": [] } });
+        dialed
+            .sender
+            .send(&serde_json::to_vec(&first).unwrap())
+            .unwrap();
+        dialed
+            .sender
+            .send(&serde_json::to_vec(&second).unwrap())
+            .unwrap();
+        let (one, two) = within(
+            "the two messages",
+            tokio::task::spawn_blocking(move || {
+                let mut accepted = accepted;
+                (accepted.receiver.recv(), accepted.receiver.recv())
+            }),
+        )
+        .await
+        .unwrap();
+        let one = one.unwrap().unwrap();
+        let two = two.unwrap().unwrap();
+        let text = std::str::from_utf8(&one).unwrap();
+        assert!(!text.contains('\n'), "{text:?}");
+        assert_eq!(serde_json::from_str::<Json>(text).unwrap(), first);
+        assert_eq!(serde_json::from_slice::<Json>(&two).unwrap(), second);
+    }
+
+    /// A message over the limit closes the channel with 1009 (CHN-10-7):
+    /// the default is 16 MiB, a configured limit refuses the send, and the
+    /// far end reads the close; a session over the same channel sees one
+    /// transport end.
+    /// rule: CHN-10-7
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_over_limit_message_closes_with_1009() {
+        assert_eq!(Limits::default().max_message, 16 * 1024 * 1024);
+        let limits = Limits {
+            max_message: 256,
+            ..Default::default()
+        };
+        let (_listener, address, mut delivered) = listening_with(PROTOCOL, limits.clone());
+        let mut dialed = dial_with(&address, Some("good"), &Trust::default(), &limits)
+            .await
+            .unwrap();
+        let accepted = within("the accepted channel", delivered.recv())
+            .await
+            .unwrap();
+        match dialed.sender.send(&vec![b'x'; 512]) {
+            Err(ChannelError::Closed { reason }) => {
+                assert!(reason.contains("512"), "{reason}");
+                assert!(reason.contains("256"), "{reason}");
+            }
+            other => panic!("a closed channel expected, got {other:?}"),
+        }
+        let far = within(
+            "the far end's close",
+            tokio::task::spawn_blocking(move || {
+                let mut accepted = accepted;
+                accepted.receiver.recv()
+            }),
+        )
+        .await
+        .unwrap();
+        match far {
+            Err(ChannelError::Closed { reason }) => {
+                assert!(reason.contains("1009"), "{reason}");
+                assert!(reason.contains("512 bytes"), "{reason}");
+            }
+            other => panic!("the far end sees the close, got {other:?}"),
+        }
+    }
+
+    /// A session that knows the channel's limit refuses the oversized frame
+    /// before the transport (#675): only that call fails, the far end reads
+    /// no frame and no close, and the session goes on. (The raw channel's
+    /// own limit still closes with 1009, checked above; the rule's "session
+    /// sees one Closed" is the path without a reported limit, #675's
+    /// deliberate exception.)
+    /// rule: CHN-10-7
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_session_refuses_an_oversized_frame_before_the_transport() {
+        // The greeting is 289 bytes: the limit must let it through and
+        // stop the call.
+        let limits = Limits {
+            max_message: 512,
+            ..Default::default()
+        };
+        let (_listener, address, mut delivered) = listening_with(PROTOCOL, limits.clone());
+        let dialed = dial_with(&address, Some("good"), &Trust::default(), &limits)
+            .await
+            .unwrap();
+        let mut accepted = within("the accepted channel", delivered.recv())
+            .await
+            .unwrap();
+        let peer = Connection::open(dialed, Arc::new(Echo), Endpoint::rust(id("main"))).unwrap();
+        greet(&mut accepted, "runtime", &[]);
+        within("the greeting", peer.ready()).await.unwrap();
+        let error = within("the oversized call", async {
+            peer.invoke("svc", "echo", Value::Data(json!("x".repeat(1024))))
+        })
+        .await
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("exceeds the limit")
+                || error.to_string().contains("over the limit"),
+            "{error}"
+        );
+        assert!(
+            peer.close_reason().is_none(),
+            "the session goes on after the refused call"
+        );
+        accepted.closer.close(Close::Done);
+    }
+
+    /// A non-loopback `ws://` address is refused before anything is dialed
+    /// (DIA-2-5): only `wss://` carries a non-loopback connection, and the
+    /// error is the incompatible category the dialer stops on.
+    /// rule: DIA-2-5
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_non_loopback_ws_address_is_refused_before_connecting() {
+        match dial("ws://192.0.2.1:80/rutis", None, &Trust::default()).await {
+            Err(ConnectError::Incompatible { reason }) => {
+                assert!(reason.contains("non-loopback"), "{reason}");
+                assert!(reason.contains("wss://"), "{reason}");
+            }
+            other => panic!("an incompatible address expected, got {other:?}"),
+        }
+    }
+
+    /// Credential refusals are their own category (DIA-6-3): 401, 403, a
+    /// server certificate this side does not trust, and a 4003 after the
+    /// hello are authentication failures, while the same listener with its
+    /// CA is reached.
+    /// rule: DIA-6-3
+    #[tokio::test(flavor = "multi_thread")]
+    async fn credential_refusals_have_their_own_category() {
+        let (_listener, address, _delivered) = listening();
+        assert!(
+            matches!(dial(&address, None, &Trust::default()).await,
+                     Err(ConnectError::AuthRejected { reason }) if reason.contains("401")),
+            "no credentials: 401"
+        );
+        assert!(
+            matches!(dial(&address, Some("bad"), &Trust::default()).await,
+                     Err(ConnectError::AuthRejected { reason }) if reason.contains("403")),
+            "refused credentials: 403"
+        );
+        // A certificate this side does not trust.
+        let (ca, certificate, key) = pki();
+        let listener = websocket::listen(
+            &ListenerConfig::new("public", "127.0.0.1:0".parse().unwrap()).tls(ServerTls {
+                certificate_pem: certificate.into_bytes(),
+                key_pem: key.into_bytes(),
+                client_ca_pem: None,
+            }),
+            &Limits::default(),
+            admitting(),
+        )
+        .unwrap();
+        let address = format!("wss://localhost:{}/rutis", listener.local_addr().port());
+        match dial(&address, Some("good"), &Trust::default()).await {
+            Err(ConnectError::AuthRejected { reason }) => {
+                assert!(
+                    reason.contains("certificate") || reason.contains("TLS"),
+                    "{reason}"
+                );
+            }
+            other => panic!("an untrusted certificate is authentication, got {other:?}"),
+        }
+        let _trusted = dial(&address, Some("good"), &Trust::only(ca.into_bytes()))
+            .await
+            .unwrap();
+        // 4003 after the hello: the access point refuses this id.
+        let (_listener, address, mut delivered) = listening();
+        let dialed = dial(&address, Some("good"), &Trust::default())
+            .await
+            .unwrap();
+        let accepted = within("the accepted channel", delivered.recv())
+            .await
+            .unwrap();
+        let closing = std::thread::spawn(move || {
+            let mut accepted = accepted;
+            let hello = read(&mut accepted);
+            assert_eq!(hello["op"], json!("hello"), "{hello}");
+            accepted
+                .closer
+                .close(Close::Rejected("this id is taken".into()));
+        });
+        let root = common::runtime::root();
+        let error = Session::handshake(&root, dialed)
+            .await
+            .err()
+            .expect("the refused handshake fails");
+        match error {
+            Error::Handshake(Handshake::IdentityMismatch(reason)) => {
+                assert!(reason.contains("rejected"), "{reason}");
+                assert!(reason.contains("this id is taken"), "{reason}");
+            }
+            other => panic!("a refused id is an identity mismatch, got {other:?}"),
+        }
+        closing.join().unwrap();
+    }
+
+    /// Protocol mismatches are the incompatible category (DIA-6-5): 404,
+    /// 405 and 426 at the upgrade, another session protocol, and a far end
+    /// greeting with a version this side does not speak.
+    /// rule: DIA-6-5
+    #[tokio::test(flavor = "multi_thread")]
+    async fn protocol_mismatches_are_incompatible() {
+        for status in [
+            "404 Not Found",
+            "405 Method Not Allowed",
+            "426 Upgrade Required",
+        ] {
+            let address = http_status(status);
+            match dial(&address, Some("good"), &Trust::default()).await {
+                Err(ConnectError::Incompatible { reason }) => {
+                    assert!(
+                        reason.contains(status.split(' ').next().unwrap()),
+                        "{status}: {reason}"
+                    );
+                }
+                other => panic!("{status}: an incompatible upgrade expected, got {other:?}"),
+            }
+        }
+        // A listener speaking another session protocol.
+        let (_listener, address, _delivered) = listening_with("rutis.3", Limits::default());
+        match dial(&address, Some("good"), &Trust::default()).await {
+            Err(ConnectError::Incompatible { reason }) => {
+                assert!(reason.contains("400"), "{reason}");
+                assert!(reason.contains("rutis.3"), "{reason}");
+            }
+            other => panic!("a protocol refusal is incompatible, got {other:?}"),
+        }
+        // The far end's hello names a protocol this side does not speak.
+        let root = common::runtime::root();
+        let (ours, theirs) = rutis_bridge::memory::pair();
+        let end = std::thread::spawn(move || {
+            let mut far = theirs;
+            let hello = read(&mut far);
+            assert_eq!(hello["op"], json!("hello"), "{hello}");
+            send(
+                &mut far,
+                json!({ "op": "hello", "version": ENDPOINT_PROTOCOL + 1,
+                        "endpoint": "node", "capabilities": [] }),
+            );
+            far
+        });
+        let error = Session::handshake(&root, ours)
+            .await
+            .err()
+            .expect("the mismatched handshake fails");
+        match error {
+            Error::Handshake(Handshake::Incompatible(reason)) => {
+                assert!(reason.contains("the far end speaks protocol"), "{reason}");
+                assert!(reason.contains("upgrade"), "{reason}");
+            }
+            other => panic!("a version mismatch is incompatible, got {other:?}"),
+        }
+        let _far = far_end(end).await;
+    }
+
+    /// The rest of the failures are retryable (DIA-6-7): a connection
+    /// nobody answers, a listener that never answers within the handshake
+    /// limit, a normal dropout, and 4002 from a newer connection.
+    /// rule: DIA-6-7
+    #[tokio::test(flavor = "multi_thread")]
+    async fn retryable_failures_are_the_rest() {
+        let probe = StdListener::bind("127.0.0.1:0").unwrap();
+        let address = format!("ws://{}/rutis", probe.local_addr().unwrap());
+        drop(probe);
+        match dial(&address, Some("good"), &Trust::default()).await {
+            Err(ConnectError::Retryable { reason }) => {
+                assert!(
+                    reason.contains("refused") || reason.contains("refusing"),
+                    "{reason}"
+                );
+            }
+            other => panic!("a refused connection is retryable, got {other:?}"),
+        }
+        let (address, release) = silent();
+        let limits = Limits {
+            handshake: Duration::from_millis(100),
+            ..Default::default()
+        };
+        match dial_with(&address, Some("good"), &Trust::default(), &limits).await {
+            Err(ConnectError::Retryable { reason }) => {
+                assert!(reason.contains("timed out"), "{reason}")
+            }
+            other => panic!("a silent listener is a timeout, got {other:?}"),
+        }
+        let _ = release.send(());
+        let (_listener, address, mut delivered) = listening();
+        let dialed = dial(&address, Some("good"), &Trust::default())
+            .await
+            .unwrap();
+        let accepted = within("the accepted channel", delivered.recv())
+            .await
+            .unwrap();
+        accepted.closer.close(Close::Done);
+        let end = within(
+            "the far end's end",
+            tokio::task::spawn_blocking(move || {
+                let mut dialed = dialed;
+                dialed.receiver.recv()
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(end, Ok(None), "a normal close is the channel's end");
+        let dialed = dial(&address, Some("good"), &Trust::default())
+            .await
+            .unwrap();
+        let accepted = within("the accepted channel", delivered.recv())
+            .await
+            .unwrap();
+        accepted.closer.close(Close::Replaced);
+        let end = within(
+            "the far end's end",
+            tokio::task::spawn_blocking(move || {
+                let mut dialed = dialed;
+                dialed.receiver.recv()
+            }),
+        )
+        .await
+        .unwrap();
+        match end {
+            Err(ChannelError::Closed { reason }) => {
+                assert!(reason.contains("replaced"), "{reason}")
+            }
+            other => panic!("4002 is a closed channel, got {other:?}"),
+        }
+    }
+
+    /// A listener admits only a controller it can verify (REM-2-2):
+    /// without a token the upgrade is refused with 401, a token it does
+    /// not accept with 403, and the accepted one starts a session.
+    /// rule: REM-2-2
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_listener_admits_only_a_verified_controller() {
+        let (_listener, address, mut delivered) = listening();
+        assert!(
+            matches!(dial(&address, None, &Trust::default()).await,
+                     Err(ConnectError::AuthRejected { reason }) if reason.contains("401")),
+            "no credentials: 401"
+        );
+        assert!(
+            matches!(dial(&address, Some("bad"), &Trust::default()).await,
+                     Err(ConnectError::AuthRejected { reason }) if reason.contains("403")),
+            "a token it does not accept: 403"
+        );
+        let root = common::runtime::root();
+        let dialed = dial(&address, Some("good"), &Trust::default())
+            .await
+            .unwrap();
+        let accepted = within("the accepted channel", delivered.recv())
+            .await
+            .unwrap();
+        let end = std::thread::spawn(move || {
+            let mut accepted = accepted;
+            greet(&mut accepted, "runtime", &[]);
+            accepted
+        });
+        let greeted = within("the handshake", Session::handshake(&root, dialed))
+            .await
+            .unwrap();
+        assert_eq!(greeted.id(), "runtime");
+        let _far = far_end(end).await;
+    }
+
+    /// Node features do not depend on who dialed (CHN-1-5): over one
+    /// WebSocket connection the listener runs a plugin on the dialer and
+    /// the dialer runs one on the listener, each from its own catalog. (The
+    /// old feature plugins are the session's families now; the checked part
+    /// is that both ends offer the node bridge, whichever accepted.)
+    /// rule: CHN-1-5
+    #[tokio::test(flavor = "multi_thread")]
+    async fn node_features_do_not_depend_on_who_dialed() {
+        let (listener, address, mut delivered) = listening();
+        let a = kernel("a");
+        let b = kernel("b");
+        let catalog: Arc<dyn PluginCatalog> =
+            Arc::new(StaticCatalog::new().with("contacts", Installed::new(Contacts)));
+        let _ca = a.provide_at(catalog_key(), catalog).unwrap();
+        let catalog: Arc<dyn PluginCatalog> =
+            Arc::new(StaticCatalog::new().with("contacts", Installed::new(Contacts)));
+        let _cb = b.provide_at(catalog_key(), catalog).unwrap();
+        let dialed = dial(&address, Some("good"), &Trust::default())
+            .await
+            .unwrap();
+        let accepted = within("the accepted channel", delivered.recv())
+            .await
+            .unwrap();
+        let (greeted_a, greeted_b) = tokio::join!(
+            Session::handshake(&a, accepted),
+            Session::handshake(&b, dialed)
+        );
+        let greeted_a = greeted_a.unwrap();
+        let greeted_b = greeted_b.unwrap();
+        assert_eq!(greeted_a.id(), "b", "the listener sees the dialer");
+        assert_eq!(greeted_b.id(), "a", "the dialer sees the listener");
+        let handle_a = greeted_a.handle();
+        let handle_b = greeted_b.handle();
+        let _view_a = a.plugin(greeted_a);
+        let _view_b = b.plugin(greeted_b);
+        until(|| handle_a.process().is_some(), "a's process on b").await;
+        until(|| handle_b.process().is_some(), "b's process on a").await;
+        let at_b = handle_a.run("contacts", json!({})).unwrap();
+        let at_a = handle_b.run("contacts", json!({})).unwrap();
+        within("the loads", async {
+            at_b.loaded().await.unwrap();
+            at_a.loaded().await.unwrap();
+        })
+        .await;
+        until(
+            || a.get_at(&host_key("contacts")).is_some(),
+            "the contacts service at a",
+        )
+        .await;
+        until(
+            || b.get_at(&host_key("contacts")).is_some(),
+            "the contacts service at b",
+        )
+        .await;
+        assert_eq!(
+            call_service::<String>(&a, "contacts", "get", ())
+                .await
+                .unwrap(),
+            "office",
+            "the listener runs the dialer's plugin"
+        );
+        assert_eq!(
+            call_service::<String>(&b, "contacts", "get", ())
+                .await
+                .unwrap(),
+            "office",
+            "the dialer runs the listener's plugin"
+        );
+        drop(listener);
+    }
 }
