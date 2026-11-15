@@ -24,7 +24,7 @@ Out of scope:
 
 ## 2. Conclusions
 
-1. **One runtime plugin and one process per language runtime.** As with #109 `CordisRuntimePlugin`, the runtime plugin starts the language process and provides a runtime service. Every plugin in that language is a loader row dependent on it and loads into the same process. Ten Python plugins still use one Python process.
+1. **One runtime plugin and one process per language runtime.** As with #109's runtime plugin, it starts the language process and provides a runtime service. Every plugin in that language is a loader row dependent on it and loads into the same process. Ten Python plugins still use one Python process.
 2. **Implement the paradigm once, in rutis.** rutis and loader own dependency gating, startup/shutdown, restart, configuration layers, and hot update. Each plugin in another language is one row and one fiber in rutis.
 3. **Plugins in other languages are leaves.** Their language side needs only a small SDK: a plugin has `apply(ctx, config)`, uses/provides services there, and returns cleanup. No child plugins or local dependency graph, so do not reproduce Cordis or rutis in Python/Swift. Events are one bus, dispatched by the host ([events protocol](design-events-protocol-2026-10-18.en.md)): `ctx.on` / `ctx.emit` listeners and the host's are in one table and run in registration order; listeners leave when the plugin unloads, `internal/*` does not cross the boundary; a failing `emit` listener is reported on the listener's side only: it affects neither the emitter nor the process. The plugin API is 3.
 4. **Node remains full Cordis.** Reusing existing npm Cordis plugins requires their native interdependencies. This is the only side that needs a complete framework.
@@ -48,7 +48,7 @@ Out of scope:
 | `host_key` host services | How plugins in other languages use rutis services |
 | Python runner research (`python.md`): prototype passed nested sync callbacks, `SyncWaitCycle`, cancellation, and deferral of unrelated calls; sync round-trip about 25–60 µs | Session layer of Python runtime can follow this prototype |
 
-One protocol detail is still hard-coded to Node: Rust accepts only call IDs beginning with `node:`. For the first phase, treat `node:` as the “runtime side” prefix and reuse it for other language runtimes without a protocol version change. Rename it with a future protocol upgrade if needed.
+A call id's prefix is this side's endpoint id (§9); Rust no longer accepts only ids beginning with `node:`. Every runtime follows this rule without a protocol version change.
 
 ## 4. Model
 
