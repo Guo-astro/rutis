@@ -7,6 +7,9 @@ use std::io::Write;
 use std::path::Path;
 use std::time::Duration;
 
+use rutis::host::CtxHost;
+use rutis::internal::CtxInternal;
+use rutis::{Ctx, Event};
 use rutis_bridge::runtime::{Mount, Process};
 use rutis_bridge::session::{settle, Value};
 use rutis_test_support::until;
@@ -130,5 +133,100 @@ async fn dropping_between_the_reply_and_its_await_still_cancels() {
         "the cancel of the dropped call",
     )
     .await;
+    process.dispose().await.unwrap();
+}
+
+/// A JavaScript listener has no signal for one call (events protocol §5.7):
+/// the caller giving up cancels the call, the listener runs on, and its
+/// reply is discarded. Only the row's unload aborts `ctx.signal`.
+const LISTENER: &str = r#"
+export function apply(ctx) {
+  let started = false
+  let finished = false
+  ctx.on('t/slow', async () => {
+    started = true
+    await new Promise(resolve => setTimeout(resolve, 300))
+    finished = true
+  })
+  ctx.provide('probe', {
+    started() { return started },
+    finished() { return finished },
+    aborted() { return ctx.signal.aborted },
+    ping() { return 'pong' },
+  })
+}
+"#;
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct Slow;
+
+impl Event for Slow {
+    const NAME: &'static str = "t/slow";
+    type Value = ();
+}
+
+/// rule: EVP-5.7-7
+#[tokio::test(flavor = "multi_thread")]
+async fn a_cancelled_dispatch_does_not_stop_a_javascript_listener() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
+    let mut plugin = tempfile::Builder::new().suffix(".mjs").tempfile().unwrap();
+    plugin.write_all(LISTENER.as_bytes()).unwrap();
+    let root = Ctx::root().unwrap();
+    let process = Process::mount(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../node/rutis-runtime"),
+        Mount {
+            plugins: vec![(plugin.path(), json!({}))],
+            services: json!({ "probe": ["started", "finished", "aborted", "ping"] }),
+            ctx: Some(root.clone()),
+            ..Mount::default()
+        },
+    )
+    .await
+    .unwrap();
+    let probe = process.service("probe").unwrap();
+    until(
+        || {
+            root.events()
+                .subscriptions()
+                .iter()
+                .any(|entry| entry.name == Slow::NAME)
+        },
+        "the listener on the bus",
+    )
+    .await;
+
+    let mut dispatch = root.named(Slow::NAME).parallel(Slow);
+    tokio::select! {
+        biased;
+        ended = &mut dispatch => panic!("the dispatch only ends when cancelled: {ended:?}"),
+        () = until(
+            || process.call(&probe, "started", json!([])).ok() == Some(json!(true)),
+            "the listener started",
+        ) => {}
+    }
+    drop(dispatch);
+
+    until(
+        || process.call(&probe, "finished", json!([])).ok() == Some(json!(true)),
+        "the listener ran to its end",
+    )
+    .await;
+    assert_eq!(
+        process.call(&probe, "aborted", json!([])).unwrap(),
+        json!(false),
+        "no signal for the call: only an unload aborts ctx.signal"
+    );
+    until(
+        || process.connection().orphans() > 0,
+        "the late reply discarded",
+    )
+    .await;
+    assert_eq!(
+        process.call(&probe, "ping", json!([])).unwrap(),
+        json!("pong"),
+        "the session goes on"
+    );
     process.dispose().await.unwrap();
 }
