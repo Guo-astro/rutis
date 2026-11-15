@@ -86,25 +86,46 @@
 //! rule: REQ-5-0
 //! rule: SYN-2-13
 //! rule: M2-2-1
+//! rule: M1-4.1-1
+//! rule: M1-5.1-3
+//! rule: M1-14-5
+//! rule: INS-4.2-9
+//! rule: INS-5-5
+//! rule: CHN-0-2
+//! rule: CHN-3-4
+//! rule: CHN-2.2-1
+//! rule: M2-2-5
+//! rule: REM-4.1-4
+//! rule: REM-4.2-10
+//! rule: REM-5.2-6
+//! rule: REM-6.2-6
+//! rule: REM-10-1
+//! rule: DIA-3-1
+//! rule: DIA-4-8
+//! rule: APP-1-2
+//! rule: APP-1-5
+//! rule: APP-1-6
+//! rule: NOD-3-8
 //! guarantee: bridge/value-tags
 //! guarantee: bridge/object-refs
 //! guarantee: bridge/unknown-fields
 
+use std::collections::VecDeque;
 use std::path::Path;
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{mpsc, Arc, Condvar, Mutex};
 
 use rutis::events::Scope;
-use rutis::host::CtxHost;
-use rutis::Ctx;
-use rutis_bridge::channel::{Channel, PeerId};
-use rutis_bridge::runtime::row_projection;
-use rutis_bridge::runtime::Process;
+use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, InstanceId};
+use rutis::{Ctx, Error as RutisError};
+use rutis_bridge::channel::{Channel, ChannelError, Close, Closer, PeerId, Receiver, Sender};
+use rutis_bridge::runtime::{row_projection, row_projection_of, Process};
 use rutis_bridge::session::{
-    call_service, host_key, settle, BigInt, Connection, Decimal, Dispatch, Endpoint, Error,
-    HostDispatch, Instant, Reference, Reply, Uuid, Value, ENDPOINT_PROTOCOL,
+    call_service, host_key, host_key_in, settle, BigInt, Connection, Decimal, Dispatch, Endpoint,
+    Error, HostDispatch, Instant, Reference, Reply, Uuid, Value, ENDPOINT_PROTOCOL,
 };
 use rutis_test_support::{until, within};
 use serde_json::{json, Value as Json};
+use tokio::sync::oneshot;
 
 mod common;
 
@@ -3624,9 +3645,11 @@ struct Scripted {
     updates: Mutex<Vec<Json>>,
     unloads: Mutex<Vec<Json>>,
     hosts: Mutex<Vec<Json>>,
+    withdraws: Mutex<Vec<Json>>,
     offers: Mutex<Vec<Json>>,
     calls: Mutex<Vec<(String, String)>>,
     mounts: Mutex<usize>,
+    sequence: Mutex<Vec<String>>,
 }
 
 impl Scripted {
@@ -3639,9 +3662,11 @@ impl Scripted {
             updates: Mutex::default(),
             unloads: Mutex::default(),
             hosts: Mutex::default(),
+            withdraws: Mutex::default(),
             offers: Mutex::default(),
             calls: Mutex::default(),
             mounts: Mutex::default(),
+            sequence: Mutex::default(),
         })
     }
 
@@ -3672,6 +3697,7 @@ impl Dispatch for Scripted {
         match (target, method) {
             ("", "mount") => {
                 *self.mounts.lock().unwrap() += 1;
+                self.sequence.lock().unwrap().push("mount".into());
                 Ok(Value::Data(self.mount.clone()))
             }
             ("", "link.offers") => {
@@ -3684,21 +3710,29 @@ impl Dispatch for Scripted {
             }
             ("", "rows.load") => {
                 self.loads.lock().unwrap().push(args.json()?);
+                self.sequence.lock().unwrap().push("rows.load".into());
                 Ok(Value::Undefined)
             }
             ("", "rows.update") => {
                 self.updates.lock().unwrap().push(args.json()?);
+                self.sequence.lock().unwrap().push("rows.update".into());
                 Ok(Value::Undefined)
             }
             ("", "rows.unload") => {
                 self.unloads.lock().unwrap().push(args.json()?);
+                self.sequence.lock().unwrap().push("rows.unload".into());
                 Ok(Value::Undefined)
             }
             ("", "hosts.provide") => {
                 self.hosts.lock().unwrap().push(args.json()?);
+                self.sequence.lock().unwrap().push("hosts.provide".into());
                 Ok(Value::Undefined)
             }
-            ("", "hosts.withdraw") => Ok(Value::Undefined),
+            ("", "hosts.withdraw") => {
+                self.withdraws.lock().unwrap().push(args.json()?);
+                self.sequence.lock().unwrap().push("hosts.withdraw".into());
+                Ok(Value::Undefined)
+            }
             _ if target.is_empty() => Err(Error::value(format!("no method {method}"))),
             // A call into a row's service, at the handle the far end was
             // given: what a runtime does when one of its rows is called.
@@ -4740,4 +4774,1168 @@ async fn rows_isolating_the_same_name_export_it_in_their_own_scopes() {
         "the refused row never loaded"
     );
     assert!(far.close_reason().is_none(), "the session goes on");
+}
+
+// ── Sixth batch: services, instances and control (#639) ─────────────────
+
+/// A plugin that marks its fiber as an instance of `tenant` and hands its
+/// identity and context back, for the instance-scoped tests.
+struct Tenant(Mutex<Option<oneshot::Sender<(InstanceId, Ctx)>>>);
+
+impl DynPlugin for Tenant {
+    fn name(&self) -> &str {
+        "tenant"
+    }
+
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, RutisError>> {
+        Box::pin(async move {
+            ctx.mark_scope("tenant")?;
+            let sender = self.0.lock().unwrap().take();
+            if let Some(sender) = sender {
+                let _ = sender.send((ctx.instance(), ctx.clone()));
+            }
+            Ok(Effect::Done)
+        })
+    }
+}
+
+/// A child context marked as an instance of `tenant`.
+async fn tenant(root: &Ctx) -> (InstanceId, Ctx) {
+    let (sender, received) = oneshot::channel();
+    root.plugin(Tenant(Mutex::new(Some(sender)))).await.unwrap();
+    received.await.unwrap()
+}
+
+/// The far end of a runtime session on `ends`, mounted as the row `row`.
+async fn runtime_pair(
+    ctx: &Ctx,
+    row: &str,
+    ends: (Channel, Channel),
+    runtime: Arc<Scripted>,
+) -> (Arc<Process>, Connection) {
+    let (ours, theirs) = ends;
+    let mut endpoint = Endpoint::rust(id(row));
+    endpoint.capabilities.push("runtime".into());
+    let far = Connection::open(theirs, runtime, endpoint).unwrap();
+    let process = common::runtime::attached(ctx, row, ours).await.unwrap();
+    (process, far)
+}
+
+/// [`runtime_pair`] on a memory channel.
+async fn runtime_on(ctx: &Ctx, row: &str, runtime: Arc<Scripted>) -> (Arc<Process>, Connection) {
+    runtime_pair(ctx, row, rutis_bridge::memory::pair(), runtime).await
+}
+
+/// A channel that is not the in-memory one: two queues and a condition
+/// variable, so the session runs over a different carrier without changing
+/// anything it sends (REM-10-1).
+struct Wire {
+    state: Mutex<WireState>,
+    arrived: Condvar,
+}
+
+#[derive(Default)]
+struct WireState {
+    messages: VecDeque<Vec<u8>>,
+    ended: bool,
+}
+
+impl Wire {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            state: Mutex::new(WireState::default()),
+            arrived: Condvar::new(),
+        })
+    }
+}
+
+struct WireSender(Arc<Wire>);
+
+impl Sender for WireSender {
+    fn send(&mut self, message: &[u8]) -> Result<(), ChannelError> {
+        let mut state = self.0.state.lock().unwrap();
+        if state.ended {
+            return Err(ChannelError::Closed {
+                reason: "the wire ended".into(),
+            });
+        }
+        state.messages.push_back(message.to_vec());
+        self.0.arrived.notify_all();
+        Ok(())
+    }
+}
+
+struct WireReceiver(Arc<Wire>);
+
+impl Receiver for WireReceiver {
+    fn recv(&mut self) -> Result<Option<Vec<u8>>, ChannelError> {
+        let mut state = self.0.state.lock().unwrap();
+        loop {
+            if let Some(message) = state.messages.pop_front() {
+                return Ok(Some(message));
+            }
+            if state.ended {
+                return Ok(None);
+            }
+            state = self.0.arrived.wait(state).unwrap();
+        }
+    }
+}
+
+struct WireCloser {
+    queues: [Arc<Wire>; 2],
+}
+
+impl Closer for WireCloser {
+    fn close(&self, _: Close) {
+        for wire in &self.queues {
+            let mut state = wire.state.lock().unwrap();
+            state.ended = true;
+            wire.arrived.notify_all();
+        }
+    }
+}
+
+/// Two ends of a [`Wire`], a carrier of the test's own.
+fn wire_pair() -> (Channel, Channel) {
+    let a_to_b = Wire::new();
+    let b_to_a = Wire::new();
+    let a = Channel {
+        sender: Box::new(WireSender(a_to_b.clone())),
+        receiver: Box::new(WireReceiver(b_to_a.clone())),
+        closer: Arc::new(WireCloser {
+            queues: [a_to_b.clone(), b_to_a.clone()],
+        }),
+    };
+    let b = Channel {
+        sender: Box::new(WireSender(b_to_a.clone())),
+        receiver: Box::new(WireReceiver(a_to_b.clone())),
+        closer: Arc::new(WireCloser {
+            queues: [a_to_b, b_to_a],
+        }),
+    };
+    (a, b)
+}
+
+/// A far end whose channel takes messages only up to `limit` bytes, as a
+/// transport with a size limit does. It does not answer `max_message`, so
+/// the session cannot check a frame before writing it (CHN-3-4).
+struct Limited {
+    inner: Box<dyn Sender>,
+    limit: usize,
+}
+
+impl Sender for Limited {
+    fn send(&mut self, message: &[u8]) -> Result<(), ChannelError> {
+        if message.len() <= self.limit {
+            return self.inner.send(message);
+        }
+        Err(ChannelError::Closed {
+            reason: format!(
+                "a frame of {} bytes is over the {}-byte limit",
+                message.len(),
+                self.limit
+            ),
+        })
+    }
+}
+
+/// A far end that records the `link.offers` this side announces, for a
+/// session without a runtime behind it (CHN-0-2).
+struct Offers(Arc<Mutex<Vec<Json>>>);
+
+impl Dispatch for Offers {
+    fn invoke(&self, _: &Connection, target: &str, method: &str, args: Value) -> Reply {
+        if target.is_empty() && method == "link.offers" {
+            self.0.lock().unwrap().push(args.json()?);
+            return Ok(Value::Undefined);
+        }
+        Ok(args)
+    }
+}
+
+/// The families of one `link.offers` frame.
+fn families(offers: &Json) -> Vec<String> {
+    offers[0]["families"]
+        .as_array()
+        .expect("families")
+        .iter()
+        .map(|family| family.as_str().expect("a family").to_owned())
+        .collect()
+}
+
+/// A lease's method shape comes from the dispatch when the caller gives none
+/// (M1-4.1-1): `hosts.provide` carries `{ method: "sync" }` from
+/// [`HostDispatch::methods`], a dispatch that says nothing is announced with
+/// `{}`, and the withdrawal names the service. (What a runtime's own `host`
+/// declaration adds is the loader's side.)
+/// rule: M1-4.1-1
+#[tokio::test(flavor = "multi_thread")]
+async fn host_method_shapes_fill_the_lease() {
+    let runtime = Scripted::new(json!({}));
+    let (_root, process, _far) = runtime_rig(runtime.clone()).await;
+    let lease = process
+        .lease_host("weather", Arc::new(RustWeather), None)
+        .await
+        .unwrap();
+    assert_eq!(
+        *runtime.hosts.lock().unwrap(),
+        vec![json!(["weather", { "today": "sync" }])],
+        "the dispatch's own methods are the announcement"
+    );
+    lease.release().await.unwrap();
+    assert_eq!(
+        *runtime.withdraws.lock().unwrap(),
+        vec![json!(["weather"])],
+        "the last lease released withdraws the service"
+    );
+    let lease = process
+        .lease_host("plain", Arc::new(Answers("plain")), None)
+        .await
+        .unwrap();
+    assert_eq!(
+        runtime.hosts.lock().unwrap().last(),
+        Some(&json!(["plain", {}])),
+        "a dispatch with no shape is announced without one"
+    );
+    lease.release().await.unwrap();
+}
+
+/// Only the names a runtime declares are projected, with the shapes it
+/// declares (M1-5.1-3): the `service` frame for a declared name publishes a
+/// service whose methods are the declared ones; one for a name outside the
+/// declaration publishes nothing.
+/// rule: M1-5.1-3
+#[tokio::test(flavor = "multi_thread")]
+async fn declared_provides_shapes_are_what_projects() {
+    let runtime = Scripted::new(json!({}));
+    let (root, process, far) = runtime_rig(runtime.clone()).await;
+    let declared = json!({ "weather": { "today": "sync" } });
+    let exports = declared.as_object().unwrap();
+    let projection = row_projection(exports);
+    projection.attach(&root, process.clone()).unwrap();
+    process
+        .load_row_exporting(
+            "w",
+            Path::new("w.js"),
+            json!({}),
+            &[],
+            &[],
+            exports,
+            projection.clone(),
+            &[],
+        )
+        .await
+        .unwrap();
+    far.invoke_async("", "service", json!(["weather", "weather#1", 1]).into())
+        .await
+        .unwrap();
+    let service = root
+        .get_at::<dyn HostDispatch>(&host_key("weather"))
+        .expect("the declared service");
+    assert_eq!(
+        service.methods(),
+        Some(declared["weather"].clone()),
+        "the declaration is its shape"
+    );
+    assert_eq!(
+        call_service::<String>(&root, "weather", "today", ())
+            .await
+            .unwrap(),
+        "sunny"
+    );
+    far.invoke_async("", "service", json!(["sun", "sun#1", 1]).into())
+        .await
+        .unwrap();
+    assert!(
+        root.get_at::<dyn HostDispatch>(&host_key("sun")).is_none(),
+        "a name outside the declaration is not projected"
+    );
+    assert_eq!(
+        *runtime.calls.lock().unwrap(),
+        vec![("weather#1".to_owned(), "today".to_owned())]
+    );
+    assert!(far.close_reason().is_none(), "the session goes on");
+}
+
+/// A row's `isolate` names stay in its own scope (M1-14-5): `weather`
+/// isolated in `tenant` is not a service of this host, while the row's
+/// declared `sunny` is; inside an instance the projection publishes under
+/// `host_key_in`, declared and announced services alike (DIA-4-8), and the
+/// isolate name still is not one.
+/// rule: M1-14-5
+/// rule: DIA-4-8
+#[tokio::test(flavor = "multi_thread")]
+async fn isolate_names_stay_in_the_rows_scope() {
+    let runtime = Scripted::new(json!({}));
+    let (root, process, far) = runtime_rig(runtime.clone()).await;
+    let declared = json!({ "sunny": { "today": "sync" } });
+    let exports = declared.as_object().unwrap();
+    let projection = row_projection(exports);
+    projection.attach(&root, process.clone()).unwrap();
+    process
+        .load_row_exporting(
+            "w",
+            Path::new("w.js"),
+            json!({}),
+            &[("weather".to_owned(), "tenant".to_owned())],
+            &[],
+            exports,
+            projection.clone(),
+            &[],
+        )
+        .await
+        .unwrap();
+    far.invoke_async("", "service", json!(["sunny", "sunny#1", 1]).into())
+        .await
+        .unwrap();
+    far.invoke_async("", "service", json!(["weather", "weather#1", 1]).into())
+        .await
+        .unwrap();
+    assert!(
+        root.get_at::<dyn HostDispatch>(&host_key("sunny"))
+            .is_some(),
+        "the declared service is projected"
+    );
+    assert!(
+        root.get_at::<dyn HostDispatch>(&host_key("weather"))
+            .is_none(),
+        "the isolate name is not a host service: {declared}"
+    );
+
+    let (instance, ctx) = tenant(&root).await;
+    let runtime = Scripted::new(json!({}));
+    let (process, far) = runtime_on(&ctx, "rt2", runtime.clone()).await;
+    let scope = ctx.scope();
+    let declared = json!({ "moon": { "today": "sync" } });
+    let exports = declared.as_object().unwrap();
+    let projection = row_projection_of("w", exports, move |name| host_key_in(name, instance));
+    projection.attach(&ctx, process.clone()).unwrap();
+    process
+        .load_row_exporting(
+            "w",
+            Path::new("w.js"),
+            json!({}),
+            &[("weather".to_owned(), "tenant".to_owned())],
+            &[],
+            exports,
+            projection.clone(),
+            &scope,
+        )
+        .await
+        .unwrap();
+    far.invoke_async("", "service", json!(["moon", "moon#1", 1]).into())
+        .await
+        .unwrap();
+    far.invoke_async(
+        "",
+        "service",
+        json!(["store", "store#1", 1, { "row": "w", "methods": { "get": "async" } }]).into(),
+    )
+    .await
+    .unwrap();
+    assert!(
+        ctx.get_at::<dyn HostDispatch>(&host_key_in("moon", instance))
+            .is_some(),
+        "a declared service is the instance's"
+    );
+    assert!(
+        ctx.get_at::<dyn HostDispatch>(&host_key_in("store", instance))
+            .is_some(),
+        "an announced service is the instance's"
+    );
+    assert!(
+        root.get_at::<dyn HostDispatch>(&host_key("moon")).is_none(),
+        "the instance's services are not the root's"
+    );
+    assert!(
+        root.get_at::<dyn HostDispatch>(&host_key("store"))
+            .is_none(),
+        "the announced service is not the root's either"
+    );
+    assert!(
+        ctx.get_at::<dyn HostDispatch>(&host_key_in("weather", instance))
+            .is_none(),
+        "the isolate name is not projected inside the instance either"
+    );
+    let store = ctx
+        .get_at::<dyn HostDispatch>(&host_key_in("store", instance))
+        .unwrap();
+    let answer = settle(store.invoke("get", Value::List(Vec::new())).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(answer.json().unwrap(), json!("sunny"));
+    assert_eq!(
+        runtime.calls.lock().unwrap().last(),
+        Some(&("store#1".to_owned(), "get".to_owned())),
+        "the call reaches the announced object"
+    );
+    assert!(far.close_reason().is_none(), "the session goes on");
+}
+
+/// Rows loaded in an instance carry its scope chain and their isolate table
+/// (INS-4.2-9), on the one session the runtime mounted outside the instance
+/// (INS-5-5): the same connection and the same `mount` serve a row loaded at
+/// the root, whose frame has an empty chain.
+/// rule: INS-4.2-9
+/// rule: INS-5-5
+#[tokio::test(flavor = "multi_thread")]
+async fn instance_rows_keep_the_scope_chain_on_one_session() {
+    let root = common::runtime::root();
+    let (instance, ctx) = tenant(&root).await;
+    let runtime = Scripted::new(json!({}));
+    let (process, far) = runtime_on(&ctx, "rt", runtime.clone()).await;
+    let scope = ctx.scope();
+    assert_eq!(
+        scope,
+        [Scope {
+            id: instance.to_string(),
+            group: "tenant".into(),
+        }],
+        "the instance's chain"
+    );
+    let tag = process.connection().tag().to_owned();
+    process
+        .load_row(
+            "in-instance",
+            Path::new("a.js"),
+            json!({ "room": "lobby" }),
+            &[("weather".to_owned(), "tenant".to_owned())],
+            &["db".to_owned()],
+            &scope,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        runtime.loads.lock().unwrap()[0],
+        json!([
+            "in-instance",
+            "a.js",
+            { "room": "lobby" },
+            [["weather", "tenant"]],
+            ["db"],
+            {},
+            { "scope": [{ "id": instance.to_string(), "group": "tenant" }], "id": "in-instance" }
+        ]),
+        "the instance's chain and the isolate pairs are the row's"
+    );
+    process
+        .load_row("at-root", Path::new("b.js"), json!({}), &[], &[], &[])
+        .await
+        .unwrap();
+    assert_eq!(
+        runtime.loads.lock().unwrap()[1][6]["scope"],
+        json!([]),
+        "a row loaded at the root has no chain"
+    );
+    assert_eq!(
+        *runtime.mounts.lock().unwrap(),
+        1,
+        "one session outside the instance serves both rows"
+    );
+    assert_eq!(process.connection().tag(), tag);
+    assert!(far.close_reason().is_none(), "the session goes on");
+}
+
+/// A frame over the channel's size limit is refused and the channel ends
+/// (CHN-3-4): the call before it crossed, the oversized return never does,
+/// and the session ends as a whole rather than answering that call.
+/// rule: CHN-3-4
+#[tokio::test(flavor = "multi_thread")]
+async fn an_over_limit_frame_ends_the_session() {
+    const LIMIT: usize = 4096;
+    let (ours, mut far) = rutis_bridge::memory::pair();
+    let Channel {
+        sender,
+        receiver,
+        closer,
+    } = ours;
+    let ours = Channel {
+        sender: Box::new(Limited {
+            inner: sender,
+            limit: LIMIT,
+        }),
+        receiver,
+        closer,
+    };
+    let peer = Connection::open(ours, Arc::new(Echo), Endpoint::rust(id("main"))).unwrap();
+    greet(&mut far, "node", &[]);
+    peer.ready().await.unwrap();
+    send(
+        &mut far,
+        invoke(
+            "node:1",
+            "svc",
+            "echo",
+            one(&json!({ "type": "data", "value": "small" })),
+        ),
+    );
+    assert_eq!(
+        read(&mut far)["op"],
+        json!("return"),
+        "a small frame crosses"
+    );
+    let huge = "x".repeat(2 * LIMIT);
+    send(
+        &mut far,
+        invoke(
+            "node:2",
+            "svc",
+            "echo",
+            one(&json!({ "type": "data", "value": huge })),
+        ),
+    );
+    within("the session's end", peer.closed()).await;
+    match peer.close_reason() {
+        Some(Error::Transport(reason)) => {
+            assert!(reason.contains("over the 4096-byte limit"), "{reason}")
+        }
+        other => panic!("a transport error expected, got {other:?}"),
+    }
+    assert!(
+        matches!(far.receiver.recv(), Ok(None)),
+        "the far end sees the channel end, not the return"
+    );
+    assert!(
+        peer.invoke("svc", "echo", Value::Undefined).is_err(),
+        "a call after the end fails"
+    );
+}
+
+/// A configuration change is one `rows.update` frame (M2-2-5): a leaf
+/// runtime restarts the row itself, and the control side sends no
+/// `rows.unload` and no `rows.load` for it.
+/// rule: M2-2-5
+#[tokio::test(flavor = "multi_thread")]
+async fn a_config_change_is_one_update() {
+    let runtime = Scripted::with_features(&["rows.v2", "hosts", "leaf"], json!({}));
+    let (_root, process, far) = runtime_rig(runtime.clone()).await;
+    process
+        .load_row(
+            "w",
+            Path::new("w.js"),
+            json!({ "room": "lobby" }),
+            &[],
+            &[],
+            &[],
+        )
+        .await
+        .unwrap();
+    process
+        .update_row("w", json!({ "room": "hall" }))
+        .await
+        .unwrap();
+    process
+        .update_row("w", json!({ "room": "garden" }))
+        .await
+        .unwrap();
+    assert_eq!(
+        *runtime.updates.lock().unwrap(),
+        vec![
+            json!(["w", { "room": "hall" }]),
+            json!(["w", { "room": "garden" }])
+        ],
+        "each change is its own update"
+    );
+    assert_eq!(
+        runtime.loads.lock().unwrap().len(),
+        1,
+        "the row was loaded once"
+    );
+    assert!(
+        runtime.unloads.lock().unwrap().is_empty(),
+        "nothing unloaded"
+    );
+    assert_eq!(*runtime.mounts.lock().unwrap(), 1);
+    assert!(far.close_reason().is_none(), "the session goes on");
+}
+
+/// Two runtime instances isolating the same name under the same label are
+/// two environments (REM-5.2-6): each row's `rows.load` carries its own
+/// isolate pair, each instance leases its own `weather`, and each call
+/// reaches its own provider.
+/// rule: REM-5.2-6
+#[tokio::test(flavor = "multi_thread")]
+async fn two_peers_isolate_the_same_label_apart() {
+    let root = common::runtime::root();
+    let first = Scripted::new(json!({}));
+    let second = Scripted::new(json!({}));
+    let (first_process, first_far) = runtime_on(&root, "rt1", first.clone()).await;
+    let (second_process, second_far) = runtime_on(&root, "rt2", second.clone()).await;
+    for process in [&first_process, &second_process] {
+        process
+            .load_row(
+                "w",
+                Path::new("w.js"),
+                json!({}),
+                &[("weather".to_owned(), "tenant".to_owned())],
+                &[],
+                &[],
+            )
+            .await
+            .unwrap();
+    }
+    for runtime in [&first, &second] {
+        assert_eq!(
+            runtime.loads.lock().unwrap()[0][3],
+            json!([["weather", "tenant"]]),
+            "the row's own isolate pair"
+        );
+    }
+    let methods = Some(json!({ "today": "sync" }));
+    let _first_lease = first_process
+        .lease_host_in(
+            "weather",
+            Some("tenant"),
+            Arc::new(Answers("first")),
+            methods.clone(),
+        )
+        .await
+        .unwrap();
+    let _second_lease = second_process
+        .lease_host_in(
+            "weather",
+            Some("tenant"),
+            Arc::new(Answers("second")),
+            methods,
+        )
+        .await
+        .unwrap();
+    for runtime in [&first, &second] {
+        assert_eq!(
+            runtime.hosts.lock().unwrap()[0],
+            json!(["weather", { "today": "sync" }, "tenant"]),
+            "the label travels with the lease"
+        );
+    }
+    for (far, answer) in [(&first_far, "first"), (&second_far, "second")] {
+        assert_eq!(
+            far.invoke_async("host:weather\u{0}tenant", "today", Value::List(Vec::new()))
+                .await
+                .unwrap()
+                .json()
+                .unwrap(),
+            json!(answer),
+            "each instance's own provider"
+        );
+    }
+    assert!(first_far.close_reason().is_none(), "the session goes on");
+    assert!(second_far.close_reason().is_none(), "the session goes on");
+}
+
+/// The same management frames run over another carrier (REM-10-1): a
+/// runtime mounted on the in-memory channel and one on the test's own queue
+/// channel get the same `mount`, `rows.load`, `rows.update` and
+/// `rows.unload`, no more and no fewer.
+/// rule: REM-10-1
+#[tokio::test(flavor = "multi_thread")]
+async fn the_management_frames_do_not_depend_on_the_carrier() {
+    let run = |ends| async move {
+        let root = common::runtime::root();
+        let runtime = Scripted::new(json!({}));
+        let (process, far) = runtime_pair(&root, "rt", ends, runtime.clone()).await;
+        process
+            .load_row(
+                "w",
+                Path::new("w.js"),
+                json!({ "room": "lobby" }),
+                &[("weather".to_owned(), "tenant".to_owned())],
+                &["db".to_owned()],
+                &[],
+            )
+            .await
+            .unwrap();
+        process
+            .update_row("w", json!({ "room": "hall" }))
+            .await
+            .unwrap();
+        process.unload_row("w").await.unwrap();
+        let frames = (
+            runtime.loads.lock().unwrap().clone(),
+            runtime.updates.lock().unwrap().clone(),
+            runtime.unloads.lock().unwrap().clone(),
+        );
+        let mounts = *runtime.mounts.lock().unwrap();
+        assert!(far.close_reason().is_none(), "the session goes on");
+        (frames, mounts)
+    };
+    let memory = run(rutis_bridge::memory::pair()).await;
+    let wire = run(wire_pair()).await;
+    assert_eq!(memory.0, wire.0, "the same frames on both carriers");
+    assert_eq!(memory.1, 1, "one mount on the in-memory carrier");
+    assert_eq!(wire.1, 1, "one mount on the queue carrier");
+}
+
+/// A runtime this side did not start is driven by the control side alone
+/// (DIA-3-1): the lease is announced before the row loads, the configuration
+/// change and the unload are the caller's, and the service is withdrawn
+/// after the row is gone.
+/// rule: DIA-3-1
+#[tokio::test(flavor = "multi_thread")]
+async fn a_dialed_in_runtime_is_driven_by_control() {
+    let runtime = Scripted::new(json!({}));
+    let (_root, process, far) = runtime_rig(runtime.clone()).await;
+    let lease = process
+        .lease_host(
+            "weather",
+            Arc::new(Answers("sunny")),
+            Some(json!({ "today": "sync" })),
+        )
+        .await
+        .unwrap();
+    process
+        .load_row(
+            "w",
+            Path::new("w.js"),
+            json!({ "room": "lobby" }),
+            &[],
+            &["weather".to_owned()],
+            &[],
+        )
+        .await
+        .unwrap();
+    process
+        .update_row("w", json!({ "room": "hall" }))
+        .await
+        .unwrap();
+    process.unload_row("w").await.unwrap();
+    lease.release().await.unwrap();
+    let sequence_guard = runtime.sequence.lock().unwrap();
+    let sequence: Vec<&str> = sequence_guard
+        .iter()
+        .map(String::as_str)
+        .filter(|step| {
+            matches!(
+                *step,
+                "hosts.provide" | "rows.load" | "rows.update" | "rows.unload" | "hosts.withdraw"
+            )
+        })
+        .collect();
+    assert_eq!(
+        sequence,
+        [
+            "hosts.provide",
+            "rows.load",
+            "rows.update",
+            "rows.unload",
+            "hosts.withdraw"
+        ],
+        "the control side gives the order"
+    );
+    assert_eq!(*runtime.mounts.lock().unwrap(), 1);
+    assert_eq!(runtime.hosts.lock().unwrap().len(), 1);
+    assert_eq!(runtime.loads.lock().unwrap().len(), 1);
+    assert_eq!(runtime.unloads.lock().unwrap().len(), 1);
+    assert!(far.close_reason().is_none(), "the session goes on");
+}
+
+/// A plugin the application carries is reported, not installed (APP-1-5,
+/// APP-1-6): the mount's `plugins` list is what this side reports, and a
+/// plugin with no row the control side loads is never described or loaded.
+/// Loading, configuring and unloading follow the control side's calls
+/// (APP-1-2), and only its `rows.load` loads a row (REM-4.1-4).
+/// rule: APP-1-2
+/// rule: APP-1-5
+/// rule: APP-1-6
+/// rule: REM-4.1-4
+#[tokio::test(flavor = "multi_thread")]
+async fn a_mount_listing_is_not_an_install() {
+    let schema = json!({
+        "config": { "type": "object" },
+        "inject": ["db"],
+        "provides": { "weather": { "today": "async" } },
+        "version": "1.0.0",
+    });
+    let runtime = Scripted::listing("carried.js", schema.clone());
+    let (_root, process, far) = runtime_rig(runtime.clone()).await;
+    let listed = process.plugins().expect("the mount listed its plugins");
+    assert_eq!(listed.len(), 1, "the application's report has one plugin");
+    assert_eq!(
+        listed["carried.js"].provides.get("weather"),
+        Some(&json!({ "today": "async" }))
+    );
+    assert!(
+        runtime.loads.lock().unwrap().is_empty(),
+        "a listed plugin is not loaded by the mount"
+    );
+    assert!(
+        runtime.schemas.lock().unwrap().is_empty(),
+        "a listed plugin is not described by the mount"
+    );
+    process
+        .describe_row(Path::new("configured.js"))
+        .await
+        .unwrap();
+    assert!(
+        runtime.loads.lock().unwrap().is_empty(),
+        "describing a plugin loads nothing"
+    );
+    assert_eq!(
+        *runtime.schemas.lock().unwrap(),
+        vec![json!(["configured.js"])],
+        "only the plugin the control side asks about is described"
+    );
+    process
+        .load_row(
+            "configured",
+            Path::new("configured.js"),
+            json!({ "room": "lobby" }),
+            &[],
+            &[],
+            &[],
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        runtime.loads.lock().unwrap()[0][0],
+        json!("configured"),
+        "the only load is the one the control side asked for"
+    );
+    assert!(
+        !runtime
+            .loads
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|load| load[1] == json!("carried.js")),
+        "the application's plugin was never loaded"
+    );
+    process
+        .update_row("configured", json!({ "room": "hall" }))
+        .await
+        .unwrap();
+    process.unload_row("configured").await.unwrap();
+    assert_eq!(runtime.updates.lock().unwrap().len(), 1);
+    assert_eq!(runtime.unloads.lock().unwrap().len(), 1);
+    assert_eq!(*runtime.mounts.lock().unwrap(), 1);
+    assert!(far.close_reason().is_none(), "the session goes on");
+}
+
+/// A leaf runtime's injects are names it asks for (REM-4.2-10): the row is
+/// loaded with `weather` in its inject list, but until this side leases it
+/// the name is not a service and a call to `host:weather` fails with
+/// `unavailable`; the lease announces it and the same call answers.
+/// rule: REM-4.2-10
+#[tokio::test(flavor = "multi_thread")]
+async fn a_leaf_rows_injects_are_gated_by_leases() {
+    let runtime = Scripted::with_features(&["rows.v2", "hosts", "leaf"], json!({}));
+    let (_root, process, far) = runtime_rig(runtime.clone()).await;
+    process
+        .load_row(
+            "w",
+            Path::new("w.js"),
+            json!({}),
+            &[],
+            &["weather".to_owned()],
+            &[],
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        runtime.loads.lock().unwrap()[0][4],
+        json!(["weather"]),
+        "the inject name is the row's"
+    );
+    assert!(
+        runtime.hosts.lock().unwrap().is_empty(),
+        "an inject name is not a lease"
+    );
+    let refused = far
+        .invoke_async("host:weather", "today", Value::List(Vec::new()))
+        .await
+        .unwrap_err();
+    assert_eq!(refused.code(), Some("unavailable"), "{refused}");
+    assert_eq!(
+        refused.data(),
+        Some(json!({ "service": "weather" })),
+        "{refused}"
+    );
+    let _lease = process
+        .lease_host(
+            "weather",
+            Arc::new(Answers("sunny")),
+            Some(json!({ "today": "sync" })),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        *runtime.hosts.lock().unwrap(),
+        vec![json!(["weather", { "today": "sync" }])]
+    );
+    assert_eq!(
+        far.invoke_async("host:weather", "today", Value::List(Vec::new()))
+            .await
+            .unwrap()
+            .json()
+            .unwrap(),
+        json!("sunny")
+    );
+    assert!(process.supports("leaf"));
+    assert!(!process.connection().supports("node"));
+    assert!(far.close_reason().is_none(), "the session goes on");
+}
+
+/// A failed handshake is a category of its own, not a closed channel's
+/// reason (CHN-2.2-1): greeting as another endpoint than the expected one,
+/// as this endpoint, and speaking another protocol version each fail with
+/// `IdentityMismatch` or `Incompatible` and a sentence naming what was
+/// wrong.
+/// rule: CHN-2.2-1
+#[tokio::test(flavor = "multi_thread")]
+async fn a_handshake_failure_has_its_own_category() {
+    // The expected endpoint, greeted as another.
+    let (peer, mut far) = session_with(
+        Arc::new(Echo),
+        Endpoint::rust(id("main")).expect(id("node")),
+    );
+    assert_eq!(read(&mut far)["op"], json!("hello"));
+    send(
+        &mut far,
+        json!({ "op": "hello", "version": ENDPOINT_PROTOCOL, "endpoint": "other",
+                "capabilities": [] }),
+    );
+    match peer.ready().await {
+        Err(Error::Handshake(rutis_bridge::session::Handshake::IdentityMismatch(reason))) => {
+            assert!(reason.contains("other"), "{reason}");
+            assert!(reason.contains("node"), "{reason}");
+        }
+        other => panic!("an identity mismatch expected, got {other:?}"),
+    }
+    assert!(
+        matches!(far.receiver.recv(), Ok(None)),
+        "the refused handshake ends the channel"
+    );
+
+    // This endpoint's own id.
+    let (peer, mut far) = session(Arc::new(Echo));
+    assert_eq!(read(&mut far)["op"], json!("hello"));
+    send(
+        &mut far,
+        json!({ "op": "hello", "version": ENDPOINT_PROTOCOL, "endpoint": "main",
+                "capabilities": [] }),
+    );
+    match peer.ready().await {
+        Err(Error::Handshake(rutis_bridge::session::Handshake::IdentityMismatch(reason))) => {
+            assert!(reason.contains("this endpoint"), "{reason}")
+        }
+        other => panic!("an identity mismatch expected, got {other:?}"),
+    }
+
+    // Another protocol version.
+    let (peer, mut far) = session(Arc::new(Echo));
+    assert_eq!(read(&mut far)["op"], json!("hello"));
+    send(
+        &mut far,
+        json!({ "op": "hello", "version": ENDPOINT_PROTOCOL + 1, "endpoint": "node",
+                "capabilities": [] }),
+    );
+    match peer.ready().await {
+        Err(Error::Handshake(rutis_bridge::session::Handshake::Incompatible(reason))) => {
+            assert!(reason.contains("the far end speaks protocol"), "{reason}");
+            assert!(reason.contains("upgrade"), "{reason}");
+        }
+        other => panic!("an incompatible handshake expected, got {other:?}"),
+    }
+}
+
+/// Two endpoints share the carrier and the session (CHN-0-2): a far end
+/// without a runtime behind it and a leaf runtime both use one `Session`
+/// and one `link`, and the runtime's rows need no node bridge (NOD-3-8):
+/// its offers have no `plugins` family and its session has no `node`
+/// capability.
+/// rule: CHN-0-2
+/// rule: NOD-3-8
+#[tokio::test(flavor = "multi_thread")]
+async fn a_connected_runtime_is_no_node_connection() {
+    // A peer without a runtime: the session and its link exist, and the
+    // offers name only the service family.
+    let root = common::runtime::root();
+    let (ours, theirs) = rutis_bridge::memory::pair();
+    let heard = Arc::new(Mutex::new(Vec::new()));
+    let far = Connection::open(
+        theirs,
+        Arc::new(Offers(heard.clone())),
+        Endpoint::rust(id("peer")),
+    )
+    .unwrap();
+    let _ = common::runtime::attached(&root, "peer-row", ours).await;
+    until(
+        || {
+            heard
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|offers| families(offers).iter().any(|family| family == "services"))
+        },
+        "the service offer",
+    )
+    .await;
+    assert_eq!(
+        far.greeting()
+            .expect("the session greeted")
+            .endpoint
+            .as_str(),
+        "main",
+        "the carrier names this endpoint"
+    );
+    let plain = families(
+        heard
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|offers| families(offers).iter().any(|family| family == "services"))
+            .unwrap(),
+    );
+    assert_eq!(plain, ["services"], "a plain peer gets the service family");
+
+    // A leaf runtime: the same session and link, plus the runtime's
+    // families; no node bridge.
+    let runtime = Scripted::with_features(&["rows.v2", "hosts", "leaf"], json!({}));
+    let (process, far) = runtime_on(&root, "rt", runtime.clone()).await;
+    assert!(process.supports("leaf"));
+    assert!(!process.connection().supports("node"));
+    until(
+        || {
+            runtime
+                .offers
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|offers| families(offers).iter().any(|family| family == "rows"))
+        },
+        "the runtime's offers",
+    )
+    .await;
+    let runtime_families = {
+        let offers = runtime.offers.lock().unwrap();
+        families(
+            offers
+                .iter()
+                .find(|offers| families(offers).iter().any(|family| family == "rows"))
+                .unwrap(),
+        )
+    };
+    for family in ["services", "host", "rows"] {
+        assert!(
+            runtime_families.iter().any(|one| one == family),
+            "{family} is offered: {runtime_families:?}"
+        );
+    }
+    assert!(
+        !runtime_families.iter().any(|one| one == "plugins"),
+        "no node bridge is offered: {runtime_families:?}"
+    );
+    process
+        .load_row("w", Path::new("w.js"), json!({}), &[], &[], &[])
+        .await
+        .unwrap();
+    assert_eq!(*runtime.mounts.lock().unwrap(), 1);
+    assert!(far.close_reason().is_none(), "the session goes on");
+}
+
+/// Functions, promises and object references cross by their kind
+/// (REM-6.2-6): a far end that declares no `objects` capability still
+/// returns all three, the function is called, the promise awaited and the
+/// object read, and this side declares no `objects` either.
+/// rule: REM-6.2-6
+#[tokio::test(flavor = "multi_thread")]
+async fn capabilities_say_which_kinds_cross() {
+    let (peer, mut far) = session(Arc::new(Nothing));
+    greet(&mut far, "node", &[]);
+    peer.ready().await.unwrap();
+    let end = std::thread::spawn(move || {
+        let call = read(&mut far);
+        send(
+            &mut far,
+            json!({ "op": "return", "id": frame_id(&call), "value": {
+                "type": "list", "value": [reference(7, "function"), reference(8, "future"),
+                                          reference(9, "object")],
+            } }),
+        );
+        let call = read(&mut far);
+        assert_eq!(call["op"], json!("call"), "{call}");
+        assert_eq!(call["reference"], json!(7), "{call}");
+        assert_eq!(
+            call["args"],
+            json!({ "type": "list", "value": [{ "type": "data", "value": "x" }] }),
+            "{call}"
+        );
+        send(
+            &mut far,
+            json!({ "op": "return", "id": frame_id(&call), "value": {
+                "type": "data", "value": "called" } }),
+        );
+        let call = read(&mut far);
+        assert_eq!(call["op"], json!("await"), "{call}");
+        assert_eq!(call["reference"], json!(8), "{call}");
+        send(
+            &mut far,
+            json!({ "op": "return", "id": frame_id(&call), "value": {
+                "type": "data", "value": "settled" } }),
+        );
+        let call = read(&mut far);
+        assert_eq!(call["op"], json!("get"), "{call}");
+        assert_eq!(call["reference"], json!(9), "{call}");
+        assert_eq!(call["property"], json!("today"), "{call}");
+        send(
+            &mut far,
+            json!({ "op": "return", "id": frame_id(&call), "value": {
+                "type": "data", "value": "sunny" } }),
+        );
+        let mut released = Vec::new();
+        for _ in 0..3 {
+            let frame = read(&mut far);
+            assert_eq!(frame["op"], json!("release"), "{frame}");
+            assert_eq!(frame["count"], json!(1), "{frame}");
+            released.push(frame["reference"].as_u64().expect("a reference id"));
+        }
+        released.sort_unstable();
+        assert_eq!(released, [7, 8, 9], "all three references released");
+        far
+    });
+    let values = peer
+        .invoke("svc", "give", Value::Undefined)
+        .unwrap()
+        .list()
+        .unwrap();
+    let function = values[0].clone().reference().unwrap();
+    let future = values[1].clone().reference().unwrap();
+    let object = values[2].clone().reference().unwrap();
+    assert!(function.is_function(), "a function reference");
+    assert!(future.is_future(), "a future reference");
+    assert!(object.is_object(), "an object reference");
+    let answer = function
+        .call_async(Value::List(vec![Value::Data(json!("x"))]))
+        .await
+        .unwrap();
+    assert_eq!(
+        settle(answer).await.unwrap().json().unwrap(),
+        json!("called")
+    );
+    assert_eq!(
+        settle(Value::Reference(future.clone()))
+            .await
+            .unwrap()
+            .json()
+            .unwrap(),
+        json!("settled")
+    );
+    let answer = object.get("today").unwrap();
+    assert_eq!(
+        settle(answer).await.unwrap().json().unwrap(),
+        json!("sunny")
+    );
+    drop(values);
+    drop(function);
+    drop(future);
+    drop(object);
+    let _far = far_end(end).await;
+    assert!(
+        !Endpoint::rust(id("main"))
+            .capabilities
+            .iter()
+            .any(|capability| capability == "objects"),
+        "this side declares no objects capability"
+    );
+    assert!(peer.close_reason().is_none(), "the session goes on");
 }
