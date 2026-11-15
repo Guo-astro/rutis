@@ -405,7 +405,8 @@ E.g.: packages on each channel, binaries, platform-specific packages.
 1. the behavior it defines, with the level of each (§3);
 2. a risk assessment (§4);
 3. acceptance criteria, each writable as a verification;
-4. the component types it belongs to (§6) and how their requirements are met.
+4. the component types it belongs to (§6) and how their requirements are met;
+5. when it changes a multi-party interaction rule (criteria Q11.2.1), a "model checking" section: the `specs/` directory and the conclusion, or why none is needed under Q11.2.1.
 
 **Q9.1.2** A protocol involving multi-party interaction is model-checked before its design is final (§11.2).
 

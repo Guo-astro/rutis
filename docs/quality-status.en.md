@@ -2,7 +2,7 @@
 
 [中文](quality-status.md) · [Quality standard](quality-standard.en.md)
 
-Status: kept up to date with the code. Last updated: 2026-11-09 (0.23 merged into 0.22, execution plan and first evidence), baseline `main` `2452baee`. Previous: 2026-11-08, baseline `cf4ebebe` (formal-verification rebaseline).
+Status: kept up to date with the code. Last updated: 2026-11-15 (rewritten per #612, merged into #635: the counts in §1, the statistics in §2.3, the codes in §3, the risk rows in §4, the project-wide coverage map in §7, the conclusions in the appendix), baseline `origin/main` `1dd73888`. Previous: 2026-11-09, baseline `2452baee`.
 Companion to: [Quality standard](quality-standard.en.md). This document maps the standard, clause by clause, to the current implementation: which clauses are met, which partly, what is missing and how it will be added. The standard describes rules that stay the same; the file names, test names, issue numbers and versions here change with the implementation. Which tests verify each guarantee is in the [guarantee register](guarantees.en.md).
 
 ---
@@ -16,14 +16,14 @@ Status: **met**, **partly**, **not met**, **n/a**. The gaps column refers to ris
 | Clause | Content | Status | Current state and gaps |
 | --- | --- | --- | --- |
 | Q3.1 | Core guarantees verified at the highest level | Partly | "Nothing left behind" and "explicit failure on interruption" are now verified as a black box on all three platforms: E2E scenarios end with residue checks (#221, #277); S3, S5 and `fault_links.rs` verify that interrupted calls fail explicitly and are not retried (#317, #322, #285). Missing: `core/D22`, `core/D28` and `boundary/5.8` are "partly verified" in the register; on Unix a runtime whose event loop is not empty does not exit after its host is `kill -9`ed (B3); long runs are verified nightly on all three platforms by S8 (#192) |
-| Q3.1, Q8.3 | Core guarantees verified in two independent ways | Partly | The Python SDK's session tests now match Node's (release counting, grant rollback, protocol version, #288); cross-runtime synchronous calls (#222) and remote leases with revocation (#210) have TLA+ models. Nobody has checked, guarantee by guarantee, that each core guarantee has two independent verifications (the register has a single "verification" column) |
+| Q3.1, Q8.3 | Core guarantees verified in two independent ways | Partly | The Python SDK's session tests now match Node's (release counting, grant rollback, protocol version, #288); cross-runtime synchronous calls, remote leases, unified events, row and call lifecycles and peer-hosted rows have TLA+ design models (7 directories, 17 modules, §7.2), the session channel has trace validation (§7.5), and the core has 16 shuttle models (§7.3). Nobody has checked, guarantee by guarantee, that each core guarantee has two independent verifications (the register has a single "verification" column) |
 | Q3.4 | Behavior explicitly not guaranteed is pinned | Partly | D29 (events not filtered by isolate) has a regression test (`event_order.rs`, #280); the limits on values are registered as not guaranteed and tested (`bridge/value-limits`, #296). D22 (no dependency cycle detection) is still not pinned by a test |
-| Q4.5 | Risk assessment recorded | Partly | §4 of this document is updated at the end of each step (this time 2026-10-12); design documents do not state risks (Q9.1.1) |
+| Q4.5 | Risk assessment recorded | Partly | §4 of this document is updated at the end of each step (this time 2026-11-15); design documents do not state risks (Q9.1.1) |
 | Q5.1.2 | Results are checked | Partly | The two known places are fixed: `typed_plugin.rs` asserts what the ErrorSink receives (#286); D24 in `contract.rs` asserts the arrival order and no longer sorts first (#280). Other tests have not been reviewed systematically |
-| Q5.2 | Each fault on the list injected | Partly | Injected: a link dropping mid-call, cancellation and release under delay, new calls during a reconnect, multiple hops (`fault_links.rs`, #285); `kill -9` of a runtime (S3, #317); a network cut between two hosts, the far end restarting, a changed token (S5, #322); a real network between two containers: 200 ms delay + 5% loss, an outage and its recovery, a changed token (S5 in containers, #433, nightly); concurrent starts (`concurrent_launch.rs`, #215); the host receiving signals (`signals.rs` #216; Ctrl-C and Windows Ctrl-Break in E2E, #277); protocol version mismatch (#288, #335); malformed frames (`malformed`, five implementations). a configuration broken while running (`host/reload-config`, #274); repeated faults during long runs: random rows added, removed and changed with reloads, rejected configurations, runtimes `kill -9`ed and restarted, links cut and redialed (S8, #192). Missing: a plugin blocking the event loop (`boundary/5.8` partly verified) |
+| Q5.2 | Each fault on the list injected | Partly | Injected: a link dropping mid-call, cancellation and release under delay, new calls during a reconnect, multiple hops (`fault_links.rs`, #285); `kill -9` of a runtime (S3, #317); a network cut between two hosts, the far end restarting, a changed token (S5, #322); a real network between two containers: 200 ms delay + 5% loss, an outage and its recovery, a changed token (S5 in containers, #433, nightly); concurrent starts (`concurrent_launch.rs`, #215); the host receiving signals (`signals.rs` #216; Ctrl-C and Windows Ctrl-Break in E2E, #277); protocol version mismatch (#288, #335); malformed frames (`malformed`, 25 cases × seven implementations). a configuration broken while running (`host/reload-config`, #274); repeated faults during long runs: random rows added, removed and changed with reloads, rejected configurations, runtimes `kill -9`ed and restarted, links cut and redialed (S8, #192). Missing: a plugin blocking the event loop (`boundary/5.8` partly verified) |
 | Q5.3.2 | Encryption across machines, TLS off loopback | Partly | Negative TLS: expired certificate, hostname mismatch, untrusted CA, verified on the Rust side (`websocket.rs`) and the Python side (`test_websocket.py`) (#297), and between two host processes (S5 step 6); `wss://` on a non-loopback address between two containers, with a CA made at test time (S5 in containers, #433). The category for an invalid client certificate on Windows is fixed (#300 → #334). Missing: whether a listener without TLS on a non-loopback address is refused has not been checked (B8) |
 | Q5.3.3 | Credentials kept out of output | Partly | Every E2E scenario ends by checking that no captured output contains the scenario's credentials (#221, #277); in S5 the token is absent from the output when it is refused (#322). Library-level logs, traces and diagnostics have no common check |
-| Q5.3.4 | External input bounded, malformed input does not crash | Partly | WebSocket has a 16 MiB limit; local line framing has a limit (#173 → #214); value nesting is limited to 64 levels, and going over fails only that call (#279 → #338); the malformed-frame check covers five implementations (Go after #294 → #305); fuzzing: session frames, local line framing, WebSocket upgrade requests, 20 minutes each nightly (#179 → #425) |
+| Q5.3.4 | External input bounded, malformed input does not crash | Partly | WebSocket has a 16 MiB limit; local line framing has a limit (#173 → #214); value nesting is limited to 64 levels, and going over fails only that call (#279 → #338); the malformed-frame check covers seven implementations (including Go after #294 → #305); fuzzing: session frames, local line framing, error graphs and WebSocket upgrade requests, run by `stress.yml` every night (#179 → #425, #624) |
 | Q5.3.6 | Unsafe code concentrated, checked before loading | Partly | `unsafe` is concentrated in dylib loading and process spawning; dylib checks verified by scripts; 5 items in `design-dylib-sdk` §13 unchecked, need reconciling |
 | Q5.3.7 | Dependency vulnerability and license checks | Partly | Weekly `deps.yml`: `cargo deny check advisories`, `npm audit`, `pip-audit` (#256); does not block merging. Licenses are not checked; there is no fixed check for the reason behind a new dependency |
 | Q5.4.2 | Residue checked at the end of each scenario | Partly | The E2E harness checks at the end of each scenario: processes the host started (Linux, macOS by scenario marker, Windows by Job Object), socket files, ports, temporary directory, credentials (#221, #277). fds and threads of the test process are checked only in the two soak tests; tokio task counts and, on Linux, OS thread counts are checked in `instance_subtrees.rs`, `instance_runtimes.rs` and `close_memory.rs` (#286, #191, #979); registrations inside runtimes are queried with the Node and Python runtimes' test control method `inspect`, used by S7 only (§5, #191) |
@@ -41,8 +41,8 @@ Status: **met**, **partly**, **not met**, **n/a**. The gaps column refers to ris
 
 | Clause | Component | Status | Current state and gaps |
 | --- | --- | --- | --- |
-| Q6.1 | Core `rutis` | Partly | Contract, Cordis parity, interleaving tests; #177 completed event ordering (D24, D31, D29) and lifecycle and reclamation (D7, D8, dropped futures, task counts for instance-subtrees §5) (#280, #286, follow-up #345). Model checking with controlled scheduling: one shuttle model for each of the three places that failed before (K2, #179 → #425). Missing: contract tests mostly use the single-threaded runtime only; D22's cycles and D28's isolate ownership are untested |
-| Q6.2 | Session protocol, runtime control operations, node operations | Partly | Conformance suites; malformed frames, unknown ops, unknown references (`malformed`, five implementations); protocol version mismatch (unit tests in three SDKs #288, message #335); multi-hop cancellation and release, fault injection (#285); the cross-runtime synchronous call policy chosen with TLA+ and implemented (#222, #261); the previous release meeting the current code (#209 → #426). Missing: resource limits on references and calls (waiting for design). Session frame decoding is fuzzed (#179 → #425) |
+| Q6.1 | Core `rutis` | Partly | Contract, Cordis parity, interleaving tests; #177 completed event ordering (D24, D31, D29) and lifecycle and reclamation (D7, D8, dropped futures, task counts for instance-subtrees §5) (#280, #286, follow-up #345). Model checking with controlled scheduling: 16 shuttle models of the core (K2, #622, §7.3), each at a million iterations nightly in `stress.yml`. Missing: shuttle models for the session layer, the event host, runtime supervision and host reloads; a reference model for `interleave.rs`; contract tests mostly use the single-threaded runtime only; D22's cycles and D28's isolate ownership are untested |
+| Q6.2 | Session protocol, runtime control operations, node operations | Partly | Conformance suites; malformed frames, unknown ops, unknown references (`malformed`, 25 cases × seven implementations); protocol version mismatch (unit tests in three SDKs #288, message #335); multi-hop cancellation and release, fault injection (#285); the cross-runtime synchronous call policy chosen with TLA+ and implemented (#222, #261; models T1 and T5 in §7.2); the previous release meeting the current code (#209 → #426). Missing: resource limits on references and calls (waiting for design); whether the callee replies after a cancellation is not written down (`SESS-61`, #1099). Session frame decoding is fuzzed (#179 → #425) |
 | Q6.3 | Local socket, inherited fd, loopback, WebSocket, memory channel | Partly | All Rust channels run the channel contract; the local channel has a size limit (#214). The Node and Python channel implementations do not run the channel contract (P1) |
 | Q6.4 | Frame decoding, framing, handshakes, configuration, manifests, patch merging | Partly | Patch merging has differential verification (against cordis-plugin-include); the line framing limit and the nesting depth limit have boundary value tests (#214, #338); every `rutis.json` field has unit tests (#217); frame decoding (with the ten tagged values of 0.11, decode→encode→decode stable), local line framing and WebSocket upgrade requests are fuzzed, with the corpus in the repository (#179 → #425). Missing: fuzzing of configuration files (low priority) |
 | Q6.5 | Parts that spawn processes and hold connections | Partly | The concurrent start race is fixed (#184 → #215); E2E scenarios end with process residue checks on three platforms; runtimes exit after their host is killed (Q5.4.4); long runs and every way of ending (S8, #192). Missing: the baseline of registrations inside runtimes in Q5.4.2 (no query, §5) |
@@ -70,12 +70,12 @@ Status: **met**, **partly**, **not met**, **n/a**. The gaps column refers to ris
 | Q7.7 | References can be regenerated | Partly | The patch reference file has generation instructions; CI does not check it |
 | Q7.8 | Skips explained | Partly | Test files that run on some platforms only state the reason next to their `cfg`; skipped cells use `ignore = "reason"`; the conformance matrix is in ci.md §4 (#176); the residue checks report which checks did not run on the platform. The `cfg(unix)` of `rutis-dev/tests/channel.rs` gives no reason |
 | Q8.1 | Three layers | Partly | Rules layer thorough; composition layer has black-box E2E and fault injection (S2–S5, `fault_links.rs`); environment layer has the support matrix, clean installation (S9) and a real network (S5 with containers + netem, #433); long runs (S8, #192) |
-| Q9.1.1 | Designs state levels, risks, acceptance | Partly | Most designs have acceptance sections; the PR template gained items for persisted formats and the guarantee register (#284, #276); designs do not state levels or risks |
+| Q9.1.1 | Designs state levels, risks, acceptance | Partly | Most designs have acceptance sections; the PR template gained items for persisted formats and the guarantee register (#284, #276); the standard gained item 5 (a "model checking" section when a multi-party interaction rule changes, or why none is needed). Missing: designs do not state levels or risks; the CI check for item 5 does not exist yet (§7.8) |
 | Q9.3.2 | Incompatible changes detected; versions meeting across releases | Partly | `cargo semver-checks` only warns; a protocol version mismatch says which end to upgrade (#335); the previous release (runtimes, Go SDK, `rutis-host`, nodes) meeting the current code, asserted to work or to say at load or connection which end to upgrade (`tests/e2e/tests/cross_version.rs`, full runs, #209 → #426) |
-| Q9.4 | Guarantee register | Partly | The [register](guarantees.en.md) exists (#276, #310, then updated by each PR); test comments carry `guarantee: <id>`; 0.10 is the baseline and Q9.4.4 applies from 0.11 (plan Q3). The `loader/` family and the rest of `host/` are not registered yet (#181) |
+| Q9.4 | Guarantee register | Partly | The [register](guarantees.en.md) exists (#276, #310, then updated by each PR); test comments carry `guarantee: <id>`; 0.10 is the baseline and Q9.4.4 applies from 0.11 (plan Q3). Every rule is registered in the [rule tracker](formal-trace/README.en.md): 1817 rows, 294 verified, 432 partly verified, 543 unverified (§7.6). The `loader/` family and the rest of `host/` are not registered yet (#181) |
 | Q10.2 | Minimum and latest versions in the support matrix | Met | Linux jobs use the minimum versions (Node 22, Python 3.12, websockets 15, Bun 1.4.0, Go oldstable), macOS and Windows the latest; MSRV 1.88 verified by the `msrv` job (#204 → #256; ci.md §9). The runtime × channel × platform matrix is in ci.md §4, with a reason for each cell that does not run (#176) |
 | Q11.3.2 | No coverage gate | Met | — |
-| Q12.1 | Verification at levels | Partly | PRs select by change; nightly (`nightly.yml`, when main has new commits) every job, installation on five platforms (`install.yml`), Windows dylib, MSRV, feature combinations, two-machine reproducibility, and `stress.yml` (core rounds, multi-process test rounds #245, two soaks, the shuttle models at a million iterations, three fuzz targets 20 minutes each #425); versions meeting across releases (`e2e` in `ci.yml`'s full run, #209), the baseline with the newest published Cordis plugins (report only, #190), S5 with containers + netem (report only, #341 → #433); weekly dependency checks and CI measurements. Missing: weekly long host soaks and benchmarks (#192) |
+| Q12.1 | Verification at levels | Partly | PRs select by change; nightly (`nightly.yml`, when main has new commits) every job, installation on five platforms (`install.yml`), Windows dylib, MSRV, feature combinations, two-machine reproducibility, and `stress.yml` (core rounds, multi-process test rounds #245, two soaks, the 16 shuttle models at a million iterations each per night, four fuzz targets #425, every event placement #464); versions meeting across releases (`e2e` in `ci.yml`'s full run, #209), the baseline with the newest published Cordis plugins (report only, #190), S5 with containers + netem (report only, #341 → #433); weekly dependency checks and CI measurements. Missing: weekly long host soaks and benchmarks (#192) |
 | Q12.3 | Selection by change | Met | The `changes` job turns switches on by change; nightly `nightly.yml` runs every job when main has new commits (`ci.yml`'s `all`), and it can be run by hand (#203 → #213, #369; ci.md §3). Before a release: step 2 of release.md checks that the commit released has a passing nightly run; `release.yml` calling the full CI itself is step 3 of the CI redesign |
 | Q12.4 | Cancel superseded runs | Met | A new push to a PR cancels the old run (#224). A merge to main runs nothing; the nightly run checks every commit merged since the last successful nightly run and is not cancelled; a failure opens an issue (label `ci`) naming the failed jobs and the commit range (#369; ci.md §7) |
 | Q12.5 | One merge condition | Met | `ci-ok` is the only required check (#213; ci.md §5) |
@@ -131,19 +131,36 @@ Status: **met**, **partly**, **not met**, **n/a**. The gaps column refers to ris
 
 ### 2.3 Existing tests
 
-Counted on 2026-10-10 (baseline `a8733d4`; coverage from the local measurement in #183, including Node / Python child processes started by Rust tests). Not recounted since; what 0.9 and 0.10 added is in the second table.
+Counted on 2026-11-15 (baseline `origin/main` `1dd73888`). Method: Rust counts `#[test]` and `#[tokio::test]` attributes, Node / Bun count `test(` / `it(`, Python counts `def test_`, Go counts `func Test`, Kotlin counts `@Test`, Swift counts `func test`. The line coverage column is still the measurement of 2026-10-10 on two platforms (#183, including Node / Python child processes started by Rust tests); it has not been re-measured and is here for magnitude only.
 
-| Part | Tests | Test functions | Line coverage |
+| Part | Tests | Test functions | Line coverage (2026-10-10) |
 | --- | --- | ---: | ---: |
-| Core `rutis` | 20 files including contract `contract.rs`, Cordis parity `parity.rs`, interleaving `interleave.rs`; 8 doctests, 4 `compile_fail` | 287 | 92.8% |
-| `rutis-bridge` | 34 test files; four conformance suites (channel / session / runtime / node); `fault` decorator; two soak tests | 143 | 87.8% |
-| `rutis-loader` | 20 test files; patch merging against cordis-plugin-include | 110 | 89.8% |
-| `rutis-host` | Unit tests inside src only | 8 | 69.8% (`main.rs` 0%) |
+| Core `rutis` | 46 files: contract `contract.rs`, Cordis parity `parity.rs`, interleaving `interleave.rs`, the listener-table model `listener_table_model.rs` and others; 8 doctests, 4 `compile_fail` | 413 | 92.8% |
+| `rutis-bridge` | 83 files; four conformance suites (channel / session / runtime / node); `fault` decorator; `trace_validation.rs`; two soak tests | 593 | 87.8% |
+| `rutis-loader` | 61 files; patch merging against cordis-plugin-include; per-language row contracts (`*_rows.rs`) | 335 | 89.8% |
+| `rutis-host` | 56 files, including the black-box tests under `tests/` | 291 | 69.8% (`main.rs` 0%) |
+| `tests/e2e` | The black-box layer, depending on no rutis crate (Q7.6) | 91 | — |
 | dylib toolchain | `tools/test-dylib*.sh`, `tools/test-sdk-bundle.sh`; SDK hashes compared across two runners | — | — |
-| Node packages | `node/*/test/` | 46 | 86% |
-| Python packages | `python/rutis/tests/` | 25 | 81% |
+| Node packages | `node/*/test/`, 48 files | 268 | 86% |
+| Bun packages | `bun/rutis-bun/test/`, 23 files | 159 | — |
+| Python packages | `python/rutis/tests/`, 27 files | 284 | 81% |
+| Go module | `go/`, 39 files | 176 | — |
+| Kotlin | `kotlin/`, 23 files | 124 | — |
+| Swift | `swift/`, 4 files | 32 | — |
+| Design models | `specs/`: 7 directories, 17 `.tla` modules, 215 configurations (§7.2) | — | — |
+| Controlled scheduling | 16 shuttle models of the core, compiled only with `--cfg rutis_shuttle` (§7.3) | 16 | — |
+| Fuzzing | `fuzz/fuzz_targets/`, 4 targets (§7.4) | 4 | — |
 
-Added in 0.9 and 0.10 (as of `f8ce69b`):
+What 0.11 and later added and still holds (details in §4, §5 and §7):
+
+- cross-language value types (date and time, binary, Map, Set, big integers, Decimal, UUID, 0.11) and the value round-trip property test over seven languages;
+- remote runtime dial-out, access points with Swift / Kotlin, iOS / Android app hosting (0.13–0.18);
+- 16 shuttle models of the core, run at scale nightly by `stress.yml`; a fourth fuzz target (error graphs);
+- `specs/` grown from 2 directories to 7 directories, 17 modules and 215 configurations;
+- the first slice of trace validation (the session channel, `trace_validation.rs`);
+- test clocks (`virtual_clock_contract.rs`, `design-test-clocks-2026-10-11.md`) and the previous release meeting the current code (`cross_version.rs`).
+
+Added in 0.9 and 0.10 (historical record, as of `f8ce69b`):
 
 | Part | Content | PR |
 | --- | --- | --- |
@@ -163,10 +180,10 @@ Added in 0.9 and 0.10 (as of `f8ce69b`):
 | `rutis-host` | 8 files under `tests/`: signals, configuration, `check`, common error output, project templates, persisted samples, link state, whole output lines | #216, #217, #284, #336, #339 |
 | Test tools and real runtimes | One expectations file, `weather.expected.json`: real runtimes through `session_matrix.rs`, one test each for the Node and Python test tools | #298 |
 | Persisted samples | `tests/fixtures/persisted/`: 0.8.0, 0.9.0, 0.9.1, `rejected/` | #284 |
-| TLA+ | `specs/cross-runtime-sync/`: cross-runtime synchronous calls and the deadlock policy; `specs/remote-lease/`: remote lease takeover, reconnection and revocation. CI's `specs` job runs them on pull requests that change `specs/**` and nightly | #222, #210 |
-| Guarantee register | [guarantees.en.md](guarantees.en.md): `core/`, `boundary/`, `instance/`, `bridge/`, `host/`, `dsh/`, `sdk/` families; about 100 `guarantee: <id>` test comments | #276, #310 |
+| TLA+ | The 7 model directories of `specs/`, 17 modules, 215 configurations (§7.2). CI's `specs` job runs them on pull requests that change `specs/**` and nightly | #222, #210, then #613 |
+| Guarantee register | [guarantees.en.md](guarantees.en.md): `core/`, `boundary/`, `instance/`, `bridge/`, `host/`, `dsh/`, `sdk/` families; about 100 `guarantee: <id>` test comments; the rule tracker has 1817 rows (§7.6) | #276, #310 → #634 |
 
-CI: `ci.yml` (PRs select jobs by change, nightly runs everything; full Linux run on the minimum versions, E2E, lint, platform-specific tests on macOS and Windows, Bun and Go runtimes, dylib, packaging, semver, MSRV, feature combinations, reproducibility); `install.yml` (installation smoke tests); `nightly.yml` (calls the three above and `stress.yml` every night, opens an issue on failure); `stress.yml` (nightly: core rounds, multi-process test rounds, two 600 s soaks); `dylib-windows.yml`; `deps.yml` and `ci-stats.yml` (weekly). Details in [ci.md](ci.en.md). CI has no fuzzing, model checking, actionlint, license checks, or versions meeting across releases.
+CI: `ci.yml` (PRs select jobs by change, nightly runs everything; full Linux run on the minimum versions, E2E, lint, platform-specific tests on macOS and Windows, Bun and Go runtimes, dylib, packaging, semver, MSRV, feature combinations, reproducibility, the `specs` job over 7 models); `install.yml` (installation smoke tests); `nightly.yml` (calls the three above and `stress.yml` every night, opens an issue on failure); `stress.yml` (nightly: core rounds, multi-process test rounds, two soaks, the 16 shuttle models, 4 fuzz targets, every event placement); `dylib-windows.yml`; `deps.yml` and `ci-stats.yml` (weekly). Details in [ci.md](ci.en.md). CI still has no actionlint and no license checks.
 
 ## 3. Control codes
 
@@ -181,9 +198,11 @@ The risk tables in §4 refer to controls by these codes; how to choose among the
 | **R** | Residue check: processes, sockets, ports, fds, threads, tasks, registries at the end of a scenario | Resource leaks and orphan processes | Why something leaked | Low (written once, used everywhere) |
 | **FI** | Fault injection: the `fault` channel decorator, killing processes, breaking configuration, occupying ports | Whether behavior under faults matches the guarantees | Faults not on the injection list | Medium |
 | **FZ** | Fuzzing (cargo-fuzz) | Crashes, unbounded memory, endless loops when parsing external input | Logic errors (wrong results without a crash) | Medium (target written once, runs nightly) |
-| **SH** | Concurrency model checking (shuttle: takes over scheduling, systematically tries execution orders, reports the exact order on failure) | Races, lost wakeups, deadlocks in small pieces of code | Wide interactions; code must be extracted into small models | Medium |
+| **SH** | Controlled scheduling: takes over scheduling, systematically tries execution orders, reports the exact order on failure. Rust uses shuttle; Python a steppable `SelectorEventLoop`; Node / Bun an injectable frame pump. Go and Swift have none | Races, lost wakeups, deadlocks between tasks / threads in one process | Wide interactions; external events not in the exploration (real processes, the OS, the runtime itself); code must be extracted into small models | Medium |
 | **TLA** | TLA+ design model checking | Deadlocks and invariant violations in a protocol design | Implementation diverging from design | High (learning; specs maintained with the design) |
+| **TV** | Trace validation: a real run's log is a trace, checked event by event against what the model allows | Whether the implementation follows the model's rules | Interleavings not run; an incorrect model | Medium (the implementation needs recording points first) |
 | **PT** | Property tests (random input, checked properties) | Logic with clear properties: value round trips, counting invariants, matching rules | Behavior without clear properties | Low to medium |
+| **KANI** | Bounded model checking (Kani): every input in a range of a tiny pure or `unsafe` function | Functions small enough to enumerate | Code that allocates, formats or needs a runtime (Kani 0.68.0 does not converge on this machine); concurrency | Medium (toolchain install; harnesses must stay tiny) |
 | **SK** | Soak: long repeated operation with sampled resource curves | Slowly growing leaks | Errors that show up fast | Medium (CI time) |
 | **MX** | Version and platform matrix: every declared OS, language version, dependency lower bound | Problems specific to a version or platform | — | Medium (CI time) |
 | **IN** | Installation smoke test: install this build's packages in a clean directory and run the minimal path | Packaging, distribution, platform package selection | Functional logic | Medium |
@@ -198,7 +217,7 @@ The risk tables in §4 refer to controls by these codes; how to choose among the
 
 ## 4. Risk analysis
 
-Rating as in standard §4 (impact, likelihood, P0 / P1 / P2). The "Current" column is the state on 2026-10-12.
+Rating as in standard §4 (impact, likelihood, P0 / P1 / P2). The "Current" column: the scenario tables in §4.2 and the first two tables of §4.1 are the state on 2026-10-12; the third table of §4.1 (events, rows and the call lifecycle) was checked against the tree on 2026-11-15.
 
 ### 4.1 Base layer: core and protocols
 
@@ -209,7 +228,7 @@ Every scenario depends on this layer, so it is analyzed on its own.
 | # | What can go wrong | Dimension | Impact | Likelihood | Pri | Control | Stage | Current |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | K1 | Lifecycle rules do not hold: a cleanup runs zero or two times, a plugin starts before dependencies are ready, wrong eviction order | Correctness | High | Medium | P0 | K (65 contract, 57 parity), U | PR | Yes |
-| K2 | Races under concurrent interleaving: lost wakeups, driver exit races, a forked tail chain | Correctness | High | Medium (happened 3 times) | P0 | SH (only the points that failed before); multi-threaded repetition with seeds | PR (small SH), nightly | Yes: `interleave.rs` seeded, `stress.yml` changes thread count and seed each round (#220); three SH models (TransitionTask lost wakeup, the `post_join` exit race, concurrent dispose cleaning up once), 1000 iterations on pull requests, a million nightly (#179 → #425). The forked tail chain (D31) still has only `dispatch_chain_probe.rs` |
+| K2 | Races under concurrent interleaving: lost wakeups, driver exit races, a forked tail chain | Correctness | High | Medium (happened 3 times) | P0 | SH (16 models running the core's own code, not copies); multi-threaded repetition with seeds | PR (1000 iterations), nightly (a million per model) | Yes: `interleave.rs` seeded, `stress.yml` changes thread count and seed each round (#220); the 16 models in `fiber/shuttle_tests.rs` cover every join of a TransitionTask, the `post_join` exit race, concurrent dispose, publication order of the lineage marker and closing, effect registration and cleanup, unloading while listener calls are in flight, concurrent subtree shutdowns, root dispose and shutdown, dependency withdrawal, emit-chain order, the listener-table watcher, an unload cancelling the running generation, a restart publishing the live generation, and more (#179 → #425, #622). Building the models against the code confirmed two core defects (#619, #620, both fixed). Missing: shuttle models for the session layer, the event host, runtime supervision and host reloads (#622); the forked tail chain (D31) still has only `dispatch_chain_probe.rs` |
 | K3 | Event ordering guarantees only half hold: per-emitter order with several emitters, delivery after a panic | Correctness | Medium | Medium | P1 | K | PR | Yes (`event_order.rs`, #280) |
 | K4 | Behavior written as "not guaranteed" changes silently (D29 events not filtered by isolate, D22 no cycle detection) | Correctness | Medium | Low | P2 | U (regression tests pin current behavior) | PR | Partly: D29 yes (#280); D22 no |
 | K5 | Repeated creation and destruction on a long-lived root grows internal tables and tasks | Residue | High | Medium | P0 | U + R (task counts and table sizes back to baseline); SK | PR, nightly | Partly: U + R yes (task counts and capacity in `instance_subtrees.rs`, #286); tenants created and closed over and over in an embedding application have E (S7, 3000 nightly, #191); no host-level SK (#192) |
@@ -224,9 +243,9 @@ Every scenario depends on this layer, so it is analyzed on its own.
 | # | What can go wrong | Dimension | Impact | Likelihood | Pri | Control | Stage | Current |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | P1 | A channel breaks its contract: lost or reordered messages, backpressure failing, close not waking | Correctness | High | Low | P1 | K (channel contract, 6 checks) | PR | Rust channels yes; Node and Python channels do not run the contract |
-| P2 | Malformed frames, oversized lines, writes without newlines cause a crash or unbounded memory | Faults, security | High | Medium | P0 | U (boundary values); FZ (frame decoding, line framing) | PR, nightly | Yes: U (WebSocket and the local channel both have limits, #214); FZ `session_frame`, `local_lines`, 20 minutes each nightly (#179 → #425) |
-| P3 | Unknown op, wrong field types, nonexistent reference ids make the session hang or are silently ignored | Faults | Medium | Medium | P1 | U (each language) | PR | Yes: the conformance suites' `malformed` check, five implementations (#214; Go #305) |
-| P4 | Reference counting errors: released too early (the far end's calls fail) or never (leak) | Correctness, residue | High | Medium | P0 | K; PT (after any grant / release sequence, table size = number not released) | PR | Yes (Python #288; PT #296) |
+| P2 | Malformed frames, oversized lines, writes without newlines cause a crash or unbounded memory | Faults, security | High | Medium | P0 | U (boundary values); FZ (frame decoding, line framing) | PR, nightly | Yes: U (WebSocket and the local channel both have limits, #214); FZ's `session_frame`, `local_lines` and `error_graph` run nightly in `stress.yml` (#179 → #425, #624) |
+| P3 | Unknown op, wrong field types, nonexistent reference ids make the session hang or are silently ignored | Faults | Medium | Medium | P1 | U (each of the seven implementations) | PR | Yes: the conformance suites' `malformed` check, 25 cases × seven implementations (#214; Go #305) |
+| P4 | Reference counting errors: released too early (the far end's calls fail) or never (leak) | Correctness, residue | High | Medium | P0 | K; PT (after any grant / release sequence, table size = number not released) | PR | Yes (Python #288; PT #296; `grant_rollback.rs` grants nothing when a value cannot cross, a capability is missing, a limit is exceeded or a result cannot cross). #621 fixed a deadlock on this path: decoding with a mismatched reference kind dropped an `Import` while holding the `imports` lock, and its destructor took the same lock again |
 | P5 | Call chain rewriting is wrong when forwarding across sessions: callbacks reach the wrong runtime or deadlock | Correctness | High | Medium | P0 | K (`rpc_callbacks.rs`, same call ids on both sides) | PR | Yes |
 | P6 | Cancellation does not reach the far end, or is lost across hops | Correctness | Medium | Medium | P1 | K (`abortable`); one new multi-hop cancellation test | PR | Yes (`fault_links.rs`, #285) |
 | P7 | Values convert differently across the three languages: `undefined` / `null` / absent, large integers, dataclasses, nesting depth | Correctness | High | High | P0 | PT (the same random values round-tripped Rust↔Node and Rust↔Python, compared); K | PR | Yes (`value_roundtrip.rs`, Go and Bun included, #296; fixes #312, #311, #338); Unix only |
@@ -234,6 +253,24 @@ Every scenario depends on this layer, so it is analyzed on its own.
 | P9 | During a synchronous call the far end calls back: Node should return `SyncWaitCycle`, Python should execute; behavior differs from the docs | Correctness | Medium | Medium | P1 | K (`reenter`) | PR | Yes |
 | P10 | The cross-runtime synchronous call policy itself has holes (two non-reentrant runtimes calling each other) | Correctness | High | Medium | P0 | TLA (design time); then K with counterexample tests | Design | Yes: policy B chosen with TLA+ (#222), implemented and tested (`rpc_callbacks.rs`, `sync_cycles.rs`, #261). Two known limits: a runtime that does not declare itself reentrant is treated as non-reentrant; a runtime that does not declare `sync-wait` is outside detection |
 | P11 | Exceptions in background threads or workers are swallowed and tests pass anyway | — | High | High (#197 happened) | P0 | Test rule: background exceptions fail tests (standard Q7.4) | PR | Partly: Python yes (#218); Rust and Node have no common mechanism |
+
+#### Events, rows and the call lifecycle
+
+These are the parts and protocols added in 0.13–0.18 (unified events, node links, app hosting, binary runtime supervision, marked services); §4 did not have them before 0.22. The ids and the controls come from #612; the "Current" column was checked against the current tree.
+
+| # | What can go wrong | Dimension | Impact | Likelihood | Level | Controls | Stage | Current |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| EV1 | The guarantee between registration and dispatch (event protocol §4.4) differs between the fast path and the path through the host | Correctness | High | Medium | P0 | TLA (`specs/events/`); K (`events.expected.json`) | PR, design | Partly: `EventsTable.tla` / `EventsHost.tla` check "registered before emitted" on both paths, and `events.expected.json` is run by `events_conformance` in all seven languages (`stress.yml`'s `events-all` samples placements nightly, all of them on Mondays). Missing: filters on the fast path and the full semantics of the five dispatch modes (only `emit` is modelled) |
+| EV2 | `emit` order broken by a path switch, a filter waiting or a non-reentrant runtime holding a call (happened: #513, #527, #557, #519, #554) | Correctness | High | Medium | P0 | TLA; K; nightly `events-all`; TV (#624) | PR, nightly | Partly: both order properties of `EventsEmit.tla` pass, and an unload dropping queued emits has a configuration; `events.expected.json` and nightly `events-all` exist. Missing: the Node per-key hold, `python-deferred` and `before-future-reply` configurations do not exist; the event host's trace validation is not done |
+| EV3 | After an unload or a disconnect, withdrawn entries still start calls, or a call in flight fails zero or twice; an unloaded row holds the queue (happened: #536 (fixed by #564), #587) | Correctness, residue | High | Medium | P0 | TLA; K; TV (#624) | PR | Partly: `EventsTable.tla`'s "only the row's current registration is accepted", plus the `table-reload` and `table-end-session` configurations; on the implementation side `rows.ended` is applied in frame order (#587) and unloading drops queued emits (#536). Missing: trace validation |
+| EV4 | Offering and announcing on node links: entries of an old offer linger, an announcement that arrives before its offer is withdrawn (happened: #593; the root cause of #435 is registration inside the host, covered by `a_family_is_announced_only_with_its_offer` in `peer.rs`) | Correctness | Medium | Medium | P1 | TLA (`EventsLink.tla`); K (`crates/rutis-bridge/src/peer.rs`, the `node/` cases of `events.expected.json`, `node/rutis-runtime/test/cordis-events.test.mjs`) | PR | Partly: `EventsLink.tla` checks that only the highest version is kept, old offers are withdrawn by epoch and an early announcement is kept; `events.expected.json` has 5 `node/` cases. Missing: multiple peers and multiple hops are not modelled |
+| EV5 | Synchronous dispatch (`bail`, `waterfall-sync`), the host's own synchronous calls and runtimes with a thread per call (Go, Swift, Kotlin) make the wait cycle missed or falsely reported (happened: #537) | Correctness | High | Medium | P0 | TLA (`specs/cross-runtime-sync/`); K (`crates/rutis-loader/tests/sync_cycles.rs`); TV (#624) | PR | Partly: the 44 configurations of `cross-runtime-sync` include `Threaded` (a thread per call) and a host-initiated `host-call`; `sync_cycles.rs` has Node / Python / Go / Swift columns. Missing: the differential property test for `cycle_among` and the wait-graph trace validation; `sync_cycles` has no Kotlin column |
+| RL1 | Row lifecycle between host and runtime: a late `rows.ended`, a refusal or a service announcement acting on another generation; a lease outliving its row (happened: a88fb65b, 54a7e824, d94aae9a, #247, #314, #372, #584, #191) | Correctness, residue | High | Medium | P1 | TLA (`specs/row-lifecycle/`); K (per-language row contracts, `crates/rutis-loader/tests/*_rows.rs`) | PR | Partly: the 36 configurations of `RowLifecycle.tla` check that one row runs at most one generation, a late ending ends only its own generation, a lease never outlives its row, and a service is withdrawn before its provider unloads; per-language row contracts exist for Node / Python / Bun / Go / Swift. Missing: `rows.schema` / `mount`, call chains, the differences between unload stacks and the shutdown deadline are not modelled; #1100 (row key identity) and #1101 (unload before load) are still OPEN |
+| CL1 | Call lifecycle: whether the callee replies after a cancellation is not written down, and the caller's cancel table only grows; read threads writing back can deadlock when both sides back up | Correctness, residue | High | Medium | P1 | TLA (`specs/call-lifecycle/`); K (`rpc_callbacks.rs`, `multihop.rs`) | PR | Partly: the 35 configurations of `CallLifecycle.tla` / `CallRelay.tla` verify both cancellation-reply implementations as "settled at most once, no reference leaked", and prove the premise that read-thread write-back does not deadlock (read threads do not write directly), plus hop-by-hop cancellation through a relay. Missing: `SESS-61` is still explicitly not guaranteed and #1099 undecided; the relay's close and a peer still reading after close are not modelled |
+| AH1 | App hosting: `RutisApp` starts and stops not in call order, a stopped port is not released, a restart sees the previous round's state (happened: #519, #521, #532, #554) | Correctness, residue | High | Medium | P1 | SH: Fray on Kotlin (#630); Swift has no controlled scheduling, so strict concurrency checking plus TSan (#630); TLA for the connection layer (`remote-lease`); simulator and device tests run locally ([CI](ci.en.md) §12) | PR, design | Partly: the `lease-app-restart` / `access-app-restart` configurations of `remote-lease` are built on "stop, then start", and the `RutisApp` thread interleaving is fixed in f57b4138; Kotlin Fray and Swift TSan do not exist (§7.3); iOS / Android app-hosting tests run locally only |
+| AH2 | Swift / Kotlin takeover order and redial rules differ from the other languages | Correctness | Medium | Medium | P1 | Checking the TLA correspondence tables; K (#624) | PR | Partly: the correspondence table in `specs/remote-lease/README.md` now lists Swift / Kotlin; the Kotlin heartbeat start point is still not fixed (#1102), and the model is built to the correct rule with a counterexample configuration for the current implementation. `sync_cycles` has no Kotlin column |
+| RS1 | Binary runtimes (Go, Swift) and their supervision, host reloads, local runtime supervision: an ending before supervision starts lingers unbounded, a restart starts a new process before the old one ends, a missing binary is retried every round, a failed `dev` rebuild throws away the old build, a removed runtime waits for the wrong process (happened: #524, #563, #565, #566, 57f536a0) | Correctness, residue | Medium | Medium | P1 | SH (shuttle after the Launcher seam, #622); U (test clocks) | PR | Partly: `crates/rutis-loader/tests/virtual_clock_contract.rs` and the [test-clock design](design-test-clocks-2026-10-11.en.md) cover the timing rules; binary runtime supervision is tested only with real Go / Swift processes. Missing: the Launcher seam and a shuttle model of supervision (no shuttle in `rutis-loader`) |
+| SV1 | Marked services: a dylib rebuilt from the same version is still served by the old build, and a call by name picks its interceptor from the wrong row (happened: #522, #531, #534) | Correctness | Medium | Low | P1 | U; E | PR | Yes: `crates/rutis-bridge/tests/marked_services.rs` and `crates/rutis-loader/tests/marked_services.rs` cover generations and interceptor selection for marked services; all three defects are fixed. Missing: no E2E scenario dedicated to marked services |
 
 ---
 
@@ -483,9 +520,11 @@ The controls used by the P0 and P1 risks in §4, merged into what needs building
 | **PT: cross-language value round trips** | P7, C5, P4 | Yes (#296) | Does not run on Windows |
 | **X: test tools vs real runtimes** | A1 | Node, Python yes (#298) | Go `rutistest`, Bun test tool |
 | **X: nightly baseline with the latest Cordis plugins** | F4 | Yes (`cordis-latest` in `nightly.yml`, report only, #190 → #429) | — |
-| **FZ** | P2, E7, B5 | Yes: session frames, local line framing, WebSocket upgrade requests (`fuzz/`, nightly, #179 → #425) | Configuration files (B5, low priority) |
-| **SH** | K2 | Yes: the three places that failed before, TransitionTask lost wakeup, the `post_join` race, exactly-once concurrent dispose (small on PRs, large nightly, #179 → #425) | — |
-| **TLA** | P10, C6, E4, E5 | Spec 1 (#222) and Spec 2 (#210) done; CI's `specs` job | §7 |
+| **FZ** | P2, E7, B5 | Yes: session frames, local line framing, error graphs, WebSocket upgrade requests (`fuzz/`, nightly, #179 → #425, #624) | Configuration files (B5, low priority); dylib object-file parsing (#631) |
+| **SH** | K2, RS1 | Yes: 16 models of the core (§7.3), a million iterations each nightly in `stress.yml`; Python's steppable event loop; Node's frame pump | Models for the session layer, the event host, runtime supervision and host reloads (#622); Kotlin Fray, Swift TSan, explicit gates in Go (#630) |
+| **TLA** | EV1–EV5, RL1, CL1, AH1, AH2, P10, C6, E4, E5 | 7 directories, 17 modules, 215 configurations (§7.2); CI's `specs` job | Per row in §7.2 |
+| **TV** | EV2, EV3, EV5, AH2 | Trace validation of the session channel (`trace_validation.rs`, #624) | Access points, the wait graph, the event host's action log (#624) |
+| **KANI** | Value ranges and the boundaries of pure functions | 6 harnesses in `fuzz/kani/` | Kani 0.68.0 does not converge on this machine within 90 minutes, so there is no verdict (`fuzz/KANI-MIRI.md`); proofs of `unsafe` code (#631) |
 | **SK: host-level soak** | L1, L3, D3, A5, H4 | Yes: two at bridge level; the host-process S8 (#192), seeded, nightly on three platforms | Longer weekly runs |
 | **G: output snapshots** | A6, A7, B6, B9, E13, F7, H3 | Common `rutis-host` errors, `check`, link state (#217, #336) | Status output as a whole; SDK errors; H3 waits for design |
 | **J3: persisted format samples** | J3 | Yes (#284) | Add a sample with each release (`docs/release.md`) |
@@ -494,15 +533,103 @@ The controls used by the P0 and P1 risks in §4, merged into what needs building
 
 ---
 
-## 7. Current scope of design models
+## 7. Formal-verification coverage map
 
-The two places selected by standard §11.2.
+Covers standard Q9.1.2 (a multi-party protocol is model-checked before its design is final), Q11.2 (when model checking applies), Q11.2.3 (models change with the design) and Q9.1.1 item 5. Scope: every crate except the examples `rutis-agent` and `rutis-cli` (including `rutis-dsh`), and the seven language runtimes.
 
-### 7.1 Spec 1: cross-runtime synchronous calls and the deadlock policy (P10, C6) — done
+"Current" column: **Yes** = the method exists and its conclusions match the current code; **Partly** = it exists but lags the code or misses cases; **No**.
+
+### 7.1 What each of the five methods covers
+
+| Method | Used for | Proves | Does not prove |
+| --- | --- | --- | --- |
+| **TLA**: TLA+ design models (TLC exhaustive search) | Protocols between processes / hosts, where messages may be delayed, reordered or lost (standard Q11.2.1) | Within a bounded scale, the protocol rules themselves do not deadlock or violate an invariant | Whether the implementation follows the rules; cases beyond the scale |
+| **SH**: controlled scheduling of real code | Races between tasks / threads in one process (§7.3). Rust uses shuttle; Python a steppable `SelectorEventLoop`; Node an injectable frame pump. Go and Swift have none | Under the explored schedules, real code does not lose a wakeup, run a step twice or deadlock | External events not in the exploration (real processes, the OS, the runtime itself) |
+| **PT / KANI / FZ**: property tests, bounded model checking, fuzzing (§7.4) | Logic with clear properties: state machines, matching rules, codecs, backoff, config evaluation. KANI only for tiny pure or `unsafe` functions; FZ for parsing external input | Under random (or exhaustively bounded) input, results match the reference model and nothing panics | The reference model making the same mistake; concurrency |
+| **TV + K**: trace validation and conformance suites (§7.5) | Between implementation and model: a real run's log is checked as one behavior of the model; the same cases run on every implementation | The implementation does follow the model's rules (only for the runs made) | Interleavings not run |
+| **Tests**: end to end, fault injection, virtual clocks, matrices, soaks | OS and platform behavior, timing and deadlines, resource limits, packaging and releases, CLI output (§7.7) | — | — |
+
+### 7.2 Cross-process protocols: TLA+
+
+`specs/` has 7 model directories, 17 `.tla` modules and 215 configurations (plus the non-model `specs/config-schema/`). CI's `specs` job ([CI](ci.en.md) §4) runs every configuration of each model on pull requests that change `specs/**` and in full runs (nightly, release gate), comparing each outcome with the directory's `expected.txt`.
+
+| # | Protocol | Directory | Modules | Configurations | Proved within the explored state space | Current and gaps |
+| --- | --- | --- | --- | ---: | --- | --- |
+| T1 | Cross-runtime synchronous calls and the wait graph | [cross-runtime-sync](../specs/cross-runtime-sync/README.en.md) | `CrossRuntimeSync.tla` | 44 | Policy B forms no cycle, a reverse call returns to its issuer, `SyncWaitCycle` is returned only for a real cycle | **Partly**: the differential property test for `cycle_among` and the wait-graph trace validation are missing; the Node per-key hold, cross-host cycles (registered as explicitly not guaranteed) and runtime thread pools are not modelled |
+| T2 | Remote leases, link reconnects, access points | [remote-lease](../specs/remote-lease/README.en.md) | `RemoteLease.tla`, `AccessPoint.tla` | 32 | At most one active lease per runtime, at most one instance per access-point id, an old session's commands do not reach a new lease, no redial after a stop | **Partly**: the Kotlin heartbeat start point has a counterexample configuration built from the implementation and is not fixed (#1102); a `.accepted` connection arriving after a Swift stop has not been checked line by line; the Cordis node's `link.mjs` is not in this repository; time is not modelled |
+| T3 | Unified events: registration and dispatch, emit order, node offers, close admission | [events](../specs/events/README.en.md), [event-close](../specs/event-close/README.en.md) | `EventsHost`, `EventsTable`, `EventsEmit`, `EventsLink`, `EventsHostCheck`, `CloseAdmission` | 33 + 7 | Registered before emitted (both paths), no call starts after a withdrawal, one pair of entries keeps one order everywhere, both emit order properties, only the highest offer version is kept, the close marker and exactly-once cleanup | **Partly**: `RegisteredThenSeen` and `OneCallPerEntry` have no mutation configurations; the `python-deferred` and `before-future-reply` configurations do not exist; scopes, values, errors, cancellation, the full semantics of the five dispatch modes, multiple hops and multiple peers are not modelled |
+| T4 | Row lifecycle between host and runtime | [row-lifecycle](../specs/row-lifecycle/README.en.md) | `RowLifecycle.tla` | 36 | One row runs at most one generation, a late ending ends only its own generation, a lease never outlives its row, a service is withdrawn before its provider unloads | **Partly**: `rows.schema` / `mount`, call chains, differences between unload stacks and the shutdown deadline are not modelled; #1100 and #1101 are still OPEN |
+| T5 | Call lifecycle (two ends plus a one-hop relay) | [call-lifecycle](../specs/call-lifecycle/README.en.md) | `CallLifecycle.tla`, `CallRelay.tla` | 35 | Every call settles at most once, a late reply is dropped, reference counts are conserved, a frame after close changes nothing, a relay cancels hop by hop | **Partly**: whether the callee replies after a cancellation is not written down (`SESS-61`, #1099); the relay's close and a peer still reading after close are not modelled |
+| T6 | Peer-hosted rows | [peer-rows](../specs/peer-rows/README.en.md) | `PeerRows`, `PeerOffers`, `PeerHosted`, `PeerPair`, `PeerServices` | 28 | One instance never runs in two sessions at once, a late ending of an old generation does not end the new one, gating and offline waiting, two nodes hosting each other do not wait on each other, service versions and tombstones | **Partly**: the current code no longer has `peer:` rows (removed in 0.19), so #438 cannot be reproduced against it; #1100 (row key identity) and #1101 (unload before load) are still open |
+
+Not every cross-process part needs TLA: the handshake and capability negotiation are two messages between two parties (PT over the decision table); exporting / importing node services is "highest version wins" (PT); a listening link is an access point without a self-reported id; cross-session reference counting is a two-party protocol per session, and the relay only holds references in-process (SH and PT).
+
+### 7.3 In-process concurrency: controlled scheduling (SH)
+
+| Area | Parts | Current |
+| --- | --- | --- |
+| Core | The 16 models in [`crates/rutis/src/fiber/shuttle_tests.rs`](../crates/rutis/src/fiber/shuttle_tests.rs): every join of a TransitionTask, `post_join` across a driver exit, exactly-once concurrent dispose, the lineage marker published before closing, effect registration and cleanup, unloading while listener calls are in flight, concurrent subtree shutdowns, root dispose and shutdown sharing one close, dependency withdrawal, emit-chain order, the listener-table watcher, an unload cancelling the running generation, effect cleanup errors reported once, several completions, a restart publishing the live generation, closing a real fiber tree | **Yes**: `stress.yml` runs each model a million iterations nightly and prints a replayable schedule on failure; compiled only with `RUSTFLAGS="--cfg rutis_shuttle"`, never by a plain build |
+| Session, event host, loader supervision, host reloads, dylib | The matching modules of `rutis-bridge`, `rutis-loader`, `rutis-host` | **No**: none of these crates has a shuttle model (#622). Binary runtime supervision and host reloads first need a Launcher seam (process, clock and files replaceable) |
+| Python | `SteppedLoop` and `ScriptedChannel` in [`python/rutis/tests/scheduling.py`](../python/rutis/tests/scheduling.py): ready callbacks run only when the test steps the loop, and the clock moves only when the test advances it | **Partly**: used by the scheduling and close tests; it controls an extracted event loop, not the whole runtime |
+| Node / Bun | The injectable frame pump (`node/rutis-runtime/test/frame-pump.test.mjs` and others) | **Partly**: frames are pushed in the test's order; `fc.scheduler` is not used to generate schedules |
+| Kotlin | Fray, Lincheck | **No** (#630): not in the repository |
+| Swift | No controlled scheduling; data races are meant to be excluded by Swift 6 strict concurrency, ordering races by TSan under stress | **No** (#630): `Package.swift` is still `swift-tools-version:5.9` with no strict concurrency setting, and CI has no TSan |
+| Go | No controlled scheduling; `testing/synctest` is not used, so a specific interleaving would need explicit gates in test builds | **No** (#630) |
+
+### 7.4 Pure logic and parsing: PT / KANI / FZ
+
+| Area | Parts | Method | Current |
+| --- | --- | --- | --- |
+| Core | Registration, withdrawal, `prepend`, prefixes, `once` and four dispatch modes of the listener table | PT | **Yes**: [`crates/rutis/tests/listener_table_model.rs`](../crates/rutis/tests/listener_table_model.rs) compares the table with an ordered-list model after every operation (256 cases, `PROPTEST_CASES`); a failure prints the seed and the shrunk operations |
+| Session | Value round trips (seven languages), grants and rollback, frame and value codecs | PT | **Yes**: `value_roundtrip.rs`, `grant_rollback.rs`, `session/protocol.rs` (the last also runs under Miri) |
+| Session | `cycle_among`'s cycle detection, compared with a naive implementation that builds every edge as the TLA definition does | PT | **No** ([cross-runtime-sync](../specs/cross-runtime-sync/README.en.md) §pending and uncovered) |
+| Loader, host, dsh | Edit pipeline, pending-save queue and multi-writer CAS, configuration evaluation, profile layer composition | PT | **No** (#629, merged into #631) |
+| Value functions | Date and time constructors and round trips | KANI | **No verdict**: 6 harnesses in `fuzz/kani/`; Kani 0.68.0 does not converge on this machine within 90 minutes, recorded in `fuzz/KANI-MIRI.md`; not reported as passing |
+| Transport | Session frames, local line framing, error graphs, WebSocket upgrade requests | FZ | **Yes**: 4 targets in `fuzz/fuzz_targets/`, each run for `fuzz_secs` nightly by `stress.yml`; three of them also run under Miri on fixed inputs (`fuzz/miri/`) |
+| dylib | Object-file parsing (ELF / Mach-O / PE) and the manifest format | FZ | **No** (#631) |
+
+### 7.5 Does the implementation follow the models: TV and conformance suites
+
+| Object | How | Current |
+| --- | --- | --- |
+| Session channel | `crates/rutis-bridge/tests/trace_validation.rs`: the channel, frames and lease steps are written as a trace, and every event is checked against what the earlier events allow ([session tracing contract](formal-trace.en.md) §2–§4) | **Yes** (first slice of #624): channel direction and end, hello once and first, call ids and `path`, at most one reply, the one allowed dangling cancel, lease takeover steps |
+| Access points | Compare `AccessEvent` results with `AccessPoint.tla`, adding hand-over and revocation log points first | **No** (#624) |
+| Wait graph | Record the six operations of `waits.rs` and every decision, and compare with `CrossRuntimeSync.tla` | **No** (#624) |
+| Event host | Compare the action log of a host running `events-all` with the host model | **No** (#616, merged into #624) |
+| Language runtimes | Conformance suites: `runtime_conformance`, `events_conformance`, `tracker_conformance`, `sync_cycles`, `host_gone` | **Partly**: `sync_cycles` has Node / Python / Go / Swift columns but no Kotlin; `host_gone` has Node / Python / Go / Bun but no Swift / Kotlin; the reference-counting PT (`grant_rollback.rs`) is Rust-side only |
+| Test tools and real runtimes | The cases of `weather.expected.json` and `events.expected.json` without `tool: false` | **Partly**: the Node and Python test tools and real runtimes read the same expectations file; Go `rutistest` already matches the whole weather file; tools that share code with a runtime (JS `events.mjs`, Python `Bus`, Go `internal/events`) can make the same mistake as it |
+| Model correspondence tables | The "corresponding design and code" table in each model README | **Partly**: Swift / Kotlin were added only in `remote-lease`; the other directories still use short paths (#635) |
+
+### 7.6 Rule-tracker statistics (#634)
+
+The scope is "the guarantee register plus every rule of every protocol specification". The tracker has 1817 rows: 211 register rows, 54 hand-written (`TRC` 44, `ECA` 10), 1552 rows of #634's rule lists (1368 current + 184 superseded). States: 294 verified, 432 partly verified, 543 unverified, 53 explicitly not guaranteed, 291 withdrawn, 204 not counted separately.
+
+The completion criterion is "every rule that should have a formal check is covered (with a mutation or a pre-fix configuration proving it is not vacuous), or says why another method replaced it; every rule covered only by tests has tests" (#612, #635). The current numbers are far from it: 543 unverified, and the `session`, `runtime`, `events` and `remote` partitions have not been re-extracted semantically against the 0.22 specifications. The numbers come from `node tools/formal-trace.mjs`, never typed by hand; the per-row record is in the [rule tracker](formal-trace/README.en.md) §4 and the [recheck table](formal-trace/recheck-0.22.en.md).
+
+### 7.7 What no formal method reaches
+
+- Operating systems and platforms: macOS fork / CLOEXEC, Windows TLS and paths, CPython and V8 behavior differences → support matrix, end to end.
+- Timing and deadlines: the greeting deadline, the 30 / 60 second backoff rules, waiting after a refusal → virtual-clock tests ([test-clock design](design-test-clocks-2026-10-11.en.md), `virtual_clock_contract.rs`; #633 was merged into #639 and is not wired yet).
+- Resource limits and slow growth → residue checks (§5) and soaks (S8).
+- Flaky failures caused by test design, packaging and CI, logic errors in the CLI and code generation.
+- `unsafe` problems visible by reading the code: `crates/rutis-dylib/src/unix.rs:47` calls `CStr::from_ptr(libc::dlerror())` without a null check (`find_symbol` in the same file does check).
+
+A classification made on 2026-10-24 over the 150 fixes from 2026-10-02 to 10-24 found 109 product defects, 45 of which no method would have caught ([#612](https://github.com/arcships/rutis/issues/612)). It has not been redone for later versions.
+
+### 7.8 Practice
+
+- A model lives in `specs/<name>/`: `.tla`, `.cfg`, `expected.txt`, `run.sh`, and a README in both languages (which design document and section, what was simplified, which invariants are checked, mutations and counterexamples). All 7 model directories follow this.
+- When a design change touches a modelled protocol, the same pull request changes the corresponding `specs/` directory; when only the implementation changes, the PR description carries a line `模型：<directory> 不涉及（reason）` (standard Q9.1.1 item 5). That CI check does not exist yet (#635).
+- Trace validation starts with the session channel (§7.5); the rules come from the [session tracing contract](formal-trace.en.md), not a second copy.
+- Timing: Spec 1 (cross-runtime synchronous calls) was finished before Bun, Spec 2 (remote leases) in 0.12; the models for events, row lifecycle, call lifecycle and peer-hosted rows were finished before 0.22 (#613).
+
+### 7.9 The first two models' scope records (2026-10)
+
+Kept as a record; the model itself, its simplifications and invariants are in each directory's README.
+
+#### Spec 1: cross-runtime synchronous calls and the deadlock policy (P10, C6)
 
 **Result** (#208 → #222, 2026-10-11): the model is in [`specs/cross-runtime-sync/`](../specs/cross-runtime-sync/README.en.md). Policy B was chosen: the host tracks waits across sessions, and when forwarding a call would close a wait cycle it does not forward it and returns `SyncWaitCycle` instead. The conclusion is written back into multilanguage design §9. The implementation is #228 → #261: the `sync` field on frames and the `sync-wait` and `sync-stack` capabilities; tests in `rpc_callbacks.rs` and `rutis-loader/tests/sync_cycles.rs`. Two points decided during implementation: a runtime that does not declare itself reentrant is treated as non-reentrant; a runtime that does not declare `sync-wait` is outside detection (no false errors).
-
-The scope as it was planned is kept below for the record.
 
 **Why first**: multilanguage design §9 states this is unresolved. The Node runtime is not reentrant, the Python one is, and two Node runtimes making crossing synchronous calls deadlock. A policy must be chosen before a third language (Swift, Go, or Bun #194). Deadlocks appear only in particular interleavings, which tests hit unreliably.
 
@@ -523,13 +650,11 @@ The scope as it was planned is kept below for the record.
 
 **Output**: the chosen policy written back into multilanguage design §9; counterexamples turned into tests in `rpc_callbacks.rs`.
 
-### 7.2 Spec 2: remote lease takeover, link reconnection and registration revocation (E4, E5) — done
+#### Spec 2: remote lease takeover, link reconnection and registration revocation (E4, E5)
 
 **Result** (#210 → #432, 2026-10-17): the models are in [`specs/remote-lease/`](../specs/remote-lease/README.en.md), two of them: `RemoteLease.tla` (a listening remote runtime and two dialing controller links) and `AccessPoint.tla` (the access point that landed after the issue: registration generations and hand-over, self-declared ids, takeover by the same id, the access point stopping and starting again). Invariants checked: at most one active lease per runtime, at most one instance per id at an access point; commands (calls) of an old session never act on a new lease (instance); after a registration is revoked an old handshake never completes hand-over; a stopped link (dialer) never reconnects; a late handshake result never revives a session given up on. Liveness: without faults a controller eventually holds the lease, and someone still holds it at the end. Scale: 2 controllers (dialers), up to 3 reconnects each (2 in the access point's configurations with lost connections), unbounded message delay; the largest configuration has about 1.2 million states, all 16 configurations take under a minute. Each property has a deliberately introduced bug (a mutation) for which TLC finds a counterexample: the model is not vacuous.
 
 TLC found two places where revoking an identity during a handshake still set a session up, fixed (#432); identity revocation (#273) was removed in 0.19, and its properties, configurations and tests with it. The §4.4 takeover order, the generation re-check, reading frames by connection and cancelling the retry on stop agree with the model. Two controllers configured for the same runtime (or two dialers with the same id) keep replacing each other, slowed by backoff (written in dial-out §6); liveness holds in the model because reconnects are bounded. CI: the `specs` job ([CI](ci.en.md) §4).
-
-What follows is the scope as planned, kept for the record.
 
 **Why**: remote design §4.4 defines the takeover order (authenticate → close the old session → clean up the old lease → answer the new hello); the network stack design defines registration generations, revocation during handshakes, and that late results are not handed over. The existing `leases.rs` and `link.rs` cover only the timings they can construct.
 
@@ -543,14 +668,6 @@ What follows is the scope as planned, kept for the record.
 **Scale**: 2 controllers, up to 3 reconnects each, messages delayed by up to 2 steps.
 
 Revoking while running was the identity layer's hook (#273), removed in 0.19; "identity revocation" was removed from the model with it.
-
-### 7.3 Practice
-
-- Specs live in `specs/<name>/`: `.tla`, `.cfg`, `expected.txt`, `run.sh` and a README (which design and section, what is simplified, which invariants are checked). Spec 1 and Spec 2 follow this layout.
-- CI's `specs` job (Linux, one entry per model) runs every configuration of each model and compares with `expected.txt`, on pull requests that change `specs/**` and in full runs (nightly, release gate) (#210). Larger configurations by hand when the design changes.
-- When a design change touches these two protocols, the spec is updated with it.
-- No trace validation (checking implementation logs against the spec); too costly for now.
-- Timing: Spec 1 was done before Bun; Spec 2 in 0.12.
 
 ---
 
@@ -703,12 +820,12 @@ The old “waiting for design” list is no longer the current schedule. The cur
 
 | Layer/work | Issue | Status and next step |
 | --- | --- | --- |
-| Protocol baseline and rule tracker | #635, #634 | In progress: first session protocol specification (`docs/protocol-session.md`) written; first tracker version has 265 rows (not the full 1368). Unknown fields are decided: reject but fail only that call (`bad-frame`); all seven runtimes implement it and run in CI |
-| Event, call and lifecycle models | #613 | All nine models are expanded to the design scope (about 215 configurations): event-close, the four events modules, cross-runtime-sync, remote-lease, row-lifecycle, call-lifecycle and peer-rows; the new configurations pass. The bail/async/cancel-table/peer-row-key findings are tracked as issues or fixed in code |
-| Rust implementation interleavings | #622 | Core done, verifying: #1025 marker publication, `Entry::live`, seven deterministic race cases and nine shuttle models pass (new: effect registration/dispose, in-flight unload, concurrent subtree shutdown, root dispose/restart, dependency withdrawal); Loading-owner, `once`, remote-entry, root dispose/restart, dependency eviction and the emit chain remain |
-| Non-Rust runtime scheduling | #630 | First slice done: four Node frame-pump cases; Bun/Python/Go are inventory-only; Swift/Kotlin lack toolchains here and are recorded as environment gaps |
-| Trace and conformance | #624 | First slice done: Rust channel/frame validator with 23 cases (reference counts, error graphs, call scope, limits, replacement/reconnect classification); limits, leases, host-gone, sync-cycles and cross-language columns remain |
-| Property, fuzz, Kani/Miri | #631 | First slice done: six grant-rollback cases plus five value/frame/bad-frame properties (proptest and corpus replay); cargo-fuzz ran four targets with no crash; Kani/Miri are not installed and are not reported as passing |
+| Protocol baseline and rule tracker | #635, #634 | In progress: first session protocol specification (`docs/protocol-session.md`) written; the rule tracker has 1817 rows (including 1368 protocol rules, §7.6). Unknown fields are decided: reject but fail only that call (`bad-frame`); all seven runtimes implement it and run in CI |
+| Event, call and lifecycle models | #613 | 7 model directories, 17 modules, 215 configurations: `cross-runtime-sync`, `remote-lease`, `event-close`, the four events modules, `row-lifecycle`, `call-lifecycle` and `peer-rows`; per-directory status and gaps in §7.2. The bail/async/cancel-table/peer-row-key findings are tracked as issues or fixed in code |
+| Rust implementation interleavings | #622 | 16 shuttle models of the core pass (§7.3): #1025 marker publication, `Entry::live`, effect registration and cleanup, in-flight unload, concurrent subtree shutdown, root dispose/shutdown, dependency withdrawal, the emit chain, the listener table, a restart publishing the live generation; seven deterministic race cases. Remaining: the session layer, the event host, runtime supervision and host reloads (Launcher seam), dylib; a reference model for `interleave.rs` |
+| Non-Rust runtime scheduling | #630 | First slice done: four Node frame-pump cases and Python's `SteppedLoop`; Bun/Go are inventory-only; Swift/Kotlin lack toolchains here and are recorded as environment gaps (§7.3) |
+| Trace and conformance | #624 | First slice done: Rust channel/frame validator with 23 cases (reference counts, error graphs, call scope, limits, replacement/reconnect classification); access points, the wait graph, the event host's action log and the cross-language columns remain (§7.5) |
+| Property, fuzz, Kani/Miri | #631 | First slice done: six grant-rollback cases, five value/frame/bad-frame properties (proptest and corpus replay) and the listener-table model property; cargo-fuzz ran four targets with no crash; Miri ran the session frame and value path (no UB); the 6 Kani harnesses have no verdict (0.68.0 does not converge) and are not reported as passing (`fuzz/KANI-MIRI.md`) |
 | Conformance and ordinary tests | #639 | In progress: the gap inventory is incomplete; the 161 conformance cases, 18 ordinary tests and virtual-clock cases are not wired yet |
 | Shared close-out | #634 | In progress: the tracker has 1817 rows (including 1368 protocol rules), `node tools/formal-trace.mjs --check` reports zero problems, and the rule-tracker check is in CI; the protocol rules are not yet rechecked against the current specification |
 
@@ -734,22 +851,25 @@ The old “waiting for design” list is no longer the current schedule. The cur
 
 ---
 
-## Appendix: specific methods evaluated and not adopted for now
+## Appendix: methods evaluated and their current conclusions
 
-Not adopted after evaluation under standard Q11.3: no matching P0 / P1 risk in §4, or duplicates a chosen method.
+Evaluated under standard Q11.3. **Adopted** methods already run; **partly adopted** rows say where they are used and where they are not; **not adopted** rows have no matching P0 / P1 risk in §4 or duplicate a chosen method.
 
-| Method | Why not | When to reconsider |
+| Method | Current conclusion | Where it is used, why not, when to reconsider |
 | --- | --- | --- |
-| Coverage gates | Coverage shows code ran, not that results were checked; a gate invites tests written for the number | Not reconsidered |
-| Mutation testing as a gate | Runs take hours; a gate needs someone to keep handling surviving mutants | Run once by hand as a review aid after major core changes |
-| proptest state machine for the core | Overlaps heavily with contract tests, parity and `interleave.rs`; the reference model can itself be wrong | When core semantics change substantially again |
-| Exhaustive loom | shuttle already covers the three chosen places; loom needs larger code changes | When shuttle finds a problem it cannot reproduce reliably |
-| SDKs running the channel contract themselves; cross-language frame reference samples | Overlap with the Rust-driven conformance suites; the malformed-frame part is in P3 | When a fourth language SDK arrives |
-| `cargo public-api` | Duplicates `cargo semver-checks` | — |
-| Miri, ASan, TSan | `unsafe` is concentrated in dylib loading and process spawning (FFI and system calls), which Miri cannot run; tokio code does not run under Miri | When dylib has memory problems |
-| Performance regression thresholds in CI | CI noise exceeds 15% and would alarm repeatedly; performance is not a guarantee yet | With a fixed benchmark machine |
-| Full disk, fd limit, OOM injection | The matching risks in §4 are all low likelihood | When users report such problems |
-| Extracting the register from docs automatically, enforced in CI | Regex extraction produces many false matches; maintaining the script costs more than it saves | When the register exceeds 300 entries |
-| A TOML DSL for end-to-end scenarios | Few scenarios; Rust is simpler | Over 15 scenarios, or when non-Rust contributors need to write them |
-| TLA+ for the core state machine | Single process; past problems were all in the implementation | — |
-| TLA+ trace validation | Too costly | When spec and implementation diverge repeatedly |
+| Coverage gates | Not adopted | Coverage shows code ran, not that results were checked; a gate invites tests written for the number. The coverage in §2.3 is for magnitude only |
+| Mutation testing as a gate | Not adopted | Runs take hours; a gate needs someone to keep handling surviving mutants. The TLA "one mutation per property" practice is inside the models and is not this |
+| proptest state machine for the core | Adopted | The listener table already has a model-based property test (`crates/rutis/tests/listener_table_model.rs`); the core's sequential operation batches live in `interleave.rs` (seeded) and still lack a reference model (#622). Bug A is reachable with sequential batches, so "overlaps with the contract tests" no longer excludes this |
+| Bounded model checking (Kani) | Partly adopted | 6 harnesses in `fuzz/kani/` cover the date and time constructors and round trips; Kani 0.68.0 does not converge on this machine within 90 minutes, so there is no verdict and they are not reported as passing (`fuzz/KANI-MIRI.md`). `unsafe` code and dylib remain in #631 |
+| Miri | Partly adopted | Used on the session frame and value path: `fuzz/miri/` runs 30 fixed inputs (13 frames, one past the depth limit, 9 framing seeds, 7 error graphs) with no UB, and the property tests in `session/protocol.rs` also run under Miri with small case counts (one recorded run took 122 s). It does not cover tokio, the network or files, so it is not used for dylib |
+| ASan | Not adopted | `unsafe` is concentrated in dylib loading and process spawning (FFI and system calls); there is no Rust-side code to run it on. Memory problems in dylib are covered by Miri's scope and by end-to-end tests |
+| TSan | Partly adopted (not wired) | Planned for Swift data-race stress testing (#630); CI has none, and `Package.swift` is still in Swift 5 mode, so this is a gap, not an adopted method |
+| Exhaustive loom | Not adopted | shuttle already covers the 16 core models and loom needs larger code changes; reconsider when shuttle finds a problem it cannot reproduce reliably |
+| SDKs running the channel contract themselves; cross-language frame reference samples | Not adopted | Overlap with the Rust-driven conformance suites; the malformed-frame part is in P3 and the `malformed` matrix |
+| `cargo public-api` | Not adopted | Duplicates `cargo semver-checks` |
+| TLA+ trace validation | Adopted | The condition to reconsider (spec and implementation diverging repeatedly) has been met: the session-channel validator exists (`crates/rutis-bridge/tests/trace_validation.rs`, #624); access points, the wait graph and the event host's action log remain per §7.5. The rules come from the [session tracing contract](formal-trace.en.md) |
+| TLA+ for the core state machine | Not adopted | Single process, and past problems were all in the implementation; in-process concurrency uses shuttle (§7.3) |
+| Performance regression thresholds in CI | Not adopted | CI noise exceeds 15% and would alarm repeatedly; performance is not a guarantee yet. Reconsider with a fixed benchmark machine |
+| Full disk, fd limit, OOM injection | Not adopted | The matching risks in §4 are all low likelihood; reconsider when users report such problems |
+| Extracting the register from docs automatically, enforced in CI | Partly adopted | The tracker's evidence, id and vocabulary checks already run in CI (`node tools/formal-trace.mjs --check`); the register itself is still handwritten because regex extraction produces many false matches |
+| A TOML DSL for end-to-end scenarios | Not adopted | Few scenarios; Rust is simpler. Reconsider over 15 scenarios, or when non-Rust contributors need to write them |
