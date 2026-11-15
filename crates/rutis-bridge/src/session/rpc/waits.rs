@@ -929,4 +929,482 @@ mod tests {
             ]
         );
     }
+
+    // ── The check against the model's `RustSucc` (#613, item 12) ──────
+
+    use proptest::prelude::*;
+    use proptest::test_runner::{Config, RngAlgorithm, TestCaseError, TestRng, TestRunner};
+
+    /// A wait graph to check: the calls in progress, the call about to be
+    /// forwarded, and what each session's far end does.
+    #[derive(Debug)]
+    struct WaitGraph {
+        hops: Vec<Hop>,
+        new: Hop,
+        profiles: HashMap<String, Profile>,
+    }
+
+    /// The sessions a generated graph runs across.
+    const SESSIONS: [&str; 5] = ["ra", "rb", "rc", "rd", "re"];
+
+    /// A session no call reaches: a chain entry naming it names a call that
+    /// is no longer in the graph (a missing edge).
+    const GONE: &str = "gone";
+
+    /// One entry of a generated chain, before ids are assigned.
+    #[derive(Clone, Debug)]
+    enum Step {
+        /// Call `i` by the id it went to (`calls.len()` is the new call): the
+        /// model's `Gid`.
+        Call(usize),
+        /// Call `i` by the id its caller gave it, the form a path carries for
+        /// the call that made it; `RustSucc`'s `Related` reads these.
+        Named(usize),
+        /// A call of [`GONE`]: a chain naming a call already returned.
+        Absent(u64),
+        /// The hop's own call: a chain that names the call itself.
+        Own,
+        /// The hop's caller, as the hop's own path ends with.
+        Caller,
+    }
+
+    #[derive(Clone, Debug)]
+    struct RawCall {
+        entry: bool,
+        src: usize,
+        dst: usize,
+        path: Vec<Step>,
+    }
+
+    #[derive(Clone, Debug)]
+    struct RawGraph {
+        calls: Vec<RawCall>,
+        new: RawCall,
+        /// `(stacked, reentrant)` for each of [`SESSIONS`].
+        profiles: Vec<(bool, bool)>,
+    }
+
+    fn step(calls: usize) -> impl Strategy<Value = Step> {
+        prop_oneof![
+            4 => (0..=calls).prop_map(Step::Call),
+            2 => (0..=calls).prop_map(Step::Named),
+            2 => (0..4u64).prop_map(Step::Absent),
+            1 => Just(Step::Own),
+            3 => Just(Step::Caller),
+        ]
+    }
+
+    fn raw_call(calls: usize) -> impl Strategy<Value = RawCall> {
+        (
+            prop::bool::weighted(0.25),
+            0..SESSIONS.len(),
+            0..SESSIONS.len(),
+            prop::collection::vec(step(calls), 0..=5),
+        )
+            .prop_map(|(entry, src, dst, path)| RawCall {
+                entry,
+                src,
+                dst,
+                path,
+            })
+    }
+
+    /// A graph of up to 20 hops: entries among them, sessions with one stack
+    /// and reentrant, chains naming calls present, returned and themselves.
+    fn raw_graph() -> impl Strategy<Value = RawGraph> {
+        (0..=20usize).prop_flat_map(|calls| {
+            (
+                prop::collection::vec(raw_call(calls), calls),
+                raw_call(calls),
+                prop::collection::vec((any::<bool>(), any::<bool>()), SESSIONS.len()),
+            )
+                .prop_map(|(calls, mut new, profiles)| {
+                    new.entry = false;
+                    RawGraph {
+                        calls,
+                        new,
+                        profiles,
+                    }
+                })
+        })
+    }
+
+    /// The session a call went to.
+    fn destination(call: &RawCall) -> &'static str {
+        SESSIONS[call.dst % SESSIONS.len()]
+    }
+
+    /// The session a call came from: never the one it went to, as `forward`
+    /// records no hop for a call back into its own session.
+    fn source(call: &RawCall) -> &'static str {
+        let sessions = SESSIONS.len();
+        SESSIONS[(call.dst + 1 + call.src % (sessions - 1)) % sessions]
+    }
+
+    /// The id call `i` went to: numbered in `seq` order, as the model's ids
+    /// are. A runtime's own ids (the ones its calls carry back) are `node:M`,
+    /// so the two id spaces never meet.
+    fn went_to(call: &RawCall, i: usize) -> Global {
+        (destination(call).to_owned(), format!("rust:{}", i + 1))
+    }
+
+    /// The session of call `i`'s caller and the id that caller gave it.
+    fn caller_of(call: &RawCall, i: usize) -> Global {
+        if call.entry {
+            // Nobody made it.
+            (String::new(), String::new())
+        } else {
+            (source(call).to_owned(), format!("node:{}", i + 1))
+        }
+    }
+
+    fn chain(steps: &[Step], own: usize, calls: &[RawCall], new: &RawCall) -> Vec<Global> {
+        let at = |i: usize| if i == calls.len() { new } else { &calls[i] };
+        let mut chain: Vec<Global> = Vec::new();
+        for step in steps {
+            let gid = match *step {
+                Step::Call(i) => went_to(at(i), i),
+                Step::Named(i) => caller_of(at(i), i),
+                Step::Absent(n) => (GONE.to_owned(), format!("rust:{n}")),
+                Step::Own => went_to(at(own), own),
+                Step::Caller => caller_of(at(own), own),
+            };
+            // The model's `Pos` takes the first occurrence; keep chains
+            // single-valued rather than guessing at a repeat.
+            if !chain.contains(&gid) {
+                chain.push(gid);
+            }
+        }
+        chain
+    }
+
+    fn built(i: usize, call: &RawCall, calls: &[RawCall], new: &RawCall, entry: bool) -> Hop {
+        let (dst, did) = went_to(call, i);
+        let mut chain = chain(&call.path, i, calls, new);
+        chain.push((dst.clone(), did.clone()));
+        Hop {
+            src: if entry {
+                String::new()
+            } else {
+                source(call).to_owned()
+            },
+            sid: if entry {
+                String::new()
+            } else {
+                format!("node:{}", i + 1)
+            },
+            dst,
+            did,
+            seq: i as u64 + 1,
+            chain,
+            entry,
+            rows: None,
+        }
+    }
+
+    /// The graph the raw one names: ids in `seq` order, entries without a
+    /// caller, and no hop from the session it goes to, the shape `forward`
+    /// records. The ids a call went to are `rust:N`, the ids a runtime gives
+    /// its own calls are `node:M`; the call `Hop::chain` keeps last can then
+    /// neither start a call nor be the id `Related` reads, as on a session
+    /// whose ids are distinct.
+    fn build(raw: RawGraph) -> WaitGraph {
+        let len = raw.calls.len();
+        let hops: Vec<Hop> = raw
+            .calls
+            .iter()
+            .enumerate()
+            .map(|(i, call)| built(i, call, &raw.calls, &raw.new, call.entry))
+            .collect();
+        let new = built(len, &raw.new, &raw.calls, &raw.new, false);
+        let profiles = SESSIONS
+            .iter()
+            .zip(&raw.profiles)
+            .map(|(session, &(stacked, reentrant))| {
+                ((*session).to_owned(), Profile { stacked, reentrant })
+            })
+            .collect();
+        WaitGraph {
+            hops,
+            new,
+            profiles,
+        }
+    }
+
+    // ── the model's graph ──
+
+    /// The model's successors (`RustSucc`, `specs/cross-runtime-sync/
+    /// CrossRuntimeSync.tla`) of every call in `nodes`, built the naive way:
+    /// one clause per kind of edge, every edge listed.
+    fn model_successors(nodes: &[&Hop], profiles: &HashMap<String, Profile>) -> Vec<Vec<usize>> {
+        let gid = |hop: &Hop| (hop.dst.clone(), hop.did.clone());
+        let gids: Vec<Global> = nodes.iter().map(|hop| gid(hop)).collect();
+        let index: HashMap<Global, usize> = gids
+            .iter()
+            .cloned()
+            .enumerate()
+            .map(|(i, gid)| (gid, i))
+            .collect();
+        assert_eq!(index.len(), nodes.len(), "generated ids are distinct");
+        // `Hop::chain` keeps the call itself last; the model's `chain` is the
+        // path the call carried, without it.
+        fn path(hop: &Hop) -> &[Global] {
+            &hop.chain[..hop.chain.len() - 1]
+        }
+        let stops = |gid: &Global| index.get(gid).is_some_and(|&at| nodes[at].entry);
+        // Started: some call out of its session names it (`Started`).
+        let started: Vec<bool> = (0..nodes.len())
+            .map(|d| {
+                nodes.iter().any(|out| {
+                    !out.entry && out.src == nodes[d].dst && path(out).contains(&gids[d])
+                })
+            })
+            .collect();
+        let mut successors: Vec<Vec<usize>> = vec![Vec::new(); nodes.len()];
+        for (a, hop) in nodes.iter().enumerate() {
+            let y = &hop.dst;
+            // Chain: a call waits for the calls whose path names it, with no
+            // entry between (`ChainFree`).
+            for (c, called) in nodes.iter().enumerate() {
+                if called.entry {
+                    continue;
+                }
+                let chain = path(called);
+                if let Some(at) = chain.iter().position(|gid| gid == &gids[a]) {
+                    if !chain[at + 1..].iter().any(stops) {
+                        successors[a].push(c);
+                    }
+                }
+            }
+            let profile = profiles.get(y).copied().unwrap_or_default();
+            if !profile.stacked {
+                continue;
+            }
+            let outs: Vec<usize> = (0..nodes.len())
+                .filter(|&d| !nodes[d].entry && nodes[d].src == *y)
+                .collect();
+            // Put aside: not started there, not on its chain, and the runtime
+            // is not reentrant, it waits for every call out of it (`defer`).
+            if !profile.reentrant && !outs.is_empty() {
+                let related = outs.iter().any(|&d| {
+                    path(hop)
+                        .iter()
+                        .any(|(session, id)| session == y && id == &nodes[d].sid)
+                });
+                if !related && !started[a] {
+                    successors[a].extend(outs.iter().copied());
+                }
+            }
+            // Stack order: every later call into the same runtime that has
+            // started. The generated ids number in `seq` order, as the
+            // model's `h.did < d.did` does.
+            successors[a].extend(
+                (0..nodes.len())
+                    .filter(|&d| nodes[d].dst == *y && nodes[d].seq > hop.seq && started[d]),
+            );
+        }
+        successors
+    }
+
+    /// A cycle through `new` (the last node) in the model's graph.
+    fn model_has_a_cycle(successors: &[Vec<usize>], nodes: usize) -> bool {
+        let new = nodes - 1;
+        let mut seen = vec![false; nodes];
+        seen[new] = true;
+        let mut stack = vec![new];
+        while let Some(at) = stack.pop() {
+            for &next in &successors[at] {
+                if next == new {
+                    return true;
+                }
+                if !seen[next] {
+                    seen[next] = true;
+                    stack.push(next);
+                }
+            }
+        }
+        false
+    }
+
+    /// `cycle_among` and the model agree on `graph`; returns the cycle found,
+    /// checked to be one cycle of the model's graph.
+    fn agrees(graph: &WaitGraph) -> Option<Vec<String>> {
+        let mut nodes: Vec<&Hop> = graph.hops.iter().collect();
+        nodes.push(&graph.new);
+        let successors = model_successors(&nodes, &graph.profiles);
+        let found = cycle_among(graph.hops.iter(), &graph.new, &graph.profiles);
+        assert_eq!(
+            found.is_some(),
+            model_has_a_cycle(&successors, nodes.len()),
+            "the check and the model disagree on {graph:?}"
+        );
+        let calls = found?;
+        // The names are one cycle: the new call first, each call leading to
+        // the next, the last back to the first.
+        let index: HashMap<String, usize> = nodes
+            .iter()
+            .enumerate()
+            .map(|(i, hop)| (name(hop), i))
+            .collect();
+        let ats: Vec<usize> = calls
+            .iter()
+            .map(|call| {
+                *index
+                    .get(call)
+                    .unwrap_or_else(|| panic!("{call} names no call in {graph:?}"))
+            })
+            .collect();
+        assert!(!ats.is_empty(), "a cycle names no call: {calls:?}");
+        assert_eq!(
+            ats[0],
+            nodes.len() - 1,
+            "the cycle does not start at the new call: {calls:?}"
+        );
+        assert_eq!(
+            ats.iter().collect::<std::collections::HashSet<_>>().len(),
+            ats.len(),
+            "a call is named twice: {calls:?}"
+        );
+        for (i, &at) in ats.iter().enumerate() {
+            let next = ats[(i + 1) % ats.len()];
+            assert!(
+                successors[at].contains(&next),
+                "the model has no edge {} -> {}: {graph:?}",
+                name(nodes[at]),
+                name(nodes[next])
+            );
+        }
+        Some(calls)
+    }
+
+    // ── the shapes and the property ──
+
+    /// The shapes a random graph meets, one by one: an empty graph, a chain
+    /// closing a cycle, a call whose chain names itself, a chain cut by an
+    /// entry (two entries in the graph), and a chain naming a call that has
+    /// returned. No session has a stack, so only the chain edges are here;
+    /// the property test adds runtimes with stacks.
+    #[test]
+    fn the_model_check_agrees_on_the_small_graphs() {
+        let profiles = HashMap::new();
+        // Nothing in progress: nothing to close.
+        assert_eq!(
+            agrees(&WaitGraph {
+                hops: vec![],
+                new: hop("a", "node:1", "b", 1, &[]),
+                profiles: profiles.clone(),
+            }),
+            None
+        );
+        // a's call to b names the host's call into a, b's call to c names
+        // a's call to b, and the host's next call into a names b's call to c:
+        // a cycle.
+        let a = hop("a", "node:1", "b", 1, &["a/rust:2"]);
+        let b = hop("b", "node:1", "c", 1, &["b/rust:1"]);
+        let new = hop("c", "node:1", "a", 2, &["c/rust:1"]);
+        assert_eq!(
+            agrees(&WaitGraph {
+                hops: vec![a.clone(), b.clone()],
+                new: new.clone(),
+                profiles: profiles.clone(),
+            }),
+            Some(vec![
+                "a/rust:2".to_owned(),
+                "b/rust:1".to_owned(),
+                "c/rust:1".to_owned()
+            ])
+        );
+        // A chain naming the call itself: it waits on itself.
+        assert_eq!(
+            agrees(&WaitGraph {
+                hops: vec![],
+                new: hop("a", "node:1", "b", 1, &["b/rust:1"]),
+                profiles: profiles.clone(),
+            }),
+            Some(vec!["b/rust:1".to_owned()])
+        );
+        // An entry between a's call to b and the host's call into a: nobody
+        // waits across it, so the same chain closes no cycle. The second
+        // entry is in the graph and waits for nothing.
+        let notice = entry("e", 3, &[]);
+        let inert = entry("d", 4, &[]);
+        let cut = hop("a", "node:1", "b", 1, &["a/rust:2", "e/rust:3"]);
+        assert_eq!(
+            agrees(&WaitGraph {
+                hops: vec![cut, b.clone(), notice, inert],
+                new: new.clone(),
+                profiles: profiles.clone(),
+            }),
+            None
+        );
+        // A chain naming a call that is not in the graph: no edge either.
+        assert_eq!(
+            agrees(&WaitGraph {
+                hops: vec![hop("a", "node:1", "b", 1, &["x/rust:9"]), b],
+                new,
+                profiles,
+            }),
+            None
+        );
+    }
+
+    /// Item 12 of #613: for a wait graph of up to 20 hops, `cycle_among` finds
+    /// a cycle exactly when a depth-first search of the model's `RustSucc`
+    /// graph (`specs/cross-runtime-sync/CrossRuntimeSync.tla`) does, and the
+    /// calls it names form one such cycle. `PROPTEST_CASES` cases (256 by
+    /// default); a failure prints the seed, rerun with
+    /// `RUTIS_PROPTEST_SEED=<seed>` (Q7.2).
+    /// guarantee: bridge/sync-wait-cycle-refused
+    #[test]
+    fn cycle_among_agrees_with_the_models_graph() {
+        check("cycle_among", raw_graph(), |raw| {
+            agrees(&build(raw));
+            Ok(())
+        });
+    }
+
+    /// Run `test` over `strategy` with a seed from `RUTIS_PROPTEST_SEED`, or
+    /// a fresh one; on failure, panic with the seed and the shrunk input.
+    fn check<S: Strategy>(
+        name: &str,
+        strategy: S,
+        test: impl Fn(S::Value) -> Result<(), TestCaseError>,
+    ) where
+        S::Value: std::fmt::Debug,
+    {
+        let seed: u64 = match std::env::var("RUTIS_PROPTEST_SEED") {
+            Ok(seed) => seed.parse().expect("RUTIS_PROPTEST_SEED is a u64"),
+            Err(_) => {
+                use std::hash::{BuildHasher, Hasher};
+                let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
+                hasher.write_u128(
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_nanos(),
+                );
+                hasher.finish()
+            }
+        };
+        let mut bytes = [0u8; 32];
+        for chunk in bytes.chunks_mut(8) {
+            chunk.copy_from_slice(&seed.to_le_bytes());
+        }
+        // `Config::default()` reads PROPTEST_CASES (256 when unset).
+        let config = Config {
+            failure_persistence: None,
+            ..Config::default()
+        };
+        let cases = config.cases;
+        let mut runner =
+            TestRunner::new_with_rng(config, TestRng::from_seed(RngAlgorithm::ChaCha, &bytes));
+        let started = std::time::Instant::now();
+        if let Err(error) = runner.run(&strategy, test) {
+            panic!("{name}: {error}\nreplay with RUTIS_PROPTEST_SEED={seed}");
+        }
+        eprintln!(
+            "{name}: {cases} cases in {:?} (seed {seed})",
+            started.elapsed()
+        );
+    }
 }
