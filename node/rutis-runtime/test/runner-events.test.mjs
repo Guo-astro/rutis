@@ -16,6 +16,7 @@ const cordis = fileURLToPath(new URL('./fixtures/events-cordis.mjs', import.meta
 const scopeFilter = fileURLToPath(new URL('./fixtures/events-scope-filter.mjs', import.meta.url))
 const cleanupEmit = fileURLToPath(new URL('./fixtures/events-cleanup-emit.mjs', import.meta.url))
 const withdrawFixture = fileURLToPath(new URL('./fixtures/events-withdraw.mjs', import.meta.url))
+const lateListener = fileURLToPath(new URL('./fixtures/events-late.mjs', import.meta.url))
 // A record (the session's mark): its functions cross as references, as the
 // host sends them.
 const RECORD = Symbol.for('rutis.session.record')
@@ -168,6 +169,7 @@ test('a row emits from its unload stack, and the other rows hear it', async () =
   }
 })
 
+// rule: EVP-11-11
 test('a listener the host refuses fails the row\'s load, and is not reported', async () => {
   const { host, rows } = await started()
   try {
@@ -178,6 +180,27 @@ test('a listener the host refuses fails the row\'s load, and is not reported', a
     await host.end()
   }
   assert.doesNotMatch(host.stderr, /registration of listener/)
+})
+
+// rule: EVP-11-11
+// Outside a row's load, a refused `events.on` is reported (§11): the line
+// names the event and the row, and the session goes on.
+test('a listener the host refuses after its row loaded is reported', async () => {
+  const { host, rows } = await started()
+  try {
+    host.refused.add('t/refused-later')
+    await host.call('rows.load', ['later', lateListener, {}, [], [], { 'late-probe': { add: 'sync' } }, { scope: [] }])
+    const probe = host.services.get('late-probe')
+    assert.ok(probe, 'the probe service')
+    assert.equal(await host.session.invokeAsync(probe, 'add', ['t/refused-later']), true)
+    await eventually('the report', () => /registration of listener of t\/refused-later in row later failed: BindingError: listening to t\/refused-later is refused here/.test(host.stderr))
+    // The session goes on: another row loads and hears a dispatch.
+    await rows.listener('ok', { label: 'ok', name: 't/ok', does: { returns: 'OK' } })
+    const emit = await rows.emitter('e')
+    assert.equal(await emit({ mode: 'serial', name: 't/ok', args: [] }), 'OK')
+  } finally {
+    await host.end()
+  }
 })
 
 // rows.update restarts the row as an unload and a load: its running

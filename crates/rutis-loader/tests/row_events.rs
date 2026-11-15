@@ -107,6 +107,72 @@ async fn rows_announce_their_states_at_their_scopes() {
     .await;
 }
 
+/// guarantee: events/framework (rutis/row)
+///
+/// A group row is a row too: it reports `pending`, `running` and `stopped`
+/// like any other, with `plugin` `group` (events protocol §15.33).
+/// rule: EVP-15.33-1
+#[tokio::test(flavor = "multi_thread")]
+async fn a_group_row_reports_its_states_as_a_row_named_group() {
+    let harness = Harness::new();
+    let store = MemStore::default();
+    let (root, loader) = mount(harness.resolver(), store.clone()).await;
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let seen = events.clone();
+    root.on::<RowEvent>(move |event, _| {
+        seen.lock().unwrap().push((*event).clone());
+        std::future::ready(Ok(None))
+    })
+    .unwrap();
+    reconcile(
+        &loader,
+        patches(json!([{ "insert": [
+            { "id": "plain", "group": true, "config": [] }
+        ] }])),
+        &store,
+    )
+    .await;
+    eventually(
+        || {
+            states(&events, "plain")
+                .contains(&RowEventState::Running)
+                .then_some(())
+        },
+        "the group running",
+    )
+    .await;
+    let first = events
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|event| event.row == "plain")
+        .cloned()
+        .unwrap();
+    assert_eq!(first.state, RowEventState::Pending, "{first:?}");
+    assert_eq!(first.plugin, "group", "{first:?}");
+    assert!(first.scope.is_empty(), "{first:?}");
+
+    loader.set_disabled("plain", true).await.unwrap();
+    eventually(
+        || {
+            states(&events, "plain")
+                .contains(&RowEventState::Stopped)
+                .then_some(())
+        },
+        "the group stopped",
+    )
+    .await;
+    assert_eq!(
+        states(&events, "plain"),
+        [
+            RowEventState::Pending,
+            RowEventState::Running,
+            RowEventState::Stopped
+        ],
+        "one change per state"
+    );
+}
+
 fn status_listeners(root: &rutis::Ctx) -> usize {
     root.events()
         .subscriptions()

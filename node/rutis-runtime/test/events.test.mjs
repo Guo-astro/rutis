@@ -208,6 +208,7 @@ test('a listener its row\'s unload stops is not reported; a mount emitter is "th
   assert.deepEqual(reported, ['rutis: emit of m from the mount failed: BindingError: no', 'rutis: emit of m from the mount failed: BindingError: no'])
 })
 
+// rule: EVP-11-11
 test('a registration the host refuses while its row loads fails the load, later it is reported', async () => {
   const refuse = Object.assign(new Error('refused'), { name: 'BindingError' })
   const host = peer(method => method === 'events.on' ? Promise.reject(refuse) : undefined)

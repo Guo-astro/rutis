@@ -213,6 +213,26 @@ test('events.dispatch gives a callback that dispatches in emit\'s, serial\'s and
   assert.equal(host.sent.filter(([method]) => method === 'events.dispatch').length, before, 'internal/* stays Cordis\'s')
 })
 
+// rule: EVD-3.7-1
+// A Cordis plugin here keeps using `internal/service`: providing a service
+// fires it, the plugin's own listener hears it, and it never becomes an
+// `events.on` on the host.
+test('internal/service stays Cordis\'s own, and a service provided here fires it', async () => {
+  const { root, host, load } = setup()
+  const seen = []
+  await load('a', ctx => {
+    ctx.on('internal/service', (name, value) => { seen.push([name, typeof value]) })
+    ctx.provide('own', { ping: () => 'pong' })
+  })
+  assert.ok(seen.some(([name]) => name === 'own'), `heard internal/service: ${JSON.stringify(seen)}`)
+  assert.equal(root.get('own').ping(), 'pong')
+  assert.ok(
+    !host.sent.some(([method, [fields]]) => method === 'events.on' && String(fields?.name).startsWith('internal/')),
+    'internal/* stays out of the bus',
+  )
+})
+
+// rule: EVD-3.7-1
 test('internal/dispatch is fired once for each dispatch, before the listeners', async () => {
   const { root, bus, host, load } = setup()
   const log = []

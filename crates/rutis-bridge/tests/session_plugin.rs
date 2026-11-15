@@ -2,15 +2,15 @@
 //! two rutis kernels, each with its `LocalId`, over a memory channel, or
 //! one kernel and a far end scripted frame by frame.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use rutis::events::Call;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, FiberState, FiberView, PluginFactory};
 use rutis::internal::CtxInternal;
 use rutis::Ctx;
-use rutis_bridge::channel::{Channel, ChannelError};
-use rutis_bridge::events::{ArgValue, Args};
+use rutis_bridge::channel::{Channel, ChannelError, Receiver};
+use rutis_bridge::events::{ArgValue, Args, ServiceEvent};
 use rutis_bridge::session::{
     call_service, host_key, Dispatch, Endpoint, Error as SessionError, Handshake, HostDispatch,
     Reply, SessionOptions, Value, ENDPOINT_PROTOCOL,
@@ -18,7 +18,7 @@ use rutis_bridge::session::{
 use rutis_bridge::{
     catalog_key, session_key, Installed, LocalId, PeerId, PluginCatalog, Session, StaticCatalog,
 };
-use rutis_test_support::{eventually, within};
+use rutis_test_support::{eventually, until, within};
 use serde_json::{json, Value as Json};
 
 fn id(id: &str) -> PeerId {
@@ -445,6 +445,223 @@ async fn events_reach_both_ways() {
     let _pair = pair(&a, &b).await;
     assert_eq!(heard(&b, "t/ping").await, json!("from a"));
     assert_eq!(heard(&a, "t/pong").await, json!("from b"));
+}
+
+/// A receiver that records every frame before the far kernel reads it.
+struct Recorded {
+    inner: Box<dyn Receiver>,
+    frames: Arc<Mutex<Vec<Json>>>,
+}
+
+impl Receiver for Recorded {
+    fn recv(&mut self) -> Result<Option<Vec<u8>>, ChannelError> {
+        let message = self.inner.recv()?;
+        if let Some(message) = &message {
+            if let Ok(frame) = serde_json::from_slice::<Json>(message) {
+                self.frames.lock().unwrap().push(frame);
+            }
+        }
+        Ok(message)
+    }
+}
+
+/// A plugin marked as the row `row-a`, whose listener is announced to a
+/// linked node.
+struct Fielded;
+
+impl DynPlugin for Fielded {
+    fn name(&self) -> &str {
+        "plugin-a"
+    }
+
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, rutis::Error>> {
+        Box::pin(async move {
+            ctx.mark_row("row-a")?;
+            ctx.listen::<Args>()
+                .prefix("t/ev")
+                .prepend()
+                .global()
+                .on(|_: Arc<Args>, _: Call<Args>| async { Ok(None::<ArgValue>) })?;
+            Ok(Effect::Done)
+        })
+    }
+}
+
+/// The fields an announcement on a node link carries (events protocol §9):
+/// id, name, prefix, plugin, row, runtime, kind, prepend and global.
+/// rule: EVP-9-5
+#[tokio::test(flavor = "multi_thread")]
+async fn a_node_links_announcement_carries_every_listener_field() {
+    let (a, b) = (kernel("a"), kernel("b"));
+    let (ours, theirs) = rutis_bridge::memory::pair();
+    let frames: Arc<Mutex<Vec<Json>>> = Arc::default();
+    let recorded = Channel {
+        sender: theirs.sender,
+        receiver: Box::new(Recorded {
+            inner: theirs.receiver,
+            frames: frames.clone(),
+        }),
+        closer: theirs.closer,
+    };
+    let at_b = b.plugin(Session::new(recorded));
+    let at_a = a.plugin(Session::new(ours));
+    within("both sessions", async {
+        (&at_a).await.unwrap();
+        (&at_b).await.unwrap();
+    })
+    .await;
+
+    // The first announcement says the link announces as listeners register
+    // (a `prepend` entry announced with the table would go in table order).
+    let ready = a
+        .listen::<Args>()
+        .name("t/ready")
+        .on(|_: Arc<Args>, _: Call<Args>| async { Ok(None::<ArgValue>) })
+        .unwrap();
+    until(
+        || {
+            frames.lock().unwrap().iter().any(|frame| {
+                frame["op"] == json!("invoke")
+                    && frame["method"] == json!("events.on")
+                    && frame["args"]["value"][0]["value"]["name"] == json!("t/ready")
+            })
+        },
+        "the first announcement",
+    )
+    .await;
+    drop(ready);
+
+    let fielded = a.plugin(Fielded);
+    within("the fielded plugin", async { (&fielded).await })
+        .await
+        .unwrap();
+    let mut announced = None;
+    until(
+        || {
+            announced = frames.lock().unwrap().iter().find_map(|frame| {
+                (frame["op"] == json!("invoke")
+                    && frame["method"] == json!("events.on")
+                    && frame["args"]["value"][0]["value"]["name"] == json!("t/ev"))
+                .then(|| frame["args"]["value"][0]["value"].clone())
+            });
+            announced.is_some()
+        },
+        "the fielded announcement",
+    )
+    .await;
+    let fields = announced.unwrap();
+    let id = fields["id"].as_str().expect("an announced id");
+    let (epoch, counter) = id.split_once('.').expect("<epoch>.<n>");
+    assert!(epoch.parse::<u64>().is_ok(), "{id}");
+    assert!(counter.parse::<u64>().is_ok(), "{id}");
+    assert_eq!(fields["name"], json!("t/ev"), "{fields}");
+    assert_eq!(fields["prefix"], json!(true), "{fields}");
+    assert_eq!(fields["plugin"], json!("plugin-a"), "{fields}");
+    assert_eq!(fields["row"], json!("row-a"), "{fields}");
+    assert_eq!(fields["runtime"], Json::Null, "{fields}");
+    assert_eq!(fields["kind"], json!("async"), "{fields}");
+    assert_eq!(fields["prepend"], json!(true), "{fields}");
+    assert_eq!(fields["global"], json!(true), "{fields}");
+}
+
+/// What a node link imports: kernel `b`'s row `clock` provides `clock`,
+/// `a` hears it on its bus (a loader holds the bus in a host; here the
+/// test does).
+struct ImportedClock {
+    _a: Ctx,
+    _b: Ctx,
+    _bus: rutis_bridge::events::BusHandle,
+    _clock: FiberView,
+    _at_a: FiberView,
+    _at_b: FiberView,
+    seen: Arc<Mutex<Vec<ServiceEvent>>>,
+}
+
+async fn imported_clock() -> ImportedClock {
+    let a = kernel("a");
+    let b = kernel("b");
+    let bus = rutis_bridge::events::join_bus(&a).unwrap();
+    let seen: Arc<Mutex<Vec<ServiceEvent>>> = Arc::default();
+    let log = seen.clone();
+    a.listen::<ServiceEvent>()
+        .on(move |event: Arc<ServiceEvent>, _: Call<ServiceEvent>| {
+            log.lock().unwrap().push((*event).clone());
+            async { Ok(None) }
+        })
+        .unwrap();
+    let clock = b.plugin(Provides {
+        name: "clock",
+        row: Some("clock"),
+        service: "clock",
+        answer: "noon",
+    });
+    within("the provider", async { (&clock).await })
+        .await
+        .unwrap();
+    let (at_a, at_b) = pair(&a, &b).await;
+    ImportedClock {
+        _a: a,
+        _b: b,
+        _bus: bus,
+        _clock: clock,
+        _at_a: at_a,
+        _at_b: at_b,
+        seen,
+    }
+}
+
+/// A service imported over a node link is a host service here: `rutis/service`
+/// announces it like one of this host's own (events protocol §8, §15.33).
+/// rule: EVP-15.33-2
+#[tokio::test(flavor = "multi_thread")]
+async fn a_node_imported_service_is_announced() {
+    let rig = imported_clock().await;
+    until(
+        || {
+            rig.seen
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|event| event.name == "clock" && event.available)
+        },
+        "rutis/service for the imported clock",
+    )
+    .await;
+    let events = rig.seen.lock().unwrap().clone();
+    let arrival = events
+        .iter()
+        .find(|event| event.name == "clock" && event.available)
+        .expect("the arrival");
+    assert!(arrival.scope.is_empty(), "{events:?}");
+}
+
+/// The same event names the row on the far end that provides it: the
+/// configuration's row id, the same in every process (events protocol §3,
+/// §15.33).
+/// rule: EVP-15.33-2
+#[ignore = "a node-imported service's row is null: #1171"]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_node_imported_service_is_announced_with_its_row() {
+    let rig = imported_clock().await;
+    until(
+        || {
+            rig.seen.lock().unwrap().iter().any(|event| {
+                event.name == "clock" && event.available && event.row.as_deref() == Some("clock")
+            })
+        },
+        "rutis/service for the imported clock, with its row",
+    )
+    .await;
+    let events = rig.seen.lock().unwrap().clone();
+    let arrival = events
+        .iter()
+        .find(|event| event.name == "clock" && event.available)
+        .expect("the arrival");
+    assert_eq!(
+        arrival.row.as_deref(),
+        Some("clock"),
+        "the id of the row the far end's service came from: {events:?}"
+    );
 }
 
 /// How many listeners the test registers while the peer reads nothing.
