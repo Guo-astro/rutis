@@ -30,8 +30,10 @@ emit-r2a ok
 emit-r2b ok
 emit-multi ok
 emit-multi-r2b ok
+emit-python-deferred ok
 emit-mut-held violated:EmitOrder
 emit-mut-reply-async violated:FastPathByFrame
+emit-mut-future-reply violated:EmitOrder
 emit-mut-unload violated:UnloadedRowEmitsNothing
 emit-mut-dead-listener violated:NoCallToUnloadedListener
 #

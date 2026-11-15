@@ -10,7 +10,7 @@
 | --- | --- | --- | --- |
 | `EventsHost.tla` | 只有定义，没有状态：名字/前缀匹配、登记顺序、elsewhere、过滤器、五种方式的开始规则、`export` / `import` 与收窄、公告 id 的 epoch 与保留规则 | 无 | `host-defs` 用 `EventsHostCheck.tla` 把规格里的例子算一遍 |
 | `EventsTable.tla` | 登记、撤下、elsewhere、快速路径与经宿主路径、`rows.load` 回复、行卸载/结束/重装、会话结束与重开、宿主前缀条目、跨进程调用的因果 | 宿主 + 1–2 个运行时；`table-multi` 是 2 个运行时 × 2 行；健康配置最多 1 次分发 | 19 |
-| `EventsEmit.tla` | 宿主按会话排队的 emit（每项记住自己的行）、扣住的调用、就地读回复、过滤器迟到、行卸载、两个行的三个 emit、`R2a`/`R2b`、死锁检查 | 宿主 + `R1`（行 A/B） + `R2`；三次 emit | 8 |
+| `EventsEmit.tla` | 宿主按会话排队的 emit（每项记住自己的行）、扣住的调用、就地读回复、过滤器迟到、行卸载、两个行的三个 emit、`R2a`/`R2b`、推迟到下一轮开始的调用（`python-deferred`）、调用未开始就回复的宿主（`before-future-reply`）、死锁检查 | 宿主 + `R1`（行 A/B） + `R2`；三次 emit | 10 |
 | `EventsLink.tla` | `link.offers` 快照、版本只保留最高、`<epoch>.<n>` 公告、宣告早于提供、接收三步、`events.off` 与 `link.offers` 的独立交错、bare-id 的当前规则、对端不转发从下一跳引进的条目 | 宿主 + 一个对端（另有它从下一跳引进的一个条目）；两个自有条目、两个族、两次提供 | 7 |
 
 `EventsHost.tla` 不是一份可执行的规格：三个有状态的模块 `EXTENDS` 它，各自的配置只用到其中一部分。`host-defs` 的检查方式是 `ASSUME`：规格第四、五、六、九节的例子必须算得出文档写的答案，然后在唯一的状态里停住。它不检查那些定义在任意输入上都成立，只检查它们和规格写的例子一致。
@@ -56,7 +56,8 @@
 - 行卸载丢弃它排队的 emit、放开正在等过滤器的 emit、丢掉已经扣住的调用；A 卸载后 `L1` 不再开始任何调用。`unloadQueue` 变异保留它们（#536）。
 - 死锁检查：健康配置 `CHECK_DEADLOCK TRUE`，`Done` 只在没有排队、没有过滤器/调用在跑、没有被扣住的调用时停住。`never` 过滤器不在这些配置里——它按协议就是永远挂着，不是要检查的死锁。
 - 不建 panic、任务调度、真实 Promise、Node/Bun/Python 的帧泵差别，也不建 `emit` 的失败报告。
-- `python-deferred` 没有建：Python 把收到的 invoke 帧（含 `events.call`）交给 `loop.call_soon`（`python/rutis/rutis/peer.py:1886`），只有同步等待中的帧就地处理（`_run`，同文件 1892–1896）。这在 `EventsEmit.tla` 里只是把 `StartCall` 推后一步，而模型本来就允许它任意晚，配置只会是模型行为的子集、只能通过；`call_soon` 先进先出，同一监听器上的开始先后不变，没有性质会被它违反。要让它可观察，需要把“宿主把这次调用算作已开始”和“监听器函数体开始”拆成两步（现在 `StartCall` 同时是这两件事，`EmitOrder` 按后者看），并加一条“帧就地处理、处理完再读下一帧”（EVP-4.1-2）的性质；两样都不在本目录里。Python 也没有快速路径（`python/rutis/rutis/runner.py` 的 `send` 总是发 `events.dispatch`，`python/rutis/rutis/` 里没有处理 `events.elsewhere` 的代码），所以也不能换个模块用别的路径代替它。
+- `python-deferred`（`Defer = "nextRound"`）：Python 把收到的 invoke 帧（含 `events.call`）交给 `loop.call_soon`（`python/rutis/rutis/peer.py:1886`），只有同步等待中的帧就地处理（`_run`，同文件 1892–1896）；`call_soon` 先进先出。模型里 `R2` 的调用先进 `deferred`，只从队头开始，所以调用比读到帧晚，同一监听器上的先后不变。配置 `emit-python-deferred` 通过：延迟只推后 `StartCall`，模型本来就允许它任意晚，性质不因此改变。它没有建的是“宿主把这次调用算作已开始”和“监听器函数体开始”两步的分离（现在 `StartCall` 同时是这两件事），也没有 EVP-4.1-2“帧就地处理、处理完再读下一帧”这条性质，所以它不能验证那条规则。Python 也没有快速路径（`python/rutis/rutis/runner.py` 的 `send` 总是发 `events.dispatch`，`python/rutis/rutis/` 里没有处理 `events.elsewhere` 的代码）。
+- `before-future-reply`（`Mutation = "futureReply"`）：c2c1b7e8 之前的宿主一半（#513）：宿主对一个还在排队、调用尚未开始的 emit 就写出回复，运行时就地读到它，这次 emit 的名字在发出方看来已经结束。变异用两步建这件事：`ReplyEarly` 在 `phase` 还是 `queued`/`filtering`/`starting` 时记下已读回复；`PendingAt` 不再把这种 emit 算作“更早的调用还没开始”，后来的同名 emit 走快速路径时不再排在它后面。`emit-mut-future-reply` 违反 `EmitOrder`。
 
 `EventsLink.tla`：
 
@@ -91,7 +92,7 @@
 
 ## 结果
 
-TLC 2.19（tla2tools v1.7.4），Temurin 21.0.12，32 核，`-workers 4`，2026-11-10；`table-mut-on-late`、`table-mut-dup-local` 是 2026-11-16 在同一台机器上按同样参数测的。`通过`指穷举完成、所列性质全部成立；被违反的配置找到第一个反例就停，状态数取决于搜索顺序。整个目录约 2 分钟。下面每个配置都在本机跑过；没有跑的是更大的参数组合（例如 `table-multi` 的 `MaxDispatch>1`、`MaxLoads>2`，或 `EventsLink` 的 `MaxEpoch>2`）。
+TLC 2.19（tla2tools v1.7.4），Temurin 21.0.12，32 核，`-workers 4`，2026-11-10；`table-mut-on-late`、`table-mut-dup-local`、`emit-python-deferred`、`emit-mut-future-reply` 是 2026-11-16 在同一台机器上按同样参数测的。`通过`指穷举完成、所列性质全部成立；被违反的配置找到第一个反例就停，状态数取决于搜索顺序。整个目录约 2 分钟。下面每个配置都在本机跑过；没有跑的是更大的参数组合（例如 `table-multi` 的 `MaxDispatch>1`、`MaxLoads>2`，或 `EventsLink` 的 `MaxEpoch>2`）。
 
 | 配置 | 内容 | 结果 | 不同状态数 | 时间 |
 | --- | --- | --- | --- | --- |
@@ -119,8 +120,10 @@ TLC 2.19（tla2tools v1.7.4），Temurin 21.0.12，32 核，`-workers 4`，2026-
 | `emit-r2b` | 同上，`R2` 规则 b；死锁检查 | 通过 | 24,893 | 2 s |
 | `emit-multi` | 两个行、三个 emit、宿主按会话排队、行 A/B 都可卸载；规则 a | 通过 | 127,576 | 4 s |
 | `emit-multi-r2b` | 同 `emit-multi`，规则 b | 通过 | 91,688 | 3 s |
+| `emit-python-deferred` | 同 `emit-multi`，`R2` 的调用推到下一轮开始（`Defer = "nextRound"`，FIFO）；死锁检查 | 通过 | 141,978 | 2 s |
 | `emit-mut-held` | 快速路径上同名的 emit 抢在被扣住的调用前面（#557 之前） | 违反 `EmitOrder` | 701 | 1 s |
 | `emit-mut-reply-async` | 读到 emit 回复后过一步才记为已回复（#513 之前） | 违反 `FastPathByFrame` | 318 | 1 s |
+| `emit-mut-future-reply` | 宿主对还在排队、调用尚未开始的 emit 就回复（c2c1b7e8 之前的宿主一半，#513） | 违反 `EmitOrder` | 526（反例即停） | 1 s |
 | `emit-mut-unload` | 行卸载时不丢弃排队的 emit（#536 之前） | 违反 `UnloadedRowEmitsNothing` | 428 | 1 s |
 | `emit-mut-dead-listener` | 行卸载后仍调用它拥有的监听器 | 违反 `NoCallToUnloadedListener` | 159 | 1 s |
 | `link-healthy` | 两次提供、宣告早于提供、另一个族引起的快照；死锁检查 | 通过 | 293,064 | 5 s |
@@ -147,6 +150,7 @@ TLC 2.19（tla2tools v1.7.4），Temurin 21.0.12，32 核，`-workers 4`，2026-
 - **`table-mut-dup-local`**：同一行在同一会话里把同一个监听器登记两次，运行时的顺序表（`local`）收下同一条 `<<r1,a,1,1>>` 的两份（`Register` 不再检查它已在列表里）；快速路径按这份列表开始调用，两次都是它，`OneCallPerEntry`（`NoDup(order[d])`）不成立。反例里 `tbl` 是空的：第一条 `events.on` 还没到宿主，运行时已经开始了两次调用。宿主一侧本来就不重复收同一条（`HostOn` 的 `kept` 要求条目还不在表里，重复 id 也被拒，EVP-4.2-1），所以这个变异拿掉的是“一个监听器只登记一次”这个前提，检查的是分发一侧的性质本身。
 - **`emit-mut-held`**：`E1` 在 `L1` 的调用被等待扣住；`R1` 读到回复后，快速路径上的 `E2` 立刻开始 `L1` 的调用；等待结束后 `E1` 的调用才跑。同一个发出方的两次 emit，在 `L1` 上 `E2` 先开始，`EmitOrder` 不成立（#557 之前）。
 - **`emit-mut-reply-async`**：`R1` 已经读到 `E1` 的回复帧，但过一步才记为已回复；等待链在这之间发出 `E2`，运行时仍把它送去宿主。`FastPathByFrame` 不成立（#513 之前）。
+- **`emit-mut-future-reply`**：行 A 的 `E1` 经宿主发出、还在宿主队列里，它的调用一个都还没开始；宿主照样写出回复，`R1` 就地读到（`read[E1]`）。行 B 的 `E3` 因此走快速路径，`L1` 的调用立刻开始；随后宿主才取 `E1`，`E1` 的 `L1` 调用排在 `E3` 之后。同一监听器上后来的 emit 先开始，`EmitOrder` 不成立（#513 之前宿主那一半）。
 - **`emit-mut-unload`**：行卸载时不丢弃排队的 emit；过滤器之后回答，`E1`/`E2` 仍开始调用，`UnloadedRowEmitsNothing` 不成立（#536 之前）。
 - **`emit-mut-dead-listener`**：行 A 已经卸载；行 B 的 emit 仍把调用送到 A 留下的 `L1`，`NoCallToUnloadedListener` 不成立。
 - **`link-bare-id`**：`PeerIds = "bare"` 是对端实现的当前规则：公告 id 不带 epoch，宿主只按 id 替换；对端重新提供后，旧提供下宣告、新提供不再有的条目留在表里，`CurrentOffer` 不成立（EVP-9-17）。这不是实现缺陷，而是这条规则不承诺 `CurrentOffer`；带 epoch 的配置和变异分开检查。
@@ -159,9 +163,9 @@ TLC 2.19（tla2tools v1.7.4），Temurin 21.0.12，32 核，`-workers 4`，2026-
 
 - 按当前规格，`EventsHost.tla` 的定义与规格例子一致；`EventsTable.tla` 的安全性质在穷举范围内成立：同一进程里先登记后发出（两条路径）、跨进程调用后接收方看到调用方已收到回复的登记、撤下后不再开始调用、同一对条目处处同一先后、`rows.load` 回复前登记已被接受、新会话必须先后收到 elsewhere 全集、宿主快照包含匹配的前缀条目。
 - `table-multi` 把 2 个运行时 × 2 行放进同一个配置跑通；`table-reload` 覆盖行结束/卸载/重装（两次登记）的交错；`table-end-session` 覆盖会话先结束再重开时仍在途的快照。行卸载后迟到的旧 `events.on` 由“只接受这一行当前登记”挡住。
-- `EventsEmit.tla` 的两个顺序性质、行卸载性质和监听器性质在它的场景里成立；宿主按会话的队列会丢弃卸载行的项而保留其他行的项；`R2a` 与 `R2b` 的状态数不同，交叠执行确实建了；四个变异都被找到反例。
+- `EventsEmit.tla` 的两个顺序性质、行卸载性质和监听器性质在它的场景里成立；宿主按会话的队列会丢弃卸载行的项而保留其他行的项；`R2a` 与 `R2b` 的状态数不同，交叠执行确实建了；五个变异都被找到反例。`emit-python-deferred` 把 `R2` 的调用推到下一轮开始（FIFO），全部通过：延迟只推后开始，模型本来就允许任意晚，所以按现在的实现这条疑点（EVP-5.5-9）在模型里不成立；它没有建的“宿主算作开始”与“函数体开始”两步分离见“简化”。`emit-mut-future-reply` 用“调用未开始就回复”的宿主找到了 `EmitOrder` 的反例：c2c1b7e8 的宿主一半不是空的。
 - `EventsLink.tla`：只保留最高版本的快照、旧提供的条目按 epoch 撤下、先于提供到达的宣告保留、单个 `events.off` 与快照独立交错，这些在当前规则下成立；不带 epoch 的 id（EVP-9-17）作为当前规则有一个预期反例，修复前 `accept()` 的解锁窗口、`offerRace`、`echo` 和 `forward` 各有一个反例；`NoForward` 覆盖“对端不转发下一跳引进的条目”。
-- 模型没有证明的（按 issue #613 的范围）：作用域、值、错误、取消、`rows.update` 的就地重排、快速路径上的过滤器、五种方式的完整语义（只有 `emit`）、真实的任务调度与帧泵差别、完整的多跳消息链、多个对端、`export` / `import` 在状态模型里的双向收窄、服务项共享、`before-future-reply` 配置、`python-deferred`（“简化”一节说明了它需要先建什么），以及整个实现的活性/死锁（本目录的 `CHECK_DEADLOCK TRUE` 只回答“这个有限协议状态机在这些配置里没有意外的终态”，不是实现没有死锁的证据）。不能把这个目录当成 #613 的完整证据。
+- 模型没有证明的（按 issue #613 的范围）：作用域、值、错误、取消、`rows.update` 的就地重排、快速路径上的过滤器、五种方式的完整语义（只有 `emit`）、真实的任务调度与帧泵差别、完整的多跳消息链、多个对端、`export` / `import` 在状态模型里的双向收窄、服务项共享、`python-deferred` 里“宿主把这次调用算作已开始”与“监听器函数体开始”两步的分离（EVP-4.1-2 的“就地处理、处理完再读下一帧”也不建）、`before-future-reply` 只建了宿主一半，以及整个实现的活性/死锁（本目录的 `CHECK_DEADLOCK TRUE` 只回答“这个有限协议状态机在这些配置里没有意外的终态”，不是实现没有死锁的证据）。不能把这个目录当成 #613 的完整证据。
 
 ## 怎么运行
 
@@ -178,4 +182,4 @@ TLC_WORKERS=2 TLA2TOOLS=/tmp/tla2tools.jar specs/events/run.sh    # 限定线程
 
 ## 维护
 
-协议规格第四、五、六、七、九节改了，或 `bus/table.rs` 的 `select` / `Entry::start`、`bus.rs` 的 `emit_erased` / 快照、`hub.rs` 的 `events.on` 回复与 elsewhere 排队 / 行撤下 / emit 队列、`link.rs` 的 `accept` / 公告撤下 / 不转发、`peer.rs` 的 `Offers` 改了，就同步改这里和 `expected.txt`（质量规范 Q11.2.3）。新增常量（`MaxLoads`、`HostPrefix`、`Reload`、`EndBeforeRestart`、`AllowCrossCall`、`PeerIds`、`PeerImports`）要同时加进每个受影响的 `.cfg`。改了模型记得重跑全部配置：变异配置要仍然找到反例，健康配置要仍然通过；`CHECK_DEADLOCK TRUE` 的配置要确认 `Done` 只在真正没工作时停住。
+协议规格第四、五、六、七、九节改了，或 `bus/table.rs` 的 `select` / `Entry::start`、`bus.rs` 的 `emit_erased` / 快照、`hub.rs` 的 `events.on` 回复与 elsewhere 排队 / 行撤下 / emit 队列、`link.rs` 的 `accept` / 公告撤下 / 不转发、`peer.rs` 的 `Offers` 改了，就同步改这里和 `expected.txt`（质量规范 Q11.2.3）。新增常量（`MaxLoads`、`HostPrefix`、`Reload`、`EndBeforeRestart`、`AllowCrossCall`、`PeerIds`、`PeerImports`、`Defer`）要同时加进每个受影响的 `.cfg`。改了模型记得重跑全部配置：变异配置要仍然找到反例，健康配置要仍然通过；`CHECK_DEADLOCK TRUE` 的配置要确认 `Done` 只在真正没工作时停住。
