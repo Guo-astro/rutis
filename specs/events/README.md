@@ -9,7 +9,7 @@
 | 模块 | 内容 | 参与者和规模 | 配置 |
 | --- | --- | --- | --- |
 | `EventsHost.tla` | 只有定义，没有状态：名字/前缀匹配、登记顺序、elsewhere、过滤器、五种方式的开始规则、`export` / `import` 与收窄、公告 id 的 epoch 与保留规则 | 无 | `host-defs` 用 `EventsHostCheck.tla` 把规格里的例子算一遍 |
-| `EventsTable.tla` | 登记、撤下、elsewhere、快速路径与经宿主路径、`rows.load` 回复、行卸载/结束/重装、会话结束与重开、宿主前缀条目、跨进程调用的因果 | 宿主 + 1–2 个运行时；`table-multi` 是 2 个运行时 × 2 行；健康配置最多 1 次分发 | 17 |
+| `EventsTable.tla` | 登记、撤下、elsewhere、快速路径与经宿主路径、`rows.load` 回复、行卸载/结束/重装、会话结束与重开、宿主前缀条目、跨进程调用的因果 | 宿主 + 1–2 个运行时；`table-multi` 是 2 个运行时 × 2 行；健康配置最多 1 次分发 | 19 |
 | `EventsEmit.tla` | 宿主按会话排队的 emit（每项记住自己的行）、扣住的调用、就地读回复、过滤器迟到、行卸载、两个行的三个 emit、`R2a`/`R2b`、死锁检查 | 宿主 + `R1`（行 A/B） + `R2`；三次 emit | 8 |
 | `EventsLink.tla` | `link.offers` 快照、版本只保留最高、`<epoch>.<n>` 公告、宣告早于提供、接收三步、`events.off` 与 `link.offers` 的独立交错、bare-id 的当前规则、对端不转发从下一跳引进的条目 | 宿主 + 一个对端（另有它从下一跳引进的一个条目）；两个自有条目、两个族、两次提供 | 7 |
 
@@ -56,6 +56,7 @@
 - 行卸载丢弃它排队的 emit、放开正在等过滤器的 emit、丢掉已经扣住的调用；A 卸载后 `L1` 不再开始任何调用。`unloadQueue` 变异保留它们（#536）。
 - 死锁检查：健康配置 `CHECK_DEADLOCK TRUE`，`Done` 只在没有排队、没有过滤器/调用在跑、没有被扣住的调用时停住。`never` 过滤器不在这些配置里——它按协议就是永远挂着，不是要检查的死锁。
 - 不建 panic、任务调度、真实 Promise、Node/Bun/Python 的帧泵差别，也不建 `emit` 的失败报告。
+- `python-deferred` 没有建：Python 把收到的 invoke 帧（含 `events.call`）交给 `loop.call_soon`（`python/rutis/rutis/peer.py:1886`），只有同步等待中的帧就地处理（`_run`，同文件 1892–1896）。这在 `EventsEmit.tla` 里只是把 `StartCall` 推后一步，而模型本来就允许它任意晚，配置只会是模型行为的子集、只能通过；`call_soon` 先进先出，同一监听器上的开始先后不变，没有性质会被它违反。要让它可观察，需要把“宿主把这次调用算作已开始”和“监听器函数体开始”拆成两步（现在 `StartCall` 同时是这两件事，`EmitOrder` 按后者看），并加一条“帧就地处理、处理完再读下一帧”（EVP-4.1-2）的性质；两样都不在本目录里。Python 也没有快速路径（`python/rutis/rutis/runner.py` 的 `send` 总是发 `events.dispatch`，`python/rutis/rutis/` 里没有处理 `events.elsewhere` 的代码），所以也不能换个模块用别的路径代替它。
 
 `EventsLink.tla`：
 
@@ -90,7 +91,7 @@
 
 ## 结果
 
-TLC 2.19（tla2tools v1.7.4），Temurin 21.0.12，32 核，`-workers 4`，2026-11-10。`通过`指穷举完成、所列性质全部成立；被违反的配置找到第一个反例就停，状态数取决于搜索顺序。整个目录约 2 分钟。下面每个配置都在本机跑过；没有跑的是更大的参数组合（例如 `table-multi` 的 `MaxDispatch>1`、`MaxLoads>2`，或 `EventsLink` 的 `MaxEpoch>2`）。
+TLC 2.19（tla2tools v1.7.4），Temurin 21.0.12，32 核，`-workers 4`，2026-11-10；`table-mut-on-late`、`table-mut-dup-local` 是 2026-11-16 在同一台机器上按同样参数测的。`通过`指穷举完成、所列性质全部成立；被违反的配置找到第一个反例就停，状态数取决于搜索顺序。整个目录约 2 分钟。下面每个配置都在本机跑过；没有跑的是更大的参数组合（例如 `table-multi` 的 `MaxDispatch>1`、`MaxLoads>2`，或 `EventsLink` 的 `MaxEpoch>2`）。
 
 | 配置 | 内容 | 结果 | 不同状态数 | 时间 |
 | --- | --- | --- | --- | --- |
@@ -112,6 +113,8 @@ TLC 2.19（tla2tools v1.7.4），Temurin 21.0.12，32 核，`-workers 4`，2026-
 | `table-mut-fresh` | 新会话没有 elsewhere 全集就可以分发 | 违反 `NoDispatchBeforeElsewhere` | 2 | <1 s |
 | `table-mut-causal` | 宿主在 elsewhere 排进其他会话之前就回复 `events.on` | 违反 `CausallyAfterCallSees` | 2,476 | 1 s |
 | `table-mut-prefix` | 宿主快照只按精确名匹配，丢掉前缀条目 | 违反 `PrefixEntrySeen` | 87 | <1 s |
+| `table-mut-on-late` | 宿主把 `events.dispatch` 单独处理：先取它，后取同一会话更早发出的 `events.on` | 违反 `RegisteredThenSeen` | 95（反例即停） | 1 s |
+| `table-mut-dup-local` | 运行时的顺序表把同一个监听器的两次登记都收下 | 违反 `OneCallPerEntry` | 89（反例即停） | 1 s |
 | `emit-r2a` | 扣住的调用、就地读回复、迟到的过滤器；`R2` 规则 a；死锁检查 | 通过 | 34,857 | 2 s |
 | `emit-r2b` | 同上，`R2` 规则 b；死锁检查 | 通过 | 24,893 | 2 s |
 | `emit-multi` | 两个行、三个 emit、宿主按会话排队、行 A/B 都可卸载；规则 a | 通过 | 127,576 | 4 s |
@@ -130,7 +133,7 @@ TLC 2.19（tla2tools v1.7.4），Temurin 21.0.12，32 核，`-workers 4`，2026-
 
 ## 反例
 
-每个被检查的性质都有一个故意引入的错误（`expected.txt` 的 `violated:<名字>`）。除了变异，`table-sees-all` 违反的是协议**明确不承诺**的性质，`link-bare-id` 违反的是“不带 epoch 的 id 只按 id 替换”这条当前规则本身的后果：
+每个被检查的性质都有一个故意引入的错误（`expected.txt` 的 `violated:<名字>`），包括 `table-mut-on-late` 的 `RegisteredThenSeen` 和 `table-mut-dup-local` 的 `OneCallPerEntry`。除了变异，`table-sees-all` 违反的是协议**明确不承诺**的性质，`link-bare-id` 违反的是“不带 epoch 的 id 只按 id 替换”这条当前规则本身的后果：
 
 - **`table-sees-all`**：`r1` 登记了监听器、`events.on` 已经发出，宿主也接受进表；`r2` 的 elsewhere 还没更新，它走快速路径，只看到自己的条目。于是“每次分发看到发出前登记的全部条目”不成立。这就是 issue #613 开头“协议不承诺顺序一致”的例子，`SeesAll` 不是承诺，`RegisteredThenSeen` 和 `WithdrawnStaysOut` 才是。
 - **`table-mut-out-of-order`**：`r1` 先发 `events.on`、再发 `off`、再发 `events.dispatch`；宿主先取 `events.dispatch`，快照里有这个条目，随后（仍在处理 `off` 之前）为它开始调用。`r1` 在发出这次分发时已经知道自己撤下了它，`WithdrawnStaysOut` 不成立。这对应 #587 之前的帧序问题。
@@ -140,6 +143,8 @@ TLC 2.19（tla2tools v1.7.4），Temurin 21.0.12，32 核，`-workers 4`，2026-
 - **`table-mut-fresh`**：新会话还没收到 elsewhere 全集就分发；`NoDispatchBeforeElsewhere` 不成立。
 - **`table-mut-causal`**：`r1` 的监听器登记被接受，宿主在把 elsewhere 排进 `r2` 之前就回复了 `events.on`；`r1` 随后调用 `r2` 的服务，`r2` 在读到调用后分发，快速路径的 elsewhere 仍是旧的，看不到 `r1` 的条目。`CausallyAfterCallSees` 不成立。基准模型里宿主先排 elsewhere、再回复，所以这条路径在 `table-causal` 里不出现。
 - **`table-mut-prefix`**：宿主快照只按精确名匹配；表里明明有匹配 `session/created` 的前缀条目，快照里却没有它，`PrefixEntrySeen` 不成立。基准模型用 `EntryMatches` 保留前缀条目。
+- **`table-mut-on-late`**：宿主把 `events.dispatch` 当成自己的任务处理，不等同一会话先发出的帧。`r1` 先发出 `events.on`（`<<r1,a,1,1>>`）、再发出 `events.dispatch`；宿主先取后者、从表里取快照，表里还没有这条登记，只有宿主自己的 `<<host,host,0,0>>`。`r1` 在发出这次分发时已经知道自己的登记，到取快照时也没有在任何地方被撤下（`Withdraw`、`Unload` 都关，`everOff` 一直是空集），`RegisteredThenSeen` 不成立。§4.4 第 1 条要求快照包含发出方已知的登记，EVP-4.1-3 要求宿主按帧序处理同一会话的事件操作；这个变异让 `events.dispatch` 插到前面那帧之前。
+- **`table-mut-dup-local`**：同一行在同一会话里把同一个监听器登记两次，运行时的顺序表（`local`）收下同一条 `<<r1,a,1,1>>` 的两份（`Register` 不再检查它已在列表里）；快速路径按这份列表开始调用，两次都是它，`OneCallPerEntry`（`NoDup(order[d])`）不成立。反例里 `tbl` 是空的：第一条 `events.on` 还没到宿主，运行时已经开始了两次调用。宿主一侧本来就不重复收同一条（`HostOn` 的 `kept` 要求条目还不在表里，重复 id 也被拒，EVP-4.2-1），所以这个变异拿掉的是“一个监听器只登记一次”这个前提，检查的是分发一侧的性质本身。
 - **`emit-mut-held`**：`E1` 在 `L1` 的调用被等待扣住；`R1` 读到回复后，快速路径上的 `E2` 立刻开始 `L1` 的调用；等待结束后 `E1` 的调用才跑。同一个发出方的两次 emit，在 `L1` 上 `E2` 先开始，`EmitOrder` 不成立（#557 之前）。
 - **`emit-mut-reply-async`**：`R1` 已经读到 `E1` 的回复帧，但过一步才记为已回复；等待链在这之间发出 `E2`，运行时仍把它送去宿主。`FastPathByFrame` 不成立（#513 之前）。
 - **`emit-mut-unload`**：行卸载时不丢弃排队的 emit；过滤器之后回答，`E1`/`E2` 仍开始调用，`UnloadedRowEmitsNothing` 不成立（#536 之前）。
@@ -156,7 +161,7 @@ TLC 2.19（tla2tools v1.7.4），Temurin 21.0.12，32 核，`-workers 4`，2026-
 - `table-multi` 把 2 个运行时 × 2 行放进同一个配置跑通；`table-reload` 覆盖行结束/卸载/重装（两次登记）的交错；`table-end-session` 覆盖会话先结束再重开时仍在途的快照。行卸载后迟到的旧 `events.on` 由“只接受这一行当前登记”挡住。
 - `EventsEmit.tla` 的两个顺序性质、行卸载性质和监听器性质在它的场景里成立；宿主按会话的队列会丢弃卸载行的项而保留其他行的项；`R2a` 与 `R2b` 的状态数不同，交叠执行确实建了；四个变异都被找到反例。
 - `EventsLink.tla`：只保留最高版本的快照、旧提供的条目按 epoch 撤下、先于提供到达的宣告保留、单个 `events.off` 与快照独立交错，这些在当前规则下成立；不带 epoch 的 id（EVP-9-17）作为当前规则有一个预期反例，修复前 `accept()` 的解锁窗口、`offerRace`、`echo` 和 `forward` 各有一个反例；`NoForward` 覆盖“对端不转发下一跳引进的条目”。
-- 模型没有证明的（按 issue #613 的范围）：作用域、值、错误、取消、`rows.update` 的就地重排、快速路径上的过滤器、五种方式的完整语义（只有 `emit`）、真实的任务调度与帧泵差别、完整的多跳消息链、多个对端、`export` / `import` 在状态模型里的双向收窄、服务项共享、`python-deferred` 和 `before-future-reply` 两个配置，以及整个实现的活性/死锁（本目录的 `CHECK_DEADLOCK TRUE` 只回答“这个有限协议状态机在这些配置里没有意外的终态”，不是实现没有死锁的证据）。不能把这个目录当成 #613 的完整证据。
+- 模型没有证明的（按 issue #613 的范围）：作用域、值、错误、取消、`rows.update` 的就地重排、快速路径上的过滤器、五种方式的完整语义（只有 `emit`）、真实的任务调度与帧泵差别、完整的多跳消息链、多个对端、`export` / `import` 在状态模型里的双向收窄、服务项共享、`before-future-reply` 配置、`python-deferred`（“简化”一节说明了它需要先建什么），以及整个实现的活性/死锁（本目录的 `CHECK_DEADLOCK TRUE` 只回答“这个有限协议状态机在这些配置里没有意外的终态”，不是实现没有死锁的证据）。不能把这个目录当成 #613 的完整证据。
 
 ## 怎么运行
 
@@ -169,7 +174,7 @@ TLA2TOOLS=/tmp/tla2tools.jar specs/events/run.sh table-healthy    # 一个配置
 TLC_WORKERS=2 TLA2TOOLS=/tmp/tla2tools.jar specs/events/run.sh    # 限定线程数
 ```
 
-`run.sh` 按配置名的前缀选模块（`host-defs` → `EventsHostCheck.tla`，`table-*` → `EventsTable.tla`，`emit-*` → `EventsEmit.tla`，`link-*` → `EventsLink.tla`），把结果和 `expected.txt` 比较，全部符合时退出码为 0；日志和反例写在 `TLC_OUT`（默认临时目录）。CI 的 `specs` 任务矩阵要把 `events` 加进去（主线程处理，见 [CI](../../docs/ci.md) §4）。
+`run.sh` 按配置名的前缀选模块（`host-defs` → `EventsHostCheck.tla`，`table-*` → `EventsTable.tla`，`emit-*` → `EventsEmit.tla`，`link-*` → `EventsLink.tla`），把结果和 `expected.txt` 比较，全部符合时退出码为 0；日志和反例写在 `TLC_OUT`（默认临时目录）。CI 的 `specs` 任务矩阵已包含 `events`（[CI](../../docs/ci.md) §4）。
 
 ## 维护
 

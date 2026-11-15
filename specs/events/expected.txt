@@ -22,6 +22,8 @@ table-mut-load-reply violated:RunningRowHeard
 table-mut-fresh violated:NoDispatchBeforeElsewhere
 table-mut-causal violated:CausallyAfterCallSees
 table-mut-prefix violated:PrefixEntrySeen
+table-mut-on-late violated:RegisteredThenSeen
+table-mut-dup-local violated:OneCallPerEntry
 #
 # EventsEmit.tla
 emit-r2a ok
