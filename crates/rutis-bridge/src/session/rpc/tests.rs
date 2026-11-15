@@ -3155,6 +3155,65 @@ async fn a_mismatched_reference_to_an_import_left_last_closes_the_session() {
     assert!(remote.join().unwrap() <= 1);
 }
 
+/// An origin entry is a call id: an optional session tag, then an
+/// endpoint and a number. Every runtime checks it; Rust takes the same
+/// format (#637).
+#[test]
+fn an_origin_entry_is_a_call_id() {
+    for entry in ["node:1", "rust:12", "s1/node:3", "s9007199254740991/py-2:4"] {
+        assert!(origin_entry(entry), "{entry}");
+    }
+    for entry in [
+        "",
+        "node:0",
+        "node:01",
+        "Node:1",
+        "node",
+        "s1/s2/node:1",
+        "s/node:1",
+        "/node:1",
+        "node:x",
+    ] {
+        assert!(!origin_entry(entry), "{entry}");
+    }
+}
+
+/// A reference whose origin names no call ends the session, as every
+/// runtime's check does (#637).
+#[tokio::test(flavor = "current_thread")]
+async fn a_reference_with_a_malformed_origin_closes_the_session() {
+    let (peer, far) = pair();
+    let remote = std::thread::spawn(move || {
+        let mut remote = Remote::start(far);
+        let Frame::Invoke { id, .. } = remote.read() else {
+            panic!("invoke expected")
+        };
+        remote.ret(
+            id,
+            WireValue::Reference {
+                id: 1,
+                kind: Kind::Function,
+                home: false,
+                origin: vec!["s1/s2/node:1".into()],
+            },
+        );
+        // Stay until the session closes.
+        while let Ok(Some(_)) = remote.reader.receiver.lock().unwrap().recv() {}
+    });
+    peer.ready().await.unwrap();
+    let result = peer.invoke_async("", "use", Value::Undefined).await;
+    assert!(result.is_err(), "{result:?}");
+    tokio::time::timeout(std::time::Duration::from_secs(10), peer.closed())
+        .await
+        .expect("the session closes");
+    let reason = peer.close_reason();
+    assert!(
+        matches!(&reason, Some(Error::Transport(r)) if r.contains("invalid reference")),
+        "{reason:?}"
+    );
+    remote.join().unwrap();
+}
+
 // ── What a call cannot send (#675) ───────────────────────────────────
 
 /// A memory channel whose sending side (this side's) takes messages of at
