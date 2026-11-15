@@ -166,6 +166,12 @@ test('leaf plugins: on with prepend and global, the five methods, filter, signal
   await leaf.filter(() => false).parallel('g')
   await leaf.filter(() => false).parallel('o')
   assert.deepEqual(log, ['global'])
+  // A predicate that answers with a Promise keeps nothing: the dispatch
+  // fails instead of treating it as true (#637).
+  await assert.rejects(leaf.filter(async () => true).parallel('o'), {
+    name: 'TypeError',
+    message: 'a filter predicate must answer with a boolean, not a Promise',
+  })
   assert.equal(leaf.signal, signals.get('leaf').signal)
   assert.throws(() => leaf.on('internal/dispatch', () => {}), /is internal to the runtime/)
   assert.throws(() => leaf.emit('internal/service'), /is internal to the runtime/)

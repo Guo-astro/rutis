@@ -19,6 +19,17 @@ const PLUGIN = Symbol.for('rutis.leaf-plugin')
 
 export const isLeaf = value => value?.[PLUGIN] === true
 
+// A filter predicate answers at once (§6): a Promise or thenable would be
+// truthy and keep the listener, so it fails the dispatch instead (#637).
+const filterAnswer = predicate => descriptor => {
+  const answer = predicate(descriptor)
+  if (answer !== null && (typeof answer === 'object' || typeof answer === 'function') && typeof answer.then === 'function') {
+    Promise.resolve(answer).then(() => {}, () => {})
+    throw new TypeError('a filter predicate must answer with a boolean, not a Promise')
+  }
+  return answer
+}
+
 // Refuse a plugin that needs a newer plugin API than this runtime's.
 export function supported(plugin, name) {
   if (plugin.api > PLUGIN_API) {
@@ -177,7 +188,7 @@ export function toCordis(spec, rowInject = [], providerOf) {
         ...emitters(context, null),
         filter: predicate => {
           if (typeof predicate !== 'function') throw new TypeError('filter needs a predicate function')
-          return emitters(context, { [KEEP]: descriptor => predicate(descriptor) })
+          return emitters(context, { [KEEP]: filterAnswer(predicate) })
         },
         // Aborted when the row unloads, while its listeners are waited for.
         get signal() { return signalOf(context) },

@@ -6,6 +6,7 @@ listeners. docs/design-events-protocol-2026-10-18.md §2, §4, §5,
 
 import asyncio
 import contextlib
+import inspect
 import io
 import json
 import queue
@@ -298,6 +299,29 @@ class ThroughTheHost(Session):
         call = self.host.call(selector["$ref"], [[{"row": "chat"}, {"row": "other"}]])
         self.assertEqual(await self.host.outcome(call), ("return", [True, False]))
         self.assertEqual(seen, ["chat", "other"])
+        self.host.answer(frame)
+        await within("the dispatch", dispatch)
+
+    async def test_a_filter_predicate_that_returns_a_coroutine_fails_the_dispatch(self):
+        # #637: rutis's own filter(predicate) answers at once; a coroutine
+        # would be truthy, so it fails the dispatch and is closed first.
+        await self.mount()
+        await self.load("a")
+        created = []
+
+        def keep(descriptor):
+            coroutine = asyncio.sleep(0)
+            created.append(coroutine)
+            return coroutine
+
+        dispatch = asyncio.ensure_future(self.contexts["a"].filter(keep).serial("t/f"))
+        frame = await self.host.request("events.dispatch")
+        selector = frame["value"][0]["filter"]
+        call = self.host.call(selector["$ref"], [[{"row": "chat"}]])
+        outcome, error = await self.host.outcome(call)
+        self.assertEqual((outcome, error["name"]), ("throw", "TypeError"))
+        self.assertIn("filter predicate", error["message"])
+        self.assertEqual(inspect.getcoroutinestate(created[0]), inspect.CORO_CLOSED)
         self.host.answer(frame)
         await within("the dispatch", dispatch)
 

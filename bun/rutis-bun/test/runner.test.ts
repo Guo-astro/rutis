@@ -398,6 +398,11 @@ test('the five modes, prepend, global and filter', () => eventRows(async (_runti
   const descriptors: any[] = []
   expect(await (a as any).filter((d: any) => { descriptors.push(d); return false }).serial('g')).toBe('global')
   expect(descriptors.map(d => [d.row, d.global, d.prefix, d.node])).toEqual([['a', false, false, null]])
+  // A predicate that answers with a Promise keeps nothing: the dispatch
+  // fails instead of treating it as true (#637).
+  const refused = await (a as any).filter(async () => true).parallel('g').catch((error: unknown) => error)
+  expect(refused).toBeInstanceOf(TypeError)
+  expect((refused as Error).message).toBe('a filter predicate must answer with a boolean, not a Promise')
 }))
 
 // guarantee: sdk/leaf-events (unload signals and waits)

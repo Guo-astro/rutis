@@ -329,9 +329,21 @@ class Emitter:
         """The same five methods, delivering only to listeners for which
         `predicate(descriptor)` is true; `global` listeners skip it. A
         descriptor is a dict: name, prefix, plugin, row, runtime, node,
-        scope, global."""
+        scope, global. The predicate answers at once: one returning an
+        awaitable fails the dispatch (the coroutine is closed)."""
         if not callable(predicate):
             raise TypeError("filter needs a predicate function")
+
+        def checked(descriptor: dict) -> Any:
+            # A predicate answers at once (§6): an awaitable would be truthy
+            # and keep the listener, so it fails the dispatch instead (#637).
+            answer = predicate(descriptor)
+            if inspect.isawaitable(answer):
+                if inspect.iscoroutine(answer):
+                    answer.close()
+                raise TypeError("a filter predicate must return a boolean, not an awaitable")
+            return answer
+
         outer = self._keep
-        keep = predicate if outer is None else (lambda descriptor: bool(outer(descriptor)) and predicate(descriptor))
+        keep = checked if outer is None else (lambda descriptor: bool(outer(descriptor)) and checked(descriptor))
         return Emitter(self._send, keep)
