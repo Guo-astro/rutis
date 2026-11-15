@@ -148,6 +148,38 @@ test('a cancel read before its deferred frame runs reaches the method', async ()
   peer.close()
 })
 
+// A reply read on the pump's drain answers its wait before the frames behind
+// it on that drain are run: those are read on a thread about to be free, and a
+// future awaited from one of them settles once it is (#639). It is not a wait
+// cycle.
+test('a frame read behind the wait\'s reply is not a wait cycle', async () => {
+  let opened: any
+  opened = wire((_: string, method: string) => method === 'pending' ? new Promise(() => {}) : 'slow', {
+    // The reply and the await behind it in one ask of the pump: one drain.
+    steps: [() => {
+      opened.peer.receive(opened.incoming.shift())
+      opened.peer.receive(opened.incoming.shift())
+    }],
+  })
+  const { peer, incoming, sent, fault } = opened
+  // A promise this process made, exported to the far end as a future.
+  peer.receive(invoke(1, 'pending'))
+  await Promise.resolve()
+  const future = sent.find((frame: any) => frame.op === 'return' && frame.id === 'rust:1')?.value?.value?.id
+  expect(typeof future).toBe('number')
+  incoming.push(
+    reply('bun:1', 'slow'),
+    { op: 'await', id: 'rust:2', path: ['bun:1'], reference: future },
+  )
+  expect(peer.invoke('test', 'slow', [])).toBe('slow')
+  // The await is taken, not refused: it waits for the promise, which can
+  // settle now that the wait's reply was read already.
+  await Promise.resolve()
+  expect(sent.filter((frame: any) => frame.op === 'throw')).toEqual([])
+  expect(fault()).toBeUndefined()
+  peer.close()
+})
+
 // Closing while a frame is being handled, while one is still queued, or while
 // a synchronous call holds the thread. In each case the session answers
 // nothing, does not report a fault (the far end leaving is not this side's
