@@ -79,7 +79,7 @@ use rutis_bridge::runtime::Process;
 use rutis_bridge::session::{
     host_key, settle, Connection, Dispatch, Endpoint, Error, HostDispatch, Reference, Reply, Value,
 };
-use rutis_test_support::{until, within};
+use rutis_test_support::{eventually, until, within};
 use serde_json::{json, Value as Json};
 
 mod common;
@@ -729,15 +729,31 @@ async fn a_dispatch_names_its_calls_and_marks_its_own_session() {
         let again = one.fake.calls.lock().unwrap()[1].clone();
         assert_ne!(again["dispatch"], first["dispatch"]);
         assert_ne!(dispatch_number(&again["dispatch"]).unwrap(), number);
-        // A host emission is no session's own.
+        // A host emission is no session's own. It is a dispatch of its own,
+        // so its call is found by what it carries: a count of the calls here
+        // is either the second dispatch's call, or skipped past when the
+        // host's lands with it (an `emit` starts its calls before it
+        // answers, §5.4).
         root.emit(Happened("host".into())).unwrap();
-        until(
-            || two.fake.calls.lock().unwrap().len() == 2,
+        let host = Value::List(vec![json!("host").into()]);
+        let heard = eventually(
+            || {
+                two.fake
+                    .calls
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .find(|call| call.get("args") == Some(&host))
+                    .cloned()
+            },
             "the host's emit at rt2",
         )
         .await;
-        let heard = two.fake.calls.lock().unwrap()[1].clone();
         assert_eq!(heard["own"], Value::Data(json!(false)), "{heard:?}");
+        assert_ne!(
+            heard["dispatch"], again["dispatch"],
+            "the host's emission is a dispatch of its own: {heard:?}"
+        );
     })
     .await;
 }
