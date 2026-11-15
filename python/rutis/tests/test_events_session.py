@@ -337,6 +337,7 @@ class ThroughTheHost(Session):
         self.host.answer(frame, "end Oslo")
         self.assertEqual(await within("the dispatch", dispatch), "end Oslo")
 
+    # rule: EVP-12.2-5
     async def test_a_host_aggregate_error_is_a_rutis_aggregate_error(self):
         await self.mount()
         await self.load("a")
@@ -476,6 +477,31 @@ class CalledByTheHost(Session):
             ("throw", "AsyncListener", "listener of t/x in row a is asynchronous and cannot run in a synchronous bail"),
         )
         self.assertEqual(await self.host.outcome(self.call("2", "bail", name="t/y")), ("return", "Y"))
+
+    # rule: EVP-5.4-17
+    async def test_bail_closes_an_awaitable_a_plain_listener_returns(self):
+        # An `any` listener is called; the coroutine it returns is discarded
+        # (closed, never started) and the call fails with AsyncListener.
+        await self.mount()
+        made = []
+
+        async def body():
+            made.append("ran")
+            return "A"
+
+        def listener():
+            coroutine = body()
+            made.append(coroutine)
+            return coroutine
+
+        await self.load("a", lambda ctx, config: ctx.on("t/x", listener), registrations=1)
+        outcome, error = await self.host.outcome(self.call("1", "bail"))
+        self.assertEqual(
+            (outcome, error["name"], error["message"]),
+            ("throw", "AsyncListener", "listener of t/x in row a is asynchronous and cannot run in a synchronous bail"),
+        )
+        self.assertEqual(len(made), 1)
+        self.assertEqual(inspect.getcoroutinestate(made[0]), inspect.CORO_CLOSED)
 
     async def test_a_cancel_cancels_the_listener_task(self):
         # §5.7: the host gave up the dispatch.

@@ -115,6 +115,14 @@ func (e *emitting) Run(ctx context.Context, mode, name string, keep string) (any
 		emitter.Emit, emitter.Parallel, emitter.Serial, emitter.Waterfall, emitter.Bail = filtered.Emit, filtered.Parallel, filtered.Serial, filtered.Waterfall, filtered.Bail
 	}
 	switch mode {
+	case "filter-error":
+		filtered := e.c.Filter(func(rutis.Listener) (bool, error) {
+			return false, &rutis.RemoteError{Name: "FilterErr", Message: "no"}
+		})
+		return filtered.Serial(ctx, name)
+	case "filter-panic":
+		filtered := e.c.Filter(func(rutis.Listener) (bool, error) { panic("bad filter") })
+		return filtered.Serial(ctx, name)
 	case "emit":
 		return nil, emitter.Emit(ctx, name, 1)
 	case "parallel":
@@ -222,6 +230,35 @@ func TestPluginEmissionsGoThroughTheHostWhenListenedElsewhere(t *testing.T) {
 	}
 }
 
+// rule: EVP-6-9
+// A Go filter's `(bool, error)` answer is the dispatch's failure, name and
+// all: an error it returns, or a panic, before any listener runs.
+func TestAFilterErrorOrPanicFailsTheDispatch(t *testing.T) {
+	loaded, state := loadEmitting(t)
+	ctx := context.Background()
+	service := loaded.Service("emitter")
+	var value any
+
+	err := service.Call(ctx, "run", &value, "filter-error", "t/serial", "")
+	var remote *rutis.RemoteError
+	if !errors.As(err, &remote) || remote.Name != "FilterErr" || remote.Message != "no" {
+		t.Fatalf("the filter's error: %#v", err)
+	}
+	if log := state.Log(); len(log) != 0 {
+		t.Fatalf("a listener ran after the filter failed: %v", log)
+	}
+
+	err = service.Call(ctx, "run", &value, "filter-panic", "t/serial", "")
+	remote = nil
+	if !errors.As(err, &remote) || remote.Name != "Panic" || !strings.Contains(remote.Message, "panic: bad filter") {
+		t.Fatalf("the filter's panic: %#v", err)
+	}
+	if log := state.Log(); len(log) != 0 {
+		t.Fatalf("a listener ran after the filter panicked: %v", log)
+	}
+}
+
+// rule: EVP-12.2-5
 // guarantee: sdk/leaf-events (Parallel's failures arrive as an
 // *AggregateError in registration order)
 func TestAggregateErrorThroughTheHost(t *testing.T) {

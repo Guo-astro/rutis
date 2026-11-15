@@ -259,6 +259,33 @@ test('events.call runs a listener here by mode; withdrawn ones fail', async () =
   assert.throws(() => bus.call({ listener: '999', name: 'n', mode: 'serial', args: [] }), { message: 'listener 999 of n is withdrawn' })
 })
 
+// rule: EVP-5.4-17
+// An `any` listener is called in `bail`; a Promise or thenable it returns is
+// discarded (its rejection taken and ignored), and the call fails with
+// `AsyncListener`. A plain value is its result.
+test('bail calls an any listener and refuses what it returns asynchronously', async () => {
+  const bus = new Bus({ peer: peer(), report: () => {} })
+  const unhandled = []
+  const onUnhandled = reason => unhandled.push(reason)
+  process.on('unhandledRejection', onUnhandled)
+  try {
+    let ran = 0
+    const rejected = bus.on({ name: 'p', callback: () => { ran++; return Promise.reject(Object.assign(new Error('late'), { name: 'Late' })) }, row: 'r' })
+    assert.throws(() => bus.call({ listener: rejected.id, dispatch: 'd1', name: 'p', mode: 'bail', args: [] }), {
+      name: 'AsyncListener', message: 'listener of p in row r is asynchronous and cannot run in a synchronous bail',
+    })
+    assert.equal(ran, 1, 'an any listener is called before its result is refused')
+    const thenable = bus.on({ name: 't', callback: () => ({ then(_resolve, reject) { reject(new Error('late too')) } }), row: 'r' })
+    assert.throws(() => bus.call({ listener: thenable.id, dispatch: 'd2', name: 't', mode: 'bail', args: [] }), { name: 'AsyncListener' })
+    const plain = bus.on({ name: 'v', callback: () => 0, row: 'r' })
+    assert.equal(bus.call({ listener: plain.id, dispatch: 'd3', name: 'v', mode: 'bail', args: [] }), 0)
+    await new Promise(resolve => setImmediate(resolve))
+    assert.deepEqual(unhandled, [], 'the refusals were taken, not left unhandled')
+  } finally {
+    process.off('unhandledRejection', onUnhandled)
+  }
+})
+
 test('unload waits for running listeners, at most the deadline', async () => {
   const reported = []
   const bus = new Bus({ runtime: 'node', peer: peer(), report: line => reported.push(line) })
