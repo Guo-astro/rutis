@@ -5,7 +5,7 @@
 > 0.19（[远程连接：只留一个会话插件](design-remote-session-2026-10-28.md) §三）：`ChannelInfo` 删除，对方 id 只来自会话握手；`Closer::close(&str)`、`replaced()`、`rejected()` 合成 `close(Close)`（`Done`、`Replaced`、`Rejected`）；`transport::local`、`transport::memory`、`transport::websocket` 改名为 `pipe`、`memory`、`websocket`。下文是设计时的写法。
 
 
-状态：设计稿，未实现。修订日期：2026-10-05。
+状态：设计稿；通道、会话与 WebSocket、memory、本机承载已实现（协议 4）。修订：2026-11-15；初稿 2026-10-05。
 依据：[兼容层设计](design-protocol-plugin-mount.md)、[挂载 Cordis 插件：需求](requirements-protocol-plugins.md)。
 使用方：[远程插件设计](design-remote-plugins-2026-10-03.md)（下称“远程稿”）。
 
@@ -152,9 +152,9 @@ Node 通道在 I/O worker 内提供等价接口：
 
 例外只有两个，都因为消息可能与对方的动作交错：对本端已取消的调用的迟到回复被丢弃（取消之后回复仍可能到达）；对本端没有的调用的 `cancel` 被忽略（它可能与该调用的回复交错）。
 
-理由：一端发出畸形帧，说明两端对协议的理解已不一致，继续处理只会把错误带进引用表和调用链；按帧拒绝还需要为每种错误定义回复，而回复的调用 id 本身可能就是坏的。Rust 端解析时还拒绝未知字段，Node 与 Python 忽略未知字段，这一差异尚未统一。
+理由：一端发出畸形帧，说明两端对协议的理解已不一致，继续处理只会把错误带进引用表和调用链；按帧拒绝还需要为每种错误定义回复，而回复的调用 id 本身可能就是坏的。未知字段不属于畸形帧：Rust、Node、Bun、Python、Go、Swift、Kotlin 七种实现都按帧的作用范围拒绝——`hello` 失败握手；有调用 id 的帧只失败该调用（`invoke` / `call` / `get` / `await`），`return` / `throw` 只失败等它的调用，错误码 `bad-frame`，data `{op, fields}`；`release` / `cancel` 忽略多余字段；会话继续（`SESS-66`、`SESS-67`；`docs/guarantees.md` 的 `bridge/unknown-fields`）。无法定位到调用的畸形帧仍结束会话。
 
-三种实现由同一组用例验证：`rutis_bridge::session::testing::malformed`（Rust、Node、Python 真实进程），另有各自的单元测试。
+七种实现由同一组用例验证：`rutis_bridge::session::testing::malformed`（Rust、Bun、Node、Python、Go、Swift、Kotlin 的真实进程或 socket），另有各自的单元测试（`SESS-64`、`SESS-67`）。
 
 ## 逻辑通道与物理连接
 

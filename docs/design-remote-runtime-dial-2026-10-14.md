@@ -4,7 +4,7 @@
 
 > 已修订（2026-10-26）：§四"二者同时出现即为动态接入"一条由 [远程运行时一致性](design-remote-runtime-consistency-2026-10-26.md) §四取代：`runtimes.remote` 的 `dial`、`listen`、`instances` 三个字段独立，`listen` 不带 `instances` 是一台。其余内容不变。
 
-状态：定稿；R-P1（Rust 侧）、R-P2（Python 拨出）已实现，其余见 §七。日期：2026-10-14。基准：`main` `a763cdc`（0.10.0）。
+状态：定稿；§六 的拨出与重连规则、七种实现的监听与拨出均已实现（Swift #387、Kotlin #391，过 `dial_conformance` 与 `session_matrix`）。§四 的“连接即实例”与 `runtimes.remote` 由 0.19 取代（见 §四 顶部）。日期：2026-10-14；状态更新：2026-11-15。基准：`main` `a763cdc`（0.10.0）。
 依据：[远程插件](design-remote-plugins-2026-10-03.md)（本文修订其 §4 运行时接入的连接方式）、[连接节点](guide/nodes.md)（link）、[按需创建实例](design-loader-instance-mounts-and-services-2026-10-07.md)、[实例内服务名](design-instance-services-2026-10-08.md)、[Go 插件运行时](design-go-runtime-2026-10-10.md)、[Bun 运行时](design-bun-runtime-2026-10-09.md)。
 使用者：[应用接入](design-app-integration-2026-10-14.md)、[Swift SDK](design-swift-sdk-2026-10-12.md)、[Android 应用托管](design-android-runtime-2026-10-12.md)。
 
@@ -48,6 +48,8 @@
 
 ## 四、动态接入即实例
 
+> 0.19 起本节不适用：`runtimes.remote`、接入点与“每条连接一个 `instanced` 实例”都已删除。现行写法是每条连接一行 `rutis-host/dial` 或 `rutis-host/listen`；连接在握手时自报的 id 就是它的键，对面插件注册为 `<id>:<插件>`，服务全局可见，没有实例键（[连接节点](guide/nodes.md)「别的机器上的语言运行时」；[远程连接：只留一个会话插件](design-remote-session-2026-10-28.md) 决定 2、决定 3）。本节保留为设计记录。
+
 - 一个接入点对应一个 `instanced` 分组：分组里的行描述"一条运行时连接里装哪些插件、用什么配置"。
 - 连接进来 → 以连接 id 创建一个实例；断开 → 关闭该实例，实例内服务全部撤销，使用者停下。
 - 运行时在 `mount` 回复里报它带的插件（`plugins`，每项与 `rows.schema` 回复相同）；分组里的行在某实例中指向该连接没有的插件时，这一行在该实例里失败并说明"该连接不含插件 X"，不影响其他实例。`engine` 之类在 `mount` 回复里加字段不算协议变化（Bun §3.3 先例）。
@@ -79,12 +81,19 @@
   - "该连接不含插件 X"是副本级的 `Unavailable`：只让这个副本失败；编辑的 dry run 不因它拒绝，reconcile 也不把它算作新失败而回滚。
   - `<运行时名>:` 行放在分组外时失败，说明它只在该分组里运行。
 
+### 4.1 现行（2026-11-15）
+
+- 连接：每条连接一行 `rutis-host/dial`（本端去连）或 `rutis-host/listen`（等对面连进来）。没有 `runtimes.remote`，没有接入点，也没有按连接创建的实例。
+- 键：连接在握手里自报的 id 就是它的键；对面运行的插件注册为 `<对面自报的 id>:<插件>`（约定与连接行 id 相同），应用托管的插件注册为 `<应用 id>:<插件>`。远程连接不再创建 `instanced` 实例，也没有按连接区分的运行时键；`host_key_in` 仍是实例内服务的通用机制（本地 `instanced` 分组照旧），远程连接的服务全局可见，同名按内核规则后注册的被拒绝。
+- 监听与接管：`rutis-host/listen` 的一条新连接完成握手后，旧 session 先卸载（对远端的全部插件），旧通道以 4002 关闭，然后才装上新的 session；握手失败的连接不影响任何东西（`crates/rutis-host/src/connect/listen.rs:1-10`）。运行时自己监听时，被新控制方接替会打印 `rutis: session ended (replaced by a new connection)`。
+- 端口：运行时二进制（Python、Node、Bun、Go、Swift）开始监听后在 stderr 打印实际绑定地址 `rutis: listening on <地址>`；地址写 `0` 时由系统挑端口，脚本从这一行读出。Swift 的 `RutisApp` 在监听模式下记下第一次绑定的端口，`stop()` 后再 `start()` 仍绑同一个端口（`swift/rutis/Tests/SelfTest/AppTests.swift::aListeningAppStartsAgainRightAfterItStopped`、`crates/rutis-host/tests/swift_app.rs::an_app_that_listens_is_dialed_and_comes_back_after_stop_and_start`）；Kotlin 的 `RutisApp` 是否保留端口：未确认。
+- 重连：仍按 §六；每次重连是新 session，重新装载，不沿用旧实例或旧引用。
+
 ## 五、身份层
 
 - rutis 侧把"认证并给出连接 id"抽成一层：输入握手里的凭据与自报 id，输出接受（连接 id）或拒绝（原因）。
-- 过渡实现：凭据等于共享 token（环境变量 `RUTIS_TOKEN_<运行时名>`，与现有命名一致）即接受，连接 id = 自报 id；自报 id 须非空、只含 `[a-z0-9-]`。自报 id 只用于区分连接、命名实例，不作为身份凭据。
-- 将来实现：管理服务核实凭据并给出 id；接入点、实例、配置不变。
-- 现有每对端 token 的静态 link（R6）是这一层的另一种实现，保留。
+- 过渡实现：凭据等于共享 token（rutis 一侧是 `RUTIS_TOKEN_<行 id>`，运行时一侧是 `RUTIS_TOKEN`）即接受，连接 id = 自报 id；自报 id 须非空、只含 `[a-z0-9-]`。自报 id 只用于区分连接，不作为身份凭据。
+- 将来实现：管理服务核实凭据并给出 id；连接、配置不变。
 - 吊销钩子（#273）：0.19 删除（`Revocations` / `Revocable` 没有生产调用方，见[会话设计](design-remote-session-2026-10-28.md) §八）；断开现有连接靠停掉那一行。
 
 ## 六、拨出与重连规范
@@ -96,9 +105,9 @@
 | 退避 | 可重试失败从 0.5 秒起翻倍至最长 30 秒，连接稳定后重置（与现有 link 一致） |
 | 凭据被拒 | 每 30 秒重试。拨出方据此判断：升级时 401 / 403，或接入点在 hello 之后拒绝这个 id（WebSocket 关闭码 4003） |
 | 协议不兼容 | 停止并报告。hello 未给出 id 或 id 不合法（`[a-z0-9-]+`）属于此类：重试修不好 |
-| 断开 | rutis 侧关闭该连接的实例；运行时侧卸载全部行（清理逆序执行），然后按退避重连 |
-| 重连 | 新会话、新实例、重新装载，不依赖上一次连接的状态 |
-| 同 id 接管 | 新连接到达时旧连接被关闭，旧实例清理完再接入新连接 |
+| 断开 | rutis 侧关闭该连接（0.18 的“实例”已不存在）；运行时侧卸载全部行（清理逆序执行），然后按退避重连 |
+| 重连 | 新会话、重新装载，不依赖上一次连接的状态 |
+| 同 id 接管 | 新连接完成握手后，旧会话先卸载（对面的插件全部卸载），旧通道以 4002 关闭，再装上新的会话（`crates/rutis-host/src/connect/listen.rs:1-10`） |
 | 主动停止 | 运行时侧停止（如 SDK 的 `stop()`）：卸载全部行后关闭连接，不重连 |
 
 一致性测试：`rutis-bridge/tests/dial_conformance.rs`，与 `websocket_conformance` 同形——rutis 侧起接入点，按语言拉起拨出方，逐条验证上表。
@@ -116,18 +125,18 @@
 
 | 一方 | 工作 | 状态 |
 | --- | --- | --- |
-| Rust 侧 | 接入点接受多条连接、连接即实例、运行时键按实例区分、身份层与过渡实现、`mount` 回复的 `plugins`、rutis-host 配置（`listen` / `instances`）、`runtimes.remote[].language` 接受 `swift`、`kotlin` / `kt` | 已实现（#396、#399），`swift`、`kotlin` 随应用接入 |
+| Rust 侧 | 接入点接受多条连接、连接即实例、运行时键按实例区分、身份层与过渡实现、`mount` 回复的 `plugins`、rutis-host 配置（`listen` / `instances`）、`runtimes.remote[].language` 接受 `swift`、`kotlin` / `kt` | 曾是 #396、#399；这一套在 0.19 删除，现行写法见 §四.1 |
 | Python | 拨出客户端（`dial:`）；首个现有语言（其 TLS 服务端问题最多，拨出收益最大） | 已实现（#383），`dial_conformance` Python 列通过 |
 | Node | 拨出客户端，紧随 Python | 已实现（#384），`dial_conformance` Node 列通过 |
 | Go | 拨出客户端，紧随 Python | 已实现（#384），`dial_conformance` Go 列通过 |
 | Bun | 监听与拨出都要补，紧随 Python | 已实现（#384），`dial_conformance` Bun 列、`session_matrix::bun_listening_on_a_websocket` 通过 |
-| Swift | 监听与拨出都实现（Swift SDK §六） | 未实现 |
+| Swift | 监听与拨出都实现（Swift SDK §六） | 已实现（#387）；`dial_conformance` Swift 列、`session_matrix::swift_listening_on_a_websocket` 通过 |
 | Kotlin | 监听与拨出都实现（Android 稿 §五） | 已实现（#391），`dial_conformance` Kotlin 列、`session_matrix::kotlin_listening_on_a_websocket` 通过 |
-| 文档 | 连接节点指南加拨出与动态接入；推荐方式改为拨出 | 已写拨出与动态接入（Python、Node、Bun）；推荐方式待各语言都能拨出后再改 |
+| 文档 | 连接节点指南加拨出与动态接入；推荐方式改为拨出 | 已写拨出与动态接入（Python、Node、Bun、Go、Swift、Kotlin）；指南推荐方式已改为拨出 |
 
 ## 八、兼容
 
-- 现有配置（`runtimes.remote` + link `dial` + `runtime`）行为不变。
+- 0.19 删除了 `runtimes.remote` 与 `peer` / link 行；现行写法是 `rutis-host/dial` / `rutis-host/listen` 行（§四.1）。迁移见[迁移到 0.19](migration-0.19.md)。
 - 运行时侧 `listen:` 是两个方向之一，长期保留。
 
 ## 九、阶段
@@ -137,4 +146,4 @@
 | R-P0 | 实测监听侧 link + `runtime` 现状 | 结论回填 §三 |
 | R-P1 | Rust 侧：§七 的 Rust 工作；`dial_conformance` 框架 | 两条连接带同名插件，各自实例内的使用者只用到本连接的服务；断开一条只关闭其实例；现有远程运行时测试全绿 |
 | R-P2 | Python 拨出 | Python 运行时拨出接入，`dial_conformance` Python 列过 |
-| R-P3 | Node、Go 拨出；Bun 监听与拨出；Swift、Kotlin 随应用接入（Swift A1、Android K-P2） | 每种语言都过 `dial_conformance`（拨出）与 `websocket_conformance`（监听） |
+| R-P3 | Node、Go 拨出；Bun 监听与拨出；Swift、Kotlin 监听与拨出（Swift A1、Android K-P2） | 每种语言都过 `dial_conformance`（拨出）与 `websocket_conformance`（监听）；Swift、Kotlin 已完成 |
