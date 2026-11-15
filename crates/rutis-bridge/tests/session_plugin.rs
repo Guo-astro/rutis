@@ -578,6 +578,10 @@ struct ImportedClock {
 }
 
 async fn imported_clock() -> ImportedClock {
+    imported_service(Some("clock")).await
+}
+
+async fn imported_service(row: Option<&'static str>) -> ImportedClock {
     let a = kernel("a");
     let b = kernel("b");
     let bus = rutis_bridge::events::join_bus(&a).unwrap();
@@ -591,7 +595,7 @@ async fn imported_clock() -> ImportedClock {
         .unwrap();
     let clock = b.plugin(Provides {
         name: "clock",
-        row: Some("clock"),
+        row,
         service: "clock",
         answer: "noon",
     });
@@ -638,8 +642,8 @@ async fn a_node_imported_service_is_announced() {
 /// The same event names the row on the far end that provides it: the
 /// configuration's row id, the same in every process (events protocol §3,
 /// §15.33).
+/// guarantee: events/framework
 /// rule: EVP-15.33-2
-#[ignore = "a node-imported service's row is null: #1171"]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_node_imported_service_is_announced_with_its_row() {
     let rig = imported_clock().await;
@@ -661,6 +665,35 @@ async fn a_node_imported_service_is_announced_with_its_row() {
         arrival.row.as_deref(),
         Some("clock"),
         "the id of the row the far end's service came from: {events:?}"
+    );
+}
+
+/// A provider with no row has none to name: the event carries no row, not
+/// an id made up here (events protocol §3, §15.33).
+/// guarantee: events/framework
+/// rule: EVP-15.33-2
+#[tokio::test(flavor = "multi_thread")]
+async fn a_node_imported_service_without_a_row_announces_none() {
+    let rig = imported_service(None).await;
+    until(
+        || {
+            rig.seen
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|event| event.name == "clock" && event.available)
+        },
+        "rutis/service for the imported clock",
+    )
+    .await;
+    let events = rig.seen.lock().unwrap().clone();
+    let arrival = events
+        .iter()
+        .find(|event| event.name == "clock" && event.available)
+        .expect("the arrival");
+    assert_eq!(
+        arrival.row, None,
+        "a row id is not made up for a provider without one: {events:?}"
     );
 }
 

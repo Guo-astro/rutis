@@ -133,11 +133,11 @@ node tools/formal-trace.mjs --check    # 只检查，不打印统计
 | [event-close-admission.md](rules/event-close-admission.md) | 手写 | 10 | 0 | 7 | 3 | 0 | 0 | 0 |
 | [protocol-registry-1.md](rules/protocol-registry-1.md) | #634 · registry-1 | 165 | 4 | 48 | 62 | 6 | 21 | 24 |
 | [protocol-registry-2.md](rules/protocol-registry-2.md) | #634 · registry-2 | 218 | 8 | 29 | 126 | 5 | 14 | 36 |
-| [protocol-events.md](rules/protocol-events.md) | #634 · events | 262 | 74 | 93 | 52 | 1 | 23 | 19 |
+| [protocol-events.md](rules/protocol-events.md) | #634 · events | 262 | 75 | 92 | 52 | 1 | 23 | 19 |
 | [protocol-session.md](rules/protocol-session.md) | #634 · session 上/下 | 350 | 13 | 99 | 86 | 7 | 118 | 27 |
 | [protocol-runtime.md](rules/protocol-runtime.md) | #634 · runtime | 309 | 8 | 38 | 140 | 10 | 50 | 63 |
 | [protocol-remote.md](rules/protocol-remote.md) | #634 · remote | 248 | 4 | 69 | 71 | 13 | 59 | 32 |
-| 合计 | — | 1825 | 291 | 435 | 540 | 61 | 294 | 204 |
+| 合计 | — | 1825 | 292 | 434 | 540 | 61 | 294 | 204 |
 <!-- index:end -->
 
 脚本还会打印这些数字（只算本表内的行）：

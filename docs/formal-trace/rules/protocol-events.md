@@ -8,6 +8,8 @@
 
 2026-11-11：EVP-5.7-4 按 #1121 的修复更新「现有形式化」「状态」「备注」（宿主侧已有用例，状态从「未覆盖」改为「部分」）；其余行仍是 issue 快照。
 
+2026-11-16：EVP-15.33-2 按 #1171 的修复更新「现有形式化」「状态」「备注」：节点导入的服务带提供方的行 id（无行时不带），两个会话用例覆盖有行与无行，状态从「部分」改为「已覆盖」。
+
 分区合计：现行 253 条，已取代 9 条，共 262 行（与 issue 正文的统计表一致）。
 
 ## 分区 `events`
@@ -274,7 +276,7 @@
 | EVP-15.29-1 | §15.29（2026-10-21 修订） | 宿主按顺序处理一个会话的 emit 而不阻塞读线程：能马上开始的在会话的有序任务上轮到时开始并作答；选择器调用要从同一会话回来的，连同之后每个 emit 进入队列，各自在调用都开始后作答 | 进程内并发 | SH + TV + TLA | events/hub-dispatch | — | 未覆盖 | #613、#616、#628 | `hub.rs` `run_emit` / `next_emit` |
 | EVP-15.29-2 | §15.29 | 运行时仍会等以 future 作答的 emit 回复，对 0.13 宿主保持 0.13 那种依赖时序的顺序 | 跨进程 | 测试 | bridge/cross-version-meetings | — | 不适用 | — | 要 0.13 的宿主（跨版本） |
 | EVP-15.33-1 | §15.33 | `rutis/row`：加载器生成该行时发 `pending`，之后按 fiber 状态的每次变化发（`loading` 算 `pending`；`unloading` 与销毁算 `stopped`）；组行也是行（`plugin` 为 `group`） | 跨进程 | K | events/framework | K `rutis/row`（`w:o,pending`…）、`rutis/row-failed` | 部分 | #639 ※ | 组行无用例 |
-| EVP-15.33-2 | §15.33 | `rutis/service` 针对每个宿主服务发出，不论提供方是 Rust 插件、运行时的行还是节点导入，带提供它的行的 id | 跨进程 | K | events/framework | K `rutis/service`、`rutis/service-of-rust` | 部分 | #639 ※ | 节点导入的服务无用例 |
+| EVP-15.33-2 | §15.33 | `rutis/service` 针对每个宿主服务发出，不论提供方是 Rust 插件、运行时的行还是节点导入，带提供它的行的 id | 跨进程 | K | events/framework | K `rutis/service`、`rutis/service-of-rust`；`crates/rutis-bridge/tests/session_plugin.rs::a_node_imported_service_is_announced_with_its_row`、`crates/rutis-bridge/tests/session_plugin.rs::a_node_imported_service_without_a_row_announces_none` | 已覆盖 | #639 ※、#1171 |  |
 | EVD-1-1 | 设计 §一 | 一个事件在哪里发出、监听器在哪里，结果都和所有监听器在同一个进程里一样 | 跨进程 | TLA + K | events/one-bus | K（全部用例在全部放置下结果相同） | 部分 | #613 | 字面上不成立：两个运行时在 elsewhere 更新前各走快速路径时排不出一致的全序（#613 `SeesAll` 预期反例），同一进程里并发的发出也没有先后；按 Q5.1.1 应限定，并在协议 §4.4 写明不保证（#613 的产出） |
 | EVD-1-2 | 设计 §一、§四 | 做不到的只有物理上不可能的情形（同步等待成环、同步等待已断开的对端、同步方式遇到异步监听器），这时明确报错，从不悄悄换成别的行为 | 跨进程 | K + TLA | events/serial-bail、events/hub-bail | K `bail/wait-cycle`、`disconnect/bail-in-flight`、`bail/async-listener` | 部分 | #613、#614 | §一 只列两种，§三.3 / §四 又加了异步监听器；协议另有值发不出、过滤答案数不符等失败；Node / Bun / Python 把返回 Promise / 协程的过滤谓词悄悄当作保留（#613 待复现疑点） |
 | EVD-3.1-1 | 设计 §三.1 | 登记是自动的：插件照常写 `ctx.on(name, listener)`，不需要任何声明 | 跨进程 | K | sdk/leaf-events、events/one-bus | K（各语言夹具都不声明事件） | 已覆盖 | — |  |

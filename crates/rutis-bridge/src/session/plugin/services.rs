@@ -8,14 +8,17 @@
 //! Import: what the far end announces is provided here by the remote
 //! plugin `<id>:<plugin>` its `plugin` names, one per plugin; a name taken
 //! here already fails that plugin, as the kernel refuses the later
-//! provider. A plugin whose services are all withdrawn unloads. Services
-//! of a row this end runs there ([`super::run`]) are that row's.
+//! provider. When the announcement names the provider's row, that plugin
+//! is marked as the row, so what it provides here is the row's. A plugin
+//! whose services are all withdrawn unloads. Services of a row this end
+//! runs there ([`super::run`]) are that row's.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use rutis::host::diagnostics::{ServiceChange, ServiceChanged};
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind, FiberView, TypeKey};
+use rutis::internal::CtxInternal;
 use rutis::{Ctx, Disposer, Error as RutisError};
 
 use crate::channel::PeerId;
@@ -149,9 +152,11 @@ impl Target {
 }
 
 /// A plugin of the far end, here: what it provides is provided from its
-/// fiber.
+/// fiber, marked as the row the far end named (if it named one).
 struct RemotePlugin {
     name: String,
+    /// The provider's row, when it has one.
+    row: Option<String>,
     target: Target,
 }
 
@@ -162,6 +167,9 @@ impl DynPlugin for RemotePlugin {
 
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, RutisError>> {
         Box::pin(async move {
+            if let Some(row) = &self.row {
+                ctx.mark_row(row)?;
+            }
             self.target.applied(ctx)?;
             Ok(Effect::Done)
         })
@@ -231,10 +239,11 @@ impl Imports {
 
     async fn announce(self: Arc<Self>, announced: Announcement) -> Result<(), Error> {
         let mut state = self.state.lock().await;
-        let (name, version, plugin) = (
+        let (name, version, plugin, row) = (
             announced.name.clone(),
             announced.version,
             announced.plugin.clone(),
+            announced.row.clone(),
         );
         if state
             .services
@@ -291,6 +300,7 @@ impl Imports {
                 let target = Target::new();
                 let view = self.ctx.plugin(RemotePlugin {
                     name: format!("{}:{plugin}", self.far),
+                    row: row.clone(),
                     target: target.clone(),
                 });
                 target.set_view(view.clone());

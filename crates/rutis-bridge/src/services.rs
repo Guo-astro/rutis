@@ -7,10 +7,13 @@
 //! function reference per method, with the methods' shape (`sync` or
 //! `async`); `version` orders announcements, so a replacement or withdrawal
 //! never loses to an older one. `plugin` names the plugin providing it:
-//! its row's id where it has one, else its name.
+//! its row's id where it has one, else its name. `row` is that row's id,
+//! sent only when the provider has one: the far end marks its remote plugin
+//! as that row, so services imported from it carry the row id the provider
+//! has here.
 //!
 //! ```text
-//! services.announce { name, service: { method: fn, … }, shape, version, plugin }
+//! services.announce { name, service: { method: fn, … }, shape, version, plugin, row? }
 //! services.withdraw { name, version }
 //! ```
 
@@ -85,9 +88,10 @@ impl DynPlugin for ExportOne {
             if own || platform {
                 return Ok(Effect::Done);
             }
-            let plugin = provider
-                .map(|provider| provider.plugin)
-                .unwrap_or_else(|| self.service.clone());
+            let (plugin, row) = match provider {
+                Some(provider) => (provider.plugin, provider.row),
+                None => (self.service.clone(), None),
+            };
             let version = self.peer.next_version();
             let announcer = tokio::spawn(announce(
                 self.peer.clone(),
@@ -96,6 +100,7 @@ impl DynPlugin for ExportOne {
                 shape,
                 version,
                 plugin,
+                row,
             ));
             let peer = self.peer.clone();
             let name = self.service.clone();
@@ -177,24 +182,31 @@ pub(crate) async fn announce(
     shape: Json,
     version: u64,
     plugin: String,
+    row: Option<String>,
 ) {
     let mut offers = peer.offers();
     let mut announced_to = None;
     loop {
         let offered = offers.borrow_and_update().epoch("services");
         if offered.is_some() && offered != announced_to {
+            let mut fields = BTreeMap::from([
+                ("name".to_owned(), Value::Data(json!(name))),
+                ("service".to_owned(), service.clone()),
+                ("shape".to_owned(), Value::Data(shape.clone())),
+                ("version".to_owned(), Value::Data(json!(version))),
+                ("plugin".to_owned(), Value::Data(json!(plugin))),
+            ]);
+            // Only a provider that has a row says so; a plugin's name is
+            // not a row id.
+            if let Some(row) = &row {
+                fields.insert("row".to_owned(), Value::Data(json!(row)));
+            }
             let announced = peer
                 .connection()
                 .invoke_async(
                     "",
                     "services.announce",
-                    Value::List(vec![Value::Record(BTreeMap::from([
-                        ("name".to_owned(), Value::Data(json!(name))),
-                        ("service".to_owned(), service.clone()),
-                        ("shape".to_owned(), Value::Data(shape.clone())),
-                        ("version".to_owned(), Value::Data(json!(version))),
-                        ("plugin".to_owned(), Value::Data(json!(plugin))),
-                    ]))]),
+                    Value::List(vec![Value::Record(fields)]),
                 )
                 .await;
             // Settled: an importer may answer once it has provided it.
@@ -307,6 +319,8 @@ pub(crate) struct Announcement {
     pub(crate) name: String,
     pub(crate) version: u64,
     pub(crate) plugin: String,
+    /// The provider's row, when it has one.
+    pub(crate) row: Option<String>,
     shape: Json,
     target: Target,
     asynchronous: HashSet<String>,
@@ -332,6 +346,10 @@ impl Announcement {
         let name: String = crate::session::decode(take(&mut fields, "name")?.json()?)?;
         let version: u64 = crate::session::decode(take(&mut fields, "version")?.json()?)?;
         let plugin: String = crate::session::decode(take(&mut fields, "plugin")?.json()?)?;
+        let row = match fields.remove("row") {
+            Some(value) => Some(crate::session::decode(value.json()?)?),
+            None => None,
+        };
         let shape = take(&mut fields, "shape")?.json()?;
         let kinds: BTreeMap<String, String> = crate::session::decode(shape.clone())?;
         let asynchronous = kinds
@@ -357,6 +375,7 @@ impl Announcement {
             name,
             version,
             plugin,
+            row,
             shape,
             target,
             asynchronous,
