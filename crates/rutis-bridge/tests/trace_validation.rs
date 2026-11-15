@@ -103,10 +103,12 @@
 //! (`go/rutis/internal/runtime/dial.go`, `sessionFailure`) decide by; this
 //! file checks the endings those classes are made from.
 
+use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect};
 use rutis::Ctx;
@@ -126,20 +128,246 @@ fn id(name: &str) -> PeerId {
 
 // ---------------------------------------------------------------- the lines
 
-/// Trace lines from every channel of one run, in the order they were made:
-/// two channels on one host write to one log, so their lines interleave and
-/// the validator has to keep them apart by label.
-#[derive(Clone, Default)]
-struct Log(Arc<Mutex<Vec<String>>>);
+/// What one run recorded, in the order its events happened: two channels on
+/// one host write to one log, so their lines interleave and the validator
+/// has to keep them apart by label.
+///
+/// A line is filed where its event was, not where its thread happened to
+/// reach the log. `trace` writes a send's or a receive's line after the
+/// message crossed, and a close's before the close happens, so the thread
+/// that closes can reach the log first: an allowed trace would then read as
+/// a message crossing a closed channel (#624).
+///
+/// `T` is a line of a channel's trace; a run that records steps beside them
+/// (`Lease`) keeps the two in one order through the same tickets.
+struct Records<T> {
+    /// What the run filed, by ticket.
+    lines: Arc<Mutex<Lines<T>>>,
+    /// Lines that have taken their place and are not written yet: a run read
+    /// before one of them is written is read before its own last line.
+    writing: Arc<AtomicUsize>,
+}
 
-impl Log {
-    fn sink(&self) -> Sink {
-        let log = self.clone();
-        Arc::new(move |line: &str| log.0.lock().unwrap().push(line.to_owned()))
+/// The trace lines of a run of channels, as `channel::trace` writes them.
+type Log = Records<String>;
+
+struct Lines<T> {
+    /// The next ticket to hand out.
+    next: u64,
+    /// What each ticket holds, in ticket order, which is the order the run's
+    /// events happened in.
+    filed: BTreeMap<u64, Slot<T>>,
+}
+
+/// One ticket's lines: the line of the event that took it, and, for a close,
+/// the lines of what it ran into.
+///
+/// A close is not one instant. This end closes its receiving before its
+/// sending (`crates/rutis-bridge/src/memory/mod.rs:145-154`) and `trace`
+/// writes the close's line before either, so while it happens a message can
+/// still cross, and a receive can already fail. What crossed came before the
+/// channel ended and belongs before the close's line; what failed did so
+/// because it was closing and belongs after it.
+struct Slot<T> {
+    /// What crossed or came in while the close happened.
+    before: Vec<T>,
+    /// The event's line.
+    line: Option<T>,
+    /// What failed while the close happened.
+    after: Vec<T>,
+}
+
+impl<T> Default for Slot<T> {
+    fn default() -> Self {
+        Self {
+            before: Vec::new(),
+            line: None,
+            after: Vec::new(),
+        }
+    }
+}
+
+impl<T> Default for Lines<T> {
+    fn default() -> Self {
+        Self {
+            next: 0,
+            filed: BTreeMap::new(),
+        }
+    }
+}
+
+impl<T> Default for Records<T> {
+    fn default() -> Self {
+        Self {
+            lines: Arc::default(),
+            writing: Arc::default(),
+        }
+    }
+}
+
+impl<T> Clone for Records<T> {
+    fn clone(&self) -> Self {
+        Self {
+            lines: self.lines.clone(),
+            writing: self.writing.clone(),
+        }
+    }
+}
+
+/// Where the line `trace` is about to write for an operation goes: at the
+/// ticket its event took, or beside the line of the close it ran into
+/// (`Slot`). `At` is the close's own line.
+#[derive(Clone, Copy)]
+enum Pending {
+    At(u64),
+    Crossed(u64),
+    Failed(u64),
+}
+
+impl Pending {
+    fn ticket(self) -> u64 {
+        match self {
+            Self::At(at) | Self::Crossed(at) | Self::Failed(at) => at,
+        }
+    }
+}
+
+impl<T> Records<T> {
+    /// A fresh ticket: where an event that takes one now stands.
+    fn ticket(&self) -> u64 {
+        let mut lines = self.lines.lock().unwrap();
+        let at = lines.next;
+        lines.next += 1;
+        at
     }
 
+    /// Take the place of the line `trace` writes for this operation next: a
+    /// send's or a receive's event, which the sink files where it happened,
+    /// or a close's, which is where the close's line goes. The line counts as
+    /// being written until the sink has filed it (`entries`).
+    fn hold(&self, pending: Pending) {
+        self.writing.fetch_add(1, Ordering::SeqCst);
+        PLACE.with(|held| held.set(Some(pending)));
+    }
+
+    /// The ticket of a close that starts now, and the record of it for the
+    /// operations it may run into: the first close is the channel's end, and
+    /// a later one (`one_reason` closes as often as it is asked) says the
+    /// same thing again.
+    fn closing(&self, closed: &Closed) -> u64 {
+        let at = self.ticket();
+        closed.ran(at);
+        at
+    }
+
+    /// File the line of `pending` where its event was: at the ticket it took,
+    /// or beside the close's line when it ran into one. A message that
+    /// crossed before a close goes before the close's line, because the
+    /// channel had not ended; a failure goes after it, because it is the
+    /// close's. What took its ticket before the close's line stands where it
+    /// took it, which is before that line already.
+    fn file(&self, pending: Pending, closed: &Closed, entry: T) {
+        let mut lines = self.lines.lock().unwrap();
+        let at = pending.ticket();
+        // The close this operation ran into, if it took its ticket after the
+        // close's line: it began while the close was happening.
+        let ran_into = closed.ran_into().filter(|close| at > *close);
+        let slot = match ran_into {
+            Some(close) => lines.filed.entry(close).or_default(),
+            None => lines.filed.entry(at).or_default(),
+        };
+        match (pending, ran_into) {
+            (Pending::At(_), _) | (Pending::Crossed(_) | Pending::Failed(_), None) => {
+                slot.line = Some(entry)
+            }
+            (Pending::Crossed(_), Some(_)) => slot.before.push(entry),
+            (Pending::Failed(_), Some(_)) => slot.after.push(entry),
+        }
+    }
+
+    /// A step this run takes between its lines, filed where it was.
+    fn note(&self, entry: T) {
+        let at = self.ticket();
+        let mut lines = self.lines.lock().unwrap();
+        lines.filed.entry(at).or_default().line = Some(entry);
+    }
+}
+
+impl<T: Clone> Records<T> {
+    /// What the run recorded, in the order its events happened, once the lines
+    /// being written are in it. A run whose channels are done has none; the
+    /// wait is bounded so that a reader on a thread that must also run the
+    /// writer cannot hang a test, and an operation still in a channel has no
+    /// line yet either way.
+    fn entries(&self) -> Vec<T> {
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while self.writing.load(Ordering::SeqCst) > 0 && Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        let lines = self.lines.lock().unwrap();
+        let mut entries = Vec::new();
+        for slot in lines.filed.values() {
+            entries.extend(slot.before.iter().cloned());
+            entries.extend(slot.line.iter().cloned());
+            entries.extend(slot.after.iter().cloned());
+        }
+        entries
+    }
+}
+
+impl<T: From<String> + Send + 'static> Records<T> {
+    /// Where the lines of a channel traced with `trace` go: filed where the
+    /// operation that took the place reported its event (`Pending`).
+    fn sink(&self, closed: Arc<Closed>) -> Sink {
+        let log = self.clone();
+        Arc::new(move |line: &str| {
+            let pending = PLACE.with(|held| {
+                held.take()
+                    .expect("a traced channel writes its line after it takes its place")
+            });
+            log.file(pending, &closed, T::from(line.to_owned()));
+            log.writing.fetch_sub(1, Ordering::SeqCst);
+        })
+    }
+}
+
+impl Records<String> {
+    /// The trace lines of the run, in the order their events happened.
     fn lines(&self) -> Vec<String> {
-        self.0.lock().unwrap().clone()
+        self.entries()
+    }
+}
+
+thread_local! {
+    /// The place of the line `trace` is about to write for this thread's
+    /// operation. A channel's sender and receiver are used from one thread
+    /// each (`channel/mod.rs`) and its closer from anywhere, so the operation
+    /// a thread is in is the one whose line comes next. A run has one log, so
+    /// a place taken for it is the one its sink reads next.
+    static PLACE: Cell<Option<Pending>> = const { Cell::new(None) };
+}
+
+/// One channel's close, as the ticket its line took (`u64::MAX` while it is
+/// open): the first one, which is where the channel ended. An operation whose
+/// line comes after it has one ran into it (`Records::file`).
+struct Closed(AtomicU64);
+
+impl Default for Closed {
+    fn default() -> Self {
+        Self(AtomicU64::new(u64::MAX))
+    }
+}
+
+impl Closed {
+    fn ran(&self, at: u64) {
+        let _ = self
+            .0
+            .compare_exchange(u64::MAX, at, Ordering::SeqCst, Ordering::SeqCst);
+    }
+
+    fn ran_into(&self) -> Option<u64> {
+        let at = self.0.load(Ordering::SeqCst);
+        (at != u64::MAX).then_some(at)
     }
 }
 
@@ -690,6 +918,101 @@ fn graph_value_at(graph: &Json, value: &Json, depth: usize) -> Option<Json> {
     }
 }
 
+/// `channel` traced as `label`, each line of it filed where its event
+/// happened (`Records`).
+fn traced_channel<T: From<String> + Send + 'static>(
+    channel: Channel,
+    label: &str,
+    log: &Records<T>,
+) -> Channel {
+    let closed = Arc::new(Closed::default());
+    // Inside the trace, so that a send's ticket is taken before the message
+    // crosses and a receive's after the message comes in: their lines are
+    // written after they come back from the channel.
+    let traced = trace(
+        Channel {
+            sender: Box::new(Ticket {
+                inner: channel.sender,
+                log: log.clone(),
+                closed: closed.clone(),
+            }),
+            receiver: Box::new(Ticket {
+                inner: channel.receiver,
+                log: log.clone(),
+                closed: closed.clone(),
+            }),
+            closer: channel.closer,
+        },
+        label,
+        log.sink(closed.clone()),
+    );
+    // A close's line is written before the close happens, so its ticket is
+    // taken before the trace runs: outside it.
+    Channel {
+        sender: traced.sender,
+        receiver: traced.receiver,
+        closer: Arc::new(Ticket {
+            inner: traced.closer,
+            log: log.clone(),
+            closed,
+        }),
+    }
+}
+
+/// One operation of a traced channel: it takes the ticket its line is filed
+/// under, and hands the line to the log where its event was. A close takes
+/// its ticket before it runs, which is where its line goes; a send takes one
+/// before the message crosses and a receive one as the message comes in, and
+/// either goes beside the close's line if a close ran into it (`Records`).
+struct Ticket<T, L> {
+    inner: T,
+    log: Records<L>,
+    closed: Arc<Closed>,
+}
+
+impl<L: Send + 'static> Sender for Ticket<Box<dyn Sender>, L> {
+    fn send(&mut self, message: &[u8]) -> Result<(), ChannelError> {
+        // Where the send is, taken before the message crosses: its line has
+        // to stand before anything that saw it cross, whatever this thread
+        // does when the channel returns it.
+        let at = self.log.ticket();
+        let result = self.inner.send(message);
+        let pending = match result.is_ok() {
+            true => Pending::Crossed(at),
+            false => Pending::Failed(at),
+        };
+        self.log.hold(pending);
+        result
+    }
+
+    fn max_message(&self) -> Option<usize> {
+        self.inner.max_message()
+    }
+}
+
+impl<L: Send + 'static> Receiver for Ticket<Box<dyn Receiver>, L> {
+    fn recv(&mut self) -> Result<Option<Vec<u8>>, ChannelError> {
+        let result = self.inner.recv();
+        // Where the message came in, taken as it comes back: a receive that
+        // waits has no event to stand at until it has one.
+        let at = self.log.ticket();
+        let pending = match result.is_ok() {
+            true => Pending::Crossed(at),
+            false => Pending::Failed(at),
+        };
+        self.log.hold(pending);
+        result
+    }
+}
+
+impl<L: Send + 'static> Closer for Ticket<Arc<dyn Closer>, L> {
+    fn close(&self, why: Close) {
+        let at = self.log.closing(&self.closed);
+        self.log.hold(Pending::At(at));
+        self.inner.close(why);
+    }
+}
+
 /// `channel` traced as `label`, its receiver decoding what the far end
 /// (`from`) sends.
 fn instrumented(
@@ -699,7 +1022,7 @@ fn instrumented(
     log: &Log,
     frames: &Decoded,
 ) -> Channel {
-    let mut channel = trace(channel, label, log.sink());
+    let mut channel = traced_channel(channel, label, log);
     channel.receiver = Box::new(Decoding {
         inner: channel.receiver,
         from,
@@ -1328,11 +1651,7 @@ fn ops(frames: &[Frame]) -> Vec<(&str, Option<&str>)> {
 fn traced(label: &str) -> (Channel, Channel, Log) {
     let (near, far) = rutis_bridge::memory::pair();
     let log = Log::default();
-    (
-        rutis_bridge::channel::trace::trace(near, label, log.sink()),
-        far,
-        log,
-    )
+    (traced_channel(near, label, &log), far, log)
 }
 
 /// A normal end: the far end finishes, then this end closes. The four lines
@@ -3997,29 +4316,25 @@ enum LeaseEvent {
     RefusedStale,
 }
 
-/// The lease's events as they happened, shared by the channel sinks and the
-/// test.
-#[derive(Clone, Default)]
-struct Lease(Arc<Mutex<Vec<LeaseEvent>>>);
+/// A lease's events as they happened, shared by the channel sinks and the
+/// test: a channel's line and the steps the test takes between them, in one
+/// order, which is what the tickets of `Records` keep.
+type Lease = Records<LeaseEvent>;
 
-impl Lease {
-    fn sink(&self) -> Sink {
-        let lease = self.clone();
-        Arc::new(move |line: &str| {
-            lease
-                .0
-                .lock()
-                .unwrap()
-                .push(LeaseEvent::Channel(line.to_owned()))
-        })
+impl From<String> for LeaseEvent {
+    fn from(line: String) -> Self {
+        Self::Channel(line)
     }
+}
 
+impl Records<LeaseEvent> {
+    /// A step the test saw between the channels' lines, filed where it was.
     fn mark(&self, event: LeaseEvent) {
-        self.0.lock().unwrap().push(event);
+        self.note(event);
     }
 
     fn events(&self) -> Vec<LeaseEvent> {
-        self.0.lock().unwrap().clone()
+        self.entries()
     }
 }
 
@@ -4188,11 +4503,11 @@ async fn a_takeover_cleans_the_old_lease_before_it_installs_the_new() {
         receiver: ours.receiver,
         closer: ours.closer,
     };
-    let ours = trace(ours, "lease-1", lease.sink());
+    let ours = traced_channel(ours, "lease-1", &lease);
     // The host's `Replaceable` closes the old connection as replaced
     // (`crates/rutis-host/src/connect/listen.rs:204-220`).
     let ours = one_reason(ours, Close::Replaced);
-    let theirs = trace(theirs, "lease-1-far", lease.sink());
+    let theirs = traced_channel(theirs, "lease-1-far", &lease);
     let old = main.plugin(Session::new(ours));
     let old_far = node.plugin(Session::new(theirs));
     within("the first lease", async {
@@ -4216,8 +4531,8 @@ async fn a_takeover_cleans_the_old_lease_before_it_installs_the_new() {
     // A newer connection of the same id: its handshake completes, nothing
     // is mounted yet and the old lease still serves.
     let (ours, theirs) = rutis_bridge::memory::pair();
-    let ours = trace(ours, "lease-2", lease.sink());
-    let theirs = trace(theirs, "lease-2-far", lease.sink());
+    let ours = traced_channel(ours, "lease-2", &lease);
+    let theirs = traced_channel(theirs, "lease-2-far", &lease);
     let next = newer.plugin(Session::new(theirs));
     let greeted = within("the new handshake", Session::handshake(&main, ours))
         .await
