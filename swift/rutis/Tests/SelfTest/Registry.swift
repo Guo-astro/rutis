@@ -72,6 +72,8 @@ private let everywhere: [(String, () async throws -> Void)] = [
     ("AppTests.aSpawnedTaskDoesNotHoldTheUnloadPastTheDeadline", { try await AppTests().aSpawnedTaskDoesNotHoldTheUnloadPastTheDeadline() }),
     ("AppTests.anUnloadedRowCannotProvide", { try await AppTests().anUnloadedRowCannotProvide() }),
     ("AppTests.silentConnectionsAreDropped", { try AppTests().silentConnectionsAreDropped() }),
+    ("AppTests.aConnectionWaitingForItsHelloIsNotDropped", { try AppTests().aConnectionWaitingForItsHelloIsNotDropped() }),
+    ("AppTests.aConnectionWaitingForTheOldCleanupIsNotDropped", { try await AppTests().aConnectionWaitingForTheOldCleanupIsNotDropped() }),
     ("AppTests.aListeningAppIsConnectedOnceGreeted", { try await AppTests().aListeningAppIsConnectedOnceGreeted() }),
     ("AppTests.aListeningAppStartsAgainRightAfterItStopped", { try await AppTests().aListeningAppStartsAgainRightAfterItStopped() }),
     ("AppTests.aRaceLostToTheStopDiscardsItsResult", { try await AppTests().aRaceLostToTheStopDiscardsItsResult() }),

@@ -44,6 +44,8 @@ async function listenOnce(spec, handlers, options) {
       // One session: whatever else got through meanwhile is turned away.
       if (taken) return channel.close('this endpoint serves one session')
       taken = true
+      // Served: the session greets now (#1182).
+      channel.start()
       take(channel)
     },
   }, { protocol: PROTOCOL, ...options })

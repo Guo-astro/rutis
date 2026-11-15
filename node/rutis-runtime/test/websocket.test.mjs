@@ -27,7 +27,10 @@ async function pair(limits) {
   const accepted = new Promise(resolve => { accept = resolve })
   const listener = await listen('ws://127.0.0.1:0/rutis', { handlers: () => server.handlers, accepted: channel => accept(channel) }, { protocol: PROTOCOL, token: 'secret', limits })
   const dialed = await open(listener.url, client.handlers, { protocol: PROTOCOL, token: 'secret', limits })
-  return { listener, dialed, accepted: await within('the accepted connection', accepted), server, client }
+  const served = await within('the accepted connection', accepted)
+  // Served: the session's hello went out (#1182).
+  served.start()
+  return { listener, dialed, accepted: served, server, client }
 }
 
 test('messages cross both ways and an orderly close is a normal end', async () => {
@@ -123,7 +126,9 @@ test('heartbeats find a half-open connection on both sides', async () => {
   const relay = await freezableRelay(new URL(listener.url))
   try {
     const dialed = await open(`ws://127.0.0.1:${relay.port}/rutis`, client.handlers, { protocol: PROTOCOL, token: 'secret', limits: quick })
-    await within('the accepted connection', accepted)
+    const served = await within('the accepted connection', accepted)
+    // Served: the session's hello went out, and both sides heartbeat (#1182).
+    served.start()
     // Alive while pings flow: through more pings and pongs than fit in one
     // timeout (at most 40: each side pings, and is answered, every 100 ms).
     const before = relay.state.carried
@@ -137,4 +142,34 @@ test('heartbeats find a half-open connection on both sides', async () => {
     relay.close()
     listener.close()
   }
+})
+
+// A connection accepted but not served yet is not silent: its heartbeat
+// starts only once the session's hello went out (#1182). Timing as above:
+// the wait is ten timeouts, so a stalled machine cannot fail it.
+test('a connection waiting for its hello is not silent; served, silence counts', async () => {
+  const limits = { maxMessage: 1024, ping: 10, timeout: 50, handshake: HANG_GUARD_MS }
+  const server = inbox()
+  let accept
+  const accepted = new Promise(resolve => { accept = resolve })
+  const listener = await listen('ws://127.0.0.1:0/rutis', { handlers: () => server.handlers, accepted: channel => accept(channel) }, { protocol: PROTOCOL, token: 'secret', limits })
+  // A far end that upgrades, then says nothing at all.
+  const silent = (await import('node:net')).connect(Number(new URL(listener.url).port), '127.0.0.1')
+  silent.on('error', () => {})
+  silent.write([
+    'GET /rutis HTTP/1.1', 'Host: 127.0.0.1', 'Upgrade: websocket', 'Connection: Upgrade',
+    'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==', 'Sec-WebSocket-Version: 13',
+    `Sec-WebSocket-Protocol: ${PROTOCOL}`, 'Authorization: Bearer secret', '', '',
+  ].join('\r\n'))
+  const waiting = await within('the silent connection to be accepted', accepted)
+  // Waiting for its hello, it is not silent, even past ten timeouts.
+  let closed = false
+  server.closedWith.then(() => { closed = true }, () => {})
+  await new Promise(resolve => setTimeout(resolve, 500))
+  assert.equal(closed, false, 'closed before its hello')
+  // Served: the hello went out, and from here silence counts.
+  waiting.start()
+  assert.match(await server.closedWith, /heartbeat timeout/)
+  silent.destroy()
+  listener.close()
 })
