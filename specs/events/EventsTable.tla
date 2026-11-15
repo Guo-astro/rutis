@@ -58,7 +58,7 @@ ASSUME MaxLoads \in Nat \ {0}
 ASSUME Restart => MaxGen > 1
 ASSUME Mutation \in {"none", "outOfOrder", "staleFast", "localOrder",
                      "loadReplyEarly", "freshFast", "replyBeforeElsewhere",
-                     "prefixMissed"}
+                     "prefixMissed", "dispatchFirst", "dupLocal"}
 
 Entries == Runtimes \X Rows \X (1..MaxGen) \X (1..MaxLoads)
 
@@ -231,7 +231,10 @@ CallToReceiver(f) ==
 Register(rt, r) ==
     /\ sess[rt] = "live"
     /\ rowst[rt][r] \in {"loading", "loaded"}
-    /\ EntryOf(rt, r) \notin Elements(local[rt])
+    (* `dupLocal`: the runtime's list takes a second registration of the same *)
+    (* listener (`insert` appends to it and nothing rejects the copy), so one *)
+    (* dispatch starts two calls of it.                                      *)
+    /\ (Mutation = "dupLocal" \/ EntryOf(rt, r) \notin Elements(local[rt]))
     /\ EntryOf(rt, r) \notin gone[rt]
     /\ Len(ch[rt]) < QueueBound
     /\ LET e == EntryOf(rt, r)
@@ -468,10 +471,17 @@ RegisterHostPrefix ==
                    path, snap, seen, order, onThen, offThen, offAtSnap,
                    issuedOn, issuedOff, causalOn, prefixAtSnap, freshAt>>
 
-(* The frame a runtime sent, at index `i` of its queue; `outOfOrder` may take  *)
-(* any of them (#587 before its fix), otherwise only the first.               *)
+(* The frame a runtime sent, at index `i` of its queue. `outOfOrder` may take  *)
+(* any of them (#587 before its fix); `dispatchFirst` lets an                 *)
+(* `events.dispatch` pass the frames its session sent before it, so the host *)
+(* takes its snapshot before the `events.on` of an entry the issuer already   *)
+(* knew. Otherwise only the first.                                           *)
 HostTakes(rt, i) ==
-    IF Mutation = "outOfOrder" THEN TRUE ELSE i = 1
+    IF Mutation = "outOfOrder"
+    THEN TRUE
+    ELSE IF Mutation = "dispatchFirst"
+         THEN i = 1 \/ ch[rt][i].k = "disp"
+         ELSE i = 1
 
 HostOn(rt, i) ==
     /\ HostTakes(rt, i)
