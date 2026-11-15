@@ -284,6 +284,151 @@ fn answer(result: &mpsc::Receiver<Result<Value, String>>, what: &str) -> Value {
         .unwrap_or_else(|error| panic!("{what} failed: {error}"))
 }
 
+// ── The wait table, against the model ───────────────
+
+use rutis_bridge::session::waits_trace::{
+    capture, check, Capture, Decision, Event, Trace, Violation,
+};
+
+/// What the wait table did during a run, replayed as the model does
+/// (`specs/cross-runtime-sync/CrossRuntimeSync.tla`): each of its operations
+/// allowed there, each forward the decision the model makes there.
+struct Waits(Capture);
+
+impl Waits {
+    /// Start recording the wait table of this run.
+    fn start() -> Self {
+        Self(capture())
+    }
+
+    /// Replay what was recorded, from the table's state when recording
+    /// began, as the model does: panics with the first operation it does not
+    /// allow, or the first decision it does not make there, and returns the
+    /// trace.
+    fn check(&self) -> Trace {
+        let trace = self.0.trace();
+        assert!(
+            !trace.events().is_empty(),
+            "the wait table recorded nothing"
+        );
+        match check(&trace) {
+            Ok(notes) => assert!(
+                notes.is_empty(),
+                "the model allows these but does not guarantee them:\n{}",
+                notes.join("\n")
+            ),
+            Err(broken) => panic!(
+                "the wait table did what the model does not allow: {broken}\n  {:#?}",
+                broken.event
+            ),
+        }
+        trace
+    }
+}
+
+/// The call `entry` of `path` names, on `dst` (`waits.rs`'s `decode`): an
+/// untagged entry is `dst`'s, a tagged one (`s1/node:3`) the tagged
+/// session's.
+fn named(path: &[String], dst: &str) -> Option<(String, String)> {
+    let entry = path.last()?;
+    Some(match entry.split_once('/') {
+        Some((tag, id)) => (tag.to_owned(), id.to_owned()),
+        None => (dst.to_owned(), entry.clone()),
+    })
+}
+
+/// The trace with one decision changed by hand, and what the replay must
+/// say about it: the check is not vacuous. Panics when a change is not
+/// reported, with the change.
+fn must_report(trace: &Trace) {
+    let events = trace.events();
+    let mut checked = 0;
+    for (at, event) in events.iter().enumerate() {
+        let broken = |changed: Vec<Event>, what: &str| -> Box<Violation> {
+            match check(&trace.with_events(changed)) {
+                Ok(notes) => panic!(
+                    "{what} at event {at} was not reported: the replay allows it\n  {:#?}\n  notes: {notes:?}",
+                    events[at]
+                ),
+                Err(broken) => broken,
+            }
+        };
+        let Event::Forward(forward) = event else {
+            continue;
+        };
+        // The refusal turned into a hop: a call that would wait on itself is
+        // forwarded, which the model does not do. Its caller is the marked
+        // call the path names last, so nothing but the cycle differs.
+        if let Decision::Refused { .. } = forward.decision {
+            let Some((src, sid)) = named(&forward.path, &forward.dst) else {
+                continue;
+            };
+            let mut changed = events.to_vec();
+            if let Event::Forward(forward) = &mut changed[at] {
+                forward.decision = Decision::Hop {
+                    src: Some((src, sid)),
+                    entry: false,
+                };
+            }
+            let broken = broken(changed, "the refusal dropped");
+            assert!(
+                broken.why.contains("waits on itself"),
+                "the refusal dropped: the replay named {broken}"
+            );
+            checked += 1;
+        }
+        // A hop whose caller was dropped: the model records it under the
+        // marked call its chain names, the changed trace says the host's.
+        if let Decision::Hop {
+            src: Some(_),
+            entry: false,
+        } = &forward.decision
+        {
+            let mut changed = events.to_vec();
+            if let Event::Forward(forward) = &mut changed[at] {
+                forward.decision = Decision::Hop {
+                    src: None,
+                    entry: false,
+                };
+            }
+            let broken = broken(changed, "the caller dropped");
+            assert!(
+                broken.why.contains("under"),
+                "the caller dropped: the replay named {broken}"
+            );
+            checked += 1;
+        }
+        // The mark the chain depends on dropped: the call is a hop on a
+        // chain that is no longer marked.
+        if let Decision::Hop {
+            src: Some((session, sid)),
+            entry: false,
+        } = &forward.decision
+        {
+            let marked = events.iter().position(|event| {
+                matches!(event, Event::Marked { session: tag, id } if tag == session && id == sid)
+            });
+            let Some(marked) = marked else { continue };
+            let mut changed = events.to_vec();
+            changed.remove(marked);
+            let broken = broken(changed, "the mark dropped");
+            assert!(
+                broken.why.contains("hop"),
+                "the mark dropped: the replay named {broken}"
+            );
+            checked += 1;
+            break;
+        }
+    }
+    assert!(checked > 0, "the trace held no decision to change");
+}
+
+/// Whether the log holds an event of `what`: the run this test is meant to
+/// cover, as opposed to one the other tests of this binary recorded.
+fn covers(events: &[Event], what: &str, of: impl Fn(&Event) -> bool) {
+    assert!(events.iter().any(of), "the run recorded no {what}");
+}
+
 /// Runtimes, one loader over them, and the gate.
 struct Fixture {
     root: Ctx,
@@ -446,6 +591,7 @@ async fn two_node_runtimes_calling_each_other() {
     if !rutis_test_support::runtimes::enabled("node") {
         return;
     }
+    let waits = Waits::start();
     let dir = tempfile::tempdir().unwrap();
     let work = |me: &str, inject: &str| NODE_WORK.replace("SELF", me).replace("INJECT", inject);
     let go = |me: &str, other: &str| NODE_GO_PEER.replace("SELF", me).replace("OTHER", other);
@@ -524,6 +670,36 @@ async fn two_node_runtimes_calling_each_other() {
         "the other completes: {answers:?}"
     );
     fixture.root.shutdown().await.unwrap();
+    // The run, as the wait table recorded it: every operation the model
+    // allows, and every forward the decision it makes there.
+    let trace = waits.check();
+    let events = trace.events();
+    covers(events, "profile", |event| {
+        matches!(event, Event::Profile { .. })
+    });
+    covers(events, "marked call", |event| {
+        matches!(event, Event::Marked { .. })
+    });
+    covers(events, "answered call", |event| {
+        matches!(event, Event::Answered { .. })
+    });
+    covers(events, "returned call", |event| {
+        matches!(event, Event::Returned { .. })
+    });
+    covers(events, "ended session", |event| {
+        matches!(event, Event::Ended { .. })
+    });
+    covers(
+        events,
+        "hop",
+        |event| matches!(event, Event::Forward(forward) if matches!(forward.decision, Decision::Hop { entry: false, .. })),
+    );
+    covers(
+        events,
+        "refusal",
+        |event| matches!(event, Event::Forward(forward) if matches!(forward.decision, Decision::Refused { .. })),
+    );
+    must_report(&trace);
 }
 
 /// Counterexample 2: one Node and two Python runtimes. Node calls `s1` in
@@ -539,6 +715,7 @@ async fn one_node_and_two_python_runtimes() {
     if !rutis_test_support::runtimes::all_enabled(&["node", "python"]) {
         return;
     }
+    let waits = Waits::start();
     let dir = tempfile::tempdir().unwrap();
     let go = write(dir.path(), "go.mjs", NODE_GO);
     let back = write(dir.path(), "back.mjs", NODE_BACK);
@@ -603,6 +780,36 @@ async fn one_node_and_two_python_runtimes() {
         "the rest completes"
     );
     fixture.root.shutdown().await.unwrap();
+    // Three runtimes, two of them reentrant (Python): the profile is what
+    // the model makes its edges from, and the refusal crosses all three.
+    let trace = waits.check();
+    let events = trace.events();
+    covers(events, "profile", |event| {
+        matches!(event, Event::Profile { .. })
+    });
+    covers(events, "marked call", |event| {
+        matches!(event, Event::Marked { .. })
+    });
+    covers(
+        events,
+        "hop",
+        |event| matches!(event, Event::Forward(forward) if matches!(forward.decision, Decision::Hop { .. })),
+    );
+    covers(events, "reentrant profile", |event| {
+        matches!(
+            event,
+            Event::Profile {
+                reentrant: true,
+                ..
+            }
+        )
+    });
+    covers(
+        events,
+        "refusal",
+        |event| matches!(event, Event::Forward(forward) if matches!(forward.decision, Decision::Refused { .. })),
+    );
+    must_report(&trace);
 }
 
 /// Two Node runtimes waiting on each other through Go: `a` calls Go, which

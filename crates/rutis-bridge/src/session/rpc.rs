@@ -3524,6 +3524,10 @@ pub(crate) mod crossing;
 mod relay;
 pub(crate) mod waits;
 use relay::Relayed;
+/// What the wait table did, for a test to check against the model
+/// (`specs/cross-runtime-sync`; feature `testing`).
+#[cfg(feature = "testing")]
+pub use waits::trace as waits_trace;
 
 // The tests script the far end over a memory channel.
 #[cfg(test)]

@@ -35,6 +35,41 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{LazyLock, Mutex};
 
+/// The record points below, for a test to check against the model (feature
+/// `testing`).
+#[cfg(feature = "testing")]
+pub mod trace;
+
+/// The record points, compiled out: what this file does is unchanged.
+#[cfg(not(feature = "testing"))]
+mod trace {
+    pub(super) fn profile(_: &str, _: bool, _: bool) {}
+    pub(super) fn marked(_: &str, _: &str) {}
+    pub(super) fn answered(_: &str, _: &str) {}
+    pub(super) fn returned(_: &str, _: &str) {}
+    pub(super) fn ended(_: &str) {}
+    pub(super) fn forward_hop(_: &str, _: &str, _: u64, _: &[String], _: bool, _: &super::Hop) {}
+    pub(super) fn forward_same_chain(
+        _: &str,
+        _: &str,
+        _: u64,
+        _: &[String],
+        _: bool,
+        _: (&str, &str),
+    ) {
+    }
+    pub(super) fn forward_not_waited(
+        _: &str,
+        _: &str,
+        _: u64,
+        _: &[String],
+        _: bool,
+        _: &'static str,
+    ) {
+    }
+    pub(super) fn forward_refused(_: &str, _: &str, _: u64, _: &[String], _: bool, _: &[String]) {}
+}
+
 /// A call in this process: a session's tag and the call's id on it.
 type Global = (String, String);
 
@@ -97,11 +132,11 @@ impl Waits {
 
 /// `session`'s far end, once it greeted.
 pub(super) fn profile(session: &str, profile: Profile) {
-    WAITS
-        .lock()
-        .unwrap()
-        .profiles
-        .insert(session.to_owned(), profile);
+    let mut waits = WAITS.lock().unwrap();
+    waits.profiles.insert(session.to_owned(), profile);
+    // Recorded under the lock, like every operation here: a forward on
+    // another thread must not be filed before what it read.
+    trace::profile(session, profile.stacked, profile.reentrant);
 }
 
 /// A call `id` received on `session` whose caller waits synchronously.
@@ -109,6 +144,7 @@ pub(super) fn marked(session: &str, id: &str) {
     let mut waits = WAITS.lock().unwrap();
     waits.marked.insert((session.to_owned(), id.to_owned()));
     waits.counted();
+    trace::marked(session, id);
 }
 
 /// How many calls received on `session` are marked: a test's own count,
@@ -131,6 +167,7 @@ pub(super) fn answered(session: &str, id: &str) {
     let mut waits = WAITS.lock().unwrap();
     waits.marked.remove(&(session.to_owned(), id.to_owned()));
     waits.counted();
+    trace::answered(session, id);
 }
 
 /// The reply to call `id` that this side sent on `session` was read (or the
@@ -142,6 +179,7 @@ pub(super) fn returned(session: &str, id: &str) {
     let mut waits = WAITS.lock().unwrap();
     waits.hops.remove(&(session.to_owned(), id.to_owned()));
     waits.counted();
+    trace::returned(session, id);
 }
 
 /// `session` ended: its calls wait for nothing, and nothing waits for them.
@@ -153,6 +191,7 @@ pub(super) fn ended(session: &str) {
     waits.marked.retain(|(tag, _)| tag != session);
     waits.profiles.remove(session);
     waits.counted();
+    trace::ended(session);
 }
 
 /// The chain `path` (as sent on session `dst`, see `rebase`) names, as
@@ -181,7 +220,19 @@ pub(super) fn forward(
     path: &[String],
     synchronous: bool,
 ) -> Result<bool, Cycle> {
-    if crate::session::rpc::unchained_now() || (MARKS.load(Ordering::SeqCst) == 0 && !synchronous) {
+    if crate::session::rpc::unchained_now() {
+        trace::forward_not_waited(
+            dst,
+            did,
+            seq,
+            path,
+            synchronous,
+            "the thread sends unchained",
+        );
+        return Ok(false);
+    }
+    if MARKS.load(Ordering::SeqCst) == 0 && !synchronous {
+        trace::forward_not_waited(dst, did, seq, path, synchronous, "nothing is marked");
         return Ok(false);
     }
     let rows = ROWS.with(|rows| rows.borrow().clone());
@@ -195,7 +246,10 @@ pub(super) fn forward(
     let hop = match caller {
         // A synchronous call back into the session it came from: on its
         // caller's chain, which runs it; not recorded.
-        Some((src, _)) if src == dst => return Ok(false),
+        Some((src, sid)) if src == dst => {
+            trace::forward_same_chain(dst, did, seq, path, synchronous, (&src, &sid));
+            return Ok(false);
+        }
         Some((src, sid)) => Hop {
             src,
             sid,
@@ -235,10 +289,12 @@ pub(super) fn forward(
     };
     if !hop.entry {
         if let Some(calls) = cycle_among(waits.hops.values(), &hop, &waits.profiles) {
+            trace::forward_refused(dst, did, seq, path, synchronous, &calls);
             let rows = rows_of(&calls, &waits.hops, &hop);
             return Err(Cycle { calls, rows });
         }
     }
+    trace::forward_hop(dst, did, seq, path, synchronous, &hop);
     waits.hops.insert(hop.gid(), hop);
     waits.counted();
     Ok(true)
@@ -1346,6 +1402,56 @@ mod tests {
             }),
             None
         );
+    }
+
+    /// A capture begins with the table as it stands: a hop and a profile
+    /// another run of the test binary left there are in the trace's initial
+    /// state, so a refusal that closes a cycle through them replays as the
+    /// model allows. Replayed from the model's empty state, the same trace
+    /// names a cycle the graph does not have (#1175).
+    #[cfg(feature = "testing")]
+    #[test]
+    fn a_capture_starts_from_the_table() {
+        profile(
+            "cap_n1",
+            Profile {
+                stacked: true,
+                reentrant: false,
+            },
+        );
+        profile(
+            "cap_n2",
+            Profile {
+                stacked: true,
+                reentrant: false,
+            },
+        );
+        // n1's call into n2, in the table before the capture begins.
+        marked("cap_n1", "node:1");
+        assert!(forward("cap_n2", "rust:1", 1, &["cap_n1/node:1".to_owned()], true).unwrap());
+        let capture = trace::capture();
+        // n2's far end calls back; the call into n1 closes the cycle through
+        // the hop and the mark the table held when recording began.
+        marked("cap_n2", "node:1");
+        assert!(
+            forward("cap_n1", "rust:2", 2, &["cap_n2/node:1".to_owned()], true).is_err(),
+            "the call would wait on itself"
+        );
+        let trace = capture.trace();
+        let notes = trace::check(&trace).expect("the refusal the model makes");
+        assert_eq!(notes, Vec::<String>::new());
+        // From the model's empty state the graph has neither the hop nor the
+        // profiles, so the refusal names a call that is not there.
+        let empty = trace::Trace::new(trace.events().to_vec());
+        assert!(
+            trace::check(&empty).is_err(),
+            "the cycle needs the table's state"
+        );
+        returned("cap_n2", "rust:1");
+        answered("cap_n2", "node:1");
+        answered("cap_n1", "node:1");
+        ended("cap_n1");
+        ended("cap_n2");
     }
 
     /// Item 12 of #613: for a wait graph of up to 20 hops, `cycle_among` finds
