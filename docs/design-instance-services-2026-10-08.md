@@ -71,9 +71,10 @@ catalog.register_shared_instance("timeline", "session"); // session 实例内的
 
 - 每个副本对实例内名字自动带上一条 isolate，标签为该实例的 `rutis-loader/instance/<InstanceId>`；配置里已经 isolate 了这个名字时，用配置的标签（#161 起已经按副本 / 按实例区分）。
 - 进程里一个服务的身份是 **(名字, 标签)**，在协议上写作 id：无标签时就是 `name`，有标签时是 `name` + NUL + `label`。名字和标签都不允许含 NUL、标签不允许为空，因此不同的 (名字, 标签) 不会得到同一个 id（全局名字 `x@L` 不会被当成标签 `L` 下的 `x`）。导出槽、句柄、宿主代理、`host:<id>` 调用目标都按 id 登记。
+- 配置的 `isolate` 标签不得含 U+0001：加载器为每一行租用的宿主服务造一个自己的标签 `<标签>\u{1}row:<行键>`（没有配置标签时以空串开头），配置标签与它共用命名空间；`parse_scope` 在读配置时拒绝含 U+0001 的标签（`crates/rutis-loader/src/loader/desired.rs`）。实例标签由加载器生成（`rutis-loader/instance/<InstanceId>`），不含 U+0001。
 - 插件看到的仍是名字 `x`：Node 用 Cordis 的 isolate，同标签的行共享一个作用域；Python 运行时按行的 isolate 表查找。
 
-协议变化（新增特性 `scopes`）：
+协议上的变化（运行时在 `mount` 回复的 `features` 里声明 `scopes`）：
 
 | 消息 | 变化 |
 | --- | --- |
@@ -82,8 +83,9 @@ catalog.register_shared_instance("timeline", "session"); // session 实例内的
 | `service [id, handle, version]` | 导出槽按 id 通知 |
 | `rows.load` | 不变；导出名的标签取自本行的 isolate |
 
-- Rust 只在确实用到标签时要求运行时支持 `scopes`；无标签的行和现在逐字节相同。缺少该特性的运行时，实例内服务报错："需要支持 `scopes` 的运行时"。
-- Node 和 Python 运行时都实现 `scopes`；Python 运行时同时补上 `isolate`（目前忽略）。
+- 运行时仍声明 `scopes`（Node、Bun、Python、Go、Swift、Kotlin 的 `features` 里都有），但宿主不再据此拒绝：`check_rows` 只要求 `rows.v2` 和 `hosts`（`crates/rutis-bridge/src/runtime/process.rs:13,1458`）。带标签的 `hosts.provide` 与含 NUL 的 id 一直按上表发送，没有"用到标签才检查"的分支。旧运行时收到第三个参数或按 id 登记时的行为**未确认**（没有测试）。
+- 按行租用宿主服务时，这一行对每个名字的 isolate 是 `<配置的标签>\u{1}row:<行键>`（没有配置标签时就是 `\u{1}row:<行键>`，`crates/rutis-bridge/src/runtime/process.rs` 的 `row_label`），所以没有配置 `isolate` 的行也不再与以前逐字节相同：`rows.load` 的 `isolate` 里带这个标签，只有这一行自己看得见它租到的代理。
+- Python 运行时已经按行的 `isolate` 表查找名字（`python/rutis/rutis/runner.py`），不再忽略 isolate。
 - 顺带修复三处已有问题：isolate 了某个名字的语言行看不到为它租用的宿主代理（代理登记在根作用域）；两行各自 isolate 同一名字并导出时，第二行被拒绝；Node 里用同一个标签 isolate 两个名字时，两者落在 Cordis 的同一个存储位置（Cordis 只按 isolate 符号存储），现在符号同时包含名字和标签。
 
 ## 5. 节点

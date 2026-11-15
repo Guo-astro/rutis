@@ -273,6 +273,12 @@ fn parse_scope(id: &str, value: &Value) -> Result<RawScope, LoaderError> {
             for (name, spec) in map {
                 let label = match spec {
                     Value::Bool(true) => format!("rutis-loader/entry/{id}"),
+                    Value::String(label) if label.contains('\u{1}') => {
+                        return Err(LoaderError::InvalidEntry(format!(
+                            "isolate.{name} of {id:?} must not contain U+0001: \
+                             it is reserved for the loader's row labels"
+                        )))
+                    }
                     Value::String(label) => format!("rutis-loader/shared/{label}"),
                     Value::Bool(false) | Value::Null => continue,
                     other => {

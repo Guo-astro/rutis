@@ -71,9 +71,10 @@ A runtime process is shared (one process per language serves the rows of every i
 
 - each copy automatically isolates the instance names it may use, under the label `rutis-loader/instance/<InstanceId>` of that instance; when its configuration already isolates the name, the configured label is used (since #161, those labels are already per copy / per instance).
 - A service in the process is identified by **(name, label)**, written on the wire as an id: `name` without a label, `name` + NUL + `label` with one. Names and labels may not contain NUL and a label may not be empty, so no two pairs share an id (a global name like `x@L` cannot pass for `x` in scope `L`). Export slots, handles, host proxies and the `host:<id>` call targets are registered by id.
+- A configured `isolate` label may not contain U+0001: the loader makes a row's own label for a host service it leases as `<label>\u{1}row:<row key>` (starting with the empty string when nothing is configured), and configured labels share that namespace; `parse_scope` refuses a label containing U+0001 when it reads the configuration (`crates/rutis-loader/src/loader/desired.rs`). Instance labels are made by the loader (`rutis-loader/instance/<InstanceId>`) and never contain it.
 - Plugins still see the name `x`: Node uses Cordis isolation, so rows with the same label share one scope; the Python runtime looks names up through the row's isolate table.
 
-Protocol changes (new feature `scopes`):
+Protocol changes (a runtime declares `scopes` in the `features` of its `mount` reply):
 
 | Message | Change |
 | --- | --- |
@@ -82,8 +83,9 @@ Protocol changes (new feature `scopes`):
 | `service [id, handle, version]` | Export slots report by id |
 | `rows.load` | Unchanged; an exported name's label comes from the row's isolates |
 
-- Rust requires `scopes` from the runtime only when a label is actually involved; rows without labels are byte-for-byte as today. A runtime without the feature fails instance services with "needs a runtime that supports `scopes`".
-- Both the Node and the Python runtime implement `scopes`; the Python runtime also gains `isolate` support (it ignores isolates today).
+- Runtimes still declare `scopes` (Node, Bun, Python, Go, Swift and Kotlin all list it in `features`), but the host no longer refuses a runtime without it: `check_rows` requires only `rows.v2` and `hosts` (`crates/rutis-bridge/src/runtime/process.rs:13,1458`). A `hosts.provide` with a label and ids containing NUL are always sent as the table says; there is no "check only when a label is used" branch. How an older runtime handles the third argument or registration by id is **not confirmed** (no test).
+- When a row leases host services, its isolate for each name is `<configured label>\u{1}row:<row key>` (just `\u{1}row:<row key>` when nothing is configured, `row_label` in `crates/rutis-bridge/src/runtime/process.rs`), so a row without a configured `isolate` is no longer byte-for-byte as before: its `rows.load` isolate carries this label, and only that row sees the proxy it leased.
+- The Python runtime already looks names up through the row's isolate table (`python/rutis/rutis/runner.py`); it no longer ignores isolates.
 - This also fixes three existing problems: a language row that isolates a name could not see the host proxy leased for it (proxies were registered in the root scope); two rows that each isolate and export the same name had the second one refused; in Node, two names isolated with one label landed in the same Cordis store slot (Cordis stores isolated services by symbol alone), and the symbol now carries the name as well as the label.
 
 ## 5. Peers
