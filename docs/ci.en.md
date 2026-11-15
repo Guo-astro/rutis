@@ -29,6 +29,17 @@ This document describes how CI runs today and what to do when changing it. The r
 | `install.yml` | Nightly, called by `nightly.yml` (five platforms when the packaging paths changed or on Monday, else linux-x64 alone); called by `release.yml` on a release; by hand | Builds this commit's packages with `package.yml`, installs and runs them: npm, PyPI, the release binary. Five platforms before a release (linux-x64, linux-arm64, darwin-x64, darwin-arm64, win32-x64); three by default when run by hand (linux-x64, darwin-arm64, win32-x64). On linux-x64 the developer-experience scenarios follow (`tests/e2e/tests/devx.rs`, #690): a plugin written from the template in each language, tested, reloaded under `dev` and packed; plugins of two languages assembled, run, changed and stopped; a small Rust host opening an extension point, taking a plugin written from the template, and getting its errors structured, with their codes; every night and in the release gate, which they stop when they fail; a few minutes; the same leg also runs the guides' examples that install only npm and PyPI packages with this build's packages (`doc_examples.rs` runs those when `RUTIS_E2E_ARTIFACTS` is set, open-host §5 among them; see [function references](design-function-refs-2026-11-03.en.md) §6) |
 | `release.yml` | `v*` tags; by hand (`dry-run`, on by default: the release gate only, nothing published) | Release gate (calls `ci.yml` with `all=true`, `package.yml`, `install.yml` on five platforms, `dylib-windows.yml`), publishing, checks after publishing ([release](release.en.md)) |
 | `release-cli.yml` | `cli-v*` tags | Releases rutis-cli |
+| `model-pr.yml` | Every pull request's open, description edit, push and reopen (`pull_request` `opened`, `edited`, `synchronize`, `reopened`) | When the change touches code a model stands for, the description needs a `模型：<directory> 不涉及（reason）` line (standard Q9.1.1 item 5; `tools/check-model-pr.mjs`, seconds). Not part of `ci-ok` yet |
+
+### The model note (`model-pr.yml`)
+
+A change to code a model stands for either changes that model or says in the description why the model is not affected (standard Q9.1.1 item 5). A workflow of its own, not a job of `ci.yml`: a description edit (`edited`) has to run it again, and that must not run every other job of `ci.yml` again. It is not part of `ci-ok` yet.
+
+- `specs/**` changed: pass, the model is in the change.
+- Neither `specs/**` nor any code a model stands for changed: pass (documentation, tools, or code no model covers).
+- Code a model stands for changed: the description needs a line `模型：<directory> 不涉及（reason）`, for example `模型：specs/events 不涉及（只改了错误文字）`. A missing line, one without 不涉及, or one without a reason in parentheses fails, and the failure lists the paths it saw.
+
+"Code a model stands for" is taken from the "对应的设计和代码" table of each `specs/<directory>/README.md`: what that table names, and what exists in this repository, is the list. A README that gains paths widens the check on its own; no second list is kept. To see it: `node tools/check-model-pr.mjs --list`; self-test: `node tools/check-model-pr.mjs --self-test`; to run it locally: `node tools/check-model-pr.mjs --body-file <description> --files-from-git origin/main`.
 
 ### The nightly `nightly.yml`
 

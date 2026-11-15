@@ -12,20 +12,20 @@
 
 | 模型部分 | 设计 | 实现 |
 | --- | --- | --- |
-| 转发、`path` 改写 | [多语言设计](../../docs/design-multilang-runtimes-2026-10-03.md) §五；[M1](../../docs/design-multilang-m1-2026-10-04.md) §七 | `crates/rutis-bridge/src/session/rpc.rs` `rebase`、`forward`；`rpc/relay.rs`；`runtime/rows.rs` `RowService::invoke` |
-| Rust 收到调用后交给哪个线程 | M1 §7.2 | `rpc.rs` `receive`：按 `path` 从后往前找正在同步等待的调用号 |
-| 等待表的六个操作（`profile`、`marked`、`answered`、`returned`、`ended`、`forward`）与调用的三种分类（同步、已标记链上的异步、入口） | 多语言设计 §九 "实现" | `crates/rutis-bridge/src/session/rpc/waits.rs`；`rpc.rs` `receive`/`send` |
-| 每个调用一个线程的运行时（Go、Swift、Kotlin）：`sync-wait`、`reentrant-sync`，不声明 `sync-stack` | 多语言设计 §九（2026-10-14） | `waits.rs` `Profile.stacked`；`go/rutis/internal/peer/peer.go`、`swift/rutis/Sources/Rutis/Session/Peer.swift`、`kotlin/rutis/rutis/src/shared/kotlin/arcships/rutis/internal/peer/Peer.kt` |
-| 没有声明 `sync-wait` 的运行时不计入 | 多语言设计 §九「新旧版本混用」 | `waits.rs` `forward`：没有 `sync` 的调用不登记；`profile` |
+| 转发、`path` 改写 | [多语言设计](../../docs/design-multilang-runtimes-2026-10-03.md) §五；[M1](../../docs/design-multilang-m1-2026-10-04.md) §七 | `crates/rutis-bridge/src/session/rpc.rs` `rebase`、`forward`；`crates/rutis-bridge/src/session/rpc/relay.rs`；`crates/rutis-bridge/src/runtime/rows.rs` `RowService::invoke` |
+| Rust 收到调用后交给哪个线程 | M1 §7.2 | `crates/rutis-bridge/src/session/rpc.rs` `receive`：按 `path` 从后往前找正在同步等待的调用号 |
+| 等待表的六个操作（`profile`、`marked`、`answered`、`returned`、`ended`、`forward`）与调用的三种分类（同步、已标记链上的异步、入口） | 多语言设计 §九 "实现" | `crates/rutis-bridge/src/session/rpc/waits.rs`；`crates/rutis-bridge/src/session/rpc.rs` `receive`/`send` |
+| 每个调用一个线程的运行时（Go、Swift、Kotlin）：`sync-wait`、`reentrant-sync`，不声明 `sync-stack` | 多语言设计 §九（2026-10-14） | `crates/rutis-bridge/src/session/rpc/waits.rs` `Profile.stacked`；`go/rutis/internal/peer/peer.go`、`swift/rutis/Sources/Rutis/Session/Peer.swift`、`kotlin/rutis/rutis/src/shared/kotlin/arcships/rutis/internal/peer/Peer.kt` |
+| 没有声明 `sync-wait` 的运行时不计入 | 多语言设计 §九「新旧版本混用」 | `crates/rutis-bridge/src/session/rpc/waits.rs` `forward`：没有 `sync` 的调用不登记；`profile` |
 | 同步的事件分发 `bail`、`waterfall-sync` | [事件协议](../../docs/design-events-protocol-2026-10-18.md) §5.4 | `crates/rutis-bridge/src/events/hub.rs` `dispatch`（`Mode::Bail`、`Mode::Waterfall if sync`）、`call_sync`、`Waits`/`wait_here` |
-| 宿主的有界工作线程（`Workers`）、Rust 服务调用、宿主自己发起的同步调用、同步分发各占一个线程 | 多语言设计 §九；事件协议 §5.4 | `rpc.rs` `receive`；`events/hub.rs` `dispatch`；`waits.rs`（`forward` 只按会话记边，宿主线程不在图里） |
-| 异步分发 `serial` / `parallel` / 异步 `waterfall`：过滤器可挂起一次，监听器调用异步、执行等结果 | 事件协议 §5.4、§5.5；多语言设计 §九（#561） | `events/hub.rs` `dispatch`（`Mode::Serial`、`Mode::Parallel`、非同步的 `Mode::Waterfall`）、`call_async` |
-| `cancel`、迟到的 `ret`、被调用方保留标记到真正结束 | 多语言设计 §九（#561） | `waits.rs` `marked` / `answered` / `returned`；`rpc.rs`；Go 的 context、Swift 的 Task、Kotlin 的中断 |
+| 宿主的有界工作线程（`Workers`）、Rust 服务调用、宿主自己发起的同步调用、同步分发各占一个线程 | 多语言设计 §九；事件协议 §5.4 | `crates/rutis-bridge/src/session/rpc.rs` `receive`；`crates/rutis-bridge/src/events/hub.rs` `dispatch`；`crates/rutis-bridge/src/session/rpc/waits.rs`（`forward` 只按会话记边，宿主线程不在图里） |
+| 异步分发 `serial` / `parallel` / 异步 `waterfall`：过滤器可挂起一次，监听器调用异步、执行等结果 | 事件协议 §5.4、§5.5；多语言设计 §九（#561） | `crates/rutis-bridge/src/events/hub.rs` `dispatch`（`Mode::Serial`、`Mode::Parallel`、非同步的 `Mode::Waterfall`）、`call_async` |
+| `cancel`、迟到的 `ret`、被调用方保留标记到真正结束 | 多语言设计 §九（#561） | `crates/rutis-bridge/src/session/rpc/waits.rs` `marked` / `answered` / `returned`；`crates/rutis-bridge/src/session/rpc.rs`；Go 的 context、Swift 的 Task、Kotlin 的中断 |
 | Cordis 节点的 connector 泵：一条连接上等待时不读别的会话 | 多语言设计 §九 | `crates/rutis-bridge/src/peer.rs`（`link.offers`）；Cordis 侧每个 connector 一个泵 |
 | Node 运行时：不可重入 | 多语言设计 §九；[插件 API](../../docs/guide/plugin-api.md)"同步调用与可重入" | `node/rutis-runtime/src/session.mjs` `#requestSync`、`#run` |
 | Python 运行时：可重入；从别的线程发同步调用 | 同上 | `python/rutis/rutis/peer.py` `_call_sync`、`_run`；`run_coroutine_threadsafe` |
 | 本地放弃同步调用（不发 `cancel`） | 多语言设计 §九（#561 后） | Go 的 context、Swift 的 Task、Kotlin 的中断 |
-| 策略 B（A 不采用） | 多语言设计 §九 | `waits.rs`（#228）；调用帧的 `sync` 字段见 `session.mjs`、`peer.py`、`bun/rutis-bun/src/session.ts` |
+| 策略 B（A 不采用） | 多语言设计 §九 | `crates/rutis-bridge/src/session/rpc/waits.rs`（#228）；调用帧的 `sync` 字段见 `node/rutis-runtime/src/session.mjs`、`python/rutis/rutis/peer.py`、`bun/rutis-bun/src/session.ts` |
 
 ## 模型
 
