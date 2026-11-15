@@ -409,7 +409,17 @@ export class Runtime {
       ...this.#emitters(row),
       filter: (predicate: (descriptor: unknown) => unknown) => {
         if (typeof predicate !== 'function') throw new TypeError('filter needs a predicate function')
-        return this.#emitters(row, predicate)
+        // A predicate answers at once (§6): a Promise or thenable would be
+        // truthy and keep the listener, so it fails the dispatch instead
+        // (#637).
+        return this.#emitters(row, (descriptor: unknown) => {
+          const answer = predicate(descriptor)
+          if (answer !== null && (typeof answer === 'object' || typeof answer === 'function') && typeof (answer as { then?: unknown }).then === 'function') {
+            Promise.resolve(answer).then(() => {}, () => {})
+            throw new TypeError('a filter predicate must answer with a boolean, not a Promise')
+          }
+          return answer
+        })
       },
     }
     try {

@@ -65,19 +65,20 @@ TypeKey::keyed_dynamic::<dyn HostDispatch>(name)   // 即 host_key(name)
 
 ### 4.1 方法形状跟着服务走
 
-Node 侧给宿主服务建代理时，要知道每个方法是同步还是异步。现在这份信息写在 `CordisRuntimePlugin::host(name, methods)` 上。宿主服务改成按行注册后，形状要跟着服务本身走：
+Node 侧给宿主服务建代理时，要知道每个方法是同步还是异步。形状跟着服务本身走：
 
 ```rust
 pub trait HostDispatch: Send + Sync + 'static {
     fn invoke(&self, method: &str, args: RpcValue) -> Reply;
-    /// { method: "sync" | "async" }。None：由运行时的 `host` 声明补上。
+    /// { method: "sync" | "async" }。None：由租用它的地方给出。
     fn methods(&self) -> Option<Value> { None }
+    // 另有 origin / provider / as_any，见 crates/rutis-bridge/src/session/services.rs
 }
 ```
 
-- 默认实现返回 `None`，现有实现不用改；
-- `CordisRuntimePlugin::host(name, methods)` 保留，但**只登记形状，不再让运行时依赖这个服务**。这是行为变化，写进 0.3.0 的迁移说明；
-- 行服务的 `HostDispatch`（§五.3）总是带形状。
+- 租用服务的地方可以给形状（`Process::lease_host{,_in}` 的 `methods`）；给了就用它，否则用 `HostDispatch::methods()`；都没有时是 `{}`。`crates/rutis-bridge/src/runtime/process.rs` 的 `lease`。
+- 行服务的 `HostDispatch`（§五.3）总是带形状，来自 `rows.schema` 的 `provides`。
+- `CordisRuntimePlugin::host(name, methods)` 已随 `CordisRuntimePlugin` 删除；静态挂载的运行时不再单独声明宿主服务的形状。
 
 ### 4.2 catalog：`register_shared`
 

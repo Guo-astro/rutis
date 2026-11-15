@@ -869,6 +869,34 @@ pub fn rebase(path: &[String], from: &str, to: &str) -> Vec<String> {
         })
         .collect()
 }
+
+/// Whether `entry` is a call id a reference's `origin` may name: this
+/// side's call or another session's, as `s<digits>/<endpoint>:<n>`
+/// (#325). Every runtime checks each origin entry this way when it takes
+/// a reference (#637); a nested tag, a bad endpoint or a wrong number is
+/// a protocol error.
+fn origin_entry(entry: &str) -> bool {
+    let id = match entry.split_once('/') {
+        Some((tag, id)) => {
+            let digits = tag.strip_prefix('s').unwrap_or("");
+            if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+                return false;
+            }
+            id
+        }
+        None => entry,
+    };
+    let Some((endpoint, number)) = id.split_once(':') else {
+        return false;
+    };
+    !endpoint.is_empty()
+        && endpoint
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        && !number.is_empty()
+        && !number.starts_with('0')
+        && number.bytes().all(|b| b.is_ascii_digit())
+}
 static NEXT_TAG: AtomicU64 = AtomicU64::new(1);
 
 /// A new session tag: `s`, this process's nonce (15 random decimal digits)
@@ -2381,6 +2409,15 @@ impl Connection {
                         .zip(nulls(self.decode_each(values)?))
                         .collect(),
                 )
+            }
+            // Every runtime checks an origin entry when it takes a
+            // reference (#637): a session tag, then an endpoint and a
+            // number. A malformed one is a protocol error, as in the
+            // runtimes.
+            WireValue::Reference { origin, .. }
+                if !origin.iter().all(|entry| origin_entry(entry)) =>
+            {
+                return Err(transport("invalid reference"))
             }
             WireValue::Reference {
                 id,

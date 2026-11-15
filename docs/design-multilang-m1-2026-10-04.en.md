@@ -87,23 +87,24 @@ The tradeoff is that the application must list service names shared across langu
 
 ### 4.1 Method shape travels with the service
 
-When creating a host-service proxy on the Node side, the runtime needs to know whether each method is synchronous or asynchronous. This information currently lives in `CordisRuntimePlugin::host(name, methods)`. Once host services are registered per row, the shape must travel with the service:
+When creating a host-service proxy on the Node side, the runtime needs to know whether each method is synchronous or asynchronous. The shape travels with the service:
 
 ```rust
 pub trait HostDispatch: Send + Sync + 'static {
     fn invoke(&self, method: &str, args: RpcValue) -> Reply;
-    /// { method: "sync" | "async" }. None: filled from the runtime's `host` declaration.
+    /// { method: "sync" | "async" }. None: supplied by whoever leases it.
     fn methods(&self) -> Option<Value> { None }
+    // origin / provider / as_any too: crates/rutis-bridge/src/session/services.rs
 }
 ```
 
-- The default implementation returns `None`, so existing implementations need no changes.
-- `CordisRuntimePlugin::host(name, methods)` remains, but **only records the shape; it no longer makes the runtime depend on this service**. Document this behavior change in the 0.3.0 migration notes.
-- A row service's `HostDispatch` (§5.3) always carries its shape.
+- Whoever leases the service may supply the shape (the `methods` argument of `Process::lease_host{,_in}`); it is used when given, otherwise `HostDispatch::methods()`, otherwise `{}`. See `lease` in `crates/rutis-bridge/src/runtime/process.rs`.
+- A row service's `HostDispatch` (§5.3) always carries its shape, from the `provides` of `rows.schema`.
+- `CordisRuntimePlugin::host(name, methods)` was removed with `CordisRuntimePlugin`; a statically mounted runtime no longer declares host-service shapes separately.
 
 ### `CordisRuntimePlugin`
 
-The runtime itself is provided under a fixed `CordisRuntime` key. `CordisRuntimePlugin::host(name, methods)` records only the method shape for the named host service; it does not make the runtime depend on that service. When a row needs the service, the row acquires a reference to it and the runner receives a proxy registration.
+`CordisRuntimePlugin` was removed with the row contract: the runtime is started and provided by the loader, and rows lease host services themselves (`Process::lease_host{,_in}`). The old type's `host(name, methods)` call has no replacement; a service's shape comes from `HostDispatch::methods()` or the lease.
 
 ## 5. Node rows and service dependencies
 

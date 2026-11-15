@@ -188,6 +188,28 @@ async fn unknown_services_and_intercept_config_are_unresolved() {
     ));
 }
 
+/// A configured isolate label may not contain U+0001: the loader makes a
+/// row's own label `<label>\u{1}row:<key>` for the services it leases, so a
+/// label from the configuration that could be read as one is refused (#637).
+#[tokio::test]
+async fn an_isolate_label_with_u0001_is_refused() {
+    let (_h, store, _root, loader) = setup(false).await;
+    let report = apply(
+        &loader,
+        &store,
+        json!([{ "id": "a", "name": "echo", "isolate": { "dep": "x\u{1}row:b" } }]),
+    )
+    .await;
+    assert_eq!(report.failures.len(), 1, "{report:?}");
+    match loader.get("a").unwrap().status {
+        EntryStatus::Unresolved(LoaderError::InvalidEntry(message)) => {
+            assert!(message.contains("isolate.dep"), "{message}");
+            assert!(message.contains("U+0001"), "{message}");
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
 /// guarantee: loader/edit-dry-run-first, loader/update-in-place-or-respawn
 #[tokio::test]
 async fn changing_the_scope_respawns_and_persists() {
