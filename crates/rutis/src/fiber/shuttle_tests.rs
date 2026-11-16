@@ -9,7 +9,8 @@
 //! `EffectRecord::{claim, finish, join}` (what `EffectRecord::drain` runs),
 //! and — for registration, event flights and the close passes — a real `Ctx`
 //! built on a tokio runtime handle, so `register_effect_named`,
-//! `Entry::start`, `set_state` and `wait_events` are the kernel's too. Models
+//! `Entry::start`, `set_state` and `wait_events` are the kernel's too (model
+//! 22's deadline is the model's clock, `crate::sync::deadline`). Models
 //! 7–9 and 12 are reference models: their comments say which bookkeeping
 //! cannot be run here and what stands in for it; models 10 and 11 run the
 //! bus's `Table`, `Selected` and `Entry` and mirror the emit chain and the
@@ -25,7 +26,9 @@
 //! 20 installs the spawn stand-in (`crate::sync::SpawnScope`), so the tasks
 //! the kernel spawns run on shuttle's executor and a model drives them; model
 //! 21 mounts a child on the root while the root closes, over the real admission
-//! and transition locks. Built with `--cfg rutis_shuttle`, `crate::sync` makes
+//! and transition locks; model 22 waits on two fibers' calls with the deadline
+//! timer, which the model moves (`crate::sync::Clock`). Built with
+//! `--cfg rutis_shuttle`, `crate::sync` makes
 //! the driver's `alive` flag, a fiber's `lineage_closed` marker, an effect
 //! record's state, a spawned task's result and the admission, transition,
 //! effects and flight locks shuttle primitives; the tokio channels in between
@@ -52,15 +55,16 @@
 //!   the same reason: `recover_driver_panic` is the code a written-out driver
 //!   would replace. It is pinned by
 //!   `crates/rutis/tests/contract.rs::driver_panic_completes_waiters_with_error`.
-//! - **The kernel side of a child process ending (#623).** The kernel sees it
-//!   only as an event call that never returns; its part is the unload deadline:
-//!   `wait_events` gives up at `shutdown_deadline()` (`fiber.rs:582`), fed by
-//!   `RUTIS_SHUTDOWN_TIMEOUT` (`fiber.rs:1201`), and reports
-//!   `ListenersStillRunning`. The timer is a real `std::thread` with
-//!   `recv_timeout` and has no seam a model can drive; the variable is
-//!   process-wide, so shortening it for one model would shorten it for model 6
-//!   too — a timing gamble, not an interleaving; the deadline timer is the rest
-//!   of `#622` item 1's stand-ins. Pinned end to end by
+//! - **The child process half of an ending runtime (#623).** The kernel sees
+//!   it only as an event call that never returns. Its own part, the unload
+//!   deadline — `wait_events` giving up at `shutdown_deadline()` and reporting
+//!   `ListenersStillRunning` — is model 22, driven by the model's clock. What
+//!   is not modelled is the channel that ends before that: the bridge's read
+//!   thread, exit status and close paths (`crates/rutis-bridge`), which are
+//!   #623's models. The plain build's timer (a `std::thread` with
+//!   `recv_timeout`, its limit the process-wide `RUTIS_SHUTDOWN_TIMEOUT`) is
+//!   not a shuttle subject — real time is not an interleaving — and is pinned
+//!   end to end by
 //!   `crates/rutis/tests/unload_deadline.rs::an_unload_gives_up_on_running_listeners_at_the_deadline`.
 //!
 //! Run (CONTRIBUTING.md):
@@ -82,24 +86,26 @@ use std::sync::{Arc, Weak};
 
 use shuttle::future::block_on;
 use shuttle::sync::atomic::{AtomicBool, AtomicUsize as ShuttleUsize};
-use shuttle::sync::Condvar as ShuttleCondvar;
+use shuttle::sync::{Barrier as ShuttleBarrier, Condvar as ShuttleCondvar};
 use shuttle::thread;
 use tokio::sync::{mpsc, watch, Notify};
 
 use super::{
     complete_intent, join_task, mark_subtree_lineage, post_join_to, publish_subtree_closing,
-    spawn_fiber, CloseTree, FiberInner, FiberState, Intent, NextState, PluginId, TransitionTask,
-    NOT_LIVE,
+    shutdown_deadline, spawn_fiber, CloseTree, FiberInner, FiberState, Intent, NextState, PluginId,
+    TransitionTask, NOT_LIVE,
 };
 use crate::bus::run::{Inv, SyncNext};
 use crate::bus::table::{Body, Entry, Selected, Table};
 use crate::effect::{run_cleanups, Cleanup, Effect, EffectRecord, Origin};
-use crate::error::{aggregate_arcs, Error, ErrorKind};
+use crate::error::{aggregate_arcs, Error, ErrorKind, ErrorSink};
 use crate::events::{ErasedSync, Event, ListenerInfo, TableChange, TableEntry, Value};
 use crate::host::CtxHost;
 use crate::internal::CtxInternal;
 use crate::key::{ScopeId, TypeKey};
-use crate::sync::{switch_point, AtomicBool as SyncBool, Mutex as SyncMutex, SpawnScope, TaskSet};
+use crate::sync::{
+    switch_point, AtomicBool as SyncBool, Clock, Mutex as SyncMutex, SpawnScope, TaskSet,
+};
 use crate::Ctx;
 
 /// Iterations of each scheduler: `RUTIS_SHUTTLE_ITERATIONS`, or 1000.
@@ -548,8 +554,9 @@ fn named_entry(ctx: &Ctx, fiber: &Arc<FiberInner>, id: u64, position: i64, name:
 /// wakeup.
 ///
 /// The model runs the kernel's `Entry::start`, `CallFlight`, `set_state` and
-/// `wait_events` (with its deadline thread, which stays out of the way here:
-/// the calls finish long before it fires). What is written out is only the
+/// `wait_events` (with no deadline timer: this model installs no clock, so the
+/// wait has none, as a plain build's has none when its thread cannot be
+/// spawned). What is written out is only the
 /// call body itself — a dispatch runs the listener between `Entry::start` and
 /// dropping the flight — and the unloader's two steps (the state change, then
 /// the wait), which are `FiberInner::unload`'s.
@@ -5895,4 +5902,244 @@ fn shuttle_mount_admission_races_root_close() {
             "the child did not end Disposed"
         );
     });
+}
+
+/// One fiber of the deadline model: the root context whose sink takes the
+/// report, the listener entry whose calls are in flight, and how many of its
+/// bodies the model runs.
+struct DeadlineFiber {
+    ctx: Ctx,
+    fiber: Arc<FiberInner>,
+    entry: Arc<Entry>,
+    errors: Arc<std::sync::Mutex<Vec<Arc<ErrorKind>>>>,
+    running: Arc<ShuttleUsize>,
+}
+
+/// A root on `runtime` with a sink that keeps what it is given, the root
+/// fiber, and a listener entry the model starts calls through.
+fn deadline_fiber(runtime: &tokio::runtime::Runtime) -> DeadlineFiber {
+    let errors: Arc<std::sync::Mutex<Vec<Arc<ErrorKind>>>> =
+        Arc::new(std::sync::Mutex::new(Vec::new()));
+    let into = errors.clone();
+    let sink: ErrorSink = Arc::new(move |error| into.lock().unwrap().push(error));
+    let ctx = Ctx::root_with_sink(runtime.handle().clone(), sink);
+    let fiber = ctx.root_view().expect("the root view").inner.clone();
+    let entry = Arc::new(model_entry(&ctx, &fiber));
+    DeadlineFiber {
+        ctx,
+        fiber,
+        entry,
+        errors,
+        running: Arc::new(ShuttleUsize::new(0)),
+    }
+}
+
+/// Model 22, the unload deadline (#622 item 1's last stand-in; #623 covers the
+/// child process that makes a call never return): an unload waits for the event
+/// calls counted on its fiber at most `shutdown_deadline()` (`wait_events`),
+/// reports `listeners of plugin root still running after <s>s; unloading
+/// anyway`, and goes on. Two fibers unload at once, each with two calls in
+/// flight, so the model drives two timers; the deadline is the model's clock
+/// (`crate::sync::Clock`), not a thread. What runs is the kernel's
+/// `Entry::start`/`CallFlight` (the call counted before its liveness check),
+/// `FiberInner::begin_event`/`finish_event`, `set_state(Unloading)` under the
+/// admission and transition locks, `shutdown_deadline`, `wait_events` with its
+/// own `select!`, and `crate::sync::deadline`'s registration on the clock. What
+/// is written out is the listener body (the model runs it and holds it at a
+/// barrier), the unloader's two steps around the wait, and the scheduler: the
+/// model thread that waits until both timers are registered, moves time, and
+/// lets the calls end.
+///
+/// The two orders, both in this test: the calls outlive the deadline, so both
+/// waits return at it and report it — a body is still running when they return;
+/// and the calls end first, so both waits return on the count without a word,
+/// and the registrations they take back fire nothing when time goes on. Half
+/// the limit is never enough to fire either timer.
+///
+/// Mutations this model catches: a `wait_events` that never registers (the
+/// deadline-first order waits for registrations that never come, and shuttle
+/// reports the deadlock), a clock that fires early (the half-limit advance
+/// fires), a deadline that never fires (the deadline-first order's second
+/// advance fires nothing and the wait hangs), a registration that outlives its
+/// wait (the calls-first order's last advance fires it), a wait that reports
+/// though its calls finished (the calls-first order's `reported`), a wait that
+/// returns without watching the count (its `running` is non-zero), a wait that
+/// goes on past the deadline (it never joins), and a report that carries
+/// another limit or names another fiber (the `seconds` and `listeners`). Each
+/// was made in `wait_events` or `crate::sync` and reverted; the first three
+/// fail before reaching the deadline-first order's joins: a `wait_events` that
+/// keeps its own `std::thread` with `recv_timeout` registers nothing, so
+/// `wait_for_waiters` blocks with every other thread too and shuttle reports
+/// the deadlock; a timer due at once fires on the half-limit advance; one due
+/// at twice the limit fires on neither.
+#[test]
+fn shuttle_event_waits_end_at_their_deadline() {
+    // The deadline first: the calls outlive it, so both waits return at it
+    // and report it.
+    explore(|| deadline_waits(false));
+    // The calls first: both finish inside the deadline, so both waits return
+    // on the count and the timers they took back fire nothing.
+    explore(|| deadline_waits(true));
+}
+
+fn deadline_waits(calls_first: bool) {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .expect("a current-thread runtime");
+    let one = deadline_fiber(&runtime);
+    let two = deadline_fiber(&runtime);
+    let clock = Clock::new();
+    let limit = shutdown_deadline();
+    // Four calls and the model: every call is in flight before anything
+    // unloads it, and the model lets the bodies end when it says so.
+    let claimed = Arc::new(ShuttleBarrier::new(5));
+    let released = Arc::new(ShuttleBarrier::new(5));
+
+    let mut dispatchers = Vec::new();
+    for fiber in [&one, &two] {
+        for _ in 0..2 {
+            let (entry, running) = (fiber.entry.clone(), fiber.running.clone());
+            let (claimed, released) = (claimed.clone(), released.clone());
+            dispatchers.push(thread::spawn(move || {
+                // The kernel's admission and flight: `Entry::start` counts the
+                // call on its owner before the liveness check, and the guard
+                // counts it back down when the body is done.
+                let flight = entry
+                    .start()
+                    .expect("a call was refused before its unload published");
+                running.fetch_add(1, Ordering::SeqCst);
+                claimed.wait();
+                released.wait();
+                running.fetch_sub(1, Ordering::SeqCst);
+                drop(flight);
+            }));
+        }
+    }
+
+    claimed.wait();
+    for fiber in [&one, &two] {
+        assert_eq!(
+            *fiber.fiber.event_flights.lock().unwrap(),
+            2,
+            "the model's two calls were not both counted on the fiber"
+        );
+    }
+
+    let mut waiters = Vec::new();
+    for fiber in [&one, &two] {
+        let (ctx, inner, running) = (
+            fiber.ctx.clone(),
+            fiber.fiber.clone(),
+            fiber.running.clone(),
+        );
+        let errors = fiber.errors.clone();
+        let clock = clock.clone();
+        waiters.push(thread::spawn(move || {
+            // The deadline this wait registers is this clock's; the model's
+            // own thread is its scheduler.
+            let _entered = clock.enter();
+            {
+                let _admission = ctx.shared().admission.lock().unwrap();
+                let mut tr = inner.transition.lock().unwrap();
+                inner.set_state(&mut tr, FiberState::Unloading);
+            }
+            let before = errors.lock().unwrap().len();
+            block_on(inner.wait_events());
+            let after = errors.lock().unwrap().len();
+            (after - before, running.load(Ordering::SeqCst))
+        }));
+    }
+
+    // Both timers are registered, half the limit is not enough to fire
+    // either, and then the model picks the order.
+    clock.wait_for_waiters(2);
+    let half = limit / 2;
+    let rest = limit - half;
+    assert_eq!(
+        clock.advance(half),
+        0,
+        "a deadline fired before its limit had passed"
+    );
+
+    if calls_first {
+        released.wait();
+        for waiter in waiters {
+            let (reported, still_running) = waiter.join().unwrap();
+            assert_eq!(
+                reported, 0,
+                "a wait reported the deadline although its calls finished first"
+            );
+            assert_eq!(
+                still_running, 0,
+                "a wait returned while a call body was still running"
+            );
+        }
+        assert_eq!(
+            clock.advance(rest),
+            0,
+            "a deadline outlived the wait that registered it"
+        );
+    } else {
+        assert_eq!(
+            clock.advance(rest),
+            2,
+            "a deadline did not fire when its limit had passed"
+        );
+        for waiter in waiters {
+            let (reported, still_running) = waiter.join().unwrap();
+            assert_eq!(
+                reported, 1,
+                "a wait past the deadline did not report it exactly once"
+            );
+            assert_eq!(
+                still_running, 2,
+                "the wait past the deadline returned after its calls did"
+            );
+        }
+        released.wait();
+    }
+
+    for dispatcher in dispatchers {
+        dispatcher.join().unwrap();
+    }
+    // Half the limit and then the rest: the clock is where the model moved
+    // it, and no registration is left to fire.
+    assert_eq!(
+        clock.now(),
+        limit,
+        "the clock is not where the model moved it"
+    );
+
+    for fiber in [&one, &two] {
+        assert_eq!(
+            *fiber.fiber.event_flights.lock().unwrap(),
+            0,
+            "an event flight was never finished"
+        );
+        assert_eq!(
+            fiber.running.load(Ordering::SeqCst),
+            0,
+            "a call body was still running at the end"
+        );
+        let errors = fiber.errors.lock().unwrap();
+        if calls_first {
+            assert!(
+                errors.is_empty(),
+                "a sink got {errors:?} although the calls finished first"
+            );
+        } else {
+            assert_eq!(errors.len(), 1, "a wait reported {} times", errors.len());
+            match &*errors[0] {
+                ErrorKind::ListenersStillRunning { listeners, seconds } => {
+                    assert_eq!(
+                        *seconds,
+                        limit.as_secs_f64(),
+                        "the report carries another limit"
+                    );
+                    assert_eq!(listeners, "plugin root", "the report names another fiber");
+                }
+                other => panic!("the sink got {other:?}, not the deadline's error"),
+            }
+        }
+    }
 }
