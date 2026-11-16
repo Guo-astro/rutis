@@ -53,6 +53,10 @@ RUSTFLAGS="--cfg rutis_shuttle" cargo test -p rutis-bridge --features websocket 
 # The runtime supervision (#627): the restart loop, and a binary runtime's
 # restart waiting for its process; same cfg, same directory.
 RUSTFLAGS="--cfg rutis_shuttle" cargo test -p rutis-host --lib --target-dir target/shuttle shuttle
+# A binary runtime's restart onto a replaced file (#627, #622): the old
+# runtime's view disposed and its process ended before the new configuration
+# — its launcher — is installed, and a row wanted meanwhile not starting a
+# second process.
 RUSTFLAGS="--cfg rutis_shuttle" cargo test -p rutis-loader --lib --features go,swift --target-dir target/shuttle shuttle
 # More iterations (1000 by default), or replay the schedule a failure printed:
 RUTIS_SHUTTLE_ITERATIONS=1000000 RUSTFLAGS="--cfg rutis_shuttle" cargo test -p rutis --lib --target-dir target/shuttle shuttle

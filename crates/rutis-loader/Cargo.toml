@@ -51,8 +51,9 @@ rutis-bridge = { path = "../rutis-bridge", features = ["websocket", "testing"] }
 # selection, #659).
 rutis = { path = "../rutis", features = ["testing"] }
 
-# The shuttle model of the binary runtime's restart
-# (src/runtime/binary/shuttle_tests.rs, #627): built with
+# The shuttle models of the binary runtime's restart and of a replaced
+# binary's install (src/runtime/binary/shuttle_tests.rs, its file and note
+# stand-ins in src/runtime/binary/model.rs, #627, #622): built with
 # `RUSTFLAGS="--cfg rutis_shuttle"` only, never by a plain build.
 [target.'cfg(rutis_shuttle)'.dependencies]
 shuttle = "0.9.7"

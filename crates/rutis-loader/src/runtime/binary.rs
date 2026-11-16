@@ -257,7 +257,20 @@ struct Stamp {
     changed: Option<(i64, i64)>,
 }
 
+/// The stand-ins the models build on (#622): the file a runtime starts from,
+/// as the model replaces it, and what a start and a stop did, in order. Built
+/// only with `--cfg rutis_shuttle` (`cargo test`).
+#[cfg(all(test, rutis_shuttle))]
+mod model;
+
 fn stamp(path: &Path) -> Option<Stamp> {
+    // A file the model replaced answers with its stamp, as the model has it:
+    // no file system, so replacing one is an event of the model rather than a
+    // clock's resolution.
+    #[cfg(all(test, rutis_shuttle))]
+    if let Some(stamp) = model::stamp_of(path) {
+        return Some(stamp);
+    }
     let metadata = std::fs::metadata(path).ok()?;
     if !metadata.is_file() {
         return None;
@@ -1631,7 +1644,13 @@ async fn stop(runtime: &str, slot: Slot) {
     // wait below is what the model checks, and the view stays in the slot
     // until the stop returns. The model's process ends by hand, so there is
     // no deadline to run out either.
-    let disposed: Result<(), rutis::host::DisposeWaitError> = Ok(());
+    let disposed: Result<(), rutis::host::DisposeWaitError> = {
+        #[cfg(test)]
+        model::note(model::Note::Disposed {
+            runtime: runtime.to_owned(),
+        });
+        Ok(())
+    };
     let timed_out = matches!(
         disposed,
         Err(rutis::host::DisposeWaitError::TimedOut { .. })
@@ -1650,7 +1669,15 @@ async fn stop(runtime: &str, slot: Slot) {
     let exited = {
         // The model ends the process; one nobody ends is a deadlock shuttle
         // reports rather than a timeout to wait out.
+        #[cfg(test)]
+        model::note(model::Note::Waited {
+            runtime: runtime.to_owned(),
+        });
         slot.processes.ended().await;
+        #[cfg(test)]
+        model::note(model::Note::Ended {
+            runtime: runtime.to_owned(),
+        });
         true
     };
     if exited {
@@ -1807,6 +1834,13 @@ impl<L: BinaryLanguage> Inner<L> {
         slots.generation += 1;
         let generation = slots.generation;
         slots.failed.remove(runtime);
+        // Under the slots' lock, with the insertion: a model that sees the
+        // note sees the runtime it installed.
+        #[cfg(all(test, rutis_shuttle))]
+        model::note(model::Note::Installed {
+            runtime: runtime.to_owned(),
+            stamp: stamp.clone(),
+        });
         slots.running.insert(
             runtime.to_owned(),
             Slot {
@@ -2057,6 +2091,14 @@ struct BinaryRuntime<L: BinaryLanguage> {
 impl<L: BinaryLanguage> BinaryRuntime<L> {
     fn spawned(&self) -> Spawned {
         let launcher = L::launch(&self.binary, &self.project);
+        // The launcher is the seam (#622): what a runtime starts with, here
+        // the replacement's file, recorded before the old runtime is stopped.
+        #[cfg(all(test, rutis_shuttle))]
+        model::note(model::Note::Launched {
+            runtime: self.runtime.clone(),
+            program: launcher.program.clone(),
+            stamp: self.stamp.clone(),
+        });
         (self.spawn)(&self.runtime, launcher, &self.project)
     }
 }
