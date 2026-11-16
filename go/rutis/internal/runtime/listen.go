@@ -99,6 +99,8 @@ var announce = func(address string) {
 
 // listen serves one controller at a time on a WebSocket address: a newer
 // connection takes over, and is greeted only once the old lease is gone.
+// Its heartbeat starts at that hello, not at the accept: a cleanup longer
+// than the heartbeat timeout does not close it (#1182).
 func listen(spec string, endpoint *peer.Endpoint, defs []*Definition) error {
 	accepted, _, err := listenWebSocket(spec, fmt.Sprintf("rutis.%d", peer.EndpointProtocol), os.Getenv("RUTIS_TOKEN"), os.Getenv("RUTIS_CERT"), os.Getenv("RUTIS_KEY"))
 	if err != nil {
@@ -238,13 +240,20 @@ func listenWebSocket(spec, protocol, token, cert, key string) (<-chan *wsConn, s
 // wsConn is a WebSocket connection carrying text messages: accepted by a
 // listener, or dialed (`client`: it masks what it sends).
 type wsConn struct {
-	conn     net.Conn
-	reader   *bufio.Reader
-	client   bool
-	writeMu  sync.Mutex
-	once     sync.Once
-	done     chan struct{}
+	conn    net.Conn
+	reader  *bufio.Reader
+	client  bool
+	writeMu sync.Mutex
+	once    sync.Once
+	done    chan struct{}
+	// lastSeen is when the far end last said something, in
+	// time.Now's units; it counts once beating is set, at the session's
+	// hello.
 	lastSeen atomic.Int64
+	// beating says the session's hello went out: until then the silence of
+	// a connection waiting for the old lease to be cleaned up is not a lost
+	// far end (#1182).
+	beating atomic.Bool
 	// farClose is the code of the far end's close frame, once it closed
 	// with one.
 	farClose atomic.Int32
@@ -255,9 +264,16 @@ func newWSConn(conn net.Conn, reader *bufio.Reader) *wsConn {
 }
 
 func startWSConn(ws *wsConn) *wsConn {
-	ws.lastSeen.Store(time.Now().UnixNano())
 	go ws.heartbeat()
 	return ws
+}
+
+// startHeartbeat starts counting silence, at the session's hello: a
+// connection waiting for the old lease to be cleaned up is not closed with
+// 1001 before it (#1182).
+func (ws *wsConn) startHeartbeat() {
+	ws.lastSeen.Store(time.Now().UnixNano())
+	ws.beating.Store(true)
 }
 
 func (ws *wsConn) heartbeat() {
@@ -269,7 +285,8 @@ func (ws *wsConn) heartbeat() {
 		case <-ws.done:
 			return
 		case <-ticker.C:
-			if time.Since(time.Unix(0, ws.lastSeen.Load())) > timeout {
+			// Waiting for its hello to go out, a connection is not silent.
+			if ws.beating.Load() && time.Since(time.Unix(0, ws.lastSeen.Load())) > timeout {
 				ws.closeWith(goingAway, "the far end stopped answering")
 				return
 			}

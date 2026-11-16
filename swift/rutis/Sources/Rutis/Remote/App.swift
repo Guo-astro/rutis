@@ -95,6 +95,9 @@ public final class RutisApp: Observable, @unchecked Sendable {
     let token: String
     let project: String
     let settings: Events.Settings
+    /// The heartbeat of connections it accepts; nil: the environment's
+    /// (tests shorten it).
+    let heartbeatTiming: (ping: Double, timeout: Double)?
 
     private let lock = Lock()
     private let registrar = ObservationRegistrar()
@@ -163,7 +166,7 @@ public final class RutisApp: Observable, @unchecked Sendable {
     }
 
     init(plugins: [Rutis.Definition], configs: [String: any Encodable]?, mode: Mode, id: String, peer: String?, token: String,
-         project: String, settings: Events.Settings)
+         project: String, settings: Events.Settings, heartbeat: (ping: Double, timeout: Double)? = nil)
     {
         self.plugins = plugins
         self.configs = configs
@@ -173,6 +176,7 @@ public final class RutisApp: Observable, @unchecked Sendable {
         self.token = token
         self.project = project
         self.settings = settings
+        heartbeatTiming = heartbeat
     }
 
     /// Writes `line` on stderr: the default `log`.
@@ -287,7 +291,8 @@ public final class RutisApp: Observable, @unchecked Sendable {
             let (events, continuation) = AsyncStream<ListenEvent>.makeStream()
             let bind = { [token] () throws -> WebSocketListener in
                 let address = self.lock.withLock { self.boundListen } ?? spec
-                let listener = try WebSocketListener(address, protocol: "rutis.\(endpointProtocol)", token: token, identity: identity)
+                let listener = try WebSocketListener(address, protocol: "rutis.\(endpointProtocol)", token: token, identity: identity,
+                                                     timing: self.heartbeatTiming)
                 let failing = ObjectIdentifier(listener)
                 let bound = try listener.start(failed: { error in continuation.yield(.failed(failing, error)) }) { socket in
                     continuation.yield(.accepted(socket))
@@ -511,6 +516,9 @@ public final class RutisApp: Observable, @unchecked Sendable {
                 do {
                     let (peer, runtime) = try Rutis.startSession(channel: socket, project: project, served, endpoint: endpoint,
                                                                  settings: settings)
+                    // The session's hello went out: from here silence counts,
+                    // not from the accept (#1182).
+                    socket.startHeartbeat()
                     next += 1
                     let id = next
                     current = (id, ControllerSession(peer: peer, runtime: runtime, socket: socket))

@@ -57,12 +57,14 @@ export function dialHost(spec) {
   return url.hostname
 }
 
-// A channel over an open WebSocket: { send(text), end(), close(reason), replaced() }.
-// `closed(reason, code)` gets the close code received from the far end
-// (1006 when none came).
+// A channel over an open WebSocket: { start(), send(text), end(), close(reason), replaced() }.
+// `start()` starts the heartbeat, at the session's hello: until then a
+// connection waiting for the old lease to be cleaned up is not silent
+// (#1182). `closed(reason, code)` gets the close code received from the far
+// end (1006 when none came).
 function wrap(socket, { message, closed }, limits) {
   let ended = false, failure
-  let lastSeen = Date.now()
+  let beating = false, lastSeen = 0
   const finish = (reason, code) => {
     if (ended) return
     ended = true
@@ -70,7 +72,8 @@ function wrap(socket, { message, closed }, limits) {
     closed(reason, code)
   }
   const heartbeat = setInterval(() => {
-    if (Date.now() - lastSeen > limits.timeout) {
+    // Waiting for its hello to go out, a connection is not silent.
+    if (beating && Date.now() - lastSeen > limits.timeout) {
       failure = `no message from the far end for ${limits.timeout / 1000} s: heartbeat timeout`
       socket.terminate()
       return
@@ -100,6 +103,11 @@ function wrap(socket, { message, closed }, limits) {
     finish(failure, code)
   })
   return {
+    start() {
+      if (beating) return
+      beating = true
+      lastSeen = Date.now()
+    },
     send(text) {
       if (ended) return
       if (Buffer.byteLength(text) > limits.maxMessage) {
@@ -167,7 +175,12 @@ export function open(spec, handlers, { protocol, token, ca, limits = LIMITS } = 
       const certificate = typeof error.code === 'string' && (/CERT|SIGNATURE|ALTNAME|ISSUER/.test(error.code))
       reject(new ConnectError(category ?? (certificate ? 'auth-rejected' : 'retryable'), `${url.host}: ${error.message}`))
     })
-    socket.once('open', () => resolve(wrap(socket, handlers, limits)))
+    socket.once('open', () => {
+      // Dialed: this side greets at once, so its heartbeat starts now.
+      const channel = wrap(socket, handlers, limits)
+      channel.start()
+      resolve(channel)
+    })
   })
 }
 
@@ -178,7 +191,8 @@ const sameSecret = (a, b) => {
 
 // Listen on `spec` (ws:// or wss://, loopback only without TLS) and accept
 // connections that present `token` and speak `protocol`; `accepted(channel)`
-// runs for each, with the channel's handlers from `handlers()`. Resolves to
+// runs for each, with the channel's handlers from `handlers()`, and calls
+// `channel.start()` once the session's hello went out. Resolves to
 // { url, stop(), close() } once listening.
 export function listen(spec, { handlers, accepted }, { protocol, token, cert, key, limits = LIMITS } = {}) {
   const url = new URL(spec)

@@ -1,5 +1,7 @@
 // A remote Bun runtime: it listens for its controller (`listen:ws://…`,
-// `listen:wss://…`), or dials a rutis access point and dials again
+// `listen:wss://…`; a new connection's heartbeat starts at its hello, not
+// at the accept, so a slow cleanup does not close it, #1182), or dials a
+// rutis access point and dials again
 // (`dial:ws://…`, `dial:wss://…`, by the rules of `dialing.ts`).
 //
 // Each session runs in a child runtime of its own (this file's main.ts on a
@@ -169,6 +171,10 @@ export async function serve(spec: string, remote: Remote): Promise<never> {
       closed: () => { if (current === session) ws.close('the runtime ended') },
     })
     link.attach(session.childChannel)
+    // Served: from here silence counts, not from the accept, so a cleanup
+    // longer than the heartbeat timeout does not close it before its hello
+    // (#1182).
+    ws.start()
     return session
   }
 

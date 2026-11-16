@@ -7,7 +7,7 @@
 - `RemoteLease.tla`：监听的远端运行时，和拨号连它的控制方 link；
 - `AccessPoint.tla`：远端拨入 `rutis-host/listen` 的一行：握手并行、每个 id 一个 session、同 id 的新连接顶替旧的，以及拨出方的重连与起停。
 
-**对账（2026-11-10）。** 本模型现在覆盖 [#615](https://github.com/arcships/rutis/issues/615) 的以下各项：接管顺序里的鉴权一步（`Auth = "step"`）、旧租约清理的截止（`Cleanup = "deadline"`）、应用托管停止后再开始（`MaxRounds` / `MaxStops`，性质 `RestartIsFresh`、`FinalStopStaysDown`、`RestartRecovers`，含 4 轮、每轮一次停止（3 次再开始）和接管进行中的停止）、故障之后的活性（`MaxFaults`，`lease-faults-live` / `access-faults-live`）、Kotlin 接管时新连接心跳从回应 hello 起算（性质 `NoHeartbeatBeforeHello`，变异 `heartbeatFromAccept`）、静态监听 link 被吊销后的注册、4003 与握手途中的吊销（`access-static-revoke`、`access-mut-revoke-after-handshake`）、`RutisApp` 多次起停与最终停止后的再次开始/拨号（`lease-app-restart-3`、`access-app-restart`、`lease-mut-start-after-final-stop`、`access-mut-final-stop-dials`），以及停止之后才到的 `.accepted` 连接（`lease-mut-late-accept`）。对应表补了 Swift / Kotlin / 应用托管 / Cordis 节点连接。仍未覆盖：Cordis 节点连接的代码（`node/rutis-runtime/src/bridge/link.mjs`）不在本仓库，只能按同一套拨出规则核对；计时（退避、心跳、强杀期限）不在模型里，见"简化"。Node / Bun 的强杀时间已改为 `RUTIS_SHUTDOWN_TIMEOUT + 2 s`（本分支 f57b4138，`serve.mjs` / `remote.ts`），Kotlin `FrameConnection` 的心跳仍从接受连接起算（见下文"实现里的反例与疑点"）。
+**对账（2026-11-10）。** 本模型现在覆盖 [#615](https://github.com/arcships/rutis/issues/615) 的以下各项：接管顺序里的鉴权一步（`Auth = "step"`）、旧租约清理的截止（`Cleanup = "deadline"`）、应用托管停止后再开始（`MaxRounds` / `MaxStops`，性质 `RestartIsFresh`、`FinalStopStaysDown`、`RestartRecovers`，含 4 轮、每轮一次停止（3 次再开始）和接管进行中的停止）、故障之后的活性（`MaxFaults`，`lease-faults-live` / `access-faults-live`）、各运行时接管时新连接心跳从回应 hello 起算（Kotlin #1102；Go、Swift、Node、Bun #1182；性质 `NoHeartbeatBeforeHello`，变异 `heartbeatFromAccept`）、静态监听 link 被吊销后的注册、4003 与握手途中的吊销（`access-static-revoke`、`access-mut-revoke-after-handshake`）、`RutisApp` 多次起停与最终停止后的再次开始/拨号（`lease-app-restart-3`、`access-app-restart`、`lease-mut-start-after-final-stop`、`access-mut-final-stop-dials`），以及停止之后才到的 `.accepted` 连接（`lease-mut-late-accept`）。对应表补了 Swift / Kotlin / 应用托管 / Cordis 节点连接。仍未覆盖：Cordis 节点连接的代码（`node/rutis-runtime/src/bridge/link.mjs`）不在本仓库，只能按同一套拨出规则核对；计时（退避、心跳、强杀期限）不在模型里，见"简化"。Node / Bun 的强杀时间已改为 `RUTIS_SHUTDOWN_TIMEOUT + 2 s`（本分支 f57b4138，`serve.mjs` / `remote.ts`）；Kotlin、Go、Swift、Node、Bun 的心跳都从回应 hello 起算（见下文"简化"）。
 
 ## 对应的设计和代码
 
@@ -56,7 +56,7 @@
 ## 简化
 
 - 时间不建模：退避、30 秒、握手 10 秒、"连接稳定 60 秒后重置退避"、心跳的 10/30 秒都只体现为"之后某个时刻"。超时是任意时刻都可能发生的 `Lose`，比真实的计时更一般。清理的截止也一样：进入清理后，"完成"和"超时强杀"都是可发生的动作，没有计时；每次运行最多一次强杀（`ghost.killed`）。强杀按旧进程消失处理，旧会话的行随之消失（变异 `killLeavesRows` 是反例）。Node / Bun 的强杀期限改为 `RUTIS_SHUTDOWN_TIMEOUT + 2 s` 这件事落在计时上：模型的 deadline 配置只检查"完成或被杀"的两种结果，期限本身由 `serve.test.mjs`、`remote.test.ts` 验证；5 秒与 12 秒在模型里是同一个动作。
-- 心跳：只建"新连接在等待旧清理期间不会被心跳关掉"这一条顺序规则（`NoHeartbeatBeforeHello`）。Kotlin 的 `FrameConnection` 现在把 `lastSeen` 设在构造时（接受连接），清理超过 30 秒时会被 1001 关闭；模型按"从回应 hello 起算"建，变异 `heartbeatFromAccept` 是现在的实现。修在 Kotlin（`Frames.kt` / `Listen.kt`）里，不在本目录。
+- 心跳：只建"新连接在等待旧清理期间不会被心跳关掉"这一条顺序规则（`NoHeartbeatBeforeHello`）。模型按"从回应 hello 起算"建；变异 `heartbeatFromAccept` 是修复前的实现：Kotlin 的 `FrameConnection` 曾在构造时（接受连接）设 `lastSeen`，Go 的 `startWSConn`、Swift 的 `WebSocket.init`、Node 的 `wrap`、Bun 的 `wrap` 也一样。#1102 修了 Kotlin（`Frames.kt` / `Listen.kt`），#1182 修了 Go / Swift / Node / Bun：心跳都改为在会话的 hello 之后开始计时。
 - 应用托管的停止与开始：`MaxRounds` 轮、`MaxStops` 次停止，一次运行里每轮最多停一次；停止可以在接管的任何阶段。停止的清理一步完成（真实实现的 `shutdownTimeout` 到时会强杀，见上一条）；"停止清理期间请求开始"建成 `pending`，清理后开下一轮。最后一轮的停止是最终的；再开始/再拨的变异是 `startAfterFinalStop` / `finalStopDials`。`RutisApp.kt` 的线程交错已在 f57b4138 修复，`access-app-restart` / `lease-app-restart-3` 按修复后的规则建。
 - 有限的重连次数、故障次数和起停次数是模型的边界，不是实现的行为。活性只在没有 stop、故障有界（`MaxFaults`）的运行里检查；在那里每个行为都是有限的，所以 `WF_vars(Next)` 足以让每个能走的步骤走到。`lease-app-restart` 的 `RestartRecovers` 要求"还有下一轮且控制方还有连接可用"：一个已经把连接额度用完的控制方在开始后没法再拨，属性不要求它。`lease-app-restart-3` 只查安全：允许多次停止时，后一次停止会打断前一次停止之后要求的活性。两个控制方配置了同一个运行时（或两个拨出方用同一个 id）时会互相顶掉（拨出稿 §六 已写明）；模型里额度用完时最后一个连上的持有租约，实现里靠退避把节奏放慢到每方约 30 秒一次。
 - 跨主机的租约竞争就是两个控制方配置（`lease-healthy`、`lease-faults`、`lease-faults-live`）：每台主机各自退避，先后不保证；模型把任意延迟当作它的交错，`EndsHeld` 说明额度用完后租约落到某个人手上。跨主机的时钟偏差和网络分区不单独建，断线用 `Lose` 表示。
@@ -69,7 +69,6 @@
 
 - Cordis 节点连接（`bridge/link.mjs`）的实现核对：代码在 Cordis 仓库，不在本仓库。模型只能说明它的规则应当与 `dialing.mjs` 相同（500 ms 起、30 s 上限、稳定 60 s 重置、被拒 30 s），接管按 §4.4；没有跑过它的代码。
 - 计时：退避的各档、握手 10 秒、心跳 10/30 秒、清理截止、Node / Bun 强杀期限。模型只用"某个时刻"和"完成或被杀"表示；这些由各语言的测试覆盖（`node/rutis-runtime/test/serve.test.mjs`、`bun/rutis-bun/test/remote.test.ts`、Kotlin `AppTest` 等）。
-- Kotlin 心跳起算点的修复：模型按正确规则建，并按现在的实现加了反例配置；实现仍是 `FrameConnection.lastSeen = System.nanoTime()`（接受时）。
 - Swift 停止之后才到的 `.accepted` 连接的关闭：只建了 `lateAccept` 变异（排队即违反 `RuntimeStopped`），没有对 Swift 的 drain 代码逐行核对。
 - 运行时一侧的线程池、网络承载与 TLS、真实调度与内存序。
 
@@ -130,7 +129,7 @@ TLC 找到过两处握手期间吊销身份仍建立会话（link 提供了 Peer
 
 本目录新增的变异对应 #615 的疑点，结论如下：
 
-- `lease-mut-heartbeat-from-accept`：Kotlin 的 `FrameConnection` 在构造时设 `lastSeen`（`Frames.kt:46-47`），`Listening` 在接受到连接时就创建它（`Listen.kt` 约 241 行），所以旧租约清理超过 30 秒时新连接会被 1001 关闭。模型按"从回应 hello 起算"建；**实现未改**（属于 #615 的实现项，不在本目录）。
+- `lease-mut-heartbeat-from-accept`：这是修复前的实现——连接在构造时（接受）设 `lastSeen`，旧租约清理超过心跳超时时间时新连接会在 hello 前被 1001 关闭。Kotlin #1102、Go / Swift / Node / Bun #1182 已改为从回应 hello 起算；变异保留为模型的反例。
 - `lease-mut-late-accept`：停止之后才到的 `.accepted` 连接如果被排队，`RuntimeStopped` 立刻被违反。Kotlin `Listening` 的 `drain()` 会关闭它们；Swift 一侧没有逐行核对。
 - `lease-mut-start-after-final-stop`、`access-mut-final-stop-dials`、`access-mut-match-by-number`：`RutisApp` 的多次起停与按编号匹配握手结果。f57b4138 已修 `RutisApp.kt` 的线程交错（stop 返回后不再拨/绑），模型按修复后的规则建，变异是修复前的行为。
 - `access-mut-revoke-after-handshake`：吊销发生在握手完成之后、`Join` 之前时，只查握手完成时的快照会把它漏掉（DIA-5-10 修复前的规则）。当前实现没有吊销钩子，配置对的是规则。

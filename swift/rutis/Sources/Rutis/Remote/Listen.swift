@@ -4,8 +4,10 @@
 // address needs TLS (RUTIS_CERT, RUTIS_KEY); the controller presents
 // RUTIS_TOKEN as a Bearer token, compared in constant time; the session
 // protocol is `rutis.4`; one controller at a time, a newer connection taking
-// over. The listener is Network.framework's; the upgrade and the frames are
-// this SDK's (WebSocket.swift), so every refusal has its own status.
+// over, its heartbeat starting at the session's hello rather than at the
+// accept (#1182). The listener is Network.framework's; the upgrade and the
+// frames are this SDK's (WebSocket.swift), so every refusal has its own
+// status.
 #if canImport(Network)
 import CryptoKit
 import Foundation
@@ -172,6 +174,9 @@ final class WebSocketListener: @unchecked Sendable {
     /// At most this many connections upgrading at once (each reads on a
     /// thread of its own); more are dropped at once.
     let maxUpgrading: Int
+    /// The heartbeat of each upgraded connection; nil: the environment's
+    /// (tests shorten it).
+    let timing: (ping: Double, timeout: Double)?
     private let stopped = Flag()
     private let upgradingLock = Lock()
     private var upgrading = 0
@@ -179,11 +184,13 @@ final class WebSocketListener: @unchecked Sendable {
     /// `identity` gives the TLS identity of a wss:// address, or says why
     /// there is none.
     init(_ spec: String, protocol protocolName: String, token: String, identity: () throws -> sec_identity_t,
-         upgradeTimeout: Double = 10, maxUpgrading: Int = 32) throws
+         upgradeTimeout: Double = 10, maxUpgrading: Int = 32,
+         timing: (ping: Double, timeout: Double)? = nil) throws
     {
         address = try ListenAddress(spec)
         self.upgradeTimeout = upgradeTimeout
         self.maxUpgrading = maxUpgrading
+        self.timing = timing
         self.token = Array(token.utf8)
         self.protocolName = protocolName
         let parameters: NWParameters
@@ -353,7 +360,7 @@ final class WebSocketListener: @unchecked Sendable {
             stream.close()
             return nil
         }
-        return WebSocket(stream, client: false)
+        return WebSocket(stream, client: false, timing: timing)
     }
 }
 

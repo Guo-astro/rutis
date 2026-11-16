@@ -173,6 +173,93 @@ struct AppTests {
         XCTAssertTrue(sendUpgrade(upgraded).hasPrefix("HTTP/1.1 101"), "an upgrade after them")
     }
 
+    /// A connection accepted by the listener but not served yet is not
+    /// silent: its heartbeat starts only with the session's hello (#1182).
+    func aConnectionWaitingForItsHelloIsNotDropped() throws {
+        let accepted = Accepted()
+        let listener = try WebSocketListener("ws://127.0.0.1:0/rutis", protocol: "rutis.\(endpointProtocol)", token: "secret",
+                                             identity: { throw ChannelError("no TLS") }, timing: (ping: 0.02, timeout: 0.2))
+        let address = try listener.start { accepted.add($0) }
+        defer { listener.stop() }
+        let port = try XCTUnwrap(port(of: address))
+        let socket = connectLoopback(port)
+        defer { close(socket) }
+        XCTAssertTrue(sendUpgrade(socket).hasPrefix("HTTP/1.1 101"))
+        for _ in 0..<500 where accepted.first == nil { Thread.sleep(forTimeInterval: 0.001) }
+        let connection = try XCTUnwrap(accepted.first)
+        // Waiting for its hello, it is not silent, even past ten timeouts.
+        XCTAssertFalse(closedWithin(socket, 2), "dropped before its hello")
+        // Served: the hello went out, and from here silence counts.
+        connection.startHeartbeat()
+        XCTAssertTrue(closedWithin(socket, 2), "served and silent: not dropped")
+    }
+
+    /// A new connection waiting for the old lease's cleanup is not closed
+    /// by its heartbeat, even when the cleanup outlasts the timeout
+    /// (#1182). The old lease is an app plugin whose cleanup takes 0.5 s;
+    /// the heartbeat times out at 0.2 s.
+    func aConnectionWaitingForTheOldCleanupIsNotDropped() async throws {
+        let installed = Event()
+        let slow = Rutis.define(Plugin(name: "slow") { ctx in
+            ctx.effect { await uncancellableSleep(0.5) }
+            // Registered: the cleanup is there when the test takes over.
+            installed.fire()
+        })
+        let lines = Lines()
+        let app = RutisApp(plugins: [slow], configs: [:], mode: .listen("ws://127.0.0.1:0/rutis",
+                                                                          identity: { throw ChannelError("no TLS") }),
+                           id: "pad", peer: nil, token: "secret", project: "",
+                           settings: Events.Settings(log: { lines.add($0) }, shutdownTimeout: 1),
+                           heartbeat: (ping: 0.02, timeout: 0.2))
+        try await app.start()
+        func waitFor(_ what: String, _ condition: () -> Bool) async throws {
+            for _ in 0..<500 where !condition() { try await Task.sleep(nanoseconds: 10_000_000) }
+            XCTAssertTrue(condition(), what)
+        }
+        try await waitFor("the listening address") { !lines.all.isEmpty }
+        let address = try XCTUnwrap(lines.all.compactMap { $0.components(separatedBy: "listening on ").dropFirst().first }.last)
+        let protocolName = "rutis.\(endpointProtocol)"
+        var options = PeerOptions(endpoint: Endpoint(local: "main", expected: "pad"))
+        options.host = true
+        // The app's own `link.offers` and services calls reach this side.
+        options.dispatch = { _, _, _ in .undefined }
+        let firstSocket = try await DialedSocket.dial(address, protocol: protocolName, token: "secret", anchors: [], timeout: 5)
+        let first = try Peer(channel: firstSocket, options: options)
+        try first.start()
+        let firstGreeted = Event()
+        Task { await first.ready(); firstGreeted.fire() }
+        let heardFirst = await firstGreeted.wait(seconds: 5)
+        XCTAssertTrue(heardFirst, "the first controller is greeted")
+        // An app's own plugins install once rutis offers `events`
+        // (`link.offers`). Its own offer and this one may race their first
+        // reconcile; every newer offer reconciles again.
+        var offerVersion = 0
+        while !installed.isSet, offerVersion < 5 {
+            offerVersion += 1
+            let version = offerVersion
+            _ = try await first.call(target: "", method: "link.offers", args: [.data(.object([
+                ("families", .array([.string("services"), .string("events")])),
+                ("version", .int(version)),
+                ("since", .object([("services", .int(version)), ("events", .int(version))])),
+            ]))], sync: false)
+            _ = await installed.wait(seconds: 1)
+        }
+        XCTAssertTrue(installed.isSet, "the app installs its plugin")
+        // A new connection takes over and waits for that cleanup: not
+        // silent, and greeted once the old lease is gone.
+        let secondSocket = try await DialedSocket.dial(address, protocol: protocolName, token: "secret", anchors: [], timeout: 5)
+        let second = try Peer(channel: secondSocket, options: options)
+        try second.start()
+        let greeted = Event()
+        Task { await second.ready(); greeted.fire() }
+        let heardSecond = await greeted.wait(seconds: 5)
+        XCTAssertTrue(heardSecond, "the waiting connection is greeted, not closed with 1001")
+        XCTAssertNil(second.error)
+        first.close()
+        second.close()
+        await app.stop()
+    }
+
     /// A listening app is `connected` once rutis greeted, not when a
     /// connection is upgraded.
     func aListeningAppIsConnectedOnceGreeted() async throws {
@@ -435,6 +522,7 @@ private final class Accepted: @unchecked Sendable {
         lock.withLock { sockets.append(socket) }
         then?()
     }
+    var first: WebSocket? { lock.withLock { sockets.first } }
     var count: Int { lock.withLock { sockets.count } }
     func closeAll() { for socket in lock.withLock({ sockets }) { socket.close() } }
 }

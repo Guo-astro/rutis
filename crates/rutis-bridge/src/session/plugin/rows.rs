@@ -13,7 +13,7 @@
 //! `rows.failed` are this end's rows ending there; the rest are the far
 //! end's rows here.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use rutis::host::{
@@ -58,7 +58,20 @@ fn not_found(name: &str) -> Error {
 pub(super) struct Server {
     ctx: Ctx,
     session: Connection,
-    loaded: Mutex<HashMap<String, FiberView>>,
+    table: Mutex<Table>,
+}
+
+/// What a session's row server has: the rows loaded here, by key, and the
+/// keys unloaded before their load was accepted.
+#[derive(Default)]
+struct Table {
+    loaded: HashMap<String, FiberView>,
+    /// Keys the far end unloaded before their load was accepted: a load of
+    /// one is refused, so a row the far end no longer wants is not left
+    /// running here (#1101). A key names one load (a `run` row takes a new
+    /// one each time), so a tombstone refuses the load it was written for
+    /// and no later one; the table goes with the session.
+    unloaded: HashSet<String>,
 }
 
 impl Server {
@@ -106,8 +119,13 @@ impl Server {
             let catalog = server.catalog().ok_or_else(|| not_found(&name))?;
             let found = catalog.find(&name).await.ok_or_else(|| not_found(&name))?;
             let view = {
-                let mut loaded = server.loaded.lock().unwrap();
-                if loaded.contains_key(&key) {
+                let mut table = server.table.lock().unwrap();
+                // Looked up before the load was accepted: an unload that
+                // overtook it is remembered, and this row is not wanted.
+                if table.unloaded.contains(&key) {
+                    return Err(Error::refused(format!("{key} was unloaded")));
+                }
+                if table.loaded.contains_key(&key) {
                     return Err(Error::refused(format!("{key} is already loaded")));
                 }
                 let view = server.ctx.plugin_with(
@@ -117,11 +135,11 @@ impl Server {
                     },
                     config,
                 );
-                loaded.insert(key.clone(), view.clone());
+                table.loaded.insert(key.clone(), view.clone());
                 view
             };
             if let Err(error) = (&view).await {
-                server.loaded.lock().unwrap().remove(&key);
+                server.table.lock().unwrap().loaded.remove(&key);
                 let _ = view.dispose().await;
                 return Err(Error::Remote {
                     name: "LoadError".into(),
@@ -148,7 +166,7 @@ impl Server {
                     // Not unloaded by the far end: it ended here, unless
                     // the session is going away, which ends the far end's
                     // rows as a disconnection does, to wait for the next.
-                    let ended = self.loaded.lock().unwrap().remove(&key).is_some();
+                    let ended = self.table.lock().unwrap().loaded.remove(&key).is_some();
                     if ended && !self.ctx.cancellation_token().is_cancelled() {
                         let _ = self
                             .session
@@ -179,9 +197,10 @@ impl Server {
         let key: String = crate::session::decode(args.next().unwrap_or_default())?;
         let config = args.next().unwrap_or(Json::Null);
         let view = self
-            .loaded
+            .table
             .lock()
             .unwrap()
+            .loaded
             .get(&key)
             .cloned()
             .ok_or_else(|| Error::refused(format!("{key} is not loaded")))?;
@@ -196,8 +215,17 @@ impl Server {
 
     fn unload(&self, args: Vec<Json>) -> Reply {
         let key: String = crate::session::decode(args.into_iter().next().unwrap_or_default())?;
-        let Some(view) = self.loaded.lock().unwrap().remove(&key) else {
-            // Already gone: unloading is idempotent.
+        let view = {
+            let mut table = self.table.lock().unwrap();
+            let view = table.loaded.remove(&key);
+            // Already gone, or the load is still being accepted: unloading
+            // is idempotent, and a load that follows is refused (#1101).
+            if view.is_none() {
+                table.unloaded.insert(key);
+            }
+            view
+        };
+        let Some(view) = view else {
             return Ok(Value::Undefined);
         };
         Ok(Value::future(async move {
@@ -320,7 +348,7 @@ impl Rows {
             server: Arc::new(Server {
                 ctx: ctx.clone(),
                 session: peer.connection().clone(),
-                loaded: Mutex::default(),
+                table: Mutex::default(),
             }),
             client: Mutex::default(),
         });
