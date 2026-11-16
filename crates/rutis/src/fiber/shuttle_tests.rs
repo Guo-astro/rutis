@@ -2591,7 +2591,7 @@ fn shuttle_emit_chain_starts_calls_in_emission_order() {
 }
 
 // ---------------------------------------------------------------------------
-// Model 11: the listener table's watchers (#622, `events/table-watch`,
+// Model 11: the listener table's watchers (#622, `events/remote`,
 // EVP-4.4-5, EVP-12.1-9)
 
 type Watcher = Arc<dyn Fn(&TableChange) + Send + Sync>;
@@ -2803,7 +2803,7 @@ impl WatchModel {
     }
 }
 
-/// Model 11, the listener table's watchers (#622, `events/table-watch`,
+/// Model 11, the listener table's watchers (#622, `events/remote`,
 /// EVP-4.4-5, EVP-12.1-9): two registrars add two listeners each, a third
 /// caller withdraws one of them, and one watcher hears every change — and,
 /// while hearing one, withdraws that listener and registers another. Every
