@@ -34,6 +34,8 @@
 //! by default, as on pull requests. A failure prints its schedule;
 //! `RUTIS_SHUTTLE_REPLAY=<schedule>` replays it, with the failing test's name
 //! as the filter.
+//!
+//! guarantee: bridge/in-flight-call-fails-once, bridge/replies-match-calls, bridge/cancel-reaches-callee, bridge/release-count, events/hub-lifecycle
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc};

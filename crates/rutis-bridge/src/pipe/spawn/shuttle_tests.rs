@@ -36,6 +36,8 @@
 //! by default, as on pull requests; the nightly run (`stress.yml`) uses a
 //! million. A failure prints its schedule; `RUTIS_SHUTTLE_REPLAY=<schedule>`
 //! replays it, with the failing test's name as the filter.
+//!
+//! guarantee: bridge/in-flight-call-fails-once
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};

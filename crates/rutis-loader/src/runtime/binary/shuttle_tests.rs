@@ -27,6 +27,8 @@
 //! by default, as on pull requests; the nightly run (`stress.yml`) uses a
 //! million. A failure prints its schedule; `RUTIS_SHUTTLE_REPLAY=<schedule>`
 //! replays it, with the failing test's name as the filter.
+//!
+//! guarantee: host/runtime-restart, loader/go-runtimes
 
 use std::collections::BTreeMap;
 use std::path::Path;
