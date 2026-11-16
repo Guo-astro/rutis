@@ -1908,6 +1908,28 @@ jobs:
           "$jdk\bin" >> $env:GITHUB_PATH
           & "$jdk\bin\java.exe" -version
           if ($LASTEXITCODE -ne 0) { exit 1 }
+      # Git Bash puts its own `link` in front of MSVC's; cargo then runs the
+      # coreutils link and fails with "extra operand". Point rustc at MSVC's
+      # linker by full path instead of fighting PATH order.
+      - name: MSVC linker for cargo (self-hosted)
+        if: runner.environment == 'self-hosted'
+        shell: powershell
+        run: |
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          if (-not (Test-Path $vswhere)) {
+            Write-Host "::error::vswhere not found; cannot locate MSVC"
+            exit 1
+          }
+          $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          $msvc = Get-ChildItem (Join-Path $vs 'VC\Tools\MSVC') -Directory |
+            Sort-Object Name -Descending | Select-Object -First 1
+          $link = Join-Path $msvc.FullName 'bin\Hostx64\x64\link.exe'
+          if (-not (Test-Path $link)) {
+            Write-Host "::error::no x64 MSVC link.exe under $($msvc.FullName)"
+            exit 1
+          }
+          "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=$link" >> $env:GITHUB_ENV
+          Write-Host "cargo linker: $link"
       - name: the Kotlin conformance jar
         working-directory: kotlin/rutis
         run: |
