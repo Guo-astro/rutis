@@ -59,9 +59,10 @@
 //!   it only as an event call that never returns. Its own part, the unload
 //!   deadline — `wait_events` giving up at `shutdown_deadline()` and reporting
 //!   `ListenersStillRunning` — is model 22, driven by the model's clock. What
-//!   is not modelled is the channel that ends before that: the bridge's read
-//!   thread, exit status and close paths (`crates/rutis-bridge`), which are
-//!   #623's models. The plain build's timer (a `std::thread` with
+//!   is not modelled here is the channel that ends before that: the bridge's
+//!   read thread, exit status and close paths (`crates/rutis-bridge`), which
+//!   are #623's models (`crates/rutis-bridge/src/pipe/spawn/shuttle_tests.rs`).
+//!   The plain build's timer (a `std::thread` with
 //!   `recv_timeout`, its limit the process-wide `RUTIS_SHUTDOWN_TIMEOUT`) is
 //!   not a shuttle subject — real time is not an interleaving — and is pinned
 //!   end to end by

@@ -642,8 +642,10 @@ jobs:
 
   # The shuttle models of the kernel (crates/rutis/src/fiber/shuttle_tests.rs:
   # TransitionTask wakeup, post_join against the driver's exit, concurrent
-  # dispose), `shuttle_iterations` iterations of each scheduler per model.
-  # A failure prints the failing schedule and seed; the log is uploaded.
+  # dispose) and of the bridge's subprocess exit state
+  # (crates/rutis-bridge/src/pipe/spawn/shuttle_tests.rs, #623),
+  # `shuttle_iterations` iterations of each scheduler per model. A failure
+  # prints the failing schedule and seed; the log is uploaded.
   shuttle:
     runs-on: ${{ fromJSON(vars.LINUX_RUNNER || '"ubuntu-24.04"') }}
     timeout-minutes: 60
@@ -668,7 +670,8 @@ jobs:
           case "$RUTIS_SHUTTLE_ITERATIONS" in ""|*[!0-9]*) echo "::error::shuttle_iterations must be a number"; exit 1;; esac
           mkdir -p "$RUNNER_TEMP/shuttle"
           cargo test -p rutis --lib --target-dir "${CARGO_TARGET_DIR:-target}/shuttle" shuttle 2>&1 | tee "$RUNNER_TEMP/shuttle/shuttle.txt"
-          echo "shuttle: $RUTIS_SHUTTLE_ITERATIONS iterations of each scheduler per model, passed" >> "$GITHUB_STEP_SUMMARY"
+          cargo test -p rutis-bridge --lib --target-dir "${CARGO_TARGET_DIR:-target}/shuttle" shuttle 2>&1 | tee "$RUNNER_TEMP/shuttle/shuttle-bridge.txt"
+          echo "shuttle: $RUTIS_SHUTTLE_ITERATIONS iterations of each scheduler per model (rutis and rutis-bridge), passed" >> "$GITHUB_STEP_SUMMARY"
       - name: Say how to replay
         if: failure()
         run: |
@@ -678,6 +681,8 @@ jobs:
             echo "The failing schedule is in the log (\`failing schedule: \"…\"\`) and in the \`shuttle-log\` artifact. Replay it:"
             echo
             echo "\`RUTIS_SHUTTLE_REPLAY=<schedule> RUSTFLAGS=\"--cfg rutis_shuttle\" cargo test -p rutis --lib --target-dir target/shuttle <failing test>\`"
+            echo
+            echo "and the same with \`-p rutis-bridge\` for the subprocess exit models."
           } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: failure()

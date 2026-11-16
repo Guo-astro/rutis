@@ -62,7 +62,15 @@ testing = []
 
 [lints.rust]
 # cargo-fuzz builds with `--cfg fuzzing` (src/fuzzing.rs).
-unexpected_cfgs = { level = "warn", check-cfg = ["cfg(fuzzing)"] }
+# The shuttle models of the exit state (src/pipe/spawn/shuttle_tests.rs,
+# #623) are built with `--cfg rutis_shuttle` only, never by a plain build.
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(fuzzing)", "cfg(rutis_shuttle)"] }
+
+# The shuttle models of the subprocess exit state (src/pipe/spawn/
+# shuttle_tests.rs, #623): built with `RUSTFLAGS="--cfg rutis_shuttle"`
+# only.
+[target.'cfg(rutis_shuttle)'.dependencies]
+shuttle = "0.9.7"
 
 [dev-dependencies]
 # Path only: cargo publish drops it.
