@@ -637,6 +637,7 @@ public final class arcships/rutis/internal/peer/Peer {
 public final class arcships/rutis/internal/peer/PeerKt {
 	public static final field ENDPOINT_PROTOCOL I
 	public static final field MAX_DEPTH I
+	public static final field MAX_FRAME_DEPTH I
 	public static final fun cyclic ()Larcships/rutis/internal/peer/ValueException;
 	public static final fun getSESSION_CAPABILITIES ()Ljava/util/List;
 	public static final fun jsonDepth (Lkotlinx/serialization/json/JsonElement;)I
