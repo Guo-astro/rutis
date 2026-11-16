@@ -18,6 +18,10 @@ import (
 // registered with the host; every emission is dispatched by the host,
 // which calls each listener where it is (`events.call`).
 
+// How many ids this runtime remembers of listeners it withdrew and told the
+// host about (`events.off`, #1138): the oldest are forgotten.
+const announcedRemembered = 4096
+
 // Listener is what the bus says of a listener, as a Filter predicate sees
 // it. Empty strings are absent values: Row is empty for a listener of no
 // row, Runtime for one of the host, Node for one of this node.
@@ -190,6 +194,9 @@ func (c *Ctx) On(name string, fn func(ctx context.Context, args ...any) (any, er
 		rt.mu.Lock()
 		if !l.withdrawn {
 			rt.withdraw(l)
+			// The host may pick it for a dispatch before its `events.off`
+			// arrives; the call then answers nothing (#1138).
+			rt.announcedGone([]string{l.id})
 			if rt.session != nil && !rt.closing {
 				session := rt.session
 				rt.post(func() { session.Notify("", "events.off", []any{[]any{l.id}}) })
@@ -210,6 +217,32 @@ func (rt *runtimeState) withdraw(l *listener) {
 	} else {
 		rt.listeners[l.name] = list
 	}
+}
+
+// announcedGone remembers `ids` as withdrawn here and told to the host
+// (`events.off`); rt.mu is held.
+func (rt *runtimeState) announcedGone(ids []string) {
+	if rt.goneIDs == nil {
+		rt.goneIDs = make(map[string]struct{}, len(ids))
+	}
+	for _, id := range ids {
+		if _, known := rt.goneIDs[id]; known {
+			continue
+		}
+		rt.goneIDs[id] = struct{}{}
+		rt.goneOrder = append(rt.goneOrder, id)
+	}
+	for len(rt.goneOrder) > announcedRemembered {
+		delete(rt.goneIDs, rt.goneOrder[0])
+		rt.goneOrder = rt.goneOrder[1:]
+	}
+}
+
+// withdrewHere reports whether `id` is one this runtime withdrew and told
+// the host about; rt.mu is held.
+func (rt *runtimeState) withdrewHere(id string) bool {
+	_, ok := rt.goneIDs[id]
+	return ok
 }
 
 // forgetListeners withdraws a row's listeners, before its context is
@@ -533,13 +566,30 @@ func (rt *runtimeState) eventCall(ctx context.Context, args []any) func() (any, 
 	}
 	rt.mu.Lock()
 	l := rt.byID[id]
+	gone := rt.withdrewHere(id)
 	rt.mu.Unlock()
 	withdrawn := peer.Errorf("BindingError", "listener %s of %s is withdrawn", id, name)
 	if l == nil {
+		// Withdrawn here, and the `events.off` that says so may not have
+		// reached the host when it picked the listener for this dispatch:
+		// the listener is gone, and the call answers as one that returns
+		// nothing, instead of failing a dispatch that was already under way
+		// (#1138). An id this process never registered, and one the host
+		// withdrew itself (a row's unload), stay the protocol failure they
+		// were.
+		if gone {
+			return goneCall(ctx, m, record)
+		}
 		return failed(withdrawn)
 	}
 	if m == events.ModeEmit {
 		if !l.reserve() {
+			rt.mu.Lock()
+			gone = rt.withdrewHere(id)
+			rt.mu.Unlock()
+			if gone {
+				return goneCall(ctx, m, record)
+			}
 			return failed(withdrawn)
 		}
 		done := make(chan error, 1)
@@ -547,9 +597,14 @@ func (rt *runtimeState) eventCall(ctx context.Context, args []any) func() (any, 
 			defer l.row.listening.Done()
 			l.rt.mu.Lock()
 			live := l.live()
+			gone := l.rt.withdrewHere(id)
 			l.rt.mu.Unlock()
 			if !live {
-				done <- withdrawn
+				if gone {
+					done <- nil
+				} else {
+					done <- withdrawn
+				}
 				return
 			}
 			if _, err := l.run(ctx, m, plain, nil); err != nil {
@@ -579,6 +634,12 @@ func (rt *runtimeState) eventCall(ctx context.Context, args []any) func() (any, 
 	}
 	call, ok := l.Begin()
 	if !ok {
+		rt.mu.Lock()
+		gone = rt.withdrewHere(id)
+		rt.mu.Unlock()
+		if gone {
+			return goneCall(ctx, m, record)
+		}
 		return failed(withdrawn)
 	}
 	return func() (any, error) {
@@ -588,4 +649,30 @@ func (rt *runtimeState) eventCall(ctx context.Context, args []any) func() (any, 
 		}
 		return convert.ToPeer(value)
 	}
+}
+
+// goneCall is what a listener this runtime withdrew answers a call already
+// on its way (#1138): nothing, as one that returns no result, and a
+// waterfall's `next` gives the rest of the chain, as if it had not been
+// there.
+func goneCall(ctx context.Context, m events.Mode, record map[string]any) func() (any, error) {
+	if m == events.ModeWaterfall {
+		if remote, ok := record["next"].(*peer.RemoteFunction); ok {
+			return func() (any, error) {
+				value, err := remote.Call(ctx, []any{}, false)
+				if err != nil {
+					return nil, err
+				}
+				if value, err = peer.Settle(ctx, value); err != nil {
+					return nil, err
+				}
+				plain, err := convert.Plain(value)
+				if err != nil {
+					return nil, err
+				}
+				return convert.ToPeer(plain)
+			}
+		}
+	}
+	return func() (any, error) { return nil, nil }
 }

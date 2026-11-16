@@ -350,6 +350,12 @@ final class Runtime: @unchecked Sendable {
     // The listeners of the rows here, by id.
     var byID: [String: LocalListener] = [:]
     var listenerSequence = 0
+    /// Ids of listeners this runtime withdrew and told the host about
+    /// (`events.off`), newest last, at most `Events.goneRemembered`: a
+    /// dispatch the host picked one for before the off reached it still
+    /// calls it, and the call answers as one that returns nothing (#1138).
+    var goneIDs: [String] = []
+    var goneSet: Set<String> = []
     /// What the host calls this runtime (mount `runtime`), for descriptors.
     var runtimeName: String?
     /// An app's own plugins, in order, with their configurations, and
@@ -884,8 +890,15 @@ final class Runtime: @unchecked Sendable {
     }
 
     func update(_ key: String, config: Value) async throws {
-        guard let row = lock.withLock({ rows[key] }), !row.unloading else {
-            throw RutisError(name: "Error", message: "row \(key) is not loaded")
+        let row = try lock.withLock { () -> Row in
+            guard let row = rows[key], !row.unloading else {
+                throw RutisError(name: "Error", message: "row \(key) is not loaded")
+            }
+            // The host keeps the row (`rows.update`), so its table still has
+            // the old listeners until the unload's `events.off`: a call it
+            // picked for one answers nothing (#1138).
+            announceGone(byID.values.filter { $0.row === row }.map(\.id))
+            return row
         }
         // Leaf plugins have no volatile fields: a new config restarts the row.
         try await unload(key)
