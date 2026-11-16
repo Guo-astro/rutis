@@ -33,6 +33,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"reflect"
 	"slices"
 	"strconv"
@@ -719,7 +720,7 @@ func start() (*host, error) {
 		return nil, err
 	}
 	served := make(chan error, 1)
-	go func() { served <- h.runtime.Serve(conn, "test") }()
+	go serveTest(h, conn, served)
 	timer := time.NewTimer(30 * time.Second)
 	defer timer.Stop()
 	select {
@@ -735,6 +736,12 @@ func start() (*host, error) {
 	case <-timer.C:
 		return nil, errors.New("timed out (30s): rutis-host test did not load the test")
 	}
+}
+
+// serveTest answers rutis-host's calls until the session ends, as the test
+// process's host: one for the whole process, not one per test.
+func serveTest(h *host, conn net.Conn, served chan<- error) {
+	served <- h.runtime.Serve(conn, "test")
 }
 
 // state is what the host says of the row `id` while it is not running:
