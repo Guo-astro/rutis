@@ -402,7 +402,9 @@ final class Runtime: @unchecked Sendable {
         outLock.withLock { outbox.append(send) }
     }
 
-    /// Sends the queued frames in order; `lock` is not held.
+    /// Runs the queued sends in order; `lock` is not held. Each queues its
+    /// frame on the session and returns: no write is made here, so a far end
+    /// that stopped reading holds up no emitting task (#630).
     func flush() {
         sendLock.lock()
         defer { sendLock.unlock() }
