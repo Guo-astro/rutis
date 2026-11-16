@@ -879,6 +879,9 @@ impl Wire for BridgeWire {
     }
 }
 
+#[cfg(all(test, rutis_shuttle))]
+mod shuttle_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;

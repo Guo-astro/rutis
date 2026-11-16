@@ -51,20 +51,20 @@
 | [protocol-registry-2.md](rules/protocol-registry-2.md) | #634 · registry-2 | 218 | 12 | 29 | 122 | 5 | 36 | 0 | 14 | 0 | 47 |
 | [protocol-events.md](rules/protocol-events.md) | #634 · events | 253 | 79 | 92 | 48 | 1 | 19 | 9 | 14 | 0 | 0 |
 | [protocol-session.md](rules/protocol-session.md) | #634 · session 上/下 | 246 | 13 | 99 | 86 | 7 | 27 | 104 | 14 | 161 | 2 |
-| [protocol-runtime.md](rules/protocol-runtime.md) | #634 · runtime | 264 | 8 | 38 | 140 | 10 | 63 | 45 | 5 | 0 | 68 |
+| [protocol-runtime.md](rules/protocol-runtime.md) | #634 · runtime | 264 | 8 | 38 | 139 | 10 | 63 | 45 | 6 | 0 | 68 |
 | [protocol-remote.md](rules/protocol-remote.md) | #634 · remote | 231 | 5 | 69 | 69 | 13 | 32 | 17 | 43 | 0 | 137 |
-| 合计 | — | 1368 | 147 | 367 | 509 | 42 | 201 | 184 | 102 | 161 | 261 |
+| 合计 | — | 1368 | 147 | 367 | 508 | 42 | 201 | 184 | 103 | 161 | 261 |
 <!-- recheck-index:end -->
 
 状态怎么变：
 
 | 快照映射状态 | 复核后状态 | 条数 |
 | --- | --- | --- |
-| 未验证 | 未验证 | 509 |
+| 未验证 | 未验证 | 508 |
 | 部分验证 | 部分验证 | 366 |
 | 不单独计数 | 不单独计数 | 201 |
 | 已验证 | 已验证 | 112 |
-| 未验证 | 已撤回 | 47 |
+| 未验证 | 已撤回 | 48 |
 | 明确不保证 | 明确不保证 | 42 |
 | 部分验证 | 已撤回 | 34 |
 | 未验证 | 已验证 | 27 |
@@ -1382,7 +1382,7 @@
 | MSV-4-1b | 未验证 | 未验证 | Rust 服务自动对外（MSV §四 R1、§五.3） | — | 无具名证据 | 现行来源：Rust 服务自动对外（MSV §四 R1、§五.3）；没有会话规格锚点；无具名证据 |
 | MSV-4-2a | 未验证 | 未验证 | Rust 服务自动对外（MSV §四 R2） | — | 无具名证据 | 现行来源：Rust 服务自动对外（MSV §四 R2）；没有会话规格锚点；无具名证据 |
 | MSV-4-2b | 不单独计数 | 不单独计数 | Rust 服务自动对外（MSV §四 R2） | — | 无具名证据 | — |
-| MSV-4-2c | 未验证 | 未验证 | Rust 服务自动对外（MSV §四 R2） | — | 无具名证据 | 现行来源：Rust 服务自动对外（MSV §四 R2）；没有会话规格锚点；无具名证据 |
+| MSV-4-2c | 已撤回 | 未验证 | Rust 服务自动对外（MSV §四 R2） | — | — | 已取代：0.19 删除 `check()` 谓词门控：`internal::provide_checked`、`refresh`、`service::Check`、`Exposure` 的 `check`、`DependencyStatus::CheckPending` / `CheckRejected` / `CheckPanicked`，写明没有替代；入口与原生绑定一起受它门控没有对象 |
 | MSV-4-2d | 未验证 | 未验证 | Rust 服务自动对外（MSV §四 R2） | — | 无具名证据 | 现行来源：Rust 服务自动对外（MSV §四 R2）；没有会话规格锚点；无具名证据 |
 | MSV-4-2e | 未验证 | 未验证 | Rust 服务自动对外（MSV §四 R2、§五.3） | — | 无具名证据 | 现行来源：Rust 服务自动对外（MSV §四 R2、§五.3）；没有会话规格锚点；无具名证据 |
 | MSV-4-2f | 未验证 | 未验证 | Rust 服务自动对外（MSV §四 R2、§五.3） | — | 无具名证据 | 现行来源：Rust 服务自动对外（MSV §四 R2、§五.3）；没有会话规格锚点；无具名证据 |
@@ -3029,7 +3029,7 @@
 | MSV-4-1b | 未验证 | guarantees.md §10 | bridge/marked-services | —（#631 的标记服务代次规则未做） | R1：没有标注的类型不对外，`provide` 时按 `TypeId` 查登记表，由登记表 `bridge/marked-services` 承载；#631 的“标记服务代次规则”未做；issue 快照记「未覆盖」 |
 | MSV-4-2a | 未验证 | guarantees.md §10 | bridge/marked-services | —（内核 shuttle 模型不含标记服务） | R2：`ctx.provide(value)` 同时提供对外入口、两者同一个撤销函数一起随插件卸载，由登记表 `bridge/marked-services` 承载；#622 的内核 shuttle 模型不含标记服务；issue 快照记「未覆盖」 |
 | MSV-4-2b | 不单独计数 | guarantees.md §10 | bridge/marked-services | —（单分支判定，没有输入空间） | R2：`provide_mut_as` 的可变绑定与带限定名的键不对外，由登记表 `bridge/marked-services` 承载；这是单分支的确定判定，issue 快照记「不适用」，不单独计数 |
-| MSV-4-2c | 未验证 | guarantees.md §10 | bridge/marked-services | — | R2：带 `check()` 谓词时入口与原生绑定一样受它门控，由登记表 `bridge/marked-services` 承载；没有具名用例；issue 快照记「未覆盖」 |
+| MSV-4-2c | 已撤回 | guarantees.md §10 | bridge/marked-services | — | 0.19 删除 `check()` 谓词门控：`internal::provide_checked`、`refresh`、`service::Check`、`Exposure` 的 `check`、`DependencyStatus::CheckPending` / `CheckRejected` / `CheckPanicked`，写明没有替代（`migration-0.19.md`）；「入口与原生绑定一样受它门控」没有对象 |
 | MSV-4-2d | 未验证 | guarantees.md §10 | bridge/marked-services | —（#631 的查找、作用域与严格读取判定表） | R2：按名字的调用经提供方上下文的严格读取路径取服务、只读到入口提供时的那个绑定，由登记表 `bridge/marked-services` 承载；#631 的判定表未做，SV1 的 #534 未清；issue 快照记「未覆盖」 |
 | MSV-4-2e | 未验证 | guarantees.md §10 | bridge/marked-services | — | R2：因原生槽位或名字被占而被拒的 `provide` 什么都不提供，由登记表 `bridge/marked-services` 承载；并发 `provide` 之间的检查与登记没有用例；issue 快照记「未覆盖」 |
 | MSV-4-2f | 未验证 | guarantees.md §10 | bridge/marked-services | — | R2：先提供原生服务、再按名字提供，撤销时反过来，由登记表 `bridge/marked-services` 承载；没有具名用例；issue 快照记「未覆盖」 |
@@ -3330,7 +3330,7 @@
 
 ## 7. 这一轮改了什么、还剩什么
 
-- **已撤回**：issue 快照的 184 条之外，本轮按 0.19 / 0.22 删除的机制追加了 102 条（见 §3 的「已撤回（本轮）」列与 §4 的缺口）。它们仍在 `rules/protocol-*.md` 里，统计不计入。
+- **已撤回**：issue 快照的 184 条之外，本轮按 0.19 / 0.22 删除的机制追加了 103 条（见 §3 的「已撤回（本轮）」列与 §4 的缺口）。它们仍在 `rules/protocol-*.md` 里，统计不计入。
 - **未完成**：没有一行重写规则文字——协议清单的 1368 条现行规则仍是 issue 快照原文；远程没有对应的新规格，只有设计稿与指南（0.19 之后的连接行为在 `design-remote-session-2026-10-28.md`）。§6 按原因列出没有锚点的规则；写规格是 #635 的后续，不是这一轮能补的。
 - **证据**：只核对 `现有形式化` 列的具名引用；备注列里的旧路径（如 `crates/rutis-bridge/src/cordis/server.rs`）没有逐条清，重抽时一并处理。
 - **升级**：35 条协议行由语义重抽的 `upgrade` 从「未验证」/「部分验证」升为「已验证」（`core/D6a`、`core/D6b`、`core/D9a`、`core/D12`、`core/D14c`、`core/D14d`、`core/D18b`、`core/D22a`、`core/D23a`、`core/D25a`、`core/D28a`、`core/D30a`、`core/D31a`、`core/D31c`、`core/D32a`、`core/D32b`、`core/D32c`、`core/features.shutdown-state a`、`core/features.errors`、`core/features.errors.failed-retry`、`core/typed.lost-dependency-pending a`、`core/typed.lost-dependency-restart`、`events/emit b`、`events/lifecycle a`、`events/lifecycle b`、`events/remote d`、`events/emit-order`、`events/liveness`、`events/table-watch`、`events/unload-waits`、`EVP-4.4-5`、`EVP-5.5-3`、`EVP-12.1-9`、`EVP-12.1-18`、`APP-5-1`）；每条都写了模型或属性测试的证据与变异，`--check` 逐个核对证据路径和用例名。其余行没有升级。
