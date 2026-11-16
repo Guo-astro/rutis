@@ -577,6 +577,13 @@ fn python(name: &str, dir: &Path) -> TestRuntime {
     TestRuntime::python(dir).named(name)
 }
 
+/// The Kotlin runtime `kt` (rows `kt:<plugin>`) of the SDK's conformance jar
+/// (`common::runtimes::kotlin_jar`), in `project`.
+fn kotlin(project: &Path) -> TestRuntime {
+    std::fs::create_dir_all(project).unwrap();
+    TestRuntime::new("kt", common::runtimes::kotlin_launcher(project), project)
+}
+
 // ── The cases ───────────────────────────────────────────────────
 
 /// Counterexample 1: each of two Node runtimes calls the other while the
@@ -1050,6 +1057,95 @@ async fn two_node_runtimes_waiting_on_each_other_through_swift() {
                 "b_svc: SyncWaitCycle"
             ]
             || answers == ["a_svc got s_relay: SyncWaitCycle", "b_svc got a_work works"],
+        "exactly one call is refused, and the other completes: {answers:?}"
+    );
+    fixture.root.shutdown().await.unwrap();
+}
+
+/// Two Node runtimes waiting on each other through Kotlin: as through Go,
+/// `a` calls the Kotlin relay, which calls `b_work` in the other runtime,
+/// while `b` calls `a_work` back. Kotlin runs every call on a thread of its
+/// own and puts none aside, but its synchronous calls say they wait
+/// (`sync: true`; the Kotlin SDK declares `sync-wait`): the host sees the
+/// cycle and refuses the call that closes it, and the rest completes.
+/// The Kotlin relay catches the refusal of the call it makes itself, as the
+/// Go and Swift relays do, so a refusal there reads as the relay's answer.
+/// risk: P10, C6
+/// guarantee: bridge/sync-wait-cycle-refused
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn two_node_runtimes_waiting_on_each_other_through_kotlin() {
+    if !rutis_test_support::runtimes::all_enabled(&["node", "kotlin"]) {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let work = |me: &str| NODE_WORK.replace("SELF", me).replace("INJECT", "");
+    let go = |me: &str, other: &str| NODE_GO_PEER.replace("SELF", me).replace("OTHER", other);
+    let files = [
+        ("aw", "node", write(dir.path(), "aw.mjs", &work("a_work"))),
+        ("bw", "nb", write(dir.path(), "bw.mjs", &work("b_work"))),
+        (
+            "a",
+            "node",
+            write(dir.path(), "a.mjs", &go("a_svc", "g_relay")),
+        ),
+        (
+            "b",
+            "nb",
+            write(dir.path(), "b.mjs", &go("b_svc", "a_work")),
+        ),
+    ];
+    let (gate, _arrivals) = Gate::new(2);
+    let services = ["a_work", "b_work", "a_svc", "b_svc", "g_relay"];
+    let fixture = fixture(
+        vec![
+            (node("node"), true),
+            (node("nb"), false),
+            (kotlin(&dir.path().join("kt")), false),
+        ],
+        false,
+        false,
+        &services,
+        gate,
+    )
+    .await;
+    let mut rows_of: Vec<Value> = files
+        .iter()
+        .map(|(id, runtime, file)| match *runtime {
+            "node" => json!({ "id": id, "name": file.to_string_lossy() }),
+            runtime => json!({ "id": id, "name": format!("{runtime}:{}", file.display()) }),
+        })
+        .collect();
+    rows_of.push(json!({ "id": "g", "name": "kt:kt_relay" }));
+    fixture.loader.reconcile(rows(rows_of), None).await.unwrap();
+    let (loader, root) = (fixture.loader.clone(), fixture.root.clone());
+    COLD.until(
+        || {
+            ["aw", "bw", "a", "b", "g"]
+                .iter()
+                .all(|id| active(&loader, id))
+                && services.iter().all(|name| service(&root, name).is_some())
+        },
+        "the rows and their services",
+    )
+    .await;
+
+    // Both wait at the gate until both arrived: then a calls b through
+    // Kotlin, and b calls a.
+    let a_go = call(&fixture.root, "a_svc", "go");
+    let b_go = call(&fixture.root, "b_svc", "go");
+    let answers = [answer(&a_go, "a.go"), answer(&b_go, "b.go")]
+        .map(|answer| answer.as_str().unwrap().to_owned());
+    assert!(
+        answers
+            == [
+                "a_svc got kt_relay relays b_work works",
+                "b_svc: SyncWaitCycle"
+            ]
+            || answers
+                == [
+                    "a_svc got kt_relay: SyncWaitCycle",
+                    "b_svc got a_work works"
+                ],
         "exactly one call is refused, and the other completes: {answers:?}"
     );
     fixture.root.shutdown().await.unwrap();

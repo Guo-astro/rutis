@@ -8,6 +8,8 @@
 
 补充评论 6415164837：远程运行时在 0.19 补齐一致性（#695，PR #700）；link、接入点、远程租约的规则本身不变，追踪表按 #695 之后的行为覆盖（#613、#624）。本文件的表格没有逐条体现这次变化。
 
+2026-11-16（#1212）：`NOD-3-1` 的备注按 0.19 删除的机制改写。导出 / 导入名单在 0.19 删除（`design-remote-session-2026-10-28.md` §八、§十二；`migration-0.19.md`），没有名单可写名字或 `*` 前缀；备注里「#631 export/import 收窄 PT」没有对象，按[复核表](../recheck-0.22.md)记「已撤回」。
+
 分区合计：现行 231 条，已取代 17 条，共 248 行（与 issue 正文的统计表一致）。
 
 ## 分区 `remote`
@@ -251,7 +253,7 @@
 | NOD-1-3 | NOD「一条 link」 | link 凭据被拒（403、证书不受信任）时每 30 秒重试；协议不兼容时停止并报告 | 跨进程 | TLA + 测试 | host/link-state-output、bridge/websocket-refusal-categories | RL（被吊销按认证失败等待；不兼容未建） | 部分 | #631、#633 | 30 秒计时 #633；分类见 REM-3.2-4 |
 | NOD-1-4 | NOD「一条 link」 | `rutis-host run` 在 link 状态变化时打印一行（connected / down / refused: auth-rejected / stopped: incompatible），带可读类别，不带 token | 外部 | 测试 | host/link-state-output | — | 不适用 | — | 文字输出；`rutis-host/tests/links.rs` |
 | NOD-1-5 | NOD「一条 link」 | 明确不保证：节点行自己的 `running` 只说明这一行在运行，不说明连上了 | 外部 | 测试 | host/row-state-lines | — | 不适用 | — |  |
-| NOD-3-1 | NOD「节点之间的事件」 | `export`/`import` 的一项是名字或以 `*` 结尾的前缀（单独 `*` 为所有名字）；前缀只选事件，服务仍按确切名字 | 纯逻辑 | PT | events/link-export-import | — | 未覆盖 | #631 | #631 export/import 收窄 PT |
+| NOD-3-1 | NOD「节点之间的事件」 | `export`/`import` 的一项是名字或以 `*` 结尾的前缀（单独 `*` 为所有名字）；前缀只选事件，服务仍按确切名字 | 纯逻辑 | PT | events/link-export-import | — | 未覆盖 | #631 | 已撤回（#1212）：导出 / 导入名单在 0.19 删除（`design-remote-session-2026-10-28.md` §八、§十二；`migration-0.19.md`），没有名单可写名字或 `*` 前缀；#631 的 export/import 收窄 PT 没有对象 |
 | NOD-3-2 | NOD「节点之间的事件」；「安全」末条 | 一个名字要在发出端 `export`、监听端 `import` 都写了才共享；同一个名字可以双向共享 | 跨进程 | K + TLA | events/link-export-import、events/node-links | K-ev `node/not-shared`、`node/shared-both-ways` | 已覆盖 | #613 |  |
 | NOD-3-3 | NOD「节点之间的事件」 | 对端的监听器是本节点总线上的条目，规则与本机相同：五种方式、过滤、所有值类型 | 跨进程 | K | events/node-links、events/one-bus | K-ev（`node` 位置的放置、`node/values`、`node/function-argument`、`node/rutis-events`） | 已覆盖 | — |  |
 | NOD-3-4 | NOD「节点之间的事件」 | 连接断开时对端条目离开总线，进行中的调用失败一次 | 跨进程 | K + TLA | events/node-links | K-ev `disconnect/node-link` | 部分 | #613 | 断开与宣告交错由 #613 `EventsLink` |
