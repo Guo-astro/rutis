@@ -6,6 +6,8 @@
 
 抽取基线：`main` `3496669b`（issue 正文的统计口径）。**这批行没有按 0.22 的现行规格复核**：状态列仍是 issue 的词汇，`node tools/formal-trace.mjs` 在统计时按 `README.md` §3 的映射换成追踪表状态；映射只降不升，不改写本文件。
 
+2026-11-16（#1212）：`events/flat b`、`events/link-export-import b` 的备注按 0.19 删除的机制改写。节点的 `export` / `import` 名单在 0.19 删除（`design-remote-session-2026-10-28.md` §八、§十二；`migration-0.19.md`），节点之间是一条总线、每个名字都在；备注里「#631 export / import 收窄 PT」没有对象，按[复核表](../recheck-0.22.md)记「已撤回」。状态列不改。
+
 分区合计：现行 156 条，已取代 9 条，共 165 行（与 issue 正文的统计表一致）。
 
 ## 分区 `registry-1`
@@ -113,7 +115,7 @@
 | `events/reserved a` | §7 | 插件以任何方式发出 `rutis/*` 都以 `ReservedEvent` 失败 | 纯逻辑 | K | EVP-8-1、EVP-11-4 | K：`reserved/rutis-emit`、`reserved/every-mode`（发出方 vary，含 host） | 已覆盖 | — |  |
 | `events/reserved b` | §7 | `rutis/*` 可以监听 | 纯逻辑 | K | EVP-8-1、EVP-4.2-2 | K：`rutis/row`、`rutis/service`、`rutis/runtime-down-reason`（host 上的监听器） | 已覆盖 | — |  |
 | `events/flat a` | §7 | 事件在一个 root 的总线上按名字送达所有监听器；作用域或运行时描述不挑选监听器；`ListenerInfo::scope` 只是过滤用的描述 | 纯逻辑 | PT + K | EVP-3-2、EVP-12.1-6 | K：`scope/flat-bus`、`scope/siblings-share-the-bus`、`scope/bail-and-waterfall`、`filter/own-listeners-in-scopes` | 部分 | #631 |  |
-| `events/flat b` | §7 | 相连的节点只见到它的连接 `export` / `import` 承载的名字 | 跨进程 | PT + K | EVP-3-2、EVP-9-2 | K：`node/not-shared`、`node/shared-both-ways` | 部分 | #631 | export / import 收窄 PT |
+| `events/flat b` | §7 | 相连的节点只见到它的连接 `export` / `import` 承载的名字 | 跨进程 | PT + K | EVP-3-2、EVP-9-2 | K：`node/not-shared`、`node/shared-both-ways` | 部分 | #631 | 已撤回（#1212）：0.19 删除节点的 `export` / `import` 名单（`design-remote-session-2026-10-28.md` §八、§十二；`migration-0.19.md`），节点之间是一条总线、每个名字都在；#631 的 export / import 收窄 PT 没有对象，`node/not-shared` 已删；按[复核表](../recheck-0.22.md)记「已撤回」 |
 | `events/flat c` | §7 | 没有总线的挂载（`Mount.ctx: None`）则没有跨进程事件 | 纯逻辑 | 测试 | — | — | 不适用 | #641 ※ | 登记表"验证"列的 4 个测试都不碰这一支 |
 | `events/scope` | §7 | 监听器收到自己作用域及其下各作用域的事件，收不到兄弟的；根收到全部 | — | — | — | — | 已取代 | — | 登记表：已撤回（0.15.1），由 `events/flat` 取代（#604、#605） |
 | `events/filter a` | §7 | 过滤在按名字取出的快照上、任何调用之前，按登记顺序看每个非 `global` 候选的 `ListenerInfo` | 纯逻辑 | PT + K | EVP-5.1-2、EVP-6-1、EVP-6-4 | K：`filter/keeps-and-sees`、`filter/every-listener`、`filter/global-skips-filter`、`filter/global-skips-filter-in-scopes`、`filter/bail` | 部分 | #631 |  |
@@ -180,4 +182,4 @@
 | `events/old-peer-refused b` | §8a | 拒绝不重试、不挂起：Go 二进制记为被拒、不再启动，它的行以同一消息失败；远程运行时的连接以 `incompatible` 停止、不再拨号；节点任一方都不重试 | 进程内并发 | SH + PT | EVP-2.2-1、EVP-2.2-3 | — | 未覆盖 | #627、#631 | #627 二进制监督（失败的启动只在文件变化或请求重启时重试）；link 循环"被拒不重试"的判定属握手判定表 / 退避 PT |
 | `events/no-multi-hop` | §8a | 只走一跳：节点经连接够到的监听器从不再传给它的其他连接 | 跨进程 | TLA | EVP-9-4 | — | 未覆盖 | #613 | `NoEcho`（单连接；a—b—c 由 `events_nodes.rs` 的普通测试覆盖） |
 | `events/link-export-import a` | §8a | 节点连接的 `export` / `import` 接受事件名和 `*` 前缀（服务仍是确切名字） | 纯逻辑 | PT | EVP-9-1 | — | 未覆盖 | #631 |  |
-| `events/link-export-import b` | §8a | 事件只有在名字同时在发出节点的 `export` 和监听节点的 `import` 里时才到达另一个节点上的监听器；不在其中的收不到 | 跨进程 | PT + K | EVP-9-2 | K：`node/not-shared`（`n/*` 不在两边的列表里）、`node/shared-both-ways` | 部分 | #631 | export / import 收窄 PT；K 的两边列表是固定的（`t/*`、`rutis/*`） |
+| `events/link-export-import b` | §8a | 事件只有在名字同时在发出节点的 `export` 和监听节点的 `import` 里时才到达另一个节点上的监听器；不在其中的收不到 | 跨进程 | PT + K | EVP-9-2 | K：`node/not-shared`（`n/*` 不在两边的列表里）、`node/shared-both-ways` | 部分 | #631 | 已撤回（#1212）：0.19 删除节点的 `export` / `import` 名单（`design-remote-session-2026-10-28.md` §八、§十二；`migration-0.19.md`），事件按名字到达另一节点的监听器，不再需要两边名单；#631 的 export / import 收窄 PT 没有对象，K 的 `node/not-shared` 已删，`node/shared-both-ways` 只剩 `tool: false` 的期望；按[复核表](../recheck-0.22.md)记「已撤回」 |
