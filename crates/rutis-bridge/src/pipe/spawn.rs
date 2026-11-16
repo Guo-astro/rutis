@@ -1469,4 +1469,29 @@ mod tests {
         };
         assert!(sender.send(b"a\nb").is_err());
     }
+
+    /// The status recorded before anyone waits is not lost: a channel that
+    /// ends after the process is gone says how it ended at once.
+    #[test]
+    fn a_record_before_the_wait_is_not_lost() {
+        let exit = Exit::default();
+        exit.record("exited with exit status: 3".into());
+        let begun = std::time::Instant::now();
+        assert_eq!(
+            exit.wait(Duration::from_secs(5)).as_deref(),
+            Some("exited with exit status: 3")
+        );
+        assert!(begun.elapsed() < Duration::from_secs(1));
+    }
+
+    /// Closing here before a send waits is not lost either: the send does
+    /// not wait for a process that is about to be killed.
+    #[test]
+    fn a_close_before_the_wait_is_not_lost() {
+        let exit = Exit::default();
+        exit.closed_here();
+        let begun = std::time::Instant::now();
+        assert_eq!(exit.wait_unless_closed(Duration::from_secs(5)), None);
+        assert!(begun.elapsed() < Duration::from_secs(1));
+    }
 }
