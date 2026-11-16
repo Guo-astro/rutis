@@ -147,7 +147,7 @@
 | Go 模块 | `go/`，39 个文件 | 176 | — |
 | Kotlin | `kotlin/`，23 个文件 | 124 | — |
 | Swift | `swift/`，4 个文件 | 32 | — |
-| 设计模型 | `specs/` 7 个目录、17 个 `.tla`、219 个配置（§7.2） | — | — |
+| 设计模型 | `specs/` 7 个目录、17 个 `.tla`、220 个配置（§7.2） | — | — |
 | 可控调度 | 内核 16 个 shuttle 模型，`--cfg rutis_shuttle` 才编译（§7.3） | 16 | — |
 | 模糊测试 | `fuzz/fuzz_targets/`，4 个目标（§7.4） | 4 | — |
 
@@ -156,7 +156,7 @@
 - 跨语言值类型（日期时间、二进制、Map、Set、大整数、Decimal、UUID，0.11）与七种语言的值往返属性测试；
 - 远程运行时拨出、接入点与 Swift / Kotlin、iOS / Android 应用托管（0.13–0.18）；
 - 内核 16 个 shuttle 模型、`stress.yml` 每晚大规模运行；`fuzz/` 的第四个目标（错误图）；
-- `specs/` 从 2 个目录扩到 7 个目录、17 个模块、219 个配置；
+- `specs/` 从 2 个目录扩到 7 个目录、17 个模块、220 个配置；
 - trace validation 的第一块（会话通道，`trace_validation.rs`）；
 - 测试时钟（`virtual_clock_contract.rs`、`design-test-clocks-2026-10-11.md`）与上一个发布版本与当前代码相遇（`cross_version.rs`）。
 
@@ -180,7 +180,7 @@
 | `rutis-host` | `tests/` 下 8 个文件：信号、配置、`check`、常见错误输出、项目模板、持久化样本、link 状态、输出整行 | #216、#217、#284、#336、#339 |
 | 测试工具与真实运行时 | 同一份期望文件 `weather.expected.json`：真实运行时经 `session_matrix.rs`，Node、Python 测试工具各一个测试 | #298 |
 | 持久化样本 | `tests/fixtures/persisted/`：0.8.0、0.9.0、0.9.1、`rejected/` | #284 |
-| TLA+ | `specs/` 的 7 个模型目录、17 个模块、219 个配置（§7.2）。CI 的 `specs` 任务在改了 `specs/**` 的 PR 和每晚运行 | #222、#210，之后 #613 |
+| TLA+ | `specs/` 的 7 个模型目录、17 个模块、220 个配置（§7.2）。CI 的 `specs` 任务在改了 `specs/**` 的 PR 和每晚运行 | #222、#210，之后 #613 |
 | 保证登记表 | [guarantees.md](guarantees.md)：`core/`、`boundary/`、`instance/`、`bridge/`、`host/`、`dsh/`、`sdk/` 族；测试注释约 100 处 `guarantee: <编号>`；规则追踪表 1817 行（§7.6） | #276、#310 → #634 |
 
 CI：`ci.yml`（PR 按改动选择任务，每晚全部运行；Linux 全量与最低版本、E2E、lint、macOS 与 Windows 的平台相关测试、Bun 与 Go 运行时、dylib、打包、semver、MSRV、feature 组合、可复现、7 个模型的 `specs` 任务）；`install.yml`（安装冒烟）；`nightly.yml`（每晚调用前面三个和 `stress.yml`，失败时开问题单）；`stress.yml`（每晚：内核多轮、多进程测试多轮、两个浸泡、16 个 shuttle 模型、4 个模糊测试目标、事件的全部放置）；`dylib-windows.yml`；`deps.yml`、`ci-stats.yml`（每周）。详见 [ci.md](ci.md)。CI 中仍然没有：actionlint、许可证检查。
@@ -265,7 +265,7 @@ CI：`ci.yml`（PR 按改动选择任务，每晚全部运行；Linux 全量与�
 | EV3 | 卸载或断开之后，已撤下的条目仍开始调用，或进行中的调用失败零次、两次；已卸载的行扣住队列（已发生：#536（#564 修复）、#587） | 语义、残留 | 高 | 中 | P0 | TLA；K；TV（#624） | PR | 部分：`EventsTable.tla` 的"只接受这一行当前登记"与 `table-reload`/`table-end-session` 配置；实现侧 `event_hub.rs` 的 `rows.ended` 按帧序（#587）、卸载丢弃排队 emit（#536）。缺：trace validation |
 | EV4 | 节点连接的提供与宣告：旧提供的条目残留，先于提供到达的宣告被撤下（已发生：#593；#435 的根因在宿主内的登记，由 `peer.rs` 的 `a_family_is_announced_only_with_its_offer` 覆盖） | 语义 | 中 | 中 | P1 | TLA（`EventsLink.tla`）；K（`crates/rutis-bridge/src/peer.rs`、`events.expected.json` 的 `node/` 用例、`node/rutis-runtime/test/cordis-events.test.mjs`） | PR | 部分：`EventsLink.tla` 检查只保留最高版本、旧提供按 epoch 撤下、先到的宣告保留；`events.expected.json` 有 5 个 `node/` 用例。缺：多对端与多跳不在模型里 |
 | EV5 | 同步分发（`bail`、`waterfall-sync`）、宿主自己的同步调用、每个调用一个线程的运行时（Go、Swift、Kotlin）让等待环漏检或误报（已发生：#537） | 语义 | 高 | 中 | P0 | TLA（`specs/cross-runtime-sync/`）；K（`crates/rutis-loader/tests/sync_cycles.rs`）；TV（#624） | PR | 部分：`cross-runtime-sync` 44 个配置含 `Threaded`（每调用一线程）与宿主发起的 `host-call`，`sync_cycles.rs` 有 Node / Python / Go / Swift 列；`cycle_among` 的差分属性测试（`waits.rs` 的 `cycle_among_agrees_with_the_models_graph` 与 `the_model_check_agrees_on_the_small_graphs`）与等待图 trace validation（`waits/trace.rs` 记录、`waits/trace/check.rs` 按 `RustSucc` 重放，在 `sync_cycles.rs`、`rpc_callbacks.rs` 上跑）已做。缺：`sync_cycles` 没有 Kotlin 列 |
-| RL1 | 宿主与运行时之间的行生命周期：迟到的 `rows.ended`、拒绝、服务公告作用到别的代次；租约比行活得长（已发生：a88fb65b、54a7e824、d94aae9a、#247、#314、#372、#584、#191） | 语义、残留 | 高 | 中 | P1 | TLA（`specs/row-lifecycle/`）；K（各语言的行契约，`crates/rutis-loader/tests/*_rows.rs`） | PR | 部分：`RowLifecycle.tla` 36 个配置检查"一行最多一个代次在运行、迟到结束只结束自己的代次、租约不长于行、服务在提供方卸载前撤下"；各语言行契约有 Node / Python / Bun / Go / Swift。缺：`rows.schema` / `mount`、调用链、各语言卸载栈差异、shutdown 截止不在模型里；#1100（行键身份）、#1101（卸载先于装载）仍 OPEN |
+| RL1 | 宿主与运行时之间的行生命周期：迟到的 `rows.ended`、拒绝、服务公告作用到别的代次；租约比行活得长（已发生：a88fb65b、54a7e824、d94aae9a、#247、#314、#372、#584、#191） | 语义、残留 | 高 | 中 | P1 | TLA（`specs/row-lifecycle/`）；K（各语言的行契约，`crates/rutis-loader/tests/*_rows.rs`） | PR | 部分：`RowLifecycle.tla` 36 个配置检查"一行最多一个代次在运行、迟到结束只结束自己的代次、租约不长于行、服务在提供方卸载前撤下"；各语言行契约有 Node / Python / Bun / Go / Swift。缺：`rows.schema` / `mount`、调用链、各语言卸载栈差异、shutdown 截止不在模型里；#1100 已定案（键每次装载新取）、#1101（卸载先于装载）仍 OPEN |
 | CL1 | 调用生命周期：取消之后被调用方是否回复没有成文规则，调用方的取消表只增不减；读线程写回在两端背压时可能互相卡死 | 语义、残留 | 高 | 中 | P1 | TLA（`specs/call-lifecycle/`）；K（`rpc_callbacks.rs`、`multihop.rs`） | PR | 部分：`CallLifecycle.tla` / `CallRelay.tla` 35 个配置把两种取消答复实现都验证为"不重复结算、不漏引用"，并证明读线程写回不死锁的前提（读线程不直接写）、中继逐跳传取消。缺：`SESS-61` 仍是明确不保证，#1099 未定；中继的关闭、关闭后对侧继续读帧不在模型里 |
 | AH1 | 应用托管：`RutisApp` 的开始、停止不按调用顺序生效，停止后端口没有释放，再开始时拿到上一轮的状态（已发生：#519、#521、#532、#554） | 语义、残留 | 高 | 中 | P1 | SH：Kotlin 用 Fray（#630）；Swift 没有可控调度，用严格并发检查加 TSan（#630）；连接层用 TLA（`remote-lease`）；模拟器与设备上的测试在本地运行（[CI](ci.md) §12） | PR、设计 | 部分：`remote-lease` 的 `lease-app-restart` / `access-app-restart` 配置按"停止后再开始"建，`RutisApp` 的线程交错已在 f57b4138 修复；Kotlin Fray、Swift TSan 都没有（§7.3）；iOS / Android 的应用托管测试只在本地跑 |
 | AH2 | Swift / Kotlin 的接管顺序、再拨规则与其他语言不一致 | 语义 | 中 | 中 | P1 | TLA 的对应表核对；K（#624） | PR | 部分：`specs/remote-lease/README.md` 的对应表已补 Swift / Kotlin；Kotlin 心跳起算点仍未修（#1102），模型按正确规则建、并按现在的实现留了反例配置。`sync_cycles` 没有 Kotlin 列 |
@@ -522,7 +522,7 @@ CI：`ci.yml`（PR 按改动选择任务，每晚全部运行；Linux 全量与�
 | **X：最新 Cordis 插件的 nightly 基线** | F4 | 有（`nightly.yml` 的 `cordis-latest`，只报告，#190 → #429） | — |
 | **FZ** | P2、E7、B5 | 有：会话帧、本地行分帧、错误图、WebSocket 升级请求（`fuzz/`，nightly，#179 → #425、#624） | 配置文件（B5，低优先级）、dylib 的目标文件解析（#631） |
 | **SH** | K2、RS1 | 有：内核 16 个模型（§7.3），`stress.yml` 每晚每个 100 万次迭代；Python 的可步进事件循环；Node 的帧泵 | 会话层、事件宿主、运行时监督与宿主重载的模型（#622）；Kotlin Fray、Swift TSan、Go 的显式闸门（#630） |
-| **TLA** | EV1–EV5、RL1、CL1、AH1、AH2、P10、C6、E4、E5 | 7 个目录、17 个模块、219 个配置（§7.2）；CI 的 `specs` 任务 | 逐条见 §7.2 的缺口一列 |
+| **TLA** | EV1–EV5、RL1、CL1、AH1、AH2、P10、C6、E4、E5 | 7 个目录、17 个模块、220 个配置（§7.2）；CI 的 `specs` 任务 | 逐条见 §7.2 的缺口一列 |
 | **TV** | EV2、EV3、EV5、AH2 | 会话通道的 trace validation（`trace_validation.rs`，#624）；等待图（`waits/trace.rs`、`waits/trace/check.rs`，#613） | 接入点、事件宿主的动作日志（#624） |
 | **KANI** | 值的范围与纯函数的边界 | 6 个 harness 在 `fuzz/kani/` | Kani 0.68.0 在这台机器上 90 分钟不收敛，没有结论（`fuzz/KANI-MIRI.md`）；`unsafe` 的证明（#631） |
 | **SK：宿主级浸泡** | L1、L3、D3、A5、H4 | 有：bridge 层两个；宿主进程级 S8（#192），带种子，每晚三个平台 | 每周更长时间的运行 |
@@ -551,16 +551,16 @@ CI：`ci.yml`（PR 按改动选择任务，每晚全部运行；Linux 全量与�
 
 ### 7.2 跨进程协议：TLA+
 
-`specs/` 有 7 个模型目录、17 个 `.tla` 模块、219 个配置（另有非模型的 `specs/config-schema/`）。CI 的 `specs` 任务（[CI](ci.md) §4）在改了 `specs/**` 的 PR 和完整运行（每晚、发布门）里把每个模型的全部配置跑一遍，与各目录的 `expected.txt` 比较。
+`specs/` 有 7 个模型目录、17 个 `.tla` 模块、220 个配置（另有非模型的 `specs/config-schema/`）。CI 的 `specs` 任务（[CI](ci.md) §4）在改了 `specs/**` 的 PR 和完整运行（每晚、发布门）里把每个模型的全部配置跑一遍，与各目录的 `expected.txt` 比较。
 
 | # | 协议 | 目录 | 模块 | 配置 | 在穷举范围内证明的 | 现状与缺口 |
 | --- | --- | --- | --- | ---: | --- | --- |
 | T1 | 跨运行时同步调用与等待图 | [cross-runtime-sync](../specs/cross-runtime-sync/README.md) | `CrossRuntimeSync.tla` | 44 | 策略 B 不成环、反向调用回到发起方、`SyncWaitCycle` 只在确实成环时返回 | **部分**：`cycle_among` 的差分属性测试与等待图的 trace validation 已做（#613）；Node 按 key 扣住、跨主机的环（写成明确不保证）、运行时线程池未建 |
 | T2 | 远端租约、link 重连、接入点 | [remote-lease](../specs/remote-lease/README.md) | `RemoteLease.tla`、`AccessPoint.tla` | 32 | 一个运行时最多一个活动租约、接入点每个 id 最多一个实例、旧会话的指令不作用于新租约、停止后不再重连 | **部分**：Kotlin 心跳起算点按实现留了反例、实现未修（#1102）；Swift 停止后到达的 `.accepted` 没有逐行核对；Cordis 节点的 `link.mjs` 不在本仓库；计时不建 |
 | T3 | 统一事件：登记与分发、emit 顺序、节点提供、关闭接纳 | [events](../specs/events/README.md)、[event-close](../specs/event-close/README.md) | `EventsHost`、`EventsTable`、`EventsEmit`、`EventsLink`、`EventsHostCheck`、`CloseAdmission` | 37 + 7 | 先登记后发出（两条路径）、撤下后不再开始调用、同一对条目处处同一先后、emit 的两个顺序性质、节点只保留最高版本、关闭的 marker 与恰好一次清理 | **部分**：`RegisteredThenSeen`、`OneCallPerEntry` 各有变异反例（`table-mut-on-late`、`table-mut-dup-local`）；`emit-python-deferred` 通过，`emit-mut-future-reply` 违反 `EmitOrder`；作用域、值、错误、取消、五种分发的完整语义、多跳、多对端未建 |
-| T4 | 宿主与运行时之间的行生命周期 | [row-lifecycle](../specs/row-lifecycle/README.md) | `RowLifecycle.tla` | 36 | 一行最多一个代次在运行、迟到结束只结束自己的代次、租约不长于行、服务在提供方卸载前撤下 | **部分**：`rows.schema` / `mount`、调用链、各语言卸载栈差异、shutdown 截止不在模型里；#1100、#1101 仍 OPEN |
+| T4 | 宿主与运行时之间的行生命周期 | [row-lifecycle](../specs/row-lifecycle/README.md) | `RowLifecycle.tla` | 36 | 一行最多一个代次在运行、迟到结束只结束自己的代次、租约不长于行、服务在提供方卸载前撤下 | **部分**：`rows.schema` / `mount`、调用链、各语言卸载栈差异、shutdown 截止不在模型里；#1100 已定案、#1101 仍 OPEN |
 | T5 | 调用生命周期（两端加一跳中继） | [call-lifecycle](../specs/call-lifecycle/README.md) | `CallLifecycle.tla`、`CallRelay.tla` | 35 | 每个调用最多结算一次、迟到答复丢弃、引用计数守恒、关闭后帧不改变状态、中继逐跳传取消 | **部分**：取消之后被调用方是否回复没有成文规则（`SESS-61`、#1099）；中继的关闭与关闭后对侧继续读帧不在模型里 |
-| T6 | 节点托管的行 | [peer-rows](../specs/peer-rows/README.md) | `PeerRows`、`PeerOffers`、`PeerHosted`、`PeerPair`、`PeerServices` | 28 | 同一实例不同时在两个会话里、旧代迟到的结束不结束新代、门控与离线等待、两个节点互相代装不互相等待、服务版本与墓碑 | **部分**：当前代码已没有 `peer:` 行（0.19 删除），#438 无法对当前代码复现；#1100（行键身份）、#1101（卸载先于装载）未关闭 |
+| T6 | 节点托管的行 | [peer-rows](../specs/peer-rows/README.md) | `PeerRows`、`PeerOffers`、`PeerHosted`、`PeerPair`、`PeerServices` | 29 | 同一实例不同时在两个会话里、旧代迟到的结束不结束新代、门控与离线等待、两个节点互相代装不互相等待、服务版本与墓碑 | **部分**：当前代码已没有 `peer:` 行（0.19 删除），#438 无法对当前代码复现；#1100 已定案（键每次装载新取，`peer-fresh-keys`）；#1101（卸载先于装载）未关闭 |
 
 不是所有跨进程的部分都需要 TLA：握手与能力协商是两方两条消息（PT 枚举判定表即可）；节点服务的导出 / 导入是"版本最高者胜"（PT）；监听 link 是接入点去掉自报 id 的特例；跨会话引用计数每个会话各自是两方协议，中继只靠进程内持有（SH 与 PT）。
 
@@ -821,7 +821,7 @@ E2E 发现并修复：#225、#226（#261、#217）。Node 最低版本降到 22�
 | 层/工作 | issue | 状态和下一步 |
 | --- | --- | --- |
 | 协议基线与规则追踪 | #635、#634 | 进行中：会话协议规格第一版（`docs/protocol-session.md`）已写入；规则追踪表 1817 行（含 1368 条协议规则，§7.6）。未知字段已定：拒绝但只失败该调用（`bad-frame`），七种运行时都已实现并进 CI |
-| 事件、调用、生命周期模型 | #613 | 7 个模型目录、17 个模块、219 个配置：`cross-runtime-sync`、`remote-lease`、`event-close`、`events` 四模块、`row-lifecycle`、`call-lifecycle`、`peer-rows`；逐目录的现状与缺口见 §7.2。模型发现的 bail/async/取消表/peer row 键等已转 issue 或实现修复 |
+| 事件、调用、生命周期模型 | #613 | 7 个模型目录、17 个模块、220 个配置：`cross-runtime-sync`、`remote-lease`、`event-close`、`events` 四模块、`row-lifecycle`、`call-lifecycle`、`peer-rows`；逐目录的现状与缺口见 §7.2。模型发现的 bail/async/取消表/peer row 键等已转 issue 或实现修复 |
 | Rust 实现交错 | #622 | 内核 16 个 shuttle 模型通过（§7.3）：#1025 的 marker 发布、`Entry::live`、effect 登记与清理、在途卸载、并发子树关闭、root dispose/shutdown、依赖撤下、emit 链、监听器表、重启发布新代次；7 个确定性竞态用例。待补：会话层、事件宿主、运行时监督与宿主重载（Launcher 接缝）、dylib；`interleave.rs` 的参考模型 |
 | 非 Rust 运行时调度 | #630 | 首块完成：Node 帧泵 4 个用例、Python 的 `SteppedLoop`；Bun/Go 只有现状盘点；Swift/Kotlin 本机无工具链，登记为环境缺口（§7.3） |
 | trace 与一致性 | #624 | 首块完成：Rust 通道/帧验证器 23 个用例（引用计数、错误图、调用范围、上限、替换/重连分类）；接入点、事件宿主的动作日志和跨语言列待补；等待图已做（#613，§7.5） |

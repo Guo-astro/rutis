@@ -2,6 +2,7 @@
 peer-healthy ok
 peer-failure ok
 peer-clean ok
+peer-fresh-keys ok
 peer-mut-late-ending violated:OwnGenerationOnly
 peer-mut-two-sessions violated:OneInstanceAtATime
 peer-mut-keep-rows violated:liveness
