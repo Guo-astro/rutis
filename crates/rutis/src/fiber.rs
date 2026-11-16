@@ -697,6 +697,35 @@ impl FiberInner {
         })
     }
 
+    /// [`post_join`](Self::post_join) for a restart (or update) intent: a
+    /// restart the driver never takes up reports what [`restart`](FiberView::restart)
+    /// reports behind a registered dispose, not the dispose's own result.
+    pub(crate) fn post_join_restart(&self, task: Arc<TransitionTask>) -> bool {
+        post_join_to(&self.alive, &self.intents_tx, task, Intent::Restart, || {
+            self.restart_stopped_error()
+        })
+    }
+
+    /// The completion of a restart that no generation followed.
+    ///
+    /// `Closed` while the fiber or its instance closes: the same refusal the
+    /// restart makes when its check runs after the close. `InactiveEffect`
+    /// for a non-root fiber whose dispose is registered: the driver's
+    /// `Dispose` arm or its exit drain may complete the restart's task after
+    /// the dispose won the race between the restart's check and its post, and
+    /// the dispose's (usually clean) result must not read as a successful
+    /// restart (#622). Otherwise the fiber's stopped error: a failed driver
+    /// reports its failure, not a success.
+    fn restart_stopped_error(&self) -> Option<Arc<ErrorKind>> {
+        if self.ctx.shared().closing.load(Ordering::SeqCst) || self.closing.load(Ordering::SeqCst) {
+            return Some(Arc::new(ErrorKind::Closed));
+        }
+        if !self.is_root && self.transition.lock().unwrap().terminal_task.is_some() {
+            return Some(Arc::new(ErrorKind::InactiveEffect));
+        }
+        self.stopped_error()
+    }
+
     pub(crate) fn state(&self) -> FiberState {
         self.transition.lock().unwrap().state
     }
@@ -1265,7 +1294,7 @@ pub(crate) async fn drive(this: Arc<FiberInner>, mut rx: mpsc::UnboundedReceiver
                         task.complete(Some(Arc::new(ErrorKind::Closed)));
                         return;
                     }
-                    // A dispose registered first wins: this restart does not
+                    // A dispose registered wins: this restart does not
                     // happen and reports what `restart()` reports once a
                     // dispose is registered. Checked before the Disposed
                     // branch: a restart queued behind a second restart or
@@ -1399,11 +1428,14 @@ pub(crate) async fn drive(this: Arc<FiberInner>, mut rx: mpsc::UnboundedReceiver
             let terminal_error = this.transition.lock().unwrap().error.clone();
             while let Ok(intent) = rx.try_recv() {
                 // Settle 只观察 Failed；其他 join 应拿到 dispose 的
-                // 清理错误，而非被排空时伪报成功。
-                let error = if matches!(intent, Intent::Settle(_)) {
-                    None
-                } else {
-                    terminal_error.clone()
+                // 清理错误，而非被排空时伪报成功。A restart that was posted
+                // before the dispose was taken up is the exception: it did not
+                // happen, so it reports `InactiveEffect`, as the `Restart`
+                // arm does behind a registered dispose (#622).
+                let error = match &intent {
+                    Intent::Settle(_) => None,
+                    Intent::Restart(_) => this.restart_stopped_error(),
+                    _ => terminal_error.clone(),
                 };
                 complete_intent(&intent, error);
             }
@@ -2024,8 +2056,10 @@ impl FiberView {
                 tr.pre_cancelled = true;
                 this.cancel_current();
             }
+            #[cfg(test)]
+            test_hooks::restart_before_post();
             let task = TransitionTask::new();
-            this.post_join(task.clone(), Intent::Restart);
+            this.post_join_restart(task.clone());
             join_task(&task).await
         })
     }
@@ -2115,8 +2149,10 @@ impl FiberView {
                 this.cancel_current();
             }
             *this.config.lock().unwrap() = Some(boxed);
+            #[cfg(test)]
+            test_hooks::restart_before_post();
             let task = TransitionTask::new();
-            this.post_join(task.clone(), Intent::Restart);
+            this.post_join_restart(task.clone());
             join_task(&task).await
         })
     }
@@ -2353,6 +2389,8 @@ pub(crate) mod test_hooks {
 
     thread_local! {
         static ROOT_DISPOSE: RefCell<Option<Box<dyn FnOnce()>>> = const { RefCell::new(None) };
+        static RESTART_BEFORE_POST: RefCell<Option<Box<dyn FnOnce()>>> =
+            const { RefCell::new(None) };
     }
 
     /// Run `f` once, on this thread, inside the next root `dispose()` call:
@@ -2366,9 +2404,26 @@ pub(crate) mod test_hooks {
             f();
         }
     }
+
+    /// Run `f` once, on this thread, inside the next `restart()` or
+    /// `update()`: after its terminal check and pre-cancel, before it posts
+    /// the restart intent. A dispose registered here has won the race the
+    /// check above cannot close (#622).
+    pub(crate) fn on_restart_before_post(f: impl FnOnce() + 'static) {
+        RESTART_BEFORE_POST.with(|hook| *hook.borrow_mut() = Some(Box::new(f)));
+    }
+
+    pub(super) fn restart_before_post() {
+        if let Some(f) = RESTART_BEFORE_POST.with(|hook| hook.borrow_mut().take()) {
+            f();
+        }
+    }
 }
 
 pub(crate) mod waiting;
+
+#[cfg(test)]
+mod restart_tests;
 
 #[cfg(test)]
 mod transient_tests;

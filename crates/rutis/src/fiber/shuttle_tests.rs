@@ -27,11 +27,13 @@
 //! the kernel spawns run on shuttle's executor and a model drives them; model
 //! 21 mounts a child on the root while the root closes, over the real admission
 //! and transition locks; model 22 waits on two fibers' calls with the deadline
-//! timer, which the model moves (`crate::sync::Clock`). Built with
-//! `--cfg rutis_shuttle`, `crate::sync` makes
-//! the driver's `alive` flag, a fiber's `lineage_closed` marker, an effect
-//! record's state, a spawned task's result and the admission, transition,
-//! effects and flight locks shuttle primitives; the tokio channels in between
+//! timer, which the model moves (`crate::sync::Clock`); model 23 races a
+//! restart against a terminal dispose (#622's "待复现的疑点"), and model 24
+//! orders one binding's `Provided` before its `Removed` (#622's third doubt).
+//! Built with `--cfg rutis_shuttle`, `crate::sync` makes the driver's `alive`
+//! flag, a fiber's `lineage_closed` marker, an effect record's state, a spawned
+//! task's result and the admission, transition, effects and flight locks
+//! shuttle primitives; the tokio channels in between
 //! (`watch`, `mpsc`, `Notify`) need no runtime and are single steps to shuttle.
 //! Shuttle switches just before an operation on its primitives, so
 //! the windows the code guards that no primitive opens are marked with
@@ -1705,6 +1707,19 @@ fn consumer_stopped_error(inner: &ConsumerInner) -> Option<Arc<ErrorKind>> {
     })
 }
 
+/// `FiberInner::restart_stopped_error`, mirrored for the model's consumer:
+/// `Closed` while it closes, `InactiveEffect` once its dispose is registered
+/// (the dispose's clean result is not a restart's), else its stopped error.
+fn consumer_restart_stopped_error(inner: &ConsumerInner) -> Option<Arc<ErrorKind>> {
+    if inner.closing.load(Ordering::SeqCst) {
+        return Some(Arc::new(ErrorKind::Closed));
+    }
+    if inner.transition.lock().unwrap().terminal_task.is_some() {
+        return Some(Arc::new(ErrorKind::InactiveEffect));
+    }
+    consumer_stopped_error(inner)
+}
+
 /// `FiberInner::post` for the model's consumer.
 fn post_consumer(consumer: &Arc<Consumer>, intent: Intent) -> bool {
     let inner = &consumer.inner;
@@ -1935,9 +1950,37 @@ fn consumer_restart(consumer: &Arc<Consumer>) -> Restart {
         &consumer.intents,
         task.clone(),
         Intent::Restart,
-        || consumer_stopped_error(inner),
+        || consumer_restart_stopped_error(inner),
     );
     Restart::Posted(task, sent)
+}
+
+/// `FiberView::register_dispose` for the model's consumer: the check and the
+/// registration share the transition lock, and the pre-cancel is the #619
+/// fix. The model's consumer has no generation token to cancel.
+fn consumer_dispose(consumer: &Arc<Consumer>) -> Arc<TransitionTask> {
+    let inner = &consumer.inner;
+    let (task, newly_registered) = {
+        let mut tr = inner.transition.lock().unwrap();
+        match &tr.terminal_task {
+            Some(task) => (task.clone(), false),
+            None => {
+                tr.pre_cancelled = true;
+                let task = TransitionTask::new();
+                tr.terminal_task = Some(task.clone());
+                (task, true)
+            }
+        }
+    };
+    if newly_registered {
+        post_consumer(consumer, Intent::Dispose);
+        if !inner.alive.load(Ordering::SeqCst) {
+            // The driver may have handled the dispose and published its
+            // result already (#1194): only a still-running task is completed.
+            task.complete_if_running(consumer_stopped_error(inner));
+        }
+    }
+    task
 }
 
 /// The consumer's driver: one intent at a time, so a load and an unload
@@ -2010,19 +2053,29 @@ fn drive_consumer(
                 complete_consumer_task(&inner, task);
             }
             Intent::Dispose => {
-                // The non-root `Dispose` arm: unload to `Disposed`, stop the
-                // driver, drain what is queued (a later `Settle` reports no
-                // failure; every other join gets the terminal error).
+                // The non-root `Dispose` arm: unload to `Disposed`, complete
+                // the terminal task with that result, stop the driver, drain
+                // what is queued (a later `Settle` reports no failure; every
+                // other join gets the terminal error or its own refusal).
                 if inner.state() != FiberState::Disposed {
                     unload(&world, &inner, ConsumerNext::Disposed);
+                }
+                let (terminal, err) = {
+                    let tr = inner.transition.lock().unwrap();
+                    (tr.terminal_task.clone(), tr.error.clone())
+                };
+                if let Some(task) = terminal {
+                    task.complete(err);
                 }
                 inner.alive.store(false, Ordering::SeqCst);
                 let error = inner.transition.lock().unwrap().error.clone();
                 while let Ok(intent) = mailbox.try_recv() {
-                    let completion = if matches!(intent, Intent::Settle(_)) {
-                        None
-                    } else {
-                        error.clone()
+                    let completion = match &intent {
+                        Intent::Settle(_) => None,
+                        // A restart drained behind the terminal dispose never
+                        // happened: report that, not the dispose's result.
+                        Intent::Restart(_) => consumer_restart_stopped_error(&inner),
+                        _ => error.clone(),
                     };
                     complete_intent(&intent, completion);
                 }
@@ -6143,4 +6196,298 @@ fn deadline_waits(calls_first: bool) {
             }
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Model 23: a restart that loses to a dispose (#622's doubt,
+// `core/features.errors`)
+
+/// Model 23, a restart and a dispose registered at the same time (#622's
+/// doubt "`restart()` / `update()` 在检查与投递之间输给终止的 Dispose 时被排干成
+/// Ok"): the restart's check and pre-cancel run under the transition lock, its
+/// post after it. A dispose registered in between is taken up first, and the
+/// restart's intent is either drained by the driver's exit or posted after the
+/// driver stopped. Both must report that the restart did not happen
+/// (`InactiveEffect`), not the dispose's (usually clean) result: a join that
+/// returns `Ok` while no generation started reads as a successful restart that
+/// never restarted.
+///
+/// The consumer is loaded once before the race, and only a handled restart
+/// can add a generation: a restart that returns `Ok` must have started one
+/// (`generation` grows), and one that returns `InactiveEffect` must not.
+/// `load`, `unload`, `refresh_deps`, the registry methods, `evict_and_finalize`
+/// and `drive`'s `Restart` and `Dispose` arms are mirrored as in models 9 and
+/// 19; `consumer_restart`/`consumer_dispose`/`consumer_restart_stopped_error`,
+/// `post_join_to`, `join_task`, `TransitionTask` and `EffectRecord` follow the
+/// kernel's own.
+///
+/// Mutations this model catches: completing a drained restart with the
+/// terminal error (the pre-fix `drive` drain) and completing a post that
+/// landed after the driver stopped with `stopped_error` (the pre-fix
+/// `post_join`). In both, the restart joins `Ok` with the generation
+/// unchanged, and the model fails with "the restart reported success without
+/// starting a generation".
+#[test]
+fn shuttle_restart_losing_to_a_dispose_reports_it() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .expect("a current-thread runtime");
+    let handle = runtime.handle().clone();
+    explore(move || {
+        let key = TypeKey::of::<u32>();
+        let world = Arc::new(DepWorld {
+            key: key.clone(),
+            registry: DepRegistry::new(),
+            admission: SyncMutex::new(()),
+            handle: handle.clone(),
+        });
+        let provider = Arc::new(DepProvider {
+            id: PluginId(7),
+            state: SyncMutex::new(FiberState::Active),
+        });
+        provider.set(FiberState::Loading);
+        let _first = world
+            .registry
+            .insert(&key, &provider, 1)
+            .expect("the first provide");
+        provider.set(FiberState::Active);
+
+        let (consumer, mailbox) = new_consumer(&world);
+        world.registry.register_inject(&key, &consumer);
+        let driver = {
+            let (world, inner) = (world.clone(), consumer.inner.clone());
+            thread::spawn(move || drive_consumer(world, inner, mailbox))
+        };
+        // One load before the race: from here on, only the restart's take-up
+        // can start a generation.
+        post_consumer(&consumer, Intent::RefreshDeps);
+        let settle = TransitionTask::new();
+        let sent = post_join_to(
+            &consumer.inner.alive,
+            &consumer.intents,
+            settle.clone(),
+            Intent::Settle,
+            || consumer_stopped_error(&consumer.inner),
+        );
+        assert!(sent, "the consumer's driver was not alive");
+        assert!(
+            block_on(join_task(&settle)).is_ok(),
+            "the first load failed"
+        );
+        assert_eq!(consumer.inner.state(), FiberState::Active);
+        let generation = consumer.inner.transition.lock().unwrap().generation;
+
+        let restarter = {
+            let consumer = consumer.clone();
+            thread::spawn(move || {
+                switch_point();
+                match consumer_restart(&consumer) {
+                    Restart::Refused(error) => Err(error),
+                    Restart::Posted(task, _) => block_on(join_task(&task)),
+                }
+            })
+        };
+        let disposer = {
+            let consumer = consumer.clone();
+            thread::spawn(move || {
+                switch_point();
+                let task = consumer_dispose(&consumer);
+                block_on(join_task(&task))
+            })
+        };
+
+        let restart_result = restarter.join().unwrap();
+        let dispose_result = disposer.join().unwrap();
+        assert!(
+            dispose_result.is_ok(),
+            "the dispose reported {dispose_result:?}"
+        );
+
+        let inner = consumer.inner.clone();
+        let end = inner.state();
+        let end_generation = inner.transition.lock().unwrap().generation;
+        assert_eq!(
+            end,
+            FiberState::Disposed,
+            "the dispose did not end the fiber"
+        );
+        match restart_result {
+            Ok(()) => assert!(
+                end_generation > generation,
+                "the restart reported success without starting a generation"
+            ),
+            Err(error) => {
+                assert!(
+                    matches!(&*error, ErrorKind::InactiveEffect),
+                    "the losing restart reported {error:?}"
+                );
+                assert_eq!(
+                    end_generation, generation,
+                    "a restart that reported InactiveEffect started a generation"
+                );
+            }
+        }
+        assert_eq!(
+            inner.cleanups.load(Ordering::SeqCst),
+            inner.applies.load(Ordering::SeqCst),
+            "a generation's cleanup did not run exactly once"
+        );
+        drop(consumer);
+        driver.join().unwrap();
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Model 24: a binding's Provided before its Removed (#622's third doubt,
+// `events/framework c`)
+
+/// The model's world for one binding's two announcements: the kernel's
+/// admission, a mirrored registry slot and the `ServiceChanged` changes in the
+/// order their emits were made.
+struct ProvideWorld {
+    key: TypeKey,
+    admission: SyncMutex<()>,
+    registry: DepRegistry,
+    changes: SyncMutex<Vec<crate::ServiceChange>>,
+}
+
+impl ProvideWorld {
+    fn announce(&self, change: crate::ServiceChange) {
+        self.changes.lock().unwrap().push(change);
+    }
+}
+
+/// `Ctx::provide_native` where the order is decided: the state check, the
+/// insert and the binding's `Provided` announcement commit under one
+/// admission. `inserted` fires inside it, so the withdrawal wakes to find the
+/// binding and then waits on the admission for the announcement.
+fn provide_binding(
+    world: &ProvideWorld,
+    provider: &Arc<DepProvider>,
+    provider_gen: u64,
+    inserted: &Notify,
+) -> Option<Arc<DepBinding>> {
+    let _admission = world.admission.lock().unwrap();
+    if matches!(
+        provider.state(),
+        FiberState::Unloading | FiberState::Disposed
+    ) {
+        return None;
+    }
+    let binding = world
+        .registry
+        .insert(&world.key, provider, provider_gen)
+        .expect("the first provide");
+    inserted.notify_one();
+    world.announce(crate::ServiceChange::Provided);
+    Some(binding)
+}
+
+/// `FiberInner::unload`'s state change and the `evict_and_finalize` mirror:
+/// `Unloading` under the admission, then the withdrawal outside it (mark the
+/// binding removing, finalize it) and its `Removed` after the finalize.
+fn withdraw_binding(
+    world: &ProvideWorld,
+    provider: &Arc<DepProvider>,
+    binding: &Arc<DepBinding>,
+) -> bool {
+    {
+        let _admission = world.admission.lock().unwrap();
+        provider.set(FiberState::Unloading);
+    }
+    world.registry.mark_removing_if(&world.key, binding);
+    let removed = world.registry.finalize_if(&world.key, binding);
+    if removed {
+        world.announce(crate::ServiceChange::Removed);
+    }
+    removed
+}
+
+/// Model 24, the two announcements of one binding (#622's doubt "同一绑定的
+/// `ServiceChanged` 可能先 Removed 后 Provided"): `provide_native` commits the
+/// binding and its cleanup record under `Shared.admission`, and the `Provided`
+/// event follows in that same critical section; an unload sets `Unloading`
+/// under the admission before its cleanup pass can withdraw the binding, so a
+/// withdrawal waits for the announcement. Without that, the window between the
+/// registration's commit and the event (where the first version emitted it)
+/// lets the withdrawal announce `Removed` first: a consumer tracking
+/// availability sees the service leave before it arrived.
+///
+/// The model: the provider's provide and its unload on two threads. The insert
+/// and the `Provided` announcement are the admission's critical section
+/// (`provide_binding`); the unload's state change takes the admission alone,
+/// then the mirrored `evict_and_finalize` marks, finalizes and announces
+/// `Removed`. `DepRegistry` mirrors `Registry`'s slots; `ServiceChange`,
+/// `SyncMutex` and `Notify` are the shared pieces.
+///
+/// Mutations this model catches: moving the `Provided` announcement after the
+/// admission's release (the pre-fix `provide_native`) lets the withdrawal run
+/// first, and the model fails with "the binding's Provided was announced after
+/// its Removed"; dropping the announcement fails with "the binding was
+/// provided without an announcement".
+#[test]
+fn shuttle_a_bindings_provided_is_announced_before_its_removed() {
+    explore(|| {
+        let world = Arc::new(ProvideWorld {
+            key: TypeKey::of::<u32>(),
+            admission: SyncMutex::new(()),
+            registry: DepRegistry::new(),
+            changes: SyncMutex::new(Vec::new()),
+        });
+        let provider = Arc::new(DepProvider {
+            id: PluginId(7),
+            state: SyncMutex::new(FiberState::Loading),
+        });
+        let inserted = Arc::new(Notify::new());
+
+        let provider_thread = {
+            let (world, provider, inserted) = (world.clone(), provider.clone(), inserted.clone());
+            thread::spawn(move || {
+                switch_point();
+                let binding = provide_binding(&world, &provider, 1, &inserted)
+                    .expect("the provider was not unloading");
+                provider.set(FiberState::Active);
+                binding
+            })
+        };
+        let withdrawer = {
+            let (world, provider, inserted) = (world.clone(), provider.clone(), inserted.clone());
+            thread::spawn(move || {
+                // The unload is what takes the binding away. It can only run
+                // after the provide inserted it; the admission decides whether
+                // it runs before or after the announcement.
+                block_on(inserted.notified());
+                switch_point();
+                let binding = world
+                    .registry
+                    .lookup(&world.key)
+                    .expect("the binding was inserted before the notification");
+                withdraw_binding(&world, &provider, &binding)
+            })
+        };
+
+        let binding = provider_thread.join().unwrap();
+        assert!(
+            withdrawer.join().unwrap(),
+            "the withdrawal did not remove the binding"
+        );
+        assert!(
+            world.registry.lookup(&world.key).is_none(),
+            "the withdrawal left the binding in the slot"
+        );
+        assert_eq!(binding.provider_gen, 1);
+        let changes = world.changes.lock().unwrap().clone();
+        assert!(
+            changes.contains(&crate::ServiceChange::Provided),
+            "the binding was provided without an announcement"
+        );
+        assert_eq!(
+            changes,
+            vec![
+                crate::ServiceChange::Provided,
+                crate::ServiceChange::Removed
+            ],
+            "the binding's Provided was announced after its Removed"
+        );
+    });
 }

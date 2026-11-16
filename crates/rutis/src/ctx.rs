@@ -775,9 +775,15 @@ impl Ctx {
         let label = format!("service provide: {}", key.describe());
         let inserted = Arc::new(Mutex::new(None));
         let inserted_slot = inserted.clone();
+        let announced = Arc::new(Mutex::new(None));
+        let announced_slot = announced.clone();
+        let announced_binding = inserted.clone();
         let origin = crate::effect::Origin::Provide(key.clone());
-        let disposer =
-            self.register_internal_effect(label, origin, move |fiber, provider_gen, state| {
+        let ctx = self;
+        let disposer = self.register_internal_effect_announced(
+            label,
+            origin,
+            move |fiber, provider_gen, state| {
                 // Admission and the fiber transition lock cover both the binding and
                 // its cleanup record, so shutdown cannot miss a committed service.
                 let binding = shared.registry.insert_binding(
@@ -819,19 +825,57 @@ impl Ctx {
                             .await
                     })
                 })))
-            })?;
+            },
+            move || {
+                // The Provided announcement runs in the registration's
+                // critical section (`Shared.admission`), after the binding and
+                // its cleanup record are committed and before a withdrawal can
+                // set `Unloading`. The same binding's Removed is emitted by
+                // the cleanup, which only runs after that state change: the
+                // events cannot arrive Removed before Provided (#622).
+                let binding = announced_binding
+                    .lock()
+                    .unwrap()
+                    .clone()
+                    .expect("the binding is inserted before the announcement");
+                let event = ctx.service_changed(
+                    &event_key,
+                    event_scope.clone(),
+                    &binding,
+                    crate::ServiceChange::Provided,
+                );
+                if let Err(error) = ctx.emit(event) {
+                    *announced_slot.lock().unwrap() = Some(error);
+                }
+            },
+        )?;
         let binding = inserted
             .lock()
             .unwrap()
             .take()
             .expect("binding inserted before registration returns");
-        self.emit_service_changed(
-            &event_key,
-            event_scope,
-            &binding,
-            crate::ServiceChange::Provided,
-        );
+        if let Some(error) = announced.lock().unwrap().take() {
+            self.error_sink()(error.shared());
+        }
         Ok((disposer, binding))
+    }
+
+    fn service_changed(
+        &self,
+        key: &TypeKey,
+        scope: Option<crate::key::ScopeId>,
+        binding: &Binding,
+        change: crate::ServiceChange,
+    ) -> crate::ServiceChanged {
+        crate::ServiceChanged {
+            key: key.clone(),
+            scope: scope.as_ref().map(|s| s.to_string()),
+            provider: binding.provider_id,
+            generation: binding.provider_gen,
+            change,
+            chain: self.scope(),
+            row: self.row(),
+        }
     }
 
     fn emit_service_changed(
@@ -841,15 +885,7 @@ impl Ctx {
         binding: &Binding,
         change: crate::ServiceChange,
     ) {
-        let event = crate::ServiceChanged {
-            key: key.clone(),
-            scope: scope.as_ref().map(|s| s.to_string()),
-            provider: binding.provider_id,
-            generation: binding.provider_gen,
-            change,
-            chain: self.scope(),
-            row: self.row(),
-        };
+        let event = self.service_changed(key, scope, binding, change);
         if let Err(error) = self.emit(event) {
             self.error_sink()(error.shared());
         }
@@ -874,6 +910,21 @@ impl Ctx {
         origin: crate::effect::Origin,
         f: impl FnOnce(&Arc<FiberInner>, u64, FiberState) -> Result<Effect, Error>,
     ) -> Result<Disposer, Error> {
+        self.register_internal_effect_announced(label, origin, f, || {})
+    }
+
+    /// [`register_internal_effect`](Self::register_internal_effect) with a
+    /// step run under the same admission, after the cleanup record is pushed
+    /// and the transition lock is released: what a withdrawal of this
+    /// registration must not precede. `announce` must not call user code or
+    /// try to acquire the admission lock again.
+    pub(crate) fn register_internal_effect_announced(
+        &self,
+        label: String,
+        origin: crate::effect::Origin,
+        f: impl FnOnce(&Arc<FiberInner>, u64, FiberState) -> Result<Effect, Error>,
+        announce: impl FnOnce(),
+    ) -> Result<Disposer, Error> {
         let _admission = self.0.shared.admission.lock().unwrap();
         self.registration_open()?;
         let fiber = self.0.fiber.upgrade().ok_or(ErrorKind::InactiveEffect)?;
@@ -886,6 +937,7 @@ impl Ctx {
         let record = EffectRecord::from(effect, label, origin, self.0.fiber.clone());
         fiber.push_effect(record.clone());
         drop(tr);
+        announce();
         let handle = self.handle().clone();
         Ok(Disposer::new(Box::new(move || {
             let record = record.clone();
@@ -1728,5 +1780,34 @@ mod tests {
         assert!(child.inner.driver.lock().unwrap().is_none());
         assert!(ctx.shared().registry.bindings_snapshot().is_empty());
         assert!(root_view.inner.children.lock().unwrap().is_empty());
+    }
+
+    /// A binding's `Provided` is announced in the registration's critical
+    /// section (#622): an unload sets `Unloading` under the same admission
+    /// before its cleanup can withdraw the binding, so the removal cannot be
+    /// announced first. Announcing after the admission (the pre-fix order)
+    /// fails this probe, and with it the shuttle model
+    /// `shuttle_a_bindings_provided_is_announced_before_its_removed` shows the
+    /// inverted order.
+    #[tokio::test]
+    async fn a_bindings_announcement_runs_under_its_registration_admission() {
+        let ctx = Ctx::root().expect("runtime in scope");
+        let shared = ctx.shared().clone();
+        let held = Arc::new(AtomicBool::new(false));
+        let probe = held.clone();
+        ctx.register_internal_effect_announced(
+            "announcement probe".into(),
+            crate::effect::Origin::Other,
+            |_, _, _| Ok(Effect::Done),
+            move || {
+                probe.store(shared.admission.try_lock().is_err(), Ordering::SeqCst);
+            },
+        )
+        .unwrap();
+        assert!(
+            held.load(Ordering::SeqCst),
+            "the announcement ran without the registration's admission, so a withdrawal could \
+             announce Removed first"
+        );
     }
 }
