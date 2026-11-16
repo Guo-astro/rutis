@@ -494,7 +494,7 @@ fn an_incoming_call_is_claimed_once() {
     explore(|| {
         let runtime = Arc::new(runtime());
         let recorder = Arc::new(Recorder::default());
-        let (_client, server) =
+        let (client, server) =
             Connection::inert_pair_with(recorder.clone(), runtime.handle().clone());
         let id = format!("{}1", server.remote_prefix());
         let frame = Frame::Invoke {
@@ -576,6 +576,11 @@ fn an_incoming_call_is_claimed_once() {
             server.0.calls.lock().unwrap().incoming.is_empty(),
             "the claimed call stayed queued"
         );
+        // The waiter's own call is never answered: the hop its `send`
+        // recorded leaves with the sessions, and the table stays the size
+        // of one call (a forward scans every hop).
+        super::waits::ended(server.tag());
+        super::waits::ended(client.tag());
     });
 }
 
