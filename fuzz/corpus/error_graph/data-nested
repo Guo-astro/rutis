@@ -1,0 +1,1 @@
+{"root":{"type":"reference","value":0},"nodes":[{"type":"error","name":"E","message":"m","code":"C","data":{"type":"reference","value":1}},{"type":"array","values":[{"type":"data","value":1},{"type":"reference","value":2}]},{"type":"object","values":[["a",{"type":"data","value":true}],["b",{"type":"bigint","value":"18446744073709551615"}]]}]}
