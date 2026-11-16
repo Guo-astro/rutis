@@ -4,7 +4,16 @@
 //! [`pair`] makes two connected channels.
 
 use std::collections::VecDeque;
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::Arc;
+
+#[cfg(rutis_shuttle)]
+use crate::sync::{Condvar, Mutex};
+#[cfg(rutis_shuttle)]
+use shuttle::sync::MutexGuard;
+/// The lock and the wakeup of a direction, which the shuttle model
+/// interleaves (#628). A plain build is std's.
+#[cfg(not(rutis_shuttle))]
+use std::sync::{Condvar, Mutex, MutexGuard};
 
 use crate::channel::{Channel, ChannelError, Close, Closer, Receiver, Sender};
 
@@ -37,10 +46,7 @@ impl Direction {
     }
 
     /// Wait for a change, counted in `waiting` under test.
-    fn wait<'a>(
-        &self,
-        state: std::sync::MutexGuard<'a, State>,
-    ) -> std::sync::MutexGuard<'a, State> {
+    fn wait<'a>(&self, state: MutexGuard<'a, State>) -> MutexGuard<'a, State> {
         #[cfg(test)]
         let state = {
             let mut state = state;
@@ -216,3 +222,7 @@ fn pair_watched() -> (Channel, Channel, Arc<Direction>, Arc<Direction>) {
 
 #[cfg(test)]
 mod tests;
+
+/// The shuttle model of a channel's close, send and receive (#628).
+#[cfg(all(test, rutis_shuttle))]
+mod shuttle_tests;

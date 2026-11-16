@@ -1443,6 +1443,84 @@ mod tests {
         );
         drop((far, near));
     }
+
+    /// The `rutis/service` listeners on `ctx`'s bus.
+    fn service_listeners(ctx: &Ctx) -> usize {
+        ctx.events()
+            .subscriptions()
+            .into_iter()
+            .filter(|entry| entry.name == "rutis::ServiceChanged" && !entry.remote)
+            .count()
+    }
+
+    /// #628: the sessions of one bus share one hub, so the bus has one
+    /// `rutis/service` listener however many join; the last one leaving takes
+    /// it with it, and the next session makes a new hub. Two buses never
+    /// share one.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn one_bus_has_one_hub_and_one_service_listener() {
+        fn join(ctx: &Ctx) -> (Arc<SessionEvents>, crate::channel::Channel) {
+            let (near, far) = crate::memory::pair();
+            let connection = Connection::open(near, Arc::new(Quiet), rust()).unwrap();
+            let session =
+                SessionEvents::join(Some(ctx), connection, "rt".into(), Vec::new()).unwrap();
+            (session, far)
+        }
+        let root = Ctx::root().unwrap();
+        let (first, far_first) = join(&root);
+        let (second, far_second) = join(&root);
+        let hub = first.hub.clone().expect("a session on a bus has a hub");
+        assert!(
+            Arc::ptr_eq(&hub, second.hub.as_ref().expect("a hub")),
+            "one bus was given two hubs"
+        );
+        assert_eq!(
+            service_listeners(&root),
+            1,
+            "the bus has one service listener"
+        );
+
+        // The last session leaving takes the hub and its listener; the next
+        // session makes a new hub with its own.
+        let old = Arc::downgrade(&hub);
+        drop((first, second, hub, far_first, far_second));
+        for _ in 0..200 {
+            if old.upgrade().is_none() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert!(
+            old.upgrade().is_none(),
+            "the bus's hub stayed after its last session"
+        );
+        for _ in 0..200 {
+            if service_listeners(&root) == 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(
+            service_listeners(&root),
+            0,
+            "the service listener stayed after the last session"
+        );
+        let (again, far_again) = join(&root);
+        assert_eq!(service_listeners(&root), 1, "the new hub listens");
+
+        // Another bus: its own hub, its own listener.
+        let other = Ctx::root().unwrap();
+        let (elsewhere, far_elsewhere) = join(&other);
+        assert!(
+            !Arc::ptr_eq(
+                again.hub.as_ref().expect("a hub"),
+                elsewhere.hub.as_ref().expect("a hub")
+            ),
+            "two buses shared a hub"
+        );
+        assert_eq!(service_listeners(&other), 1, "the other bus listens");
+        drop((again, far_again, elsewhere, far_elsewhere));
+    }
 }
 
 /// The shuttle model of a row's listeners and its unload (#628).

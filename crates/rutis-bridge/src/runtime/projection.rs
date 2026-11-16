@@ -10,6 +10,13 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, Weak};
 
+/// The lock the shuttle model interleaves (#628): the slots' handles, the
+/// target, and the publish in flight. A plain build is std's.
+#[cfg(rutis_shuttle)]
+use crate::sync::Mutex as StateMutex;
+#[cfg(not(rutis_shuttle))]
+use std::sync::Mutex as StateMutex;
+
 use rutis::host::{BoxFuture, ErrorKind, Key};
 use rutis::internal::{CtxInternal, ServiceWriter};
 use rutis::{Ctx, Disposer, Error as RutisError};
@@ -74,7 +81,7 @@ struct State {
 /// Declared before launching, attached once the mounting plugin has a
 /// process, closed when that plugin is disposed.
 pub struct Projection {
-    state: Mutex<State>,
+    state: StateMutex<State>,
     /// Woken when a publisher finishes.
     idle: tokio::sync::Notify,
     me: Weak<Projection>,
@@ -89,7 +96,7 @@ pub struct Projection {
 impl Projection {
     pub fn new() -> Arc<Self> {
         Arc::new_cyclic(|me| Self {
-            state: Mutex::default(),
+            state: StateMutex::default(),
             idle: tokio::sync::Notify::new(),
             me: me.clone(),
             announce: Mutex::new(None),
@@ -535,3 +542,7 @@ impl ServiceEvents for Projection {
         }
     }
 }
+
+/// The shuttle model of the projection's slots (#628).
+#[cfg(all(test, rutis_shuttle))]
+mod shuttle_tests;
