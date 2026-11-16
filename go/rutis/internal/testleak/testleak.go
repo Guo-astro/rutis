@@ -5,9 +5,7 @@
 //
 // Every package of the SDK with tests calls Verify from its TestMain. A
 // package whose tests keep a shared rutis-host passes SharedHost as well:
-// that session belongs to the test process, not to a test. internal/runtime
-// has none yet: its tests leave the WebSocket listeners they start running,
-// as listenWebSocket has no way to stop one (#1245).
+// that session belongs to the test process, not to a test.
 package testleak
 
 import (
