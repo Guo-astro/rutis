@@ -51,6 +51,7 @@ RUSTFLAGS="--cfg rutis_shuttle" cargo test -p rutis --lib --target-dir target/sh
 RUSTFLAGS="--cfg rutis_shuttle" cargo test -p rutis-bridge --features websocket --lib --target-dir target/shuttle shuttle
 # 运行时监督（#627）：重启循环，以及二进制运行时的重启等自己的进程；同一个 cfg，同一个编译目录
 RUSTFLAGS="--cfg rutis_shuttle" cargo test -p rutis-host --lib --target-dir target/shuttle shuttle
+# 二进制运行时重启到被替换的文件（#627、#622）：旧运行时的视图先 dispose、进程先结束，新配置（它的 launcher）才装上；期间来的行不会起第二个进程
 RUSTFLAGS="--cfg rutis_shuttle" cargo test -p rutis-loader --lib --features go,swift --target-dir target/shuttle shuttle
 # 增加迭代次数（默认 1000），或重放失败时打印的调度
 RUTIS_SHUTTLE_ITERATIONS=1000000 RUSTFLAGS="--cfg rutis_shuttle" cargo test -p rutis --lib --target-dir target/shuttle shuttle
