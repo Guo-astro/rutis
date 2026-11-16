@@ -220,6 +220,8 @@ struct AppTests {
         let protocolName = "rutis.\(endpointProtocol)"
         var options = PeerOptions(endpoint: Endpoint(local: "main", expected: "pad"))
         options.host = true
+        // The app's own `link.offers` and services calls reach this side.
+        options.dispatch = { _, _, _ in .undefined }
         let firstSocket = try await DialedSocket.dial(address, protocol: protocolName, token: "secret", anchors: [], timeout: 5)
         let first = try Peer(channel: firstSocket, options: options)
         try first.start()
@@ -227,8 +229,21 @@ struct AppTests {
         Task { await first.ready(); firstGreeted.fire() }
         let heardFirst = await firstGreeted.wait(seconds: 5)
         XCTAssertTrue(heardFirst, "the first controller is greeted")
-        let heardInstall = await installed.wait(seconds: 5)
-        XCTAssertTrue(heardInstall, "the app installs its plugin")
+        // An app's own plugins install once rutis offers `events`
+        // (`link.offers`). Its own offer and this one may race their first
+        // reconcile; every newer offer reconciles again.
+        var offerVersion = 0
+        while !installed.isSet, offerVersion < 5 {
+            offerVersion += 1
+            let version = offerVersion
+            _ = try await first.call(target: "", method: "link.offers", args: [.data(.object([
+                ("families", .array([.string("services"), .string("events")])),
+                ("version", .int(version)),
+                ("since", .object([("services", .int(version)), ("events", .int(version))])),
+            ]))], sync: false)
+            _ = await installed.wait(seconds: 1)
+        }
+        XCTAssertTrue(installed.isSet, "the app installs its plugin")
         // A new connection takes over and waits for that cleanup: not
         // silent, and greeted once the old lease is gone.
         let secondSocket = try await DialedSocket.dial(address, protocol: protocolName, token: "secret", anchors: [], timeout: 5)
