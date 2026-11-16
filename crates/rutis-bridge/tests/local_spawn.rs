@@ -123,12 +123,22 @@ async fn a_process_that_ended_before_a_send_reports_its_exit_on_that_send() {
     tokio::time::timeout(Duration::from_secs(20), processes.ended())
         .await
         .expect("the process to be gone");
-    match channel.sender.send(b"{}") {
-        Err(ChannelError::Closed { reason }) => {
-            assert_eq!(reason, "the process exited with exit status: 5")
+    // `ended()` says the process is gone; the owning thread may still be
+    // closing the pipe (its frame is read after the exit). A send can land in
+    // that window and be accepted; keep trying until the channel reports the
+    // exit, as a caller would.
+    let reason = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match channel.sender.send(b"{}") {
+                Err(ChannelError::Closed { reason }) => break reason,
+                Ok(()) => tokio::time::sleep(Duration::from_millis(10)).await,
+                Err(other) => panic!("the send should report the exit status, got {other:?}"),
+            }
         }
-        other => panic!("the send should report the exit status, got {other:?}"),
-    }
+    })
+    .await
+    .expect("the send to report the exit status");
+    assert_eq!(reason, "the process exited with exit status: 5");
 }
 
 #[tokio::test(flavor = "multi_thread")]
