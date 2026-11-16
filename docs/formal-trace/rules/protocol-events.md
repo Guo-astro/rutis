@@ -10,6 +10,8 @@
 
 2026-11-16：EVP-15.33-2 按 #1171 的修复更新「现有形式化」「状态」「备注」：节点导入的服务带提供方的行 id（无行时不带），两个会话用例覆盖有行与无行，状态从「部分」改为「已覆盖」。
 
+2026-11-16（#1212）：`EVP-9-1`、`EVP-9-12` 的备注按 0.19 删除的机制改写。节点的 `export` / `import` 名单在 0.19 删除（`design-remote-session-2026-10-28.md` §八、§十二；`migration-0.19.md`），节点之间是一条总线、每个名字都在；备注里「#631 export / import 收窄 PT」没有对象，按[复核表](../recheck-0.22.md)记「已撤回」。
+
 2026-11-16：EVP-5.5-9、EVP-4.1-2、EVP-5.4-2、EVP-5.5-17 按 #613 的 `specs/events` 更新「备注」（EVP-5.5-9 同时更新「现有形式化」）：`emit-python-deferred`（`Defer = "nextRound"`，FIFO）通过，只把调用开始推到下一轮；`emit-mut-future-reply` 以变异建「调用未开始就回复」，违反 `EmitOrder`。状态都不变。
 
 分区合计：现行 253 条，已取代 9 条，共 262 行（与 issue 正文的统计表一致）。
@@ -196,7 +198,7 @@
 | EVP-8-5 | §八 | `rutis/runtime` 记录 `{runtime, state, reason}`：挂载成功时（每次重连之后也是）`running`；会话结束或挂载失败时 `down`，`reason` 说明原因 | 跨进程 | K + SH | events/framework | K `rutis/runtime`、`rutis/runtime-down-reason` | 部分 | #628 | #628 疑点：跟随 `watch`，快速重启时 `down` 与第二次 `running` 被合并（确定性测试）；挂载失败的 `down` 无用例 |
 | EVP-8-6 | §八 表"发出方作用域"列、§15.18、§15.33 | `rutis/service` 在服务的作用域、`rutis/row` 在行的作用域、`rutis/runtime` 在根发出 | — | — | events/framework | — | 已取代 | — | 平总线后发出方作用域不可观察（过滤只看监听器描述，0.16 删 `Dispatch::scope`）；规格表、§15.18、§15.33 与登记表 `events/framework`（"于该行的作用域发出"）仍这样写 |
 | EVP-8-7 | §八 | `internal/*` 留在每个运行时内部，从不向宿主登记或发给宿主 | 跨进程 | K | events/hub-reserved | — | 未覆盖 | #639 ※ | 宿主拒绝只有普通测试；套件无 `internal/*` 用例 |
-| EVP-9-1 | §九 | 连接用已有的 `export` / `import`（与服务共用）共享事件；一项是名字或以 `*` 结尾的前缀（单独 `*` 为所有名字）；前缀项只用于事件，服务仍按确切名字 | 纯逻辑 | PT + K | events/link-export-import | K `node/not-shared`（`n/*` 不共享） | 部分 | #631 | #631 export / import 收窄 PT |
+| EVP-9-1 | §九 | 连接用已有的 `export` / `import`（与服务共用）共享事件；一项是名字或以 `*` 结尾的前缀（单独 `*` 为所有名字）；前缀项只用于事件，服务仍按确切名字 | 纯逻辑 | PT + K | events/link-export-import | K `node/not-shared`（`n/*` 不共享） | 部分 | #631 | 已撤回（#1212）：0.19 删除了节点的 `export` / `import` 名单（`design-remote-session-2026-10-28.md` §八、§十二；`migration-0.19.md`），节点之间是一条总线、每个名字都在；#631 的 export / import 收窄 PT 没有对象，`events/link-export-import` 用例已撤 |
 | EVP-9-2 | §九 | A 的 `export: [x]` = A 发出的 x 到达 B 的监听器；B 的 `import: [x]` = B 的监听器收到 A 的 x；条目从导入方流向导出方：B 通告与 `import` 匹配的，A 接受与 `export` 匹配的 | 跨进程 | K + TV | events/link-export-import | K `parallel/all-ok`、`serial/first-result`、`waterfall/veto`（node 位置）、`node/not-shared` | 部分 | #616、#631 |  |
 | EVP-9-3 | §九 | 同一个名字可以双向共享 | 跨进程 | K | events/link-export-import | K `node/shared-both-ways` | 已覆盖 | — |  |
 | EVP-9-4 | §九 | 连接开始时每个节点登记 `events` 族；连接上的消息为 `events.on` / `events.off` / `events.call` | 跨进程 | TLA + K | events/node-links | K（node 位置的用例） | 部分 | #613 | EventsLink 的提供（`link.offers`） |
@@ -207,7 +209,7 @@
 | EVP-9-9 | §九 | `export` / `import` 名单是唯一的边界 | 跨进程 | K | events/flat、events/link-export-import | K `node/root-hears-instances` | 已覆盖 | — | 0.15.1 去掉作用域边界 |
 | EVP-9-10 | §九 | 前缀条目按它与 `import` 项共同匹配的部分收窄后通告（两个前缀：一个延伸另一个时取较长的；前缀与名字：取名字） | 纯逻辑 | PT | events/node-links | — | 未覆盖 | #631 |  |
 | EVP-9-11 | §九 | 接受的条目放在接受方连接的作用域（描述的 `scope`），按到达顺序追加，`prepend: true` 的放在全部已有条目之前；描述 `node` = 对端 id，`plugin`/`row`/`runtime` 按通告 | 跨进程 | K + TV | events/node-links | K `filterSees`（node 放置核对 `node`、`scope`） | 部分 | #616 |  |
-| EVP-9-12 | §九 | 通告来的条目不匹配 `export` 的任何项则忽略（回复 `undefined`） | 纯逻辑 | PT + TV | events/link-export-import | — | 未覆盖 | #616、#631 |  |
+| EVP-9-12 | §九 | 通告来的条目不匹配 `export` 的任何项则忽略（回复 `undefined`） | 纯逻辑 | PT + TV | events/link-export-import | — | 未覆盖 | #616、#631 | 已撤回（#1212）：通告不匹配 `export` 就忽略以 `export` 名单为前提，名单在 0.19 删除（`design-remote-session-2026-10-28.md` §八、§十二；`migration-0.19.md`）；#631 的 export / import 收窄 PT 没有对象 |
 | EVP-9-13 | §九 | 宣告 id 为 `<epoch>.<n>`：`epoch` 为发送方这次提供 `events` 族的序号（`link.offers` 中的 `since`），`n` 在这次提供内递增 | 跨进程 | TLA | events/node-links | — | 未覆盖 | #613 | EventsLink |
 | EVP-9-14 | §九 | 接收方看到对端更新的提供（经 `link.offers`，或 epoch 更大的宣告先到）时，撤下对端在更早提供下宣告的全部条目 | 跨进程 | TLA | events/node-links | — | 未覆盖 | #613 | `CurrentOffer`；`accept-unlocked` 疑点 |
 | EVP-9-15 | §九（2026-10-23 修订） | 对端的 `link.offers` 不再列出它列出过的 `events` 提供时，撤下那次及更早提供下的条目；`link.offers` 还没列出的那次提供的条目留着 | 跨进程 | TLA | events/node-links | — | 未覆盖 | #613 | `CurrentOffer`、`before-offer-race`（#593） |
