@@ -144,6 +144,11 @@ func run(command *exec.Cmd, path string) (<-chan error, error) {
 		return nil, fmt.Errorf("start %s: %w", path, err)
 	}
 	exited := make(chan error, 1)
-	go func() { exited <- command.Wait() }()
+	go waitFor(command, exited)
 	return exited, nil
+}
+
+// waitFor waits for `command`, whose end the channel says.
+func waitFor(command *exec.Cmd, exited chan<- error) {
+	exited <- command.Wait()
 }

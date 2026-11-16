@@ -49,7 +49,9 @@ func objectHost(t *testing.T, dispatch func(ctx context.Context, target, method 
 		t.Fatalf("%v", hello)
 	}
 	testwait.Within(t, "the handshake", runtime.Ready())
-	t.Cleanup(func() { runtime.Close(nil) })
+	// The far end is this test's too: an open pipe keeps the frame reader
+	// below (and the peer's own) running until the test process ends (#630).
+	t.Cleanup(func() { far.Close(""); runtime.Close(nil) })
 	return runtime, far, next
 }
 
