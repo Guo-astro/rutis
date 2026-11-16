@@ -3282,8 +3282,11 @@ name = "rutis-dylib"
 version = "0.21.0"
 dependencies = [
  "libc",
+ "object",
+ "proptest",
  "rutis",
  "rutis-bridge",
+ "rutis-dylib",
  "rutis-dylib-meta",
  "rutis-loader",
  "rutis-sdk",

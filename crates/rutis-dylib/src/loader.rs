@@ -18,6 +18,8 @@ use rutis_sdk::{ConfigValue, PluginMeta, BOOT_MAGIC, BOOT_SIZE, SDK_ID};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
+#[cfg(any(test, feature = "testing"))]
+use std::ffi::c_void;
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -140,6 +142,27 @@ fn open_generation_with(
 // rejected load is dropped.
 unsafe impl Send for Retained {}
 
+/// What [`Loader::load`] does once its checks on the files pass: map the
+/// library and look up its exported symbols. The platform supplies these in
+/// every real build; a test replaces them to prove that a rejected plugin
+/// never reaches `dlopen`, and to answer for a library it does not open.
+#[cfg(any(test, feature = "testing"))]
+pub trait Backend: Send + Sync {
+    /// Maps `path`, as `dlopen`/`LoadLibraryExW` does.
+    ///
+    /// # Safety
+    ///
+    /// The library's initializers run in this process.
+    unsafe fn open(&self, path: &Path) -> Result<Handle, String>;
+    /// Finds the symbol `name` (which ends with a NUL byte) in `handle`, as
+    /// `dlsym`/`GetProcAddress` does.
+    ///
+    /// # Safety
+    ///
+    /// `handle` must be one this backend returned from [`Backend::open`].
+    unsafe fn symbol(&self, handle: Handle, name: &[u8]) -> Result<*mut c_void, String>;
+}
+
 /// Host-side loader. Construct it after the independent bundle launcher has
 /// verified the host, SDK and dynamic libstd files, and before creating root.
 pub struct Loader {
@@ -153,6 +176,8 @@ pub struct Loader {
     interfaces: HashMap<String, semver::Version>,
     max_versions: usize,
     retained: Mutex<Vec<Retained>>,
+    #[cfg(any(test, feature = "testing"))]
+    backend: Option<Box<dyn Backend>>,
 }
 
 impl Loader {
@@ -209,7 +234,84 @@ impl Loader {
             interfaces,
             max_versions,
             retained: Mutex::new(Vec::new()),
+            #[cfg(any(test, feature = "testing"))]
+            backend: None,
         })
+    }
+
+    /// A loader for tests: the host identity checks [`Loader::new`] makes are
+    /// skipped, `sdk_library` and `std_library` stand for the names of the
+    /// host's copies, and `backend` answers for a library that is never
+    /// really opened.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn testing(
+        sdk_artifact_sha256: impl Into<String>,
+        sdk_library: impl Into<String>,
+        std_library: impl Into<String>,
+        cache: impl Into<PathBuf>,
+        interfaces: &[(&str, &str)],
+        max_versions: usize,
+        backend: Box<dyn Backend>,
+    ) -> Self {
+        Self {
+            sdk_artifact_sha256: sdk_artifact_sha256.into(),
+            sdk_library: sdk_library.into(),
+            std_library: std_library.into(),
+            #[cfg(target_os = "macos")]
+            allowed_team_ids: None,
+            cache: cache.into(),
+            interfaces: interfaces
+                .iter()
+                .map(|(name, version)| {
+                    (
+                        name.to_string(),
+                        semver::Version::parse(version).expect("test interface version"),
+                    )
+                })
+                .collect(),
+            max_versions,
+            retained: Mutex::new(Vec::new()),
+            backend: Some(backend),
+        }
+    }
+
+    /// Opens `path` as a generation of its own, through the test backend when
+    /// there is one.
+    fn open_library(&self, path: &Path) -> Result<(Handle, Generation), String> {
+        #[cfg(any(test, feature = "testing"))]
+        if let Some(backend) = &self.backend {
+            return open_generation_with(|| unsafe { backend.open(path) });
+        }
+        unsafe { open_generation(path) }
+    }
+
+    /// Finds the symbol `name` in `handle`, through the test backend when
+    /// there is one.
+    unsafe fn find_symbol(
+        &self,
+        handle: Handle,
+        name: &[u8],
+    ) -> Result<*mut std::ffi::c_void, String> {
+        #[cfg(any(test, feature = "testing"))]
+        if let Some(backend) = &self.backend {
+            return unsafe { backend.symbol(handle, name) };
+        }
+        unsafe { platform::find_symbol(handle, name) }
+    }
+
+    unsafe fn optional_symbol<T>(&self, handle: Handle, name: &[u8]) -> Option<T> {
+        unsafe { self.find_symbol(handle, name) }
+            .ok()
+            .map(|ptr| unsafe { std::mem::transmute_copy(&ptr) })
+    }
+
+    unsafe fn symbol<T>(&self, handle: Handle, name: &[u8]) -> Result<T, String> {
+        debug_assert_eq!(
+            std::mem::size_of::<T>(),
+            std::mem::size_of::<*mut std::ffi::c_void>()
+        );
+        unsafe { self.find_symbol(handle, name) }
+            .map(|ptr| unsafe { std::mem::transmute_copy(&ptr) })
     }
 
     /// Only load plugins with a valid signature from an Apple-issued
@@ -374,8 +476,9 @@ impl Loader {
                         .map_err(|e| fail("code signature", e))?;
                 }
             }
-            let (handle, generation) =
-                open_generation(&cached).map_err(|e| fail(platform::OPEN_STEP, e))?;
+            let (handle, generation) = self
+                .open_library(&cached)
+                .map_err(|e| fail(platform::OPEN_STEP, e))?;
             // This is the plugin's newest build: names are looked up in it,
             // not in the earlier ones, whose blocks keep serving the values
             // they provided.
@@ -399,7 +502,8 @@ impl Loader {
             (handle, generation, retained.len() - 1)
         };
         let meta_fn: unsafe fn() -> PluginMeta =
-            symbol(handle, b"rutis_plugin_meta\0").map_err(|e| fail("metadata", e))?;
+            unsafe { self.symbol(handle, b"rutis_plugin_meta\0") }
+                .map_err(|e| fail("metadata", e))?;
         let meta = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| meta_fn()))
             .map_err(|_| fail("metadata", "metadata function panicked".into()))?;
         if meta.sdk_id != SDK_ID
@@ -415,7 +519,8 @@ impl Loader {
             ));
         }
         let entry: unsafe fn() -> Result<Box<dyn PluginFactory<ConfigValue>>, Error> =
-            symbol(handle, b"rutis_plugin_entry\0").map_err(|e| fail("entry", e))?;
+            unsafe { self.symbol(handle, b"rutis_plugin_entry\0") }
+                .map_err(|e| fail("entry", e))?;
         let factory = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| entry()))
             .map_err(|_| fail("entry", "factory entry panicked".into()))?
             .map_err(|e| fail("entry", e.to_string()))?;
@@ -424,10 +529,12 @@ impl Loader {
         }))
         .map_err(|_| fail("entry", "factory metadata panicked".into()))?;
         // Optional: plugins built before the symbol existed have no schema.
-        let schema = match optional_symbol::<unsafe fn() -> Option<String>>(
-            handle,
-            b"rutis_plugin_config_schema\0",
-        ) {
+        let schema = match unsafe {
+            self.optional_symbol::<unsafe fn() -> Option<String>>(
+                handle,
+                b"rutis_plugin_config_schema\0",
+            )
+        } {
             None => None,
             Some(schema_fn) => {
                 let text = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| schema_fn()))
@@ -699,20 +806,6 @@ fn open_matching(path: &Path, hash: &str) -> Result<fs::File, String> {
         return Err(format!("{}: SHA-256 is {actual}", path.display()));
     }
     Ok(file)
-}
-
-unsafe fn optional_symbol<T>(handle: Handle, name: &[u8]) -> Option<T> {
-    platform::find_symbol(handle, name)
-        .ok()
-        .map(|ptr| std::mem::transmute_copy(&ptr))
-}
-
-unsafe fn symbol<T>(handle: Handle, name: &[u8]) -> Result<T, String> {
-    debug_assert_eq!(
-        std::mem::size_of::<T>(),
-        std::mem::size_of::<*mut std::ffi::c_void>()
-    );
-    platform::find_symbol(handle, name).map(|ptr| std::mem::transmute_copy(&ptr))
 }
 
 #[cfg(test)]

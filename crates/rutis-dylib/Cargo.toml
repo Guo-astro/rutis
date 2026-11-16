@@ -32,11 +32,20 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage
 [features]
 # DylibResolver: dylib plugins as rutis-loader rows (`dylib:<dir>`).
 loader = ["dep:rutis-loader"]
+# Test hooks only: `Loader::testing` and `Backend` replace the opener and the
+# symbol lookup of a load, so a test can prove that a rejected plugin never
+# reaches `dlopen`.
+testing = []
 
 [dev-dependencies]
 tokio = { workspace = true }
 # greeter_host: a #[rutis::service] type in a plugin is served by name.
 rutis-bridge = { path = "../rutis-bridge", default-features = false }
+# `tests/open_seam.rs` writes plugin files and needs the identity this crate
+# was built against; it builds the seam in through this dependency.
+object = { version = "0.40", default-features = false, features = ["std", "read_core", "elf", "macho", "pe", "write"] }
+proptest = { version = "1.12.0", default-features = false, features = ["std"] }
+rutis-dylib = { path = ".", features = ["testing"] }
 
 [[example]]
 name = "loader_host"
