@@ -221,6 +221,7 @@ jobs:
             swift:
               - Package.swift
               - swift/**
+              - tools/swift-strict-concurrency.sh
               - tools/public-api-swift.sh
               - tools/public-api-check.sh
               - crates/rutis-bridge/tests/swift_remote.rs
@@ -1148,8 +1149,18 @@ jobs:
       - name: swift build and the SDK's tests
         run: |
           cargo build -p rutis-host
-          swift build
+          mkdir -p .build
+          set -o pipefail
+          swift build 2>&1 | tee .build/swift-build.log
           RUTIS_HOST="${CARGO_TARGET_DIR:-$PWD/target}/debug/rutis-host" swift run RutisSelfTest
+      # Swift 6 strict concurrency (#630): the diagnostics the `Rutis` target
+      # still has, read from the log of the build above. Package.swift turns
+      # the checking on for that target in the Swift 5 language mode, so they
+      # are warnings: the report says how far the target is from Swift 6, and
+      # does not fail this job (a build that fails of its own does).
+      - name: strict concurrency report (#630)
+        continue-on-error: true
+        run: tools/swift-strict-concurrency.sh --log .build/swift-build.log
       # The session's concurrent parts under ThreadSanitizer (#630): the
       # reading and writing threads, the calls they run and cancel, the event
       # host's concurrent emitters, and an app's start and stop. The SDK's

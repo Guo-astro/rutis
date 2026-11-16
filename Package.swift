@@ -7,6 +7,16 @@
 import CompilerPluginSupport
 import PackageDescription
 
+// Swift 6's strict concurrency, as a warning (#630). `swiftLanguageVersions`
+// below stays Swift 5, so these diagnostics do not fail a build: a target
+// moves when its count reaches zero, and `Rutis` starts (`RutisTest`, the
+// fixtures and RutisSelfTest follow). What is left in it is printed by
+// `tools/swift-strict-concurrency.sh`. Not `unsafeFlags`: SwiftPM rejects
+// those in a package that is a git dependency.
+let strictConcurrency: [SwiftSetting] = [
+    .enableUpcomingFeature("StrictConcurrency"),
+]
+
 let package = Package(
     name: "rutis",
     platforms: [.macOS(.v14), .iOS(.v17)],
@@ -43,7 +53,8 @@ let package = Package(
         .target(
             name: "Rutis",
             dependencies: ["RutisMacros"],
-            path: "swift/rutis/Sources/Rutis"
+            path: "swift/rutis/Sources/Rutis",
+            swiftSettings: strictConcurrency
         ),
         .target(
             name: "RutisTest",
