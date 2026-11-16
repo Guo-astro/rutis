@@ -48,7 +48,7 @@ Two more kinds of check, for concurrency and for input from the far end:
 # The shuttle models of the core (crates/rutis/src/fiber/shuttle_tests.rs):
 # built with a cfg of their own, in a target directory of their own.
 RUSTFLAGS="--cfg rutis_shuttle" cargo test -p rutis --lib --target-dir target/shuttle shuttle
-# The bridge's subprocess exit state (#623): same cfg, same directory.
+# The bridge's shuttle models (#623 subprocess exit, #628 session and event host): same cfg, same directory.
 RUSTFLAGS="--cfg rutis_shuttle" cargo test -p rutis-bridge --lib --target-dir target/shuttle shuttle
 # The runtime supervision (#627): the restart loop, and a binary runtime's
 # restart waiting for its process; same cfg, same directory.

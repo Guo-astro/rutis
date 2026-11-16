@@ -7,6 +7,13 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
+
+/// The locks the shuttle models interleave (#628): a session's rows, its
+/// entries and its emit queue. A plain build is std's.
+#[cfg(rutis_shuttle)]
+use crate::sync::Mutex as SeamMutex;
+#[cfg(not(rutis_shuttle))]
+use std::sync::Mutex as SeamMutex;
 use std::task::{Context, Poll};
 
 use rutis::events::{ListenerInfo, Mode, Scope};
@@ -128,11 +135,11 @@ pub(crate) struct SessionEvents {
     /// The scope of the mount's own plugins (`row: null`).
     mount_scope: Vec<Scope>,
     /// Where each row loaded on the session is, by key (see [`RowPlace`]).
-    rows: Mutex<HashMap<String, RowPlace>>,
+    rows: SeamMutex<HashMap<String, RowPlace>>,
     /// The session's entries, by the runtime's id.
-    entries: Mutex<HashMap<String, Registered>>,
+    entries: SeamMutex<HashMap<String, Registered>>,
     /// `emit` dispatches waiting for those before them to start (§5.5).
-    emits: Mutex<Emits>,
+    emits: SeamMutex<Emits>,
     /// The synchronous waits of the runtime in its `waterfall` dispatches
     /// (`sync: true`, §5.4); its entries read it.
     waits: Waits,
@@ -299,9 +306,9 @@ impl SessionEvents {
             executor: connection.executor(),
             runtime,
             mount_scope: scope,
-            rows: Mutex::default(),
-            entries: Mutex::default(),
-            emits: Mutex::default(),
+            rows: SeamMutex::default(),
+            entries: SeamMutex::default(),
+            emits: SeamMutex::default(),
             waits: Waits::default(),
         });
         let weak = Arc::downgrade(&session);
@@ -1437,3 +1444,7 @@ mod tests {
         drop((far, near));
     }
 }
+
+/// The shuttle model of a row's listeners and its unload (#628).
+#[cfg(all(test, rutis_shuttle))]
+mod shuttle_tests;

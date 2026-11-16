@@ -5,7 +5,14 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{mpsc, Arc, Condvar, Mutex, Weak};
+use std::sync::{mpsc, Arc, Mutex, Weak};
+
+/// The locks the shuttle models interleave (#628): a call's table, the
+/// reference tables and the outbound queue. A plain build is std's.
+#[cfg(rutis_shuttle)]
+use crate::sync::{Condvar as SeamCondvar, Mutex as SeamMutex};
+#[cfg(not(rutis_shuttle))]
+use std::sync::{Condvar as SeamCondvar, Mutex as SeamMutex};
 use std::task::{Context, Poll, Waker};
 use std::thread::ThreadId;
 
@@ -953,7 +960,7 @@ struct Import {
     peer: Weak<SessionState>,
     id: u64,
     kind: Kind,
-    grants: Mutex<u64>,
+    grants: SeamMutex<u64>,
     origin: Vec<String>,
     /// The far end it came from, for messages ([`Connection::far_name`]),
     /// and why that session ended, once it did: kept here, as the session
@@ -1341,9 +1348,9 @@ struct SessionState {
     /// The channel's message limit, if it has one (#675).
     max_message: Option<usize>,
     closer: Arc<dyn Closer>,
-    calls: Mutex<Calls>,
-    exports: Mutex<Exports>,
-    imports: Mutex<HashMap<u64, Weak<Import>>>,
+    calls: SeamMutex<Calls>,
+    exports: SeamMutex<Exports>,
+    imports: SeamMutex<HashMap<u64, Weak<Import>>>,
     executor: Handle,
     background: Mutex<Option<Background>>,
     dispatch: Arc<dyn Dispatch>,
@@ -1379,6 +1386,26 @@ impl Drop for SessionState {
     }
 }
 
+/// Answers every call with nothing, for the shuttle models (#628).
+#[cfg(all(test, rutis_shuttle))]
+struct Quiet;
+
+#[cfg(all(test, rutis_shuttle))]
+impl Dispatch for Quiet {
+    fn invoke(&self, _: &Connection, _: &str, _: &str, _: Value) -> Reply {
+        Ok(Value::Undefined)
+    }
+}
+
+/// A channel that closes nothing, for the shuttle models (#628).
+#[cfg(all(test, rutis_shuttle))]
+struct NoCloser;
+
+#[cfg(all(test, rutis_shuttle))]
+impl Closer for NoCloser {
+    fn close(&self, _: crate::channel::Close) {}
+}
+
 /// Frames on their way to the far end, in the order they were made, and
 /// the thread that writes them (#1005).
 ///
@@ -1389,9 +1416,9 @@ impl Drop for SessionState {
 /// it does not read waits for it here; a host that bounds that backlog
 /// ends such a session instead ([`SessionOptions::outbound_limit`]).
 struct Outbound {
-    queued: Mutex<Queued>,
+    queued: SeamMutex<Queued>,
     /// The writer thread waits here for a frame, or for the end.
-    ready: Condvar,
+    ready: SeamCondvar,
     /// What may wait for the far end before the session ends; `None` is no
     /// bound.
     limit: Option<usize>,
@@ -1400,8 +1427,8 @@ struct Outbound {
 impl Outbound {
     fn new(limit: Option<usize>) -> Self {
         Self {
-            queued: Mutex::new(Queued::default()),
-            ready: Condvar::new(),
+            queued: SeamMutex::new(Queued::default()),
+            ready: SeamCondvar::new(),
             limit,
         }
     }
@@ -1494,6 +1521,75 @@ impl Connection {
     pub fn downgrade(&self) -> WeakConnection {
         WeakConnection(Arc::downgrade(&self.0))
     }
+
+    /// A session with no channel under it, for the shuttle models (#628):
+    /// ready, greeted by a generated far end, with no reader, writer or
+    /// executor task. Its tables, `send`, `receive`, `cancel`, `close`,
+    /// `encode` and `decode` are the production ones; a frame the models
+    /// hand it is what a reader would.
+    #[cfg(all(test, rutis_shuttle))]
+    pub(crate) fn inert(executor: Handle) -> Connection {
+        Self::inert_tagged(Arc::new(Quiet), executor, next_tag(), next_tag())
+    }
+
+    /// [`Connection::inert`], the far end answering with `dispatch`; the two
+    /// sides greet each other, so each one's call ids are the other's remote
+    /// prefix.
+    #[cfg(all(test, rutis_shuttle))]
+    pub(crate) fn inert_pair_with(
+        dispatch: Arc<dyn Dispatch>,
+        executor: Handle,
+    ) -> (Connection, Connection) {
+        let (first, second) = (next_tag(), next_tag());
+        (
+            Self::inert_tagged(
+                Arc::new(Quiet),
+                executor.clone(),
+                first.clone(),
+                second.clone(),
+            ),
+            Self::inert_tagged(dispatch, executor, second, first),
+        )
+    }
+
+    #[cfg(all(test, rutis_shuttle))]
+    fn inert_tagged(
+        dispatch: Arc<dyn Dispatch>,
+        executor: Handle,
+        tag: String,
+        remote: String,
+    ) -> Connection {
+        let endpoint =
+            Endpoint::rust(PeerId::new(tag.clone()).expect("a generated tag is a peer id"));
+        Connection(Arc::new(SessionState {
+            tag: tag.clone(),
+            endpoint,
+            end: Arc::default(),
+            local_prefix: format!("{tag}:"),
+            remote_prefix: std::sync::OnceLock::from(format!("{remote}:")),
+            greeting: std::sync::OnceLock::from(Greeting {
+                endpoint: PeerId::new(remote).expect("a generated tag is a peer id"),
+                implementation: None,
+                capabilities: Vec::new(),
+            }),
+            outbound: Arc::new(Outbound::new(None)),
+            max_message: None,
+            closer: Arc::new(NoCloser),
+            calls: SeamMutex::new(Calls::default()),
+            exports: SeamMutex::new(Exports::default()),
+            imports: SeamMutex::new(HashMap::new()),
+            executor,
+            background: Mutex::new(None),
+            dispatch,
+            ready: watch::channel(Some(Ok(()))).0,
+            ended: watch::channel(false).0,
+            activity: Arc::new(Activity {
+                count: Mutex::new(0),
+                changed: Notify::new(),
+            }),
+            ordered: Mutex::default(),
+        }))
+    }
     /// The runtime the session was opened on, which runs its tasks.
     pub(crate) fn executor(&self) -> Handle {
         self.0.executor.clone()
@@ -1544,9 +1640,9 @@ impl Connection {
             outbound: Arc::new(Outbound::new(options.outbound_limit)),
             max_message,
             closer,
-            calls: Mutex::new(Calls::default()),
-            exports: Mutex::new(Exports::default()),
-            imports: Mutex::new(HashMap::new()),
+            calls: SeamMutex::new(Calls::default()),
+            exports: SeamMutex::new(Exports::default()),
+            imports: SeamMutex::new(HashMap::new()),
             executor: Handle::current(),
             background: Mutex::new(None),
             dispatch,
@@ -2473,7 +2569,7 @@ impl Connection {
                             peer: Arc::downgrade(&self.0),
                             id,
                             kind,
-                            grants: Mutex::new(1),
+                            grants: SeamMutex::new(1),
                             origin,
                             source: self.far_name(),
                             end: self.0.end.clone(),
@@ -3552,3 +3648,7 @@ pub use waits::trace as waits_trace;
 // The tests script the far end over a memory channel.
 #[cfg(test)]
 mod tests;
+
+// The shuttle models (#628): call and reference tables, and close.
+#[cfg(all(test, rutis_shuttle))]
+mod shuttle_tests;
