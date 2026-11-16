@@ -82,7 +82,7 @@
 | `NoDispatchBeforeElsewhere` | Table | 新会话没有应用 elsewhere 全集就不分发（§4.5） | — |
 | `PrefixEntrySeen` | Table | 取快照时宿主表里有匹配的前缀条目，宿主快照就包含它（§4.3、§5.1） | `events/presence` |
 | `SeesAll` | Table | 每次分发看到发出前已登记、发出时未撤下的全部条目；协议**不**承诺这一点，配置预期被违反 | `events/one-bus`（反例写进本文件） |
-| `EmitOrder` | Emit | 同一发出方、同一监听器上，`emit` 的调用按发出顺序开始（§5.5） | `events/emit`、`events/emit-order` |
+| `EmitOrder` | Emit | 同一发出方、同一监听器上，`emit` 的调用按发出顺序开始（§5.5） | `events/emit`、`core/D31` |
 | `FastPathByFrame` | Emit | 读到经宿主的 emit 的回复之后，这次 emit 不再让同名的后续 emit 留在经宿主路径上（§5.5 最后一条） | `events/one-bus`（`emit/order-across-fast-path`） |
 | `UnloadedRowEmitsNothing` | Emit | 一行卸载之后，它排队或正在等过滤器的 emit 不开始任何调用（§5.5、§7.1） | 登记表没有对应条目；随模型补登记 |
 | `NoCallToUnloadedListener` | Emit | 一行卸载之后，它拥有的监听器不再开始任何调用（§7.1） | 随模型补登记 |
