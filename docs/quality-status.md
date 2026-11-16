@@ -2,7 +2,7 @@
 
 [English](quality-status.en.md) · [质量规范](quality-standard.md)
 
-状态：随代码持续更新。最近更新：2026-11-16（按 #1190 的顺序参考模型、#624 的套件列与缺列理由、#1181/#1183 的心跳修复与 #1185 的卸载修复更新 §1.2、§4、§7.2、§7.5、§9.4 与附录），基准 `origin/main` `f70156be`。上一次：2026-11-16，基准 `328c228a`（#613）；再上一次：2026-11-15，基准 `1dd73888`。
+状态：随代码持续更新。最近更新：2026-11-16（按追踪表脚本的当前输出同步 Q9.4、§7.3、§7.6、§7.7 与 §9.4 的统计和状态：#639、#1100、#1101 已关闭，#1194 仍 open，§9.4 记 #1200 未合入），基准 `origin/main` `abfa7495`（#1202）。上一次：2026-11-16，基准 `f70156be`（按 #1190、#624、#1181/#1183、#1185 更新 §1.2、§4、§7.2、§7.5、§9.4 与附录）；再上一次：2026-11-16，基准 `328c228a`（#613）；更早：2026-11-15，基准 `1dd73888`。
 对应：[质量规范](quality-standard.md)。本文把规范逐条对应到当前的实现：哪些条款已满足、哪些部分满足、缺什么、计划怎么补。规范描述长期不变的规则；本文中的文件名、测试名、issue 号、版本号都会随实现变化。每条保证由哪些测试验证，见[保证登记表](guarantees.md)。
 
 ---
@@ -72,7 +72,7 @@
 | Q8.1 | 三个层次 | 部分 | 规则层充分；组合层有黑盒 E2E 与故障注入（S2–S5、`fault_links.rs`）；环境层有支持矩阵与干净环境安装（S9）、真实网络（S5 容器 + netem，#433）；长时间运行（S8，#192） |
 | Q9.1.1 | 设计文档包含级别、风险、验收 | 部分 | 多数设计有验收节；PR 模板加了持久化格式与保证登记的检查项（#284、#276）；规范本节加了第 5 项（改了多方交互规则时写"模型检查"一节，或写明为什么不需要）。缺：设计文档没有标级别与风险；第 5 项的 CI 检查还没有（§7.8） |
 | Q9.3.2 | 不兼容变化检测与跨版本相遇 | 部分 | `cargo semver-checks` 只提示；协议版本不匹配时说明升级哪一端（#335）；上一个发布版本（运行时、Go SDK、`rutis-host`、节点）与当前代码相遇，断言正常工作或在加载、连接时说明升级哪一端（`tests/e2e/tests/cross_version.rs`，完整运行，#209 → #426） |
-| Q9.4 | 保证登记 | 部分 | [登记表](guarantees.md)已建立（#276、#310，之后各 PR 顺带登记），测试注释写 `guarantee: <编号>`；0.10 作为基线，Q9.4.4 从 0.11 起执行（方案 Q3）。规则按条登记在[追踪表](formal-trace/README.md)：1817 行，294 已验证、432 部分验证、543 未验证（§7.6）。`loader/` 族与 `host/` 其余条目未登记（#181） |
+| Q9.4 | 保证登记 | 部分 | [登记表](guarantees.md)已建立（#276、#310，之后各 PR 顺带登记），测试注释写 `guarantee: <编号>`；0.10 作为基线，Q9.4.4 从 0.11 起执行（方案 Q3）。规则按条登记在[追踪表](formal-trace/README.md)：1825 行，292 已验证、434 部分验证、540 未验证（§7.6）。登记表本身覆盖 §6–§15 共 219 行（#181 已关闭） |
 | Q10.2 | 支持矩阵最低与最新版本 | 满足 | Linux 任务用最低版本（Node 22、Python 3.12、websockets 15、Bun 1.4.0、Go oldstable），macOS、Windows 用最新版本；MSRV 1.88 由 `msrv` 任务验证（#204 → #256；ci.md §9）。运行时 × 通道 × 平台矩阵写在 ci.md §4，不运行的格子写原因（#176） |
 | Q11.3.2 | 不以覆盖率为门槛 | 满足 | — |
 | Q12.1 | 分级运行 | 部分 | PR 按改动选择；每晚（`nightly.yml`，main 有新提交时）运行全部任务、五平台安装（`install.yml`）、Windows dylib、MSRV、feature 组合、两机可复现，以及 `stress.yml`（内核多轮、多进程测试多轮 #245、两个浸泡、16 个 shuttle 模型每晚每个 100 万次迭代、四个模糊测试目标 #425、事件的全部放置 #464）；跨版本相遇（`ci.yml` 完整运行的 `e2e`，#209）、最新已发布 Cordis 插件的基线（只报告，#190）、S5 容器 + netem（只报告，#341 → #433）；每周依赖检查与 CI 度量。缺：每周的长时间宿主浸泡与基准测试（#192） |
@@ -181,7 +181,7 @@
 | 测试工具与真实运行时 | 同一份期望文件 `weather.expected.json`：真实运行时经 `session_matrix.rs`，Node、Python 测试工具各一个测试 | #298 |
 | 持久化样本 | `tests/fixtures/persisted/`：0.8.0、0.9.0、0.9.1、`rejected/` | #284 |
 | TLA+ | `specs/` 的 7 个模型目录、17 个模块、220 个配置（§7.2）。CI 的 `specs` 任务在改了 `specs/**` 的 PR 和每晚运行 | #222、#210，之后 #613 |
-| 保证登记表 | [guarantees.md](guarantees.md)：`core/`、`boundary/`、`instance/`、`bridge/`、`host/`、`dsh/`、`sdk/` 族；测试注释约 100 处 `guarantee: <编号>`；规则追踪表 1817 行（§7.6） | #276、#310 → #634 |
+| 保证登记表 | [guarantees.md](guarantees.md)：`core/`、`boundary/`、`instance/`、`bridge/`、`host/`、`dsh/`、`sdk/` 族；代码里 1162 处 `guarantee: <编号>` 标记（`tools/check-guarantees.mjs` 的计数）；规则追踪表 1825 行（§7.6） | #276、#310 → #634 |
 
 CI：`ci.yml`（PR 按改动选择任务，每晚全部运行；Linux 全量与最低版本、E2E、lint、macOS 与 Windows 的平台相关测试、Bun 与 Go 运行时、dylib、打包、semver、MSRV、feature 组合、可复现、7 个模型的 `specs` 任务）；`install.yml`（安装冒烟）；`nightly.yml`（每晚调用前面三个和 `stress.yml`，失败时开问题单）；`stress.yml`（每晚：内核多轮、多进程测试多轮、两个浸泡、16 个 shuttle 模型、4 个模糊测试目标、事件的全部放置）；`dylib-windows.yml`；`deps.yml`、`ci-stats.yml`（每周）。详见 [ci.md](ci.md)。CI 中仍然没有：actionlint、许可证检查。
 
@@ -265,7 +265,7 @@ CI：`ci.yml`（PR 按改动选择任务，每晚全部运行；Linux 全量与�
 | EV3 | 卸载或断开之后，已撤下的条目仍开始调用，或进行中的调用失败零次、两次；已卸载的行扣住队列（已发生：#536（#564 修复）、#587） | 语义、残留 | 高 | 中 | P0 | TLA；K；TV（#624） | PR | 部分：`EventsTable.tla` 的"只接受这一行当前登记"与 `table-reload`/`table-end-session` 配置；实现侧 `event_hub.rs` 的 `rows.ended` 按帧序（#587）、卸载丢弃排队 emit（#536）。缺：trace validation |
 | EV4 | 节点连接的提供与宣告：旧提供的条目残留，先于提供到达的宣告被撤下（已发生：#593；#435 的根因在宿主内的登记，由 `peer.rs` 的 `a_family_is_announced_only_with_its_offer` 覆盖） | 语义 | 中 | 中 | P1 | TLA（`EventsLink.tla`）；K（`crates/rutis-bridge/src/peer.rs`、`events.expected.json` 的 `node/` 用例、`node/rutis-runtime/test/cordis-events.test.mjs`） | PR | 部分：`EventsLink.tla` 检查只保留最高版本、旧提供按 epoch 撤下、先到的宣告保留；`events.expected.json` 有 5 个 `node/` 用例。缺：多对端与多跳不在模型里 |
 | EV5 | 同步分发（`bail`、`waterfall-sync`）、宿主自己的同步调用、每个调用一个线程的运行时（Go、Swift、Kotlin）让等待环漏检或误报（已发生：#537） | 语义 | 高 | 中 | P0 | TLA（`specs/cross-runtime-sync/`）；K（`crates/rutis-loader/tests/sync_cycles.rs`）；TV（#624） | PR | 部分：`cross-runtime-sync` 44 个配置含 `Threaded`（每调用一线程）与宿主发起的 `host-call`，`sync_cycles.rs` 有 Node / Python / Go / Swift 列；`cycle_among` 的差分属性测试（`waits.rs` 的 `cycle_among_agrees_with_the_models_graph` 与 `the_model_check_agrees_on_the_small_graphs`）与等待图 trace validation（`waits/trace.rs` 记录、`waits/trace/check.rs` 按 `RustSucc` 重放，在 `sync_cycles.rs`、`rpc_callbacks.rs` 上跑）已做。缺：`sync_cycles` 没有 Kotlin 列（Kotlin 要 JDK 17 与 `:rutis-conformance:fatJar`，#624） |
-| RL1 | 宿主与运行时之间的行生命周期：迟到的 `rows.ended`、拒绝、服务公告作用到别的代次；租约比行活得长（已发生：a88fb65b、54a7e824、d94aae9a、#247、#314、#372、#584、#191） | 语义、残留 | 高 | 中 | P1 | TLA（`specs/row-lifecycle/`）；K（各语言的行契约，`crates/rutis-loader/tests/*_rows.rs`） | PR | 部分：`RowLifecycle.tla` 36 个配置检查"一行最多一个代次在运行、迟到结束只结束自己的代次、租约不长于行、服务在提供方卸载前撤下"；各语言行契约有 Node / Python / Bun / Go / Swift。缺：`rows.schema` / `mount`、调用链、各语言卸载栈差异、shutdown 截止不在模型里；#1100 已定案（键每次装载新取）、#1101（卸载先于装载）已修（#1185），issue 未关 |
+| RL1 | 宿主与运行时之间的行生命周期：迟到的 `rows.ended`、拒绝、服务公告作用到别的代次；租约比行活得长（已发生：a88fb65b、54a7e824、d94aae9a、#247、#314、#372、#584、#191） | 语义、残留 | 高 | 中 | P1 | TLA（`specs/row-lifecycle/`）；K（各语言的行契约，`crates/rutis-loader/tests/*_rows.rs`） | PR | 部分：`RowLifecycle.tla` 36 个配置检查"一行最多一个代次在运行、迟到结束只结束自己的代次、租约不长于行、服务在提供方卸载前撤下"；各语言行契约有 Node / Python / Bun / Go / Swift。缺：`rows.schema` / `mount`、调用链、各语言卸载栈差异、shutdown 截止不在模型里；#1100 已定案（键每次装载新取）、#1101（卸载先于装载）已修（#1185），两个 issue 都已关闭 |
 | CL1 | 调用生命周期：取消之后被调用方可能回也可能不回（已成文，`SESS-61`），调用方的取消表只增不减；读线程写回在两端背压时可能互相卡死 | 语义、残留 | 高 | 中 | P1 | TLA（`specs/call-lifecycle/`）；K（`rpc_callbacks.rs`、`multihop.rs`） | PR | 部分：`CallLifecycle.tla` / `CallRelay.tla` 35 个配置把两种取消答复实现都验证为"不重复结算、不漏引用"，并证明读线程写回不死锁的前提（读线程不直接写）、中继逐跳传取消。缺：调用方的取消表可能只增不减，清理与取消确认未定（#1099）；中继的关闭、关闭后对侧继续读帧不在模型里 |
 | AH1 | 应用托管：`RutisApp` 的开始、停止不按调用顺序生效，停止后端口没有释放，再开始时拿到上一轮的状态（已发生：#519、#521、#532、#554） | 语义、残留 | 高 | 中 | P1 | SH：Kotlin 用 Fray（#630）；Swift 没有可控调度，用严格并发检查加 TSan（#630）；连接层用 TLA（`remote-lease`）；模拟器与设备上的测试在本地运行（[CI](ci.md) §12） | PR、设计 | 部分：`remote-lease` 的 `lease-app-restart` / `access-app-restart` 配置按"停止后再开始"建，`RutisApp` 的线程交错已在 f57b4138 修复；Kotlin Fray、Swift TSan 都没有（§7.3）；iOS / Android 的应用托管测试只在本地跑 |
 | AH2 | Swift / Kotlin 的接管顺序、再拨规则与其他语言不一致 | 语义 | 中 | 中 | P1 | TLA 的对应表核对；K（#624） | PR | 部分：`specs/remote-lease/README.md` 的对应表已补 Swift / Kotlin；Kotlin 心跳起算点已修（#1181），模型按正确规则建，修复前的实现留作反例 `lease-mut-heartbeat-from-accept`。`sync_cycles` 没有 Kotlin 列（#624） |
@@ -560,7 +560,7 @@ CI：`ci.yml`（PR 按改动选择任务，每晚全部运行；Linux 全量与�
 | T3 | 统一事件：登记与分发、emit 顺序、节点提供、关闭接纳 | [events](../specs/events/README.md)、[event-close](../specs/event-close/README.md) | `EventsHost`、`EventsTable`、`EventsEmit`、`EventsLink`、`EventsHostCheck`、`CloseAdmission` | 37 + 7 | 先登记后发出（两条路径）、撤下后不再开始调用、同一对条目处处同一先后、emit 的两个顺序性质、节点只保留最高版本、关闭的 marker 与恰好一次清理 | **部分**：`RegisteredThenSeen`、`OneCallPerEntry` 各有变异反例（`table-mut-on-late`、`table-mut-dup-local`）；`emit-python-deferred` 通过，`emit-mut-future-reply` 违反 `EmitOrder`；作用域、值、错误、取消、五种分发的完整语义、多跳、多对端未建 |
 | T4 | 宿主与运行时之间的行生命周期 | [row-lifecycle](../specs/row-lifecycle/README.md) | `RowLifecycle.tla` | 36 | 一行最多一个代次在运行、迟到结束只结束自己的代次、租约不长于行、服务在提供方卸载前撤下 | **部分**：`rows.schema` / `mount`、调用链、各语言卸载栈差异、shutdown 截止不在模型里；#1100 已定案、#1101 已修（#1185） |
 | T5 | 调用生命周期（两端加一跳中继） | [call-lifecycle](../specs/call-lifecycle/README.md) | `CallLifecycle.tla`、`CallRelay.tla` | 35 | 每个调用最多结算一次、迟到答复丢弃、引用计数守恒、关闭后帧不改变状态、中继逐跳传取消 | **部分**：两种取消答复都已验证，回复规则已写进规格（`SESS-61`）；取消表清理与取消确认未定（#1099）；中继的关闭与关闭后对侧继续读帧不在模型里 |
-| T6 | 节点托管的行 | [peer-rows](../specs/peer-rows/README.md) | `PeerRows`、`PeerOffers`、`PeerHosted`、`PeerPair`、`PeerServices` | 29 | 同一实例不同时在两个会话里、旧代迟到的结束不结束新代、门控与离线等待、两个节点互相代装不互相等待、服务版本与墓碑 | **部分**：当前代码已没有 `peer:` 行（0.19 删除），#438 无法对当前代码复现；#1100 已定案（键每次装载新取，`peer-fresh-keys`）；#1101（卸载先于装载）已修（#1185），issue 未关闭 |
+| T6 | 节点托管的行 | [peer-rows](../specs/peer-rows/README.md) | `PeerRows`、`PeerOffers`、`PeerHosted`、`PeerPair`、`PeerServices` | 29 | 同一实例不同时在两个会话里、旧代迟到的结束不结束新代、门控与离线等待、两个节点互相代装不互相等待、服务版本与墓碑 | **部分**：当前代码已没有 `peer:` 行（0.19 删除），#438 无法对当前代码复现；#1100 已定案（键每次装载新取，`peer-fresh-keys`）；#1101（卸载先于装载）已修（#1185），issue 已关闭 |
 
 不是所有跨进程的部分都需要 TLA：握手与能力协商是两方两条消息（PT 枚举判定表即可）；节点服务的导出 / 导入是"版本最高者胜"（PT）；监听 link 是接入点去掉自报 id 的特例；跨会话引用计数每个会话各自是两方协议，中继只靠进程内持有（SH 与 PT）。
 
@@ -568,7 +568,7 @@ CI：`ci.yml`（PR 按改动选择任务，每晚全部运行；Linux 全量与�
 
 | 区域 | 部件 | 现状 |
 | --- | --- | --- |
-| 内核 | [`crates/rutis/src/fiber/shuttle_tests.rs`](../crates/rutis/src/fiber/shuttle_tests.rs) 的 16 个模型：TransitionTask 的每次 join、`post_join` 跨驱动退出、并发 dispose 恰好一次、代次 marker 先于 closing 发布、effect 登记与清理、在途监听器调用期间的卸载、并发子树关闭、root dispose 与 shutdown 共用一次关闭、依赖撤下、emit 链顺序、监听器表观察者、卸载取消当前代、effect 清理错误只报一次、多次完成、重启发布新代次、真实 fiber 树关闭 | **有**：`stress.yml` 每晚每个模型 100 万次迭代，失败打印可重放的调度；`RUSTFLAGS="--cfg rutis_shuttle"` 才编译，普通构建不跑 |
+| 内核 | [`crates/rutis/src/fiber/shuttle_tests.rs`](../crates/rutis/src/fiber/shuttle_tests.rs) 的 16 个模型：TransitionTask 的每次 join、`post_join` 跨驱动退出、并发 dispose 恰好一次、代次 marker 先于 closing 发布、effect 登记与清理、在途监听器调用期间的卸载、并发子树关闭、root dispose 与 shutdown 共用一次关闭、依赖撤下、emit 链顺序、监听器表观察者、卸载取消当前代、effect 清理错误只报一次、多次完成、重启发布新代次、真实 fiber 树关闭 | **有**：`stress.yml` 每晚每个模型 100 万次迭代，失败打印可重放的调度；`RUSTFLAGS="--cfg rutis_shuttle"` 才编译，普通构建不跑。**未关闭的缺口**（#1194）：干净的子 dispose 与根关闭竞争时，同一 transition 的 join 拿到 `Err(Closed)`；issue 附了复现模型与修改建议，issue 仍 open |
 | 会话、事件宿主、加载器监督、宿主重载、dylib | `rutis-bridge`、`rutis-loader`、`rutis-host` 的对应模块 | **无**：这些 crate 里没有任何 shuttle 模型（#622）。二进制运行时监督与宿主重载要先抽出 Launcher 接缝（进程、时钟、文件可替换） |
 | Python | [`python/rutis/tests/scheduling.py`](../python/rutis/tests/scheduling.py) 的 `SteppedLoop`、`ScriptedChannel`：就绪回调只在测试推进时跑，时钟只随测试前进 | **部分**：用于调度与关闭相关的用例；控制的是抽出来的事件循环，不是整个运行时 |
 | Node / Bun | 可注入的帧泵（`node/rutis-runtime/test/frame-pump.test.mjs` 等） | **部分**：可以按测试的顺序推帧；没有用 `fc.scheduler` 生成调度 |
@@ -602,14 +602,16 @@ CI：`ci.yml`（PR 按改动选择任务，每晚全部运行；Linux 全量与�
 
 ### 7.6 追踪表的统计（#634）
 
-覆盖范围是"保证登记表 + 各协议规格的全部规则"。追踪表 1817 行：211 行登记表、54 行手写（`TRC` 44、`ECA` 10）、1552 行 #634 的规则清单（1368 条现行 + 184 条已取代）。状态：294 已验证、432 部分验证、543 未验证、53 明确不保证、291 已撤回、204 不单独计数。
+覆盖范围是"保证登记表 + 各协议规格的全部规则"。追踪表 1825 行：219 行登记表、54 行手写（`TRC` 44、`ECA` 10）、1552 行 #634 的规则清单（1368 条现行 + 184 条已取代）。状态：292 已验证、434 部分验证、540 未验证、61 明确不保证、294 已撤回、204 不单独计数。
 
-完成的标准是"应有形式化检查的规则全部已覆盖（并有变异或修复前的配置证明它不是空的），或写明理由改为其他手段；只靠测试的规则都有测试"（#612、#635）。按现在的统计差得远：543 条未验证，`session`、`runtime`、`events`、`remote` 四个分区还没有按 0.22 现行规格做语义重抽。数字由 `node tools/formal-trace.mjs` 计算，不手写；逐条记录在[追踪表](formal-trace/README.md) §4 与[复核表](formal-trace/recheck-0.22.md)。
+协议复核（1368 条现行）：112 已验证、375 部分验证、537 未验证、42 明确不保证、201 不单独计数，101 条按 0.19 / 0.22 删除的机制记已撤回；161 条有 `SESS-*` 锚点，261 条没有现行来源。
+
+完成的标准是"应有形式化检查的规则全部已覆盖（并有变异或修复前的配置证明它不是空的），或写明理由改为其他手段；只靠测试的规则都有测试"（#612、#635）。按现在的统计差得远：540 条未验证。语义重抽已完成 `TRC` 与六个协议分区（规则文字仍是 issue 快照原文），剩下 219 行登记表与 10 行 `ECA` 没重抽。数字由 `node tools/formal-trace.mjs` 计算，不手写；逐条记录在[追踪表](formal-trace/README.md) §4 与[复核表](formal-trace/recheck-0.22.md)。
 
 ### 7.7 形式化手段覆盖不到的
 
 - 操作系统与平台：macOS 的 fork / CLOEXEC、Windows 的 TLS 与路径、CPython 与 V8 的行为差异 → 支持矩阵、端到端。
-- 计时与截止时间：问候截止时间、退避的 30 / 60 秒、被拒后的等待 → 虚拟时钟测试（[测试时钟设计](design-test-clocks-2026-10-11.md)、`virtual_clock_contract.rs`；#633 并入 #639，尚未接入）。
+- 计时与截止时间：问候截止时间、退避的 30 / 60 秒、被拒后的等待 → 虚拟时钟测试（[测试时钟设计](design-test-clocks-2026-10-11.md)、`virtual_clock_contract.rs`；退避翻倍、被拒后 30 秒重试与 60 秒重置在 `crates/rutis-host/src/connect/dial.rs` 的 `start_paused` 用例里，问候的 10 秒截止在 `crates/rutis-bridge/tests/session_plugin.rs`；#633 并入 #639，随 #639 关闭）。
 - 资源上限与缓慢增长 → 残余检查（§5）与浸泡（S8）。
 - 测试设计造成的偶发失败、打包与 CI、CLI 与代码生成的逻辑错误。
 - 读代码就能看到的 `unsafe` 问题：`crates/rutis-dylib/src/unix.rs:47` 的 `CStr::from_ptr(libc::dlerror())` 没有空指针检查（同文件的 `find_symbol` 检查了）。
@@ -820,14 +822,14 @@ E2E 发现并修复：#225、#226（#261、#217）。Node 最低版本降到 22�
 
 | 层/工作 | issue | 状态和下一步 |
 | --- | --- | --- |
-| 协议基线与规则追踪 | #635、#634 | 进行中：会话协议规格第一版（`docs/protocol-session.md`）与行协议规格第一版（`docs/protocol-rows.md`）已写入；规则追踪表 1817 行（含 1368 条协议规则，§7.6）。未知字段已定：拒绝但只失败该调用（`bad-frame`），七种运行时都已实现并进 CI |
+| 协议基线与规则追踪 | #635、#634 | 进行中：会话协议规格第一版（`docs/protocol-session.md`）与行协议规格第一版（`docs/protocol-rows.md`）已写入；规则追踪表 1825 行（含 1368 条协议规则，§7.6）。未知字段已定：拒绝但只失败该调用（`bad-frame`），七种运行时都已实现并进 CI |
 | 事件、调用、生命周期模型 | #613 | 7 个模型目录、17 个模块、220 个配置：`cross-runtime-sync`、`remote-lease`、`event-close`、`events` 四模块、`row-lifecycle`、`call-lifecycle`、`peer-rows`；逐目录的现状与缺口见 §7.2。模型发现的 bail/async/取消表/peer row 键等已转 issue 或实现修复 |
-| Rust 实现交错 | #622 | 内核 16 个 shuttle 模型通过（§7.3）：#1025 的 marker 发布、`Entry::live`、effect 登记与清理、在途卸载、并发子树关闭、root dispose/shutdown、依赖撤下、emit 链、监听器表、重启发布新代次；7 个确定性竞态用例。待补：会话层、事件宿主、运行时监督与宿主重载（Launcher 接缝）、dylib；`interleave.rs` 的顺序参考模型（#1190，本稿核对时 PR 未合入） |
+| Rust 实现交错 | #622 | 内核 16 个 shuttle 模型通过（§7.3）：#1025 的 marker 发布、`Entry::live`、effect 登记与清理、在途卸载、并发子树关闭、root dispose/shutdown、依赖撤下、emit 链、监听器表、重启发布新代次；7 个确定性竞态用例。待补：会话层、事件宿主、运行时监督与宿主重载（Launcher 接缝）、dylib；`interleave.rs` 的顺序参考模型（#1190，本稿核对时 PR 仍 open）；#1194（干净的子 dispose 与根关闭竞争时 join 拿到 `Err(Closed)`）已报告并附复现模型，issue 仍 open |
 | 非 Rust 运行时调度 | #630 | 首块完成：Node 帧泵 4 个用例、Python 的 `SteppedLoop`；Bun/Go 只有现状盘点；Swift/Kotlin 本机无工具链，登记为环境缺口（§7.3） |
 | trace 与一致性 | #624 | 首块完成：Rust 通道/帧验证器 23 个用例（引用计数、错误图、调用范围、上限、替换/重连分类）；租约套件补了 Go、Bun 列（Python、Go、Bun 三列）；接入点、事件宿主的动作日志、`sync_cycles` 的 Kotlin 列与 `host_gone` 的 Swift / Kotlin 列待补（理由见 §7.5）；等待图已做（#613，§7.5） |
-| 属性、模糊、Kani/Miri | #631 | 首块完成：引用授予回滚 6 个用例、值/帧/坏帧属性 5 个（proptest + corpus 重放）、监听器表模型属性；cargo-fuzz 实际跑 4 个目标无 crash；Miri 跑了会话帧与值路径（无 UB）；Kani 6 个 harness 没有结论（0.68.0 不收敛），不写成通过（`fuzz/KANI-MIRI.md`） |
-| 一致性与普通测试 | #639 | 进行中：缺口清单未完成；161 条一致性用例、18 条普通测试和虚拟时钟计时用例尚未接入 |
-| 统一收口 | #634 | 进行中：追踪表 1817 行（含 1368 条协议规则），`node tools/formal-trace.mjs --check` 零问题，rule tracker 检查已进 CI；协议规则尚未按现行规格逐条复核 |
+| 属性、模糊、Kani/Miri | #631 | 首块完成：引用授予回滚 6 个用例、值/帧/坏帧属性 5 个（proptest + corpus 重放）、监听器表模型属性；cargo-fuzz 实际跑 4 个目标无 crash；Miri 跑了会话帧与值路径（无 UB）；Kani 6 个 harness 没有结论（0.68.0 不收敛），不写成通过（`fuzz/KANI-MIRI.md`）。服务槽与五种分发的参考模型在 PR #1200（未合入） |
+| 一致性与普通测试 | #639 | 已关闭（2026-11-15，COMPLETED）：按追踪表补的一致性用例分批合入，虚拟时钟计时用例在 `rutis-host/src/connect/dial.rs`、`rutis-bridge/tests/session_plugin.rs` 里（§7.7）；追踪表的状态仍按复核结论计（§7.6），`M1-13-3` 等行仍记未验证 |
+| 统一收口 | #634 | 进行中：追踪表 1825 行（含 1368 条协议规则），`node tools/formal-trace.mjs --check` 零问题，rule tracker 检查已进 CI；协议规则已按 0.22 来源复核（§7.6、[复核表](formal-trace/recheck-0.22.md)），但规则文字仍是 issue 快照原文，没有按现行规格重写 |
 
 #1040 继续延期；不把服务公告策略重新纳入 0.22。
 
