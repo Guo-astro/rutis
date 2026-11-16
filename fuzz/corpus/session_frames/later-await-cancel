@@ -1,0 +1,4 @@
+{"op":"invoke","id":"far:1","path":[],"target":"conformance","method":"later","args":{"type":"list","value":[{"type":"data","value":1}]}}
+{"op":"await","id":"far:2","path":[],"reference":1}
+{"op":"cancel","id":"far:2"}
+{"op":"release","reference":1,"count":1}

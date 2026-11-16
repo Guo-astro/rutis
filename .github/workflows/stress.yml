@@ -692,17 +692,18 @@ jobs:
         run: bash tools/ci-self-hosted.sh end
 
   # The fuzz targets in fuzz/ (cargo-fuzz, nightly Rust), `fuzz_secs` each,
-  # in parallel: session frames, the local line framing, WebSocket upgrade
-  # requests. They start from the corpus checked in (fuzz/corpus/<target>);
-  # what they add to it is not kept. A crash or a property that fails stops
-  # the target; its input is uploaded with the log.
+  # in parallel: session frames, frames in sequence into a live session, the
+  # local line framing, WebSocket upgrade requests, error graphs. They start
+  # from the corpus checked in (fuzz/corpus/<target>); what they add to it is
+  # not kept. A crash or a property that fails stops the target; its input is
+  # uploaded with the log.
   fuzz:
     runs-on: ${{ fromJSON(vars.LINUX_RUNNER || '"ubuntu-24.04"') }}
     timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
-        target: [session_frame, local_lines, websocket_upgrade, error_graph]
+        target: [session_frame, session_frames, local_lines, websocket_upgrade, error_graph]
     steps:
       - uses: actions/checkout@v4
       - name: self-hosted runner, start (tools/ci-self-hosted.sh)

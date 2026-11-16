@@ -13,7 +13,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4.13"
-rutis-bridge = { path = "../crates/rutis-bridge", default-features = false, features = ["websocket"] }
+rutis-bridge = { path = "../crates/rutis-bridge", default-features = false, features = ["testing", "websocket"] }
 
 [workspace]
 members = ["."]
@@ -21,6 +21,13 @@ members = ["."]
 [[bin]]
 name = "session_frame"
 path = "fuzz_targets/session_frame.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "session_frames"
+path = "fuzz_targets/session_frames.rs"
 test = false
 doc = false
 bench = false

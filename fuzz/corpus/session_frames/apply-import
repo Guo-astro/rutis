@@ -1,0 +1,1 @@
+{"op":"invoke","id":"far:1","path":[],"target":"conformance","method":"apply","args":{"type":"list","value":[{"type":"reference","value":{"id":7,"home":false,"kind":"function","origin":[]}},{"type":"data","value":"x"}]}}
