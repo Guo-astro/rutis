@@ -1117,10 +1117,11 @@ jobs:
           JOB_STATUS: ${{ job.status }}
         run: bash tools/ci-self-hosted.sh end
 
-  # The Swift SDK (swift/rutis, the root Package.swift): its own tests,
-  # the library built for iOS where the runner has the iOS SDK, and the Rust
-  # tests that run its session and runtimes. macOS only (design §13), on the
-  # self-hosted Macs (MACOS_RUNNER) with their Xcode.
+  # The Swift SDK (swift/rutis, the root Package.swift): its own tests (the
+  # session's threads under ThreadSanitizer too, #630), the library built for
+  # iOS where the runner has the iOS SDK, and the Rust tests that run its
+  # session and runtimes. macOS only (design §13), on the self-hosted Macs
+  # (MACOS_RUNNER) with their Xcode.
   runtimes-swift:
     needs: changes
     if: needs.changes.outputs.swift == 'true'
@@ -1149,6 +1150,25 @@ jobs:
           cargo build -p rutis-host
           swift build
           RUTIS_HOST="${CARGO_TARGET_DIR:-$PWD/target}/debug/rutis-host" swift run RutisSelfTest
+      # The session's concurrent parts under ThreadSanitizer (#630): the
+      # reading and writing threads, the calls they run and cancel, the event
+      # host's concurrent emitters, and an app's start and stop. The SDK's
+      # tests are a program (see above), so this is `swift run
+      # --sanitize=thread`, not `swift test`; the program runs the tests whose
+      # name starts with its argument, so only those four suites run. A race
+      # is printed with both stacks, and `halt_on_error=1` ends the run with a
+      # non-zero status, failing this job. The build directory is its own: the
+      # instrumented products do not replace the ones the steps after this one
+      # use, and the runs share them.
+      - name: ThreadSanitizer over the session, writer, events and app tests
+        run: |
+          export RUTIS_HOST="${CARGO_TARGET_DIR:-$PWD/target}/debug/rutis-host"
+          export TSAN_OPTIONS=halt_on_error=1
+          for suite in PeerTests WriterTests EventsConformanceTests AppTests; do
+            echo "::group::RutisSelfTest $suite under ThreadSanitizer"
+            swift run --sanitize=thread --build-path .build/tsan RutisSelfTest "$suite"
+            echo "::endgroup::"
+          done
       # The public API of Rutis and RutisTest against
       # swift/rutis/public-api.txt (SDK entry design §6, #692).
       - name: public API of the Swift SDK
