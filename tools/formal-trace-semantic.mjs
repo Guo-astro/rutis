@@ -14065,9 +14065,9 @@ export const SEMANTIC_REMOTE = {
       whyNoAnchor: '导出 / 导入名单在 0.19 删除（`design-remote-session-2026-10-28.md` §八、§十二）：节点之间是一条总线、每个名字都在，没有名单可写名字或 `*` 前缀',
       whyNoAnchorEn: 'The export and import lists went in 0.19 (§8 and §12 of the remote session design): the nodes share one bus with every name on it, so there is no list to write a name or a `*` prefix into',
       evidence: '—',
-      status: '未验证',
-      why: '没有名单，前缀写法的规则就没有对象；状态沿用复核结论（未验证），下一轮应改为「已撤回」；issue 快照记「未覆盖」',
-      whyEn: 'With no list the prefix rule has nothing to describe; the status stays the re-check\'s (unverified) and a later round should withdraw it; the issue marked it uncovered.',
+      status: '已撤回',
+      why: '没有名单，前缀写法的规则就没有对象；0.19 删除了导出 / 导入名单（`design-remote-session-2026-10-28.md` §八、§十二；`migration-0.19.md`），#1212 改记已撤回；issue 快照记「未覆盖」',
+      whyEn: 'With no list the prefix rule has nothing to describe; 0.19 deleted the export and import lists (§8 and §12 of the remote session design; migration-0.19.md), so #1212 withdraws it; the issue marked it uncovered.',
     },
     'NOD-3-2': {
       source: 'guarantees.md §8a',

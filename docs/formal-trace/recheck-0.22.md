@@ -52,19 +52,19 @@
 | [protocol-events.md](rules/protocol-events.md) | #634 · events | 253 | 75 | 92 | 52 | 1 | 19 | 9 | 14 | 0 | 0 |
 | [protocol-session.md](rules/protocol-session.md) | #634 · session 上/下 | 246 | 13 | 99 | 86 | 7 | 27 | 104 | 14 | 161 | 2 |
 | [protocol-runtime.md](rules/protocol-runtime.md) | #634 · runtime | 264 | 8 | 38 | 140 | 10 | 63 | 45 | 5 | 0 | 68 |
-| [protocol-remote.md](rules/protocol-remote.md) | #634 · remote | 231 | 4 | 69 | 71 | 13 | 32 | 17 | 42 | 0 | 137 |
-| 合计 | — | 1368 | 112 | 375 | 537 | 42 | 201 | 184 | 101 | 161 | 261 |
+| [protocol-remote.md](rules/protocol-remote.md) | #634 · remote | 231 | 4 | 69 | 70 | 13 | 32 | 17 | 43 | 0 | 137 |
+| 合计 | — | 1368 | 112 | 375 | 536 | 42 | 201 | 184 | 102 | 161 | 261 |
 <!-- recheck-index:end -->
 
 状态怎么变：
 
 | 快照映射状态 | 复核后状态 | 条数 |
 | --- | --- | --- |
-| 未验证 | 未验证 | 537 |
+| 未验证 | 未验证 | 536 |
 | 部分验证 | 部分验证 | 374 |
 | 不单独计数 | 不单独计数 | 201 |
 | 已验证 | 已验证 | 112 |
-| 未验证 | 已撤回 | 46 |
+| 未验证 | 已撤回 | 47 |
 | 明确不保证 | 明确不保证 | 42 |
 | 部分验证 | 已撤回 | 34 |
 | 不单独计数 | 已撤回 | 13 |
@@ -1640,7 +1640,7 @@
 | NOD-1-3 | 部分验证 | 部分验证 | 连接节点指南（NOD「一条 link」） | — | 无具名证据 | 现行来源：连接节点指南（NOD「一条 link」）；没有会话规格锚点；无具名证据 |
 | NOD-1-4 | 不单独计数 | 不单独计数 | 连接节点指南（NOD「一条 link」） | — | 无具名证据 | 0.19 的 link 状态行改为连接插件的输出；类别、不带 token 仍现行 |
 | NOD-1-5 | 明确不保证 | 明确不保证 | 连接节点指南（NOD「一条 link」） | — | 无具名证据 | — |
-| NOD-3-1 | 未验证 | 未验证 | 连接节点指南（NOD「节点之间的事件」） | — | 无具名证据 | 现行来源：连接节点指南（NOD「节点之间的事件」）；没有会话规格锚点；无具名证据 |
+| NOD-3-1 | 已撤回 | 未验证 | 连接节点指南（NOD「节点之间的事件」） | — | — | 已取代：0.19 删除节点的 `export` / `import` 名单，节点之间是一条总线、每个名字都在（`design-remote-session-2026-10-28.md` §八、§十二；登记表 `events/node-links` 重写） |
 | NOD-3-2 | 已验证 | 已验证 | 连接节点指南（NOD「节点之间的事件」；「安全」末条） | — | 具名证据是模块/用例名，不是文件路径；按原文保留 | 现行来源：连接节点指南（NOD「节点之间的事件」；「安全」末条）；没有会话规格锚点 |
 | NOD-3-3 | 已验证 | 已验证 | 连接节点指南（NOD「节点之间的事件」） | — | 具名证据是模块/用例名，不是文件路径；按原文保留 | 现行来源：连接节点指南（NOD「节点之间的事件」）；没有会话规格锚点 |
 | NOD-3-4 | 部分验证 | 部分验证 | 连接节点指南（NOD「节点之间的事件」） | — | 具名证据是模块/用例名，不是文件路径；按原文保留 | 现行来源：连接节点指南（NOD「节点之间的事件」）；没有会话规格锚点 |
@@ -3289,7 +3289,7 @@
 | NOD-1-3 | 部分验证 | guarantees.md §13 | host/link-state-output | `crates/rutis-bridge/tests/websocket.rs::authentication_routing_and_compatibility_failures_carry_their_category`、`crates/rutis-host/tests/dial_conformance.rs::python::an_incompatible_listener_stops_the_dialer` | link 凭据被拒（403、证书不受信任）按退避重试、协议不兼容时停止并报告，由登记表 `host/link-state-output`（§13）的输出行与 `bridge/websocket-refusal-categories`（§10）的类别承载；节点 link 与拨出的运行时走同一套 `rutis-host/dial` 规则；「每 30 秒」的节奏在 `dial_conformance` 里是缩短过的；issue 快照记「部分」 |
 | NOD-1-4 | 不单独计数 | guarantees.md §13 | host/link-state-output | `crates/rutis-host/tests/remote_runtimes.rs::run_says_when_a_dial_row_connects_and_disconnects` | `rutis-host run` 在 link 状态变化时打印一行，由登记表 `host/link-state-output`（§13）承载；0.19 起这行改为连接插件的输出，类别与「不带 token」仍现行，逐字文字待重抽；这是输出格式，不单独计数；issue 快照记「不适用」 |
 | NOD-1-5 | 明确不保证 | guarantees.md §15 | host/row-state-lines | — | 明确不保证：节点行自己的 `running` 只说明这一行在运行，不说明连上了；连接状态另有一行（登记表 `host/link-state-output`，§13）；issue 快照记「明确不保证」 |
-| NOD-3-1 | 未验证 | 0.22 无此条 | —（导出 / 导入名单在 0.19 删除（`design-remote-session-2026-10-28.md` §八、§十二）：节点之间是一条总线、每个名字都在，没有名单可写名字或 `*` 前缀） | — | 没有名单，前缀写法的规则就没有对象；状态沿用复核结论（未验证），下一轮应改为「已撤回」；issue 快照记「未覆盖」 |
+| NOD-3-1 | 已撤回 | 0.22 无此条 | —（导出 / 导入名单在 0.19 删除（`design-remote-session-2026-10-28.md` §八、§十二）：节点之间是一条总线、每个名字都在，没有名单可写名字或 `*` 前缀） | — | 没有名单，前缀写法的规则就没有对象；0.19 删除了导出 / 导入名单（`design-remote-session-2026-10-28.md` §八、§十二；`migration-0.19.md`），#1212 改记已撤回；issue 快照记「未覆盖」 |
 | NOD-3-2 | 已验证 | guarantees.md §8a | events/node-links | `crates/rutis-host/tests/nodes.rs::two_hosts_as_nodes_share_services_events_and_run_rows`、`crates/rutis-bridge/tests/session_plugin.rs::events_reach_both_ways` | 本条写给的是导出 / 导入名单（「两端都写了才共享」），名单在 0.19 删除；现行规则是登记表 `events/node-links`（§8a）：一个名字在节点总线上，连接建立即到、断开即走，同一个名字两个方向都能用。证据解析，状态沿用复核结论（已验证），下一轮按 `events/node-links` 重写文字；issue 快照记「已覆盖」 |
 | NOD-3-3 | 已验证 | guarantees.md §8a | events/node-links、events/one-bus | `crates/rutis-loader/tests/events_conformance.rs::events_with_x_a_node_leaf_plugin` | 对端的监听器是本节点总线上的条目，规则与本机相同：五种方式、过滤、所有值类型，由登记表 `events/node-links` 与 `events/one-bus`（§8a）两行承载，事件一致性用例的 `node` 位置覆盖；issue 快照记「已覆盖」，证据解析 |
 | NOD-3-4 | 部分验证 | guarantees.md §8a | events/node-links | `crates/rutis-bridge/tests/session_plugin.rs::events_reach_both_ways`、`crates/rutis-bridge/tests/fault_links.rs::a_call_in_flight_when_the_connection_drops_fails_and_ran_once` | 连接断开时对端条目离开总线、进行中的调用失败一次：前半由登记表 `events/node-links`（§8a）承载，后半由 `bridge/in-flight-call-fails-once`（§10）承载，两半各有一个用例，断链时条目离开没有跨节点的具名用例；issue 快照记「部分」 |
@@ -3328,7 +3328,7 @@
 
 ## 7. 这一轮改了什么、还剩什么
 
-- **已撤回**：issue 快照的 184 条之外，本轮按 0.19 / 0.22 删除的机制追加了 101 条（见 §3 的「已撤回（本轮）」列与 §4 的缺口）。它们仍在 `rules/protocol-*.md` 里，统计不计入。
+- **已撤回**：issue 快照的 184 条之外，本轮按 0.19 / 0.22 删除的机制追加了 102 条（见 §3 的「已撤回（本轮）」列与 §4 的缺口）。它们仍在 `rules/protocol-*.md` 里，统计不计入。
 - **未完成**：没有一行重写规则文字——协议清单的 1368 条现行规则仍是 issue 快照原文；远程没有对应的新规格，只有设计稿与指南（0.19 之后的连接行为在 `design-remote-session-2026-10-28.md`）。§6 按原因列出没有锚点的规则；写规格是 #635 的后续，不是这一轮能补的。
 - **证据**：只核对 `现有形式化` 列的具名引用；备注列里的旧路径（如 `crates/rutis-bridge/src/cordis/server.rs`）没有逐条清，重抽时一并处理。
 - **语义**：TRC 分区（规则文字整体重写）与协议清单 `registry-1`、`registry-2`、`session`、`events`、`runtime`、`remote`（来源、锚点、证据、状态）已在 §5 全部重抽，协议清单没有剩下的分区；规则文字仍是 issue 快照原文。规则的「已撤回 / 明确不保证 / 未验证 / 部分验证 / 已验证」按上面的四件事定，不按记忆。
