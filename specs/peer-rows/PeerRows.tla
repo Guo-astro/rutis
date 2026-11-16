@@ -1,8 +1,12 @@
 --------------------------- MODULE PeerRows ----------------------------
 (***************************************************************************)
 (* Node-hosted rows (peer rows): the far end's rows run here as a          *)
-(* session's rows, keyed by the row's instance, which outlives a restart.  *)
-(* Two control sessions of the same peer (the old one breaking, a new one  *)
+(* session's rows, under the key the peer loads each one by. KeyPerLoad    *)
+(* writes the key rule: FALSE is the old `PeerRow`'s instance key, the     *)
+(* same across restarts, so a notice must carry the generation it belongs  *)
+(* to; TRUE is a `run` row's key, new on every load, so the key itself     *)
+(* names the load (decided for #1100: TRUE; see README, "The key"). Two    *)
+(* control sessions of the same peer (the old one breaking, a new one      *)
 (* taking over) with the host's per-session table of what it loaded, and   *)
 (* what a late notification of the old session must not do to the new      *)
 (* generation.                                                             *)
@@ -27,20 +31,26 @@
 (* README.md next to this file lists the simplifications.                  *)
 (*                                                                         *)
 (* Sessions are the peer's control connections, opened in order. A row's   *)
-(* generation names one load: the key the row goes by is its instance, the *)
-(* same in every session, so a notification carries the generation whose   *)
-(* registration the host had loaded, and the peer must match it rather     *)
-(* than the key alone. Each direction of a session is FIFO and delayed     *)
+(* generation names one load. Under a stable key (`KeyPerLoad = FALSE`,    *)
+(* the old `PeerRow`) the key is the row's instance, the same in every     *)
+(* session, so a notification carries the generation whose registration    *)
+(* the host had loaded, and the peer must match it rather than the key     *)
+(* alone. Under a key per load (`KeyPerLoad = TRUE`, a current `run` row)  *)
+(* the key is the generation: a notice of an old load names a key no load  *)
+(* here has. Each direction of a session is FIFO and delayed               *)
 (* arbitrarily long; a session that broke is not read any more, but a      *)
 (* notification already written may still reach the row late (`PLateEnded` *)
 (* and `PLateFailed`).                                                     *)
 (*                                                                         *)
-(* The key: this model uses the row's instance, stable across restarts, as *)
-(* the old `PeerRow` did. A current `run` row uses `plugin#n`, new on every *)
-(* load (`run.rs:168`), so a notice of an old load cannot reach a new one; *)
-(* the model's stable key is what makes the generation in each notice      *)
-(* necessary. That difference is the decision input for #1100: see README, *)
-(* "The key: the model and today's code".                                  *)
+(* The key: #1100 decided the second rule — a remote row takes             *)
+(* a new key on every load (`<plugin>#<n>` in `run.rs:168`,                *)
+(* `<instance>.<generation>` in a loader row, `runtime.rs:722-727`), so    *)
+(* a notice of an old load names a key no row here has. `KeyPerLoad =      *)
+(* TRUE` writes that rule; `peer-fresh-keys` checks it, with the           *)
+(* `lateEnding` policy (match by the key alone) that is unsafe under a     *)
+(* bare instance key. The first rule stays in the model: it is what the    *)
+(* old `PeerRow` did, and what a key without a generation would have to    *)
+(* satisfy. See README, "The key".                                         *)
 (***************************************************************************)
 EXTENDS Naturals, Sequences, FiniteSets, TLC
 
@@ -51,6 +61,7 @@ CONSTANTS
     Faults,      \* what the environment may do: "lose"
     Failures,    \* a hosted row may fail (rows.failed)
     SelfEnds,    \* a hosted row may end on its own (rows.ended)
+    KeyPerLoad,  \* TRUE: a key per load (a `run` row); FALSE: the instance
     Mutation     \* "none", or a deliberate bug (README, "Mutations")
 
 ASSUME Rows /= {}
@@ -59,6 +70,7 @@ ASSUME MaxGens \in Nat \ {0}
 ASSUME Faults \subseteq {"lose"}
 ASSUME Failures \in BOOLEAN
 ASSUME SelfEnds \in BOOLEAN
+ASSUME KeyPerLoad \in BOOLEAN
 ASSUME Mutation \in {"none", "acceptBeforeClean", "lateEnding", "keepRows",
                      "serviceResidue"}
 
@@ -67,6 +79,10 @@ Gens == 1..MaxGens
 Keys == Sessions \X Rows \X Gens
 NoGen == 0
 NoSvc == <<0, 0>>
+
+\* The key a notice of generation g names: a key per load is that generation;
+\* a stable key is the row, the same for every generation.
+RowKey(r, g) == IF KeyPerLoad THEN <<r, g>> ELSE r
 
 VARIABLES
     pst,          \* the peer: "connecting" | "greeting" | "ready" | "waiting"
@@ -158,9 +174,9 @@ PGreeted ==
                    svc, late, cur, pick, rside, answered, ended, broke,
                    loaded, sentFail, clean, toH>>
 
-\* Load a row on the session the peer is on: the key is its instance, the
-\* generation is what this load is called (the instance is the same after
-\* every restart).
+\* Load a row on the session the peer is on: the generation is what this load
+\* is called; the key is the generation (`KeyPerLoad`) or the instance (the
+\* same after every restart).
 PLoad(r) ==
     /\ pst = "ready"
     /\ pconn > 0
@@ -215,7 +231,9 @@ PUnloaded(r) ==
                       loaded, sentFail, clean, toH>>
 
 \* `rows.ended`: the row ended there on its own. Only the generation it
-\* belongs to ends; a late ending of an earlier generation does not.
+\* belongs to ends; a late ending of an earlier generation does not. (Under
+\* a stable key the key alone does not tell them apart; under a key per load
+\* it does — `PLateEnded` writes the difference.)
 PEnded(r) ==
     /\ pst = "ready"
     /\ pconn > 0
@@ -279,14 +297,19 @@ PLoss(s) ==
 
 \* An ending already written on the session that broke, delivered after
 \* the row moved on. The protocol ignores it: it is not this generation's.
-\* The mutation ends the row anyway.
+\* The mutation acts on the row that is loaded now if the notice names its
+\* key: under a stable key every generation's notice names it (`lateEnding`
+\* ends the new generation); under a key per load only this load's does, and
+\* a late notice of an earlier one names a key no row has.
 PLateEnded(r, g) ==
     /\ <<"ended", r, g>> \in late
     /\ late' = late \ {<<"ended", r, g>>}
-    /\ prow' = IF Mutation = "lateEnding"
-               THEN [prow EXCEPT ![r] = "gone"] ELSE prow
-    /\ pEndedFrom' = IF Mutation = "lateEnding"
-                     THEN [pEndedFrom EXCEPT ![r] = g] ELSE pEndedFrom
+    /\ LET acts == Mutation = "lateEnding"
+                  /\ prow[r] = "loaded"
+                  /\ RowKey(r, g) = RowKey(r, pkey[r])
+       IN /\ prow' = IF acts THEN [prow EXCEPT ![r] = "gone"] ELSE prow
+          /\ pEndedFrom' = IF acts
+                           THEN [pEndedFrom EXCEPT ![r] = g] ELSE pEndedFrom
     /\ UNCHANGED <<pst, pconn, pdial, pkey, pgen, pFailedFrom, svc, cur, pick,
                    rside, answered, ended, broke, loaded, sentFail, clean,
                    toH, toP>>
@@ -296,9 +319,12 @@ PLateEnded(r, g) ==
 PLateFailed(r, g) ==
     /\ <<"failed", r, g>> \in late
     /\ late' = late \ {<<"failed", r, g>>}
-    /\ LET acts == Mutation = "lateEnding" /\ prow[r] # "gone" /\ pconn > 0
+    /\ LET acts == Mutation = "lateEnding"
+                  /\ prow[r] = "loaded"
+                  /\ pconn > 0
+                  /\ RowKey(r, g) = RowKey(r, pkey[r])
           IN /\ prow' = IF acts THEN [prow EXCEPT ![r] = "unloading"] ELSE prow
-             /\ pFailedFrom' = IF Mutation = "lateEnding"
+             /\ pFailedFrom' = IF acts
                                THEN [pFailedFrom EXCEPT ![r] = g]
                                ELSE pFailedFrom
              /\ toH' = IF acts
@@ -366,8 +392,9 @@ HEndSession(s) ==
                    pFailedFrom, svc, answered, broke, loaded, sentFail,
                    clean>>
 
-\* `rows.load`: the row's instance is the key, so a second load of the same
-\* key in one session is refused (not modelled: no correct peer sends one).
+\* `rows.load`: the row is keyed by its instance (`KeyPerLoad = FALSE`) or by
+\* the load (`TRUE`); a second load of the same key in one session is refused
+\* (not modelled: no correct peer sends one).
 HReadLoad(r, s) ==
     /\ CanRead(s)
     /\ toH[s] /= <<>>
@@ -498,7 +525,9 @@ OneInstanceAtATime ==
         Cardinality({s \in Sessions : loaded[s][r] # NoGen}) <= 1
 
 \* The peer ends or restarts a row only for the generation the row is on:
-\* a late ending or failure of an earlier generation changes nothing.
+\* a late ending or failure of an earlier generation changes nothing. With
+\* a key per load the key alone says which generation; with a stable key the
+\* notice must carry it (the `lateEnding` mutation matches the key only).
 OwnGenerationOnly ==
     \A r \in Rows :
         /\ (pEndedFrom[r] = NoGen \/ pEndedFrom[r] = pkey[r])

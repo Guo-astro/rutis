@@ -10,9 +10,11 @@ use std::sync::{Arc, Mutex};
 
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, FiberState, FiberView, PluginFactory};
 use rutis::Ctx;
+use rutis_bridge::runtime::Process;
 use rutis_bridge::session::{call_service, host_key, HostDispatch, Reply, Value as RpcValue};
 use rutis_bridge::{
-    catalog_key, Channel, Installed, LocalId, PeerId, PluginCatalog, Session, StaticCatalog,
+    catalog_key, session_key, Channel, Installed, LocalId, PeerId, PluginCatalog, Session,
+    SessionHandle, StaticCatalog,
 };
 use rutis_loader::edit::{Editable, Version};
 use rutis_loader::report::{EntryStatus, Unavailable};
@@ -215,6 +217,35 @@ impl Main {
         far
     }
 
+    /// [`Main::connect`], with the far end greeted by the test: its handle
+    /// writes what the far end writes (`rows.ended` of a key).
+    async fn connect_as_far(&self, office: &Ctx) -> (FiberView, SessionHandle) {
+        let (ours, theirs) = rutis_bridge::memory::pair();
+        let greeting = tokio::spawn({
+            let office = office.clone();
+            async move { Session::handshake(&office, theirs).await }
+        });
+        self.connect.send(ours).unwrap();
+        let greeted = within("the far end greeting", greeting)
+            .await
+            .expect("the greeting task")
+            .expect("the far end greets");
+        let handle = greeted.handle();
+        let far = office.plugin(greeted);
+        (far, handle)
+    }
+
+    /// The process of the session of `gpu` here, once mounted: its
+    /// connection writes to the far end (`rows.unload`).
+    async fn process(&self) -> Arc<Process> {
+        let session = eventually(
+            || self.root.get_at(&session_key("gpu")),
+            "the session of gpu",
+        )
+        .await;
+        eventually(|| session.process(), "the session's process").await
+    }
+
     fn status(&self, id: &str) -> Option<EntryStatus> {
         self.loader.get(id).map(|entry| entry.status)
     }
@@ -362,5 +393,175 @@ async fn a_far_session_unloading_first_leaves_the_row_waiting() {
 async fn a_row_whose_connection_row_is_not_there_waits_for_it() {
     let main = main(json!([{ "id": "contacts", "name": "cpu:contacts" }])).await;
     assert_eq!(main.waiting("contacts").await, "waiting for cpu");
+    main.root.shutdown().await.unwrap();
+}
+
+// ── the row's key (#1100) ───────────────────────
+
+/// The keys the far end has `contacts` loaded under now: the row a
+/// plugin's fiber is marked with (`Ctx::mark_row`), not disposed.
+fn hosted_keys(office: &Ctx) -> Vec<String> {
+    office
+        .diagnostics()
+        .plugins
+        .into_iter()
+        .filter(|plugin| plugin.name == "contacts" && plugin.state != FiberState::Disposed)
+        .filter_map(|plugin| plugin.row)
+        .collect()
+}
+
+/// Whether `key` is how a loader row names its load at a session:
+/// `<instance>.<generation>` (`JsRow::start`, `crates/rutis-loader/src/runtime.rs:722-727`).
+fn is_loader_key(key: &str) -> bool {
+    key.split_once('.').is_some_and(|(instance, generation)| {
+        !instance.is_empty()
+            && instance.bytes().all(|byte| byte.is_ascii_digit())
+            && !generation.is_empty()
+            && generation.parse::<u64>().is_ok()
+    })
+}
+
+/// The one key the far end has `contacts` loaded under, once it is the
+/// only one.
+async fn the_key(office: &Ctx) -> String {
+    eventually(
+        || {
+            let keys = hosted_keys(office);
+            (keys.len() == 1).then(|| keys[0].clone())
+        },
+        "the row's key at the far end",
+    )
+    .await
+}
+
+/// guarantee: loader/peer-rows
+/// Each load takes a new key at the far end: a reload loads the row again
+/// under a new `<instance>.<generation>`, never under the key of the load
+/// before (#1100).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_reload_takes_a_new_key() {
+    let main = main(json!([{ "id": "contacts", "name": "gpu:contacts" }])).await;
+    let office = office();
+    let (_far, _handle) = main.connect_as_far(&office).await;
+    main.running("contacts").await;
+    let first = the_key(&office).await;
+    assert!(is_loader_key(&first), "{first}");
+
+    let report = main.loader.reload("contacts").await.unwrap();
+    assert!(report.failures.is_empty(), "{report:?}");
+    main.running("contacts").await;
+    let second = eventually(
+        || {
+            let keys = hosted_keys(&office);
+            (keys.len() == 1 && keys[0] != first).then(|| keys[0].clone())
+        },
+        "the reloaded row's key",
+    )
+    .await;
+    assert_ne!(second, first);
+    assert!(is_loader_key(&second), "{second}");
+    main.root.shutdown().await.unwrap();
+}
+
+/// guarantee: loader/peer-rows
+/// One plugin in two sessions of the same far end: each session's load
+/// takes its own key, so the next session never loads under the previous
+/// one's key (#1100).
+#[tokio::test(flavor = "multi_thread")]
+async fn two_sessions_do_not_share_a_key() {
+    let main = main(json!([{ "id": "contacts", "name": "gpu:contacts" }])).await;
+    let office = office();
+    let (far, _handle) = main.connect_as_far(&office).await;
+    main.running("contacts").await;
+    let first = the_key(&office).await;
+
+    within("the far session unloading", far.dispose())
+        .await
+        .unwrap();
+    assert_eq!(main.waiting("contacts").await, "waiting for gpu");
+
+    let (_far, _handle) = main.connect_as_far(&office).await;
+    main.running("contacts").await;
+    let second = eventually(
+        || {
+            let keys = hosted_keys(&office);
+            (keys.len() == 1 && keys[0] != first).then(|| keys[0].clone())
+        },
+        "the next session's key",
+    )
+    .await;
+    assert_ne!(second, first);
+    assert!(is_loader_key(&second), "{second}");
+    main.root.shutdown().await.unwrap();
+}
+
+/// guarantee: loader/peer-rows
+/// A notice of an old load names its key: `rows.ended` of the key the row
+/// had before a reload, and `rows.unload` of it after, reach no row. The
+/// row loaded now keeps running and keeps its service; a `rows.unload` of
+/// the current key really does unload it (#1100).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_late_notice_of_an_old_key_reaches_no_row() {
+    let main = main(json!([{ "id": "contacts", "name": "gpu:contacts" }])).await;
+    let office = office();
+    let (_far, handle) = main.connect_as_far(&office).await;
+    main.running("contacts").await;
+    eventually(|| main.contacts(), "contacts at main").await;
+    let old = the_key(&office).await;
+
+    let report = main.loader.reload("contacts").await.unwrap();
+    assert!(report.failures.is_empty(), "{report:?}");
+    main.running("contacts").await;
+    let now = eventually(
+        || {
+            let keys = hosted_keys(&office);
+            (keys.len() == 1 && keys[0] != old).then(|| keys[0].clone())
+        },
+        "the reloaded row's key",
+    )
+    .await;
+
+    // The far end's late ending of the old load: no row here has that key.
+    let far = eventually(|| handle.process(), "the far end's process").await;
+    within(
+        "a late rows.ended",
+        far.invoke_async("", "rows.ended", vec![json!(old).into()]),
+    )
+    .await
+    .unwrap();
+    // A late unload of the old load: the far end has no row under it.
+    let here = main.process().await;
+    within(
+        "a late rows.unload",
+        here.invoke_async("", "rows.unload", vec![json!(old).into()]),
+    )
+    .await
+    .unwrap();
+
+    // Nothing changed: the row loaded now is there, with its service.
+    assert_eq!(
+        hosted_keys(&office),
+        vec![now.clone()],
+        "the row loaded now"
+    );
+    main.running("contacts").await;
+    eventually(|| main.contacts(), "contacts at main").await;
+    let answer: String = within("the call", call_service(&main.root, "contacts", "get", ()))
+        .await
+        .unwrap();
+    assert_eq!(answer, "office");
+
+    // The key of the load now is the one that unloads it.
+    within(
+        "the unload of the current key",
+        here.invoke_async("", "rows.unload", vec![json!(now).into()]),
+    )
+    .await
+    .unwrap();
+    eventually(
+        || hosted_keys(&office).is_empty().then_some(()),
+        "the row gone at the far end",
+    )
+    .await;
     main.root.shutdown().await.unwrap();
 }
