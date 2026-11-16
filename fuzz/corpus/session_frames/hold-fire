@@ -1,0 +1,4 @@
+{"op":"invoke","id":"far:1","path":[],"target":"conformance","method":"make","args":{"type":"list","value":[]}}
+{"op":"invoke","id":"far:2","path":[],"target":"conformance","method":"hold","args":{"type":"list","value":[{"type":"reference","value":{"id":1,"home":true,"kind":"function","origin":[]}}]}}
+{"op":"invoke","id":"far:3","path":[],"target":"conformance","method":"fire","args":{"type":"list","value":[{"type":"data","value":2}]}}
+{"op":"invoke","id":"far:4","path":[],"target":"conformance","method":"drop","args":{"type":"list","value":[]}}

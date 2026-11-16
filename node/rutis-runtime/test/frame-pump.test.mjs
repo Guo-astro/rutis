@@ -8,6 +8,10 @@
 // by how fast the machine is: no test below waits on a timer, and a pump asked
 // past its script throws instead of spinning the thread.
 //
+// The bus over the session appears here once, to drive a Cordis filter's
+// synchronous call; the same-name hold is the session's `holds` seam
+// (src/runner.mjs:1168).
+//
 // What this does not cover: the process's own pump (`receiveMessageOnPort`
 // plus `Atomics.wait`, src/client.mjs:30-35) and the runner around it.
 // runner.mjs is a script, not a factory, so the runner-level frame pump has no
@@ -16,6 +20,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { Session, ENDPOINT_PROTOCOL } from '../src/session.mjs'
+import { Bus } from '../src/events.mjs'
 
 const data = value => ({ type: 'data', value })
 const invoke = (id, method, path = [], args = data([])) => ({ op: 'invoke', id: `rust:${id}`, path, target: 'test', method, args })
@@ -30,12 +35,13 @@ const greeting = { op: 'hello', version: ENDPOINT_PROTOCOL, endpoint: 'rust', ca
 // function runs (the far end's frame arriving between two asks, say), and a
 // leftover step delivers the next frame of `incoming`. Nothing is read unless
 // the session asks, which is what makes the order below the test's.
-function wire(dispatch, { steps = [] } = {}) {
+function wire(dispatch, { steps = [], holds } = {}) {
   const incoming = [], sent = [], asks = []
   let fault
   const peer = new Session({
     endpoint: { local: 'node' },
     dispatch,
+    holds,
     send: line => sent.push(JSON.parse(line)),
     pump: done => {
       // `done()` is false while the wait is unanswered: a session asking
@@ -219,4 +225,110 @@ test('frames in hand at close: none answers, none runs, and the wait ends', asyn
     assert.equal(fault(), undefined)
     await peer.drain()
   }
+})
+
+// §5.5 items 3–4 (EVP-5.5-10, EVP-5.5-11): this runtime holds an emit-mode
+// listener call that arrives during a synchronous wait, and a later call of
+// the same name waits behind it — also when its path is on the wait's chain,
+// where it would otherwise start ahead of the earlier emit. The hold is by
+// name (`holds`); a call of another name on the same chain starts there, as
+// it always did. Once the wait ends, the held calls run in frame order.
+test('a same-name emit call waits behind the one a synchronous wait holds', async () => {
+  const log = []
+  const holds = (method, args) => method === 'events.call' && args?.[0]?.mode === 'emit' ? args[0].name : undefined
+  const { peer, incoming, sent, asks, fault } = wire((_, __, args) => {
+    log.push(`${args[0].name}:${args[0].args[0]}`)
+    return undefined
+  }, { holds })
+  const call = (id, name, value, path = []) => ({
+    op: 'invoke', id: `rust:${id}`, path, target: '', method: 'events.call',
+    args: data([{ listener: '1', mode: 'emit', name, args: [value] }]),
+  })
+  incoming.push(
+    call(2, 'n', 1),
+    call(3, 'n', 2, ['node:1']),
+    call(4, 'm', 3, ['node:1']),
+    reply('node:1', 7),
+  )
+  assert.equal(peer.invoke('test', 'sync', []), 7)
+  // During the wait only the other name ran: it was on the wait's chain, and
+  // no earlier call of its name was queued.
+  assert.deepEqual(log, ['m:3'])
+  assert.deepEqual(sent.filter(frame => frame.op === 'return').map(frame => frame.id), ['rust:4'])
+  assert.deepEqual(asks, [false, false, false, false])
+  // The wait over, the held calls run in the order their frames arrived: the
+  // later `n` did not overtake the earlier one, on the chain or not.
+  await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(log, ['m:3', 'n:1', 'n:2'])
+  assert.deepEqual(sent.filter(frame => frame.op === 'return').map(frame => frame.id), ['rust:4', 'rust:2', 'rust:3'])
+  assert.equal(fault(), undefined)
+  peer.close()
+})
+
+// §5.5 item 4 (#630): a filter's answer is a decision taken during the
+// dispatch, so the runtime asks it synchronously (`#keeps` → `withinSync`). A
+// filter that calls a service of the host waits on that call, and the pump
+// reads the frames behind it. This runtime is not re-entrant: a later emit's
+// listener call that arrives meanwhile is held, so the filter never sees this
+// process's state through a listener running in the middle of its wait.
+test("a filter's synchronous call holds a later emit until the wait ends", async () => {
+  const log = [], sent = [], asks = [], steps = []
+  let session
+  let bus
+  session = new Session({
+    endpoint: { local: 'node' },
+    dispatch: (_, method, args) => method === 'events.call' ? bus.call(args[0]) : 'checked',
+    send: line => sent.push(JSON.parse(line)),
+    pump: done => {
+      asks.push(done())
+      const step = steps.shift()
+      if (!step) throw new Error('the pump was asked for a frame the script does not have')
+      step()
+    },
+    abort: error => log.push(`fault: ${error?.message}`),
+  })
+  session.receive(greeting)
+  bus = new Bus({
+    runtime: 'node',
+    peer: {
+      call: (target, method, args, described) => session.invoke(target, method, args, described),
+      callAsync: (target, method, args, described) => session.invokeAsync(target, method, args, described),
+      callAnswered: (target, method, args, answered, described) => session.invokeAnswered(target, method, args, answered, described),
+      callFunctionSync: (fn, args) => session.callFunctionSync(fn, args),
+      callFunctionAsync: (fn, args) => session.callFunctionAsync(fn, args),
+      withinSync: run => session.withinSync(run),
+    },
+    report: line => log.push(`reported: ${line}`),
+  })
+  bus.on({ name: 'n', callback: value => { log.push(`listener ${value}`) }, row: 'r', plugin: 'p' })
+  const keep = () => {
+    log.push('filter asked')
+    log.push(`filter saw ${session.invoke('test', 'check', [])}`)
+    return true
+  }
+  const out = method => sent.find(frame => frame.op === 'invoke' && frame.method === method)
+  steps.push(() => session.receive({
+    op: 'call', id: 'rust:1', path: [out('events.dispatch').id],
+    reference: out('events.dispatch').args.value[0].value.filter.value.id,
+    args: data([[{ listener: '1', name: 'n', plugin: 'p', row: 'r', runtime: 'node', node: null, scope: [], global: false }]]),
+    sync: true,
+  }))
+  steps.push(() => session.receive({
+    op: 'invoke', id: 'rust:2', path: [], target: '', method: 'events.call',
+    args: data([{ listener: '1', dispatch: 'later', own: false, name: 'n', mode: 'emit', args: [2] }]),
+  }))
+  steps.push(() => session.receive({ op: 'return', id: out('check').id, value: data('checked') }))
+  steps.push(() => session.receive({ op: 'return', id: out('events.dispatch').id, value: data(undefined) }))
+  bus.dispatch('emit', 'n', [1], { row: 'r', keep, sync: true })
+  // The later emit's frame was read inside the filter's wait and still did
+  // not start: only the filter's own answer went out.
+  assert.deepEqual(log, ['filter asked', 'filter saw checked'])
+  assert.deepEqual(asks, [false, false, false, false])
+  assert.deepEqual(sent.filter(frame => frame.op === 'return').map(frame => frame.id), ['rust:1'])
+  await new Promise(resolve => setImmediate(resolve))
+  // The wait over, the held listener runs and answers.
+  assert.deepEqual(log, ['filter asked', 'filter saw checked', 'listener 2'])
+  assert.deepEqual(sent.filter(frame => frame.op === 'return').map(frame => frame.id), ['rust:1', 'rust:2'])
+  assert.equal(session.fault, undefined)
+  session.close()
 })

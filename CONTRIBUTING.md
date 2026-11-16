@@ -55,7 +55,7 @@ RUTIS_SHUTTLE_REPLAY=<schedule> RUSTFLAGS="--cfg rutis_shuttle" cargo test -p ru
 # The fuzz targets (fuzz/, its own workspace): nightly Rust and cargo-fuzz.
 cargo install cargo-fuzz
 cd fuzz
-cargo +nightly fuzz run session_frame -- -max_total_time=60   # or local_lines, websocket_upgrade
+cargo +nightly fuzz run session_frame -- -max_total_time=60   # or session_frames, local_lines, websocket_upgrade, error_graph
 cargo +nightly fuzz run session_frame artifacts/session_frame/crash-…   # reproduce a failure
 ```
 

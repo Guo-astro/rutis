@@ -339,6 +339,7 @@ let some = ctx.filter { $0.row == "chat" }                        // Rutis.Emitt
 | 调用链 | `@TaskLocal var path: [String]`：进来的调用在其 Task 里设 `path + [id]`；发出的调用从当前 TaskLocal 取链；`apply` / 清理带 `rows.load` / `rows.unload` 的链；插件自己用 `Task.detached` 时链丢失（写进指南：用 `ctx.spawn` 或普通 `Task {}`） |
 | `sync` 方法 | 实现可以是 `async`，也可以在里面调用其他服务（挂起不占线程）；与 Go 的行为相同 |
 | 进来的取消 | `cancel` 帧或 `signal` 中止 → 该调用的 `Task.cancel()`；`Task.checkCancellation()` 抛 `CancellationError` |
+| 会话结束 | `close()`（对端断开、`stop()`）取消当时正在运行的每个调用；恰在这时拿到调用号、Task 还没接上的，接上时即被取消（#630） |
 | 发出的取消 | Task 被取消时：`async` 调用发 `cancel`，立即抛 `CancellationError`，丢弃迟到结果；`sync` 调用立即抛，丢弃迟到结果，对端照常执行 |
 | 行卸载 | 取消该行 Task 树；顺序按 §4.7 的卸载 |
 | `SyncWaitCycle` | 自身不产生；收到时为 `RutisError`，`name == "SyncWaitCycle"` |

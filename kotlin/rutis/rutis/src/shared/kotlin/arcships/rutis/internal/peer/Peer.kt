@@ -44,6 +44,17 @@ const val ENDPOINT_PROTOCOL: Int = 4
 /** How deep a value crossing a session may nest (#279): each list, record, map or set is a level. */
 const val MAX_DEPTH: Int = 64
 
+/**
+ * How deep a frame this side reads may nest (#279, protocol §8): every JSON
+ * array and object counts, as in [frameDeeperThan]. A frame within [MAX_DEPTH]
+ * levels of values takes at most `3 * MAX_DEPTH + 6` on the wire; the rest is
+ * margin, as in Rust's `MAX_FRAME_DEPTH`.
+ */
+const val MAX_FRAME_DEPTH: Int = 3 * MAX_DEPTH + 16
+
+/** The reader thread's stack: room to parse and decode a frame [MAX_FRAME_DEPTH] deep (as Rust's `READER_STACK`). */
+private const val READER_STACK: Long = 2L * 1024 * 1024
+
 /** How long [Peer.shutdown] waits for the frames already queued to go out. */
 private const val SHUTDOWN_FLUSH_NANOS: Long = 2_000_000_000
 
@@ -240,7 +251,9 @@ class Peer(private val channel: Channel, private val opts: Options) {
 
     /** Sends the handshake and starts reading and writing. */
     fun start() {
-        Thread(::read, "rutis-reader").apply { isDaemon = true }.start()
+        // The stack is set, not left to -Xss: a frame within [MAX_FRAME_DEPTH]
+        // takes room to parse and decode.
+        Thread(null, ::read, "rutis-reader", READER_STACK).apply { isDaemon = true }.start()
         Thread(::write, "rutis-writer").apply { isDaemon = true }.start()
         val hello = buildJsonObject {
             put("op", "hello")
@@ -300,6 +313,16 @@ class Peer(private val channel: Channel, private val opts: Options) {
     }
 
     private fun read() {
+        try {
+            readFrames()
+        } catch (e: StackOverflowError) {
+            // A frame this side's stack cannot take ends the session: the
+            // reader thread must not die with the session looking alive.
+            fault(HostGoneException("the far end sent a frame this side cannot read (too deep)", e))
+        }
+    }
+
+    private fun readFrames() {
         while (true) {
             val message = try {
                 channel.recv()
@@ -313,8 +336,13 @@ class Peer(private val channel: Channel, private val opts: Options) {
                 return
             }
             try {
-                val frame = parseFrame(message)
-                receive(frame)
+                val text = String(message, Charsets.UTF_8)
+                // Checked before any parser recurses into it (#279, protocol §8).
+                if (frameDeeperThan(text, MAX_FRAME_DEPTH)) {
+                    tooDeep(text)
+                    continue
+                }
+                receive(parseFrame(text))
             } catch (e: Exception) {
                 fault(
                     when (e) {
@@ -328,8 +356,46 @@ class Peer(private val channel: Channel, private val opts: Options) {
         }
     }
 
-    private fun parseFrame(message: ByteArray): JsonObject {
-        val text = String(message, Charsets.UTF_8)
+    /**
+     * A frame nested deeper than [MAX_FRAME_DEPTH] (protocol §8): the call it
+     * names fails, and the session goes on; one that names none ends the
+     * session. Its value is not read, so references in it stay granted until
+     * the session ends.
+     */
+    private fun tooDeep(text: String) {
+        val message = "frame nested deeper than $MAX_FRAME_DEPTH levels: a value crossing a session may nest at most $MAX_DEPTH levels"
+        val head = frameHead(text) ?: throw ProtocolException(message)
+        val id = head.id ?: throw ProtocolException(message)
+        when (head.op) {
+            "return", "throw" -> {
+                val waiter: CompletableFuture<Outcome>?
+                synchronized(lock) {
+                    if (!handshake) throw ProtocolException("request before protocol handshake")
+                    waiter = pending.remove(id)
+                }
+                if (waiter == null) {
+                    // A late reply to a call of ours given up (cancelled, or a
+                    // notification) is dropped; any other is a fault.
+                    if (issued(id)) return
+                    throw ProtocolException("response for unknown call")
+                }
+                waiter.complete(Outcome(null, ValueException(message, reason = "too-deep")))
+            }
+            "invoke", "call", "get", "await" -> {
+                synchronized(lock) {
+                    if (!handshake || !id.startsWith(remote)) throw ProtocolException(message)
+                }
+                enqueue(compact(buildJsonObject {
+                    put("op", "throw")
+                    put("id", id)
+                    put("error", encodeError(ValueException(message, reason = "too-deep")))
+                }))
+            }
+            else -> throw ProtocolException(message)
+        }
+    }
+
+    private fun parseFrame(text: String): JsonObject {
         if (text.isNotEmpty() && text[0] == '\uFEFF') throw ProtocolException("the host sent a message with a byte order mark")
         val element = try {
             frameJson.parseToJsonElement(text)

@@ -1,0 +1,2 @@
+{"op":"invoke","id":"far:1","path":[],"target":"conformance","method":"echo","args":{"type":"list","value":[]},"extra":1}
+{"op":"invoke","id":"far:2","path":[],"target":"conformance","method":"echo","args":{"type":"list","value":[]}}

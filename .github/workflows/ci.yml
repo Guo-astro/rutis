@@ -519,7 +519,7 @@ jobs:
       - name: cargo check (rutis-bridge fuzz entry points)
         env:
           RUSTFLAGS: --cfg fuzzing
-        run: cargo check -p rutis-bridge --features websocket --target-dir "${CARGO_TARGET_DIR:-target}/fuzzcheck"
+        run: cargo check -p rutis-bridge --features testing,websocket --target-dir "${CARGO_TARGET_DIR:-target}/fuzzcheck"
 
       # The fuzz targets themselves (fuzz/, its own workspace): a change
       # there used to break only the nightly stress.yml, which compiles them

@@ -17,6 +17,8 @@ private let everywhere: [(String, () async throws -> Void)] = [
     ("OptionalDepsTests.aServiceOfARowLoadedAgainHasANewHandle", { try await OptionalDepsTests().aServiceOfARowLoadedAgainHasANewHandle() }),
     ("PeerTests.testCallsAndCallbacks", { try await PeerTests().testCallsAndCallbacks() }),
     ("PeerTests.testCancellingAnAsyncCallAbortsTheCallee", { try await PeerTests().testCancellingAnAsyncCallAbortsTheCallee() }),
+    ("PeerTests.testTheSessionEndingCancelsTheCallsRunning", { try await PeerTests().testTheSessionEndingCancelsTheCallsRunning() }),
+    ("PeerTests.testACallAttachingItsTaskAsTheSessionClosesIsCancelled", { try await PeerTests().testACallAttachingItsTaskAsTheSessionClosesIsCancelled() }),
     ("PeerTests.testAValueTooDeepFailsOnlyItsCall", { try await PeerTests().testAValueTooDeepFailsOnlyItsCall() }),
     ("PeerTests.testTheSessionEndsWhenTheFarEndGoes", { try await PeerTests().testTheSessionEndsWhenTheFarEndGoes() }),
     ("PeerTests.testAFarEndOfProtocol3IsRefused", { try await PeerTests().testAFarEndOfProtocol3IsRefused() }),

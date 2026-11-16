@@ -82,7 +82,7 @@ Shared by every module:
 | `NoDispatchBeforeElsewhere` | Table | a new session does not dispatch before it applied the full elsewhere set (§4.5) | — |
 | `PrefixEntrySeen` | Table | a matching prefix entry in the host's table at snapshot time is in the host's snapshot (§4.3, §5.1) | `events/presence` |
 | `SeesAll` | Table | every dispatch sees every entry registered before it and not withdrawn at issue; the protocol does **not** promise this, the configuration expects it violated | `events/one-bus` (counterexample below) |
-| `EmitOrder` | Emit | for one emitter and one listener, `emit` calls start in the order the emits were issued (§5.5) | `events/emit`, `events/emit-order` |
+| `EmitOrder` | Emit | for one emitter and one listener, `emit` calls start in the order the emits were issued (§5.5) | `events/emit`, `core/D31` |
 | `FastPathByFrame` | Emit | once the reply of a via-host emit was read, a later emit of the same name is not left on the via-host path (§5.5 last rule) | `events/one-bus` (`emit/order-across-fast-path`) |
 | `UnloadedRowEmitsNothing` | Emit | an emit of a row that unloaded starts no call, even after its filter answers (§5.5, §7.1) | no table row; added with the model |
 | `NoCallToUnloadedListener` | Emit | a listener owned by a row that unloaded starts no call after the unload (§7.1) | added with the model |

@@ -5,6 +5,9 @@
 // handovers, driven by `sh` scripts; Windows has only the loopback
 // handover, covered by local_loopback.rs.
 #![cfg(unix)]
+use std::time::Duration;
+
+use rutis_bridge::channel::ChannelError;
 use rutis_bridge::pipe::{self, Handover, Processes, Spawn};
 use rutis_bridge::ConnectError;
 
@@ -83,6 +86,70 @@ async fn what_cannot_start_is_incompatible() {
         pipe::spawn(&Spawn::new("/nonexistent/program"), &Processes::default()).await,
         Err(ConnectError::Incompatible { .. })
     ));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_process_that_exits_by_signal_ends_the_channel_with_the_signal() {
+    // Answers one line, then ends by SIGTERM: the channel's end says the
+    // signal, not the broken pipe the exit leaves behind.
+    let mut channel = pipe::spawn(
+        &shell(r#"read line <&3; echo "$line" >&3; kill -TERM $$"#),
+        &Processes::default(),
+    )
+    .await
+    .unwrap();
+
+    channel.sender.send(b"hello").unwrap();
+    let end = tokio::task::spawn_blocking(move || {
+        assert_eq!(channel.receiver.recv().unwrap().unwrap(), b"hello");
+        channel.receiver.recv()
+    })
+    .await
+    .unwrap();
+    match end {
+        Err(ChannelError::Closed { reason }) => {
+            assert_eq!(reason, "the process exited with signal: 15 (SIGTERM)")
+        }
+        other => panic!("the signal should end the channel, got {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_process_that_ended_before_a_send_reports_its_exit_on_that_send() {
+    // #157: a send to a process that is already gone says how it ended,
+    // instead of the pipe's `Broken pipe`.
+    let processes = Processes::default();
+    let mut channel = pipe::spawn(&shell("exit 5"), &processes).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(20), processes.ended())
+        .await
+        .expect("the process to be gone");
+    match channel.sender.send(b"{}") {
+        Err(ChannelError::Closed { reason }) => {
+            assert_eq!(reason, "the process exited with exit status: 5")
+        }
+        other => panic!("the send should report the exit status, got {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_kill_asked_for_before_the_waiter_runs_still_ends_the_process() {
+    // The task that waits for the process may not have polled the kill yet:
+    // the notification is kept, and the process does end.
+    let processes = Processes::default();
+    let mut channel = pipe::spawn(&shell("exec sleep 30"), &processes)
+        .await
+        .unwrap();
+    processes.kill();
+    tokio::time::timeout(Duration::from_secs(20), processes.ended())
+        .await
+        .expect("the kill to be kept");
+    let end = tokio::task::spawn_blocking(move || channel.receiver.recv())
+        .await
+        .unwrap();
+    match end {
+        Err(ChannelError::Closed { reason }) => assert!(reason.contains("signal: 9"), "{reason}"),
+        other => panic!("the kill should end the channel, got {other:?}"),
+    }
 }
 
 /// Every `Close` ends a process's channel the same way: its end of the

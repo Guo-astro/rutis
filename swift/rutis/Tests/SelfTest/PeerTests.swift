@@ -81,6 +81,87 @@ struct PeerTests {
         XCTAssertTrue(heard, "the callee's Task is cancelled")
     }
 
+    /// The session ending cancels the calls running then, as a `cancel` frame
+    /// does one call: the reader keeps its hands off them and the far end's
+    /// handlers stop.
+    func testTheSessionEndingCancelsTheCallsRunning() async throws {
+        let started = Event()
+        let cancelled = Event()
+        let (host, runtime) = try await pairOfPeers { _, _, _ in
+            started.fire()
+            do { try await Task.sleep(nanoseconds: 30_000_000_000) } catch { cancelled.fire() }
+            return .undefined
+        }
+        defer {
+            host.close()
+            runtime.close()
+        }
+        let call = Task { try await host.call(target: "t", method: "wait", args: [], sync: false) }
+        let began = await started.wait(seconds: 5)
+        XCTAssertTrue(began, "the call reached its handler")
+        // Its Task is attached right after the call starts; a moment is enough
+        // for the attach to be behind us.
+        try await Task.sleep(nanoseconds: 50_000_000)
+        runtime.close()
+        let heard = await cancelled.wait(seconds: 5)
+        XCTAssertTrue(heard, "the call running when the session ended is cancelled")
+        call.cancel()
+        _ = await call.result
+    }
+
+    /// A call that takes its id just as the session ends is cancelled too
+    /// (#630): `close()` cancels the calls it saw, and this one's Task is
+    /// attached after that snapshot — it must not run on as a call nobody can
+    /// hear.
+    func testACallAttachingItsTaskAsTheSessionClosesIsCancelled() async throws {
+        let (a, b) = try Channels.pair()
+        let arrived = Event()
+        let attaching = DispatchSemaphore(value: 0)
+        let cancelled = Event()
+        let ran = Event()
+        var runtimeOptions = PeerOptions(endpoint: Endpoint(local: "swift", expected: "main"))
+        // The reading thread between a call's id and its Task: where the close
+        // lands, and the call has no Task to cancel yet (#630).
+        runtimeOptions.arrive = { method, _ in
+            guard method == "hold" else { return nil }
+            arrived.fire()
+            attaching.wait()
+            return {
+                do {
+                    try await Task.sleep(nanoseconds: 200_000_000)
+                } catch {
+                    cancelled.fire()
+                    throw error
+                }
+                ran.fire()
+                return .undefined
+            }
+        }
+        let runtime = try Peer(channel: a, options: runtimeOptions)
+        var hostOptions = PeerOptions(endpoint: Endpoint(local: "main", expected: "swift"))
+        hostOptions.host = true
+        let host = try Peer(channel: b, options: hostOptions)
+        try runtime.start()
+        try host.start()
+        await host.ready()
+        await runtime.ready()
+        defer {
+            host.close()
+            runtime.channel.close()
+            host.channel.close()
+        }
+        let call = Task { try await host.call(target: "", method: "hold", args: [], sync: false) }
+        let reached = await arrived.wait(seconds: 5)
+        XCTAssertTrue(reached, "the call reached the point before its Task is made")
+        runtime.close()
+        attaching.signal()
+        _ = await cancelled.wait(seconds: 5)
+        XCTAssertTrue(cancelled.isSet, "the call whose Task is attached as the session closed is cancelled")
+        XCTAssertFalse(ran.isSet, "it does not run after the session closed")
+        call.cancel()
+        _ = await call.result
+    }
+
     func testAValueTooDeepFailsOnlyItsCall() async throws {
         let (host, runtime) = try await pairOfPeers { _, _, args in args.first ?? .undefined }
         defer {

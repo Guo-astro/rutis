@@ -938,6 +938,12 @@ impl Exit {
         self.1.notify_all();
     }
 
+    /// Test only: the process has ended and been waited for.
+    #[cfg(any(test, feature = "testing"))]
+    fn gone_here(&self) {
+        self.3.send_replace(true);
+    }
+
     /// Waits for the process to end, so the channel's end can say how,
     /// however long that takes (#246): a process that closed its channel is
     /// ending, one whose channel was closed here is killed after [`GRACE`].
@@ -1026,6 +1032,33 @@ impl Processes {
         for exit in started {
             exit.gone().await;
         }
+    }
+
+    /// A set of one process a test ends by hand ([`HeldProcess::end`]):
+    /// for code that waits for a runtime's own process, with no process
+    /// started (#627).
+    #[cfg(any(test, feature = "testing"))]
+    #[doc(hidden)]
+    pub fn held() -> (Self, HeldProcess) {
+        let exit = Arc::new(Exit::default());
+        let processes = Self(Arc::new(Mutex::new(vec![exit.clone()])));
+        (processes, HeldProcess(exit))
+    }
+}
+
+/// One process of [`Processes::held`], running until a test ends it: a
+/// runtime's process, without a process.
+#[cfg(any(test, feature = "testing"))]
+#[doc(hidden)]
+#[derive(Clone)]
+pub struct HeldProcess(Arc<Exit>);
+
+#[cfg(any(test, feature = "testing"))]
+impl HeldProcess {
+    /// End it, as a process that exited: whoever waits for it goes on.
+    pub fn end(&self) {
+        self.0.record("exited normally".to_owned());
+        self.0.gone_here();
     }
 }
 
@@ -1435,5 +1468,30 @@ mod tests {
             ended: Arc::new(Exit::default()),
         };
         assert!(sender.send(b"a\nb").is_err());
+    }
+
+    /// The status recorded before anyone waits is not lost: a channel that
+    /// ends after the process is gone says how it ended at once.
+    #[test]
+    fn a_record_before_the_wait_is_not_lost() {
+        let exit = Exit::default();
+        exit.record("exited with exit status: 3".into());
+        let begun = std::time::Instant::now();
+        assert_eq!(
+            exit.wait(Duration::from_secs(5)).as_deref(),
+            Some("exited with exit status: 3")
+        );
+        assert!(begun.elapsed() < Duration::from_secs(1));
+    }
+
+    /// Closing here before a send waits is not lost either: the send does
+    /// not wait for a process that is about to be killed.
+    #[test]
+    fn a_close_before_the_wait_is_not_lost() {
+        let exit = Exit::default();
+        exit.closed_here();
+        let begun = std::time::Instant::now();
+        assert_eq!(exit.wait_unless_closed(Duration::from_secs(5)), None);
+        assert!(begun.elapsed() < Duration::from_secs(1));
     }
 }
