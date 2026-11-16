@@ -711,18 +711,18 @@ fn the_last_waiter_gives_up_on_the_future() {
     });
 }
 
-/// #628: a future started by a sync await that cannot wait for it is
+/// #628, #1250: a future started by a sync await that cannot wait for it is
 /// cancelled when the last other waiter gives up, even while the sync await
 /// is between taking the future and recording the task it started
 /// (`ready_on_blocked_executor`): the drop finds `task` empty, and the task
-/// stored afterwards runs with nobody waiting for it.
+/// spawned afterwards is aborted instead of stored, so the future does not
+/// run with nobody waiting for it.
 ///
-/// The window is reachable: the future's own first poll runs here, and a
+/// The window is reachable: the future's own first poll runs there, and a
 /// poll may take any amount of work (a call into another session, a
 /// plugin's future). The model puts the waiter's drop inside it with a
 /// barrier.
 #[test]
-#[ignore = "known gap: the abort handle is recorded after the future is polled and spawned, so a waiter that gives up before that is lost (#1250)"]
 fn a_future_started_as_its_last_waiter_leaves_is_cancelled() {
     explore(|| {
         let runtime = runtime();
