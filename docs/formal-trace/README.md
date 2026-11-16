@@ -25,6 +25,8 @@
 
 2026-11-16：行协议有了现行规格[行协议规格](../protocol-rows.md)（`ROWS-*`，中英）。`runtime` 分区的行生命周期与服务条目在复核页里仍以登记表行作锚点，尚未改成 `ROWS-*`（下一步）；本轮的锚点与状态不变。取消后的回复规则在会话规格 `SESS-61` 里改为“可能回也可能不回，调用方必须接受两种”；`TRC-CANCEL-2`、`SES-10-10`、`MNT-3-9` 与 `bridge/cancel-reaches-callee a` 的说明随之改为指向 #1099，状态不变。
 
+2026-11-17（#622 标记服务模型）：`MSV-4-2c` 改「已撤回」：`check()` 谓词、`provide_as_with_check`、`service::Check` 与 `DependencyStatus::Check*` 在 0.19 删除、写明没有替代（`migration-0.19.md`），这条规则描述的门控不存在；复核数据 `tools/formal-trace-recheck.mjs` 的 `SUPERSEDED` 加了这一条，语义条目同步改状态与理由。状态变化只这一行：未验证 509 → 508，已撤回 102 → 103。同轮 `crates/rutis-bridge/src/marked/shuttle_tests.rs` 加了标记服务与名字的 shuttle 模型，覆盖 `bridge/marked-services b`、`MSV-4-2a`、`MSV-4-2e`、`MSV-4-2f`、`MSV-4-3b`、`MSV-4-6`；这 6 条在表里的状态未改。
+
 2026-11-17（#634 状态升级机制，基准 `2f4971a3`）：协议行不再只能降级。[复核表](recheck-0.22.md) §1 第 4 条加了一个例外：语义重抽条目可以带 `upgrade`，把「未验证」「部分验证」升到「已验证」，条件是有能在当前树解析的 `path::name` 证据（模型、属性测试或具名用例）和变异或修复前的配置；`--check` 对缺证据或缺变异的升级报错，并逐条打印升级差异，没有 `upgrade` 的行不会被上调。第一批按 #622 审计的 35 条「可立即登记」：`registry-1` 26 条、`registry-2` 4 条、`events` 4 条、`remote` 1 条，全部升到「已验证」；证据是内核模型 1、3、5、6、8、9、10、11、12、13、14、15、16、17、19、21、22、23，`interleave.rs` 的参考模型 PT，注册槽 PT，会话宿主模型与 K 用例；每条的变异写在 `tools/formal-trace-semantic.mjs` 的 `upgrade.mutation`，没有证据的行未动。统计：已验证 112 → 147、部分验证 375 → 367、未验证 536 → 509。
 
 2026-11-16（#1212）：`EVP-9-1`、`EVP-9-12`、`NOD-3-1` 的备注按 0.19 删除的机制改写。节点的 `export` / `import` 名单在 0.19 删除（`design-remote-session-2026-10-28.md` §八、§十二；`migration-0.19.md`），节点之间是一条总线、每个名字都在，没有名单可写名字或 `*` 前缀；备注里「#631 export / import 收窄 PT」没有对象，三条都记「已撤回」。`NOD-3-1` 同时加进复核数据（`tools/formal-trace-recheck.mjs` 的 `SUPERSEDED`）与语义重抽条目（`tools/formal-trace-semantic.mjs`，状态从「未验证」改为「已撤回」）。状态只这一处变动：未验证 537 → 536，已撤回 101 → 102。
@@ -60,7 +62,7 @@ node tools/formal-trace.mjs --check    # 只检查，不打印统计
   | [protocol-remote.md](rules/protocol-remote.md) | `remote` | 231 | 17 | 248 |
   | 合计 | — | 1368 | 184 | 1552 |
 
-- **#634 的 1368 条规则按 0.22 现行来源复核**（方法与逐条记录见[复核表](recheck-0.22.md)）：147「已验证」、367「部分验证」、509「未验证」、42「明确不保证」、201「不单独计数」，另有 102 条按 0.19 / 0.22 删除的机制改记「已撤回」；issue 快照里的 184 条「已取代」没有重抽。1368 = 147 + 367 + 509 + 42 + 201 + 102。147 条里有 35 条是 2026-11-17 按 `upgrade` 从「未验证／部分验证」升上来的（见上）。
+- **#634 的 1368 条规则按 0.22 现行来源复核**（方法与逐条记录见[复核表](recheck-0.22.md)）：147「已验证」、367「部分验证」、508「未验证」、42「明确不保证」、201「不单独计数」，另有 103 条按 0.19 / 0.22 删除的机制改记「已撤回」；issue 快照里的 184 条「已取代」没有重抽。1368 = 147 + 367 + 508 + 42 + 201 + 103。147 条里有 35 条是 2026-11-17 按 `upgrade` 从「未验证／部分验证」升上来的（见上）。
 - **TRC 分区（44 行）已语义重抽**（2026-11-11，基准 `4a1ac08b`）：`rules/trace-contract.md` 的九类追踪规则、8 条不变量、9 条不作保证条目（`TRC-NG-4` 后按 #1123 撤回）逐行按 `docs/formal-trace.md`、`docs/protocol-session.md` §11 与 `docs/design-remote-session-2026-10-28.md` 重写。43 行给出 `SESS-*` 锚点；`TRC-INV-7` 没有锚点，写明会话规格不规定追踪输出。来源章节、锚点、状态与英文页由 `--check` 核对。
 - **协议清单 `registry-1`（165 行）已语义重抽**（2026-11-11，基准 `b86dfdcf`）：保证登记表 §6–§8a 的行被 #634 拆出的 156 条现行要求与 9 条已取代行，逐行重抽四件事——现行来源（`guarantees.md` §6、§7、§8、§8a）、现行锚点（登记表那一行）、承载这条拆分要求的现行证据、状态与理由。155 行以登记表行作锚点，10 行写明没有锚点的原因。规则文字仍是 issue 快照原文（中文），没有重写。
 - **协议清单 `registry-2`（218 行）已语义重抽**（2026-11-14，基准 `b41e3904`）：保证登记表 §9–§15 的行被 #634 拆出的 218 条现行要求（issue 快照没有已取代行），逐行重抽同样四件事——现行来源（`guarantees.md` §9–§15）、现行锚点（登记表那一行）、承载这条拆分要求的现行证据、状态与理由。205 行以登记表行作锚点（2026-11-16 起，原先记「未登记」的 35 个编号改以它们现在并入的行作锚点）；13 行写明没有锚点的原因（9 行是 0.19 删除的机制，3 行登记表未收录，1 行 `bridge/frame-limits` 只有 RFC 6455 的关闭码）。规则文字仍是 issue 快照原文（中文），没有重写。重抽数据是这六个分区（`tools/formal-trace-semantic.mjs`）。
@@ -143,9 +145,9 @@ node tools/formal-trace.mjs --check    # 只检查，不打印统计
 | [protocol-registry-2.md](rules/protocol-registry-2.md) | #634 · registry-2 | 218 | 12 | 29 | 122 | 5 | 14 | 36 |
 | [protocol-events.md](rules/protocol-events.md) | #634 · events | 262 | 79 | 92 | 48 | 1 | 23 | 19 |
 | [protocol-session.md](rules/protocol-session.md) | #634 · session 上/下 | 350 | 13 | 99 | 86 | 7 | 118 | 27 |
-| [protocol-runtime.md](rules/protocol-runtime.md) | #634 · runtime | 309 | 8 | 38 | 140 | 10 | 50 | 63 |
+| [protocol-runtime.md](rules/protocol-runtime.md) | #634 · runtime | 309 | 8 | 38 | 139 | 10 | 51 | 63 |
 | [protocol-remote.md](rules/protocol-remote.md) | #634 · remote | 248 | 5 | 69 | 69 | 13 | 60 | 32 |
-| 合计 | — | 1825 | 327 | 426 | 512 | 61 | 295 | 204 |
+| 合计 | — | 1825 | 327 | 426 | 511 | 61 | 296 | 204 |
 <!-- index:end -->
 
 脚本还会打印这些数字（只算本表内的行）：

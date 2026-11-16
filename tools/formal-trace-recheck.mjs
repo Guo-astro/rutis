@@ -242,6 +242,11 @@ export const SUPERSEDED = [
     why: '`peer:` 行在 0.19 删除，改为 `<连接行>:<插件>`（`design-remote-session-2026-10-28.md` §八）',
     by: 'docs/design-remote-session-2026-10-28.md',
   },
+  {
+    ids: ['MSV-4-2c'],
+    why: '0.19 删除 `check()` 谓词门控：`internal::provide_checked`、`refresh`、`service::Check`、`Exposure` 的 `check`、`DependencyStatus::CheckPending` / `CheckRejected` / `CheckPanicked`，写明没有替代；入口与原生绑定一起受它门控没有对象',
+    by: 'docs/migration-0.19.md',
+  },
 ]
 
 // The reason a rule with no anchor stays without one, by old source section.

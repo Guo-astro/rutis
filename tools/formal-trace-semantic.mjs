@@ -11941,9 +11941,9 @@ export const SEMANTIC_RUNTIME = {
       source: 'guarantees.md §10',
       anchors: ['bridge/marked-services'],
       evidence: '—',
-      status: '未验证',
-      why: 'R2：带 `check()` 谓词时入口与原生绑定一样受它门控，由登记表 `bridge/marked-services` 承载；没有具名用例；issue 快照记「未覆盖」',
-      whyEn: 'R2: a `check()` predicate gates the entry as it gates the native binding, which the register row `bridge/marked-services` carries; no named test covers it; the issue marked it uncovered.',
+      status: '已撤回',
+      why: '0.19 删除 `check()` 谓词门控：`internal::provide_checked`、`refresh`、`service::Check`、`Exposure` 的 `check`、`DependencyStatus::CheckPending` / `CheckRejected` / `CheckPanicked`，写明没有替代（`migration-0.19.md`）；「入口与原生绑定一样受它门控」没有对象',
+      whyEn: '0.19 deleted the `check()` predicate gate: `internal::provide_checked`, `refresh`, `service::Check`, `Exposure`\'s `check` and `DependencyStatus::CheckPending` / `CheckRejected` / `CheckPanicked`, with no replacement (`migration-0.19.md`); "the entry is gated as the native binding is" has no subject.',
     },
     'MSV-4-2d': {
       source: 'guarantees.md §10',
