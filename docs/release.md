@@ -68,11 +68,33 @@ cargo run -p rutis-bridge --features websocket --example smoke -- \
     dial wss://<监听方主机名>:7443/rutis --ca ca.pem --token secret
 ```
 
-要看到：拨号方每秒打印 `clock: <n>`；断网后 30 秒内两边报告心跳超时并等待重连，恢复后 `ready, session <n+1>`；重启监听方后拨号方退避重连；错误的 token 是 `AuthRejected … 403`，不信任的 CA 是 `AuthRejected … UnknownIssuer`。
+在一台机器上只走回环时不用证书：`listen 127.0.0.1:7443 --token secret` 配 `dial ws://127.0.0.1:7443/rutis --token secret`。
+
+要看到：拨号方每秒打印 `clock: <n> in <用时>`（会话建好之前是 `clock: not here`），两边各打印一次 `session: started`，链接断了打印 `session: ended (<原因>)`。错误的 token 是 `dial: <主机>: upgrade refused with 403 Forbidden: <监听方给的原因>`（例子给的是 `not accepted here`）；不信任的 CA 是 `dial: <主机>: TLS: invalid peer certificate: UnknownIssuer`。杀掉监听方后，拨号方每秒重试一次（`dial: <主机>: Connection refused (os error 111)`），监听方起来后 1 秒内重新 `session: started`，`clock` 从 0 重新数（例子固定隔 1 秒重拨、每个会话一个新时钟；退避重连的是运行时自己的行，见下）。
+
+断网后的心跳超时与恢复这条命令看不到：回环上断不开网，这两段由 `netem.yml` 的两个容器跑（200 ms 延迟、5% 丢包、整段断网再恢复，`tests/e2e/tests/netem.rs`），要看的文字在那里。
 
 [写一个 TypeScript 插件](guide/typescript-plugin.md) 和 [写一个 Python 插件](guide/python-plugin.md) 都由发布后验证照着走（标记过的示例，`tools/doc-examples.mjs`）。
 
 每晚的 stress 工作流还跑两个浸泡测试（link 反复断开重连、进程反复拉起结束），检查文件描述符、线程数不增长、进程都被回收。
+
+## 0.22.0
+
+0.22 把形式化覆盖并进本版：会话协议有了现行规格（`docs/protocol-session.md`，83 条 `SESS-*`），1368 条现行协议规则按 0.22 来源重抽进追踪表，TLA+ 模型与内核 shuttle 模型按 0.22 对账，事件监听者的关闭接纳改成子树关闭时发布永久 marker、`Entry::live` 不再每次遍历祖先链；另外修了关闭、撤下、心跳与未知字段的边界。所有包均为 0.22.0；见[发布说明](releases/0.22.0.md)与[迁移到 0.22](migration-0.22.md)。
+
+0.x 的次版本号变化允许不兼容的改动：`cargo semver-checks` 与 0.21.0 比较时，0.21.0 → 0.22.0 是次版本变化，工具按 major 处理，`rutis`、`rutis-bridge`、`rutis-loader` 都报 `0 checks: 0 pass, 260 skip`；加 `--release-type minor` 强制按次版本比较时，三个 crate 各跑 202 条 lint、全部通过，即 Rust 公开 API 没有不兼容改动。`crates/rutis/public-api.txt` 的快照不变，但要按 CI 固定的 `nightly-2026-10-16` 跑（`RUTIS_PUBLIC_API_TOOLCHAIN=nightly-2026-10-16 tools/public-api.sh`）：默认的 `nightly` 会多出 nightly 新加的 `impl core::marker::Forget` 行，那是 rustdoc 的变化，不是 API 变化。`rutis.json` 的 `format` 仍是 1，配置没有变化：持久化样本从 0.21.0 复制，两份期望不变；dsh 的用户层没变，`cordis.patch.yml` 原样复制。会话协议仍是 4，没有新的能力，插件 API 仍是 3：发布门的跨版本测试（`RUTIS_E2E_ONLY_OLDER=1`）与 0.21.0 相遇，两边都说协议 4，相遇正常工作。Kotlin SDK 随列车一起打版本；Maven Central 按 `release.yml` 的规则发（environment `maven` 的四个 secret，缺一个时 `maven` 任务跳过）。
+
+发布门能在本机跑的部分跑过（2026-11-17，Linux x86-64）：
+
+- `cargo package --locked --registry crates-io` 为列车的 10 个 crate 打包并各自验证通过；四个 npm 包（`node/rutis`、`node/rutis-runtime`、`bun/rutis-bun`、`node/rutis-host`）的 `npm pack --dry-run` 都是 0.22.0。这两步就是 CI 的 `release-dry-run` 任务。
+- `tools/install/local-artifacts.sh` 建出这一平台的 5 个 npm 包、`rutis` 与 `rutis-host` 两个 wheel、`rutis-host-0.22.0-x86_64-unknown-linux-gnu.tar.gz`；sha256 对得上，解出的二进制 `--version` 是 `rutis-host 0.22.0`。
+- 用这些文件跑 `RUTIS_E2E_ARTIFACTS=<目录> cargo test -p rutis-e2e --test install -- --ignored --test-threads=1`：npm、PyPI（含 `rutis[network]` 起一个远程运行时）、发布二进制（带 Go 行）三个场景都通过。本机 `/usr/bin/python3` 没有 `python3-venv`，要让 `PATH` 前面的 `python3` 能建带 pip 的 venv（`uv python install 3.12` 装的那个可以）。
+- `cargo test -p rutis-host --test persisted` 与 `cargo test -p rutis-dsh --test persisted` 通过（0.22.0 的样本读出的就是期望）。
+- `tools/check-guarantees.mjs`（219 行、1226 个标记）、`tools/formal-trace.mjs --check`、`tools/check-faults.mjs`、`tools/check-model-pr.mjs --self-test`、`tools/doc-examples.mjs --check` 都是 0 problem。
+
+只能在 CI 上跑的是整套发布门：`gh workflow run release.yml --ref <分支> -f dry-run=true`（`ci.yml` 的全部任务、五个平台的打包与安装、Windows 的 dylib 测试），macOS、Windows、arm64 都在这里。
+
+这一版的网络冒烟只在本机回环跑过（见[冒烟](#冒烟)）：clock、证书与 CA、错误 token 的 403、不信任 CA 的 `UnknownIssuer`、杀掉监听方后重拨都看到了；两台机器和断网那一半没跑，心跳超时与恢复由 `netem.yml` 的两个容器跑。发布前的 agent 试用（#663）也还没做。
 
 ## 0.21.0
 

@@ -68,11 +68,33 @@ cargo run -p rutis-bridge --features websocket --example smoke -- \
     dial wss://<listener-hostname>:7443/rutis --ca ca.pem --token secret
 ```
 
-Expected behavior: the dialer prints `clock: <n>` every second. After a network outage, both sides report a heartbeat timeout and wait to reconnect within 30 seconds; after recovery, they report `ready, session <n+1>`. Restarting the listener makes the dialer retry with backoff. A wrong token returns `AuthRejected … 403`; an untrusted CA returns `AuthRejected … UnknownIssuer`.
+On one machine over loopback no certificate is needed: `listen 127.0.0.1:7443 --token secret` with `dial ws://127.0.0.1:7443/rutis --token secret`.
+
+Expected behavior: the dialer prints `clock: <n> in <how long>` every second (`clock: not here` until the session is up), both sides print `session: started` once, and a link that ends prints `session: ended (<why>)`. A wrong token returns `dial: <host>: upgrade refused with 403 Forbidden: <the listener's reason>` (the example's is `not accepted here`); an untrusted CA returns `dial: <host>: TLS: invalid peer certificate: UnknownIssuer`. Killing the listener makes the dialer dial every second (`dial: <host>: Connection refused (os error 111)`), and within a second of the listener's return it prints `session: started` again and counts from `clock: 0` (the example redials on a fixed 1 s interval, and each session gets a new clock; the backoff belongs to a runtime's own rows, below).
+
+The heartbeat timeout and recovery after an outage are not visible with this command: loopback cannot be cut, so `netem.yml` runs those two phases in two containers (200 ms delay, 5 % loss, a full outage and its recovery, `tests/e2e/tests/netem.rs`), and the text to look for is there.
 
 [Write a TypeScript plugin](guide/typescript-plugin.en.md) and [Write a Python plugin](guide/python-plugin.en.md) are both followed by the check after publishing (their marked examples, `tools/doc-examples.mjs`).
 
 The nightly stress workflow also runs two soak tests (repeated link disconnect/reconnect and repeated process start/exit) and checks that file descriptor and thread counts do not grow and all processes are reaped.
+
+## 0.22.0
+
+0.22 folds the formal coverage into this release: the session protocol has a current specification (`docs/protocol-session.md`, 83 `SESS-*` rules), the 1368 current protocol rules were re-extracted against the 0.22 sources into the rule tracker, the TLA+ models and the kernel's shuttle models were reconciled with 0.22, event-listener close admission publishes a permanent marker when a subtree closes and `Entry::live` no longer walks the ancestor chain every call; edges of close, withdrawal, heartbeat and unknown fields are fixed too. All packages are at 0.22.0; see [the release notes](releases/0.22.0.en.md) and [migrating to 0.22](migration-0.22.en.md).
+
+A minor version of 0.x may be incompatible: `cargo semver-checks` compares with 0.21.0, and 0.21.0 → 0.22.0 is a minor change, which the tool treats as major, so `rutis`, `rutis-bridge` and `rutis-loader` each report `0 checks: 0 pass, 260 skip`; with `--release-type minor`, forcing a minor comparison, each runs 202 lints and passes all of them, so the Rust public API has no breaking change. The snapshot in `crates/rutis/public-api.txt` is unchanged, but it has to be read with the nightly CI pins (`RUTIS_PUBLIC_API_TOOLCHAIN=nightly-2026-10-16 tools/public-api.sh`): the default `nightly` adds the `impl core::marker::Forget` lines a newer nightly writes, which is a rustdoc change, not an API change. `format` of `rutis.json` stays 1 and no configuration changes: the persisted sample is copied from 0.21.0 and its expectations are unchanged; dsh's user layer has not changed, so `cordis.patch.yml` is copied as is. The session protocol stays 4, there is no new capability, and the plugin API stays 3: the release gate's cross-version tests (`RUTIS_E2E_ONLY_OLDER=1`) meet 0.21.0, which speaks protocol 4 as well, and the meeting works as usual. The Kotlin SDK takes the train's version like the other packages; Maven Central is published by the rules of `release.yml` (the four secrets of the environment `maven`; the `maven` job skips when one is missing).
+
+The parts of the release gate a local machine can run were run (2026-11-17, Linux x86-64):
+
+- `cargo package --locked --registry crates-io` packaged the train's 10 crates and verified each; the four npm packages (`node/rutis`, `node/rutis-runtime`, `bun/rutis-bun`, `node/rutis-host`) all pack at 0.22.0 with `npm pack --dry-run`. These two steps are CI's `release-dry-run` job.
+- `tools/install/local-artifacts.sh` built this platform's five npm packages, the `rutis` and `rutis-host` wheels and `rutis-host-0.22.0-x86_64-unknown-linux-gnu.tar.gz`; its sha256 checks out and the binary inside answers `rutis-host 0.22.0` to `--version`.
+- With those files, `RUTIS_E2E_ARTIFACTS=<dir> cargo test -p rutis-e2e --test install -- --ignored --test-threads=1` passes all three scenarios: npm, PyPI (including `rutis[network]` serving a remote runtime) and the release binary (with a Go row). This machine's `/usr/bin/python3` has no `python3-venv`, so the `python3` first on `PATH` has to build a venv with pip in it (the one `uv python install 3.12` gives you does).
+- `cargo test -p rutis-host --test persisted` and `cargo test -p rutis-dsh --test persisted` pass (the 0.22.0 samples read as their expectations).
+- `tools/check-guarantees.mjs` (219 rows, 1226 markers), `tools/formal-trace.mjs --check`, `tools/check-faults.mjs`, `tools/check-model-pr.mjs --self-test` and `tools/doc-examples.mjs --check` all report 0 problems.
+
+What only CI can run is the whole gate of `gh workflow run release.yml --ref <branch> -f dry-run=true`: every job of `ci.yml`, the five platforms' packages and installs, and the Windows dylib tests, which is where macOS, Windows and arm64 run.
+
+The network smoke test ran on loopback only for this release (see [Smoke test](#smoke-test)): the clock, a certificate and its CA, a wrong token's 403, an untrusted CA's `UnknownIssuer` and the redial after the listener is killed were all seen; the two-machine half and the outage were not run, and `netem.yml`'s two containers run the heartbeat timeout and the recovery. The pre-release agent trial (#663) has not run either.
 
 ## 0.21.0
 
