@@ -42,6 +42,17 @@ url = "2"
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+# The shuttle models of the restart supervision
+# (src/restart/shuttle_tests.rs, src/host_shuttle_tests.rs, #627): built with
+# `RUSTFLAGS="--cfg rutis_shuttle"` only, never by a plain build.
+[target.'cfg(rutis_shuttle)'.dependencies]
+shuttle = "0.9.7"
+
+[lints.rust]
+# The supervision's shuttle models (#627) are built with
+# `--cfg rutis_shuttle` only, never by a plain build.
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(rutis_shuttle)"] }
+
 [dev-dependencies]
 # Path only: cargo publish drops it.
 rutis-test-support = { path = "../rutis-test-support" }

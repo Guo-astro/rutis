@@ -49,6 +49,9 @@ npm --prefix node/rutis-runtime ci && npm --prefix node/rutis-runtime test
 RUSTFLAGS="--cfg rutis_shuttle" cargo test -p rutis --lib --target-dir target/shuttle shuttle
 # 桥的子进程退出状态模型（#623）：同一个 cfg，同一个编译目录
 RUSTFLAGS="--cfg rutis_shuttle" cargo test -p rutis-bridge --lib --target-dir target/shuttle shuttle
+# 运行时监督（#627）：重启循环，以及二进制运行时的重启等自己的进程；同一个 cfg，同一个编译目录
+RUSTFLAGS="--cfg rutis_shuttle" cargo test -p rutis-host --lib --target-dir target/shuttle shuttle
+RUSTFLAGS="--cfg rutis_shuttle" cargo test -p rutis-loader --lib --features go,swift --target-dir target/shuttle shuttle
 # 增加迭代次数（默认 1000），或重放失败时打印的调度
 RUTIS_SHUTTLE_ITERATIONS=1000000 RUSTFLAGS="--cfg rutis_shuttle" cargo test -p rutis --lib --target-dir target/shuttle shuttle
 RUTIS_SHUTTLE_REPLAY=<调度> RUSTFLAGS="--cfg rutis_shuttle" cargo test -p rutis --lib --target-dir target/shuttle <测试名>

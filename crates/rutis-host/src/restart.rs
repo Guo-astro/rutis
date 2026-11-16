@@ -17,6 +17,19 @@ use tokio::time::Instant;
 use crate::config::Restart;
 use crate::errln;
 
+/// The wait before a restart ([`supervise`]): tokio's in a plain build, the
+/// model's clock in the model build (`cargo test` with `--cfg
+/// rutis_shuttle`: real time is not an interleaving, `crate::shuttle`).
+#[cfg(not(all(test, rutis_shuttle)))]
+async fn sleep(wait: Duration) {
+    tokio::time::sleep(wait).await;
+}
+
+#[cfg(all(test, rutis_shuttle))]
+async fn sleep(wait: Duration) {
+    crate::shuttle::sleep(wait).await;
+}
+
 /// The wait before the first restart; each one after doubles it.
 pub const FIRST: Duration = Duration::from_secs(1);
 
@@ -132,7 +145,7 @@ pub async fn supervise(
             );
             return Supervised::GaveUp;
         };
-        tokio::time::sleep(wait).await;
+        sleep(wait).await;
         if !runtime.still_ended() {
             continue;
         }
@@ -297,6 +310,11 @@ impl Watched for Compiled {
     }
 }
 
+/// The supervision's shuttle models (#627), built only with
+/// `--cfg rutis_shuttle`.
+#[cfg(all(test, rutis_shuttle))]
+mod shuttle_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -305,6 +323,7 @@ mod tests {
     use rutis::host::{BoxFuture, DynPlugin, Effect};
     use rutis::{Ctx, Error};
     use rutis_bridge::runtime::RuntimeStates;
+    use std::collections::VecDeque;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
     use std::time::Duration;
@@ -587,6 +606,192 @@ mod tests {
         binary.start();
         assert!(supervised.await.unwrap());
         assert_eq!(binary.restarts(), 0);
+    }
+
+    /// What one supervision made of a crash sequence: how it ended, the ends
+    /// it saw, and how often it restarted the runtime.
+    #[derive(Debug, PartialEq, Eq)]
+    struct Outcome {
+        supervised: Supervised,
+        ends: Vec<String>,
+        restarts: usize,
+    }
+
+    /// A `Watched` that records each end it hands to the supervision, and
+    /// otherwise runs the runtime it wraps.
+    struct Logged<W> {
+        inner: W,
+        ends: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl<W: Watched> Watched for Logged<W> {
+        fn ended(&self) -> BoxFuture<'_, String> {
+            let ends = self.ends.clone();
+            Box::pin(async move {
+                let why = self.inner.ended().await;
+                ends.lock().unwrap().push(why.clone());
+                why
+            })
+        }
+
+        fn still_ended(&self) -> bool {
+            self.inner.still_ended()
+        }
+
+        fn start_again(&self) -> BoxFuture<'_, bool> {
+            self.inner.start_again()
+        }
+    }
+
+    /// A local runtime that ends with the next reason whenever it starts.
+    #[derive(Clone)]
+    struct Failing {
+        runtime: RuntimeStates,
+        reasons: Arc<Mutex<VecDeque<String>>>,
+        starts: Arc<AtomicUsize>,
+    }
+
+    impl Failing {
+        fn new(reasons: &[&str]) -> Self {
+            Self {
+                runtime: RuntimeStates::new("py", "."),
+                reasons: Arc::new(Mutex::new(
+                    reasons.iter().map(|why| (*why).to_owned()).collect(),
+                )),
+                starts: Arc::default(),
+            }
+        }
+    }
+
+    impl DynPlugin for Failing {
+        fn name(&self) -> &str {
+            "failing-runtime"
+        }
+
+        fn apply<'a>(&'a self, _ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
+            self.starts.fetch_add(1, Ordering::SeqCst);
+            self.runtime.starting();
+            let why = self
+                .reasons
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or_else(|| "crashed".to_owned());
+            self.runtime.failed(why);
+            Box::pin(async { Ok(Effect::Done) })
+        }
+    }
+
+    /// One crash sequence through [`Local`], the Node, Python and Bun
+    /// runtimes' `Watched`.
+    async fn local_outcome(root: &Ctx, reasons: &[&str], restart: Restart) -> Outcome {
+        let failing = Failing::new(reasons);
+        let starts = failing.starts.clone();
+        let handle = failing.runtime.handle();
+        let fiber = root.plugin(failing);
+        let ends = Arc::new(Mutex::new(Vec::new()));
+        let watched = Logged {
+            inner: Local { handle, fiber },
+            ends: ends.clone(),
+        };
+        let supervised = supervise("py", &watched, restart, &mut Backoff::default()).await;
+        let ends = ends.lock().unwrap().clone();
+        Outcome {
+            supervised,
+            ends,
+            restarts: starts.load(Ordering::SeqCst).saturating_sub(1),
+        }
+    }
+
+    /// One start of the compiled runtimes' `go-a`, ending at once with the
+    /// next reason.
+    fn start_binary(
+        starts: &Starts,
+        states: &Arc<Mutex<Vec<RuntimeStates>>>,
+        reasons: &Arc<Mutex<VecDeque<String>>>,
+    ) {
+        let runtime = RuntimeStates::new("go-a", ".");
+        runtime.starting();
+        starts.started("go-a", runtime.handle());
+        let why = reasons
+            .lock()
+            .unwrap()
+            .pop_front()
+            .unwrap_or_else(|| "crashed".to_owned());
+        runtime.failed(why);
+        states.lock().unwrap().push(runtime);
+    }
+
+    /// One crash sequence through [`Compiled`], each Go and Swift runtime's
+    /// `Watched`.
+    async fn compiled_outcome(reasons: &[&str], restart: Restart) -> Outcome {
+        let starts = Starts::default();
+        let states: Arc<Mutex<Vec<RuntimeStates>>> = Arc::default();
+        let restarts = Arc::new(AtomicUsize::new(0));
+        let reasons: Arc<Mutex<VecDeque<String>>> = Arc::new(Mutex::new(
+            reasons.iter().map(|why| (*why).to_owned()).collect(),
+        ));
+        start_binary(&starts, &states, &reasons);
+
+        let seen: Arc<Mutex<Option<tokio::sync::watch::Receiver<Start>>>> = Arc::default();
+        let capture = seen.clone();
+        starts.watch(move |_, receiver| *capture.lock().unwrap() = Some(receiver));
+        let receiver = seen.lock().unwrap().take().expect("go-a started");
+        let compiled = Compiled::new(receiver, {
+            let starts = starts.clone();
+            let states = states.clone();
+            let reasons = reasons.clone();
+            let restarts = restarts.clone();
+            move || {
+                restarts.fetch_add(1, Ordering::SeqCst);
+                start_binary(&starts, &states, &reasons);
+                Box::pin(async {})
+            }
+        });
+        let ends = Arc::new(Mutex::new(Vec::new()));
+        let watched = Logged {
+            inner: compiled,
+            ends: ends.clone(),
+        };
+        let supervised = supervise("go-a", &watched, restart, &mut Backoff::default()).await;
+        let ends = ends.lock().unwrap().clone();
+        Outcome {
+            supervised,
+            ends,
+            restarts: restarts.load(Ordering::SeqCst),
+        }
+    }
+
+    /// The same crash sequence through both `Watched` implementations the
+    /// host's supervision drives — [`Local`] (Node, Python, Bun) and
+    /// [`Compiled`] (each Go and Swift runtime) — restarts, gives up and
+    /// reports the same ends, whatever the process ended with (an exit
+    /// status or a signal) and however fast the exits follow each other
+    /// (#627).
+    /// guarantee: host/runtime-restart
+    #[tokio::test(start_paused = true)]
+    async fn the_two_supervisions_handle_the_same_crash_sequence_alike() {
+        const STATUS: &str = "exited with exit status: 17";
+        const SIGNAL: &str = "exited with signal: 9 (SIGKILL)";
+        const OTHER: &str = "exited with exit status: 2";
+        let root = Ctx::root().unwrap();
+        let sequences: &[&[&str]] = &[
+            &[STATUS, STATUS, STATUS, STATUS, STATUS, STATUS],
+            &[SIGNAL, SIGNAL, SIGNAL, SIGNAL, SIGNAL, SIGNAL],
+            // Rapid exits, an exit status and a signal in turn.
+            &[STATUS, SIGNAL, OTHER, STATUS, SIGNAL, OTHER],
+        ];
+        for reasons in sequences {
+            for restart in [Restart::OnFailure, Restart::Exit, Restart::No] {
+                let local = local_outcome(&root, reasons, restart).await;
+                let compiled = compiled_outcome(reasons, restart).await;
+                assert_eq!(
+                    local, compiled,
+                    "the two supervisions disagree on {reasons:?} with {restart:?}"
+                );
+            }
+        }
+        root.shutdown().await.unwrap();
     }
 
     /// A runtime that is down as soon as it starts.

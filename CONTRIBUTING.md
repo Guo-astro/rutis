@@ -50,6 +50,10 @@ Two more kinds of check, for concurrency and for input from the far end:
 RUSTFLAGS="--cfg rutis_shuttle" cargo test -p rutis --lib --target-dir target/shuttle shuttle
 # The bridge's subprocess exit state (#623): same cfg, same directory.
 RUSTFLAGS="--cfg rutis_shuttle" cargo test -p rutis-bridge --lib --target-dir target/shuttle shuttle
+# The runtime supervision (#627): the restart loop, and a binary runtime's
+# restart waiting for its process; same cfg, same directory.
+RUSTFLAGS="--cfg rutis_shuttle" cargo test -p rutis-host --lib --target-dir target/shuttle shuttle
+RUSTFLAGS="--cfg rutis_shuttle" cargo test -p rutis-loader --lib --features go,swift --target-dir target/shuttle shuttle
 # More iterations (1000 by default), or replay the schedule a failure printed:
 RUTIS_SHUTTLE_ITERATIONS=1000000 RUSTFLAGS="--cfg rutis_shuttle" cargo test -p rutis --lib --target-dir target/shuttle shuttle
 RUTIS_SHUTTLE_REPLAY=<schedule> RUSTFLAGS="--cfg rutis_shuttle" cargo test -p rutis --lib --target-dir target/shuttle <test name>

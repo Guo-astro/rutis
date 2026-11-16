@@ -23,6 +23,11 @@ pub mod rows_file;
 pub mod status;
 pub mod test;
 
+/// The clock the supervision's shuttle models move (#627), built only for
+/// the model build (`cargo test` with `--cfg rutis_shuttle`).
+#[cfg(all(test, rutis_shuttle))]
+mod shuttle;
+
 /// The Rust host guide's examples compile against these crates (#667).
 #[cfg(doctest)]
 #[doc = include_str!("../../../docs/guide/rust-host.md")]
