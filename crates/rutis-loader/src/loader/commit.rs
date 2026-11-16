@@ -15,7 +15,7 @@ use crate::resolver::Build;
 use crate::LoaderError;
 
 use super::desired::{Desired, Row};
-use super::{Failing, Inner, LoaderChanged, PendingEditDropped, Slot, State};
+use super::{Failing, Inner, LoaderChanged, PendingEditDropped, Restore, Slot, State};
 
 /// Where one copy would run: its instance (`None` outside instances), its
 /// context without its own scope, and the instances enclosing it.
@@ -314,7 +314,12 @@ impl Inner {
 
     /// Apply one edit in memory: rewrite the editable layer, dry-run,
     /// reconcile, and roll back if rows newly fail. Nothing is persisted.
-    pub(super) async fn commit(self: &Arc<Self>, edit: &Edit) -> Result<(), LoaderError> {
+    ///
+    /// The layer change and the edit's place in the pending queue are set in
+    /// one critical section, before the reconcile is awaited: a caller that
+    /// drops the future at the reconcile leaves the edit queued, and a later
+    /// `flush` writes it (#1229). Returns the edit's index in the queue.
+    pub(super) async fn commit(self: &Arc<Self>, edit: &Edit) -> Result<usize, LoaderError> {
         let (layers, editable, before) = {
             let state = self.state.lock().unwrap();
             let editable = state.editable.ok_or(LoaderError::NoEditableLayer)?;
@@ -331,7 +336,7 @@ impl Inner {
                 self.dry_run(&next, id, None).await?;
             }
         }
-        {
+        let index = {
             let mut state = self.state.lock().unwrap();
             // A rename changes the module: resolve it afresh.
             if let Edit::Rename { name, .. } = edit {
@@ -342,12 +347,20 @@ impl Inner {
                 state.stopped.retain(|slot, _| slot.row != id);
             }
             state.layers = next;
-        }
+            state.pending.push(edit.clone());
+            state.pending.len() - 1
+        };
         let report = self.reconcile_inner().await;
         if report.new_failures.is_empty() {
-            return Ok(());
+            return Ok(index);
         }
-        self.state.lock().unwrap().layers = layers;
+        {
+            let mut state = self.state.lock().unwrap();
+            state.layers = layers;
+            // Undo the queue entry with the layer change: the edit failed to
+            // apply, so no caller sees it queued.
+            state.pending.remove(index);
+        }
         self.reconcile_inner().await;
         // Compare with the state before the edit, not before the rollback.
         let rollback: Vec<Failure> = {
@@ -414,27 +427,39 @@ impl Inner {
                         .load(&layer)
                         .await
                         .map_err(|e| LoaderError::PersistFailed(e.to_string()))?;
-                    let queue = {
+                    // `edits` is the queue as it was: the replay rebuilds it
+                    // on the latest content, and the state below puts the old
+                    // layer, version and queue back if this future is dropped
+                    // before the replay finishes (#1229).
+                    let mut restore = {
                         let mut state = self.state.lock().unwrap();
+                        let restore = Restore::new(self, &state);
                         let editable = state.editable.unwrap();
                         state.layers[editable].patches = latest;
                         state.version = version;
-                        std::mem::take(&mut state.pending)
+                        state.pending.clear();
+                        restore
                     };
                     self.reconcile_inner().await;
                     let mut replaced = None;
-                    for (index, edit) in queue.into_iter().enumerate() {
+                    // Reported once the replay is kept: a future dropped
+                    // before that leaves the queue, and the edits, as they
+                    // were.
+                    let mut dropped = Vec::new();
+                    for (index, edit) in edits.into_iter().enumerate() {
                         match self.commit(&edit).await {
-                            Ok(()) => {
-                                let mut state = self.state.lock().unwrap();
+                            Ok(queued) => {
                                 if current == Some(index) {
-                                    replaced = Some(state.pending.len());
+                                    replaced = Some(queued);
                                 }
-                                state.pending.push(edit);
                             }
                             Err(error) if current == Some(index) => current_error = Some(error),
-                            Err(error) => self.emit(PendingEditDropped { edit, error }),
+                            Err(error) => dropped.push((edit, error)),
                         }
+                    }
+                    restore.disarm();
+                    for (edit, error) in dropped {
+                        self.emit(PendingEditDropped { edit, error });
                     }
                     current = replaced;
                 }
@@ -446,12 +471,7 @@ impl Inner {
     pub(super) async fn edit(self: &Arc<Self>, edit: Edit) -> Result<(), LoaderError> {
         let _op = self.op.lock().await;
         self.check_open()?;
-        self.commit(&edit).await?;
-        let index = {
-            let mut state = self.state.lock().unwrap();
-            state.pending.push(edit.clone());
-            state.pending.len() - 1
-        };
+        let index = self.commit(&edit).await?;
         let result = self.persist_queue(Some(index)).await;
         self.emit(LoaderChanged::Edited(edit));
         result

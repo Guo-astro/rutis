@@ -12,7 +12,7 @@ use crate::LoaderError;
 
 use super::{
     Editable, EntryInfo, Failing, Inner, Isolate, Loader, LoaderChanged, NewEntry,
-    PendingEditDropped, ReconcileReport, RowInfo, Slot,
+    PendingEditDropped, ReconcileReport, Restore, RowInfo, Slot,
 };
 
 pub(super) fn generate_id(taken: impl Fn(&str) -> bool) -> String {
@@ -53,7 +53,7 @@ impl Loader {
         let inner = &self.inner;
         let _op = inner.op.lock().await;
         inner.check_open()?;
-        let replay = {
+        let (replay, mut restore) = {
             let mut state = inner.state.lock().unwrap();
             let index = match &editable {
                 None => None,
@@ -61,24 +61,40 @@ impl Loader {
                     || LoaderError::InvalidEntry(format!("no layer named {:?}", e.layer)),
                 )?),
             };
+            let replay = if index.is_some() {
+                state.pending.clone()
+            } else {
+                Vec::new()
+            };
+            // The queue is rebuilt as the edits are committed below; put the
+            // old layers and queue back if this future is dropped first
+            // (#1229).
+            let restore = (!replay.is_empty()).then(|| Restore::new(inner, &state));
             state.layers = layers;
             state.editable = index;
             if let Some(e) = editable {
                 state.version = e.version;
             }
             if index.is_some() {
-                std::mem::take(&mut state.pending)
-            } else {
-                Vec::new()
+                state.pending.clear();
             }
+            (replay, restore)
         };
         let mut report = inner.reconcile_inner().await;
         if !replay.is_empty() {
+            // Reported once the replayed queue is kept: a future dropped
+            // before that leaves the queue, and the edits, as they were.
+            let mut dropped = Vec::new();
             for edit in replay {
-                match inner.commit(&edit).await {
-                    Ok(()) => inner.state.lock().unwrap().pending.push(edit),
-                    Err(error) => inner.emit(PendingEditDropped { edit, error }),
+                if let Err(error) = inner.commit(&edit).await {
+                    dropped.push((edit, error));
                 }
+            }
+            if let Some(restore) = &mut restore {
+                restore.disarm();
+            }
+            for (edit, error) in dropped {
+                inner.emit(PendingEditDropped { edit, error });
             }
             let _ = inner.persist_queue(None).await;
             let state = inner.state.lock().unwrap();

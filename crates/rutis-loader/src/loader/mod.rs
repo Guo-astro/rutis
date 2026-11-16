@@ -415,6 +415,54 @@ struct State {
     last_root: Option<Ctx>,
 }
 
+/// The state a replayed queue was built on — the layers, the editable
+/// layer, its version and the queue — put back if the operation's future is
+/// dropped before the replay finished (#1229). The caller changes the layer
+/// and takes the queue in one critical section, then holds this across the
+/// awaits of the replay; a future dropped in between leaves the queue as it
+/// was instead of losing the edits only it held.
+struct Restore<'a> {
+    inner: &'a Inner,
+    layers: Vec<Layer>,
+    editable: Option<usize>,
+    version: Version,
+    pending: Vec<Edit>,
+    armed: bool,
+}
+
+impl<'a> Restore<'a> {
+    /// Take the state to put back from `state`, before the caller replaces
+    /// its layer and queue.
+    fn new(inner: &'a Inner, state: &State) -> Self {
+        Self {
+            inner,
+            layers: state.layers.clone(),
+            editable: state.editable,
+            version: state.version.clone(),
+            pending: state.pending.clone(),
+            armed: true,
+        }
+    }
+
+    /// The operation finished: keep what it wrote.
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for Restore<'_> {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let mut state = self.inner.state.lock().unwrap();
+        state.layers = std::mem::take(&mut self.layers);
+        state.editable = self.editable;
+        state.version = std::mem::take(&mut self.version);
+        state.pending = std::mem::take(&mut self.pending);
+    }
+}
+
 /// Where a fiber runs: its row, and the instance it belongs to (`None`
 /// outside instanced groups). An instanced group's own fiber has its own
 /// instance as `scope`; the rows inside it share that scope.
