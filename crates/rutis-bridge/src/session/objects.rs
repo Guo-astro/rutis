@@ -1377,6 +1377,7 @@ fn shift_markers(json: Json, keys: &Keys, base: (usize, usize)) -> Json {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
     use serde_json::json;
     use std::sync::atomic::Ordering;
 
@@ -1475,6 +1476,142 @@ mod tests {
             ]);
             let (_, got): (Instant, Json) = decode_value(list).unwrap();
             assert_eq!(got, forged);
+        }
+    }
+
+    /// A key that data may use: one of the marker keys the next encodes
+    /// will pick, an earlier unnumbered one, or any key a user may write.
+    fn forged_key() -> impl Strategy<Value = String> {
+        let next = NONCE.load(Ordering::Relaxed);
+        let mut keys = vec![
+            "\u{0}rutis:reference".to_owned(),
+            "\u{0}rutis:value".to_owned(),
+        ];
+        for nonce in next..next + 64 {
+            let keys_at = Keys::new(nonce);
+            keys.push(keys_at.reference);
+            keys.push(keys_at.value);
+        }
+        prop_oneof![
+            3 => prop::sample::select(keys),
+            1 => (
+                prop::sample::select(vec!["reference".to_owned(), "value".to_owned()]),
+                0u32..1_000_000,
+            )
+                .prop_map(|(kind, number)| format!("\u{0}rutis:{kind}:{number}")),
+            2 => "[a-z][a-z0-9-]{0,7}".prop_map(String::from),
+        ]
+    }
+
+    /// Arbitrary JSON, its object keys sometimes marker keys.
+    fn arbitrary_json() -> impl Strategy<Value = Json> {
+        let leaf = prop_oneof![
+            Just(Json::Null),
+            any::<bool>().prop_map(Json::Bool),
+            any::<i64>().prop_map(|number| Json::Number(number.into())),
+            "[ -~]{0,12}".prop_map(Json::String),
+        ];
+        leaf.prop_recursive(4, 32, 4, |inner| {
+            prop_oneof![
+                prop::collection::vec(inner.clone(), 0..=3).prop_map(Json::Array),
+                prop::collection::vec((forged_key(), inner), 0..=4)
+                    .prop_map(|entries| { Json::Object(entries.into_iter().collect()) }),
+            ]
+        })
+        .boxed()
+    }
+
+    fn reference_count(value: &Value) -> usize {
+        match value {
+            Value::Reference(_) => 1,
+            Value::List(items) => items.iter().map(reference_count).sum(),
+            Value::Record(fields) => fields.values().map(reference_count).sum(),
+            Value::Map(entries) => entries
+                .iter()
+                .map(|(key, value)| reference_count(key) + reference_count(value))
+                .sum(),
+            Value::Set(items) => items.iter().map(reference_count).sum(),
+            _ => 0,
+        }
+    }
+
+    #[derive(Debug, PartialEq, Serialize, Deserialize)]
+    struct Carried {
+        data: Json,
+        function: RemoteFunction,
+    }
+
+    #[derive(Debug, PartialEq, Serialize, Deserialize)]
+    struct MarkedPayload {
+        data: Json,
+        function: RemoteFunction,
+        carried: Vec<Carried>,
+        by_name: std::collections::BTreeMap<String, RemoteFunction>,
+        map: ValueMap<String, Json>,
+    }
+
+    proptest! {
+        /// guarantee: bridge/value-tags; MNT-2-8i
+        ///
+        /// Arbitrary data whose keys are marker keys, even the very keys
+        /// the next encodes pick, and references nested at any depth of a
+        /// generated type: the call argument keeps the data as data, turns
+        /// only the real references into markers, and decodes back to what
+        /// was sent. The number of references stays what the value holds.
+        #[test]
+        fn random_data_with_marker_keys_and_nested_references_round_trips(
+            data in arbitrary_json(),
+            carried in prop::collection::vec(arbitrary_json(), 0..=3),
+            names in prop::collection::vec("[a-z][a-z0-9-]{0,7}", 0..=3),
+            entries in prop::collection::vec((forged_key(), arbitrary_json()), 0..=3),
+        ) {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let _entered = runtime.enter();
+            let function = || {
+                decode_value::<RemoteFunction>(Value::callback(|_| Ok(Value::Undefined)))
+                    .expect("a function reference")
+            };
+            let root = function();
+            let carried: Vec<Carried> = carried
+                .iter()
+                .map(|data| Carried {
+                    data: data.clone(),
+                    function: function(),
+                })
+                .collect();
+            let by_name: std::collections::BTreeMap<String, RemoteFunction> = names
+                .iter()
+                .map(|name| (name.clone(), function()))
+                .collect();
+            // The very keys the next `arg` picks, with the first entries: data
+            // shaped as the markers of the operation about to run.
+            let keys = Keys::new(NONCE.load(Ordering::Relaxed));
+            let data = Json::Array(vec![
+                data,
+                Json::Object([(keys.reference, json!(0))].into_iter().collect()),
+                Json::Object([(keys.value, json!(0))].into_iter().collect()),
+            ]);
+            let sent = MarkedPayload {
+                data: data.clone(),
+                function: root,
+                carried,
+                by_name,
+                map: ValueMap(entries),
+            };
+            let expected = 1 + sent.carried.len() + sent.by_name.len();
+
+            let value = arg(&sent).expect("the value crosses");
+            prop_assert_eq!(reference_count(&value), expected);
+            let decoded: MarkedPayload = decode_value(value).expect("the value decodes");
+            prop_assert_eq!(&decoded, &sent);
+
+            // The same data alone: never a marker, whichever keys it has.
+            prop_assert_eq!(arg(&data).unwrap(), Value::Data(data.clone()));
+            let alone: Json = decode_value(Value::Data(data.clone())).expect("data decodes");
+            prop_assert_eq!(alone, data);
         }
     }
 }

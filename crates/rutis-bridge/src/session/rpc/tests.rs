@@ -1219,6 +1219,302 @@ proptest! {
     }
 }
 
+/// What the far end said in its greeting (SESS-23, SESS-24, CHN-2-8), as a
+/// test decides it: only the protocol version, the endpoint and the
+/// expected endpoint decide; capabilities are declared, never required
+/// (SESS-25).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HandshakeVerdict {
+    Ready,
+    Incompatible,
+    IdentityMismatch,
+}
+
+fn reference_handshake(
+    local: &str,
+    expected: Option<&str>,
+    version: u32,
+    endpoint: Option<&str>,
+) -> HandshakeVerdict {
+    if version != ENDPOINT_PROTOCOL {
+        return HandshakeVerdict::Incompatible;
+    }
+    let Some(endpoint) = endpoint else {
+        return HandshakeVerdict::Incompatible;
+    };
+    let Ok(endpoint) = PeerId::new(endpoint) else {
+        return HandshakeVerdict::Incompatible;
+    };
+    if let Some(expected) = expected {
+        if expected != endpoint.as_str() {
+            return HandshakeVerdict::IdentityMismatch;
+        }
+    }
+    if endpoint.as_str() == local {
+        return HandshakeVerdict::IdentityMismatch;
+    }
+    HandshakeVerdict::Ready
+}
+
+fn verdict_of(result: &Result<(), Error>) -> HandshakeVerdict {
+    match result {
+        Ok(()) => HandshakeVerdict::Ready,
+        Err(Error::Handshake(Handshake::Incompatible(_))) => HandshakeVerdict::Incompatible,
+        Err(Error::Handshake(Handshake::IdentityMismatch(_))) => HandshakeVerdict::IdentityMismatch,
+        Err(other) => panic!("not a handshake decision: {other:?}"),
+    }
+}
+
+/// The id of an endpoint that greets: lowercase letters, digits and `-`.
+fn endpoint_id() -> impl Strategy<Value = String> {
+    "[a-z][a-z0-9-]{0,7}"
+}
+
+/// What a `hello` names: a valid endpoint, nothing, or anything a broken
+/// or much older far end might send.
+fn greeted_endpoint() -> impl Strategy<Value = Option<String>> {
+    prop_oneof![
+        4 => endpoint_id().prop_map(Some),
+        2 => Just(None),
+        1 => Just(Some(String::new())),
+        1 => "[A-Za-z0-9/:_ .]{1,8}".prop_map(Some),
+        1 => any::<String>().prop_map(Some),
+    ]
+}
+
+fn protocol_version() -> impl Strategy<Value = u32> {
+    prop_oneof![
+        2 => Just(ENDPOINT_PROTOCOL),
+        2 => 0u32..ENDPOINT_PROTOCOL,
+        2 => (ENDPOINT_PROTOCOL + 1)..=10,
+        1 => any::<u32>(),
+    ]
+}
+
+fn implementation() -> impl Strategy<Value = Implementation> {
+    ("[ -~]{0,16}", "[ -~]{0,16}").prop_map(|(name, version)| Implementation { name, version })
+}
+
+fn capabilities() -> impl Strategy<Value = Vec<String>> {
+    prop::collection::vec("[a-z][a-z0-9-]{0,11}", 0..=4)
+}
+
+fn endpoint_with(local: String, expected: Option<String>, capabilities: Vec<String>) -> Endpoint {
+    Endpoint {
+        local: PeerId::new(local).unwrap(),
+        expected: expected.map(|id| PeerId::new(id).unwrap()),
+        implementation: Implementation {
+            name: "test".into(),
+            version: "0".into(),
+        },
+        capabilities,
+    }
+}
+
+/// A session whose far end has not greeted yet, as `endpoint`.
+fn pair_as_endpoint(endpoint: Endpoint) -> (Connection, Far) {
+    let (local, far) = far_pair();
+    (
+        Connection::open(local, Arc::new(NoExports), endpoint).unwrap(),
+        far,
+    )
+}
+
+proptest! {
+    /// guarantee: bridge/version-refusal; CHN-2-8; SESS-23, SESS-24
+    ///
+    /// The handshake is the decision table: a protocol version other than
+    /// 4 fails as incompatible, a greeting that names no endpoint or an
+    /// invalid one fails as incompatible, an endpoint other than the one
+    /// the channel verified (passed here as `expected`) or this side itself
+    /// fails as an identity mismatch, and everything else greets. The far
+    /// end's capabilities and implementation never decide (SESS-25), and a
+    /// ready session keeps them as sent.
+    ///
+    /// Protocol 4 has one wire format, so another format is another version
+    /// here (SESS-12, SESS-13); the identity the connector verified reaches
+    /// the session as `expected` (CHN-2-8), and both ends of a real exchange
+    /// are covered below.
+    #[test]
+    fn the_handshake_decides_as_its_table_says(
+        local in endpoint_id(),
+        expected in prop::option::of(endpoint_id()),
+        version in protocol_version(),
+        endpoint in greeted_endpoint(),
+        implementation in prop::option::of(implementation()),
+        capabilities in prop::option::of(capabilities()),
+        local_capabilities in capabilities(),
+    ) {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let (peer, _far) = runtime.block_on(async {
+            pair_as_endpoint(endpoint_with(
+                local.clone(),
+                expected.clone(),
+                local_capabilities.clone(),
+            ))
+        });
+        let result = peer.greet(
+            version,
+            endpoint.clone(),
+            implementation.clone(),
+            capabilities.clone(),
+        );
+        let expected_verdict = reference_handshake(
+            &local,
+            expected.as_deref(),
+            version,
+            endpoint.as_deref(),
+        );
+        prop_assert_eq!(verdict_of(&result), expected_verdict, "{:?}", result);
+
+        match (&result, expected_verdict) {
+            (Ok(()), HandshakeVerdict::Ready) => {
+                let greeting = peer.greeting().expect("a ready session keeps the greeting");
+                prop_assert_eq!(greeting.endpoint.as_str(), endpoint.as_deref().unwrap());
+                prop_assert_eq!(&greeting.implementation, &implementation);
+                prop_assert_eq!(greeting.capabilities.clone(), capabilities.unwrap_or_default());
+            }
+            (
+                Err(Error::Handshake(Handshake::Incompatible(reason))),
+                HandshakeVerdict::Incompatible,
+            ) => {
+                if version != ENDPOINT_PROTOCOL {
+                    let expected = if version > ENDPOINT_PROTOCOL {
+                        format!(
+                            "the far end speaks protocol {version}, this side {ENDPOINT_PROTOCOL}: \
+                             upgrade this side (Rust crates rutis-host / rutis-bridge)"
+                        )
+                    } else {
+                        match &implementation {
+                            Some(implementation) => format!(
+                                "the far end speaks protocol {version}, this side {ENDPOINT_PROTOCOL}: \
+                                 upgrade the far end ({} {})",
+                                implementation.name, implementation.version
+                            ),
+                            None => format!(
+                                "the far end speaks protocol {version}, this side {ENDPOINT_PROTOCOL}: \
+                                 upgrade the far end"
+                            ),
+                        }
+                    };
+                    prop_assert_eq!(reason, &expected);
+                } else {
+                    prop_assert!(
+                        reason.starts_with("the far end named no endpoint")
+                            || reason.starts_with("invalid endpoint id"),
+                        "{}",
+                        reason
+                    );
+                }
+            }
+            (
+                Err(Error::Handshake(Handshake::IdentityMismatch(reason))),
+                HandshakeVerdict::IdentityMismatch,
+            ) => {
+                let endpoint = endpoint.as_deref().unwrap();
+                match &expected {
+                    Some(expected) if expected != endpoint => prop_assert_eq!(
+                        reason,
+                        &format!(
+                            "the far end greeted as {endpoint}, but {expected} is the expected endpoint"
+                        )
+                    ),
+                    _ => prop_assert_eq!(
+                        reason,
+                        &format!("the far end greeted as this endpoint ({endpoint})")
+                    ),
+                }
+            }
+            (other, verdict) => prop_assert!(false, "{:?} does not match {:?}", other, verdict),
+        }
+        peer.close(Error::Transport("the test is done".into()));
+    }
+}
+
+proptest! {
+    /// guarantee: CHN-2-8; SESS-23, SESS-24
+    ///
+    /// Both ends of one real exchange decide as the same table: each one
+    /// checks the other's greeting against what it expects, and the two
+    /// greetings are what each end declared. Capabilities do not decide,
+    /// whichever side declares them.
+    #[test]
+    fn two_ends_decide_their_handshakes_as_the_same_table(
+        a_local in endpoint_id(),
+        a_expected in prop::option::of(endpoint_id()),
+        a_capabilities in capabilities(),
+        b_local in endpoint_id(),
+        b_expected in prop::option::of(endpoint_id()),
+        b_capabilities in capabilities(),
+    ) {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let (a, b, a_result, b_result, a_greeting, b_greeting) = runtime.block_on(async {
+            let (left, right) = crate::memory::pair();
+            let a = Connection::open(
+                left,
+                Arc::new(NoExports),
+                endpoint_with(a_local.clone(), a_expected.clone(), a_capabilities.clone()),
+            )
+            .unwrap();
+            let b = Connection::open(
+                right,
+                Arc::new(NoExports),
+                endpoint_with(b_local.clone(), b_expected.clone(), b_capabilities.clone()),
+            )
+            .unwrap();
+            let a_result = a.ready().await;
+            let b_result = b.ready().await;
+            (
+                a.clone(),
+                b.clone(),
+                a_result,
+                b_result,
+                a.greeting().cloned(),
+                b.greeting().cloned(),
+            )
+        });
+
+        prop_assert_eq!(
+            verdict_of(&a_result),
+            reference_handshake(
+                &a_local,
+                a_expected.as_deref(),
+                ENDPOINT_PROTOCOL,
+                Some(&b_local),
+            ),
+            "{:?}",
+            a_result
+        );
+        prop_assert_eq!(
+            verdict_of(&b_result),
+            reference_handshake(
+                &b_local,
+                b_expected.as_deref(),
+                ENDPOINT_PROTOCOL,
+                Some(&a_local),
+            ),
+            "{:?}",
+            b_result
+        );
+        if let Some(greeting) = a_greeting {
+            prop_assert_eq!(greeting.endpoint.as_str(), b_local.as_str());
+            prop_assert_eq!(greeting.capabilities, b_capabilities);
+        }
+        if let Some(greeting) = b_greeting {
+            prop_assert_eq!(greeting.endpoint.as_str(), a_local.as_str());
+            prop_assert_eq!(greeting.capabilities, a_capabilities);
+        }
+        a.close(Error::Transport("the test is done".into()));
+        b.close(Error::Transport("the test is done".into()));
+    }
+}
+
 /// A call made into one session while another session's call is handled
 /// carries that call's chain rebased, also when it is sent without
 /// `forward` (an `invoke_async` from a host service serving the other
