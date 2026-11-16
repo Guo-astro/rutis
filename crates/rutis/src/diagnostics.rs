@@ -246,9 +246,10 @@ pub struct BindingDiagnostics {
 }
 
 /// A service binding was registered or finally removed. Emitted on the bus
-/// of the provider's context, after the registry change and outside every
-/// lock. A registered binding becomes visible once its provider is active;
-/// removal is reported after consumers were evicted.
+/// of the provider's context, after the registry change. A registered
+/// binding becomes visible once its provider is active; removal is reported
+/// after consumers were evicted. One binding's `Provided` is always announced
+/// before its `Removed`.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct ServiceChanged {
