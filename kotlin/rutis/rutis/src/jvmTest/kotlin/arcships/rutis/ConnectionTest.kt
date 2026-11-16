@@ -1,6 +1,8 @@
 package arcships.rutis
 
 import arcships.rutis.internal.peer.Endpoint
+import arcships.rutis.internal.peer.Options
+import arcships.rutis.internal.peer.Peer
 import arcships.rutis.internal.remote.CloseCode
 import arcships.rutis.internal.remote.Connection
 import arcships.rutis.internal.remote.Ended
@@ -30,6 +32,7 @@ import java.util.Base64
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ExecutionException
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicLong
 import javax.net.ssl.SSLContext
 import javax.net.ssl.SSLEngine
 import javax.net.ssl.X509ExtendedTrustManager
@@ -84,10 +87,16 @@ private class RawClient(address: String, receiveBuffer: Int? = null) : AutoClose
     }
 
     /** The code of the close frame that comes next, the pings before it skipped. */
-    fun closed(): Int {
+    fun closed(): Int = closing().first
+
+    /** The code and reason of the close frame that comes next, the pings before it skipped. */
+    fun closing(): Pair<Int, String> {
         while (true) {
             val (opcode, payload) = next()
-            if (opcode == 0x8) return ((payload[0].toInt() and 0xFF) shl 8) or (payload[1].toInt() and 0xFF)
+            if (opcode == 0x8) {
+                val code = ((payload[0].toInt() and 0xFF) shl 8) or (payload[1].toInt() and 0xFF)
+                return code to String(payload, 2, payload.size - 2, Charsets.UTF_8)
+            }
         }
     }
 
@@ -104,6 +113,22 @@ private fun readHead(input: InputStream): String {
         head.write(b)
     }
     return head.toString("ISO-8859-1")
+}
+
+/** The next text message, the pings and pongs before it skipped. */
+private fun nextMessage(next: () -> Pair<Int, ByteArray>): ByteArray {
+    while (true) {
+        val (opcode, payload) = next()
+        if (opcode == 0x1) return payload
+    }
+}
+
+/** The next frame that is neither a ping nor a pong. */
+private fun nextFrame(client: RawClient): Pair<Int, ByteArray> {
+    while (true) {
+        val frame = client.next()
+        if (frame.first != 0x9 && frame.first != 0xA) return frame
+    }
 }
 
 /** Whether `socket` is closed by the far end within `millis`. */
@@ -147,6 +172,19 @@ class ConnectionTest {
         return client to connection
     }
 
+    /** A controller dialed into `server`, its session started. */
+    private fun connected(server: WebSocketServer, id: String): Peer {
+        val dialer = WebSocketDialer(server.address, PROTOCOL, TOKEN, null, Retry(handshakeMillis = 5000), Heartbeat(100, 3000))
+        closing.add(AutoCloseable { dialer.close() })
+        val connection = dialer.dial()
+        closing.add(AutoCloseable { connection.close("the test ended") })
+        val peer = Peer(connection, Options(endpoint = Endpoint(id)))
+        peer.start()
+        peer.readyFuture.get(5, TimeUnit.SECONDS)
+        closing.add(AutoCloseable { peer.close(null) })
+        return peer
+    }
+
     /** Sends until a send blocks: the client stopped reading. Returns the blocked send. */
     private fun stuck(connection: Connection): CompletableFuture<Unit> {
         val sending = CompletableFuture<Unit>()
@@ -161,6 +199,75 @@ class ConnectionTest {
         Thread.sleep(500)
         assertTrue(!sending.isDone, "the sends did not block")
         return sending
+    }
+
+    @Test
+    fun aConnectionWaitingForTheOldLeaseIsNotClosedByTheHeartbeat() {
+        val server = server(Heartbeat(20, 100))
+        val slow = Rutis.define<Rutis.NoConfig>(name = "slow") { ctx, _ ->
+            ctx.effect { Thread.sleep(400) }
+        }
+        val listening = Listening(server, Endpoint("app", null, listOf("runtime")), listOf(slow), shutdownMillis = 2_000)
+        closing.add(AutoCloseable { listening.stop() })
+        val ended = CompletableFuture.supplyAsync { listening.run() }
+        // The old lease: a row whose cleanup outlasts the heartbeat timeout.
+        val first = connected(server, "first")
+        first.call("", "rows.load", listOf("row", "slow"), false)
+        // A new connection takes over and waits for that cleanup: not silent.
+        val second = RawClient(server.address)
+        closing.add(second)
+        val frame = nextFrame(second)
+        assertEquals(0x1, frame.first, "the waiting connection was closed before its hello")
+        val hello = frame.second.toString(Charsets.UTF_8)
+        assertTrue(hello.contains("\"op\":\"hello\""), hello)
+        listening.stop()
+        assertTrue(ended.get(5, TimeUnit.SECONDS) is Ended.Stopped)
+    }
+
+    @Test
+    fun aConnectionWaitingForItsHelloIsNotClosedForSilence() {
+        val server = server(Heartbeat(20, 100))
+        val (client, connection) = client(server)
+        val clock = AtomicLong(Long.MAX_VALUE / 2)
+        connection.now = { clock.get() }
+        // Well past the timeout, and no hello yet: waiting is not silence.
+        Thread.sleep(300)
+        connection.send("not yet".toByteArray())
+        assertEquals("not yet", nextMessage(client::next).toString(Charsets.UTF_8))
+    }
+
+    @Test
+    fun theHeartbeatStartsAtTheHelloAndClosesASilentConnection() {
+        val server = server(Heartbeat(20, 100))
+        val (client, connection) = client(server)
+        val clock = AtomicLong(Long.MAX_VALUE / 2)
+        connection.now = { clock.get() }
+        Thread.sleep(200)
+        connection.send("hello".toByteArray())
+        assertEquals("hello", nextMessage(client::next).toString(Charsets.UTF_8))
+        // Greeted: silence now counts, from the hello.
+        connection.startHeartbeat()
+        clock.addAndGet(200_000_000)
+        val (code, reason) = client.closing()
+        assertEquals(CloseCode.GOING_AWAY, code)
+        assertTrue(reason.contains("stopped answering"), reason)
+    }
+
+    @Test
+    fun aServedConnectionEndsWhenItStaysSilent() {
+        val server = server(Heartbeat(20, 100))
+        val plugin = Rutis.define<Rutis.NoConfig>(name = "idle") { _, _ -> }
+        val listening = Listening(server, Endpoint("app", null, listOf("runtime")), listOf(plugin))
+        closing.add(AutoCloseable { listening.stop() })
+        val ended = CompletableFuture.supplyAsync { listening.run() }
+        val client = RawClient(server.address)
+        closing.add(client)
+        // The session's hello goes out; then this side says nothing.
+        val hello = nextMessage(client::next).toString(Charsets.UTF_8)
+        assertTrue(hello.contains("\"op\":\"hello\""), hello)
+        assertEquals(CloseCode.GOING_AWAY, client.closed())
+        listening.stop()
+        assertTrue(ended.get(5, TimeUnit.SECONDS) is Ended.Stopped)
     }
 
     @Test

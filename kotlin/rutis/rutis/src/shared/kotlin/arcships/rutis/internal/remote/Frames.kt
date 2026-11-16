@@ -21,8 +21,10 @@ import java.util.concurrent.atomic.AtomicBoolean
  * already upgraded and accepted by a listener (frames received must be
  * masked, frames sent are not). It pings the far end every
  * [Heartbeat.pingMillis] and closes with 1001 when nothing came for
- * [Heartbeat.timeoutMillis]. Broken frames close it with their code:
- * unmasked 1002, binary 1003, over 16 MiB 1009, not UTF-8 1007.
+ * [Heartbeat.timeoutMillis], once [startHeartbeat] said the connection's
+ * hello went out: a connection still waiting to be served is not silent.
+ * Broken frames close it with their code: unmasked 1002, binary 1003, over
+ * 16 MiB 1009, not UTF-8 1007.
  *
  * Frames are written by its own writer thread, in order (pings and pongs
  * ahead of the messages waiting): a far end that stops reading blocks only
@@ -43,8 +45,17 @@ class FrameConnection(
     private val reader = DataInputStream(input)
     private val closed = AtomicBoolean(false)
 
+    /** The time its heartbeat reads, in [System.nanoTime]'s units; tests move it. Writes keep the real clock. */
     @Volatile
-    private var lastSeen = System.nanoTime()
+    internal var now: () -> Long = System::nanoTime
+
+    /** When the far end last said something ([now]); 0 until [startHeartbeat]. */
+    @Volatile
+    private var lastSeen = 0L
+
+    /** Whether [startHeartbeat] has come: until then silence is waiting, not a lost far end. */
+    @Volatile
+    private var beating = false
 
     @Volatile
     override var farClose: Int = 0
@@ -70,12 +81,24 @@ class FrameConnection(
         when {
             // The far end stopped reading: the blocked write fails.
             since != 0L && (System.nanoTime() - since) / 1_000_000 > heartbeat.timeoutMillis -> shut()
-            (System.nanoTime() - lastSeen) / 1_000_000 > heartbeat.timeoutMillis ->
+            // Waiting for its hello to go out, a connection is not silent.
+            beating && (now() - lastSeen) / 1_000_000 > heartbeat.timeoutMillis ->
                 closeWith(CloseCode.GOING_AWAY, "the far end stopped answering")
             // A frame being written does what a ping would.
             since == 0L -> outbox.offerFirst(Frame(0x9, ByteArray(0)))
         }
     }, heartbeat.pingMillis, heartbeat.pingMillis, TimeUnit.MILLISECONDS)
+
+    /**
+     * Starts its heartbeat: from now on nothing for [Heartbeat.timeoutMillis]
+     * closes it. The listener calls this once the session's hello went out;
+     * until then, a connection waiting for the old lease to be cleaned up is
+     * not closed with 1001 (#1102).
+     */
+    internal fun startHeartbeat() {
+        lastSeen = now()
+        beating = true
+    }
 
     init {
         Thread(::writeAll, "rutis-websocket-write").apply {
@@ -220,7 +243,7 @@ class FrameConnection(
             val payload = ByteArray(length.toInt())
             reader.readFully(payload)
             if (masked) for (i in payload.indices) payload[i] = (payload[i].toInt() xor key[i % 4].toInt()).toByte()
-            lastSeen = System.nanoTime()
+            lastSeen = now()
             when (opcode) {
                 0x8 -> {
                     val code = if (payload.size >= 2) ((payload[0].toInt() and 0xFF) shl 8) or (payload[1].toInt() and 0xFF) else CloseCode.NO_STATUS
