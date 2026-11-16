@@ -50,7 +50,7 @@
   - `install.yml`（构建这次提交的包，五个平台安装运行；`darwin-arm64` 在自托管 macOS 上，其他格子用 GitHub 的干净机器）：只有改了打包相关路径才跑五个平台（`scripts/train.mjs`、`**/pyproject.toml`、`**/package.json`、`crates/*/Cargo.toml`、`node/rutis-host/scripts/**`），其余的晚上只跑 linux-x64，为了开发者体验场景（#690）每晚都跑（要构建 linux-x64 的二进制、x86_64 的 wheel 和 npm 包，每晚多出几十个 runner 分钟）；
   - `dylib-windows.yml`：只有改了 dylib 相关路径才跑；
   - `ci.yml` 的 `specs`：只有改了 `specs/**` 才跑；`sdk-repro`：只有改了 SDK 可复现相关路径才跑；
-  - `stress.yml` 的 `events-all`：每晚抽样（`RUTIS_EVENTS_PLACEMENTS=sampled`），周一跑全部（`all`）。
+  - `stress.yml` 的 `events-all`：每晚抽样（`RUTIS_EVENTS_PLACEMENTS=sampled`），周一跑全部（`all`）。它的 `X`（发事件的插件语言）只有 `node`、`node-leaf`、`bun`、`python`、`go`：Swift 的插件只在 macOS 上构建，进不了这个 `ubuntu-24.04` 矩阵；Kotlin 要在每个分片装 JDK 17 并先构建 `:rutis-conformance:fatJar`。两者的 `X` 放置由 `ci.yml` 的 `runtimes-swift`、`runtimes-kotlin` 任务跑（写定的放置，完整运行时抽样），`events-all` 不加这两列（#624）。
 
   `Cargo.toml`、`Cargo.lock`、`rust-toolchain.toml`、workflow 文件有改动，或者上一次成功运行的提交不在 main 的历史里（main 被改写）时，上面这些全部跑。每周一（UTC 19:00，北京周二 03:00）也全部跑一次，所以这些检查最长一周一定完整跑一次（#576）。
 - 失败时 `report` 任务开问题单（§7）。
