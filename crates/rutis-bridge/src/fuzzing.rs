@@ -28,10 +28,10 @@ use crate::session::Value;
 /// Its `data` is read too, within limits (#631,
 /// `bridge/error-code-and-data b`): a graph is followed without
 /// memoization, so a node naming itself twice, 64 levels of the depth limit
-/// [`MAX_DEPTH`](crate::session::MAX_DEPTH), is 2^64 steps; a graph that would
-/// pass the limits below is left unread, and one within them reads in bounded
-/// time and size, crosses again unchanged, and leaves out what it cannot hold
-/// while the rest of the error still reads.
+/// [`MAX_DEPTH`](crate::session::MAX_DEPTH), is 2^64 steps; a graph past the
+/// limits below is left unread, and one within them reads in bounded time and
+/// size, crosses again unchanged, and leaves out what it cannot hold while the
+/// rest of the error still reads.
 pub fn error_graph(data: &[u8]) {
     let Ok(text) = std::str::from_utf8(data) else {
         return;
