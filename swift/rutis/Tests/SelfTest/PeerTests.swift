@@ -206,7 +206,10 @@ struct PeerTests {
     func testAReadErrorClosesTheChannel() async throws {
         let channel = FailingChannel()
         let peer = try Peer(channel: channel, options: PeerOptions(endpoint: Endpoint(local: "swift", expected: "main")))
-        try peer.start()
+        // The reading thread can meet the error before the hello goes out, and
+        // the session is then already closed: `start()` throws, and what this
+        // test is about is the channel below (TSan, #630).
+        try? peer.start()
         await peer.closed()
         XCTAssertTrue("\(peer.error.map { "\($0)" } ?? "")".contains("read failed"), "\(String(describing: peer.error))")
         for _ in 0 ..< 200 where !channel.isClosed { try await Task.sleep(nanoseconds: 10_000_000) }
