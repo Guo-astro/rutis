@@ -157,6 +157,6 @@ Node、Bun 判断同步等待成环时只看尚未回复的同步调用；回复
 
 - 会话协议仍是 4，`rutis.json` 的 `format` 仍是 1，插件 API 仍是 3：没有新的能力要求，没有新的必需帧字段，握手不变。
 - 新旧版本可以混用：旧运行时包在它那一侧保持旧行为（旧 Kotlin/Swift 仍忽略未知字段，旧心跳仍从 accept 起算，旧 Python/Bun 仍接受卸载后的 `provide`）；新对端不会因为对方是旧版本而断会话。`services.announce` 的 `row` 是可选字段。
-- `rutis.json` 与 dsh 用户层没有格式变化：持久化样本从 0.21.0 复制，期望不变。发布 PR 里建 `tests/fixtures/persisted/0.22.0/`。
+- `rutis.json` 与 dsh 用户层没有格式变化：持久化样本在 `tests/fixtures/persisted/0.22.0/`，从 0.21.0 复制，期望不变。
 - dylib 插件照每次发布一样用 0.22.0 的 SDK 重新构建。
 - 这一版没有网络冒烟或发布门结果；发布前按 [release.md](release.md) 的正常流程跑。
