@@ -201,8 +201,9 @@ struct AppTests {
     func aConnectionWaitingForTheOldCleanupIsNotDropped() async throws {
         let installed = Event()
         let slow = Rutis.define(Plugin(name: "slow") { ctx in
-            installed.fire()
             ctx.effect { await uncancellableSleep(0.5) }
+            // Registered: the cleanup is there when the test takes over.
+            installed.fire()
         })
         let lines = Lines()
         let app = RutisApp(plugins: [slow], configs: [:], mode: .listen("ws://127.0.0.1:0/rutis",
