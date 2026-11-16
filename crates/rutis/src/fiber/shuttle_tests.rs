@@ -19,8 +19,8 @@
 //! publishes across restarts; model 16 closes a real fiber tree while its
 //! listeners dispatch, so `CloseTree for FiberInner` and the walk over the real
 //! child lists run, not a stand-in. Model 17 closes a root with the child it
-//! mounted, through the mount record that owns it; model 18 is the ignored
-//! reproducer of one transition's result across its driver's exit (#1194);
+//! mounted, through the mount record that owns it; model 18 pins one
+//! transition's result across its driver's exit (#1194);
 //! model 19 adds a restart inside the dependency window model 9 covers. Built
 //! with `--cfg rutis_shuttle`,
 //! `crate::sync` makes the driver's `alive` flag, a fiber's `lineage_closed`
@@ -3810,8 +3810,7 @@ fn shuttle_effect_record_owner_reports_each_cleanup_error_once() {
 // 多个完成方")
 
 /// Model 14, `TransitionTask::complete` called more than once (#622, item 3 of
-/// "加强现有模型"; the same shape as the suspicion it lists: a clean dispose and
-/// a root close racing leave a late join with `Err(Closed)`). `complete` sends
+/// "加强现有模型"; the primitive behind #1194's overwrite). `complete` sends
 /// the result into the task's watch channel, so:
 ///
 /// - a completion before anyone joined is kept (the keep-alive receiver), and
@@ -3819,11 +3818,11 @@ fn shuttle_effect_record_owner_reports_each_cleanup_error_once() {
 /// - every join returns one of the results someone announced, never a made-up
 ///   error;
 /// - the **last** completion is what a later join reads — the overwrite. The
-///   model asserts the current behaviour and says so: the first joiner sees the
-///   driver's result, a joiner that comes after the poster's own completion
-///   sees the poster's `Closed`, even though the transition itself succeeded.
-///   #622 lists that as a suspicion, so the model does not promise it is right;
-///   a fix would change the late assertion, not the early one.
+///   kernel's late `alive` rechecks no longer use `complete`: they complete
+///   only a `Running` task (`complete_if_running`, #1194). This model pins the
+///   primitive's last-write behaviour: the first joiner sees the driver's
+///   result, a joiner that comes after a later `complete` sees the later
+///   result.
 ///
 /// Mutations this model catches (each one made in the kernel and reverted): a
 /// task with no keep-alive receiver — the completion before any subscriber is
@@ -3887,9 +3886,10 @@ fn shuttle_transition_task_several_completions() {
             );
         }
 
-        // A clean completion, then a late `Closed` (the suspicion): the
-        // overwrite turns a successful transition into an error for every join
-        // that comes after it.
+        // A clean completion, then a later `Closed`: `complete` overwrites, so
+        // a joiner after the second call reads the error. The kernel's late
+        // `alive` rechecks use `complete_if_running` and keep the clean result
+        // (#1194); this pins the primitive they build on.
         let clean = TransitionTask::new();
         clean.complete(None);
         assert!(
@@ -4709,7 +4709,7 @@ fn node_dispose(node: &Arc<CloseNode>) -> Arc<TransitionTask> {
     if newly_registered {
         post_node(node, Intent::Dispose);
         if !node.alive.load(Ordering::SeqCst) {
-            task.complete(node_stopped_error(node));
+            task.complete_if_running(node_stopped_error(node));
         }
     }
     task
@@ -5193,13 +5193,13 @@ fn shuttle_root_close_owns_the_child_it_mounted() {
             "the child's mount record ran more than once"
         );
         // The mount cleanup reports a child dispose error to the sink unless the
-        // child was already `Disposed` when it asked. The one it can report is
-        // the last-write-wins result model 18 pins: `register_dispose` looks at
-        // `alive` after posting, and a driver that finished in between had
-        // already completed the task with the cleanup's result.
-        assert!(
-            sink_errors.load(Ordering::SeqCst) <= 1,
-            "the mount cleanup reported more than one error to the sink"
+        // child was already `Disposed` when it asked, and a successful cleanup
+        // reports nothing: `register_dispose` keeps the driver's result instead
+        // of replacing it with `Closed` (#1194).
+        assert_eq!(
+            sink_errors.load(Ordering::SeqCst),
+            0,
+            "the mount cleanup reported an error to the sink"
         );
         assert_eq!(
             root.shutdown_posts.load(Ordering::SeqCst),
@@ -5266,24 +5266,19 @@ fn shuttle_root_close_owns_the_child_it_mounted() {
     });
 }
 
-/// Model 18, one transition's result across its driver's exit (#622's "待复现
-/// 的疑点": "`complete` 后写覆盖先写：干净的子 dispose 与根关闭竞争时，晚到的
+/// Model 18, one transition's result across its driver's exit (#1194, #622's
+/// "待复现的疑点": "`complete` 后写覆盖先写：干净的子 dispose 与根关闭竞争时，晚到的
 /// join 拿到 `Err(Closed)`"): a child's dispose and a child subtree shutdown
 /// race while the root is closing. `register_dispose` posts the dispose and
 /// then looks at `alive`; a driver that finished the dispose in between already
-/// completed the terminal task with the cleanup's result, and the late check
-/// completes that same task again — with `stopped_error()`, which is `Closed`
-/// while `Shared.closing` is set. Every join that attaches after the overwrite
-/// reads `Closed` although the cleanup succeeded; the same overwrite makes the
-/// mount cleanup report a false error to the sink (model 17 accepts the one it
-/// can see).
-///
-/// Ignored: it fails on the current kernel (#1194). A fix would complete the
-/// task only while it is still `Running` (the driver's completion happens
-/// before `alive` is cleared, so a check made after reading `alive == false`
-/// would see it).
+/// completed the terminal task with the cleanup's result. The late check must
+/// not complete that task again: `stopped_error()` is `Closed` while
+/// `Shared.closing` is set, so the overwrite would turn a successful cleanup
+/// into an error for every join that attaches after it and make the mount
+/// cleanup report a false error to the sink. The fix completes only while the
+/// task is still `Running`; the driver completes before it clears `alive`, so a
+/// check made after reading `alive == false` sees `Done` and keeps the result.
 #[test]
-#[ignore = "#1194: the kernel's late !alive completion overwrites the driver's result"]
 fn shuttle_dispose_result_survives_the_driver_exit() {
     explore(|| {
         // The root's close is in progress: `Shared.closing` is what turns the
