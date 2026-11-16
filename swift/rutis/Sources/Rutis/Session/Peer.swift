@@ -556,6 +556,10 @@ package final class Peer: @unchecked Sendable {
         let draining = self.draining
         self.draining = []
         let running = Array(self.running.values)
+        // A call that took its id just before this ends has no Task yet (the
+        // reading thread is between `invocation` and attaching it): it is
+        // cancelled once it is there, which sees this (#630).
+        for call in running { call.cancelled = true }
         lock.unlock()
         readyEvent.fire()
         let failure = RutisError.ended(error)
@@ -1209,6 +1213,9 @@ package final class Peer: @unchecked Sendable {
         lock.lock()
         if let call = running[job.id] {
             call.task = task
+            // Cancelled by a `cancel` frame, or by the session ending while
+            // this call was between taking its id and its Task being here
+            // (#630).
             if call.cancelled { task.cancel() }
         }
         lock.unlock()

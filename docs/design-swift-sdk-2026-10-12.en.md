@@ -339,6 +339,7 @@ Applies to both shapes.
 | Call chain | `@TaskLocal var path: [String]`: an incoming call sets `path + [id]` in its Task; outgoing calls take the chain from the current TaskLocal; `apply` / cleanups carry the chain of `rows.load` / `rows.unload`; a plugin's own `Task.detached` loses the chain (in the guide: use `ctx.spawn` or a plain `Task {}`) |
 | `sync` methods | the implementation may be `async` and may call other services (suspending holds no thread); the same behavior as Go |
 | Incoming cancellation | a `cancel` frame or an aborted `signal` → `Task.cancel()` on that call; `Task.checkCancellation()` throws `CancellationError` |
+| Session end | `close()` (the peer went away, `stop()`) cancels every call running then; one that took its id just then, before its Task was attached, is cancelled when it is (#630) |
 | Outgoing cancellation | when the Task is cancelled: an `async` call sends `cancel`, throws `CancellationError` at once and discards a late result; a `sync` call throws at once and discards a late result, and the peer runs to completion |
 | Row unload | cancels the row's Task tree; the order is §4.7's unload |
 | `SyncWaitCycle` | never produced here; received as a `RutisError` with `name == "SyncWaitCycle"` |
