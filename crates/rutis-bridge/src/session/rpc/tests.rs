@@ -3801,4 +3801,85 @@ fn the_limit_and_the_call_are_named() {
     );
 }
 
+/// #1250: the sync await polls a future without the state's lock (a poll may
+/// run anything, including a wait on this state), so the last waiter can give
+/// up before the task the future was started as is recorded. The task is then
+/// aborted instead of recorded: the future does not run with nobody waiting
+/// for it, and no later wait gives up on a second, unrecorded task.
+#[test]
+fn a_future_started_as_its_last_waiter_leaves_is_cancelled() {
+    struct Flag(Arc<AtomicBool>);
+    impl Drop for Flag {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .expect("a current-thread runtime");
+    let _entered = runtime.enter();
+    let (polling, polling_now) = mpsc::channel::<()>();
+    let (given_up, has_given_up) = mpsc::channel::<()>();
+    let dropped = Arc::new(AtomicBool::new(false));
+    let flag = Flag(dropped.clone());
+    let first = async move {
+        // The first poll of the future: the sync await is now between taking
+        // it and recording the task it started.
+        let _flag = flag;
+        polling.send(()).expect("the waiter hears of the poll");
+        has_given_up.recv().expect("the waiter gives up");
+        std::future::pending().await
+    };
+    let value = Value::cancellable_future(first);
+    let Value::Reference(Reference(ReferenceInner::Local(object))) = value else {
+        panic!("a future is a local reference");
+    };
+    let Body::Future(state) = &object.body else {
+        panic!("a future reference is a future");
+    };
+    // The one waiter the future has, given up inside that poll.
+    let waiting = {
+        let (object, polling_now) = (object.clone(), polling_now);
+        std::thread::spawn(move || {
+            let Body::Future(state) = &object.body else {
+                panic!("a future reference is a future");
+            };
+            state.future.lock().unwrap().waiters += 1;
+            let waiter = Waiter(state);
+            polling_now.recv().expect("the sync await polls the future");
+            drop(waiter);
+            given_up.send(()).expect("the sync await waits");
+        })
+    };
+    assert!(
+        object.ready_on_blocked_executor().is_err(),
+        "a blocked executor waits for nothing"
+    );
+    waiting.join().unwrap();
+
+    let recorded = state.future.lock().unwrap();
+    assert_eq!(recorded.waiters, 0, "a waiter was left counted");
+    assert!(
+        recorded.task.is_none(),
+        "the future runs with nobody waiting for it: the abort handle was recorded after the \
+         last waiter gave up"
+    );
+    drop(recorded);
+    assert!(
+        state.result.borrow().is_none(),
+        "the future finished after its last waiter gave up"
+    );
+    // Aborted before the runtime ever polled it: the future the task held is
+    // dropped, not left to run.
+    runtime.block_on(async {
+        for _ in 0..16 {
+            tokio::task::yield_now().await;
+        }
+    });
+    assert!(
+        dropped.load(Ordering::SeqCst),
+        "the aborted task still holds the future"
+    );
+}
+
 mod objects;

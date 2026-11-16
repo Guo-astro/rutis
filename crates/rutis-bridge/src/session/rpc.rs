@@ -195,6 +195,7 @@ impl Value {
                     task: None,
                     cancellable: false,
                     waiters: 0,
+                    abandoned: false,
                 }),
                 result: watch::channel(None).0,
                 call: std::sync::OnceLock::new(),
@@ -510,6 +511,10 @@ struct FutureState {
     cancellable: bool,
     /// The waits under way.
     waiters: usize,
+    /// The last waiter gave up after the future was taken to be started but
+    /// before its task was recorded, so there was no handle to abort: the one
+    /// that records it aborts instead (#1250).
+    abandoned: bool,
 }
 
 /// One wait for a future: when the last one is given up before the result,
@@ -517,18 +522,36 @@ struct FutureState {
 struct Waiter<'a>(&'a AsyncResult);
 impl Drop for Waiter<'_> {
     fn drop(&mut self) {
-        let mut state = self.0.future.lock().unwrap();
+        // Another thread's panic must not turn this drop into a second one
+        // (a panic in a drop aborts the process).
+        let mut state = self
+            .0
+            .future
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.waiters -= 1;
         if state.waiters == 0 && state.cancellable && self.0.result.borrow().is_none() {
-            if let Some(task) = state.task.take() {
-                task.abort();
+            match state.task.take() {
+                Some(task) => task.abort(),
+                // Taken to be started, its task not recorded yet: a poll runs
+                // without the lock, so the future is between the two (the
+                // sync await, #1250). The abort cannot be given here; the
+                // one recording the handle aborts it.
+                None if state.pending.is_none() => state.abandoned = true,
+                // Not started: nothing runs, and a new wait starts it.
+                None => {}
             }
         }
     }
 }
 impl Drop for AsyncResult {
     fn drop(&mut self) {
-        if let Some(task) = self.future.get_mut().unwrap().task.take() {
+        // A panic elsewhere must not turn this drop into a second one.
+        let state = self
+            .future
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(task) = state.task.take() {
             task.abort();
         }
     }
@@ -558,6 +581,13 @@ impl Object {
             _ => Err(Error::value("reference is not callable")),
         }
     }
+    /// The wait a blocked executor allows: the future is started here, its
+    /// first poll running on this thread and the rest as a task, and the
+    /// caller's own wait is refused ([`Error::SyncWaitCycle`]). The poll runs
+    /// without the state's lock (a poll may reach back into this state), so
+    /// the task it started is recorded afterwards, under the lock, and
+    /// aborted instead when every wait for it was given up meanwhile
+    /// (#1250).
     fn ready_on_blocked_executor(&self) -> Reply {
         let Body::Future(state) = &self.body else {
             return Err(Error::value("reference is not awaitable"));
@@ -588,7 +618,20 @@ impl Object {
                                 .await;
                                 result.send_replace(Some(reply));
                             }));
-                    state.future.lock().unwrap().task = Some(task.abort_handle());
+                    // The handle is recorded under the lock a waiter takes,
+                    // and only while one is left waiting: with the last one
+                    // gone there is nobody to abort it later, so the task is
+                    // aborted here instead — once, since nothing records it.
+                    let mut recorded = state.future.lock().unwrap();
+                    if recorded.abandoned
+                        && recorded.waiters == 0
+                        && state.result.borrow().is_none()
+                    {
+                        task.abort();
+                    } else {
+                        recorded.abandoned = false;
+                        recorded.task = Some(task.abort_handle());
+                    }
                 }
             }
         }
