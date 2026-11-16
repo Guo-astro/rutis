@@ -86,7 +86,7 @@ A minor version of 0.x may be incompatible: `cargo semver-checks` compares with 
 
 The parts of the release gate a local machine can run were run (2026-11-17, Linux x86-64):
 
-- `cargo package --locked --registry crates-io` packaged the train's 10 crates and verified each.
+- `cargo package --locked --registry crates-io` packaged the train's 10 crates and verified each; the four npm packages (`node/rutis`, `node/rutis-runtime`, `bun/rutis-bun`, `node/rutis-host`) all pack at 0.22.0 with `npm pack --dry-run`. These two steps are CI's `release-dry-run` job.
 - `tools/install/local-artifacts.sh` built this platform's five npm packages, the `rutis` and `rutis-host` wheels and `rutis-host-0.22.0-x86_64-unknown-linux-gnu.tar.gz`; its sha256 checks out and the binary inside answers `rutis-host 0.22.0` to `--version`.
 - With those files, `RUTIS_E2E_ARTIFACTS=<dir> cargo test -p rutis-e2e --test install -- --ignored --test-threads=1` passes all three scenarios: npm, PyPI (including `rutis[network]` serving a remote runtime) and the release binary (with a Go row). This machine's `/usr/bin/python3` has no `python3-venv`, so the `python3` first on `PATH` has to build a venv with pip in it (the one `uv python install 3.12` gives you does).
 - `cargo test -p rutis-host --test persisted` and `cargo test -p rutis-dsh --test persisted` pass (the 0.22.0 samples read as their expectations).

@@ -86,7 +86,7 @@ cargo run -p rutis-bridge --features websocket --example smoke -- \
 
 发布门能在本机跑的部分跑过（2026-11-17，Linux x86-64）：
 
-- `cargo package --locked --registry crates-io` 为列车的 10 个 crate 打包并各自验证通过。
+- `cargo package --locked --registry crates-io` 为列车的 10 个 crate 打包并各自验证通过；四个 npm 包（`node/rutis`、`node/rutis-runtime`、`bun/rutis-bun`、`node/rutis-host`）的 `npm pack --dry-run` 都是 0.22.0。这两步就是 CI 的 `release-dry-run` 任务。
 - `tools/install/local-artifacts.sh` 建出这一平台的 5 个 npm 包、`rutis` 与 `rutis-host` 两个 wheel、`rutis-host-0.22.0-x86_64-unknown-linux-gnu.tar.gz`；sha256 对得上，解出的二进制 `--version` 是 `rutis-host 0.22.0`。
 - 用这些文件跑 `RUTIS_E2E_ARTIFACTS=<目录> cargo test -p rutis-e2e --test install -- --ignored --test-threads=1`：npm、PyPI（含 `rutis[network]` 起一个远程运行时）、发布二进制（带 Go 行）三个场景都通过。本机 `/usr/bin/python3` 没有 `python3-venv`，要让 `PATH` 前面的 `python3` 能建带 pip 的 venv（`uv python install 3.12` 装的那个可以）。
 - `cargo test -p rutis-host --test persisted` 与 `cargo test -p rutis-dsh --test persisted` 通过（0.22.0 的样本读出的就是期望）。
