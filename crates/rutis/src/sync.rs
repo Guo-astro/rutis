@@ -65,15 +65,44 @@
 //! it adds the task), where `Handle::spawn` does not. A `std::thread_local!`
 //! window that spans a spawn — the bus's `SPAWNING_EMIT` — therefore spans a
 //! switch in a model; a model that drives the emit chain must account for it.
+//!
+//! # The deadline stand-in
+//!
+//! [`deadline`] is the timer an unload's `wait_events` bounds its wait with
+//! (`shutdown_deadline()`). In a plain build it is the thread that has kept
+//! that time (`rutis-unload-deadline`): `recv_timeout` on a channel the wait
+//! closes when its calls finish, then a send on a oneshot when it times out.
+//! Under `rutis_shuttle` no thread runs and no real time passes: the timer
+//! registers its deadline on the model's `Clock`, and `Clock::advance` fires
+//! it. The model is the scheduler: `Clock::wait_for_waiters` blocks until the
+//! timers it is about to move are in place, `Clock::advance` moves virtual
+//! time, and `Clock::now` says where it is. A wait that ends before its
+//! deadline (the calls finished) drops its `Deadline`, which takes the
+//! registration back, as dropping the channel end ends the plain thread. A
+//! model that installs no clock gets no timer at all — `wait_events` waits for
+//! the calls without a deadline, the path a plain build takes when the thread
+//! cannot be spawned — which is what the models that only wait for calls that
+//! finish (6, 15 and 16) need.
+//!
+//! Shuttle models no time, so the clock is the model's, not shuttle's: a
+//! `std::thread` with `recv_timeout` would wait ten real seconds per iteration
+//! and never let the model decide when the deadline arrives; a shuttle thread
+//! that slept would only wait for the model's own `advance`.
 
 #[cfg(not(rutis_shuttle))]
-pub(crate) use host::{spawn, Task, TaskSet};
+pub(crate) use host::{deadline, spawn, Task, TaskSet};
 
 #[cfg(rutis_shuttle)]
 pub(crate) use spawned::{spawn, Task, TaskSet};
 
+#[cfg(rutis_shuttle)]
+pub(crate) use timed::deadline;
+
 #[cfg(all(test, rutis_shuttle))]
 pub(crate) use spawned::SpawnScope;
+
+#[cfg(all(test, rutis_shuttle))]
+pub(crate) use timed::Clock;
 
 #[cfg(not(rutis_shuttle))]
 pub(crate) use std::sync::{atomic::AtomicBool, Mutex, RwLock};
@@ -94,8 +123,49 @@ pub(crate) fn switch_point() {
 #[cfg(not(rutis_shuttle))]
 mod host {
     use std::future::Future;
+    use std::time::Duration;
 
     use crate::error::{join_panic_error, Error};
+
+    /// The timer `wait_events` bounds an unload with: a thread that waits on
+    /// `finished` until the deadline passes, then sends on the oneshot. While
+    /// this exists the thread keeps waiting; dropping it (the calls finished
+    /// first) closes the channel, so `recv_timeout` returns `Disconnected` and
+    /// the thread ends without firing.
+    pub(crate) struct Deadline {
+        /// The caller's end of the deadline thread's channel.
+        _done: std::sync::mpsc::Sender<()>,
+        /// Completes when the deadline passed.
+        past: tokio::sync::oneshot::Receiver<()>,
+    }
+
+    impl Deadline {
+        /// Whether the deadline passed before the wait was dropped. `Err`
+        /// never happens here: the thread sends on the timeout and is ended by
+        /// this value's drop otherwise. It disables the branch in
+        /// `wait_events`'s `select!` anyway, as the plain build always did.
+        pub(crate) async fn passed(self) -> Result<(), ()> {
+            self.past.await.map_err(|_| ())
+        }
+    }
+
+    /// Starts the deadline thread: `None` when it cannot be spawned (the
+    /// unload then waits for its calls without a deadline).
+    pub(crate) fn deadline(limit: Duration) -> Option<Deadline> {
+        let (done, finished) = std::sync::mpsc::channel::<()>();
+        let (late, past) = tokio::sync::oneshot::channel::<()>();
+        std::thread::Builder::new()
+            .name("rutis-unload-deadline".into())
+            .spawn(move || {
+                if let Err(std::sync::mpsc::RecvTimeoutError::Timeout) =
+                    finished.recv_timeout(limit)
+                {
+                    let _ = late.send(());
+                }
+            })
+            .ok()?;
+        Some(Deadline { _done: done, past })
+    }
 
     /// A spawned task: the host runtime's handle.
     pub(crate) struct Task<T>(tokio::task::JoinHandle<T>);
@@ -363,6 +433,237 @@ mod spawned {
             *pending -= 1;
             drop(pending);
             self.0.wake.notify_one();
+        }
+    }
+}
+
+#[cfg(rutis_shuttle)]
+mod timed {
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex as StdMutex, OnceLock};
+    use std::thread::ThreadId;
+    use std::time::Duration;
+
+    use shuttle::sync::{Condvar, Mutex};
+
+    /// The model's virtual clock (see the module docs): the deadline timer's
+    /// stand-in. Time is where the model put it, and a deadline fires when
+    /// [`advance`](Self::advance) reaches it. The model that drives a wait
+    /// installs the clock on the thread that calls `wait_events`
+    /// ([`enter`](Self::enter)), so a `Ctx` needs no clock field and a model
+    /// that never waits pays nothing.
+    #[cfg(test)]
+    pub(crate) struct Clock {
+        inner: Arc<Inner>,
+    }
+
+    #[cfg(test)]
+    impl Clock {
+        /// A clock at time zero, with no deadlines.
+        pub(crate) fn new() -> Self {
+            Self {
+                inner: Arc::new(Inner {
+                    now: Mutex::new(Duration::ZERO),
+                    waits: Mutex::new(Vec::new()),
+                    registered: Condvar::new(),
+                    next: Mutex::new(0),
+                }),
+            }
+        }
+
+        /// Registers this clock for the `wait_events` calls on this thread
+        /// until the guard is dropped. A shuttle thread keeps its own guard;
+        /// a task shuttle runs on this thread's executor sees this one.
+        pub(crate) fn enter(&self) -> ClockEntered {
+            ClockEntered::install(self.inner.clone())
+        }
+
+        /// Where time is.
+        pub(crate) fn now(&self) -> Duration {
+            *self.inner.now.lock().unwrap()
+        }
+
+        /// Moves time forward by `by` and fires every deadline that is now
+        /// due, in registration order; returns how many fired. A deadline
+        /// registered at `t` with a limit of `l` fires at `t + l`.
+        pub(crate) fn advance(&self, by: Duration) -> usize {
+            let now = {
+                let mut now = self.inner.now.lock().unwrap();
+                *now += by;
+                *now
+            };
+            let due = {
+                let mut waits = self.inner.waits.lock().unwrap();
+                let mut due = Vec::new();
+                let mut at = 0;
+                while at < waits.len() {
+                    if waits[at].due <= now {
+                        due.push(waits.remove(at));
+                    } else {
+                        at += 1;
+                    }
+                }
+                due
+            };
+            let fired = due.len();
+            // Outside the lock: a send wakes the wait it belongs to, which the
+            // scheduler may run before this thread continues.
+            for wait in due {
+                let _ = wait.fire.send(());
+            }
+            fired
+        }
+
+        /// Blocks until `waits` deadlines are registered. The model's scheduler
+        /// calls it before moving time past a deadline it must fire; with no
+        /// such wait it never returns, and shuttle reports the deadlock.
+        pub(crate) fn wait_for_waiters(&self, waits: usize) {
+            let mut pending = self.inner.waits.lock().unwrap();
+            while pending.len() < waits {
+                pending = self.inner.registered.wait(pending).unwrap();
+            }
+        }
+    }
+
+    #[cfg(test)]
+    impl Clone for Clock {
+        fn clone(&self) -> Self {
+            Self {
+                inner: self.inner.clone(),
+            }
+        }
+    }
+
+    struct Inner {
+        /// Virtual time since the clock was made.
+        now: Mutex<Duration>,
+        /// The deadlines registered and not yet fired or taken back.
+        waits: Mutex<Vec<Wait>>,
+        /// Wakes `wait_for_waiters` when one is added.
+        registered: Condvar,
+        next: Mutex<u64>,
+    }
+
+    /// One registered deadline. A shuttle build without tests has no clock to
+    /// install (`Clock` is the models' tool), so `deadline` never registers one
+    /// there and nothing reads these two fields; the model-facing `advance`
+    /// reads them in a test build.
+    #[cfg_attr(not(test), allow(dead_code))]
+    struct Wait {
+        id: u64,
+        due: Duration,
+        /// Completes the wait's future; taken by `advance`.
+        fire: tokio::sync::oneshot::Sender<()>,
+    }
+
+    /// One registration, taken back when it is dropped: the plain build's
+    /// thread ending when its channel closes. Field order is the drop order.
+    struct Registration {
+        clock: Arc<Inner>,
+        id: u64,
+    }
+
+    impl Drop for Registration {
+        fn drop(&mut self) {
+            self.clock
+                .waits
+                .lock()
+                .unwrap()
+                .retain(|wait| wait.id != self.id);
+        }
+    }
+
+    /// One wait's deadline. Dropping it (the calls finished first) takes the
+    /// registration back, so a later advance fires nothing for it.
+    pub(crate) struct Deadline {
+        /// Dropped with the value, whichever way the wait ends.
+        _registration: Registration,
+        past: tokio::sync::oneshot::Receiver<()>,
+    }
+
+    impl Deadline {
+        /// Whether the deadline passed before the wait was dropped (`Err`
+        /// disables the branch in `wait_events`'s `select!`).
+        pub(crate) async fn passed(self) -> Result<(), ()> {
+            self.past.await.map_err(|_| ())
+        }
+    }
+
+    /// Registers `limit` from now on the clock installed on this thread;
+    /// `None` when there is none (the model waits for its calls without a
+    /// deadline).
+    pub(crate) fn deadline(limit: Duration) -> Option<Deadline> {
+        let clock = current()?;
+        let id = {
+            let mut next = clock.next.lock().unwrap();
+            *next += 1;
+            *next
+        };
+        let due = *clock.now.lock().unwrap() + limit;
+        let (late, past) = tokio::sync::oneshot::channel::<()>();
+        clock.waits.lock().unwrap().push(Wait {
+            id,
+            due,
+            fire: late,
+        });
+        clock.registered.notify_all();
+        Some(Deadline {
+            _registration: Registration { clock, id },
+            past,
+        })
+    }
+
+    /// The clock installed on this thread, innermost first. Keyed by the
+    /// operating-system thread, as the spawn scope is, and for the same
+    /// reason: shuttle's threads of one execution share a `std::thread_local!`.
+    fn current() -> Option<Arc<Inner>> {
+        registry()
+            .lock()
+            .unwrap()
+            .get(&std::thread::current().id())
+            .and_then(|clocks| clocks.last().cloned())
+    }
+
+    fn registry() -> &'static StdMutex<HashMap<ThreadId, Vec<Arc<Inner>>>> {
+        static REGISTRY: OnceLock<StdMutex<HashMap<ThreadId, Vec<Arc<Inner>>>>> = OnceLock::new();
+        REGISTRY.get_or_init(|| StdMutex::new(HashMap::new()))
+    }
+
+    /// One clock installed on one thread; the clock underneath it comes back on
+    /// drop.
+    #[cfg(test)]
+    pub(crate) struct ClockEntered {
+        thread: ThreadId,
+    }
+
+    #[cfg(test)]
+    impl ClockEntered {
+        fn install(clock: Arc<Inner>) -> Self {
+            let thread = std::thread::current().id();
+            registry()
+                .lock()
+                .unwrap()
+                .entry(thread)
+                .or_default()
+                .push(clock);
+            Self { thread }
+        }
+    }
+
+    #[cfg(test)]
+    impl Drop for ClockEntered {
+        fn drop(&mut self) {
+            let mut all = registry().lock().unwrap();
+            let empty = match all.get_mut(&self.thread) {
+                Some(clocks) => {
+                    clocks.pop();
+                    clocks.is_empty()
+                }
+                None => false,
+            };
+            if empty {
+                all.remove(&self.thread);
+            }
         }
     }
 }

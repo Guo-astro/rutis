@@ -614,27 +614,20 @@ impl FiberInner {
             }
         };
         let limit = shutdown_deadline();
-        // A thread keeps the time, not the runtime's timer: the kernel runs
-        // on whatever runtime it is given, timers enabled or not. It ends as
-        // soon as the calls finish (`done` dropped).
-        let (done, finished) = std::sync::mpsc::channel::<()>();
-        let (late, past) = tokio::sync::oneshot::channel::<()>();
-        let timer = std::thread::Builder::new()
-            .name("rutis-unload-deadline".into())
-            .spawn(move || {
-                if let Err(std::sync::mpsc::RecvTimeoutError::Timeout) =
-                    finished.recv_timeout(limit)
-                {
-                    let _ = late.send(());
-                }
-            });
-        if timer.is_err() {
+        // A timer keeps the time, not the runtime's own: the kernel runs on
+        // whatever runtime it is given, timers enabled or not. `crate::sync`:
+        // in a plain build a thread with `recv_timeout`, which ends as soon as
+        // the calls finish; in a shuttle model a registration on the model's
+        // clock, fired when the model advances time past it (#622 item 1).
+        let Some(deadline) = crate::sync::deadline(limit) else {
+            // No timer could be started: wait for the calls without a
+            // deadline, as there is nothing to report them past.
             settled.await;
             return;
-        }
+        };
         tokio::select! {
-            () = settled => drop(done),
-            Ok(()) = past => {
+            () = settled => {}
+            Ok(()) = deadline.passed() => {
                 let listeners = match self.ctx.row() {
                     Some(row) => format!("row {row}"),
                     None => format!("plugin {}", self.ctx.plugin_name()),
