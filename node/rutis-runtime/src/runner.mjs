@@ -1,7 +1,7 @@
 import { createRequire } from 'node:module'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { isAbsolute } from 'node:path'
-import { statSync, writeSync } from 'node:fs'
+import { statSync, writeSync, realpathSync } from 'node:fs'
 import { Worker } from 'node:worker_threads'
 import { Process } from './client.mjs'
 import { toJsonSchema } from './schema.mjs'
@@ -15,6 +15,32 @@ import { prefixOutput, say, watchBlocking } from './output.mjs'
 import { registeredDefinition } from './definitions.mjs'
 import { followRow, forgetRow } from './rows.mjs'
 
+// One runtime: a session in a Cordis Context of its own, driven by the host
+// at the other end of the channel it is given. The file as a program runs
+// one of these (the last line below); a test runs one in its own process,
+// with a session of its own (#630):
+//
+//   await run({ argv, env, connect, exit, handlers: false, watchdog: false })
+//
+// `argv` is the arguments after the script (default: this process's), `env`
+// what RUTIS_* is read from (default: this process's), and `connect` the
+// session, answering a peer as `Process.connect` does (default: that one).
+// `exit(code)` ends the runtime (default: `process.exit`); a test's leaves
+// its process running. `handlers` installs this process's unhandled-error
+// handlers (default: yes: they are the process's) and `watchdog` starts the
+// thread that ends a process stuck after the channel ended (default: yes).
+//
+// The body below is the script as it was, its indentation kept, so this
+// change adds the seam that makes the runner a factory and not a rewrite.
+export async function run({
+  argv = process.argv.slice(2),
+  env = process.env,
+  connect = Process.connect,
+  exit = code => process.exit(code),
+  handlers = true,
+  watchdog = true,
+} = {}) {
+
 // `<channel> --id <endpoint> [--peer <endpoint>] <first plugin or anchor>`.
 // The session greets as `--id`, expecting `--peer` as the controller when
 // given, on a local channel (`fd:3`, a socket path) or a network one.
@@ -24,7 +50,7 @@ import { followRow, forgetRow } from './rows.mjs'
 // runtime's (`--supervisor dial`), on SIGINT or SIGTERM, unloads its rows
 // and ends its session.
 const { channelSpec, pluginPath, endpoint, flags } = (() => {
-  const [channelSpec, ...rest] = process.argv.slice(2)
+  const [channelSpec, ...rest] = argv
   const flags = {}
   while (rest[0]?.startsWith('--')) flags[rest.shift().slice(2)] = rest.shift()
   const network = /^(wss?|listen|dial):/.test(channelSpec)
@@ -33,12 +59,15 @@ const { channelSpec, pluginPath, endpoint, flags } = (() => {
   // line saying so, no stack.
   if (!flags.id) {
     writeSync(2, `a local channel needs --id <endpoint>: ${channelSpec}; a host older than rutis 0.19 started this runtime: upgrade the host\n`)
-    process.exit(1)
+    exit(1)
+    // A test's `exit` leaves its process running: nothing to connect.
+    return {}
   }
   // A runner is a runtime: the controller manages its rows.
   const endpoint = { local: flags.id, expected: flags.peer, declare: ['runtime'] }
   return { channelSpec, pluginPath: rest[0], endpoint, flags }
 })()
+if (endpoint === undefined) return
 
 if (channelSpec.startsWith('listen:')) {
   const { serve } = await import('./serve.mjs')
@@ -48,7 +77,8 @@ if (channelSpec.startsWith('dial:')) {
   const { dialOut } = await import('./dial.mjs')
   const code = await dialOut({ spec: channelSpec.slice('dial:'.length), id: flags.id, peer: flags.peer, anchor: pluginPath })
   await new Promise(resolve => process.stderr.write('', resolve))
-  process.exit(code)
+  exit(code)
+  return
 }
 // The session of a dialing runtime: its supervisor reports what ends it.
 const dialed = flags.supervisor === 'dial'
@@ -69,6 +99,9 @@ let mounted = false
 let closing = false
 let disposing
 let version = 0
+// The status this runtime ends with: 1 after a fault or a failed unload, else
+// what the process already had.
+let exitCode
 // Rows: plugins rutis-loader manages one by one in this Context (`rows.*`).
 const rows = new Map() // key -> { fiber, inner, config, exports, loading, scope, labelOf, chain, abort }
 // rutis services registered one by one (`hosts.*`): id -> withdraw
@@ -106,8 +139,8 @@ const unloaded = new WeakMap()
 // (#688, ./unhandled.mjs): an error it leaves unhandled fails that row.
 // With RUTIS_PREFIX_OUTPUT=1 (#678, ./output.mjs) the row running is traced
 // too: each line its code writes starts with its name.
-const prefixing = process.env.RUTIS_PREFIX_OUTPUT === '1'
-const tracking = rowTracking(process.env.RUTIS_DEV === '1', { output: prefixing })
+const prefixing = env.RUTIS_PREFIX_OUTPUT === '1'
+const tracking = rowTracking(env.RUTIS_DEV === '1', { output: prefixing })
 // The bus's lines (a listener that failed in `emit`) are the runtime's own:
 // never prefixed with a row's name.
 const bus = new Bus({ loading: key => key === null ? !mounted : Boolean(rows.get(key)?.loading), within: tracking.within, report: line => say(`${line}\n`) })
@@ -152,7 +185,7 @@ const deadline = shutdownDeadline()
 // proxies, export slots, object handles, Cordis plugins, fibers and
 // services), so a test can check that nothing of the rows it unloaded is
 // left in the process. Without it the method is unknown.
-const INSPECT = Boolean(process.env.RUTIS_TEST_INSPECT)
+const INSPECT = Boolean(env.RUTIS_TEST_INSPECT)
 
 // A service in a scope: rows isolating `name` with `label` share it, and the
 // same name in another scope (another instance, say) is another service.
@@ -630,7 +663,7 @@ function fresh(entry) {
 // (#665). The file as it is now when this process imported none of it yet,
 // and always outside `dev`, where an edited file is what a restart runs.
 const imported = new Map()
-const development = process.env.RUTIS_DEV === '1'
+const development = env.RUTIS_DEV === '1'
 function described(entry) {
   return (development && imported.get(entry)) || fresh(entry)
 }
@@ -1088,7 +1121,7 @@ function dispatchCall(target, method, args) {
 // ends the process, so it never outlives its host. It sleeps until then
 // (the wait's timeout is the clock), and process.exit ends it as any other.
 const channelEnded = new Int32Array(new SharedArrayBuffer(4))
-watch(channelEnded, deadline + 1000)
+if (watchdog) watch(channelEnded, deadline + 1000)
 function watch(ended, after) {
   const watchdog = new Worker(`
     const { workerData: { ended, after } } = require('node:worker_threads')
@@ -1156,7 +1189,7 @@ function exitingRow(key, files) {
 
 // Calls on exported objects and functions may replace services too.
 try {
-  peer = await Process.connect(channelSpec, dispatch, () => { if (slots.size && !closing) refresh() }, endpoint, {
+  peer = await connect(channelSpec, dispatch, () => { if (slots.size && !closing) refresh() }, endpoint, {
     // The channel's end, seen by the watchdog.
     ended: channelEnded,
     // `plugins.read` only reads: answered even while a synchronous call
@@ -1174,12 +1207,12 @@ try {
   })
 } catch (error) {
   // The supervisor ended the session before it greeted, and said why.
-  if (dialed) process.exit(1)
+  if (dialed) exit(1)
   throw error
 }
 // Installed once connected: a failure before that is the runtime's own,
 // and ends it.
-handleUnhandled(tracking, {
+if (handlers) handleUnhandled(tracking, {
   charge,
   // Written before the process exits, as Node exits at once.
   exiting: (key, files, code) => {
@@ -1207,7 +1240,7 @@ if (dialed) {
   process.on('SIGTERM', stop)
 }
 // Spent once connected: what this process starts does not inherit it.
-delete process.env.RUTIS_CHANNEL_TOKEN
+delete env.RUTIS_CHANNEL_TOKEN
 await peer.closed()
 closing = true
 bus.ended()
@@ -1216,7 +1249,7 @@ bus.ended()
 // host report "exited normally" and nothing else (#225).
 if (peer.fault) {
   say(`runtime node: disconnected from the host: ${peer.fault.message}\n`)
-  process.exitCode = 1
+  exitCode = 1
 }
 // The rows go now, unless the host disposed them first: it went away (it
 // was killed, say) and nothing else ends this process. Cleanups that do not
@@ -1224,20 +1257,25 @@ if (peer.fault) {
 // exits, also when a plugin left a timer or a socket that would keep it.
 const late = setTimeout(() => {
   say(`runtime node: cleanups did not finish within ${deadline / 1000} s after the host disconnected; exiting\n`)
-  process.exit(1)
+  exit(1)
 }, deadline)
 await dispose().catch(error => {
   say(`rutis runtime: unloading failed: ${error?.stack ?? error}\n`)
-  process.exitCode = 1
+  exitCode = 1
 })
 // What is still being written goes out first.
 await Promise.all([process.stdout, process.stderr].map(stream => new Promise(resolve => stream.write('', resolve))))
 clearTimeout(late)
-process.exit()
+exit(exitCode ?? process.exitCode ?? 0)
 
 // How long cleanups may take once the session ended: RUTIS_SHUTDOWN_TIMEOUT
 // seconds (rutis-host passes its own deadline on), 10 by default; in ms.
 function shutdownDeadline() {
-  const seconds = Number(process.env.RUTIS_SHUTDOWN_TIMEOUT)
+  const seconds = Number(env.RUTIS_SHUTDOWN_TIMEOUT)
   return Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : 10_000
 }
+}
+
+// The CLI: this file as a program is the runtime on the channel it is given.
+// Imported, it is `run` alone: a test's process is not a runtime's.
+if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) await run()

@@ -10,13 +10,12 @@
 //
 // The bus over the session appears here once, to drive a Cordis filter's
 // synchronous call; the same-name hold is the session's `holds` seam
-// (src/runner.mjs:1168).
+// (src/runner.mjs:1197).
 //
 // What this does not cover: the process's own pump (`receiveMessageOnPort`
-// plus `Atomics.wait`, src/client.mjs:30-35) and the runner around it.
-// runner.mjs is a script, not a factory, so the runner-level frame pump has no
-// test yet — it is the gap #630 names for Node and Bun ("runner.mjs 要先改成
-// 工厂").
+// plus `Atomics.wait`, src/client.mjs:30-35) and the runner around it, which
+// test/runner-factory.test.mjs drives in process: runner.mjs is a factory
+// (#630), so its dispatch, bus and synchronous wait are that test's.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { Session, ENDPOINT_PROTOCOL } from '../src/session.mjs'
