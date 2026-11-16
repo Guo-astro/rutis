@@ -216,6 +216,38 @@ struct ManifestWire {
     rest: BinaryManifest,
 }
 
+/// Reads a manifest a binary printed (or, in tests and fuzzing, bytes that
+/// claim to be one). The format is checked before any field is used: one
+/// this host does not read is refused whole.
+fn parse_binary_manifest(bytes: &[u8]) -> Result<BinaryManifest, String> {
+    let wire: ManifestWire = serde_json::from_slice(bytes)
+        .map_err(|error| format!("it printed no manifest: {error}"))?;
+    match wire.manifest {
+        0 => Err(
+            "it prints a manifest of format 0, this host reads format 1: upgrade the SDK".into(),
+        ),
+        format if format > MANIFEST_FORMAT => Err(format!(
+            "it prints a manifest of format {format}, this host reads up to {MANIFEST_FORMAT}: upgrade rutis-host"
+        )),
+        _ => Ok(wire.rest),
+    }
+}
+
+// The entry point of `fuzz/fuzz_targets/binary_manifest.rs` (#631): only in a
+// build by cargo-fuzz, which sets `--cfg fuzzing`.
+#[cfg(fuzzing)]
+#[doc(hidden)]
+pub mod fuzzing {
+    /// Arbitrary bytes as what a binary printed for `--rutis-manifest`;
+    /// never panics, and a format this host does not read is refused whole.
+    pub fn binary_manifest(data: &[u8]) {
+        if data.len() as u64 > super::MANIFEST_OUTPUT {
+            return;
+        }
+        let _ = super::parse_binary_manifest(data);
+    }
+}
+
 /// What can tell that a file changed: its size, modification time and (on
 /// Unix) change time, which a copy that keeps the others still changes.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -474,23 +506,12 @@ fn read_manifest_with_timeout(path: &Path, timeout: Duration) -> Result<BinaryMa
             .collect();
         return Err(format!("--rutis-manifest exited with {status}: {tail}"));
     }
-    let wire: ManifestWire =
-        serde_json::from_slice(&out).map_err(|error| format!("it printed no manifest: {error}"))?;
-    match wire.manifest {
-        0 => Err(
-            "it prints a manifest of format 0, this host reads format 1: upgrade the SDK".into(),
-        ),
-        format if format > MANIFEST_FORMAT => Err(format!(
-            "it prints a manifest of format {format}, this host reads up to {MANIFEST_FORMAT}: upgrade rutis-host"
-        )),
-        _ => {
-            // Only a manifest that is used leaves what it started alone.
-            if let Some(guard) = guard.as_mut() {
-                guard.disarm();
-            }
-            Ok(wire.rest)
-        }
+    let manifest = parse_binary_manifest(&out)?;
+    // Only a manifest that is used leaves what it started alone.
+    if let Some(guard) = guard.as_mut() {
+        guard.disarm();
     }
+    Ok(manifest)
 }
 
 /// Whether the manifest process `child` ended, without reaping it: it stays
@@ -2297,6 +2318,33 @@ mod tests {
             .status()
             .unwrap();
         assert!(status.success(), "the check in its own process failed");
+    }
+
+    /// The parser the fuzz target calls reads arbitrary bytes: malformed
+    /// JSON is an error, and a format other than 1 is refused before any
+    /// field is used.
+    #[test]
+    fn a_manifest_is_parsed_whole_and_its_format_checked_first() {
+        let manifest = parse_binary_manifest(br#"{"pluginApi": 2}"#).unwrap();
+        assert_eq!(manifest.plugin_api, 2);
+        let error = parse_binary_manifest(br#"{"manifest": 2, "pluginApi": 2}"#).unwrap_err();
+        assert!(error.contains("format 2"), "{error}");
+        let error = parse_binary_manifest(br#"{"manifest": 0, "pluginApi": 2}"#).unwrap_err();
+        assert!(error.contains("format 0"), "{error}");
+        for bad in [
+            b"".as_slice(),
+            b"{",
+            b"[]",
+            b"null",
+            br#"{"plugins": 1}"#,
+            br#"{"manifest": -1}"#,
+        ] {
+            assert!(
+                parse_binary_manifest(bad).is_err(),
+                "{:?}",
+                String::from_utf8_lossy(bad)
+            );
+        }
     }
 
     /// A format this host does not read is refused whole, not half-read.

@@ -38,3 +38,11 @@ mod resolver;
     feature = "loader"
 ))]
 pub use resolver::DylibResolver;
+
+/// The message of the last failed `dlopen`, or that it left none. Not API:
+/// the test `tests/dlerror.rs` reaches the null check `open_library` uses.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[doc(hidden)]
+pub fn take_dl_error() -> String {
+    platform::take_dl_error()
+}

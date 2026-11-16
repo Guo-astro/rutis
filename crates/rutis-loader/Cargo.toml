@@ -50,3 +50,7 @@ rutis-bridge = { path = "../rutis-bridge", features = ["websocket", "testing"] }
 # The kernel's test hooks (events_conformance.rs waits on a dispatch's
 # selection, #659).
 rutis = { path = "../rutis", features = ["testing"] }
+
+[lints.rust]
+# cargo-fuzz builds with `--cfg fuzzing` (src/runtime/binary.rs).
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(fuzzing)"] }

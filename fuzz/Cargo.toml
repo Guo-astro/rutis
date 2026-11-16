@@ -14,6 +14,10 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4.13"
 rutis-bridge = { path = "../crates/rutis-bridge", default-features = false, features = ["testing", "websocket"] }
+# The dylib loader's pre-dlopen checks: ELF, Mach-O and PE parsing (#631).
+rutis-dylib-meta = { path = "../crates/rutis-dylib-meta" }
+# The manifest a runtime binary prints, parsed before it is trusted (#631).
+rutis-loader = { path = "../crates/rutis-loader", features = ["binary"] }
 
 [workspace]
 members = ["."]
@@ -49,6 +53,20 @@ bench = false
 [[bin]]
 name = "error_graph"
 path = "fuzz_targets/error_graph.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "dylib_meta"
+path = "fuzz_targets/dylib_meta.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "binary_manifest"
+path = "fuzz_targets/binary_manifest.rs"
 test = false
 doc = false
 bench = false
