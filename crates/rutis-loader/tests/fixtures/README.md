@@ -13,3 +13,11 @@ const rows = applyEntryPatches([], structuredClone(c.layers.flat()), (m) => warn
 ```
 
 Regenerate it after adding a case; never edit it by hand.
+
+`patch-random-expected.json` holds 120 seeded random layer stacks composed by
+the same original — version 1.0.9, the one `crates/rutis-dsh/dsh/package-lock.json`
+pins — for `tests/patch_random_parity.rs`: each case carries its layers, the rows
+`applyEntryPatches` returned, and how many times it warned. `patch-random.mjs`
+generates it, with its own deterministic seeds; its header has the command
+(the package is not a dependency of this repository). Regenerate it with the
+same package version; never edit it by hand.

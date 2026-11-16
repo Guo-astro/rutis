@@ -743,6 +743,7 @@ pub fn shared_tokens(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     fn accepting(listener: &str, entry: &str, name: &str) -> Accepting {
         Accepting {
@@ -802,6 +803,45 @@ mod tests {
             accepting("public", "row phone", "phone"),
         ];
         assert!(shared_tokens(&entries, &set).is_ok());
+    }
+
+    proptest! {
+        /// guarantee: host/credentials-from-env
+        ///
+        /// For any row name and any values: its token is the one in
+        /// `RUTIS_TOKEN_<NAME>` (upper case, `-` as `_`), and a bare
+        /// `RUTIS_TOKEN` is never a row's, whatever else the environment
+        /// holds — the row's own variable wins over every other one.
+        #[test]
+        fn only_the_rows_own_variable_is_read(
+            name in "[a-z][a-z0-9-]{0,12}",
+            own in ".{0,32}",
+            shared in ".{0,32}",
+            other in ".{0,32}",
+        ) {
+            let variable = token_variable(&name);
+            prop_assert_eq!(
+                variable.clone(),
+                format!("RUTIS_TOKEN_{}", name.to_uppercase().replace('-', "_"))
+            );
+            let expected_variable = variable.clone();
+            let environment = |asked: &str| match asked {
+                asked if asked == expected_variable.as_str() => Some(own.clone()),
+                "RUTIS_TOKEN" => Some(shared.clone()),
+                "RUTIS_TOKEN_OTHER" => Some(other.clone()),
+                _ => None,
+            };
+            prop_assert_eq!(
+                token_in(&name, &environment),
+                Some((variable, own.clone()))
+            );
+            // The shared token alone is no row's; nor is a neighbour's.
+            let bare = |asked: &str| (asked == "RUTIS_TOKEN").then(|| shared.clone());
+            prop_assert_eq!(token_in(&name, &bare), None);
+            let neighbour =
+                |asked: &str| (asked == "RUTIS_TOKEN_OTHER").then(|| other.clone());
+            prop_assert_eq!(token_in(&name, &neighbour), None);
+        }
     }
 
     /// guarantee: host/connection-plugins
