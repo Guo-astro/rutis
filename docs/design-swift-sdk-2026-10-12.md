@@ -332,7 +332,7 @@ let some = ctx.filter { $0.row == "chat" }                        // Rutis.Emitt
 
 | 项 | 规则 |
 | --- | --- |
-| 会话结构 | 一个读线程（阻塞读通道，帧经 `AsyncStream` 进 async 世界；阻塞读不落在协作线程池上）；写帧一个 actor 串行；每个进来的 `call` / `invoke` / `get` / `await` / 控制操作一个新 Task；`events.on` / `events.off` / `events.elsewhere` 在读循环里按帧序就地处理；行状态各自加锁 |
+| 会话结构 | 一个读线程（阻塞读通道，帧经 `AsyncStream` 进 async 世界；阻塞读不落在协作线程池上）；一条写线程按序写帧——发帧的只把帧入队，阻塞写落在写线程上，不落在协作线程池上；会话结束时等它把已收的帧写完（至多 5 秒）再返回（#630）；每个进来的 `call` / `invoke` / `get` / `await` / 控制操作一个新 Task；`events.on` / `events.off` / `events.elsewhere` 在读循环里按帧序就地处理；行状态各自加锁 |
 | 可重入 | 任何时候执行任何进来的调用；声明 `reentrant-sync`。不声明 `sync-stack`：调用并发跑在不同 Task 上，无单栈顺序（与 Go 同类，见契约 §2） |
 | 同步等待 | 调用对端 `sync` 方法或 `bail` 时帧带 `sync: true`，当前 Task 挂起在 continuation 上等回复——**不阻塞任何线程**；声明 `sync-wait`，参与宿主的等待环检测。等待期间其他 Task 照常执行进来的调用 |
 | 插件要求 | 服务对象可被并发调用（推荐 `actor` 或 `Sendable` 类型）；调用其他服务时不持锁（写进指南） |
@@ -502,7 +502,7 @@ await rutis.stop()        // 全部插件逆序清理，然后断开
 
 | 测试 | 位置 | 内容 |
 | --- | --- | --- |
-| 会话层单元 | `swift/rutis/Tests` | 编解码（十种值、键规则、截断、深度、超界整数）、引用计数、同步中回调、取消、TaskLocal 取链、并发、挂起等待不阻塞、宏展开（方法表、代理、Schema） |
+| 会话层单元 | `swift/rutis/Tests` | 编解码（十种值、键规则、截断、深度、超界整数）、引用计数、同步中回调、取消、TaskLocal 取链、并发、挂起等待不阻塞、发帧不阻塞发帧方（对端不读时只入队、按序写出、会话结束时已收的帧写完才返回，对端不读时至多等时限）、宏展开（方法表、代理、Schema） |
 | iOS 核心单测 | 同上，CI 加 `xcodebuild test -destination 'platform=iOS Simulator'` | 核心层在 iOS 上编译并测试（值、叶子 API、事件、内存会话、`RutisApp` 状态机） |
 | 会话一致性 | `rutis-bridge/tests/runtime_conformance.rs` + `RutisConformance` 目标 | `session::testing::session` |
 | 契约 × 通道 | `session_matrix.rs` 加 `Swift` | `fd:3`、拨回、回环 `tcp:`、（A1）监听 WebSocket；`weather.expected.json` 的全部调用、样例值与事件 |

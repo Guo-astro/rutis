@@ -392,9 +392,13 @@ package final class Peer: @unchecked Sendable {
     let options: PeerOptions
 
     private let lock = Lock()
-    /// Spans taking a call id and writing its frame: the far end refuses an
+    /// Spans taking a call id and queueing its frame: the far end refuses an
     /// id not above the last it received, so ids go out in order.
     private let writeLock = Lock()
+    /// The frames queued for the far end, written by a thread of the
+    /// session's own: a far end that stopped reading holds up that thread,
+    /// not the one that emitted (#630).
+    private let writer: Writer
 
     private var local: String
     private var remote: String
@@ -431,10 +435,18 @@ package final class Peer: @unchecked Sendable {
         guard valid(id: options.endpoint.local) else { throw ChannelError("invalid endpoint id \(options.endpoint.local)") }
         local = options.endpoint.local + ":"
         remote = ""
+        writer = Writer(channel)
+        // A write that fails ends the session, as one that failed on the
+        // sending thread used to: the frame was taken already (#630).
+        writer.onFailure { [weak self] error in
+            guard let self else { return }
+            self.fault(error)
+        }
     }
 
     /// Sends the handshake and starts reading.
     package func start() throws {
+        writer.start()
         let thread = Thread { [self] in read() }
         thread.stackSize = 8 << 20
         thread.name = "rutis session"
@@ -503,10 +515,12 @@ package final class Peer: @unchecked Sendable {
         try write(data)
     }
 
-    /// Writes a frame; writeLock is held.
+    /// Queues a frame for the writing thread; writeLock is held. Nothing here
+    /// waits for the write to be made: a far end that stopped reading holds
+    /// up that thread alone (#630).
     private func write(_ data: [UInt8]) throws {
         if let error = self.error { throw error }
-        try channel.send(data)
+        try writer.enqueue(data)
     }
 
     private func read() {
@@ -567,6 +581,10 @@ package final class Peer: @unchecked Sendable {
         for event in draining { event.fire() }
         for call in running { call.task?.cancel() }
         _ = held
+        // What was taken before the session ended still goes out, and this
+        // waits for it: a process that ends at the session's end, as a
+        // runtime's does, loses no frame for it (#630).
+        writer.drain(within: writerDrainSeconds)
         closedEvent.fire()
     }
 

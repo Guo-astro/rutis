@@ -1,4 +1,4 @@
-//! guarantee: core/D2b, events/12.1-args, events/by-name b
+//! guarantee: core/D2, events/by-name
 //! Property test of the event-argument codec (#631): the shape table of
 //! protocol spec §12.1 decides how many arguments a value is, and any
 //! nested serde value survives the round trip through those arguments.
