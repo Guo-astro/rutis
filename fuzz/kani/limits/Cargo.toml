@@ -1,0 +1,16 @@
+# The two shapes Kani 0.68.0 does not finish here (#631), minimized and
+# without any rutis code: plain `format!` with one argument and
+# `str::from_utf8` over one symbolic byte. `fuzz/KANI-MIRI.md` records the
+# timings. Its own workspace, and not a member of `fuzz/kani`'s: `cargo kani`
+# there never runs these, which would not finish.
+[package]
+name = "rutis-kani-limits"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[workspace]
+
+[lints.rust]
+# `#[cfg(kani)]` is set by `cargo kani` only.
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }
