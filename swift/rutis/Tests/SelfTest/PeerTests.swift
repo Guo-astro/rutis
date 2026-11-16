@@ -97,7 +97,8 @@ struct PeerTests {
             runtime.close()
         }
         let call = Task { try await host.call(target: "t", method: "wait", args: [], sync: false) }
-        await started.wait(seconds: 5)
+        let began = await started.wait(seconds: 5)
+        XCTAssertTrue(began, "the call reached its handler")
         // Its Task is attached right after the call starts; a moment is enough
         // for the attach to be behind us.
         try await Task.sleep(nanoseconds: 50_000_000)
@@ -150,8 +151,8 @@ struct PeerTests {
             host.channel.close()
         }
         let call = Task { try await host.call(target: "", method: "hold", args: [], sync: false) }
-        await arrived.wait(seconds: 5)
-        XCTAssertTrue(arrived.isSet, "the call reached the point before its Task is made")
+        let reached = await arrived.wait(seconds: 5)
+        XCTAssertTrue(reached, "the call reached the point before its Task is made")
         runtime.close()
         attaching.signal()
         _ = await cancelled.wait(seconds: 5)
