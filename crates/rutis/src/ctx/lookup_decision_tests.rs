@@ -1,4 +1,4 @@
-//! guarantee: core/D13, core/D21b
+//! guarantee: core/D13, core/D21
 //! Property test of the lookup, scope and strict-read decision table (#631):
 //! generated reader / declaration / provider scenes are compared with a
 //! simple table-driven reference.
