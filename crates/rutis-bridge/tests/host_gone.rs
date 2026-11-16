@@ -19,6 +19,8 @@ use rutis_test_support::{eventually_with, scaled, HANG_GUARD};
 use serde_json::json;
 
 mod common;
+mod kotlin;
+
 use common::runtime::launcher;
 use rutis_test_support::runtimes;
 
@@ -138,6 +140,7 @@ enum Runtime {
     Node,
     Python,
     Go,
+    Kotlin,
     #[cfg(unix)]
     Bun,
 }
@@ -172,6 +175,17 @@ async fn start(runtime: Runtime, dir: &Path, deadline: &str) -> (Arc<Process>, P
                 launcher(runtimes::binary(&binary, dir)),
                 dir.to_owned(),
                 PathBuf::from("lingering"),
+            )
+        }
+        Runtime::Kotlin => {
+            // The conformance jar's plugin `host_gone` (Rutis.serve), from
+            // the SDK's Gradle build or `RUTIS_KOTLIN_JAR`.
+            let package = repo().join("kotlin/rutis");
+            (
+                package,
+                kotlin::launcher().cwd(dir),
+                dir.to_owned(),
+                PathBuf::from("host_gone"),
             )
         }
         #[cfg(unix)]
@@ -363,6 +377,9 @@ def apply(ctx, config):
             Runtime::Go => {
                 unreachable!("a busy goroutine does not keep the Go runtime from its end")
             }
+            Runtime::Kotlin => {
+                unreachable!("the Kotlin column has no busy case")
+            }
             _ => {
                 let entry = dir.join("busy.mjs");
                 std::fs::write(&entry, NODE_BUSY).unwrap();
@@ -504,4 +521,20 @@ async fn bun_gives_up_a_cleanup_at_its_deadline_when_its_host_goes_away() {
         return;
     }
     gives_up_a_cleanup_at_its_deadline(Runtime::Bun).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn kotlin_exits_after_its_cleanups_when_its_host_goes_away() {
+    if !rutis_test_support::runtimes::enabled("kotlin") {
+        return;
+    }
+    exits_after_its_cleanups(Runtime::Kotlin).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn kotlin_gives_up_a_cleanup_at_its_deadline_when_its_host_goes_away() {
+    if !rutis_test_support::runtimes::enabled("kotlin") {
+        return;
+    }
+    gives_up_a_cleanup_at_its_deadline(Runtime::Kotlin).await;
 }

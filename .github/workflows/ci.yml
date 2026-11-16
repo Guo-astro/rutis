@@ -1103,6 +1103,15 @@ jobs:
           cargo test -p rutis-host --features kotlin --test dial_conformance kotlin::
           cargo test -p rutis-bridge --all-features --test kotlin_remote
           cargo test -p rutis-host --features kotlin --test kotlin
+      # The lease suite's Kotlin column (a listening runtime on another
+      # machine, lease_e2e) and host_gone's (a runtime whose host went away),
+      # #624.
+      - name: cargo test (the lease and host-gone suites with Kotlin)
+        env:
+          RUTIS_TEST_RUNTIMES: kotlin
+        run: |
+          cargo test -p rutis-host --test lease_e2e
+          cargo test -p rutis-bridge --all-features --test host_gone
       # Kotlin rows among Node and Python ones (the multilang Kotlin column),
       # and their plugin definitions handed to Rust, from rows and from an
       # app that dials in (the plugin-values Kotlin column).
