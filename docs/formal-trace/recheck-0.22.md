@@ -2,7 +2,7 @@
 
 [中文索引](README.md) · [英文复核页](recheck-0.22.en.md) · [保证登记表](../guarantees.md) · [会话协议规格](../protocol-session.md) · 议题：[#634](https://github.com/arcships/rutis/issues/634)
 
-状态：第一版。日期：2026-11-15。基准：`origin/main` `a2a7a743`。
+状态：第一版。日期：2026-11-17。基准：`origin/main` `2f4971a3`。
 
 本文件由 `node tools/formal-trace.mjs --write` 生成，`--check` 检查它是否与 `rules/protocol-*.md` 及现行来源一致。它复核的是 `rules/protocol-*.md` 里的 1368 条现行规则（另 184 条 issue 快照里已取代的规则不重抽）。**状态是这一轮复核的结论；`rules/protocol-*.md` 保持 issue 的十列原文不改。**
 
@@ -13,7 +13,7 @@
 1. **来源是否还在**：来源文档在当前树存在，且 0.19 / 0.22 没有删掉它描述的东西。删掉的（compat 格式、`events-v2`、`sync-wait` 能力、节点 `export` / `import`、`Registration`、接入点、`Revocations`、`PeerRows`、`peer:` 行、`runtimes.remote`、`Transport`、`ChannelInfo`）记「已撤回」，并在缺口写取代它的规则。
 2. **有没有现行锚点**：会话层规则对到 `docs/protocol-session.md` 的 `SESS-*` 编号（§11 规则状态表）；其余分区没有新的现行规格，只有设计或指南，锚点写 `—`，并在缺口写明它落在哪份文档或为什么没有。
 3. **证据是否解析**：用 `现有形式化` 列里的具名路径、用例名与行号核对当前树；解析不了的降级，只有模型或没有实现检查的记「部分验证」。
-4. **状态只降不升**：以 issue 的十列映射为上限；本轮只把来源被删、登记表删行、证据不解析或来源已历史化的行降级。**没有一条因为“规格说是当前”就升为「已验证」**：规格的「当前」说的是规则现行，不是实现验证过。
+4. **状态只降不升，只有一个例外：有证据的升级**。以 issue 的十列映射为上限；本轮只把来源被删、登记表删行、证据不解析或来源已历史化的行降级。**没有一条因为“规格说是当前”就升为「已验证」**：规格的「当前」说的是规则现行，不是实现验证过。语义重抽条目可以带 `upgrade` 把「未验证」「部分验证」升到「已验证」，条件是同时写出目标状态、能在当前树解析的 `path::name` 证据（模型、属性测试或具名用例）和变异或修复前的配置；`--check` 对缺证据或缺变异的升级报错，并逐条打印接受的升级。
 
 复核不判断规则文字的语义是否正确：它核对来源、锚点、证据路径和状态。**TRC 分区的 44 行与协议清单 `registry-1` 的 165 行、`registry-2` 的 218 行、`session` 的 350 行、`events` 的 262 行、`runtime` 的 309 行、`remote` 的 248 行已在 §5 语义重抽**：协议清单全部现行规则都有条目，规则文字仍是 issue 快照原文。
 
@@ -47,27 +47,29 @@
 <!-- recheck-index:begin -->
 | 文件 | 分区 | 现行 | 已验证 | 部分验证 | 未验证 | 明确不保证 | 不单独计数 | 已撤回（快照） | 已撤回（本轮） | 有规格锚点 | 无现行来源 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| [protocol-registry-1.md](rules/protocol-registry-1.md) | #634 · registry-1 | 156 | 4 | 48 | 62 | 6 | 24 | 9 | 12 | 0 | 7 |
-| [protocol-registry-2.md](rules/protocol-registry-2.md) | #634 · registry-2 | 218 | 8 | 29 | 126 | 5 | 36 | 0 | 14 | 0 | 47 |
-| [protocol-events.md](rules/protocol-events.md) | #634 · events | 253 | 75 | 92 | 52 | 1 | 19 | 9 | 14 | 0 | 0 |
+| [protocol-registry-1.md](rules/protocol-registry-1.md) | #634 · registry-1 | 156 | 30 | 40 | 44 | 6 | 24 | 9 | 12 | 0 | 7 |
+| [protocol-registry-2.md](rules/protocol-registry-2.md) | #634 · registry-2 | 218 | 12 | 29 | 122 | 5 | 36 | 0 | 14 | 0 | 47 |
+| [protocol-events.md](rules/protocol-events.md) | #634 · events | 253 | 79 | 92 | 48 | 1 | 19 | 9 | 14 | 0 | 0 |
 | [protocol-session.md](rules/protocol-session.md) | #634 · session 上/下 | 246 | 13 | 99 | 86 | 7 | 27 | 104 | 14 | 161 | 2 |
 | [protocol-runtime.md](rules/protocol-runtime.md) | #634 · runtime | 264 | 8 | 38 | 140 | 10 | 63 | 45 | 5 | 0 | 68 |
-| [protocol-remote.md](rules/protocol-remote.md) | #634 · remote | 231 | 4 | 69 | 70 | 13 | 32 | 17 | 43 | 0 | 137 |
-| 合计 | — | 1368 | 112 | 375 | 536 | 42 | 201 | 184 | 102 | 161 | 261 |
+| [protocol-remote.md](rules/protocol-remote.md) | #634 · remote | 231 | 5 | 69 | 69 | 13 | 32 | 17 | 43 | 0 | 137 |
+| 合计 | — | 1368 | 147 | 367 | 509 | 42 | 201 | 184 | 102 | 161 | 261 |
 <!-- recheck-index:end -->
 
 状态怎么变：
 
 | 快照映射状态 | 复核后状态 | 条数 |
 | --- | --- | --- |
-| 未验证 | 未验证 | 536 |
-| 部分验证 | 部分验证 | 374 |
+| 未验证 | 未验证 | 509 |
+| 部分验证 | 部分验证 | 366 |
 | 不单独计数 | 不单独计数 | 201 |
 | 已验证 | 已验证 | 112 |
 | 未验证 | 已撤回 | 47 |
 | 明确不保证 | 明确不保证 | 42 |
 | 部分验证 | 已撤回 | 34 |
+| 未验证 | 已验证 | 27 |
 | 不单独计数 | 已撤回 | 13 |
+| 部分验证 | 已验证 | 8 |
 | 已验证 | 已撤回 | 4 |
 | 明确不保证 | 已撤回 | 4 |
 | 已验证 | 部分验证 | 1 |
@@ -90,77 +92,77 @@
 | core/D4e | 部分验证 | 部分验证 | 保证登记表 §6 | — | 具名证据是模块/用例名，不是文件路径；按原文保留 | 现行来源：保证登记表 §6；没有会话规格锚点 |
 | core/D5a | 部分验证 | 部分验证 | 保证登记表 §6 | — | 具名证据是模块/用例名，不是文件路径；按原文保留 | 现行来源：保证登记表 §6；没有会话规格锚点 |
 | core/D5b | 不单独计数 | 不单独计数 | 保证登记表 §6 | — | 无具名证据 | — |
-| core/D6a | 部分验证 | 部分验证 | 保证登记表 §6 | — | 具名证据是模块/用例名，不是文件路径；按原文保留 | 现行来源：保证登记表 §6；没有会话规格锚点 |
-| core/D6b | 未验证 | 未验证 | 保证登记表 §6 | — | 无具名证据 | 现行来源：保证登记表 §6；没有会话规格锚点；无具名证据 |
+| core/D6a | 已验证 | 部分验证 | 保证登记表 §6 | — | 具名证据是模块/用例名，不是文件路径；按原文保留 | 现行来源：保证登记表 §6；没有会话规格锚点；升为已验证（部分验证）：证据与变异见 tools/formal-trace-semantic.mjs |
+| core/D6b | 已验证 | 未验证 | 保证登记表 §6 | — | 无具名证据 | 现行来源：保证登记表 §6；没有会话规格锚点；升为已验证（未验证）：证据与变异见 tools/formal-trace-semantic.mjs |
 | core/D7a | 未验证 | 未验证 | 保证登记表 §6 | — | 无具名证据 | 现行来源：保证登记表 §6；没有会话规格锚点；无具名证据 |
 | core/D7b | 未验证 | 未验证 | 保证登记表 §6 | — | 无具名证据 | 现行来源：保证登记表 §6；没有会话规格锚点；无具名证据 |
 | core/D7c | 不单独计数 | 不单独计数 | 保证登记表 §6 | — | 无具名证据 | — |
 | core/D8 | 不单独计数 | 不单独计数 | 保证登记表 §6 | — | 无具名证据 | — |
-| core/D9a | 未验证 | 未验证 | 保证登记表 §6 | — | 无具名证据 | 现行来源：保证登记表 §6；没有会话规格锚点；无具名证据 |
+| core/D9a | 已验证 | 未验证 | 保证登记表 §6 | — | 无具名证据 | 现行来源：保证登记表 §6；没有会话规格锚点；升为已验证（未验证）：证据与变异见 tools/formal-trace-semantic.mjs |
 | core/D9b | 明确不保证 | 明确不保证 | 保证登记表 §6 | — | 无具名证据 | — |
 | core/D10 | 不单独计数 | 不单独计数 | 保证登记表 §6 | — | 无具名证据 | — |
 | core/D11 | 不单独计数 | 不单独计数 | 保证登记表 §6 | — | 无具名证据 | — |
-| core/D12 | 未验证 | 未验证 | 保证登记表 §6 | — | 无具名证据 | 现行来源：保证登记表 §6；没有会话规格锚点；无具名证据 |
+| core/D12 | 已验证 | 未验证 | 保证登记表 §6 | — | 无具名证据 | 现行来源：保证登记表 §6；没有会话规格锚点；升为已验证（未验证）：证据与变异见 tools/formal-trace-semantic.mjs |
 | core/D13 | 未验证 | 未验证 | 保证登记表 §6 | — | 无具名证据 | 现行来源：保证登记表 §6；没有会话规格锚点；无具名证据 |
 | core/D14a | 未验证 | 未验证 | 保证登记表 §6 | — | 无具名证据 | 现行来源：保证登记表 §6；没有会话规格锚点；无具名证据 |
 | core/D14b | 未验证 | 未验证 | 保证登记表 §6 | — | 无具名证据 | 现行来源：保证登记表 §6；没有会话规格锚点；无具名证据 |
-| core/D14c | 未验证 | 未验证 | 保证登记表 §6 | — | 无具名证据 | 现行来源：保证登记表 §6；没有会话规格锚点；无具名证据 |
-| core/D14d | 未验证 | 未验证 | 保证登记表 §6 | — | 无具名证据 | 现行来源：保证登记表 §6；没有会话规格锚点；无具名证据 |
+| core/D14c | 已验证 | 未验证 | 保证登记表 §6 | — | 无具名证据 | 现行来源：保证登记表 §6；没有会话规格锚点；升为已验证（未验证）：证据与变异见 tools/formal-trace-semantic.mjs |
+| core/D14d | 已验证 | 未验证 | 保证登记表 §6 | — | 无具名证据 | 现行来源：保证登记表 §6；没有会话规格锚点；升为已验证（未验证）：证据与变异见 tools/formal-trace-semantic.mjs |
 | core/D15 | 明确不保证 | 明确不保证 | 保证登记表 §6 | — | 无具名证据 | — |
 | core/D16a | 不单独计数 | 不单独计数 | 保证登记表 §6 | — | 无具名证据 | — |
 | core/D16b | 部分验证 | 部分验证 | 保证登记表 §6 | — | 具名证据是模块/用例名，不是文件路径；按原文保留 | 现行来源：保证登记表 §6；没有会话规格锚点 |
 | core/D17 | 部分验证 | 部分验证 | 保证登记表 §6 | — | 具名证据是模块/用例名，不是文件路径；按原文保留 | 现行来源：保证登记表 §6；没有会话规格锚点 |
 | core/D18a | 不单独计数 | 不单独计数 | 保证登记表 §6 | — | 无具名证据 | — |
-| core/D18b | 部分验证 | 部分验证 | 保证登记表 §6 | — | 具名证据是模块/用例名，不是文件路径；按原文保留 | 现行来源：保证登记表 §6；没有会话规格锚点 |
+| core/D18b | 已验证 | 部分验证 | 保证登记表 §6 | — | 具名证据是模块/用例名，不是文件路径；按原文保留 | 现行来源：保证登记表 §6；没有会话规格锚点；升为已验证（部分验证）：证据与变异见 tools/formal-trace-semantic.mjs |
 | core/D19 | 不单独计数 | 不单独计数 | 保证登记表 §6 | — | 无具名证据 | — |
 | core/D20 | 已撤回 | 已撤回 | 保证登记表 §6（issue 快照：已取代） | — | — | issue 快照：已取代，不重抽 |
 | core/D21a | 未验证 | 未验证 | 保证登记表 §6 | — | 无具名证据 | 现行来源：保证登记表 §6；没有会话规格锚点；无具名证据 |
 | core/D21b | 未验证 | 未验证 | 保证登记表 §6 | — | 无具名证据 | 现行来源：保证登记表 §6；没有会话规格锚点；无具名证据 |
 | core/D21c | 未验证 | 未验证 | 保证登记表 §6 | — | 无具名证据 | 现行来源：保证登记表 §6；没有会话规格锚点；无具名证据 |
-| core/D22a | 未验证 | 未验证 | 保证登记表 §6 | — | 无具名证据 | 现行来源：保证登记表 §6；没有会话规格锚点；无具名证据 |
+| core/D22a | 已验证 | 未验证 | 保证登记表 §6 | — | 无具名证据 | 现行来源：保证登记表 §6；没有会话规格锚点；升为已验证（未验证）：证据与变异见 tools/formal-trace-semantic.mjs |
 | core/D22b | 明确不保证 | 明确不保证 | 保证登记表 §6 | — | 无具名证据 | — |
-| core/D23a | 未验证 | 未验证 | 保证登记表 §6 | — | 无具名证据 | 现行来源：保证登记表 §6；没有会话规格锚点；无具名证据 |
+| core/D23a | 已验证 | 未验证 | 保证登记表 §6 | — | 无具名证据 | 现行来源：保证登记表 §6；没有会话规格锚点；升为已验证（未验证）：证据与变异见 tools/formal-trace-semantic.mjs |
 | core/D23b | 不单独计数 | 不单独计数 | 保证登记表 §6 | — | 无具名证据 | — |
 | core/D24a | 未验证 | 未验证 | 保证登记表 §6 | — | 无具名证据 | 现行来源：保证登记表 §6；没有会话规格锚点；无具名证据 |
 | core/D24b | 明确不保证 | 明确不保证 | 保证登记表 §6 | — | 无具名证据 | 登记表把这条登记为明确不保证 |
-| core/D25a | 部分验证 | 部分验证 | 保证登记表 §6 | — | 具名证据是模块/用例名，不是文件路径；按原文保留 | 现行来源：保证登记表 §6；没有会话规格锚点 |
+| core/D25a | 已验证 | 部分验证 | 保证登记表 §6 | — | 具名证据是模块/用例名，不是文件路径；按原文保留 | 现行来源：保证登记表 §6；没有会话规格锚点；升为已验证（部分验证）：证据与变异见 tools/formal-trace-semantic.mjs |
 | core/D25b | 未验证 | 未验证 | 保证登记表 §6 | — | 无具名证据 | 现行来源：保证登记表 §6；没有会话规格锚点；无具名证据 |
 | core/D26 | 已撤回 | 已撤回 | 保证登记表 §6（issue 快照：已取代） | — | — | issue 快照：已取代，不重抽 |
 | core/D27 | 已撤回 | 已撤回 | 保证登记表 §6（issue 快照：已取代） | — | — | issue 快照：已取代，不重抽 |
-| core/D28a | 部分验证 | 部分验证 | 保证登记表 §6 | — | 具名证据是模块/用例名，不是文件路径；按原文保留 | 现行来源：保证登记表 §6；没有会话规格锚点 |
+| core/D28a | 已验证 | 部分验证 | 保证登记表 §6 | — | 具名证据是模块/用例名，不是文件路径；按原文保留 | 现行来源：保证登记表 §6；没有会话规格锚点；升为已验证（部分验证）：证据与变异见 tools/formal-trace-semantic.mjs |
 | core/D28b | 未验证 | 未验证 | 保证登记表 §6 | — | 无具名证据 | 现行来源：保证登记表 §6；没有会话规格锚点；无具名证据 |
 | core/D29a | 未验证 | 未验证 | 保证登记表 §6 | — | 无具名证据 | 现行来源：保证登记表 §6；没有会话规格锚点；无具名证据 |
 | core/D29b | 部分验证 | 部分验证 | 保证登记表 §6 | — | 具名证据是模块/用例名，不是文件路径；按原文保留 | 现行来源：保证登记表 §6；没有会话规格锚点 |
-| core/D30a | 未验证 | 未验证 | 保证登记表 §6 | — | 无具名证据 | 现行来源：保证登记表 §6；没有会话规格锚点；无具名证据 |
+| core/D30a | 已验证 | 未验证 | 保证登记表 §6 | — | 无具名证据 | 现行来源：保证登记表 §6；没有会话规格锚点；升为已验证（未验证）：证据与变异见 tools/formal-trace-semantic.mjs |
 | core/D30b | 部分验证 | 部分验证 | 保证登记表 §6 | — | 具名证据是模块/用例名，不是文件路径；按原文保留 | 现行来源：保证登记表 §6；没有会话规格锚点 |
 | core/D30c | 未验证 | 未验证 | 保证登记表 §6 | — | 无具名证据 | 现行来源：保证登记表 §6；没有会话规格锚点；无具名证据 |
 | core/D30d | 未验证 | 未验证 | 保证登记表 §6 | — | 无具名证据 | 现行来源：保证登记表 §6；没有会话规格锚点；无具名证据 |
 | core/D30e | 未验证 | 未验证 | 保证登记表 §6 | — | 无具名证据 | 现行来源：保证登记表 §6；没有会话规格锚点；无具名证据 |
-| core/D31a | 未验证 | 未验证 | 保证登记表 §6 | — | 无具名证据 | 现行来源：保证登记表 §6；没有会话规格锚点；无具名证据 |
+| core/D31a | 已验证 | 未验证 | 保证登记表 §6 | — | 无具名证据 | 现行来源：保证登记表 §6；没有会话规格锚点；升为已验证（未验证）：证据与变异见 tools/formal-trace-semantic.mjs |
 | core/D31b | 未验证 | 未验证 | 保证登记表 §6 | — | 无具名证据 | 现行来源：保证登记表 §6；没有会话规格锚点；无具名证据 |
-| core/D31c | 未验证 | 未验证 | 保证登记表 §6 | — | 无具名证据 | 现行来源：保证登记表 §6；没有会话规格锚点；无具名证据 |
+| core/D31c | 已验证 | 未验证 | 保证登记表 §6 | — | 无具名证据 | 现行来源：保证登记表 §6；没有会话规格锚点；升为已验证（未验证）：证据与变异见 tools/formal-trace-semantic.mjs |
 | core/D31d | 明确不保证 | 明确不保证 | 保证登记表 §6 | — | 无具名证据 | 登记表把这条登记为明确不保证 |
-| core/D32a | 未验证 | 未验证 | 保证登记表 §6 | — | 无具名证据 | 现行来源：保证登记表 §6；没有会话规格锚点；无具名证据 |
-| core/D32b | 部分验证 | 部分验证 | 保证登记表 §6 | — | 具名证据是模块/用例名，不是文件路径；按原文保留 | 现行来源：保证登记表 §6；没有会话规格锚点 |
-| core/D32c | 未验证 | 未验证 | 保证登记表 §6 | — | 无具名证据 | 现行来源：保证登记表 §6；没有会话规格锚点；无具名证据 |
+| core/D32a | 已验证 | 未验证 | 保证登记表 §6 | — | 无具名证据 | 现行来源：保证登记表 §6；没有会话规格锚点；升为已验证（未验证）：证据与变异见 tools/formal-trace-semantic.mjs |
+| core/D32b | 已验证 | 部分验证 | 保证登记表 §6 | — | 具名证据是模块/用例名，不是文件路径；按原文保留 | 现行来源：保证登记表 §6；没有会话规格锚点；升为已验证（部分验证）：证据与变异见 tools/formal-trace-semantic.mjs |
+| core/D32c | 已验证 | 未验证 | 保证登记表 §6 | — | 无具名证据 | 现行来源：保证登记表 §6；没有会话规格锚点；升为已验证（未验证）：证据与变异见 tools/formal-trace-semantic.mjs |
 | core/D32d | 明确不保证 | 明确不保证 | 保证登记表 §6 | — | 无具名证据 | — |
 | core/D33a | 部分验证 | 部分验证 | 保证登记表 §6 | — | 1/1 个具名引用解析 | 现行来源：保证登记表 §6；没有会话规格锚点 |
 | core/D33b | 未验证 | 未验证 | 保证登记表 §6 | — | 无具名证据 | 现行来源：保证登记表 §6；没有会话规格锚点；无具名证据 |
 | core/D33c | 未验证 | 未验证 | 保证登记表 §6 | — | 无具名证据 | 现行来源：保证登记表 §6；没有会话规格锚点；无具名证据 |
-| core/features.shutdown-state a | 未验证 | 未验证 | 保证登记表 §7 | — | 无具名证据 | 现行来源：保证登记表 §7；没有会话规格锚点；无具名证据 |
+| core/features.shutdown-state a | 已验证 | 未验证 | 保证登记表 §7 | — | 无具名证据 | 现行来源：保证登记表 §7；没有会话规格锚点；升为已验证（未验证）：证据与变异见 tools/formal-trace-semantic.mjs |
 | core/features.shutdown-state b | 未验证 | 未验证 | 保证登记表 §7 | — | 无具名证据 | 现行来源：保证登记表 §7；没有会话规格锚点；无具名证据 |
-| core/features.errors | 未验证 | 未验证 | 保证登记表 §7 | — | 无具名证据 | 现行来源：保证登记表 §7；没有会话规格锚点；无具名证据 |
-| core/features.errors.failed-retry | 未验证 | 未验证 | 保证登记表 §7 | — | 无具名证据 | 现行来源：保证登记表 §7；没有会话规格锚点；无具名证据 |
-| core/typed.lost-dependency-pending a | 未验证 | 未验证 | 保证登记表 §7 | — | 无具名证据 | 现行来源：保证登记表 §7；没有会话规格锚点；无具名证据 |
+| core/features.errors | 已验证 | 未验证 | 保证登记表 §7 | — | 无具名证据 | 现行来源：保证登记表 §7；没有会话规格锚点；升为已验证（未验证）：证据与变异见 tools/formal-trace-semantic.mjs |
+| core/features.errors.failed-retry | 已验证 | 未验证 | 保证登记表 §7 | — | 无具名证据 | 现行来源：保证登记表 §7；没有会话规格锚点；升为已验证（未验证）：证据与变异见 tools/formal-trace-semantic.mjs |
+| core/typed.lost-dependency-pending a | 已验证 | 未验证 | 保证登记表 §7 | — | 无具名证据 | 现行来源：保证登记表 §7；没有会话规格锚点；升为已验证（未验证）：证据与变异见 tools/formal-trace-semantic.mjs |
 | core/typed.lost-dependency-pending b | 未验证 | 未验证 | 保证登记表 §7 | — | 无具名证据 | 现行来源：保证登记表 §7；没有会话规格锚点；无具名证据 |
 | core/typed.lost-dependency-silent | 未验证 | 未验证 | 保证登记表 §7 | — | 无具名证据 | 现行来源：保证登记表 §7；没有会话规格锚点；无具名证据 |
-| core/typed.lost-dependency-restart | 未验证 | 未验证 | 保证登记表 §7 | — | 无具名证据 | 现行来源：保证登记表 §7；没有会话规格锚点；无具名证据 |
+| core/typed.lost-dependency-restart | 已验证 | 未验证 | 保证登记表 §7 | — | 无具名证据 | 现行来源：保证登记表 §7；没有会话规格锚点；升为已验证（未验证）：证据与变异见 tools/formal-trace-semantic.mjs |
 | core/typed.get-not-evidence | 未验证 | 未验证 | 保证登记表 §7 | — | 无具名证据 | 现行来源：保证登记表 §7；没有会话规格锚点；无具名证据 |
 | core/typed.untyped-require | 未验证 | 未验证 | 保证登记表 §7 | — | 无具名证据 | 现行来源：保证登记表 §7；没有会话规格锚点；无具名证据 |
 | events/one-table a | 部分验证 | 部分验证 | 保证登记表 §7 | — | 具名证据是模块/用例名，不是文件路径；按原文保留 | 现行来源：保证登记表 §7；没有会话规格锚点 |
 | events/one-table b | 部分验证 | 部分验证 | 保证登记表 §7 | — | 具名证据是模块/用例名，不是文件路径；按原文保留 | 现行来源：保证登记表 §7；没有会话规格锚点 |
 | events/emit a | 部分验证 | 部分验证 | 保证登记表 §7 | — | 具名证据是模块/用例名，不是文件路径；按原文保留 | 现行来源：保证登记表 §7；没有会话规格锚点 |
-| events/emit b | 部分验证 | 部分验证 | 保证登记表 §7 | — | 具名证据是模块/用例名，不是文件路径；按原文保留 | 现行来源：保证登记表 §7；没有会话规格锚点 |
+| events/emit b | 已验证 | 部分验证 | 保证登记表 §7 | — | 具名证据是模块/用例名，不是文件路径；按原文保留 | 现行来源：保证登记表 §7；没有会话规格锚点；升为已验证（部分验证）：证据与变异见 tools/formal-trace-semantic.mjs |
 | events/emit c | 部分验证 | 部分验证 | 保证登记表 §7 | — | 具名证据是模块/用例名，不是文件路径；按原文保留 | 现行来源：保证登记表 §7；没有会话规格锚点 |
 | events/parallel | 部分验证 | 部分验证 | 保证登记表 §7 | — | 具名证据是模块/用例名，不是文件路径；按原文保留 | 现行来源：保证登记表 §7；没有会话规格锚点 |
 | events/serial-bail a | 部分验证 | 部分验证 | 保证登记表 §7 | — | 具名证据是模块/用例名，不是文件路径；按原文保留 | 现行来源：保证登记表 §7；没有会话规格锚点 |
@@ -180,14 +182,14 @@
 | events/scope | 已撤回 | 已撤回 | 保证登记表 §7（issue 快照：已取代） | — | — | issue 快照：已取代，不重抽 |
 | events/filter a | 部分验证 | 部分验证 | 保证登记表 §7 | — | 具名证据是模块/用例名，不是文件路径；按原文保留 | 现行来源：保证登记表 §7；没有会话规格锚点 |
 | events/filter b | 部分验证 | 部分验证 | 保证登记表 §7 | — | 具名证据是模块/用例名，不是文件路径；按原文保留 | 现行来源：保证登记表 §7；没有会话规格锚点 |
-| events/lifecycle a | 部分验证 | 部分验证 | 保证登记表 §7 | — | 具名证据是模块/用例名，不是文件路径；按原文保留 | 现行来源：保证登记表 §7；没有会话规格锚点 |
-| events/lifecycle b | 部分验证 | 部分验证 | 保证登记表 §7 | — | 具名证据是模块/用例名，不是文件路径；按原文保留 | 现行来源：保证登记表 §7；没有会话规格锚点 |
+| events/lifecycle a | 已验证 | 部分验证 | 保证登记表 §7 | — | 具名证据是模块/用例名，不是文件路径；按原文保留 | 现行来源：保证登记表 §7；没有会话规格锚点；升为已验证（部分验证）：证据与变异见 tools/formal-trace-semantic.mjs |
+| events/lifecycle b | 已验证 | 部分验证 | 保证登记表 §7 | — | 具名证据是模块/用例名，不是文件路径；按原文保留 | 现行来源：保证登记表 §7；没有会话规格锚点；升为已验证（部分验证）：证据与变异见 tools/formal-trace-semantic.mjs |
 | events/lifecycle c | 不单独计数 | 不单独计数 | 保证登记表 §7 | — | 无具名证据 | — |
 | events/lifecycle d | 不单独计数 | 不单独计数 | 保证登记表 §7 | — | 无具名证据 | — |
 | events/remote a | 未验证 | 未验证 | 保证登记表 §7 | — | 无具名证据 | 现行来源：保证登记表 §7；没有会话规格锚点；无具名证据 |
 | events/remote b | 未验证 | 未验证 | 保证登记表 §7 | — | 无具名证据 | 现行来源：保证登记表 §7；没有会话规格锚点；无具名证据 |
 | events/remote c | 未验证 | 未验证 | 保证登记表 §7 | — | 无具名证据 | 现行来源：保证登记表 §7；没有会话规格锚点；无具名证据 |
-| events/remote d | 未验证 | 未验证 | 保证登记表 §7 | — | 无具名证据 | 现行来源：保证登记表 §7；没有会话规格锚点；无具名证据 |
+| events/remote d | 已验证 | 未验证 | 保证登记表 §7 | — | 无具名证据 | 现行来源：保证登记表 §7；没有会话规格锚点；升为已验证（未验证）：证据与变异见 tools/formal-trace-semantic.mjs |
 | events/remote e | 未验证 | 未验证 | 保证登记表 §7 | — | 无具名证据 | 现行来源：保证登记表 §7；没有会话规格锚点；无具名证据 |
 | events/remote f | 不单独计数 | 不单独计数 | 保证登记表 §7 | — | 无具名证据 | — |
 | boundary/5.1a | 未验证 | 未验证 | 保证登记表 §8 | — | 无具名证据 | 现行来源：保证登记表 §8；没有会话规格锚点；无具名证据 |
@@ -439,12 +441,12 @@
 | events/bun-runtime | 未验证 | 未验证 | 保证登记表（0.22 已无此行） | — | 2/2 个具名引用解析 | 无现行锚点：保证登记表 0.22 没有这一行：旧编号或已并入别的行，待重抽或删除 |
 | events/cancel | 未验证 | 未验证 | 保证登记表（0.22 已无此行） | — | 具名证据是模块/用例名，不是文件路径；按原文保留 | 无现行锚点：保证登记表 0.22 没有这一行：旧编号或已并入别的行，待重抽或删除 |
 | events/cordis | 未验证 | 未验证 | 保证登记表（0.22 已无此行） | — | 具名证据是模块/用例名，不是文件路径；按原文保留 | 无现行锚点：保证登记表 0.22 没有这一行：旧编号或已并入别的行，待重抽或删除 |
-| events/emit-order | 未验证 | 未验证 | 保证登记表（0.22 已无此行） | — | 具名证据是模块/用例名，不是文件路径；按原文保留 | 无现行锚点：保证登记表 0.22 没有这一行：旧编号或已并入别的行，待重抽或删除 |
+| events/emit-order | 已验证 | 未验证 | 保证登记表（0.22 已无此行） | — | 具名证据是模块/用例名，不是文件路径；按原文保留 | 无现行锚点：保证登记表 0.22 没有这一行：旧编号或已并入别的行，待重抽或删除；升为已验证（未验证）：证据与变异见 tools/formal-trace-semantic.mjs |
 | events/emit-reported | 未验证 | 未验证 | 保证登记表（0.22 已无此行） | — | 具名证据是模块/用例名，不是文件路径；按原文保留 | 无现行锚点：保证登记表 0.22 没有这一行：旧编号或已并入别的行，待重抽或删除 |
 | events/filter-emit | 未验证 | 未验证 | 保证登记表（0.22 已无此行） | — | 具名证据是模块/用例名，不是文件路径；按原文保留 | 无现行锚点：保证登记表 0.22 没有这一行：旧编号或已并入别的行，待重抽或删除 |
 | events/handshake | 未验证 | 未验证 | 保证登记表（0.22 已无此行） | — | 无具名证据 | 无现行锚点：保证登记表 0.22 没有这一行：旧编号或已并入别的行，待重抽或删除；无具名证据 |
 | events/js-bus | 未验证 | 未验证 | 保证登记表（0.22 已无此行） | — | 1/1 个具名引用解析 | 无现行锚点：保证登记表 0.22 没有这一行：旧编号或已并入别的行，待重抽或删除 |
-| events/liveness | 未验证 | 未验证 | 保证登记表（0.22 已无此行） | — | 具名证据是模块/用例名，不是文件路径；按原文保留 | 无现行锚点：保证登记表 0.22 没有这一行：旧编号或已并入别的行，待重抽或删除 |
+| events/liveness | 已验证 | 未验证 | 保证登记表（0.22 已无此行） | — | 具名证据是模块/用例名，不是文件路径；按原文保留 | 无现行锚点：保证登记表 0.22 没有这一行：旧编号或已并入别的行，待重抽或删除；升为已验证（未验证）：证据与变异见 tools/formal-trace-semantic.mjs |
 | events/next | 未验证 | 未验证 | 保证登记表（0.22 已无此行） | — | 具名证据是模块/用例名，不是文件路径；按原文保留 | 无现行锚点：保证登记表 0.22 没有这一行：旧编号或已并入别的行，待重抽或删除 |
 | events/next-misuse | 未验证 | 未验证 | 保证登记表（0.22 已无此行） | — | 具名证据是模块/用例名，不是文件路径；按原文保留 | 无现行锚点：保证登记表 0.22 没有这一行：旧编号或已并入别的行，待重抽或删除 |
 | events/no-result | 未验证 | 未验证 | 保证登记表（0.22 已无此行） | — | 具名证据是模块/用例名，不是文件路径；按原文保留 | 无现行锚点：保证登记表 0.22 没有这一行：旧编号或已并入别的行，待重抽或删除 |
@@ -459,10 +461,10 @@
 | events/serial | 未验证 | 未验证 | 保证登记表（0.22 已无此行） | — | 具名证据是模块/用例名，不是文件路径；按原文保留 | 无现行锚点：保证登记表 0.22 没有这一行：旧编号或已并入别的行，待重抽或删除 |
 | events/serial-error | 未验证 | 未验证 | 保证登记表（0.22 已无此行） | — | 具名证据是模块/用例名，不是文件路径；按原文保留 | 无现行锚点：保证登记表 0.22 没有这一行：旧编号或已并入别的行，待重抽或删除 |
 | events/session | 未验证 | 未验证 | 保证登记表（0.22 已无此行） | — | 具名证据是模块/用例名，不是文件路径；按原文保留 | 无现行锚点：保证登记表 0.22 没有这一行：旧编号或已并入别的行，待重抽或删除 |
-| events/table-watch | 未验证 | 未验证 | 保证登记表（0.22 已无此行） | — | 无具名证据 | 无现行锚点：保证登记表 0.22 没有这一行：旧编号或已并入别的行，待重抽或删除；无具名证据 |
+| events/table-watch | 已验证 | 未验证 | 保证登记表（0.22 已无此行） | — | 无具名证据 | 无现行锚点：保证登记表 0.22 没有这一行：旧编号或已并入别的行，待重抽或删除；升为已验证（未验证）：证据与变异见 tools/formal-trace-semantic.mjs |
 | events/tool | 未验证 | 未验证 | 保证登记表（0.22 已无此行） | — | 无具名证据 | 无现行锚点：保证登记表 0.22 没有这一行：旧编号或已并入别的行，待重抽或删除；无具名证据 |
 | events/unload | 未验证 | 未验证 | 保证登记表（0.22 已无此行） | — | 具名证据是模块/用例名，不是文件路径；按原文保留 | 无现行锚点：保证登记表 0.22 没有这一行：旧编号或已并入别的行，待重抽或删除 |
-| events/unload-waits | 未验证 | 未验证 | 保证登记表（0.22 已无此行） | — | 具名证据是模块/用例名，不是文件路径；按原文保留 | 无现行锚点：保证登记表 0.22 没有这一行：旧编号或已并入别的行，待重抽或删除 |
+| events/unload-waits | 已验证 | 未验证 | 保证登记表（0.22 已无此行） | — | 具名证据是模块/用例名，不是文件路径；按原文保留 | 无现行锚点：保证登记表 0.22 没有这一行：旧编号或已并入别的行，待重抽或删除；升为已验证（未验证）：证据与变异见 tools/formal-trace-semantic.mjs |
 | events/via-host | 未验证 | 未验证 | 保证登记表（0.22 已无此行） | — | 具名证据是模块/用例名，不是文件路径；按原文保留 | 无现行锚点：保证登记表 0.22 没有这一行：旧编号或已并入别的行，待重抽或删除 |
 | events/waterfall-sync | 未验证 | 未验证 | 保证登记表（0.22 已无此行） | — | 具名证据是模块/用例名，不是文件路径；按原文保留 | 无现行锚点：保证登记表 0.22 没有这一行：旧编号或已并入别的行，待重抽或删除 |
 | events/withdrawn | 未验证 | 未验证 | 保证登记表（0.22 已无此行） | — | 具名证据是模块/用例名，不是文件路径；按原文保留 | 无现行锚点：保证登记表 0.22 没有这一行：旧编号或已并入别的行，待重抽或删除 |
@@ -527,7 +529,7 @@
 | EVP-4.4-2 | 部分验证 | 部分验证 | 事件协议规格（§4.4 第 2 条） | — | 具名证据是模块/用例名，不是文件路径；按原文保留 | 现行来源：事件协议规格（§4.4 第 2 条）；没有会话规格锚点 |
 | EVP-4.4-3 | 未验证 | 未验证 | 事件协议规格（§4.4 第 3 条） | — | 无具名证据 | 现行来源：事件协议规格（§4.4 第 3 条）；没有会话规格锚点；无具名证据 |
 | EVP-4.4-4 | 部分验证 | 部分验证 | 事件协议规格（§4.4 第 4 条） | — | 具名证据是模块/用例名，不是文件路径；按原文保留 | 现行来源：事件协议规格（§4.4 第 4 条）；没有会话规格锚点 |
-| EVP-4.4-5 | 未验证 | 未验证 | 事件协议规格（§4.4 第 5 条） | — | 无具名证据 | 现行来源：事件协议规格（§4.4 第 5 条）；没有会话规格锚点；无具名证据 |
+| EVP-4.4-5 | 已验证 | 未验证 | 事件协议规格（§4.4 第 5 条） | — | 无具名证据 | 现行来源：事件协议规格（§4.4 第 5 条）；没有会话规格锚点；升为已验证（未验证）：证据与变异见 tools/formal-trace-semantic.mjs |
 | EVP-4.5-1 | 部分验证 | 部分验证 | 事件协议规格（§4.5） | — | 具名证据是模块/用例名，不是文件路径；按原文保留 | 现行来源：事件协议规格（§4.5）；没有会话规格锚点 |
 | EVP-4.5-2 | 未验证 | 未验证 | 事件协议规格（§4.5） | — | 无具名证据 | 现行来源：事件协议规格（§4.5）；没有会话规格锚点；无具名证据 |
 | EVP-4.5-3 | 未验证 | 未验证 | 事件协议规格（§4.5） | — | 无具名证据 | 现行来源：事件协议规格（§4.5）；没有会话规格锚点；无具名证据 |
@@ -578,7 +580,7 @@
 | EVP-5.4-19 | 部分验证 | 部分验证 | 事件协议规格（§5.4 种类） | — | 具名证据是模块/用例名，不是文件路径；按原文保留 | 现行来源：事件协议规格（§5.4 种类）；没有会话规格锚点 |
 | EVP-5.5-1 | 部分验证 | 部分验证 | 事件协议规格（§5.5） | — | 具名证据是模块/用例名，不是文件路径；按原文保留 | 现行来源：事件协议规格（§5.5）；没有会话规格锚点 |
 | EVP-5.5-2 | 部分验证 | 部分验证 | 事件协议规格（§5.5 第 1 条） | — | 具名证据是模块/用例名，不是文件路径；按原文保留 | 现行来源：事件协议规格（§5.5 第 1 条）；没有会话规格锚点 |
-| EVP-5.5-3 | 未验证 | 未验证 | 事件协议规格（§5.5 第 1 条） | — | 无具名证据 | 现行来源：事件协议规格（§5.5 第 1 条）；没有会话规格锚点；无具名证据 |
+| EVP-5.5-3 | 已验证 | 未验证 | 事件协议规格（§5.5 第 1 条） | — | 无具名证据 | 现行来源：事件协议规格（§5.5 第 1 条）；没有会话规格锚点；升为已验证（未验证）：证据与变异见 tools/formal-trace-semantic.mjs |
 | EVP-5.5-4 | 部分验证 | 部分验证 | 事件协议规格（§5.5 第 2 条） | — | 具名证据是模块/用例名，不是文件路径；按原文保留 | 现行来源：事件协议规格（§5.5 第 2 条）；没有会话规格锚点 |
 | EVP-5.5-5 | 未验证 | 未验证 | 事件协议规格（§5.5 第 2 条） | — | 无具名证据 | 现行来源：事件协议规格（§5.5 第 2 条）；没有会话规格锚点；无具名证据 |
 | EVP-5.5-6 | 未验证 | 未验证 | 事件协议规格（§5.5 第 2 条） | — | 无具名证据 | 现行来源：事件协议规格（§5.5 第 2 条）；没有会话规格锚点；无具名证据 |
@@ -691,7 +693,7 @@
 | EVP-12.1-6 | 未验证 | 未验证 | 事件协议规格（§12.1） | — | 无具名证据 | 现行来源：事件协议规格（§12.1）；没有会话规格锚点；无具名证据 |
 | EVP-12.1-7 | 未验证 | 未验证 | 事件协议规格（§12.1） | — | 无具名证据 | 现行来源：事件协议规格（§12.1）；没有会话规格锚点；无具名证据 |
 | EVP-12.1-8 | 未验证 | 未验证 | 事件协议规格（§12.1） | — | 无具名证据 | 现行来源：事件协议规格（§12.1）；没有会话规格锚点；无具名证据 |
-| EVP-12.1-9 | 未验证 | 未验证 | 事件协议规格（§12.1） | — | 无具名证据 | 现行来源：事件协议规格（§12.1）；没有会话规格锚点；无具名证据 |
+| EVP-12.1-9 | 已验证 | 未验证 | 事件协议规格（§12.1） | — | 无具名证据 | 现行来源：事件协议规格（§12.1）；没有会话规格锚点；升为已验证（未验证）：证据与变异见 tools/formal-trace-semantic.mjs |
 | EVP-12.1-10 | 未验证 | 未验证 | 事件协议规格（§12.1） | — | 无具名证据 | 现行来源：事件协议规格（§12.1）；没有会话规格锚点；无具名证据 |
 | EVP-12.1-11 | 未验证 | 未验证 | 事件协议规格（§12.1） | — | 无具名证据 | 现行来源：事件协议规格（§12.1）；没有会话规格锚点；无具名证据 |
 | EVP-12.1-12 | 已验证 | 已验证 | 事件协议规格（§12.1） | — | 具名证据是模块/用例名，不是文件路径；按原文保留 | 现行来源：事件协议规格（§12.1）；没有会话规格锚点 |
@@ -700,7 +702,7 @@
 | EVP-12.1-15 | 部分验证 | 部分验证 | 事件协议规格（§12.1） | — | 具名证据是模块/用例名，不是文件路径；按原文保留 | 现行来源：事件协议规格（§12.1）；没有会话规格锚点 |
 | EVP-12.1-16 | 部分验证 | 部分验证 | 事件协议规格（§12.1） | — | 1/1 个具名引用解析 | 现行来源：事件协议规格（§12.1）；没有会话规格锚点 |
 | EVP-12.1-17 | 不单独计数 | 不单独计数 | 事件协议规格（§12.1） | — | 无具名证据 | — |
-| EVP-12.1-18 | 未验证 | 未验证 | 事件协议规格（§12.1） | — | 无具名证据 | 现行来源：事件协议规格（§12.1）；没有会话规格锚点；无具名证据 |
+| EVP-12.1-18 | 已验证 | 未验证 | 事件协议规格（§12.1） | — | 无具名证据 | 现行来源：事件协议规格（§12.1）；没有会话规格锚点；升为已验证（未验证）：证据与变异见 tools/formal-trace-semantic.mjs |
 | EVP-12.1-19 | 已验证 | 已验证 | 事件协议规格（§12.1） | — | 具名证据是模块/用例名，不是文件路径；按原文保留 | 现行来源：事件协议规格（§12.1）；没有会话规格锚点 |
 | EVP-12.1-20 | 已验证 | 已验证 | 事件协议规格（§12.1） | — | 具名证据是模块/用例名，不是文件路径；按原文保留 | 现行来源：事件协议规格（§12.1）；没有会话规格锚点 |
 | EVP-12.1-21 | 已验证 | 已验证 | 事件协议规格（§12.1） | — | 具名证据是模块/用例名，不是文件路径；按原文保留 | 现行来源：事件协议规格（§12.1）；没有会话规格锚点 |
@@ -1633,7 +1635,7 @@
 | APP-4-5 | 明确不保证 | 明确不保证 | 应用接入设计（APP §四 SDK 保证第3条） | — | 无具名证据 | — |
 | APP-4-6 | 未验证 | 未验证 | 应用接入设计（APP §四 SDK 保证第4条） | — | 无具名证据 | 现行来源：应用接入设计（APP §四 SDK 保证第4条）；没有会话规格锚点；无具名证据 |
 | APP-4-7 | 明确不保证 | 明确不保证 | 应用接入设计（APP §四 SDK 保证第4条） | — | 无具名证据 | 登记表把这条登记为明确不保证 |
-| APP-5-1 | 未验证 | 未验证 | 应用接入设计（APP §五 末条） | — | 无具名证据 | 现行来源：应用接入设计（APP §五 末条）；没有会话规格锚点；无具名证据 |
+| APP-5-1 | 已验证 | 未验证 | 应用接入设计（APP §五 末条） | — | 无具名证据 | 现行来源：应用接入设计（APP §五 末条）；没有会话规格锚点；升为已验证（未验证）：证据与变异见 tools/formal-trace-semantic.mjs |
 | APP-6-1 | 部分验证 | 部分验证 | 应用接入设计（APP §六 末条；§八） | — | 无具名证据 | 现行来源：应用接入设计（APP §六 末条；§八）；没有会话规格锚点；无具名证据 |
 | NOD-1-1 | 部分验证 | 部分验证 | 连接节点指南（NOD 开头；「一条 link」） | — | 无具名证据 | 现行来源：连接节点指南（NOD 开头；「一条 link」）；没有会话规格锚点；无具名证据 |
 | NOD-1-2 | 未验证 | 未验证 | 连接节点指南（NOD「一条 link」；「安全」） | — | 无具名证据 | 现行来源：连接节点指南（NOD「一条 link」；「安全」）；没有会话规格锚点；无具名证据 |
@@ -1656,7 +1658,7 @@
 | NOD-5-3 | 不单独计数 | 不单独计数 | 连接节点指南（NOD「别的机器上的语言运行时」） | — | 无具名证据 | — |
 | NOD-6-1 | 部分验证 | 部分验证 | 连接节点指南（NOD「连进来的运行时」） | — | 无具名证据 | 现行来源：连接节点指南（NOD「连进来的运行时」）；没有会话规格锚点；无具名证据 |
 
-## 5. 语义重抽（1596 行，2026-11-15，基准 `a2a7a743`）
+## 5. 语义重抽（1596 行，2026-11-17，基准 `2f4971a3`）
 
 7 个分区已按 0.22 现行来源重抽（TRC、`registry-1`、`registry-2`、`session`、`events`、`runtime`、`remote`）：协议清单 1368 条现行规则与 184 条 issue 快照已取代行都有条目（状态按本页复核，规则文字仍是 issue 快照原文）。保证登记表 219 行由登记表生成，`ECA` 10 行仍是手写的设计提案。
 
@@ -1729,77 +1731,77 @@
 | core/D4e | 部分验证 | guarantees.md §6 | core/D4 | `rutis/tests/contract.rs::serial_bails`、`rutis/tests/waterfall_sync.rs::sync_waterfall_meets_an_async_listener` | 登记表 `core/D4` 记「已验证」；#634 快照记「部分」，同步方式的 PT 尚未补齐 |
 | core/D5a | 部分验证 | guarantees.md §6 | core/D5 | `rutis/tests/contract.rs::mixed_concurrent_ops_complete`、`rutis/tests/interleave.rs::restart_settle_and_dispose_interleave`；CI clippy `await_holding_lock` | 登记表 `core/D5` 记「部分验证」：持锁跨 await 只有 clippy 静态检查（只覆盖 std 锁），锁内 FIFO 入队的顺序与「回调在锁外」都没有模型 |
 | core/D5b | 不单独计数 | guarantees.md §6 | core/D5 | CI clippy `-D warnings` 的 `await_holding_lock`（`rutis/tests/contract.rs::mixed_concurrent_ops_complete` 覆盖运行时部分） | 登记表 `core/D5` 记「部分验证」；本行是编码规则，由 CI clippy 的 `await_holding_lock`（`-D warnings`）静态检查，内核的锁都是 std 的，#634 快照记「不适用」，不单独计数 |
-| core/D6a | 部分验证 | guarantees.md §6 | core/D6 | `rutis/tests/contract.rs::concurrent_dispose_join`、`::exactly_once_same_error`、`rutis/tests/load_window.rs::a_dispose_right_after_mounting_ends_on_current_thread` | 登记表 `core/D6` 记「已验证」；#634 快照记「部分」：两个模型各覆盖一个部件（EffectRecord 的并发排干、单完成方的 TransitionTask），fiber 层的 dispose 登记不在模型里，Bug A（#619）的回归测试属测试、不算形式化，SH 仍归 #622 |
-| core/D6b | 未验证 | guarantees.md §6 | core/D6 | `rutis/tests/contract.rs::cross_generation_isolation`、`::dispose_idempotent` | 登记表 `core/D6` 记「已验证」；#634 快照记「未覆盖」，fiber 生命周期的参考模型 PT（代次、清理次数）没有，#622 的模型只比较最终状态，状态只降不升 |
+| core/D6a | 已验证 | guarantees.md §6 | core/D6 | `rutis/src/fiber/shuttle_tests.rs::shuttle_concurrent_dispose_cleans_up_exactly_once`、`::shuttle_effect_registration_and_dispose_clean_up_exactly_once`、`::shuttle_root_dispose_and_shutdown_share_one_close`、`::shuttle_root_close_owns_the_child_it_mounted`、`::shuttle_mount_admission_races_root_close`、`rutis/tests/contract.rs::concurrent_dispose_join`、`::exactly_once_same_error`、`rutis/tests/load_window.rs::a_dispose_right_after_mounting_ends_on_current_thread` | 登记表 `core/D6` 记「已验证」；#634 快照记「部分」。模型 3 跑真实的 `EffectRecord::{claim, finish, join}`，三个调用者并发排干、恰好一个拿到清理、都拿到同一个错误；模型 5 覆盖登记与卸载的准入，模型 8、17、21 覆盖根关闭与挂载准入（变异见 `upgrade.mutation`）。两个回归用例是 Bug A 修复前的配置（#619）。升为「已验证」。 |
+| core/D6b | 已验证 | guarantees.md §6 | core/D6 | `rutis/src/fiber/shuttle_tests.rs::shuttle_dispose_registration_cancels_the_running_generation`、`::shuttle_restart_publishes_the_live_generation`、`rutis/tests/interleave.rs::the_fiber_lifecycle_matches_a_reference_model`、`rutis/tests/contract.rs::cross_generation_isolation`、`::dispose_idempotent` | 登记表 `core/D6` 记「已验证」；#634 快照记「未覆盖」。参考模型 PT 在每次操作（挂载、依赖翻转、restart、update、dispose）后比较每代的状态、代次、apply 与清理次数；模型 12 覆盖 dispose 登记取消当前代，模型 15 覆盖重启后的活跃代次（变异见 `upgrade.mutation`）。升为「已验证」。 |
 | core/D7a | 未验证 | guarantees.md §6 | core/D7 | `rutis/tests/lifecycle_order.rs::unload_publishes_unloading_and_cancels_before_cleanup_and_disposed_after`、`::unload_waits_for_apply_to_exit_before_cleanup` | 登记表 `core/D7` 记「已验证」（两个 lifecycle_order 用例断言了这几步的先后）；#634 快照记「未覆盖」：参考模型只比较最终状态、代次与次数，不记事件序列，状态只降不升 |
 | core/D7b | 未验证 | guarantees.md §6 | core/D7 | `rutis/tests/load_window.rs::a_dispose_right_after_mounting_ends_on_current_thread`、`::a_restart_right_after_mounting_is_taken_up_on_current_thread`、`::an_update_right_after_mounting_is_taken_up_on_current_thread` | 登记表 `core/D7` 记「已验证」；#634 快照记「未覆盖」。Bug A（dispose 只取消当前令牌）由 #652 修复，restart / update 在锁外预取消也一并修复，回归用例在上；SH 仍归 #622 |
 | core/D7c | 不单独计数 | guarantees.md §6 | core/D7 | `rutis/tests/lifecycle_order.rs::unload_waits_for_apply_to_exit_before_cleanup` | 登记表 `core/D7` 记「已验证」（限制写在规则内容里）；本行是写明的限制而不是保证，#634 快照记「不适用」，不单独计数 |
 | core/D8 | 不单独计数 | guarantees.md §6 | core/D8 | `rutis/src/ctx.rs::root_without_a_runtime_is_an_explicit_error` | 登记表 `core/D8` 记「已验证」（`ctx.rs` 的单元测试）；这是依赖 tokio 运行时环境的 API 形状，#634 快照记「不适用」，不单独计数 |
-| core/D9a | 未验证 | guarantees.md §6 | core/D9 | `rutis/tests/generation_registration.rs::rejects_late_registration_current_thread`、`::rejects_late_registration_multi_thread`、`rutis/tests/host_control.rs::a_stale_context_cannot_dispose_the_next_generation` | 登记表 `core/D9` 记「已验证」；#634 快照记「未覆盖」并缺「登记准入与卸载」模型（已提交的登记恰好清理一次、被拒的不留记录），状态只降不升 |
+| core/D9a | 已验证 | guarantees.md §6 | core/D9 | `rutis/src/fiber/shuttle_tests.rs::shuttle_effect_registration_and_dispose_clean_up_exactly_once`、`::shuttle_dispose_registration_cancels_the_running_generation`、`::shuttle_mount_admission_races_root_close`、`rutis/tests/generation_registration.rs::rejects_late_registration_current_thread`、`::rejects_late_registration_multi_thread`、`rutis/tests/host_control.rs::a_stale_context_cannot_dispose_the_next_generation` | 登记表 `core/D9` 记「已验证」；#634 快照记「未覆盖」。模型 5 覆盖登记准入：已提交的登记恰好清理一次、被拒的不留记录；模型 12、21 覆盖旧代次与关闭中的准入（变异见 `upgrade.mutation`）。三个用例断言过期上下文被拒。升为「已验证」。 |
 | core/D9b | 明确不保证 | guarantees.md §6 | core/D9 | — | 登记表 `core/D9` 把「监听器完成顺序不作契约」列为明确不保证；#634 快照记「不适用」，规则文字本身写明不保证 |
 | core/D10 | 不单独计数 | guarantees.md §6 | core/D10 | `rutis/tests/host_control.rs::view_finds_a_fiber_by_id` | 登记表 `core/D10` 记「已验证」（一个用例）；本行是 API 形状（`is_unique` 未实现，设计写明可选），#634 快照记「不适用」，不单独计数 |
 | core/D11 | 不单独计数 | guarantees.md §6 | core/D11 | `rutis/src/error.rs` 中 `ErrorKind` 的三个文档测试（两个 `compile_fail,E0277`） | 登记表 `core/D11` 记「已验证」（doctest）；0.17（#617）把 `CordisError` 改名为 `host::ErrorKind`，规则文字里的旧名要按此读；#634 快照记「不适用」，不单独计数 |
-| core/D12 | 未验证 | guarantees.md §6 | core/D12 | `rutis/tests/contract.rs::validate_panic_marks_failed`、`rutis/tests/host_control.rs::set_config_stores_without_restarting`、`rutis/tests/config_update.rs::update_dry_run_failure_leaves_state_untouched` | 登记表 `core/D12` 记「已验证」（三个用例）；#634 快照记「未覆盖」，缺参考模型 PT 的更新与失败注入，状态只降不升 |
+| core/D12 | 已验证 | guarantees.md §6 | core/D12 | `rutis/tests/interleave.rs::the_fiber_lifecycle_matches_a_reference_model`、`rutis/tests/contract.rs::validate_panic_marks_failed`、`rutis/tests/host_control.rs::set_config_stores_without_restarting`、`rutis/tests/config_update.rs::update_dry_run_failure_leaves_state_untouched` | 登记表 `core/D12` 记「已验证」；#634 快照记「未覆盖」。参考模型 PT 注入 `Mode::BadConfig`（干跑拒绝）、`Mode::Fail` 与 `Mode::Panic`，每次 update 后比较状态、代次、apply 与清理次数；三个用例覆盖校验 panic、存储与干跑拒绝（变异见 `upgrade.mutation`）。升为「已验证」。 |
 | core/D13 | 未验证 | guarantees.md §6 | core/D13 | `rutis/tests/contract.rs::typed_roundtrip`、`::parent_chain_lookup`、`::keyed_multi_instance` | 登记表 `core/D13` 记「已验证」（三个用例）；#634 快照记「未覆盖」，「查找、作用域与严格读取」的判定表 PT 没有，状态只降不升 |
 | core/D14a | 未验证 | guarantees.md §6 | core/D14 | `rutis/tests/contract.rs::eviction_order`、`rutis/tests/instance_subtrees.rs::closing_subtree_disposes_consumer_before_provider`、`rutis/tests/load_window.rs::a_dependency_withdrawn_at_the_gate_of_a_first_load_stops_the_consumer` | 登记表 `core/D14` 记「已验证」；#634 快照记「未覆盖」。「消费者并发排干」是机制、没有断言；Bug B（#620）由 #652 修复，过门时被撤下的回归用例在上；SH 仍归 #622 |
 | core/D14b | 未验证 | guarantees.md §6 | core/D14 | `rutis/tests/contract.rs::self_access_during_cleanup` | 登记表 `core/D14` 记「已验证」（`self_access_during_cleanup` 断言清理期间能读自身服务）；#634 快照记「未覆盖」，状态只降不升 |
-| core/D14c | 未验证 | guarantees.md §6 | core/D14 | `rutis/tests/contract.rs::single_service_evict`、`::eviction_order` | 登记表 `core/D14` 记「已验证」（两个用例）；#634 快照记「未覆盖」，参考模型 PT 与服务注册槽 PT 都没有，状态只降不升 |
-| core/D14d | 未验证 | guarantees.md §6 | core/D14 | `rutis/tests/contract.rs::provider_reload_reactivates` | 登记表 `core/D14` 记「已验证」（`provider_reload_reactivates` 断言服务恢复后消费者重新启动）；#634 快照记「未覆盖」，状态只降不升 |
+| core/D14c | 已验证 | guarantees.md §6 | core/D14 | `rutis/tests/interleave.rs::the_fiber_lifecycle_matches_a_reference_model`、`rutis/tests/contract.rs::single_service_evict`、`::eviction_order` | 登记表 `core/D14` 记「已验证」（两个用例）；#634 快照记「未覆盖」。参考模型 PT 用 3 个 fiber × 2 个键，每次 provide/withdraw 后比较每个 fiber 的状态与清理次数：只有依赖被撤下那个键的 fiber 重载（变异见 `upgrade.mutation`）。升为「已验证」。 |
+| core/D14d | 已验证 | guarantees.md §6 | core/D14 | `rutis/tests/interleave.rs::the_fiber_lifecycle_matches_a_reference_model`、`rutis/src/fiber/shuttle_tests.rs::shuttle_dependency_withdrawal_stops_the_loading_consumer`、`::shuttle_dependency_restart_in_the_window_returns_to_the_returned_generation`、`rutis/tests/contract.rs::provider_reload_reactivates` | 登记表 `core/D14` 记「已验证」（`provider_reload_reactivates` 断言服务恢复后消费者重新启动）；#634 快照记「未覆盖」。PT 在每次 provide/withdraw 后比较每个 fiber 的状态与清理次数；模型 9 覆盖撤下时消费者停下，模型 19 覆盖窗口里的 restart（变异见 `upgrade.mutation`）。升为「已验证」。 |
 | core/D15 | 明确不保证 | guarantees.md §6 | core/D15 | — | 登记表 `core/D15` 的级别与状态都是「明确不保证」：核心不提供 tower 兼容，现在也没有适配层；#634 快照记「不适用」 |
 | core/D16a | 不单独计数 | guarantees.md §6 | core/D16 | `rutis/tests/events.rs::one_listener_is_called_by_every_mode` | 登记表 `core/D16` 记「已验证」；本行是 API 形状（同步方式、`Call` / `SyncCall`、载荷为 `Arc<E>`），属编译期，#634 快照记「不适用」，不单独计数 |
 | core/D16b | 部分验证 | guarantees.md §6 | core/D16 | `rutis/tests/events.rs::one_listener_is_called_by_every_mode` | 登记表 `core/D16` 记「已验证」；#634 快照记「部分」，细则同 `events/one-table` a：五种方式共用一个监听器的跨方式覆盖还不完整 |
 | core/D17 | 部分验证 | guarantees.md §6 | core/D17 | `rutis/tests/events.rs::waterfall_chains_vetoes_and_ends_in_the_terminal`、`::next_outside_a_waterfall_is_an_error`、`rutis/tests/waterfall_sync.rs::a_sync_listener_calls_next_only_in_a_sync_waterfall` | 登记表 `core/D17` 记「已验证」（三个用例）；#634 快照记「部分」，而且同步 `next` 的生命周期 transmute 只靠 #632 的 Miri 查 |
 | core/D18a | 不单独计数 | guarantees.md §6 | core/D18 | `rutis/tests/contract.rs::effect_yields_disposer` | 登记表 `core/D18` 记「已验证」；本行是编译期签名（两个 Disposer 变体返回 `Result`，闭包捕获 owned `Ctx`），#634 快照记「不适用」，不单独计数 |
-| core/D18b | 部分验证 | guarantees.md §6 | core/D18 | `rutis/tests/contract.rs::aggregate_no_flatten`、`::restart_cleanup_errors_to_sink`、`rutis/tests/cleanup_errors.rs::unconsumed_early_cleanup_error_reaches_unload_with_same_identity` | 登记表 `core/D18` 记「已验证」；#634 快照记「部分」：模型不含所属 fiber（`finish()` 自移除、错误存放与 `drain_effects` 的 `mem::take` 竞争，#622 第 3 项），「聚合不展平」没有 PT |
+| core/D18b | 已验证 | guarantees.md §6 | core/D18 | `rutis/src/fiber/shuttle_tests.rs::shuttle_effect_record_owner_reports_each_cleanup_error_once`、`::shuttle_concurrent_dispose_cleans_up_exactly_once`、`::shuttle_dispose_result_survives_the_driver_exit`、`rutis/tests/contract.rs::aggregate_no_flatten`、`::restart_cleanup_errors_to_sink`、`rutis/tests/cleanup_errors.rs::unconsumed_early_cleanup_error_reaches_unload_with_same_identity` | 登记表 `core/D18` 记「已验证」；#634 快照记「部分」。模型 13 覆盖所属 fiber：提前排干的记录与卸载取列表竞争，每条清理错误以同一身份恰好报告一次；模型 3、18 覆盖并发排干与驱动退出时的结果。三个用例覆盖聚合与 sink（变异见 `upgrade.mutation`）。升为「已验证」。 |
 | core/D19 | 不单独计数 | guarantees.md §6 | core/D19 | `rutis/tests/parity.rs::plugin_apply_functional_plugin`、`rutis/tests/contract.rs::plugin_provides_n_services` | 登记表 `core/D19` 记「已验证」；本行是编译期形状（`Plugin` 无关联类型、`new(config)` 自持、注册表只存 `Arc<dyn Plugin>`），#634 快照记「不适用」，不单独计数 |
 | core/D20 | 已撤回 | guarantees.md §6 | core/D20 | — | 登记表 `core/D20` 是 D6 的复述（状态「—」，编号保留、不单独计数），#634 快照也记「已取代」；规则并入 `core/D6` |
 | core/D21a | 未验证 | guarantees.md §6 | core/D21 | `rutis/tests/parity.rs::distinguishes_provider_incarnations_without_a_global_counter`、`rutis/tests/contract.rs::isolate_no_cross_evict` | 登记表 `core/D21` 记「已验证」（六个用例）；#634 快照记「未覆盖」，「依赖驱逐」SH 模型与服务注册槽 PT 都没有，状态只降不升 |
 | core/D21b | 未验证 | guarantees.md §6 | core/D21 | `rutis/tests/contract.rs::isolate_scoping`、`rutis/tests/parity.rs::isolate_shared_label` | 登记表 `core/D21` 记「已验证」（六个用例）；#634 快照记「未覆盖」，「查找与作用域」判定表 PT 没有，状态只降不升 |
 | core/D21c | 未验证 | guarantees.md §6 | core/D21 | `rutis/tests/contract.rs::mismatched_service_key_never_satisfies_injection` | 登记表 `core/D21` 记「已验证」（六个用例）；#634 快照记「未覆盖」，状态只降不升 |
-| core/D22a | 未验证 | guarantees.md §6 | core/D22 | `rutis/tests/contract.rs::pending_not_failed`、`::waits_for_dependency`、`::late_provider_activates` | 登记表 `core/D22` 记「部分验证」（核心承诺只指门控部分，三个用例在上）；#634 快照记「未覆盖」，状态只降不升 |
+| core/D22a | 已验证 | guarantees.md §6 | core/D22 | `rutis/tests/interleave.rs::the_fiber_lifecycle_matches_a_reference_model`、`rutis/tests/contract.rs::pending_not_failed`、`::waits_for_dependency`、`::late_provider_activates` | 登记表 `core/D22` 记「部分验证」（核心承诺只指门控部分，三个用例在上）；#634 快照记「未覆盖」。参考模型 PT 在每次 provide/withdraw 后比较每个 fiber 的状态与 apply 次数：依赖不齐的 fiber 保持 Pending、不 apply，依赖到位后启动（变异见 `upgrade.mutation`）。升为「已验证」。 |
 | core/D22b | 明确不保证 | guarantees.md §6 | core/D22 | — | 登记表 `core/D22` 把「不检测依赖环」列为明确不保证（核心承诺只指门控部分）；没有回归测试锁定，`#177` 已关闭且没有已开 issue 计划补 |
-| core/D23a | 未验证 | guarantees.md §6 | core/D23 | `rutis/tests/contract.rs::effect_yields_disposer`、`::effect_during_cleanup_fails`、`rutis/tests/parity.rs::rejects_effect_registration_during_unload` | 登记表 `core/D23` 记「已验证」（三个用例）；#634 快照记「未覆盖」，「登记准入与卸载」模型没有，状态只降不升 |
+| core/D23a | 已验证 | guarantees.md §6 | core/D23 | `rutis/src/fiber/shuttle_tests.rs::shuttle_effect_registration_and_dispose_clean_up_exactly_once`、`::shuttle_dispose_registration_cancels_the_running_generation`、`::shuttle_mount_admission_races_root_close`、`rutis/tests/contract.rs::effect_yields_disposer`、`::effect_during_cleanup_fails`、`rutis/tests/parity.rs::rejects_effect_registration_during_unload` | 登记表 `core/D23` 记「已验证」（三个用例）；#634 快照记「未覆盖」。模型 5 覆盖 `Ctx::effect` 的登记准入与卸载，模型 12、21 覆盖代次与关闭中的登记（变异见 `upgrade.mutation`）。升为「已验证」。 |
 | core/D23b | 不单独计数 | guarantees.md §6 | core/D23 | — | 登记表 `core/D23` 记「已验证」；本行是明确不提供的特性（增量式 effect），无需测试，#634 快照记「不适用」，不单独计数 |
 | core/D24a | 未验证 | guarantees.md §6 | core/D24 | `rutis/tests/event_order.rs::status_events_arrive_in_commit_order_across_concurrent_fibers`、`rutis/tests/contract.rs::state_transitions` | 登记表 `core/D24` 记「已验证」（两个用例）；#634 快照记「未覆盖」：#622 的 emit 链模型只查发出方的开始顺序，状态入队与 `flush_status` 的顺序没有列入 |
 | core/D24b | 明确不保证 | guarantees.md §6 | core/D24 | — | 登记表 `core/D24` 把「不保证监听器完成顺序」列为明确不保证；#634 快照记「不适用」 |
-| core/D25a | 部分验证 | guarantees.md §6 | core/D25 | `rutis/tests/contract.rs::exactly_once_same_error` | 登记表 `core/D25` 记「已验证」；#634 快照记「部分」：只有一个完成方，#622 的疑点（`complete` 之后写入覆盖先写）要加多个完成方才能查 |
+| core/D25a | 已验证 | guarantees.md §6 | core/D25 | `rutis/src/fiber/shuttle_tests.rs::shuttle_transition_task_reaches_every_join`、`::shuttle_transition_task_several_completions`、`::shuttle_concurrent_dispose_cleans_up_exactly_once`、`rutis/tests/contract.rs::exactly_once_same_error` | 登记表 `core/D25` 记「已验证」；#634 快照记「部分」。模型 1 覆盖早到与晚到的 join 都拿到同一个 `Arc`，模型 14 覆盖多次完成（后写覆盖先写、每个 join 读到一致结果），模型 3 覆盖并发排干拿到同一结果（变异见 `upgrade.mutation`）。升为「已验证」。 |
 | core/D25b | 未验证 | guarantees.md §6 | core/D25 | `rutis/src/error.rs::plugin_failure_display_and_sink_preserve_each_cause_once`、`::sink_recurses_into_aggregate_used_as_plugin_failure_source` | 登记表 `core/D25` 记「已验证」（四个用例）；#634 快照记「未覆盖」，缺随机嵌套错误树对照参考实现的测试，#631 的内核清单也没有这一项 |
 | core/D26 | 已撤回 | guarantees.md §6 | core/D26 | — | 登记表 `core/D26` 状态「—」：编号保留、不单独计数，规则并入 `core/D27`；#634 快照记「已取代」 |
 | core/D27 | 已撤回 | guarantees.md §6 | core/D27 | — | 登记表 `core/D27` 状态「—」：是 D7 的复述，编号保留、不单独计数；#634 快照记「已取代」 |
-| core/D28a | 部分验证 | guarantees.md §6 | core/D28 | `rutis/tests/contract.rs::auto_ownership`、`::effect_yields_disposer`、`rutis/tests/events.rs::unloaded_listeners_are_not_called` | 登记表 `core/D28` 记「部分验证」；#634 快照记「部分」：模型不含所属 fiber（#622 第 3 项） |
+| core/D28a | 已验证 | guarantees.md §6 | core/D28 | `rutis/src/fiber/shuttle_tests.rs::shuttle_effect_registration_and_dispose_clean_up_exactly_once`、`::shuttle_effect_record_owner_reports_each_cleanup_error_once`、`rutis/tests/interleave.rs::the_fiber_lifecycle_matches_a_reference_model`、`rutis/tests/contract.rs::auto_ownership`、`::effect_yields_disposer`、`rutis/tests/events.rs::unloaded_listeners_are_not_called` | 登记表 `core/D28` 记「部分验证」；#634 快照记「部分」。模型 5 覆盖 `Ctx::effect` 的登记随卸载排干，模型 13 覆盖 effect 记录所属 fiber 的身份与恰好一次；参考模型 PT 比较每代的清理次数（变异见 `upgrade.mutation`）。升为「已验证」。 |
 | core/D28b | 未验证 | guarantees.md §6 | core/D28 | — | 登记表 `core/D28` 记「部分验证」并写明「isolate 出的 `Ctx` 保留原 fiber 所有权」没有测试；#634 快照记「未覆盖」，#622 参考模型的操作里也没有 isolate |
 | core/D29a | 未验证 | guarantees.md §6 | core/D29 | `rutis/tests/event_order.rs::events_are_not_filtered_by_isolate`、`rutis/tests/events.rs::events_reach_every_listener_on_the_bus` | 登记表 `core/D29` 记「已验证」（两个用例）；#634 快照记「未覆盖」：K 的作用域是加载器的组实例（`mark_scope`），不是 `isolate`，#631 的分发参考解释器没有列 isolate |
 | core/D29b | 部分验证 | guarantees.md §6 | core/D29 | `rutis/tests/event_order.rs::events_are_not_filtered_by_isolate`、`rutis/tests/events.rs::events_reach_every_listener_on_the_bus` | 登记表 `core/D29` 记「已验证」（两个用例）；#634 快照记「部分」，细则同 `events/flat` a |
-| core/D30a | 未验证 | guarantees.md §6 | core/D30 | `rutis/tests/contract.rs::apply_failure_rolls_back`、`::apply_panics_complete_and_roll_back_current_thread`、`::driver_panic_completes_waiters_with_error` | 登记表 `core/D30` 记「已验证」（用例在上）；#634 快照记「未覆盖」，缺含失败与 panic 注入的参考模型 PT，状态只降不升 |
+| core/D30a | 已验证 | guarantees.md §6 | core/D30 | `rutis/tests/interleave.rs::the_fiber_lifecycle_matches_a_reference_model`、`rutis/tests/contract.rs::apply_failure_rolls_back`、`::apply_panics_complete_and_roll_back_current_thread`、`::apply_panics_complete_and_roll_back_multi_thread`、`::driver_panic_completes_waiters_with_error` | 登记表 `core/D30` 记「已验证」（用例在上）；#634 快照记「未覆盖」。参考模型 PT 注入 `Mode::Fail` 与 `Mode::Panic`，要求状态为 Failed、已登记的资源各清理一次；三个用例覆盖回滚与驱动 panic（变异见 `upgrade.mutation`）。升为「已验证」。 |
 | core/D30b | 部分验证 | guarantees.md §6 | core/D30 | `rutis/tests/contract.rs::emit_error_sink`、`::serial_panic_contained`、`rutis/tests/event_order.rs::async_waterfall_panic_reaches_the_caller` | 登记表 `core/D30` 记「已验证」；#634 快照记「部分」，五种方式的参考解释器含 panic，但还没并进本表的证据 |
 | core/D30c | 未验证 | guarantees.md §6 | core/D30 | `rutis/tests/contract.rs::cleanup_panics_contained` | 登记表 `core/D30` 记「已验证」（`cleanup_panics_contained` 断言清理 panic 被捕获并包装为 `PluginFailed`）；#634 快照记「未覆盖」，状态只降不升 |
 | core/D30d | 未验证 | guarantees.md §6 | core/D30 | `rutis/tests/event_order.rs::async_waterfall_panic_reaches_the_caller` | 登记表 `core/D30` 记「已验证」（#464 起 waterfall 的 panic 被捕获并作为错误返回，用例在上）；#634 快照记「未覆盖」，状态只降不升 |
 | core/D30e | 未验证 | guarantees.md §6 | core/D30 | `tests/e2e/tests/runtime_crash.rs::a_killed_runtime_fails_its_calls_and_a_restart_recovers` | 登记表 `core/D30` 记「已验证」（e2e `runtime_crash` 列在 D30 下，用例在上）；#634 快照记「未覆盖」：进程被杀本身是外部行为，调用生命周期模型的 `SettlesOnce` 只覆盖调用，状态只降不升 |
-| core/D31a | 未验证 | guarantees.md §6 | core/D31 | `rutis/tests/event_order.rs::emit_order_is_kept_per_emitter`、`rutis/tests/events.rs::emits_of_one_name_start_in_emit_order`、`rutis/tests/dispatch_chain_probe.rs::dispatch_chain_does_not_fork_under_concurrent_emit` | 登记表 `core/D31` 记「已验证」（用例在上）；#634 快照记「未覆盖」，#622 的 emit 链模型（2 发出方 × 2 次 × 2 监听器）与 EVP-5.5-1 的口径不同，状态只降不升 |
+| core/D31a | 已验证 | guarantees.md §6 | core/D31 | `rutis/src/fiber/shuttle_tests.rs::shuttle_emit_chain_starts_calls_in_emission_order`、`rutis/tests/event_order.rs::emit_order_is_kept_per_emitter`、`rutis/tests/events.rs::emits_of_one_name_start_in_emit_order`、`rutis/tests/dispatch_chain_probe.rs::dispatch_chain_does_not_fork_under_concurrent_emit` | 登记表 `core/D31` 记「已验证」（用例在上）；#634 快照记「未覆盖」。模型 10 用 2 个发出方 × 2 次 × 2 个监听器，检查同名 emit 在每个监听器上按发出顺序开始（变异见 `upgrade.mutation`）。升为「已验证」。 |
 | core/D31b | 未验证 | guarantees.md §6 | core/D31 | `rutis/tests/event_order.rs::emit_after_listener_panic_is_still_delivered` | 登记表 `core/D31` 记「已验证」（`emit_after_listener_panic_is_still_delivered`）；#634 快照记「未覆盖」，状态只降不升 |
-| core/D31c | 未验证 | guarantees.md §6 | core/D31 | `rutis/tests/event_order.rs::emit_inside_listener_goes_to_the_back` | 登记表 `core/D31` 记「已验证」（`emit_inside_listener_goes_to_the_back`）；#634 快照记「未覆盖」，#622 的模型有「监听器里再 emit」但没并进证据，状态只降不升 |
+| core/D31c | 已验证 | guarantees.md §6 | core/D31 | `rutis/src/fiber/shuttle_tests.rs::shuttle_emit_chain_starts_calls_in_emission_order`、`rutis/tests/event_order.rs::emit_inside_listener_goes_to_the_back` | 登记表 `core/D31` 记「已验证」（`emit_inside_listener_goes_to_the_back`）；#634 快照记「未覆盖」。模型 10 在监听器里再 emit 同名：它排到当前调用之后、不死锁，模型断言两次 emit 的开始顺序（变异见 `upgrade.mutation`）。升为「已验证」。 |
 | core/D31d | 明确不保证 | guarantees.md §6 | core/D31 | — | 登记表 `core/D31` 把「跨名字不保证顺序、完成顺序不作契约」列为明确不保证；#634 快照记「不适用」 |
-| core/D32a | 未验证 | guarantees.md §6 | core/D32 | `rutis/tests/config_update.rs::update_dry_run_failure_leaves_state_untouched`、`::update_active_applies_new_config_and_cleans_once` | 登记表 `core/D32` 记「已验证」（`config_update.rs` 的 15 个测试与 `lifecycle_order.rs` 的用例）；#634 快照记「未覆盖」，缺更新与失败注入的参考模型 PT，状态只降不升 |
-| core/D32b | 部分验证 | guarantees.md §6 | core/D32 | `rutis/tests/config_update.rs::update_during_loading_converges_to_new_config`、`::concurrent_update_and_dispose_settle_correctly` | 登记表 `core/D32` 记「已验证」；#634 快照记「部分」，#622 的疑点仍在：restart / update 在检查与投递之间输给终止的 Dispose 时被排干成 `Ok` |
-| core/D32c | 未验证 | guarantees.md §6 | core/D32 | `rutis/tests/config_update.rs::update_active_applies_new_config_and_cleans_once` | 登记表 `core/D32` 记「已验证」；#634 快照记「未覆盖」，config 不进依赖身份的交叉用例没有单列，状态只降不升 |
+| core/D32a | 已验证 | guarantees.md §6 | core/D32 | `rutis/tests/interleave.rs::the_fiber_lifecycle_matches_a_reference_model`、`rutis/tests/config_update.rs::update_dry_run_failure_leaves_state_untouched`、`::update_active_applies_new_config_and_cleans_once` | 登记表 `core/D32` 记「已验证」（`config_update.rs` 的 15 个测试与 `lifecycle_order.rs` 的用例）；#634 快照记「未覆盖」。参考模型 PT 的 update 先走干跑，`Mode::BadConfig` 被拒后旧状态继续；两个用例断言拒绝不生效与成功时只清理一次（变异见 `upgrade.mutation`）。升为「已验证」。 |
+| core/D32b | 已验证 | guarantees.md §6 | core/D32 | `rutis/tests/interleave.rs::the_fiber_lifecycle_matches_a_reference_model`、`rutis/src/fiber/shuttle_tests.rs::shuttle_restart_losing_to_a_dispose_reports_it`、`rutis/tests/config_update.rs::update_during_loading_converges_to_new_config`、`::concurrent_update_and_dispose_settle_correctly` | 登记表 `core/D32` 记「已验证」；#634 快照记「部分」。参考模型 PT 覆盖 Loading 中与运行中的 update、失败与自 dispose；模型 23 覆盖 restart/update 输给终止 dispose 时报告失败而不是排干成 `Ok`（变异见 `upgrade.mutation`）。升为「已验证」。 |
+| core/D32c | 已验证 | guarantees.md §6 | core/D32 | `rutis/tests/interleave.rs::the_fiber_lifecycle_matches_a_reference_model`、`rutis/tests/config_update.rs::update_active_applies_new_config_and_cleans_once` | 登记表 `core/D32` 记「已验证」；#634 快照记「未覆盖」。参考模型 PT 的 `last_deps` 只由依赖键组成：update 改 config 不改变依赖身份、不触发别的 fiber 重载（变异见 `upgrade.mutation`）。升为「已验证」。 |
 | core/D32d | 明确不保证 | guarantees.md §6 | core/D32 | — | 登记表 `core/D32` 把「不提供 `internal/update` waterfall、持久化归宿主层」列为明确不保证；#634 快照记「不适用」 |
 | core/D33a | 部分验证 | guarantees.md §6 | core/D33 | `rutis/tests/typed_dispatch.rs::named_key_keeps_order_once_and_waterfall_nesting`、`rutis/tests/events.rs::prefixes_prepend_and_once_keep_registration_order` | 登记表 `core/D33` 记「已验证」（三个用例）；#634 快照记「部分」，`EventKey::dynamic` 的运行时字符串与不同名字不串的覆盖还不完整 |
 | core/D33b | 未验证 | guarantees.md §6 | core/D33 | `rutis/tests/events.rs::listeners_of_another_type_hear_the_same_name` | 登记表 `core/D33` 记「已验证」（用例在上）；#634 快照记「未覆盖」，细则同 `events/by-name` a，状态只降不升 |
 | core/D33c | 未验证 | guarantees.md §6 | core/D33 | `rutis/tests/event_order.rs::events_are_not_filtered_by_isolate` | 登记表 `core/D33` 记「已验证」（D33d 由 `core/D29` 的测试覆盖）；#634 快照记「未覆盖」，状态只降不升 |
-| core/features.shutdown-state a | 未验证 | guarantees.md §7 | core/features.shutdown-state | `rutis/tests/lifecycle_diagnostics.rs::shutdown_state_is_shared_before_cleanup_and_after_completion` | 登记表 `core/features.shutdown-state` 记「已验证」（用例在上）；#634 快照记「未覆盖」：#622 的根关闭模型只查 join 的结果，不查这个标志，状态只降不升 |
+| core/features.shutdown-state a | 已验证 | guarantees.md §7 | core/features.shutdown-state | `rutis/src/fiber/shuttle_tests.rs::shuttle_root_close_owns_the_child_it_mounted`、`rutis/tests/lifecycle_diagnostics.rs::shutdown_state_is_shared_before_cleanup_and_after_completion` | 登记表 `core/features.shutdown-state` 记「已验证」（用例在上）；#634 快照记「未覆盖」。模型 17 在根关闭期间断言 `is_shutting_down()`，直到子树清理完成；用例覆盖清理前与完成后的共享状态（变异见 `upgrade.mutation`）。升为「已验证」。 |
 | core/features.shutdown-state b | 未验证 | guarantees.md §7 | core/features.shutdown-state | `rutis/tests/lifecycle_diagnostics.rs::closing_a_child_does_not_report_root_shutdown` | 登记表 `core/features.shutdown-state` 记「已验证」（`closing_a_child_does_not_report_root_shutdown`）；#634 快照记「未覆盖」，状态只降不升 |
-| core/features.errors | 未验证 | guarantees.md §7 | core/features.errors | `rutis/tests/lifecycle_order.rs::a_restart_dropped_after_its_cleanup_started_still_completes`、`::an_update_dropped_after_its_cleanup_started_still_completes` | 登记表 `core/features.errors` 记「已验证」（四个用例）；#634 快照记「未覆盖」：#622 的模型没有「在 await 处丢弃 future」的动作（#629 的做法只用于加载器），状态只降不升 |
-| core/features.errors.failed-retry | 未验证 | guarantees.md §7 | core/features.errors.failed-retry | `rutis/tests/failed_retry.rs::a_failed_apply_is_retried_only_when_its_dependencies_change`、`::a_failed_validate_is_retried_only_when_its_dependencies_change`、`::a_failed_build_is_retried_only_when_its_dependencies_change` | 登记表 `core/features.errors.failed-retry` 记「已验证」（用例在上，`#327`）；#634 快照记「未覆盖」，缺参考模型 PT（失败注入 + 提供 / 撤下）与逐键通知的 SH，状态只降不升 |
-| core/typed.lost-dependency-pending a | 未验证 | guarantees.md §7 | core/typed.lost-dependency-pending | `rutis/tests/typed_plugin.rs::a_dependency_lost_before_it_is_read_returns_the_plugin_to_pending`、`::a_dependency_withdrawn_before_apply_starts_returns_the_plugin_to_pending` | 登记表 `core/typed.lost-dependency-pending` 记「已验证」（用例在上；#652 按 #620 改写了依赖 Bug B 窗口的测试）；#634 快照记「未覆盖」，SH + PT 仍归 #622，状态只降不升 |
+| core/features.errors | 已验证 | guarantees.md §7 | core/features.errors | `rutis/src/fiber/shuttle_tests.rs::shuttle_root_close_owns_the_child_it_mounted`、`::shuttle_dependency_restart_in_the_window_returns_to_the_returned_generation`、`rutis/tests/lifecycle_order.rs::a_restart_dropped_after_its_cleanup_started_still_completes`、`::an_update_dropped_after_its_cleanup_started_still_completes` | 登记表 `core/features.errors` 记「已验证」（四个用例）；#634 快照记「未覆盖」。模型 17、19 都在 await 处丢弃 restart/update 的 future，已开始的清理仍完成；两个用例断言丢弃后清理仍完成（变异见 `upgrade.mutation`）。升为「已验证」。 |
+| core/features.errors.failed-retry | 已验证 | guarantees.md §7 | core/features.errors.failed-retry | `rutis/tests/interleave.rs::the_fiber_lifecycle_matches_a_reference_model`、`rutis/tests/failed_retry.rs::a_failed_apply_is_retried_only_when_its_dependencies_change`、`::a_failed_validate_is_retried_only_when_its_dependencies_change`、`::a_failed_build_is_retried_only_when_its_dependencies_change` | 登记表 `core/features.errors.failed-retry` 记「已验证」（用例在上，`#327`）；#634 快照记「未覆盖」。参考模型 PT 注入失败并比较 `last_deps`：只有依赖集合变化才重试，同一提供者恢复不算变化；三个用例覆盖构造、validate、apply 失败（变异见 `upgrade.mutation`）。升为「已验证」。 |
+| core/typed.lost-dependency-pending a | 已验证 | guarantees.md §7 | core/typed.lost-dependency-pending | `rutis/src/fiber/shuttle_tests.rs::shuttle_dependency_withdrawal_stops_the_loading_consumer`、`::shuttle_dependency_restart_in_the_window_returns_to_the_returned_generation`、`rutis/tests/typed_plugin.rs::a_dependency_lost_before_it_is_read_returns_the_plugin_to_pending`、`::a_dependency_withdrawn_before_apply_starts_returns_the_plugin_to_pending` | 登记表 `core/typed.lost-dependency-pending` 记「已验证」（用例在上；#652 按 #620 改写了依赖 Bug B 窗口的测试）；#634 快照记「未覆盖」。模型 9 覆盖门控通过后、读取前依赖被撤下的窗口，模型 19 覆盖窗口里的 restart；两个用例断言之（变异见 `upgrade.mutation`）。升为「已验证」。 |
 | core/typed.lost-dependency-pending b | 未验证 | guarantees.md §7 | core/typed.lost-dependency-pending | `rutis/tests/typed_plugin.rs::the_claim_without_a_failed_read_is_a_plain_failure` | 登记表 `core/typed.lost-dependency-pending` 记「已验证」（用例在上，防循环的判定）；#634 快照记「未覆盖」，严格读取的判定表 PT 没有，状态只降不升 |
 | core/typed.lost-dependency-silent | 未验证 | guarantees.md §7 | core/typed.lost-dependency-silent | `rutis/tests/typed_plugin.rs::a_lost_dependency_error_does_not_reach_the_error_sink` | 登记表 `core/typed.lost-dependency-silent` 记「已验证」（用例在上）；#634 快照记「未覆盖」，状态只降不升 |
-| core/typed.lost-dependency-restart | 未验证 | guarantees.md §7 | core/typed.lost-dependency-restart | `rutis/tests/typed_plugin.rs::a_restart_in_the_lost_dependency_window_returns_ok` | 登记表 `core/typed.lost-dependency-restart` 记「已验证」（用例在上）；#634 快照记「未覆盖」：#622 的「依赖驱逐」模型不含 restart，状态只降不升 |
+| core/typed.lost-dependency-restart | 已验证 | guarantees.md §7 | core/typed.lost-dependency-restart | `rutis/src/fiber/shuttle_tests.rs::shuttle_dependency_restart_in_the_window_returns_to_the_returned_generation`、`rutis/tests/typed_plugin.rs::a_restart_in_the_lost_dependency_window_returns_ok` | 登记表 `core/typed.lost-dependency-restart` 记「已验证」（用例在上）；#634 快照记「未覆盖」。模型 19 在依赖窗口里发起 restart：返回 Ok、回到被返回的那一代、`pending_restarts` 清零（变异见 `upgrade.mutation`）。升为「已验证」。 |
 | core/typed.get-not-evidence | 未验证 | guarantees.md §7 | core/typed.get-not-evidence | `rutis/tests/typed_plugin.rs::a_get_read_is_not_evidence_of_a_lost_dependency` | 登记表 `core/typed.get-not-evidence` 记「已验证」（用例在上）；#634 快照记「未覆盖」，状态只降不升 |
 | core/typed.untyped-require | 未验证 | guarantees.md §7 | core/typed.untyped-require | `rutis/tests/typed_plugin.rs::an_untyped_plugin_whose_require_fails_returns_to_pending`、`::an_untyped_plugin_returning_its_failed_require_returns_to_pending` | 登记表 `core/typed.untyped-require` 记「已验证」（两个用例，`#438`）；#634 快照记「未覆盖」，状态只降不升 |
 | events/one-table a | 部分验证 | guarantees.md §7 | events/one-table | `rutis/tests/events.rs::one_listener_is_called_by_every_mode` | 登记表 `events/one-table` 记「已验证」（两个用例）；#634 快照记「部分」，五种方式 × 一次登记的组合覆盖还不完整 |
 | events/one-table b | 部分验证 | guarantees.md §7 | events/one-table | `rutis/tests/events.rs::next_outside_a_waterfall_is_an_error` | 登记表 `events/one-table` 记「已验证」（用例在上）；#634 快照记「部分」，同步监听器在异步 waterfall 中的分支只由同一组用例覆盖 |
 | events/emit a | 部分验证 | guarantees.md §7 | events/emit | `rutis/tests/events.rs::emit_does_not_wait_and_contains_failures`、`::emits_of_one_name_start_in_emit_order` | 登记表 `events/emit` 记「已验证」（用例在上）；#634 快照记「部分」，缺与发出顺序配合的模型/PT 证据 |
-| events/emit b | 部分验证 | guarantees.md §7 | events/emit | `rutis/tests/event_order.rs::emit_order_is_kept_per_emitter`、`rutis/tests/events.rs::emits_of_one_name_start_in_emit_order` | 登记表 `events/emit` 记「已验证」（用例在上）；#634 快照记「部分」：内核一侧由 emit 链 SH 检查，K 走经会话的路径，跨进程的 `EmitOrder` 在 #613 |
+| events/emit b | 已验证 | guarantees.md §7 | events/emit | `rutis/src/fiber/shuttle_tests.rs::shuttle_emit_chain_starts_calls_in_emission_order`、`rutis/tests/event_order.rs::emit_order_is_kept_per_emitter`、`rutis/tests/events.rs::emits_of_one_name_start_in_emit_order`、`rutis-bridge/src/runtime/testing/events.expected.json`（`emit/order-per-listener`、`emit/order-filtered-then-unfiltered`） | 登记表 `events/emit` 记「已验证」（用例在上）；#634 快照记「部分」。模型 10 覆盖内核的 emit 链（2 个发出方 × 2 次 × 2 个监听器），K 的两个用例走经会话的路径；跨进程的 `EmitOrder` 由 `specs/events/EventsEmit.tla::EmitOrder` 覆盖（变异见 `upgrade.mutation`）。升为「已验证」。 |
 | events/emit c | 部分验证 | guarantees.md §7 | events/emit | `rutis/tests/events.rs::emit_does_not_wait_and_contains_failures` | 登记表 `events/emit` 记「已验证」（`emit_does_not_wait_and_contains_failures` 断言失败进 ErrorSink、不到达发出方）；#634 快照记「部分」 |
 | events/parallel | 部分验证 | guarantees.md §7 | events/parallel | `rutis/tests/events.rs::parallel_aggregates_in_registration_order`、`rutis/tests/contract.rs::parallel_aggregates` | 登记表 `events/parallel` 记「已验证」（两个用例）；#634 快照记「部分」，聚合顺序的 PT 尚未补齐 |
 | events/serial-bail a | 部分验证 | guarantees.md §7 | events/serial-bail | `rutis/tests/events.rs::serial_and_bail_skip_no_result`、`::serial_stops_at_an_error` | 登记表 `events/serial-bail` 记「已验证」（六个用例）；#634 快照记「部分」，逐个调用至第一个结果的 PT 尚未补齐 |
@@ -1819,14 +1821,14 @@
 | events/scope | 已撤回 | guarantees.md §7 | events/scope | — | 登记表 `events/scope` 状态「已撤回（0.15.1）」：作用域不再挑选监听器，事件是一条平总线，由 `events/flat` 取代（#604、#605）；#634 快照记「已取代」 |
 | events/filter a | 部分验证 | guarantees.md §7 | events/filter | `rutis/tests/events.rs::filters_see_descriptors_and_global_entries_skip_them` | 登记表 `events/filter` 记「已验证」（两个用例）；#634 快照记「部分」，过滤在快照上、调用前、按登记顺序的 PT 尚未补齐 |
 | events/filter b | 部分验证 | guarantees.md §7 | events/filter | `rutis/tests/events.rs::a_failing_emit_filter_is_reported` | 登记表 `events/filter` 记「已验证」（用例在上）；#634 快照记「部分」，失败时整次分发失败、不送达任何监听器的覆盖还不完整 |
-| events/lifecycle a | 部分验证 | guarantees.md §7 | events/lifecycle | `rutis/tests/events.rs::unloaded_listeners_are_not_called`、`rutis-loader/tests/event_close_admission.rs::subtree_shutdown_before_start_skips_listener_in_every_mode` | 登记表 `events/lifecycle` 记「已验证」（用例在上）；#634 快照记「部分」：在途计数模型（`wait_events` 看到 0 之后没有调用体再运行）还没有，`Entry::live` 的 shuttle 模型（#1025）只覆盖标记先于关闭 |
-| events/lifecycle b | 部分验证 | guarantees.md §7 | events/lifecycle | `rutis/tests/events.rs::unload_cancels_and_waits_for_running_listeners`、`rutis-loader/tests/event_close_admission.rs::accepted_listener_drains_after_subtree_shutdown` | 登记表 `events/lifecycle` 记「已验证」（用例在上）；#634 快照记「部分」，卸载等待运行中调用结束的模型没有 |
+| events/lifecycle a | 已验证 | guarantees.md §7 | events/lifecycle | `rutis/src/fiber/shuttle_tests.rs::shuttle_unload_waits_for_in_flight_listener_calls`、`::shuttle_subtree_close_marks_every_member_of_a_real_tree`、`rutis/tests/events.rs::unloaded_listeners_are_not_called`、`rutis-loader/tests/event_close_admission.rs::subtree_shutdown_before_start_skips_listener_in_every_mode`、`rutis-bridge/src/runtime/testing/events.expected.json`（`unload/not-called-after`） | 登记表 `events/lifecycle` 记「已验证」（用例在上）；#634 快照记「部分」。模型 6 覆盖卸载等待在途调用、开始后不再有新调用体，模型 16 覆盖真实子树关闭时的 `Entry::live`；K 的 `unload/not-called-after` 走会话路径（变异见 `upgrade.mutation`）。升为「已验证」。 |
+| events/lifecycle b | 已验证 | guarantees.md §7 | events/lifecycle | `rutis/src/fiber/shuttle_tests.rs::shuttle_unload_waits_for_in_flight_listener_calls`、`::shuttle_subtree_close_marks_every_member_of_a_real_tree`、`::shuttle_event_waits_end_at_their_deadline`、`rutis/tests/events.rs::unload_cancels_and_waits_for_running_listeners`、`rutis-loader/tests/event_close_admission.rs::accepted_listener_drains_after_subtree_shutdown`、`rutis-bridge/src/runtime/testing/events.expected.json`（`unload/waits-and-cancels`、`unload/in-flight-emit`） | 登记表 `events/lifecycle` 记「已验证」（用例在上）；#634 快照记「部分」。模型 6 覆盖卸载等待在途调用、它们看到取消，模型 16 覆盖真实子树关闭的等待，模型 22 覆盖带截止时间的等待；K 的两个用例走会话路径（变异见 `upgrade.mutation`）。升为「已验证」。 |
 | events/lifecycle c | 不单独计数 | guarantees.md §7 | events/lifecycle | `rutis/tests/unload_deadline.rs::an_unload_gives_up_on_running_listeners_at_the_deadline` | 登记表 `events/lifecycle` 记「已验证」（截止时间由 `unload_deadline.rs` 覆盖）；本行是计时行为，#634 快照记「不适用」，不单独计数 |
 | events/lifecycle d | 不单独计数 | guarantees.md §7 | events/lifecycle | `rutis/tests/events.rs::unloaded_listeners_are_not_called` | 登记表 `events/lifecycle` 记「已验证」；本行是确定性判定（监听器以登记它的上下文被调用），#634 快照记「不适用」，不单独计数 |
 | events/remote a | 未验证 | guarantees.md §7 | events/remote | `rutis/tests/events.rs::remote_entries_take_part_like_any_listener`、`::remote_entries_in_synchronous_modes` | 登记表 `events/remote` 记「已验证」（七个用例）；#634 快照记「未覆盖」，五种方式的参考解释器含远程监听器，但还没并进本表的证据，状态只降不升 |
 | events/remote b | 未验证 | guarantees.md §7 | events/remote | `rutis/tests/events.rs::remote_waterfall_next_runs_once` | 登记表 `events/remote` 记「已验证」（用例在上）；#634 快照记「未覆盖」，同步 `next` 的 transmute 只靠 #632 的 Miri 查，状态只降不升 |
 | events/remote c | 未验证 | guarantees.md §7 | events/remote | `rutis/tests/events.rs::remote_entries_in_synchronous_modes` | 登记表 `events/remote` 记「已验证」（用例在上）；#634 快照记「未覆盖」，状态只降不升 |
-| events/remote d | 未验证 | guarantees.md §7 | events/remote | `rutis/tests/events.rs::table_changes_are_heard_in_the_order_they_were_made`、`::the_table_is_watched` | 登记表 `events/remote` 记「已验证」（用例在上）；#634 快照记「未覆盖」，监听器表观察者模型（FIFO、恰好一次、`deliver(seq)` 在 seq 被听到后才返回）没有，状态只降不升 |
+| events/remote d | 已验证 | guarantees.md §7 | events/remote | `rutis/src/fiber/shuttle_tests.rs::shuttle_table_watcher_hears_each_change_once_in_order`、`rutis/tests/events.rs::table_changes_are_heard_in_the_order_they_were_made`、`::the_table_is_watched` | 登记表 `events/remote` 记「已验证」（用例在上）；#634 快照记「未覆盖」。模型 11 跑真实的监听器表与观察者：每次变化按发生顺序恰好听到一次，`deliver(seq)` 在 seq 被听到后才返回（变异见 `upgrade.mutation`）。升为「已验证」。 |
 | events/remote e | 未验证 | guarantees.md §7 | events/remote | `rutis/tests/events.rs::raw_dispatch_and_entry_calls` | 登记表 `events/remote` 记「已验证」（用例在上）；#634 快照记「未覆盖」，协议层的 `before-future-reply` 在 #613，状态只降不升 |
 | events/remote f | 不单独计数 | guarantees.md §7 | events/remote | `rutis/tests/events.rs::an_entry_called_by_id_must_have_the_name` | 登记表 `events/remote` 记「已验证」（用例在上）；本行是确定性判定（按 id 调用的条目必须属于这个名字），#634 快照记「不适用」，不单独计数 |
 | boundary/5.1a | 未验证 | guarantees.md §8 | boundary/5.1 | `rutis-bridge/tests/service_projection.rs::projected_service_follows_replacement_and_withdrawal`、`rutis-bridge/tests/projection_lifecycle.rs::a_call_on_an_exported_object_refreshes_the_slots` | 登记表 `boundary/5.1` 记「已验证」（用例在上）；#634 快照记「未覆盖」，服务投影的模型（#628 `Projection`、#625 `NewerWins`）还没并进证据，状态只降不升 |
@@ -2080,12 +2082,12 @@
 | events/bun-runtime | 未验证 | guarantees.md §12 | sdk/leaf-events | `bun/rutis-bun/test/runner.test.ts`（#634 快照指第 125 行等；登记表没有这一行） | 编号本身从未登记（#634 快照记「未登记」）；规则现由登记表 §12 的 `sdk/leaf-events` 承载，测试带它的标记。状态沿用快照的「未验证」，不按登记表那一行的状态上调。 |
 | events/cancel | 未验证 | guarantees.md §12 | sdk/leaf-events | `go/rutis/internal/runtime/events_test.go`（#634 快照指的 go/rutis/events_test.go 已不在；登记表没有这一行） | 编号本身从未登记（#634 快照记「未登记」）；规则现由登记表 §12 的 `sdk/leaf-events` 承载，测试带它的标记。状态沿用快照的「未验证」，不按登记表那一行的状态上调。 |
 | events/cordis | 未验证 | guarantees.md §8a | events/one-bus | `node/rutis-runtime/test/cordis-events.test.mjs`（#634 快照指第 1 行；登记表没有这一行） | 编号本身从未登记（#634 快照记「未登记」）；规则现由登记表 §8a 的 `events/one-bus` 承载，测试带它的标记。状态沿用快照的「未验证」，不按登记表那一行的状态上调。 |
-| events/emit-order | 未验证 | guarantees.md §7 | events/emit | `rutis/tests/events.rs`、`go/rutis/events_session_test.go`（#634 快照指第 329、267 行；登记表没有这一行） | 编号本身从未登记（#634 快照记「未登记」）；规则现由登记表 §7 的 `events/emit` 承载，测试带它的标记。状态沿用快照的「未验证」，不按登记表那一行的状态上调。 |
+| events/emit-order | 已验证 | guarantees.md §7 | events/emit | `rutis/src/fiber/shuttle_tests.rs::shuttle_emit_chain_starts_calls_in_emission_order`、`rutis-bridge/src/runtime/testing/events.expected.json`（`emit/order-per-listener`、`emit/order-filtered-then-unfiltered`）、`specs/events/EventsEmit.tla::EmitOrder`、`rutis/tests/events.rs`、`go/rutis/events_session_test.go`（#634 快照指第 329、267 行；登记表没有这一行） | 编号本身从未登记（#634 快照记「未登记」）；规则现由登记表 §7 的 `events/emit` 承载。模型 10 覆盖内核 emit 链，两个 K 用例覆盖经会话的路径，TLA `EmitOrder` 覆盖跨进程；证据与登记表 `events/emit` 同一批（变异见 `upgrade.mutation`）。升为「已验证」。 |
 | events/emit-reported | 未验证 | guarantees.md §15 | host/test-command | `go/rutis/events_session_test.go`（#634 快照指第 426 行；登记表没有这一行） | 编号本身从未登记（#634 快照记「未登记」）；规则现由登记表 §15 的 `host/test-command` 承载，测试带它的标记。状态沿用快照的「未验证」，不按登记表那一行的状态上调。 |
 | events/filter-emit | 未验证 | guarantees.md §7 | events/filter | `rutis/tests/events.rs`（#634 快照指第 1002 行；登记表没有这一行） | 编号本身从未登记（#634 快照记「未登记」）；规则现由登记表 §7 的 `events/filter` 承载，测试带它的标记。状态沿用快照的「未验证」，不按登记表那一行的状态上调。 |
 | events/handshake | 未验证 | guarantees.md §8a | events/old-peer-refused | `go/rutis/events_session_test.go`（#634 快照指第 453 行；登记表没有这一行） | 编号本身从未登记（#634 快照记「未登记」）；规则现由登记表 §8a 的 `events/old-peer-refused` 承载，测试带它的标记。握手判定表的 PT 仍归 #631；状态沿用快照的「未验证」，不按登记表那一行的状态上调。 |
 | events/js-bus | 未验证 | guarantees.md §12 | sdk/leaf-events | `node/rutis-runtime/test/events.test.mjs`（#634 快照指第 1 行；登记表没有这一行） | 编号本身从未登记（#634 快照记「未登记」）；规则现由登记表 §12 的 `sdk/leaf-events` 承载，测试带它的标记。状态沿用快照的「未验证」，不按登记表那一行的状态上调。 |
-| events/liveness | 未验证 | guarantees.md §7 | events/lifecycle | `rutis/tests/events.rs`（#634 快照指第 1108 行；登记表没有这一行） | 编号本身从未登记（#634 快照记「未登记」）；规则现由登记表 §7 的 `events/lifecycle` 承载，测试带它的标记。在途计数归 #622、`WithdrawnStaysOut` 归 #613；状态沿用快照的「未验证」，不按登记表那一行的状态上调。 |
+| events/liveness | 已验证 | guarantees.md §7 | events/lifecycle | `rutis/src/fiber/shuttle_tests.rs::shuttle_unload_waits_for_in_flight_listener_calls`、`::shuttle_restart_publishes_the_live_generation`、`::shuttle_subtree_close_marks_every_member_of_a_real_tree`、`rutis/tests/events.rs`、`rutis-bridge/src/runtime/testing/events.expected.json`（`unload/not-called-after`）（#634 快照指第 1108 行；登记表没有这一行） | 编号本身从未登记（#634 快照记「未登记」）；规则现由登记表 §7 的 `events/lifecycle` 承载。模型 6 覆盖卸下后不再开始调用，模型 15 覆盖代次失效，模型 16 覆盖真实子树关闭；K 的 `unload/not-called-after` 走会话路径（变异见 `upgrade.mutation`）。升为「已验证」。 |
 | events/next | 未验证 | guarantees.md §7 | events/waterfall | `go/rutis/events_session_test.go`（#634 快照指的 go/rutis/events_test.go 已不在；登记表没有这一行） | 编号本身从未登记（#634 快照记「未登记」）；规则现由登记表 §7 的 `events/waterfall` 承载，测试带它的标记。状态沿用快照的「未验证」，不按登记表那一行的状态上调。 |
 | events/next-misuse | 未验证 | guarantees.md §7 | events/one-table | `rutis/tests/events.rs`（#634 快照指第 206 行；登记表没有这一行） | 编号本身从未登记（#634 快照记「未登记」）；规则现由登记表 §7 的 `events/one-table` 承载，测试带它的标记。状态沿用快照的「未验证」，不按登记表那一行的状态上调。 |
 | events/no-result | 未验证 | guarantees.md §7 | events/serial-bail | `rutis/tests/events.rs`、`go/rutis/internal/events/events_test.go`（#634 快照指第 433、10 行；登记表没有这一行） | 编号本身从未登记（#634 快照记「未登记」）；规则现由登记表 §7 的 `events/serial-bail` 承载，测试带它的标记。结果判定的 PT 仍归 #631；状态沿用快照的「未验证」，不按登记表那一行的状态上调。 |
@@ -2100,10 +2102,10 @@
 | events/serial | 未验证 | guarantees.md §7 | events/serial-bail | `go/rutis/events_session_test.go`、`go/rutis/internal/runtime/events_test.go`（#634 快照指的 go/rutis/events_test.go 已不在；登记表没有这一行） | 编号本身从未登记（#634 快照记「未登记」）；规则现由登记表 §7 的 `events/serial-bail` 承载，测试带它的标记。状态沿用快照的「未验证」，不按登记表那一行的状态上调。 |
 | events/serial-error | 未验证 | guarantees.md §7 | events/serial-bail | `rutis/tests/events.rs`（#634 快照指第 496 行；登记表没有这一行） | 编号本身从未登记（#634 快照记「未登记」）；规则现由登记表 §7 的 `events/serial-bail` 承载，测试带它的标记。状态沿用快照的「未验证」，不按登记表那一行的状态上调。 |
 | events/session | 未验证 | guarantees.md §12 | sdk/leaf-events | `go/rutis/events_session_test.go`（#634 快照指第 27 行；登记表没有这一行） | 编号本身从未登记（#634 快照记「未登记」）；规则现由登记表 §12 的 `sdk/leaf-events` 承载，测试带它的标记。状态沿用快照的「未验证」，不按登记表那一行的状态上调。 |
-| events/table-watch | 未验证 | guarantees.md §7 | events/remote | `rutis/tests/events.rs`（#634 快照指第 1472 行；登记表没有这一行） | 编号本身从未登记（#634 快照记「未登记」）；规则现由登记表 §7 的 `events/remote` 承载，测试带它的标记。表的模型归 #622、`RegisteredThenSeen` 归 #613；状态沿用快照的「未验证」，不按登记表那一行的状态上调。 |
+| events/table-watch | 已验证 | guarantees.md §7 | events/remote | `rutis/src/fiber/shuttle_tests.rs::shuttle_table_watcher_hears_each_change_once_in_order`、`rutis/tests/events.rs::the_table_is_watched`（#634 快照指第 1472 行；登记表没有这一行） | 编号本身从未登记（#634 快照记「未登记」）；规则现由登记表 §7 的 `events/remote` 承载。模型 11 覆盖观察者先拿到当前条目、再按发生顺序收到每次变化，`deliver(seq)` 在 seq 被听到后才返回；用例断言同一行为（变异见 `upgrade.mutation`）。升为「已验证」。 |
 | events/tool | 未验证 | guarantees.md §15 | host/test-command | `go/rutis/events_session_test.go`（#634 快照指第 384 行；登记表没有这一行） | 编号本身从未登记（#634 快照记「未登记」）；规则现由登记表 §15 的 `host/test-command` 承载，测试带它的标记。状态沿用快照的「未验证」，不按登记表那一行的状态上调。 |
 | events/unload | 未验证 | guarantees.md §12 | sdk/leaf-events | `go/rutis/events_session_test.go`、`go/rutis/internal/runtime/events_test.go`（#634 快照指第 421、780、355 行；登记表没有这一行） | 编号本身从未登记（#634 快照记「未登记」）；规则现由登记表 §12 的 `sdk/leaf-events` 承载，测试带它的标记。状态沿用快照的「未验证」，不按登记表那一行的状态上调。 |
-| events/unload-waits | 未验证 | guarantees.md §7 | events/lifecycle | `rutis/tests/events.rs`（#634 快照指第 1056 行；登记表没有这一行） | 编号本身从未登记（#634 快照记「未登记」）；规则现由登记表 §7 的 `events/lifecycle` 承载，测试带它的标记。在途计数归 #622；状态沿用快照的「未验证」，不按登记表那一行的状态上调。 |
+| events/unload-waits | 已验证 | guarantees.md §7 | events/lifecycle | `rutis/src/fiber/shuttle_tests.rs::shuttle_unload_waits_for_in_flight_listener_calls`、`::shuttle_subtree_close_marks_every_member_of_a_real_tree`、`::shuttle_event_waits_end_at_their_deadline`、`rutis/tests/events.rs`、`rutis-bridge/src/runtime/testing/events.expected.json`（`unload/waits-and-cancels`）（#634 快照指第 1056 行；登记表没有这一行） | 编号本身从未登记（#634 快照记「未登记」）；规则现由登记表 §7 的 `events/lifecycle` 承载。模型 6 覆盖监听器随登记它的上下文被调用、卸载等它结束，模型 16 覆盖真实子树关闭，模型 22 覆盖截止时间；K 的 `unload/waits-and-cancels` 走会话路径（变异见 `upgrade.mutation`）。升为「已验证」。 |
 | events/via-host | 未验证 | guarantees.md §12 | sdk/leaf-events | `go/rutis/events_session_test.go`（#634 快照指第 176、224 行；登记表没有这一行） | 编号本身从未登记（#634 快照记「未登记」）；规则现由登记表 §12 的 `sdk/leaf-events` 承载，测试带它的标记。状态沿用快照的「未验证」，不按登记表那一行的状态上调。 |
 | events/waterfall-sync | 未验证 | guarantees.md §7 | events/waterfall | `rutis/tests/events.rs`（#634 快照指第 685 行；登记表没有这一行） | 编号本身从未登记（#634 快照记「未登记」）；规则现由登记表 §7 的 `events/waterfall` 承载，测试带它的标记。状态沿用快照的「未验证」，不按登记表那一行的状态上调。 |
 | events/withdrawn | 未验证 | guarantees.md §12 | sdk/leaf-events | `go/rutis/internal/runtime/events_test.go`（#634 快照指的 go/rutis/events_test.go 已不在；登记表没有这一行） | 编号本身从未登记（#634 快照记「未登记」）；规则现由登记表 §12 的 `sdk/leaf-events` 承载，测试带它的标记。`WithdrawnStaysOut` 归 #613；状态沿用快照的「未验证」，不按登记表那一行的状态上调。 |
@@ -2527,7 +2529,7 @@
 | EVP-4.4-2 | 部分验证 | design-events-protocol-2026-10-18.md §4.4 | EVP §4.4 | `specs/events/EventsTable.tla::RunningRowHeard`、`crates/rutis-bridge/src/runtime/testing/events.expected.json`（`registration/loaded-row-hears`） | §4.4 第 2 条要求一行 `apply` 期间的每个 `events.on` 都得到回复之后才回复 `rows.load`；`RunningRowHeard` 建模，K 有一个构造时序的用例；登记表没有对应条目（#613 计划补）；#634 快照记「部分」 |
 | EVP-4.4-3 | 未验证 | design-events-protocol-2026-10-18.md §4.4 | EVP §4.4、events/presence | `specs/events/EventsTable.tla::RegisteredThenSeen`、`specs/events/EventsTable.tla::CausallyAfterCallSees` | §4.4 第 3 条要求宿主在回复 `events.on` 之前把 elsewhere 排进其他每个会话；两个不变量建模了含跨进程调用的因果，没有实现或 trace 检查；#634 快照记「未覆盖」 |
 | EVP-4.4-4 | 部分验证 | design-events-protocol-2026-10-18.md §4.4 | EVP §4.4、events/hub-lifecycle、events/lifecycle | `specs/events/EventsTable.tla::WithdrawnStaysOut`、`crates/rutis-bridge/src/runtime/testing/events.expected.json`（`unload/not-called-after`、`registration/unloaded-row-silent`） | §4.4 第 4 条要求撤下之后不再开始新的调用、已发出的失败一次；模型与两个 K 用例在，`SettlesOnce` 只在登记表 `bridge/in-flight-call-fails-once` 里、不在 `specs/` 里，#630 的 Go、Kotlin 快速路径用例也不在树里；#634 快照记「部分」 |
-| EVP-4.4-5 | 未验证 | design-events-protocol-2026-10-18.md §4.4 | EVP §4.4、events/presence、events/remote | — | §4.4 第 5 条要求宿主里的 Rust 登记在 `on` 返回时已进表、elsewhere 已排好；#622 的 `deliver(seq)` 与 #613 的配置都不在树里，没有用例；#634 快照记「未覆盖」 |
+| EVP-4.4-5 | 已验证 | design-events-protocol-2026-10-18.md §4.4 | EVP §4.4、events/presence、events/remote | `rutis/src/fiber/shuttle_tests.rs::shuttle_table_watcher_hears_each_change_once_in_order` | §4.4 第 5 条要求宿主里的 Rust 登记在 `on` 返回时已进表、elsewhere 已排好；#634 快照记「未覆盖」。模型 11 覆盖表的登记与观察者：`deliver(seq)` 在 seq 被听到后才返回，登记在 `on` 返回前已进表；elsewhere 的排序不在模型里，但规则的前半条有实现检查（变异见 `upgrade.mutation`）。升为「已验证」。 |
 | EVP-4.5-1 | 部分验证 | design-events-protocol-2026-10-18.md §4.5 | EVP §4.5、events/presence | — | §4.5 规定宿主为每个运行时会话维护 elsewhere(R)；#634 快照记「部分」，套件里 `fast-path/*` 的用例名已不在 `events.expected.json` 里，#628 的 presence 计数不在树里 |
 | EVP-4.5-2 | 未验证 | design-events-protocol-2026-10-18.md §4.5 | EVP §4.5、events/presence | `specs/events/EventsTable.tla`（`table-restart` 配置：会话结束后以新会话重新开始） | §4.5 要求握手后、`mount` 前先发全集、之后只发差异；`table-restart` 配置建到会话重开，但没有断言“先全集后差异”的不变量；#634 快照记「未覆盖」 |
 | EVP-4.5-3 | 未验证 | design-events-protocol-2026-10-18.md §4.5 | EVP §4.5、events/presence | — | §4.5 要求快速路径判断用 elsewhere(R)、会话结束后当作空；事体“会话结束”在 `EventsTable` 里建了，快速路径是否采信 elsewhere 没有断言；#634 快照记「未覆盖」 |
@@ -2578,7 +2580,7 @@
 | EVP-5.4-19 | 部分验证 | design-events-protocol-2026-10-18.md §5.4 | EVP §5.4、events/serial-bail、bridge/sync-wait-cycle-refused | `crates/rutis-bridge/src/runtime/testing/events.expected.json`（`bail/wait-cycle`、`bail/call-back-into-waiting-emitter`） | §5.4 让每个同步调用像同步服务调用一样参加等待环检测；#634 快照记「部分」，K 的等待环用例只有 Node×Node，`cross-runtime-sync` 现在没有事件的同步方式（只有 emit 投递） |
 | EVP-5.5-1 | 部分验证 | design-events-protocol-2026-10-18.md §5.5 | EVP §5.5、events/emit、events/one-bus | `specs/events/EventsEmit.tla::EmitOrder`、`crates/rutis-bridge/src/runtime/testing/events.expected.json`（`emit/order-per-listener`、`emit/order-filtered-then-unfiltered`） | §5.5 让每个（发出的进程，名字）在每个监听器上的 `emit` 调用按发出顺序开始；`EmitOrder` 建模，K 的两个用例按监听器核对顺序；#634 快照记「部分」，“同一进程并发的发出没有先后”规格还没写（#613 要求补） |
 | EVP-5.5-2 | 部分验证 | design-events-protocol-2026-10-18.md §5.5 | EVP §5.5、events/emit | `crates/rutis-bridge/src/runtime/testing/events.expected.json`（`emit/order-per-listener`） | §5.5 第 1 条让宿主按顺序处理一个会话的 `events.dispatch` 帧，先开始前一次 emit 的调用；K 的 `emit/order-per-listener` 核对结果，宿主侧没有单独用例；#634 快照记「部分」 |
-| EVP-5.5-3 | 未验证 | design-events-protocol-2026-10-18.md §5.5 | EVP §5.5、events/emit | — | §5.5 第 1 条要求宿主自己的 Rust 监听器保留内核按键排队的 emit 链；#622 的 emit 链模型不在树里，没有用例；#634 快照记「未覆盖」 |
+| EVP-5.5-3 | 已验证 | design-events-protocol-2026-10-18.md §5.5 | EVP §5.5、events/emit | `rutis-bridge/src/events/hub/shuttle_tests.rs::emits_start_in_the_order_they_were_queued` | §5.5 第 1 条要求宿主自己的 Rust 监听器保留内核按键排队的 emit 链；#634 快照记「未覆盖」。会话宿主模型并发发出同名 emit，断言它们按入队顺序开始、取消的不启动（变异见 `upgrade.mutation`）。升为「已验证」。 |
 | EVP-5.5-4 | 部分验证 | design-events-protocol-2026-10-18.md §5.5 | EVP §5.5、events/emit | `crates/rutis-bridge/src/runtime/testing/events.expected.json`（`emit/order-filtered-then-unfiltered`） | §5.5 第 2 条让一个在等过滤器的 `emit` 把之后的 emit 排进队列、每项记着发出它的行；K 的 `emit/order-filtered-then-unfiltered` 核对先后，`hub.rs` 的 `run_emit` 实现队列，模型没有“每项记着行”的不变量；#634 快照记「部分」 |
 | EVP-5.5-5 | 未验证 | design-events-protocol-2026-10-18.md §5.5 | EVP §5.5、events/emit | `specs/events/EventsEmit.tla::UnloadedRowEmitsNothing`（`specs/events/expected.txt`：`emit-mut-unload` 违反它） | §5.5 第 2 条让行卸载时丢弃它排队的 emit、放开正在跑过滤器的那个；`UnloadedRowEmitsNothing` 与 `hub.rs` 一致，套件没有用例；#634 快照记「未覆盖」 |
 | EVP-5.5-6 | 未验证 | design-events-protocol-2026-10-18.md §5.5 | EVP §5.5、events/emit | — | §5.5 第 2 条要求被丢弃或放开的 emit 的 `events.dispatch` 照样得到回复、会话的其他 emit 按顺序继续；没有用例；#634 快照记「未覆盖」 |
@@ -2691,7 +2693,7 @@
 | EVP-12.1-6 | 未验证 | design-events-protocol-2026-10-18.md §12.1 | EVP §12.1、events/remote | — | §12.1 让 `RemoteListener::call` 在调用开始时按登记顺序被调用（emit 在分发完成之前）、丢弃 future 即取消；没有用例；#634 快照记「未覆盖」 |
 | EVP-12.1-7 | 未验证 | design-events-protocol-2026-10-18.md §12.1 | EVP §12.1、events/remote | — | §12.1 让 `call_sync` 在分发线程上就地调用、不持内核锁；#614 的宿主参与者模型不在树里，没有用例；#634 快照记「未覆盖」 |
 | EVP-12.1-8 | 未验证 | design-events-protocol-2026-10-18.md §12.1 | EVP §12.1、events/remote | `crates/rutis/tests/events.rs::remote_waterfall_next_runs_once`（普通测试） | §12.1 让 `RemoteNext` 第一次调用执行其余链、第二次以 already called 失败、结束后再调用以 called after its waterfall ended 失败；只有普通测试；#634 快照记「未覆盖」，#631 的参考解释器不在树里 |
-| EVP-12.1-9 | 未验证 | design-events-protocol-2026-10-18.md §12.1 | EVP §12.1、events/remote | — | §12.1 让 `watch_table` 先给当前条目、再按发生顺序给每次变化，Rust 的 `on` 在返回之前已报告；#622 的“监听器表的观察者”不在树里；#634 快照记「未覆盖」 |
+| EVP-12.1-9 | 已验证 | design-events-protocol-2026-10-18.md §12.1 | EVP §12.1、events/remote | `rutis/src/fiber/shuttle_tests.rs::shuttle_table_watcher_hears_each_change_once_in_order` | §12.1 让 `watch_table` 先给当前条目、再按发生顺序给每次变化，Rust 的 `on` 在返回之前已报告；#634 快照记「未覆盖」。模型 11 覆盖当前条目与后续变化、FIFO、恰好一次与 `deliver(seq)` 的返回点（变异见 `upgrade.mutation`）。升为「已验证」。 |
 | EVP-12.1-10 | 未验证 | design-events-protocol-2026-10-18.md §12.1 | EVP §12.1、events/remote | — | §12.1 让原始 `dispatch` 对 `emit` 在每个调用都开始后完成，`dispatch_sync` 用于 `bail`、`waterfall-sync`；#622 的 emit 链模型不在树里；#634 快照记「未覆盖」 |
 | EVP-12.1-11 | 未验证 | design-events-protocol-2026-10-18.md §12.1 | EVP §12.1、events/remote | `crates/rutis/tests/events.rs::an_entry_called_by_id_must_have_the_name`（普通测试） | §12.1 让 `invoke_entry` 在分发之外按 id 调用一个条目（节点执行对端的 `events.call`），条目必须是这个名字的；只有普通测试；#634 快照记「未覆盖」 |
 | EVP-12.1-12 | 已验证 | design-events-protocol-2026-10-18.md §12.1 | EVP §12.1、events/reserved | `crates/rutis-bridge/src/runtime/testing/events.expected.json`（`reserved/rutis-emit`、`reserved/every-mode`、`rutis/row`） | §12.1 让 `emit_framework` 只有 rutis 能发出 `rutis/*`；#634 快照记「已覆盖」，K 的 `reserved/*` 与 `rutis/*` 用例在 |
@@ -2700,7 +2702,7 @@
 | EVP-12.1-15 | 部分验证 | design-events-protocol-2026-10-18.md §12.1 | EVP §12.1、events/by-name | `crates/rutis-bridge/src/runtime/testing/events.expected.json`（`rust/typed-args`、`rust/unit-event`） | §12.1 给出参数与 `E` 的对应（两字段及以上的元组逐个、unit 无、其余一个）；两个 K 用例覆盖元组与 unit，参数个数不匹配的边界没有用例；#634 快照记「部分」 |
 | EVP-12.1-16 | 部分验证 | design-events-protocol-2026-10-18.md §12.1 | EVP §12.1、events/by-name、bridge/value-tags | `crates/rutis-bridge/src/runtime/testing/events.expected.json`（`values/every-tag`，host 位置）、`crates/rutis-bridge/tests/value_roundtrip.rs`（服务调用路径） | §12.1 让 bridge 的转码器按服务参数的规则编码 `Bytes`、`Instant`、`ValueMap`、`ObjectRef`、`RemoteFunction`；K 在 host 位置覆盖标记，PT 走服务调用；#634 快照记「部分」，事件路径上的对象引用与远程函数没有单独用例 |
 | EVP-12.1-17 | 不单独计数 | design-events-protocol-2026-10-18.md §12.1 | EVP §12.1、events/by-name | `crates/rutis-bridge/tests/event_hub.rs::args_events_need_a_name` | §12.1 让动态事件 `Args` 只能以 `EventKey::<Args>::dynamic(name)` 使用，走 `of()` 以 `BindingError` 失败；单一判定与输出文字，一个用例穷尽；#634 快照记「不适用」 |
-| EVP-12.1-18 | 未验证 | design-events-protocol-2026-10-18.md §12.1 | EVP §12.1、events/lifecycle | — | §12.1 让 Rust 监听器以登记它的上下文被调用（`ctx.cancelled()` 就是卸载信号）；#622 的事件调用在途计数不在树里；#634 快照记「未覆盖」 |
+| EVP-12.1-18 | 已验证 | design-events-protocol-2026-10-18.md §12.1 | EVP §12.1、events/lifecycle | `rutis/src/fiber/shuttle_tests.rs::shuttle_dispose_registration_cancels_the_running_generation`、`::shuttle_restart_publishes_the_live_generation`、`::shuttle_subtree_close_marks_every_member_of_a_real_tree` | §12.1 让 Rust 监听器以登记它的上下文被调用（`ctx.cancelled()` 就是卸载信号）；#634 快照记「未覆盖」。模型 12 覆盖 dispose 取消当前代，模型 15 覆盖 restart 后的活跃代次，模型 16 覆盖真实子树关闭时监听器看到取消（变异见 `upgrade.mutation`）。升为「已验证」。 |
 | EVP-12.1-19 | 已验证 | design-events-protocol-2026-10-18.md §12.1 | EVP §12.1、events/serial-bail | `crates/rutis-bridge/src/runtime/testing/events.expected.json`（`rust/some-false-is-no-result`、`waterfall/false-stays-false`） | §12.1 让 `serial` / `bail_sync` 中 `Ok(Some(false))` 是没有结果、`waterfall` 原样返回；#634 快照记「已覆盖」，两个 K 用例在 |
 | EVP-12.1-20 | 已验证 | design-events-protocol-2026-10-18.md §12.1 | EVP §12.1、events/flat | `crates/rutis-bridge/src/runtime/testing/events.expected.json`（`scope/flat-bus`、`scope/siblings-share-the-bus`、`scope/bail-and-waterfall`，发出方在 host 的放置） | §12.1 让发出方的 `ctx.scope()` 只是描述、事件按名字送达，进一步挑选按 `ListenerInfo::scope` 过滤；#634 快照记「已覆盖」，三个 `scope/*` 用例在 |
 | EVP-12.1-21 | 已验证 | design-events-protocol-2026-10-18.md §12.1 | EVP §12.1、events/one-bus | `crates/rutis-bridge/src/runtime/testing/events.expected.json`（`rutis/row-host-row`、`filterSees`：`filter/keeps-and-sees`，host 放置的 `row`） | §12.1 让 `Ctx::mark_row` 使这个 fiber 成为行、`Ctx::row` 为最近的标记行、`mark_scope` 在组实例的行开始前调用；#634 快照记「已覆盖」，K 的 `rutis/row-host-row` 与 host 放置的 `row` 核对 |
@@ -3282,7 +3284,7 @@
 | APP-4-5 | 明确不保证 | design-app-integration-2026-10-14.md §四 | —（明确不保证：应用接入设计 §四 SDK 保证第 3 条——插件要持久化的数据由插件自己处理，SDK 不提供存储契约） | — | SDK 不管持久化，插件自己在设备上存；issue 快照记「明确不保证」 |
 | APP-4-6 | 未验证 | guarantees.md §14 | swift/app-start-stop | `crates/rutis-host/tests/swift_app.rs::an_apps_start_and_stop_take_effect_in_call_order` | 连接状态（stopped / connecting / connected）可观察、供业务层显示：登记表 `swift/app-start-stop`（§14）只登记启停的效果，没有用例断言状态可观察；issue 快照记「未覆盖」 |
 | APP-4-7 | 明确不保证 | guarantees.md §14 | swift/app-start-stop | — | SDK 不据连接状态做任何生命周期决定（停掉时不自动重来、连上时不自动装东西）：登记表 `swift/app-start-stop`（§14）与明确不保证的惯例；issue 快照记「明确不保证」 |
-| APP-5-1 | 未验证 | design-app-integration-2026-10-14.md §五 | —（应用接入设计 §五 末条：实例外（全局）同名服务仍按现有规则、后注册的被拒绝；应用实例已随 0.19 删除，现行是内核的同名规则（登记表 `loader/announced-services`），不在同一节） | `crates/rutis-host/tests/clash.rs::a_service_provided_after_loading_twice_fails_the_later_row` | 全局同名服务后注册的被拒由内核规则保证（`clash.rs`）；「应用实例外」这一半随应用实例删除；issue 快照记「未覆盖」 |
+| APP-5-1 | 已验证 | design-app-integration-2026-10-14.md §五 | —（应用接入设计 §五 末条：实例外（全局）同名服务仍按现有规则、后注册的被拒绝；应用实例已随 0.19 删除，现行是内核的同名规则（登记表 `loader/announced-services`），不在同一节） | `rutis/src/registry/prop_tests.rs::the_registration_slot_matches_a_map_model`、`rutis/src/fiber/shuttle_tests.rs::shuttle_mount_admission_races_root_close`、`crates/rutis-host/tests/clash.rs::a_service_provided_after_loading_twice_fails_the_later_row` | 全局同名服务后注册的被拒由内核规则保证（`clash.rs`）；「应用实例外」这一半随应用实例删除；issue 快照记「未覆盖」。注册槽 PT 与 map 模型比较随机 insert/mark/replace/finalize：`insert_binding` 拒绝仍活的绑定（含全局作用域），模型 21 覆盖挂载与关闭的准入（变异见 `upgrade.mutation`）。按名字的 `Exposer` 不在 PT 里，留在缺口；这一条升为「已验证」。 |
 | APP-6-1 | 部分验证 | guarantees.md §10 | bridge/dial-out-rules | `crates/rutis-host/tests/dial_conformance.rs::swift::connects_with_its_id`、`::kotlin::connects_with_its_id`；`crates/rutis-bridge/tests/session_matrix.rs`（swift 与 kotlin 列） | Swift、Kotlin 与其他语言过同一套一致性测试：`dial_conformance` 六列与 `session_matrix` 的 swift、kotlin 两列都跑同一套用例，由登记表 `bridge/dial-out-rules`（§10）承载；应用托管（`RutisApp`）这一层只有 Swift 的用例，Kotlin 的应用托管没核对；issue 快照记「部分」 |
 | NOD-1-1 | 部分验证 | guarantees.md §14 | loader/peer-rows | `crates/rutis-host/tests/nodes.rs::two_hosts_as_nodes_share_services_events_and_run_rows` | 节点之间一端拨号一端监听，连上后共享服务、代运行插件、共享事件，由登记表 `loader/peer-rows`（§14）承载，`nodes.rs` 一个用例覆盖三件事；断开后拨号侧自动重连由连接行负责（登记表 `host/link-state-output`，§13；`dial_conformance` 六列）；issue 快照记「部分」 |
 | NOD-1-2 | 未验证 | guarantees.md §15 | host/credentials-from-env | `crates/rutis-host/tests/config.rs::a_peers_token_is_its_own_variable_only` | 拨号方出示 `RUTIS_TOKEN_<对端>`，监听方用它核对来者：登记表 `host/credentials-from-env`（§15）规定只读 `RUTIS_TOKEN_<行 id>`、不读单独的 `RUTIS_TOKEN`，监听方按 token 路由升级（`crates/rutis-host/src/connect/listen.rs`）；「核对来者是谁」只是 token 比对，没有身份概念；issue 快照记「未覆盖」 |
@@ -3331,4 +3333,5 @@
 - **已撤回**：issue 快照的 184 条之外，本轮按 0.19 / 0.22 删除的机制追加了 102 条（见 §3 的「已撤回（本轮）」列与 §4 的缺口）。它们仍在 `rules/protocol-*.md` 里，统计不计入。
 - **未完成**：没有一行重写规则文字——协议清单的 1368 条现行规则仍是 issue 快照原文；远程没有对应的新规格，只有设计稿与指南（0.19 之后的连接行为在 `design-remote-session-2026-10-28.md`）。§6 按原因列出没有锚点的规则；写规格是 #635 的后续，不是这一轮能补的。
 - **证据**：只核对 `现有形式化` 列的具名引用；备注列里的旧路径（如 `crates/rutis-bridge/src/cordis/server.rs`）没有逐条清，重抽时一并处理。
+- **升级**：35 条协议行由语义重抽的 `upgrade` 从「未验证」/「部分验证」升为「已验证」（`core/D6a`、`core/D6b`、`core/D9a`、`core/D12`、`core/D14c`、`core/D14d`、`core/D18b`、`core/D22a`、`core/D23a`、`core/D25a`、`core/D28a`、`core/D30a`、`core/D31a`、`core/D31c`、`core/D32a`、`core/D32b`、`core/D32c`、`core/features.shutdown-state a`、`core/features.errors`、`core/features.errors.failed-retry`、`core/typed.lost-dependency-pending a`、`core/typed.lost-dependency-restart`、`events/emit b`、`events/lifecycle a`、`events/lifecycle b`、`events/remote d`、`events/emit-order`、`events/liveness`、`events/table-watch`、`events/unload-waits`、`EVP-4.4-5`、`EVP-5.5-3`、`EVP-12.1-9`、`EVP-12.1-18`、`APP-5-1`）；每条都写了模型或属性测试的证据与变异，`--check` 逐个核对证据路径和用例名。其余行没有升级。
 - **语义**：TRC 分区（规则文字整体重写）与协议清单 `registry-1`、`registry-2`、`session`、`events`、`runtime`、`remote`（来源、锚点、证据、状态）已在 §5 全部重抽，协议清单没有剩下的分区；规则文字仍是 issue 快照原文。规则的「已撤回 / 明确不保证 / 未验证 / 部分验证 / 已验证」按上面的四件事定，不按记忆。

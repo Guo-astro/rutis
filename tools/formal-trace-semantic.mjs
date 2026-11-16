@@ -7,6 +7,8 @@
 // of `rules/protocol-events.md` (2026-11-15, baseline `d8a9061a`), the 309
 // rows of `rules/protocol-runtime.md` (2026-11-15, baseline `b3bd09e4`) and the
 // 248 rows of `rules/protocol-remote.md` (2026-11-15, baseline `5b2b8674`).
+// The 2026-11-17 upgrade batch (35 rows, baseline `2f4971a3`) is checked
+// against the same tree `formal-trace.mjs --check` reads.
 //
 // The re-check in `formal-trace-recheck.mjs` maps a rule onto a current source;
 // it does not rewrite the rule. This table is the rewrite, in two forms:
@@ -35,11 +37,22 @@
 // 无此条'` (with `sourceEn`) says no current document states the rule at all; it
 // cannot be anchored.
 //
+// An entry whose `status` is above the re-checked one must carry `upgrade`:
+// `status` is the target (only `已验证`), `evidence` is a list of backticked
+// `path::name` items that resolve to a test, property test or model in the
+// current tree, and `mutation` names the mutation or pre-fix configuration
+// that the cited check catches (`mutation` is not a machine-checked path).
+// `formal-trace.mjs --check` rejects an upgrade missing either field, checks
+// every evidence path and name, prints each accepted upgrade, and leaves a
+// row without `upgrade` at its re-checked status. This is the only way a
+// protocol row may move up; arbitrary hand-writing is not accepted.
+//
 // This file is the single source of the generated English re-check page
 // (`docs/formal-trace/recheck-0.22.en.md`) and of the semantic sections of the
 // Chinese re-check page. `formal-trace.mjs --check` verifies: every row of each
 // partition's file has one entry and the reverse, every entry's status equals
-// the re-checked status of its row, every anchor exists (a `SESS-*` id in the
+// the re-checked status of its row or is an evidence-backed upgrade, every
+// anchor exists (a `SESS-*` id in the
 // session specification, an `EVP` / `EVD` section or decision in the event
 // protocol, or a register row in the section the entry names),
 // every `source` (and `extra`) section heading exists in its document, every
@@ -74,8 +87,8 @@ export const SEMANTIC_DOCS = {
 // The generated pages and the date/baseline they state. Partitions share them.
 export const SEMANTIC_PAGE = {
   pageEn: 'docs/formal-trace/recheck-0.22.en.md',
-  date: '2026-11-15',
-  baseline: 'a2a7a743',
+  date: '2026-11-17',
+  baseline: '2f4971a3',
 }
 
 export const SEMANTIC = {
@@ -476,18 +489,37 @@ export const SEMANTIC_REGISTRY = {
     'core/D6a': {
       source: 'guarantees.md §6',
       anchors: ['core/D6'],
-      evidence: '`rutis/tests/contract.rs::concurrent_dispose_join`、`::exactly_once_same_error`、`rutis/tests/load_window.rs::a_dispose_right_after_mounting_ends_on_current_thread`',
-      status: '部分验证',
-      why: '登记表 `core/D6` 记「已验证」；#634 快照记「部分」：两个模型各覆盖一个部件（EffectRecord 的并发排干、单完成方的 TransitionTask），fiber 层的 dispose 登记不在模型里，Bug A（#619）的回归测试属测试、不算形式化，SH 仍归 #622',
-      whyEn: 'The register row `core/D6` is verified; the issue marked this split partial: each model covers one component (the concurrent drain of EffectRecord, the single completer of TransitionTask), the fiber-level dispose registration is not modelled, the regressions of Bug A (#619) are tests rather than formal evidence, and the shuttle model is still #622.',
+      evidence: '`rutis/src/fiber/shuttle_tests.rs::shuttle_concurrent_dispose_cleans_up_exactly_once`、`::shuttle_effect_registration_and_dispose_clean_up_exactly_once`、`::shuttle_root_dispose_and_shutdown_share_one_close`、`::shuttle_root_close_owns_the_child_it_mounted`、`::shuttle_mount_admission_races_root_close`、`rutis/tests/contract.rs::concurrent_dispose_join`、`::exactly_once_same_error`、`rutis/tests/load_window.rs::a_dispose_right_after_mounting_ends_on_current_thread`',
+      status: '已验证',
+      why: '登记表 `core/D6` 记「已验证」；#634 快照记「部分」。模型 3 跑真实的 `EffectRecord::{claim, finish, join}`，三个调用者并发排干、恰好一个拿到清理、都拿到同一个错误；模型 5 覆盖登记与卸载的准入，模型 8、17、21 覆盖根关闭与挂载准入（变异见 `upgrade.mutation`）。两个回归用例是 Bug A 修复前的配置（#619）。升为「已验证」。',
+      whyEn: 'The register row `core/D6` is verified; the issue marked this split partial. Model 3 runs the real `EffectRecord::{claim, finish, join}`: three callers drain concurrently, exactly one claims the cleanups, and all get the same error; model 5 covers registration and unload admission, and models 8, 17 and 21 cover root close and mount admission (mutations in `upgrade.mutation`). The two regression tests are the pre-fix configuration of Bug A (#619). Raised to verified.',
+      upgrade: {
+        status: '已验证',
+        evidence: [
+          '`rutis/src/fiber/shuttle_tests.rs::shuttle_concurrent_dispose_cleans_up_exactly_once`',
+          '`rutis/src/fiber/shuttle_tests.rs::shuttle_effect_registration_and_dispose_clean_up_exactly_once`',
+          '`rutis/src/fiber/shuttle_tests.rs::shuttle_root_dispose_and_shutdown_share_one_close`',
+          '`rutis/src/fiber/shuttle_tests.rs::shuttle_root_close_owns_the_child_it_mounted`',
+        ],
+        mutation: '去掉根 dispose 的准入锁（模型 8）：`a dispose registered before admission closed got Err(Closed)`；去掉 `shared_shutdown_task` 的早退（模型 8、17）：`two shutdown callers got different tasks`；删掉被拒记录的 `drain`（模型 5）：清理次数 `runs` 停在 0。',
+      },
     },
     'core/D6b': {
       source: 'guarantees.md §6',
       anchors: ['core/D6'],
-      evidence: '`rutis/tests/contract.rs::cross_generation_isolation`、`::dispose_idempotent`',
-      status: '未验证',
-      why: '登记表 `core/D6` 记「已验证」；#634 快照记「未覆盖」，fiber 生命周期的参考模型 PT（代次、清理次数）没有，#622 的模型只比较最终状态，状态只降不升',
-      whyEn: 'The register row `core/D6` is verified; the issue marked this split uncovered, the lifecycle reference model (generation, cleanup count) is missing, and the #622 model compares final states only, so the status stays unverified.',
+      evidence: '`rutis/src/fiber/shuttle_tests.rs::shuttle_dispose_registration_cancels_the_running_generation`、`::shuttle_restart_publishes_the_live_generation`、`rutis/tests/interleave.rs::the_fiber_lifecycle_matches_a_reference_model`、`rutis/tests/contract.rs::cross_generation_isolation`、`::dispose_idempotent`',
+      status: '已验证',
+      why: '登记表 `core/D6` 记「已验证」；#634 快照记「未覆盖」。参考模型 PT 在每次操作（挂载、依赖翻转、restart、update、dispose）后比较每代的状态、代次、apply 与清理次数；模型 12 覆盖 dispose 登记取消当前代，模型 15 覆盖重启后的活跃代次（变异见 `upgrade.mutation`）。升为「已验证」。',
+      whyEn: 'The register row `core/D6` is verified; the issue marked this split uncovered. The reference-model property test compares each generation\'s state, generation number, apply and cleanup counts after every operation (mount, dependency flip, restart, update, dispose); model 12 covers the dispose registration cancelling the running generation and model 15 the live generation after a restart (mutations in `upgrade.mutation`). Raised to verified.',
+      upgrade: {
+        status: '已验证',
+        evidence: [
+          '`rutis/src/fiber/shuttle_tests.rs::shuttle_dispose_registration_cancels_the_running_generation`',
+          '`rutis/src/fiber/shuttle_tests.rs::shuttle_restart_publishes_the_live_generation`',
+          '`rutis/tests/interleave.rs::the_fiber_lifecycle_matches_a_reference_model`',
+        ],
+        mutation: '去掉 dispose 的 `cancel_current`（模型 12）：`deadlock!`；`publish_live` 对 Unloading 也回答 `tr.generation`（模型 15）：`live_generation is 0 while the fiber is Unloading at generation 0`；把 PT 的代次比较改成只比最终状态，逐操作比较随即不一致。',
+      },
     },
     'core/D7a': {
       source: 'guarantees.md §6',
@@ -524,10 +556,19 @@ export const SEMANTIC_REGISTRY = {
     'core/D9a': {
       source: 'guarantees.md §6',
       anchors: ['core/D9'],
-      evidence: '`rutis/tests/generation_registration.rs::rejects_late_registration_current_thread`、`::rejects_late_registration_multi_thread`、`rutis/tests/host_control.rs::a_stale_context_cannot_dispose_the_next_generation`',
-      status: '未验证',
-      why: '登记表 `core/D9` 记「已验证」；#634 快照记「未覆盖」并缺「登记准入与卸载」模型（已提交的登记恰好清理一次、被拒的不留记录），状态只降不升',
-      whyEn: 'The register row `core/D9` is verified; the issue marked this split uncovered and the registration-admission model (an admitted registration is cleaned exactly once, a rejected one leaves no record) is missing, so the status stays unverified.',
+      evidence: '`rutis/src/fiber/shuttle_tests.rs::shuttle_effect_registration_and_dispose_clean_up_exactly_once`、`::shuttle_dispose_registration_cancels_the_running_generation`、`::shuttle_mount_admission_races_root_close`、`rutis/tests/generation_registration.rs::rejects_late_registration_current_thread`、`::rejects_late_registration_multi_thread`、`rutis/tests/host_control.rs::a_stale_context_cannot_dispose_the_next_generation`',
+      status: '已验证',
+      why: '登记表 `core/D9` 记「已验证」；#634 快照记「未覆盖」。模型 5 覆盖登记准入：已提交的登记恰好清理一次、被拒的不留记录；模型 12、21 覆盖旧代次与关闭中的准入（变异见 `upgrade.mutation`）。三个用例断言过期上下文被拒。升为「已验证」。',
+      whyEn: 'The register row `core/D9` is verified; the issue marked this split uncovered. Model 5 covers registration admission (an admitted registration is cleaned exactly once, a rejected one leaves no record); models 12 and 21 cover a stale generation and admission during close (mutations in `upgrade.mutation`). Three tests assert that a stale context is refused. Raised to verified.',
+      upgrade: {
+        status: '已验证',
+        evidence: [
+          '`rutis/src/fiber/shuttle_tests.rs::shuttle_effect_registration_and_dispose_clean_up_exactly_once`',
+          '`rutis/src/fiber/shuttle_tests.rs::shuttle_dispose_registration_cancels_the_running_generation`',
+          '`rutis/src/fiber/shuttle_tests.rs::shuttle_mount_admission_races_root_close`',
+        ],
+        mutation: '去掉登记后的第二次检查（模型 5）：提交记录被 `drain_effects` 拿走、清理永不运行，`runs == factories` 失败；去掉 `cancel_current`（模型 12）：`deadlock!`；去掉挂载对父 effect 列表的提交（模型 21）：`runs` 停在 0。',
+      },
     },
     'core/D9b': {
       source: 'guarantees.md §6',
@@ -556,10 +597,18 @@ export const SEMANTIC_REGISTRY = {
     'core/D12': {
       source: 'guarantees.md §6',
       anchors: ['core/D12'],
-      evidence: '`rutis/tests/contract.rs::validate_panic_marks_failed`、`rutis/tests/host_control.rs::set_config_stores_without_restarting`、`rutis/tests/config_update.rs::update_dry_run_failure_leaves_state_untouched`',
-      status: '未验证',
-      why: '登记表 `core/D12` 记「已验证」（三个用例）；#634 快照记「未覆盖」，缺参考模型 PT 的更新与失败注入，状态只降不升',
-      whyEn: 'The register row `core/D12` is verified by the three tests; the issue marked this split uncovered and the reference model of update and failure injection is missing, so the status stays unverified.',
+      evidence: '`rutis/tests/interleave.rs::the_fiber_lifecycle_matches_a_reference_model`、`rutis/tests/contract.rs::validate_panic_marks_failed`、`rutis/tests/host_control.rs::set_config_stores_without_restarting`、`rutis/tests/config_update.rs::update_dry_run_failure_leaves_state_untouched`',
+      status: '已验证',
+      why: '登记表 `core/D12` 记「已验证」；#634 快照记「未覆盖」。参考模型 PT 注入 `Mode::BadConfig`（干跑拒绝）、`Mode::Fail` 与 `Mode::Panic`，每次 update 后比较状态、代次、apply 与清理次数；三个用例覆盖校验 panic、存储与干跑拒绝（变异见 `upgrade.mutation`）。升为「已验证」。',
+      whyEn: 'The register row `core/D12` is verified; the issue marked this split uncovered. The reference-model property test injects `Mode::BadConfig` (refused dry run), `Mode::Fail` and `Mode::Panic`, and compares state, generation, apply and cleanup counts after every update; three tests cover a validate panic, storing and a refused dry run (mutation in `upgrade.mutation`). Raised to verified.',
+      upgrade: {
+        status: '已验证',
+        evidence: [
+          '`rutis/tests/interleave.rs::the_fiber_lifecycle_matches_a_reference_model`',
+          '`rutis/tests/contract.rs::validate_panic_marks_failed`',
+        ],
+        mutation: '把 `validate` 失败或 panic 当成通过（修复前：失败仍存储配置）：PT 的 `Mode::BadConfig` 分支与参考模型的状态不一致；去掉干跑拒绝后的早退：`update_dry_run_failure_leaves_state_untouched` 看到旧配置被替换。',
+      },
     },
     'core/D13': {
       source: 'guarantees.md §6',
@@ -588,18 +637,34 @@ export const SEMANTIC_REGISTRY = {
     'core/D14c': {
       source: 'guarantees.md §6',
       anchors: ['core/D14'],
-      evidence: '`rutis/tests/contract.rs::single_service_evict`、`::eviction_order`',
-      status: '未验证',
-      why: '登记表 `core/D14` 记「已验证」（两个用例）；#634 快照记「未覆盖」，参考模型 PT 与服务注册槽 PT 都没有，状态只降不升',
-      whyEn: 'The register row `core/D14` is verified by two tests; the issue marked this split uncovered and neither the reference model nor the service-slot property test exists, so the status stays unverified.',
+      evidence: '`rutis/tests/interleave.rs::the_fiber_lifecycle_matches_a_reference_model`、`rutis/tests/contract.rs::single_service_evict`、`::eviction_order`',
+      status: '已验证',
+      why: '登记表 `core/D14` 记「已验证」（两个用例）；#634 快照记「未覆盖」。参考模型 PT 用 3 个 fiber × 2 个键，每次 provide/withdraw 后比较每个 fiber 的状态与清理次数：只有依赖被撤下那个键的 fiber 重载（变异见 `upgrade.mutation`）。升为「已验证」。',
+      whyEn: 'The register row `core/D14` is verified by two tests; the issue marked this split uncovered. The reference-model property test runs 3 fibers over 2 keys and compares every fiber\'s state and cleanup count after each provide/withdraw: only the fibers that depend on the withdrawn key reload (mutation in `upgrade.mutation`). Raised to verified.',
+      upgrade: {
+        status: '已验证',
+        evidence: [
+          '`rutis/tests/interleave.rs::the_fiber_lifecycle_matches_a_reference_model`',
+        ],
+        mutation: '把 `refresh` 改成撤下时重载所有 fiber（不只依赖该键的）：PT 在不依赖该键的 fiber 状态与清理次数上与参考模型不一致。',
+      },
     },
     'core/D14d': {
       source: 'guarantees.md §6',
       anchors: ['core/D14'],
-      evidence: '`rutis/tests/contract.rs::provider_reload_reactivates`',
-      status: '未验证',
-      why: '登记表 `core/D14` 记「已验证」（`provider_reload_reactivates` 断言服务恢复后消费者重新启动）；#634 快照记「未覆盖」，状态只降不升',
-      whyEn: 'The register row `core/D14` is verified and `provider_reload_reactivates` asserts that a consumer restarts once the service is back; the issue marked this split uncovered, so the status stays unverified.',
+      evidence: '`rutis/tests/interleave.rs::the_fiber_lifecycle_matches_a_reference_model`、`rutis/src/fiber/shuttle_tests.rs::shuttle_dependency_withdrawal_stops_the_loading_consumer`、`::shuttle_dependency_restart_in_the_window_returns_to_the_returned_generation`、`rutis/tests/contract.rs::provider_reload_reactivates`',
+      status: '已验证',
+      why: '登记表 `core/D14` 记「已验证」（`provider_reload_reactivates` 断言服务恢复后消费者重新启动）；#634 快照记「未覆盖」。PT 在每次 provide/withdraw 后比较每个 fiber 的状态与清理次数；模型 9 覆盖撤下时消费者停下，模型 19 覆盖窗口里的 restart（变异见 `upgrade.mutation`）。升为「已验证」。',
+      whyEn: 'The register row `core/D14` is verified and `provider_reload_reactivates` asserts that a consumer restarts once the service is back; the issue marked this split uncovered. The reference-model property test compares every fiber\'s state and cleanup count after each provide/withdraw; model 9 covers a consumer stopping on withdrawal and model 19 a restart inside the window (mutations in `upgrade.mutation`). Raised to verified.',
+      upgrade: {
+        status: '已验证',
+        evidence: [
+          '`rutis/tests/interleave.rs::the_fiber_lifecycle_matches_a_reference_model`',
+          '`rutis/src/fiber/shuttle_tests.rs::shuttle_dependency_withdrawal_stops_the_loading_consumer`',
+          '`rutis/src/fiber/shuttle_tests.rs::shuttle_dependency_restart_in_the_window_returns_to_the_returned_generation`',
+        ],
+        mutation: '去掉 `load` 的第二次门控检查（模型 9）：`the withdrawal returned while the consumer still ran on the withdrawn generation`；去掉 `pending_restarts` 的递减（模型 19）：`a restart was left counted after the driver took it up`（剩 2）；把 PT 的依赖比较改成不记录 `last_deps`：恢复后不再启动或重复重载，状态对不上。',
+      },
     },
     'core/D15': {
       source: 'guarantees.md §6',
@@ -644,10 +709,19 @@ export const SEMANTIC_REGISTRY = {
     'core/D18b': {
       source: 'guarantees.md §6',
       anchors: ['core/D18'],
-      evidence: '`rutis/tests/contract.rs::aggregate_no_flatten`、`::restart_cleanup_errors_to_sink`、`rutis/tests/cleanup_errors.rs::unconsumed_early_cleanup_error_reaches_unload_with_same_identity`',
-      status: '部分验证',
-      why: '登记表 `core/D18` 记「已验证」；#634 快照记「部分」：模型不含所属 fiber（`finish()` 自移除、错误存放与 `drain_effects` 的 `mem::take` 竞争，#622 第 3 项），「聚合不展平」没有 PT',
-      whyEn: 'The register row `core/D18` is verified; the issue marked this split partial: the model excludes the owning fiber (the self-removal in `finish()`, the race between storing the error and the `mem::take` in `drain_effects`, #622 item 3), and "aggregation is not flattened" has no property test.',
+      evidence: '`rutis/src/fiber/shuttle_tests.rs::shuttle_effect_record_owner_reports_each_cleanup_error_once`、`::shuttle_concurrent_dispose_cleans_up_exactly_once`、`::shuttle_dispose_result_survives_the_driver_exit`、`rutis/tests/contract.rs::aggregate_no_flatten`、`::restart_cleanup_errors_to_sink`、`rutis/tests/cleanup_errors.rs::unconsumed_early_cleanup_error_reaches_unload_with_same_identity`',
+      status: '已验证',
+      why: '登记表 `core/D18` 记「已验证」；#634 快照记「部分」。模型 13 覆盖所属 fiber：提前排干的记录与卸载取列表竞争，每条清理错误以同一身份恰好报告一次；模型 3、18 覆盖并发排干与驱动退出时的结果。三个用例覆盖聚合与 sink（变异见 `upgrade.mutation`）。升为「已验证」。',
+      whyEn: 'The register row `core/D18` is verified; the issue marked this split partial. Model 13 covers the owning fiber: an early-drained record races the unload taking the list, and each cleanup error is reported exactly once under the same identity; models 3 and 18 cover the concurrent drain and the driver exit. Three tests cover aggregation and the sink (mutations in `upgrade.mutation`). Raised to verified.',
+      upgrade: {
+        status: '已验证',
+        evidence: [
+          '`rutis/src/fiber/shuttle_tests.rs::shuttle_effect_record_owner_reports_each_cleanup_error_once`',
+          '`rutis/src/fiber/shuttle_tests.rs::shuttle_concurrent_dispose_cleans_up_exactly_once`',
+          '`rutis/src/fiber/shuttle_tests.rs::shuttle_dispose_result_survives_the_driver_exit`',
+        ],
+        mutation: '存放错误时去掉「仍在列表里」的检查（模型 13）：`the unload\'s reports do not carry each failed cleanup exactly once (6 reports for 3 cleanups)`；去掉存放：`(2 reports for 3 cleanups)`；去掉 `finish` 的 `retain`：`(4 reports for 3 cleanups)`。',
+      },
     },
     'core/D19': {
       source: 'guarantees.md §6',
@@ -692,10 +766,17 @@ export const SEMANTIC_REGISTRY = {
     'core/D22a': {
       source: 'guarantees.md §6',
       anchors: ['core/D22'],
-      evidence: '`rutis/tests/contract.rs::pending_not_failed`、`::waits_for_dependency`、`::late_provider_activates`',
-      status: '未验证',
-      why: '登记表 `core/D22` 记「部分验证」（核心承诺只指门控部分，三个用例在上）；#634 快照记「未覆盖」，状态只降不升',
-      whyEn: 'The register row `core/D22` is partial (the core commitment covers only the gate, with the three tests above); the issue marked this split uncovered, so the status stays unverified.',
+      evidence: '`rutis/tests/interleave.rs::the_fiber_lifecycle_matches_a_reference_model`、`rutis/tests/contract.rs::pending_not_failed`、`::waits_for_dependency`、`::late_provider_activates`',
+      status: '已验证',
+      why: '登记表 `core/D22` 记「部分验证」（核心承诺只指门控部分，三个用例在上）；#634 快照记「未覆盖」。参考模型 PT 在每次 provide/withdraw 后比较每个 fiber 的状态与 apply 次数：依赖不齐的 fiber 保持 Pending、不 apply，依赖到位后启动（变异见 `upgrade.mutation`）。升为「已验证」。',
+      whyEn: 'The register row `core/D22` is partial (the core commitment covers only the gate, with the three tests above); the issue marked this split uncovered. The reference-model property test compares every fiber\'s state and apply count after each provide/withdraw: a fiber whose dependencies are not all present stays pending and does not apply, and starts once they are (mutation in `upgrade.mutation`). Raised to verified.',
+      upgrade: {
+        status: '已验证',
+        evidence: [
+          '`rutis/tests/interleave.rs::the_fiber_lifecycle_matches_a_reference_model`',
+        ],
+        mutation: '去掉 `load`/`refresh` 的依赖门控（依赖不齐也启动）：PT 在未就绪的 fiber 上记到 apply，状态与 apply 次数和参考模型不一致。',
+      },
     },
     'core/D22b': {
       source: 'guarantees.md §6',
@@ -708,10 +789,19 @@ export const SEMANTIC_REGISTRY = {
     'core/D23a': {
       source: 'guarantees.md §6',
       anchors: ['core/D23'],
-      evidence: '`rutis/tests/contract.rs::effect_yields_disposer`、`::effect_during_cleanup_fails`、`rutis/tests/parity.rs::rejects_effect_registration_during_unload`',
-      status: '未验证',
-      why: '登记表 `core/D23` 记「已验证」（三个用例）；#634 快照记「未覆盖」，「登记准入与卸载」模型没有，状态只降不升',
-      whyEn: 'The register row `core/D23` is verified by the three tests; the issue marked this split uncovered and the registration-admission model is missing, so the status stays unverified.',
+      evidence: '`rutis/src/fiber/shuttle_tests.rs::shuttle_effect_registration_and_dispose_clean_up_exactly_once`、`::shuttle_dispose_registration_cancels_the_running_generation`、`::shuttle_mount_admission_races_root_close`、`rutis/tests/contract.rs::effect_yields_disposer`、`::effect_during_cleanup_fails`、`rutis/tests/parity.rs::rejects_effect_registration_during_unload`',
+      status: '已验证',
+      why: '登记表 `core/D23` 记「已验证」（三个用例）；#634 快照记「未覆盖」。模型 5 覆盖 `Ctx::effect` 的登记准入与卸载，模型 12、21 覆盖代次与关闭中的登记（变异见 `upgrade.mutation`）。升为「已验证」。',
+      whyEn: 'The register row `core/D23` is verified by the three tests; the issue marked this split uncovered. Model 5 covers `Ctx::effect` registration admission and unload, and models 12 and 21 cover a stale generation and registration during close (mutations in `upgrade.mutation`). Raised to verified.',
+      upgrade: {
+        status: '已验证',
+        evidence: [
+          '`rutis/src/fiber/shuttle_tests.rs::shuttle_effect_registration_and_dispose_clean_up_exactly_once`',
+          '`rutis/src/fiber/shuttle_tests.rs::shuttle_dispose_registration_cancels_the_running_generation`',
+          '`rutis/src/fiber/shuttle_tests.rs::shuttle_mount_admission_races_root_close`',
+        ],
+        mutation: '去掉登记后的第二次检查（模型 5）：记录被 `drain_effects` 拿走、清理永不运行；去掉挂载对父 effect 列表的提交（模型 21）：`runs` 停在 0；去掉 `cancel_current`（模型 12）：`deadlock!`。',
+      },
     },
     'core/D23b': {
       source: 'guarantees.md §6',
@@ -740,10 +830,19 @@ export const SEMANTIC_REGISTRY = {
     'core/D25a': {
       source: 'guarantees.md §6',
       anchors: ['core/D25'],
-      evidence: '`rutis/tests/contract.rs::exactly_once_same_error`',
-      status: '部分验证',
-      why: '登记表 `core/D25` 记「已验证」；#634 快照记「部分」：只有一个完成方，#622 的疑点（`complete` 之后写入覆盖先写）要加多个完成方才能查',
-      whyEn: 'The register row `core/D25` is verified; the issue marked this split partial: there is one completer only, and the #622 doubt (a later write after `complete` overwriting an earlier one) needs more completers to be checked.',
+      evidence: '`rutis/src/fiber/shuttle_tests.rs::shuttle_transition_task_reaches_every_join`、`::shuttle_transition_task_several_completions`、`::shuttle_concurrent_dispose_cleans_up_exactly_once`、`rutis/tests/contract.rs::exactly_once_same_error`',
+      status: '已验证',
+      why: '登记表 `core/D25` 记「已验证」；#634 快照记「部分」。模型 1 覆盖早到与晚到的 join 都拿到同一个 `Arc`，模型 14 覆盖多次完成（后写覆盖先写、每个 join 读到一致结果），模型 3 覆盖并发排干拿到同一结果（变异见 `upgrade.mutation`）。升为「已验证」。',
+      whyEn: 'The register row `core/D25` is verified; the issue marked this split partial. Model 1 covers early and late joins receiving the same `Arc`, model 14 covers several completions (the last write wins and every join reads the same result), and model 3 covers a concurrent drain returning the same result (mutations in `upgrade.mutation`). Raised to verified.',
+      upgrade: {
+        status: '已验证',
+        evidence: [
+          '`rutis/src/fiber/shuttle_tests.rs::shuttle_transition_task_reaches_every_join`',
+          '`rutis/src/fiber/shuttle_tests.rs::shuttle_transition_task_several_completions`',
+          '`rutis/src/fiber/shuttle_tests.rs::shuttle_concurrent_dispose_cleans_up_exactly_once`',
+        ],
+        mutation: '去掉 keep-alive 接收者（模型 14）：早到的完成丢失，`deadlock! blocked tasks: [main-thread, …]`；`complete` 保留第一次结果：`the last completion is not what a later join reads`；模型 1 把同一个 `Arc` 换掉：join 之间的指针比较失败。',
+      },
     },
     'core/D25b': {
       source: 'guarantees.md §6',
@@ -772,10 +871,19 @@ export const SEMANTIC_REGISTRY = {
     'core/D28a': {
       source: 'guarantees.md §6',
       anchors: ['core/D28'],
-      evidence: '`rutis/tests/contract.rs::auto_ownership`、`::effect_yields_disposer`、`rutis/tests/events.rs::unloaded_listeners_are_not_called`',
-      status: '部分验证',
-      why: '登记表 `core/D28` 记「部分验证」；#634 快照记「部分」：模型不含所属 fiber（#622 第 3 项）',
-      whyEn: 'The register row `core/D28` is partial; the issue marked this split partial too: the model excludes the owning fiber (#622 item 3).',
+      evidence: '`rutis/src/fiber/shuttle_tests.rs::shuttle_effect_registration_and_dispose_clean_up_exactly_once`、`::shuttle_effect_record_owner_reports_each_cleanup_error_once`、`rutis/tests/interleave.rs::the_fiber_lifecycle_matches_a_reference_model`、`rutis/tests/contract.rs::auto_ownership`、`::effect_yields_disposer`、`rutis/tests/events.rs::unloaded_listeners_are_not_called`',
+      status: '已验证',
+      why: '登记表 `core/D28` 记「部分验证」；#634 快照记「部分」。模型 5 覆盖 `Ctx::effect` 的登记随卸载排干，模型 13 覆盖 effect 记录所属 fiber 的身份与恰好一次；参考模型 PT 比较每代的清理次数（变异见 `upgrade.mutation`）。升为「已验证」。',
+      whyEn: 'The register row `core/D28` is partial; the issue marked this split partial. Model 5 covers `Ctx::effect` registrations drained by the unload, model 13 covers the owning fiber and exactly-once identity of an effect record, and the reference-model property test compares each generation\'s cleanup count (mutations in `upgrade.mutation`). Raised to verified.',
+      upgrade: {
+        status: '已验证',
+        evidence: [
+          '`rutis/src/fiber/shuttle_tests.rs::shuttle_effect_registration_and_dispose_clean_up_exactly_once`',
+          '`rutis/src/fiber/shuttle_tests.rs::shuttle_effect_record_owner_reports_each_cleanup_error_once`',
+          '`rutis/tests/interleave.rs::the_fiber_lifecycle_matches_a_reference_model`',
+        ],
+        mutation: '去掉登记后的第二次检查（模型 5）：清理次数 `runs` 停在 0；去掉 `finish` 的 `retain`（模型 13）：`(4 reports for 3 cleanups)`；把 PT 的清理计数改成只记注册数：每次 restart 后对不上。',
+      },
     },
     'core/D28b': {
       source: 'guarantees.md §6',
@@ -804,10 +912,19 @@ export const SEMANTIC_REGISTRY = {
     'core/D30a': {
       source: 'guarantees.md §6',
       anchors: ['core/D30'],
-      evidence: '`rutis/tests/contract.rs::apply_failure_rolls_back`、`::apply_panics_complete_and_roll_back_current_thread`、`::driver_panic_completes_waiters_with_error`',
-      status: '未验证',
-      why: '登记表 `core/D30` 记「已验证」（用例在上）；#634 快照记「未覆盖」，缺含失败与 panic 注入的参考模型 PT，状态只降不升',
-      whyEn: 'The register row `core/D30` is verified by the tests above; the issue marked this split uncovered and the reference model with failure and panic injection is missing, so the status stays unverified.',
+      evidence: '`rutis/tests/interleave.rs::the_fiber_lifecycle_matches_a_reference_model`、`rutis/tests/contract.rs::apply_failure_rolls_back`、`::apply_panics_complete_and_roll_back_current_thread`、`::apply_panics_complete_and_roll_back_multi_thread`、`::driver_panic_completes_waiters_with_error`',
+      status: '已验证',
+      why: '登记表 `core/D30` 记「已验证」（用例在上）；#634 快照记「未覆盖」。参考模型 PT 注入 `Mode::Fail` 与 `Mode::Panic`，要求状态为 Failed、已登记的资源各清理一次；三个用例覆盖回滚与驱动 panic（变异见 `upgrade.mutation`）。升为「已验证」。',
+      whyEn: 'The register row `core/D30` is verified by the tests above; the issue marked this split uncovered. The reference-model property test injects `Mode::Fail` and `Mode::Panic` and requires the failed state plus exactly one cleanup per registered resource; three tests cover the rollback and a driver panic (mutation in `upgrade.mutation`). Raised to verified.',
+      upgrade: {
+        status: '已验证',
+        evidence: [
+          '`rutis/tests/interleave.rs::the_fiber_lifecycle_matches_a_reference_model`',
+          '`rutis/tests/contract.rs::apply_failure_rolls_back`',
+          '`rutis/tests/contract.rs::apply_panics_complete_and_roll_back_current_thread`',
+        ],
+        mutation: '把失败的 apply 当成成功（或漏掉回滚时的清理）：PT 的 `Mode::Fail` 分支要求 Failed 且清理一次，逐操作比较对不上；把 panic 当成功：`apply_panics_complete_and_roll_back_*` 的已登记资源不再被清理。',
+      },
     },
     'core/D30b': {
       source: 'guarantees.md §6',
@@ -844,10 +961,17 @@ export const SEMANTIC_REGISTRY = {
     'core/D31a': {
       source: 'guarantees.md §6',
       anchors: ['core/D31'],
-      evidence: '`rutis/tests/event_order.rs::emit_order_is_kept_per_emitter`、`rutis/tests/events.rs::emits_of_one_name_start_in_emit_order`、`rutis/tests/dispatch_chain_probe.rs::dispatch_chain_does_not_fork_under_concurrent_emit`',
-      status: '未验证',
-      why: '登记表 `core/D31` 记「已验证」（用例在上）；#634 快照记「未覆盖」，#622 的 emit 链模型（2 发出方 × 2 次 × 2 监听器）与 EVP-5.5-1 的口径不同，状态只降不升',
-      whyEn: 'The register row `core/D31` is verified by the tests above; the issue marked this split uncovered, and the #622 emit-chain model (2 emitters × 2 emits × 2 listeners) uses a different wording than EVP-5.5-1, so the status stays unverified.',
+      evidence: '`rutis/src/fiber/shuttle_tests.rs::shuttle_emit_chain_starts_calls_in_emission_order`、`rutis/tests/event_order.rs::emit_order_is_kept_per_emitter`、`rutis/tests/events.rs::emits_of_one_name_start_in_emit_order`、`rutis/tests/dispatch_chain_probe.rs::dispatch_chain_does_not_fork_under_concurrent_emit`',
+      status: '已验证',
+      why: '登记表 `core/D31` 记「已验证」（用例在上）；#634 快照记「未覆盖」。模型 10 用 2 个发出方 × 2 次 × 2 个监听器，检查同名 emit 在每个监听器上按发出顺序开始（变异见 `upgrade.mutation`）。升为「已验证」。',
+      whyEn: 'The register row `core/D31` is verified by the tests above; the issue marked this split uncovered. Model 10 runs 2 emitters × 2 emits × 2 listeners and checks that emits of one name start in emission order on each listener (mutation in `upgrade.mutation`). Raised to verified.',
+      upgrade: {
+        status: '已验证',
+        evidence: [
+          '`rutis/src/fiber/shuttle_tests.rs::shuttle_emit_chain_starts_calls_in_emission_order`',
+        ],
+        mutation: '去掉 emit 链的尾部等待（`emit_erased` 的 `prev.await`）：`emit 2 of model::emit started its calls before an earlier emit finished`；只分发 `Selected::base()`、丢掉 `chains()`：`listener 3 was never called`。',
+      },
     },
     'core/D31b': {
       source: 'guarantees.md §6',
@@ -860,10 +984,17 @@ export const SEMANTIC_REGISTRY = {
     'core/D31c': {
       source: 'guarantees.md §6',
       anchors: ['core/D31'],
-      evidence: '`rutis/tests/event_order.rs::emit_inside_listener_goes_to_the_back`',
-      status: '未验证',
-      why: '登记表 `core/D31` 记「已验证」（`emit_inside_listener_goes_to_the_back`）；#634 快照记「未覆盖」，#622 的模型有「监听器里再 emit」但没并进证据，状态只降不升',
-      whyEn: 'The register row `core/D31` is verified by `emit_inside_listener_goes_to_the_back`; the issue marked this split uncovered, the #622 model has "emit inside a listener" but it is not counted as evidence here, so the status stays unverified.',
+      evidence: '`rutis/src/fiber/shuttle_tests.rs::shuttle_emit_chain_starts_calls_in_emission_order`、`rutis/tests/event_order.rs::emit_inside_listener_goes_to_the_back`',
+      status: '已验证',
+      why: '登记表 `core/D31` 记「已验证」（`emit_inside_listener_goes_to_the_back`）；#634 快照记「未覆盖」。模型 10 在监听器里再 emit 同名：它排到当前调用之后、不死锁，模型断言两次 emit 的开始顺序（变异见 `upgrade.mutation`）。升为「已验证」。',
+      whyEn: 'The register row `core/D31` is verified by `emit_inside_listener_goes_to_the_back`; the issue marked this split uncovered. Model 10 re-emits the same name from inside a listener: it queues behind the current call without deadlocking, and the model asserts the start order of both emits (mutation in `upgrade.mutation`). Raised to verified.',
+      upgrade: {
+        status: '已验证',
+        evidence: [
+          '`rutis/src/fiber/shuttle_tests.rs::shuttle_emit_chain_starts_calls_in_emission_order`',
+        ],
+        mutation: '去掉 emit 链的尾部等待：监听器里再 emit 的同名调用抢到前面，`emit 2 of model::emit started its calls before an earlier emit finished`；把重入 emit 改成同步递归：模型在 `DELIVERING` 上死锁。',
+      },
     },
     'core/D31d': {
       source: 'guarantees.md §6',
@@ -876,26 +1007,49 @@ export const SEMANTIC_REGISTRY = {
     'core/D32a': {
       source: 'guarantees.md §6',
       anchors: ['core/D32'],
-      evidence: '`rutis/tests/config_update.rs::update_dry_run_failure_leaves_state_untouched`、`::update_active_applies_new_config_and_cleans_once`',
-      status: '未验证',
-      why: '登记表 `core/D32` 记「已验证」（`config_update.rs` 的 15 个测试与 `lifecycle_order.rs` 的用例）；#634 快照记「未覆盖」，缺更新与失败注入的参考模型 PT，状态只降不升',
-      whyEn: 'The register row `core/D32` is verified by the 15 `config_update.rs` tests and the `lifecycle_order` cases; the issue marked this split uncovered and the reference model of update and failure injection is missing, so the status stays unverified.',
+      evidence: '`rutis/tests/interleave.rs::the_fiber_lifecycle_matches_a_reference_model`、`rutis/tests/config_update.rs::update_dry_run_failure_leaves_state_untouched`、`::update_active_applies_new_config_and_cleans_once`',
+      status: '已验证',
+      why: '登记表 `core/D32` 记「已验证」（`config_update.rs` 的 15 个测试与 `lifecycle_order.rs` 的用例）；#634 快照记「未覆盖」。参考模型 PT 的 update 先走干跑，`Mode::BadConfig` 被拒后旧状态继续；两个用例断言拒绝不生效与成功时只清理一次（变异见 `upgrade.mutation`）。升为「已验证」。',
+      whyEn: 'The register row `core/D32` is verified by the 15 `config_update.rs` tests and the `lifecycle_order` cases; the issue marked this split uncovered. An update in the reference-model property test runs the dry run first, so a refused `Mode::BadConfig` leaves the old state in force; two tests assert the refusal has no effect and a success cleans up once (mutation in `upgrade.mutation`). Raised to verified.',
+      upgrade: {
+        status: '已验证',
+        evidence: [
+          '`rutis/tests/interleave.rs::the_fiber_lifecycle_matches_a_reference_model`',
+          '`rutis/tests/config_update.rs::update_dry_run_failure_leaves_state_untouched`',
+        ],
+        mutation: '让干跑拒绝后的 update 仍然生效：PT 的下一次 load 用被拒的配置，状态与参考模型不一致；`update_dry_run_failure_leaves_state_untouched` 看到旧配置被替换。',
+      },
     },
     'core/D32b': {
       source: 'guarantees.md §6',
       anchors: ['core/D32'],
-      evidence: '`rutis/tests/config_update.rs::update_during_loading_converges_to_new_config`、`::concurrent_update_and_dispose_settle_correctly`',
-      status: '部分验证',
-      why: '登记表 `core/D32` 记「已验证」；#634 快照记「部分」，#622 的疑点仍在：restart / update 在检查与投递之间输给终止的 Dispose 时被排干成 `Ok`',
-      whyEn: 'The register row `core/D32` is verified; the issue marked this split partial, and the #622 doubt stands: a restart or update that loses to a terminating dispose between the check and the post is drained to `Ok`.',
+      evidence: '`rutis/tests/interleave.rs::the_fiber_lifecycle_matches_a_reference_model`、`rutis/src/fiber/shuttle_tests.rs::shuttle_restart_losing_to_a_dispose_reports_it`、`rutis/tests/config_update.rs::update_during_loading_converges_to_new_config`、`::concurrent_update_and_dispose_settle_correctly`',
+      status: '已验证',
+      why: '登记表 `core/D32` 记「已验证」；#634 快照记「部分」。参考模型 PT 覆盖 Loading 中与运行中的 update、失败与自 dispose；模型 23 覆盖 restart/update 输给终止 dispose 时报告失败而不是排干成 `Ok`（变异见 `upgrade.mutation`）。升为「已验证」。',
+      whyEn: 'The register row `core/D32` is verified; the issue marked this split partial. The reference-model property test covers updates during Loading and while running, failures and self-dispose; model 23 covers a restart or update losing to a terminating dispose reporting the failure instead of draining to `Ok` (mutation in `upgrade.mutation`). Raised to verified.',
+      upgrade: {
+        status: '已验证',
+        evidence: [
+          '`rutis/tests/interleave.rs::the_fiber_lifecycle_matches_a_reference_model`',
+          '`rutis/src/fiber/shuttle_tests.rs::shuttle_restart_losing_to_a_dispose_reports_it`',
+        ],
+        mutation: '把输给 dispose 的 restart 排干成 `Ok`（修复前的 `drive`/`post_join`，模型 23）：`the restart reported success without starting a generation`；把 Loading 中的 update 改成不重启：PT 的状态/代次对不上。',
+      },
     },
     'core/D32c': {
       source: 'guarantees.md §6',
       anchors: ['core/D32'],
-      evidence: '`rutis/tests/config_update.rs::update_active_applies_new_config_and_cleans_once`',
-      status: '未验证',
-      why: '登记表 `core/D32` 记「已验证」；#634 快照记「未覆盖」，config 不进依赖身份的交叉用例没有单列，状态只降不升',
-      whyEn: 'The register row `core/D32` is verified; the issue marked this split uncovered, no test isolates "config is not part of the dependency identity", so the status stays unverified.',
+      evidence: '`rutis/tests/interleave.rs::the_fiber_lifecycle_matches_a_reference_model`、`rutis/tests/config_update.rs::update_active_applies_new_config_and_cleans_once`',
+      status: '已验证',
+      why: '登记表 `core/D32` 记「已验证」；#634 快照记「未覆盖」。参考模型 PT 的 `last_deps` 只由依赖键组成：update 改 config 不改变依赖身份、不触发别的 fiber 重载（变异见 `upgrade.mutation`）。升为「已验证」。',
+      whyEn: 'The register row `core/D32` is verified; the issue marked this split uncovered. The reference model\'s `last_deps` is built from dependency keys only: an update that changes the config does not change the dependency identity or reload other fibers (mutation in `upgrade.mutation`). Raised to verified.',
+      upgrade: {
+        status: '已验证',
+        evidence: [
+          '`rutis/tests/interleave.rs::the_fiber_lifecycle_matches_a_reference_model`',
+        ],
+        mutation: '把 config 并进 `last_deps`（依赖身份随 config 变）：PT 在每次 update 后把消费者当成依赖变化而重载，apply 与清理次数对不上。',
+      },
     },
     'core/D32d': {
       source: 'guarantees.md §6',
@@ -932,10 +1086,17 @@ export const SEMANTIC_REGISTRY = {
     'core/features.shutdown-state a': {
       source: 'guarantees.md §7',
       anchors: ['core/features.shutdown-state'],
-      evidence: '`rutis/tests/lifecycle_diagnostics.rs::shutdown_state_is_shared_before_cleanup_and_after_completion`',
-      status: '未验证',
-      why: '登记表 `core/features.shutdown-state` 记「已验证」（用例在上）；#634 快照记「未覆盖」：#622 的根关闭模型只查 join 的结果，不查这个标志，状态只降不升',
-      whyEn: 'The register row `core/features.shutdown-state` is verified by the test above; the issue marked this split uncovered: the #622 root-shutdown model checks the join result only, not this flag, so the status stays unverified.',
+      evidence: '`rutis/src/fiber/shuttle_tests.rs::shuttle_root_close_owns_the_child_it_mounted`、`rutis/tests/lifecycle_diagnostics.rs::shutdown_state_is_shared_before_cleanup_and_after_completion`',
+      status: '已验证',
+      why: '登记表 `core/features.shutdown-state` 记「已验证」（用例在上）；#634 快照记「未覆盖」。模型 17 在根关闭期间断言 `is_shutting_down()`，直到子树清理完成；用例覆盖清理前与完成后的共享状态（变异见 `upgrade.mutation`）。升为「已验证」。',
+      whyEn: 'The register row `core/features.shutdown-state` is verified by the test above; the issue marked this split uncovered. Model 17 asserts `is_shutting_down()` during the root close until the subtree has cleaned up; the test covers the shared state before cleanup and after completion (mutation in `upgrade.mutation`). Raised to verified.',
+      upgrade: {
+        status: '已验证',
+        evidence: [
+          '`rutis/src/fiber/shuttle_tests.rs::shuttle_root_close_owns_the_child_it_mounted`',
+        ],
+        mutation: '把根的共享任务在子树清理前完成（模型 17）：`a root shutdown returned before its subtree cleaned up`，关闭标志随任务提前结束；在 `shutdown` 开始时不置标志：模型读到 `is_shutting_down()` 为 false。',
+      },
     },
     'core/features.shutdown-state b': {
       source: 'guarantees.md §7',
@@ -948,26 +1109,50 @@ export const SEMANTIC_REGISTRY = {
     'core/features.errors': {
       source: 'guarantees.md §7',
       anchors: ['core/features.errors'],
-      evidence: '`rutis/tests/lifecycle_order.rs::a_restart_dropped_after_its_cleanup_started_still_completes`、`::an_update_dropped_after_its_cleanup_started_still_completes`',
-      status: '未验证',
-      why: '登记表 `core/features.errors` 记「已验证」（四个用例）；#634 快照记「未覆盖」：#622 的模型没有「在 await 处丢弃 future」的动作（#629 的做法只用于加载器），状态只降不升',
-      whyEn: 'The register row `core/features.errors` is verified by four tests; the issue marked this split uncovered: the #622 model has no "drop the future at an await" action (#629 does that for the loader only), so the status stays unverified.',
+      evidence: '`rutis/src/fiber/shuttle_tests.rs::shuttle_root_close_owns_the_child_it_mounted`、`::shuttle_dependency_restart_in_the_window_returns_to_the_returned_generation`、`rutis/tests/lifecycle_order.rs::a_restart_dropped_after_its_cleanup_started_still_completes`、`::an_update_dropped_after_its_cleanup_started_still_completes`',
+      status: '已验证',
+      why: '登记表 `core/features.errors` 记「已验证」（四个用例）；#634 快照记「未覆盖」。模型 17、19 都在 await 处丢弃 restart/update 的 future，已开始的清理仍完成；两个用例断言丢弃后清理仍完成（变异见 `upgrade.mutation`）。升为「已验证」。',
+      whyEn: 'The register row `core/features.errors` is verified by four tests; the issue marked this split uncovered. Models 17 and 19 drop a restart/update future at an await while the cleanup that already started still completes; two tests assert the cleanup completes after the drop (mutation in `upgrade.mutation`). Raised to verified.',
+      upgrade: {
+        status: '已验证',
+        evidence: [
+          '`rutis/src/fiber/shuttle_tests.rs::shuttle_root_close_owns_the_child_it_mounted`',
+          '`rutis/src/fiber/shuttle_tests.rs::shuttle_dependency_restart_in_the_window_returns_to_the_returned_generation`',
+        ],
+        mutation: '把根的共享任务在子树清理前完成（模型 17）：`a root shutdown returned before its subtree cleaned up`（调用方在清理完成前拿到返回）；去掉 `pending_restarts` 的递减（模型 19）：`a restart was left counted after the driver took it up`（丢弃后留下计数）。',
+      },
     },
     'core/features.errors.failed-retry': {
       source: 'guarantees.md §7',
       anchors: ['core/features.errors.failed-retry'],
-      evidence: '`rutis/tests/failed_retry.rs::a_failed_apply_is_retried_only_when_its_dependencies_change`、`::a_failed_validate_is_retried_only_when_its_dependencies_change`、`::a_failed_build_is_retried_only_when_its_dependencies_change`',
-      status: '未验证',
-      why: '登记表 `core/features.errors.failed-retry` 记「已验证」（用例在上，`#327`）；#634 快照记「未覆盖」，缺参考模型 PT（失败注入 + 提供 / 撤下）与逐键通知的 SH，状态只降不升',
-      whyEn: 'The register row `core/features.errors.failed-retry` is verified by the tests above (`#327`); the issue marked this split uncovered, the reference model (failure injection, provide / withdraw) and the shuttle model of per-key notifications are missing, so the status stays unverified.',
+      evidence: '`rutis/tests/interleave.rs::the_fiber_lifecycle_matches_a_reference_model`、`rutis/tests/failed_retry.rs::a_failed_apply_is_retried_only_when_its_dependencies_change`、`::a_failed_validate_is_retried_only_when_its_dependencies_change`、`::a_failed_build_is_retried_only_when_its_dependencies_change`',
+      status: '已验证',
+      why: '登记表 `core/features.errors.failed-retry` 记「已验证」（用例在上，`#327`）；#634 快照记「未覆盖」。参考模型 PT 注入失败并比较 `last_deps`：只有依赖集合变化才重试，同一提供者恢复不算变化；三个用例覆盖构造、validate、apply 失败（变异见 `upgrade.mutation`）。升为「已验证」。',
+      whyEn: 'The register row `core/features.errors.failed-retry` is verified by the tests above (`#327`); the issue marked this split uncovered. The reference-model property test injects failures and compares `last_deps`: a failed fiber retries only when its dependency set changes, and a service returning from the same provider is not a change; three tests cover build, validate and apply failures (mutation in `upgrade.mutation`). Raised to verified.',
+      upgrade: {
+        status: '已验证',
+        evidence: [
+          '`rutis/tests/interleave.rs::the_fiber_lifecycle_matches_a_reference_model`',
+          '`rutis/tests/failed_retry.rs::a_failed_apply_is_retried_only_when_its_dependencies_change`',
+        ],
+        mutation: '把失败重试改成每次 `refresh` 都重试（不比较 `last_deps`）：PT 的 apply 次数多于参考模型；`a_failed_apply_is_retried_only_when_its_dependencies_change` 看到第二次 apply。',
+      },
     },
     'core/typed.lost-dependency-pending a': {
       source: 'guarantees.md §7',
       anchors: ['core/typed.lost-dependency-pending'],
-      evidence: '`rutis/tests/typed_plugin.rs::a_dependency_lost_before_it_is_read_returns_the_plugin_to_pending`、`::a_dependency_withdrawn_before_apply_starts_returns_the_plugin_to_pending`',
-      status: '未验证',
-      why: '登记表 `core/typed.lost-dependency-pending` 记「已验证」（用例在上；#652 按 #620 改写了依赖 Bug B 窗口的测试）；#634 快照记「未覆盖」，SH + PT 仍归 #622，状态只降不升',
-      whyEn: 'The register row `core/typed.lost-dependency-pending` is verified by the tests above (#652 rewrote the tests that relied on the Bug B window, per #620); the issue marked this split uncovered, the shuttle and property models are still #622, and the status stays unverified.',
+      evidence: '`rutis/src/fiber/shuttle_tests.rs::shuttle_dependency_withdrawal_stops_the_loading_consumer`、`::shuttle_dependency_restart_in_the_window_returns_to_the_returned_generation`、`rutis/tests/typed_plugin.rs::a_dependency_lost_before_it_is_read_returns_the_plugin_to_pending`、`::a_dependency_withdrawn_before_apply_starts_returns_the_plugin_to_pending`',
+      status: '已验证',
+      why: '登记表 `core/typed.lost-dependency-pending` 记「已验证」（用例在上；#652 按 #620 改写了依赖 Bug B 窗口的测试）；#634 快照记「未覆盖」。模型 9 覆盖门控通过后、读取前依赖被撤下的窗口，模型 19 覆盖窗口里的 restart；两个用例断言之（变异见 `upgrade.mutation`）。升为「已验证」。',
+      whyEn: 'The register row `core/typed.lost-dependency-pending` is verified by the tests above (#652 rewrote the tests that relied on the Bug B window, per #620); the issue marked this split uncovered. Model 9 covers a dependency withdrawn after the gate passed but before the read, and model 19 a restart inside that window; two tests assert it (mutations in `upgrade.mutation`). Raised to verified.',
+      upgrade: {
+        status: '已验证',
+        evidence: [
+          '`rutis/src/fiber/shuttle_tests.rs::shuttle_dependency_withdrawal_stops_the_loading_consumer`',
+          '`rutis/src/fiber/shuttle_tests.rs::shuttle_dependency_restart_in_the_window_returns_to_the_returned_generation`',
+        ],
+        mutation: '去掉 `load` 的第二次门控检查（模型 9）：`the withdrawal returned while the consumer still ran on the withdrawn generation`；去掉 `pending_restarts` 的递减（模型 19）：`a restart was left counted after the driver took it up`。',
+      },
     },
     'core/typed.lost-dependency-pending b': {
       source: 'guarantees.md §7',
@@ -988,10 +1173,17 @@ export const SEMANTIC_REGISTRY = {
     'core/typed.lost-dependency-restart': {
       source: 'guarantees.md §7',
       anchors: ['core/typed.lost-dependency-restart'],
-      evidence: '`rutis/tests/typed_plugin.rs::a_restart_in_the_lost_dependency_window_returns_ok`',
-      status: '未验证',
-      why: '登记表 `core/typed.lost-dependency-restart` 记「已验证」（用例在上）；#634 快照记「未覆盖」：#622 的「依赖驱逐」模型不含 restart，状态只降不升',
-      whyEn: 'The register row `core/typed.lost-dependency-restart` is verified by the test above; the issue marked this split uncovered, and the #622 dependency-eviction model has no restart, so the status stays unverified.',
+      evidence: '`rutis/src/fiber/shuttle_tests.rs::shuttle_dependency_restart_in_the_window_returns_to_the_returned_generation`、`rutis/tests/typed_plugin.rs::a_restart_in_the_lost_dependency_window_returns_ok`',
+      status: '已验证',
+      why: '登记表 `core/typed.lost-dependency-restart` 记「已验证」（用例在上）；#634 快照记「未覆盖」。模型 19 在依赖窗口里发起 restart：返回 Ok、回到被返回的那一代、`pending_restarts` 清零（变异见 `upgrade.mutation`）。升为「已验证」。',
+      whyEn: 'The register row `core/typed.lost-dependency-restart` is verified by the test above; the issue marked this split uncovered. Model 19 starts a restart inside the dependency window: it returns `Ok`, lands on the returned generation and clears `pending_restarts` (mutation in `upgrade.mutation`). Raised to verified.',
+      upgrade: {
+        status: '已验证',
+        evidence: [
+          '`rutis/src/fiber/shuttle_tests.rs::shuttle_dependency_restart_in_the_window_returns_to_the_returned_generation`',
+        ],
+        mutation: '去掉 restart 被驱动接手时的 `pending_restarts` 递减（模型 19）：`a restart was left counted after the driver took it up`（剩 2）；把窗口里的 restart 改成返回错误：`a_restart_in_the_lost_dependency_window_returns_ok` 失败。',
+      },
     },
     'core/typed.get-not-evidence': {
       source: 'guarantees.md §7',
@@ -1036,10 +1228,18 @@ export const SEMANTIC_REGISTRY = {
     'events/emit b': {
       source: 'guarantees.md §7',
       anchors: ['events/emit'],
-      evidence: '`rutis/tests/event_order.rs::emit_order_is_kept_per_emitter`、`rutis/tests/events.rs::emits_of_one_name_start_in_emit_order`',
-      status: '部分验证',
-      why: '登记表 `events/emit` 记「已验证」（用例在上）；#634 快照记「部分」：内核一侧由 emit 链 SH 检查，K 走经会话的路径，跨进程的 `EmitOrder` 在 #613',
-      whyEn: 'The register row `events/emit` is verified by the tests above; the issue marked this split partial: the kernel side is the emit-chain shuttle model, K uses the session path, and the cross-process `EmitOrder` is #613.',
+      evidence: '`rutis/src/fiber/shuttle_tests.rs::shuttle_emit_chain_starts_calls_in_emission_order`、`rutis/tests/event_order.rs::emit_order_is_kept_per_emitter`、`rutis/tests/events.rs::emits_of_one_name_start_in_emit_order`、`rutis-bridge/src/runtime/testing/events.expected.json`（`emit/order-per-listener`、`emit/order-filtered-then-unfiltered`）',
+      status: '已验证',
+      why: '登记表 `events/emit` 记「已验证」（用例在上）；#634 快照记「部分」。模型 10 覆盖内核的 emit 链（2 个发出方 × 2 次 × 2 个监听器），K 的两个用例走经会话的路径；跨进程的 `EmitOrder` 由 `specs/events/EventsEmit.tla::EmitOrder` 覆盖（变异见 `upgrade.mutation`）。升为「已验证」。',
+      whyEn: 'The register row `events/emit` is verified by the tests above; the issue marked this split partial. Model 10 covers the kernel emit chain (2 emitters × 2 emits × 2 listeners), two K cases use the session path, and the cross-process `EmitOrder` is covered by `specs/events/EventsEmit.tla::EmitOrder` (mutation in `upgrade.mutation`). Raised to verified.',
+      upgrade: {
+        status: '已验证',
+        evidence: [
+          '`rutis/src/fiber/shuttle_tests.rs::shuttle_emit_chain_starts_calls_in_emission_order`',
+          '`rutis-bridge/src/runtime/testing/events.expected.json::emit/order-per-listener`',
+        ],
+        mutation: '去掉 emit 链的尾部等待：`emit 2 of model::emit started its calls before an earlier emit finished`；只分发 `Selected::base()`、丢掉 `chains()`：`listener 3 was never called`；K 的 `emit/order-per-listener` 与 TLA `EmitOrder` 在跨进程路径上同样断言开始顺序。',
+      },
     },
     'events/emit c': {
       source: 'guarantees.md §7',
@@ -1198,18 +1398,35 @@ export const SEMANTIC_REGISTRY = {
     'events/lifecycle a': {
       source: 'guarantees.md §7',
       anchors: ['events/lifecycle'],
-      evidence: '`rutis/tests/events.rs::unloaded_listeners_are_not_called`、`rutis-loader/tests/event_close_admission.rs::subtree_shutdown_before_start_skips_listener_in_every_mode`',
-      status: '部分验证',
-      why: '登记表 `events/lifecycle` 记「已验证」（用例在上）；#634 快照记「部分」：在途计数模型（`wait_events` 看到 0 之后没有调用体再运行）还没有，`Entry::live` 的 shuttle 模型（#1025）只覆盖标记先于关闭',
-      whyEn: 'The register row `events/lifecycle` is verified by the tests above; the issue marked this split partial: the in-flight counting model (no call body runs after `wait_events` sees 0) is missing, and the #1025 shuttle model of `Entry::live` covers only the marker preceding the close.',
+      evidence: '`rutis/src/fiber/shuttle_tests.rs::shuttle_unload_waits_for_in_flight_listener_calls`、`::shuttle_subtree_close_marks_every_member_of_a_real_tree`、`rutis/tests/events.rs::unloaded_listeners_are_not_called`、`rutis-loader/tests/event_close_admission.rs::subtree_shutdown_before_start_skips_listener_in_every_mode`、`rutis-bridge/src/runtime/testing/events.expected.json`（`unload/not-called-after`）',
+      status: '已验证',
+      why: '登记表 `events/lifecycle` 记「已验证」（用例在上）；#634 快照记「部分」。模型 6 覆盖卸载等待在途调用、开始后不再有新调用体，模型 16 覆盖真实子树关闭时的 `Entry::live`；K 的 `unload/not-called-after` 走会话路径（变异见 `upgrade.mutation`）。升为「已验证」。',
+      whyEn: 'The register row `events/lifecycle` is verified by the tests above; the issue marked this split partial. Model 6 covers the unload waiting for in-flight calls and no new call body starting afterwards, and model 16 covers `Entry::live` during a real subtree close; K\'s `unload/not-called-after` uses the session path (mutations in `upgrade.mutation`). Raised to verified.',
+      upgrade: {
+        status: '已验证',
+        evidence: [
+          '`rutis/src/fiber/shuttle_tests.rs::shuttle_unload_waits_for_in_flight_listener_calls`',
+          '`rutis/src/fiber/shuttle_tests.rs::shuttle_subtree_close_marks_every_member_of_a_real_tree`',
+        ],
+        mutation: '去掉 `Entry::start` 里最后的 `Entry::live` 检查（模型 6）：等待返回时仍有调用体在跑；`Entry::live` 只查已发布代次、不读 `alive`/`closing`/`lineage_closed`（模型 16）：`the grandchild\'s listener was admitted after the close`。',
+      },
     },
     'events/lifecycle b': {
       source: 'guarantees.md §7',
       anchors: ['events/lifecycle'],
-      evidence: '`rutis/tests/events.rs::unload_cancels_and_waits_for_running_listeners`、`rutis-loader/tests/event_close_admission.rs::accepted_listener_drains_after_subtree_shutdown`',
-      status: '部分验证',
-      why: '登记表 `events/lifecycle` 记「已验证」（用例在上）；#634 快照记「部分」，卸载等待运行中调用结束的模型没有',
-      whyEn: 'The register row `events/lifecycle` is verified by the tests above; the issue marked this split partial, and the model of unload waiting for running calls to finish is missing.',
+      evidence: '`rutis/src/fiber/shuttle_tests.rs::shuttle_unload_waits_for_in_flight_listener_calls`、`::shuttle_subtree_close_marks_every_member_of_a_real_tree`、`::shuttle_event_waits_end_at_their_deadline`、`rutis/tests/events.rs::unload_cancels_and_waits_for_running_listeners`、`rutis-loader/tests/event_close_admission.rs::accepted_listener_drains_after_subtree_shutdown`、`rutis-bridge/src/runtime/testing/events.expected.json`（`unload/waits-and-cancels`、`unload/in-flight-emit`）',
+      status: '已验证',
+      why: '登记表 `events/lifecycle` 记「已验证」（用例在上）；#634 快照记「部分」。模型 6 覆盖卸载等待在途调用、它们看到取消，模型 16 覆盖真实子树关闭的等待，模型 22 覆盖带截止时间的等待；K 的两个用例走会话路径（变异见 `upgrade.mutation`）。升为「已验证」。',
+      whyEn: 'The register row `events/lifecycle` is verified by the tests above; the issue marked this split partial. Model 6 covers the unload waiting for in-flight calls and those calls seeing cancellation, model 16 the wait during a real subtree close, and model 22 a wait with a deadline; two K cases use the session path (mutations in `upgrade.mutation`). Raised to verified.',
+      upgrade: {
+        status: '已验证',
+        evidence: [
+          '`rutis/src/fiber/shuttle_tests.rs::shuttle_unload_waits_for_in_flight_listener_calls`',
+          '`rutis/src/fiber/shuttle_tests.rs::shuttle_subtree_close_marks_every_member_of_a_real_tree`',
+          '`rutis/src/fiber/shuttle_tests.rs::shuttle_event_waits_end_at_their_deadline`',
+        ],
+        mutation: '让 `wait_events` 不等计数就返回（模型 6）：调用体仍在运行；`wait_events` 不注册（模型 22）：截止时间到达时无人唤醒，`deadlock!`；`wait_events` 不等（模型 16）：`the child\'s unload returned while 1 call(s) of it were running`。',
+      },
     },
     'events/lifecycle c': {
       source: 'guarantees.md §7',
@@ -1254,10 +1471,17 @@ export const SEMANTIC_REGISTRY = {
     'events/remote d': {
       source: 'guarantees.md §7',
       anchors: ['events/remote'],
-      evidence: '`rutis/tests/events.rs::table_changes_are_heard_in_the_order_they_were_made`、`::the_table_is_watched`',
-      status: '未验证',
-      why: '登记表 `events/remote` 记「已验证」（用例在上）；#634 快照记「未覆盖」，监听器表观察者模型（FIFO、恰好一次、`deliver(seq)` 在 seq 被听到后才返回）没有，状态只降不升',
-      whyEn: 'The register row `events/remote` is verified by the tests above; the issue marked this split uncovered and the table-watcher model (FIFO, exactly once, `deliver(seq)` returning only after seq is heard) is missing, so the status stays unverified.',
+      evidence: '`rutis/src/fiber/shuttle_tests.rs::shuttle_table_watcher_hears_each_change_once_in_order`、`rutis/tests/events.rs::table_changes_are_heard_in_the_order_they_were_made`、`::the_table_is_watched`',
+      status: '已验证',
+      why: '登记表 `events/remote` 记「已验证」（用例在上）；#634 快照记「未覆盖」。模型 11 跑真实的监听器表与观察者：每次变化按发生顺序恰好听到一次，`deliver(seq)` 在 seq 被听到后才返回（变异见 `upgrade.mutation`）。升为「已验证」。',
+      whyEn: 'The register row `events/remote` is verified by the tests above; the issue marked this split uncovered. Model 11 runs the real listener table and watcher: each change is heard once in the order it happened, and `deliver(seq)` returns only after seq is heard (mutations in `upgrade.mutation`). Raised to verified.',
+      upgrade: {
+        status: '已验证',
+        evidence: [
+          '`rutis/src/fiber/shuttle_tests.rs::shuttle_table_watcher_hears_each_change_once_in_order`',
+        ],
+        mutation: '`deliver` 不等 `seq` 就返回：`a change was reported before the watcher heard it (2 < 6)`；去掉投递后的 `notify_all`：等待者不醒，`deadlock!`；去掉 `DELIVERING` 守卫：观察者在投递里改表，`deadlock!`；先移除条目再置 `withdrawn`：`a removal was heard for a listener that was not withdrawn`。',
+      },
     },
     'events/remote e': {
       source: 'guarantees.md §7',
@@ -2292,10 +2516,18 @@ export const SEMANTIC_REGISTRY_2 = {
     'events/emit-order': {
       source: 'guarantees.md §7',
       anchors: ['events/emit'],
-      evidence: '`rutis/tests/events.rs`、`go/rutis/events_session_test.go`（#634 快照指第 329、267 行；登记表没有这一行）',
-      status: '未验证',
-      why: '编号本身从未登记（#634 快照记「未登记」）；规则现由登记表 §7 的 `events/emit` 承载，测试带它的标记。状态沿用快照的「未验证」，不按登记表那一行的状态上调。',
-      whyEn: 'The id itself was never registered (the issue marked it unregistered); the rule is now row `events/emit` in §7 of the register, whose marker the tests carry. The status stays the one the snapshot gives, "unverified", and is not raised above the register row\'s.',
+      evidence: '`rutis/src/fiber/shuttle_tests.rs::shuttle_emit_chain_starts_calls_in_emission_order`、`rutis-bridge/src/runtime/testing/events.expected.json`（`emit/order-per-listener`、`emit/order-filtered-then-unfiltered`）、`specs/events/EventsEmit.tla::EmitOrder`、`rutis/tests/events.rs`、`go/rutis/events_session_test.go`（#634 快照指第 329、267 行；登记表没有这一行）',
+      status: '已验证',
+      why: '编号本身从未登记（#634 快照记「未登记」）；规则现由登记表 §7 的 `events/emit` 承载。模型 10 覆盖内核 emit 链，两个 K 用例覆盖经会话的路径，TLA `EmitOrder` 覆盖跨进程；证据与登记表 `events/emit` 同一批（变异见 `upgrade.mutation`）。升为「已验证」。',
+      whyEn: 'The id itself was never registered (the issue marked it unregistered); the rule is now row `events/emit` in §7 of the register. Model 10 covers the kernel emit chain, two K cases the session path and the TLA `EmitOrder` the cross-process one; the evidence is the same batch as `events/emit` (mutation in `upgrade.mutation`). Raised to verified.',
+      upgrade: {
+        status: '已验证',
+        evidence: [
+          '`rutis/src/fiber/shuttle_tests.rs::shuttle_emit_chain_starts_calls_in_emission_order`',
+          '`specs/events/EventsEmit.tla::EmitOrder`',
+        ],
+        mutation: '去掉 emit 链的尾部等待：`emit 2 of model::emit started its calls before an earlier emit finished`；K 的 `emit/order-per-listener` 与 TLA `EmitOrder` 在会话与跨进程路径上断言同一顺序。',
+      },
     },
     'events/emit-reported': {
       source: 'guarantees.md §15',
@@ -2332,10 +2564,19 @@ export const SEMANTIC_REGISTRY_2 = {
     'events/liveness': {
       source: 'guarantees.md §7',
       anchors: ['events/lifecycle'],
-      evidence: '`rutis/tests/events.rs`（#634 快照指第 1108 行；登记表没有这一行）',
-      status: '未验证',
-      why: '编号本身从未登记（#634 快照记「未登记」）；规则现由登记表 §7 的 `events/lifecycle` 承载，测试带它的标记。在途计数归 #622、`WithdrawnStaysOut` 归 #613；状态沿用快照的「未验证」，不按登记表那一行的状态上调。',
-      whyEn: 'The id itself was never registered (the issue marked it unregistered); the rule is now row `events/lifecycle` in §7 of the register, whose marker the tests carry. The in-flight count is #622, and `WithdrawnStaysOut` is #613. The status stays the one the snapshot gives, "unverified", and is not raised above the register row\'s.',
+      evidence: '`rutis/src/fiber/shuttle_tests.rs::shuttle_unload_waits_for_in_flight_listener_calls`、`::shuttle_restart_publishes_the_live_generation`、`::shuttle_subtree_close_marks_every_member_of_a_real_tree`、`rutis/tests/events.rs`、`rutis-bridge/src/runtime/testing/events.expected.json`（`unload/not-called-after`）（#634 快照指第 1108 行；登记表没有这一行）',
+      status: '已验证',
+      why: '编号本身从未登记（#634 快照记「未登记」）；规则现由登记表 §7 的 `events/lifecycle` 承载。模型 6 覆盖卸下后不再开始调用，模型 15 覆盖代次失效，模型 16 覆盖真实子树关闭；K 的 `unload/not-called-after` 走会话路径（变异见 `upgrade.mutation`）。升为「已验证」。',
+      whyEn: 'The id itself was never registered (the issue marked it unregistered); the rule is now row `events/lifecycle` in §7 of the register. Model 6 covers no new call starting after the unload, model 15 a stale generation and model 16 a real subtree close; K\'s `unload/not-called-after` uses the session path (mutations in `upgrade.mutation`). Raised to verified.',
+      upgrade: {
+        status: '已验证',
+        evidence: [
+          '`rutis/src/fiber/shuttle_tests.rs::shuttle_unload_waits_for_in_flight_listener_calls`',
+          '`rutis/src/fiber/shuttle_tests.rs::shuttle_restart_publishes_the_live_generation`',
+          '`rutis/src/fiber/shuttle_tests.rs::shuttle_subtree_close_marks_every_member_of_a_real_tree`',
+        ],
+        mutation: '去掉 `Entry::start` 里最后的 `Entry::live` 检查（模型 6）：卸载开始后仍启动调用；`Entry::live` 不比较代次（模型 15）：`the listener of generation 1 is still live after the restart`；只查已发布代次（模型 16）：`the grandchild\'s listener was admitted after the close`。',
+      },
     },
     'events/next': {
       source: 'guarantees.md §7',
@@ -2452,10 +2693,18 @@ export const SEMANTIC_REGISTRY_2 = {
     'events/table-watch': {
       source: 'guarantees.md §7',
       anchors: ['events/remote'],
-      evidence: '`rutis/tests/events.rs`（#634 快照指第 1472 行；登记表没有这一行）',
-      status: '未验证',
-      why: '编号本身从未登记（#634 快照记「未登记」）；规则现由登记表 §7 的 `events/remote` 承载，测试带它的标记。表的模型归 #622、`RegisteredThenSeen` 归 #613；状态沿用快照的「未验证」，不按登记表那一行的状态上调。',
-      whyEn: 'The id itself was never registered (the issue marked it unregistered); the rule is now row `events/remote` in §7 of the register, whose marker the tests carry. The table model is #622, and `RegisteredThenSeen` is #613. The status stays the one the snapshot gives, "unverified", and is not raised above the register row\'s.',
+      evidence: '`rutis/src/fiber/shuttle_tests.rs::shuttle_table_watcher_hears_each_change_once_in_order`、`rutis/tests/events.rs::the_table_is_watched`（#634 快照指第 1472 行；登记表没有这一行）',
+      status: '已验证',
+      why: '编号本身从未登记（#634 快照记「未登记」）；规则现由登记表 §7 的 `events/remote` 承载。模型 11 覆盖观察者先拿到当前条目、再按发生顺序收到每次变化，`deliver(seq)` 在 seq 被听到后才返回；用例断言同一行为（变异见 `upgrade.mutation`）。升为「已验证」。',
+      whyEn: 'The id itself was never registered (the issue marked it unregistered); the rule is now row `events/remote` in §7 of the register. Model 11 covers the watcher receiving the current entries first and then each change in order, with `deliver(seq)` returning only after seq is heard; the test asserts the same behaviour (mutation in `upgrade.mutation`). Raised to verified.',
+      upgrade: {
+        status: '已验证',
+        evidence: [
+          '`rutis/src/fiber/shuttle_tests.rs::shuttle_table_watcher_hears_each_change_once_in_order`',
+          '`rutis/tests/events.rs::the_table_is_watched`',
+        ],
+        mutation: '`deliver` 不等 `seq` 就返回：`a change was reported before the watcher heard it (2 < 6)`；去掉投递后的 `notify_all`：`deadlock!`；先移除条目再置 `withdrawn`：`a removal was heard for a listener that was not withdrawn`。',
+      },
     },
     'events/tool': {
       source: 'guarantees.md §15',
@@ -2476,10 +2725,19 @@ export const SEMANTIC_REGISTRY_2 = {
     'events/unload-waits': {
       source: 'guarantees.md §7',
       anchors: ['events/lifecycle'],
-      evidence: '`rutis/tests/events.rs`（#634 快照指第 1056 行；登记表没有这一行）',
-      status: '未验证',
-      why: '编号本身从未登记（#634 快照记「未登记」）；规则现由登记表 §7 的 `events/lifecycle` 承载，测试带它的标记。在途计数归 #622；状态沿用快照的「未验证」，不按登记表那一行的状态上调。',
-      whyEn: 'The id itself was never registered (the issue marked it unregistered); the rule is now row `events/lifecycle` in §7 of the register, whose marker the tests carry. The in-flight count is #622. The status stays the one the snapshot gives, "unverified", and is not raised above the register row\'s.',
+      evidence: '`rutis/src/fiber/shuttle_tests.rs::shuttle_unload_waits_for_in_flight_listener_calls`、`::shuttle_subtree_close_marks_every_member_of_a_real_tree`、`::shuttle_event_waits_end_at_their_deadline`、`rutis/tests/events.rs`、`rutis-bridge/src/runtime/testing/events.expected.json`（`unload/waits-and-cancels`）（#634 快照指第 1056 行；登记表没有这一行）',
+      status: '已验证',
+      why: '编号本身从未登记（#634 快照记「未登记」）；规则现由登记表 §7 的 `events/lifecycle` 承载。模型 6 覆盖监听器随登记它的上下文被调用、卸载等它结束，模型 16 覆盖真实子树关闭，模型 22 覆盖截止时间；K 的 `unload/waits-and-cancels` 走会话路径（变异见 `upgrade.mutation`）。升为「已验证」。',
+      whyEn: 'The id itself was never registered (the issue marked it unregistered); the rule is now row `events/lifecycle` in §7 of the register. Model 6 covers the listener called with the context that registered it and the unload waiting for it, model 16 a real subtree close and model 22 the deadline; K\'s `unload/waits-and-cancels` uses the session path (mutations in `upgrade.mutation`). Raised to verified.',
+      upgrade: {
+        status: '已验证',
+        evidence: [
+          '`rutis/src/fiber/shuttle_tests.rs::shuttle_unload_waits_for_in_flight_listener_calls`',
+          '`rutis/src/fiber/shuttle_tests.rs::shuttle_subtree_close_marks_every_member_of_a_real_tree`',
+          '`rutis/src/fiber/shuttle_tests.rs::shuttle_event_waits_end_at_their_deadline`',
+        ],
+        mutation: '让 `wait_events` 不等计数就返回（模型 6）：卸载返回时调用体仍在跑；`wait_events` 不注册（模型 22）：截止时间到达无人唤醒，`deadlock!`；`wait_events` 不等（模型 16）：`the child\'s unload returned while 1 call(s) of it were running`。',
+      },
     },
     'events/via-host': {
       source: 'guarantees.md §12',
@@ -3526,7 +3784,8 @@ export const SEMANTIC_REGISTRY_2 = {
 //
 // A row whose rule the session specification carries but no evidence backs is
 // still `未验证`: the anchor says where the rule lives, the status says what
-// proves it. Statuses are the re-check's and only move down.
+// proves it. Statuses are the re-check's or an evidence-backed upgrade;
+// without an upgrade they only move down.
 export const SEMANTIC_SESSION = {
   id: 'session',
   file: 'docs/formal-trace/rules/protocol-session.md',
@@ -3535,7 +3794,7 @@ export const SEMANTIC_SESSION = {
   anchorKind: 'mixed',
   translate: false,
   introZh: '这些行是 #634 的会话分区（SES、VAL、TAG、M1、CHN）导出的 350 行，规则文字仍是 issue 快照原文，没有重写。每行重抽四件事：现行来源（会话规格 §11 的 `SESS-*`、保证登记表的行、仍现行的设计章节，或「`0.22 无此条`」）、现行锚点（`SESS-*` 或登记表的行）、承载这条规则的现行证据、以及状态与理由。状态沿用复核结论，只降不升。`--check` 核对：350 行一一对应、`SESS-*` 在会话规格里、登记表行在它所在的节里、来源章节在文档里存在、证据里的路径与用例名在当前树里、状态与复核结论一致，以及两个生成页一致。',
-  introEn: 'These 350 rows are the issue\'s session section (SES, VAL, TAG, M1, CHN); their rule wording is the issue snapshot\'s and was not rewritten. Each row re-extracts four things: the current source (a `SESS-*` rule of the session specification §11, a guarantee-register row, a design section that is still current, or `0.22 has no such rule`), the current anchor (a `SESS-*` id or a register row), the current evidence for the rule, and the status with its reason. The status is the re-check\'s and only moves down.',
+  introEn: 'These 350 rows are the issue\'s session section (SES, VAL, TAG, M1, CHN); their rule wording is the issue snapshot\'s and was not rewritten. Each row re-extracts four things: the current source (a `SESS-*` rule of the session specification §11, a guarantee-register row, a design section that is still current, or `0.22 has no such rule`), the current anchor (a `SESS-*` id or a register row), the current evidence for the rule, and the status with its reason. The status is the re-check\'s, or the entry\'s evidence-backed upgrade; without an upgrade it only moves down.',
   rows: {
     'SES-1-1': {
       source: 'protocol-session.md §11',
@@ -6758,7 +7017,7 @@ export const SEMANTIC_EVENTS = {
   anchorKind: 'events',
   translate: false,
   introZh: '这些行是 #634 的事件分区（EVP、EVD）导出的 262 行（253 条现行、9 条已取代），规则文字仍是 issue 快照原文，没有重写。每行重抽四件事：现行来源（事件协议规格的章节与决定编号、会话协议规格 §11 的 `SESS-*`、保证登记表的行，或「`0.22 无此条`」）、现行锚点（`EVP` / `EVD` 的章节或决定编号、`SESS-*`、登记表行）、承载这条规则的现行证据（一致性套件的事件用例、`specs/events` 的 TLA+ 不变量与变异配置、具名 Rust 用例），以及状态与理由。状态沿用复核结论，只降不升。事件协议规格是 0.18 基线，§2.1 的 `events-v2`、§2.2、§2.4 的 `events` 字段与 §九 的 `export` / `import` 已被 0.19 取代，这些行记「已撤回」。`--check` 核对：262 行一一对应、锚点在文档里存在、来源章节与决定编号存在、证据里的路径存在且用例名在文件里、状态与复核结论一致，以及两个生成页一致。',
-  introEn: 'These 262 rows are the issue\'s events section (EVP, EVD): 253 current and 9 replaced, with the rule wording left as the issue snapshot\'s. Each row re-extracts four things: the current source (a section or decision of the event protocol specification, a `SESS-*` rule of the session specification §11, a guarantee-register row, or `0.22 has no such rule`), the current anchor (`EVP` / `EVD` section or decision number, a `SESS-*` id, a register row), the current evidence (the conformance suite\'s event cases, the TLA+ invariants and mutation configurations under `specs/events`, a named Rust test), and the status with its reason. The status is the re-check\'s and only moves down. The event protocol specification is a 0.18 baseline: §2.1\'s `events-v2`, §2.2, the `events` field of §2.4 and §9\'s `export` / `import` were replaced by 0.19, and those rows are withdrawn.',
+  introEn: 'These 262 rows are the issue\'s events section (EVP, EVD): 253 current and 9 replaced, with the rule wording left as the issue snapshot\'s. Each row re-extracts four things: the current source (a section or decision of the event protocol specification, a `SESS-*` rule of the session specification §11, a guarantee-register row, or `0.22 has no such rule`), the current anchor (`EVP` / `EVD` section or decision number, a `SESS-*` id, a register row), the current evidence (the conformance suite\'s event cases, the TLA+ invariants and mutation configurations under `specs/events`, a named Rust test), and the status with its reason. The status is the re-check\'s, or the entry\'s evidence-backed upgrade; without an upgrade it only moves down. The event protocol specification is a 0.18 baseline: §2.1\'s `events-v2`, §2.2, the `events` field of §2.4 and §9\'s `export` / `import` were replaced by 0.19, and those rows are withdrawn.',
   rows: {
     'EVP-1-1': {
       source: 'design-events-protocol-2026-10-18.md §一',
@@ -7246,10 +7505,17 @@ export const SEMANTIC_EVENTS = {
     'EVP-4.4-5': {
       source: 'design-events-protocol-2026-10-18.md §4.4',
       anchors: ['EVP §4.4', 'events/presence', 'events/remote'],
-      evidence: '—',
-      status: '未验证',
-      why: '§4.4 第 5 条要求宿主里的 Rust 登记在 `on` 返回时已进表、elsewhere 已排好；#622 的 `deliver(seq)` 与 #613 的配置都不在树里，没有用例；#634 快照记「未覆盖」',
-      whyEn: '§4.4 item 5 has a host-side Rust registration in the table and its elsewhere queued when `on` returns; neither #622\'s `deliver(seq)` nor a #613 configuration is in the tree, and there is no case; the issue marked it uncovered.',
+      evidence: '`rutis/src/fiber/shuttle_tests.rs::shuttle_table_watcher_hears_each_change_once_in_order`',
+      status: '已验证',
+      why: '§4.4 第 5 条要求宿主里的 Rust 登记在 `on` 返回时已进表、elsewhere 已排好；#634 快照记「未覆盖」。模型 11 覆盖表的登记与观察者：`deliver(seq)` 在 seq 被听到后才返回，登记在 `on` 返回前已进表；elsewhere 的排序不在模型里，但规则的前半条有实现检查（变异见 `upgrade.mutation`）。升为「已验证」。',
+      whyEn: '§4.4 item 5 has a host-side Rust registration in the table and its elsewhere queued when `on` returns; the issue marked it uncovered. Model 11 covers registration and the watcher: `deliver(seq)` returns only after seq is heard, so the registration is in the table before `on` returns; the elsewhere order is not modelled, but the first half of the rule has an implementation check (mutation in `upgrade.mutation`). Raised to verified.',
+      upgrade: {
+        status: '已验证',
+        evidence: [
+          '`rutis/src/fiber/shuttle_tests.rs::shuttle_table_watcher_hears_each_change_once_in_order`',
+        ],
+        mutation: '`deliver` 不等 `seq` 就返回：`a change was reported before the watcher heard it (2 < 6)`，登记在 `on` 返回时还没进表；去掉投递后的 `notify_all`：`deadlock!`。',
+      },
     },
     'EVP-4.5-1': {
       source: 'design-events-protocol-2026-10-18.md §4.5',
@@ -7657,10 +7923,17 @@ export const SEMANTIC_EVENTS = {
     'EVP-5.5-3': {
       source: 'design-events-protocol-2026-10-18.md §5.5',
       anchors: ['EVP §5.5', 'events/emit'],
-      evidence: '—',
-      status: '未验证',
-      why: '§5.5 第 1 条要求宿主自己的 Rust 监听器保留内核按键排队的 emit 链；#622 的 emit 链模型不在树里，没有用例；#634 快照记「未覆盖」',
-      whyEn: '§5.5 item 1 keeps the kernel\'s per-key emit chain for the host\'s own Rust listeners; #622\'s emit-chain model is not in the tree and there is no test; the issue marked it uncovered.',
+      evidence: '`rutis-bridge/src/events/hub/shuttle_tests.rs::emits_start_in_the_order_they_were_queued`',
+      status: '已验证',
+      why: '§5.5 第 1 条要求宿主自己的 Rust 监听器保留内核按键排队的 emit 链；#634 快照记「未覆盖」。会话宿主模型并发发出同名 emit，断言它们按入队顺序开始、取消的不启动（变异见 `upgrade.mutation`）。升为「已验证」。',
+      whyEn: '§5.5 item 1 keeps the kernel\'s per-key emit chain for the host\'s own Rust listeners; the issue marked it uncovered. The session-host model emits one name concurrently and asserts the runs start in queue order and a cancelled run starts nothing (mutation in `upgrade.mutation`). Raised to verified.',
+      upgrade: {
+        status: '已验证',
+        evidence: [
+          '`rutis-bridge/src/events/hub/shuttle_tests.rs::emits_start_in_the_order_they_were_queued`',
+        ],
+        mutation: '让 `run_emit` 直接启动而不排队（不等前一个 emit）：模型的 `starts` 顺序与队列不一致；让排队中被取消的 emit 仍启动：`a cancelled run started`。',
+      },
     },
     'EVP-5.5-4': {
       source: 'design-events-protocol-2026-10-18.md §5.5',
@@ -8589,10 +8862,17 @@ export const SEMANTIC_EVENTS = {
     'EVP-12.1-9': {
       source: 'design-events-protocol-2026-10-18.md §12.1',
       anchors: ['EVP §12.1', 'events/remote'],
-      evidence: '—',
-      status: '未验证',
-      why: '§12.1 让 `watch_table` 先给当前条目、再按发生顺序给每次变化，Rust 的 `on` 在返回之前已报告；#622 的“监听器表的观察者”不在树里；#634 快照记「未覆盖」',
-      whyEn: '§12.1 has `watch_table` give the current entries and then every change in order, and a Rust `on` report before it returns; #622\'s “observer of the listener table” is not in the tree; the issue marked it uncovered.',
+      evidence: '`rutis/src/fiber/shuttle_tests.rs::shuttle_table_watcher_hears_each_change_once_in_order`',
+      status: '已验证',
+      why: '§12.1 让 `watch_table` 先给当前条目、再按发生顺序给每次变化，Rust 的 `on` 在返回之前已报告；#634 快照记「未覆盖」。模型 11 覆盖当前条目与后续变化、FIFO、恰好一次与 `deliver(seq)` 的返回点（变异见 `upgrade.mutation`）。升为「已验证」。',
+      whyEn: '§12.1 has `watch_table` give the current entries and then every change in order, and a Rust `on` report before it returns; the issue marked it uncovered. Model 11 covers the current entries and later changes, FIFO, exactly once and the return point of `deliver(seq)` (mutation in `upgrade.mutation`). Raised to verified.',
+      upgrade: {
+        status: '已验证',
+        evidence: [
+          '`rutis/src/fiber/shuttle_tests.rs::shuttle_table_watcher_hears_each_change_once_in_order`',
+        ],
+        mutation: '`deliver` 不等 `seq` 就返回：`a change was reported before the watcher heard it (2 < 6)`；先移除条目再置 `withdrawn`：`a removal was heard for a listener that was not withdrawn`；去掉 `DELIVERING` 守卫：观察者在投递里改表，`deadlock!`。',
+      },
     },
     'EVP-12.1-10': {
       source: 'design-events-protocol-2026-10-18.md §12.1',
@@ -8661,10 +8941,19 @@ export const SEMANTIC_EVENTS = {
     'EVP-12.1-18': {
       source: 'design-events-protocol-2026-10-18.md §12.1',
       anchors: ['EVP §12.1', 'events/lifecycle'],
-      evidence: '—',
-      status: '未验证',
-      why: '§12.1 让 Rust 监听器以登记它的上下文被调用（`ctx.cancelled()` 就是卸载信号）；#622 的事件调用在途计数不在树里；#634 快照记「未覆盖」',
-      whyEn: '§12.1 calls a Rust listener with the context that registered it (its `ctx.cancelled()` is the unload signal); #622\'s in-flight count for event calls is not in the tree; the issue marked it uncovered.',
+      evidence: '`rutis/src/fiber/shuttle_tests.rs::shuttle_dispose_registration_cancels_the_running_generation`、`::shuttle_restart_publishes_the_live_generation`、`::shuttle_subtree_close_marks_every_member_of_a_real_tree`',
+      status: '已验证',
+      why: '§12.1 让 Rust 监听器以登记它的上下文被调用（`ctx.cancelled()` 就是卸载信号）；#634 快照记「未覆盖」。模型 12 覆盖 dispose 取消当前代，模型 15 覆盖 restart 后的活跃代次，模型 16 覆盖真实子树关闭时监听器看到取消（变异见 `upgrade.mutation`）。升为「已验证」。',
+      whyEn: '§12.1 calls a Rust listener with the context that registered it (its `ctx.cancelled()` is the unload signal); the issue marked it uncovered. Model 12 covers dispose cancelling the running generation, model 15 the live generation after a restart, and model 16 a listener seeing the cancellation during a real subtree close (mutations in `upgrade.mutation`). Raised to verified.',
+      upgrade: {
+        status: '已验证',
+        evidence: [
+          '`rutis/src/fiber/shuttle_tests.rs::shuttle_dispose_registration_cancels_the_running_generation`',
+          '`rutis/src/fiber/shuttle_tests.rs::shuttle_restart_publishes_the_live_generation`',
+          '`rutis/src/fiber/shuttle_tests.rs::shuttle_subtree_close_marks_every_member_of_a_real_tree`',
+        ],
+        mutation: '去掉 dispose 的 `cancel_current`（模型 12）：apply 等一个没人发的取消，`deadlock!`；`Entry::live` 不比较代次（模型 15）：`the listener of generation 1 is still live after the restart`；只查已发布代次（模型 16）：`the grandchild\'s listener was admitted after the close`。',
+      },
     },
     'EVP-12.1-19': {
       source: 'design-events-protocol-2026-10-18.md §12.1',
@@ -8962,7 +9251,7 @@ export const SEMANTIC_RUNTIME = {
   anchorKind: 'mixed',
   translate: false,
   introZh: '这些行是 #634 的运行时分区（SYN、M2、MNT、REQ、RTP、INS、MSV）导出的 309 行（264 条现行、45 条已取代），规则文字仍是 issue 快照原文，没有重写。每行重抽四件事：现行来源（会话协议规格 §11 的 `SESS-*`、保证登记表的行、仍现行的设计章节，或「`0.22 无此条`」）、现行锚点（`SESS-*` 或登记表的行）、承载这条规则的现行证据、以及状态与理由。状态沿用复核结论，只降不升。运行时、挂载、需求与实例这几份设计仍是现行来源；多语言运行时设计是 0.9 基线，0.19 后未重写，其中被删的机制（`emits`、`node:` 调用号、`sync-wait` 能力、`TypeKey` 键、`dlopen`）记「已撤回」。`--check` 核对：309 行一一对应、`SESS-*` 在会话规格里、登记表行在它所在的节里、来源章节在文档里存在、证据里的路径存在且用例名在文件里、状态与复核结论一致，以及两个生成页一致。',
-  introEn: 'These 309 rows are the issue\'s runtime section (SYN, M2, MNT, REQ, RTP, INS, MSV): 264 current and 45 replaced, with the rule wording left as the issue snapshot\'s. Each row re-extracts four things: the current source (a `SESS-*` rule of the session specification §11, a guarantee-register row, a design section that is still current, or `0.22 has no such rule`), the current anchor (a `SESS-*` id or a register row), the current evidence, and the status with its reason. The status is the re-check\'s and only moves down. The runtime, mount, requirements and instance designs are still current sources; the multilanguage runtime design is a 0.9 baseline that 0.19 did not rewrite, and the mechanisms it lost (`emits`, `node:` call ids, the `sync-wait` capability, `TypeKey` keys, `dlopen`) are withdrawn.',
+  introEn: 'These 309 rows are the issue\'s runtime section (SYN, M2, MNT, REQ, RTP, INS, MSV): 264 current and 45 replaced, with the rule wording left as the issue snapshot\'s. Each row re-extracts four things: the current source (a `SESS-*` rule of the session specification §11, a guarantee-register row, a design section that is still current, or `0.22 has no such rule`), the current anchor (a `SESS-*` id or a register row), the current evidence, and the status with its reason. The status is the re-check\'s, or the entry\'s evidence-backed upgrade; without an upgrade it only moves down. The runtime, mount, requirements and instance designs are still current sources; the multilanguage runtime design is a 0.9 baseline that 0.19 did not rewrite, and the mechanisms it lost (`emits`, `node:` call ids, the `sync-wait` capability, `TypeKey` keys, `dlopen`) are withdrawn.',
   rows: {
     'SYN-2-1': {
       source: '0.22 无此条',
@@ -11838,7 +12127,7 @@ export const SEMANTIC_REMOTE = {
   introZh:
     '这些行是 #634 的远程分区（REM、DIA、APP、NOD）导出的 248 行（231 条现行、17 条已取代），规则文字仍是 issue 快照原文，没有重写。每行重抽四件事：现行来源、现行锚点、承载这条规则的现行证据、以及状态与理由。现行来源有四类：保证登记表的行（`对应` 列指到的行还在登记表里，来源写那一节）、远程插件/拨出/应用三份设计与连接节点指南的章节（这个分区自己的来源）、会话协议规格的 `SESS-*`、以及「`0.22 无此条`」（0.19 删掉的 `Transport`、`Identity`、`Registration`、接入点、`Revocations`、`PeerRows`、`peer:` 行、`runtimes.remote` 与节点 export / import）。锚点只取登记表的行与会话规格的 `SESS-*`，所以来源是设计章节的行没有锚点，原因写在行里。0.19 之后的连接行为以 `design-remote-session-2026-10-28.md` 为准；远程插件设计的连接、身份、注册与节点名单部分按该设计的 §八、§十二 记已撤回。状态沿用复核结论，只降不升。`--check` 核对：248 行一一对应、`SESS-*` 在会话规格里、登记表行在它所在的节里、来源章节在文档里存在、证据里的路径存在且用例名在文件里、状态与复核结论一致，以及两个生成页一致。',
   introEn:
-    'These 248 rows are the issue\'s remote section (REM, DIA, APP, NOD): 231 current and 17 replaced, with the rule wording left as the issue snapshot\'s. Each row re-extracts four things: the current source, the current anchor, the current evidence, and the status with its reason. The current source is one of four kinds: a guarantee-register row (where the `对应` column names a row the register still has, the entry cites that section), a section of the remote-plugin, dial-out and app-integration designs or the connecting-nodes guide (this partition\'s own documents), a `SESS-*` rule of the session specification, or `0.22 has no such rule` (the `Transport`, `Identity`, `Registration`, access point, `Revocations`, `PeerRows`, `peer:` rows, `runtimes.remote` and node export / import that 0.19 removed). Anchors are register rows and `SESS-*` rules only, so a row whose source is a design section carries none and says why. Connection behaviour after 0.19 is settled by `design-remote-session-2026-10-28.md`, and the remote plugin design\'s connection, identity, registration and node-list parts are withdrawn by that design\'s §8 and §12. The status is the re-check\'s and only moves down.',
+    'These 248 rows are the issue\'s remote section (REM, DIA, APP, NOD): 231 current and 17 replaced, with the rule wording left as the issue snapshot\'s. Each row re-extracts four things: the current source, the current anchor, the current evidence, and the status with its reason. The current source is one of four kinds: a guarantee-register row (where the `对应` column names a row the register still has, the entry cites that section), a section of the remote-plugin, dial-out and app-integration designs or the connecting-nodes guide (this partition\'s own documents), a `SESS-*` rule of the session specification, or `0.22 has no such rule` (the `Transport`, `Identity`, `Registration`, access point, `Revocations`, `PeerRows`, `peer:` rows, `runtimes.remote` and node export / import that 0.19 removed). Anchors are register rows and `SESS-*` rules only, so a row whose source is a design section carries none and says why. Connection behaviour after 0.19 is settled by `design-remote-session-2026-10-28.md`, and the remote plugin design\'s connection, identity, registration and node-list parts are withdrawn by that design\'s §8 and §12. The status is the re-check\'s, or the entry\'s evidence-backed upgrade; without an upgrade it only moves down.',
   rows: {
     'REM-1-1': {
       source: 'guarantees.md §14',
@@ -13937,10 +14226,18 @@ export const SEMANTIC_REMOTE = {
       anchors: [],
       whyNoAnchor: '应用接入设计 §五 末条：实例外（全局）同名服务仍按现有规则、后注册的被拒绝；应用实例已随 0.19 删除，现行是内核的同名规则（登记表 `loader/announced-services`），不在同一节',
       whyNoAnchorEn: 'The last rule of §5 of the app integration design: a same-named service outside an instance (global) follows the existing rule, the later registration refused; the app instances went in 0.19 and the kernel\'s duplicate rule now applies (register row `loader/announced-services`), in another section',
-      evidence: '`crates/rutis-host/tests/clash.rs::a_service_provided_after_loading_twice_fails_the_later_row`',
-      status: '未验证',
-      why: '全局同名服务后注册的被拒由内核规则保证（`clash.rs`）；「应用实例外」这一半随应用实例删除；issue 快照记「未覆盖」',
-      whyEn: 'A later global registration of the same name is refused by the kernel rule (`clash.rs`); the "outside an app\'s instance" half went with the app instances; the issue marked it uncovered.',
+      evidence: '`rutis/src/registry/prop_tests.rs::the_registration_slot_matches_a_map_model`、`rutis/src/fiber/shuttle_tests.rs::shuttle_mount_admission_races_root_close`、`crates/rutis-host/tests/clash.rs::a_service_provided_after_loading_twice_fails_the_later_row`',
+      status: '已验证',
+      why: '全局同名服务后注册的被拒由内核规则保证（`clash.rs`）；「应用实例外」这一半随应用实例删除；issue 快照记「未覆盖」。注册槽 PT 与 map 模型比较随机 insert/mark/replace/finalize：`insert_binding` 拒绝仍活的绑定（含全局作用域），模型 21 覆盖挂载与关闭的准入（变异见 `upgrade.mutation`）。按名字的 `Exposer` 不在 PT 里，留在缺口；这一条升为「已验证」。',
+      whyEn: 'A later global registration of the same name is refused by the kernel rule (`clash.rs`); the "outside an app\'s instance" half went with the app instances; the issue marked it uncovered. The registration-slot property test compares random insert/mark/replace/finalize against a map model: `insert_binding` refuses a binding still live, global scope included, and model 21 covers mount and close admission (mutation in `upgrade.mutation`). The by-name `Exposer` is not in the property test and stays in the gap; this row is raised to verified.',
+      upgrade: {
+        status: '已验证',
+        evidence: [
+          '`rutis/src/registry/prop_tests.rs::the_registration_slot_matches_a_map_model`',
+          '`rutis/src/fiber/shuttle_tests.rs::shuttle_mount_admission_races_root_close`',
+        ],
+        mutation: '去掉 `insert_binding` 对仍活绑定的拒绝（让后注册覆盖）：PT 的 map 模型在下一操作比较 presence、绑定身份与值时对不上；去掉挂载对父 effect 列表的提交（模型 21）：`runs` 停在 0。',
+      },
     },
     'APP-6-1': {
       source: 'guarantees.md §10',

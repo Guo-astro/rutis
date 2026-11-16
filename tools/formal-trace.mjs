@@ -22,9 +22,10 @@
 // #634's section comments, one row per rule, kept verbatim in the issue's ten
 // columns and never rewritten by this script. Their status is the issue's
 // vocabulary (已覆盖, 部分, …); the script maps it to the table's status at
-// read time (§3 of the README maps only downwards), checks the id form, the
-// per-section totals of #634's summary table, and the evidence the 现有形式化
-// column names. Replaced rows are kept and not counted.
+// read time (§3 of the README maps downwards, except for an evidence-backed
+// upgrade), checks the id form, the per-section totals of #634's summary
+// table, and the evidence the 现有形式化 column names. Replaced rows are kept
+// and not counted.
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { posix } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -506,7 +507,9 @@ function coveredOf(row, source, anchors) {
 
 // The re-checked status. Only downwards from the issue mapping, except that
 // a register row whose register status says withdrawn or explicit
-// non-guarantee follows the register.
+// non-guarantee follows the register. An evidence-backed upgrade in
+// `tools/formal-trace-semantic.mjs` may lift a `未验证` or `部分验证` row to
+// `已验证`; `upgradeOf` below applies it after this function returns.
 function recheckStatus(row) {
   if (row.状态 === '已取代') return '已撤回'
   if (superseded.has(row.id)) return '已撤回'
@@ -562,7 +565,8 @@ function recheckGap(row, result) {
     if (result.anchors.length) parts.push(`现行对应：${result.anchors.join('、')}${result.anchorNote ? `（${result.anchorNote}）` : ''}`)
     else if (result.covered) parts.push(`现行来源：${result.source.label}；没有会话规格锚点`)
     else parts.push(`无现行锚点：${result.unmapped}`)
-    if (result.evidence.kind === 'none' || result.evidence.kind === 'partial') parts.push(result.evidence.text)
+    if (result.upgraded) parts.push(`升为${result.upgraded.to}（${result.upgraded.from}）：证据与变异见 tools/formal-trace-semantic.mjs`)
+    else if (result.evidence.kind === 'none' || result.evidence.kind === 'partial') parts.push(result.evidence.text)
     if (result.status === '部分验证' && result.original === '已验证') parts.push('原状态降为部分验证：来源已历史化或证据不完整')
   } else if (result.status === '明确不保证' && result.issueStatus !== '明确不保证' && !explicitNonGuarantee(row)) {
     parts.push('登记表把这条登记为明确不保证')
@@ -593,8 +597,39 @@ function rechecked(row) {
 
 const recheckOf = row => rechecked(row)
 
+// An evidence-backed upgrade: a protocol semantic entry may name a target
+// status above its re-checked one, with the evidence and the mutation that
+// justify it. The map is only a lookup; the checks below decide whether the
+// upgrade is accepted, so an entry that claims one without both fields is a
+// `--check` problem, not a silent pass.
+const upgrades = new Map()
+for (const partition of SEMANTIC_PARTITIONS) {
+  if (partition.translate) continue
+  for (const [id, entry] of Object.entries(partition.rows)) {
+    if (entry.upgrade) upgrades.set(id, entry)
+  }
+}
+const upgradeOf = id => upgrades.get(id)
+const EVIDENCE_FILE = /\.(?:rs|mjs|ts|js|py|go|swift|kt|json|tla)$/
+
+// The parsed evidence of an upgrade: one `path::name` per item, the path
+// located and the name defined in it. A path-only item is not an
+// implementation check, so it is rejected rather than counted.
+function upgradeEvidence(items) {
+  const found = []
+  for (const item of items) {
+    for (const token of backticked(item)) {
+      const [file, name] = token.split('::')
+      if (!EVIDENCE_FILE.test(file)) continue
+      found.push({ token, file: locate(file), name })
+    }
+  }
+  return found
+}
+
 // The protocol rows, with the mapped status and the nine-column fields the
-// index and the counts use.
+// index and the counts use. An upgrade is applied when the entry and its
+// target agree; the checks in section 0b verify evidence and mutation.
 function protocolRows() {
   const found = []
   for (const meta of PROTOCOL) {
@@ -602,6 +637,13 @@ function protocolRows() {
     if (!exists(file)) continue
     for (const row of protocolTable(read(file))) {
       const result = recheckOf(row)
+      const baseStatus = result.status
+      result.baseStatus = baseStatus
+      const entry = upgradeOf(row.id)
+      if (entry && entry.status === entry.upgrade.status) {
+        result.upgraded = { from: baseStatus, to: entry.upgrade.status, entry }
+        result.status = entry.upgrade.status
+      }
       const status = result.status
       const gap = [protocolGap(row, status), ...recheckGap(row, result)].filter(part => part && part !== '—')
       found.push({
@@ -951,6 +993,7 @@ function englishRecheckPage(lists) {
   const all = lists.flatMap(list => list.rows).filter(row => row.semantic)
   const trace = lists.find(list => list.partition.translate)
   const registries = lists.filter(list => !list.partition.translate)
+  const upgraded = all.filter(row => row.recheck?.upgraded)
   const protocolCurrent = PROTOCOL.reduce((total, meta) => total + meta.current, 0)
   const protocolReplaced = PROTOCOL.reduce((total, meta) => total + meta.replaced, 0)
   const reExtractedCurrent = registries.reduce((total, list) => total + list.rows.filter(row => row.issueStatus !== '已取代').length, 0)
@@ -1014,7 +1057,7 @@ The protocol rules pass four checks, and the trace rows pass a fifth. Every chec
 1. **The source still exists**: the source document is in the current tree and 0.19 / 0.22 did not remove what it describes. Removed mechanisms (compat format, \`events-v2\`, the \`sync-wait\` capability, node \`export\` / \`import\`, \`Registration\`, the access point, \`Revocations\`, \`PeerRows\`, \`peer:\` rows, \`runtimes.remote\`, \`Transport\`, \`ChannelInfo\`) are \`withdrawn\`, and the gap names the rule that replaced them.
 2. **A current anchor**: session rules map onto the \`SESS-*\` ids of \`docs/protocol-session.md\` §11; a registry row maps onto the guarantee-register row the issue split; an event rule maps onto the event protocol specification's own section or §15 decision, a \`SESS-*\` rule where the session specification carries it, or a register row; a runtime rule maps onto the guarantee-register row its 对应 column names, a \`SESS-*\` rule where the session specification states the synchronous wait, or a design section that is still the source; a remote rule maps onto the guarantee-register row its 对应 column names, a \`SESS-*\` rule where the session specification carries it, or a section of the remote-plugin, dial-out and app-integration designs or the connecting-nodes guide; a row with no anchor says why.
 3. **The evidence resolves**: the paths, test names and line ranges of the evidence column are checked against the current tree; a rule with only a model, or without an implementation check, is \`partial\`.
-4. **The status only moves down**: the issue snapshot is the ceiling. A rule is never raised to \`verified\` because a specification calls it current; current describes the rule, not its implementation evidence.
+4. **The status only moves down**, with one exception: an evidence-backed upgrade. The issue snapshot is the ceiling, and a rule is never raised to \`verified\` because a specification calls it current. The semantic re-extraction may raise an \`unverified\` or \`partial\` row to \`verified\` only by carrying an \`upgrade\` block: the target status, evidence that names a \`path::name\` resolving to a test or model, and a mutation or a pre-fix configuration that failed. \`--check\` rejects an upgrade without either field and prints every upgrade it accepted.
 5. **The rule text is re-extracted** (trace rows only): the wording is the current source's, not the old design's, and the row names the \`SESS-*\` ids that carry it — or says why the session specification does not cover it.
 
 ## 2. Current sources of the re-extracted rows
@@ -1029,7 +1072,7 @@ ${sources.join('\n')}
 | --- | --- | --- | --- | --- | --- | --- | --- |
 ${partitionCounts.join('\n')}
 
-No status moved because of the re-extraction itself in any partition: no test was added, the two trace rows that gained evidence citations (\`TRC-LIMIT-2\`, \`TRC-MALFORMED-2\`) already described that evidence in their wording, and each row of the protocol lists keeps the status the re-check gave it (the issue snapshot is the ceiling). \`TRC-GREET-3\` moved from \`unverified\` to \`not guaranteed\` after #1111 removed an unreachable check: no implementation offers a required-capabilities entry point. \`TRC-NG-4\` is withdrawn: protocol 4 no longer has the \`objects\` capability it described (#1123).
+${upgraded.length ? `${upgraded.length} protocol rows were raised from \`unverified\` / \`partial\` to \`verified\` by an evidence-backed upgrade (${joinList(upgraded.map(row => `\`${row.id}\``))}); every other row keeps the status the re-check gave it. The upgrade names a model or property test and the mutation or pre-fix configuration that failed, and \`--check\` verifies that the evidence resolves.` : 'No status moved because of the re-extraction itself in any partition: no test was added and every row keeps the status the re-check gave it.'} The two trace rows that gained evidence citations (\`TRC-LIMIT-2\`, \`TRC-MALFORMED-2\`) already described that evidence in their wording. \`TRC-GREET-3\` moved from \`unverified\` to \`not guaranteed\` after #1111 removed an unreachable check: no implementation offers a required-capabilities entry point. \`TRC-NG-4\` is withdrawn: protocol 4 no longer has the \`objects\` capability it described (#1123).
 
 ## 4. Per-row re-extraction: session trace contract
 
@@ -1055,6 +1098,7 @@ function refreshSemantic(lists) {
 
 function recheckPage(rows, lists) {
   const total = rows.filter(row => row.recheck.issueStatus !== '已取代').length
+  const upgraded = rows.filter(row => row.recheck.upgraded)
   const withdrawnNow = rows.filter(row => row.recheck.issueStatus !== '已取代' && row.recheck.status === '已撤回').length
   const sources = []
   for (const [prefix, source] of Object.entries(SOURCES)) {
@@ -1087,7 +1131,7 @@ function recheckPage(rows, lists) {
 1. **来源是否还在**：来源文档在当前树存在，且 0.19 / 0.22 没有删掉它描述的东西。删掉的（compat 格式、\`events-v2\`、\`sync-wait\` 能力、节点 \`export\` / \`import\`、\`Registration\`、接入点、\`Revocations\`、\`PeerRows\`、\`peer:\` 行、\`runtimes.remote\`、\`Transport\`、\`ChannelInfo\`）记「已撤回」，并在缺口写取代它的规则。
 2. **有没有现行锚点**：会话层规则对到 \`docs/protocol-session.md\` 的 \`SESS-*\` 编号（§11 规则状态表）；其余分区没有新的现行规格，只有设计或指南，锚点写 \`—\`，并在缺口写明它落在哪份文档或为什么没有。
 3. **证据是否解析**：用 \`现有形式化\` 列里的具名路径、用例名与行号核对当前树；解析不了的降级，只有模型或没有实现检查的记「部分验证」。
-4. **状态只降不升**：以 issue 的十列映射为上限；本轮只把来源被删、登记表删行、证据不解析或来源已历史化的行降级。**没有一条因为“规格说是当前”就升为「已验证」**：规格的「当前」说的是规则现行，不是实现验证过。
+4. **状态只降不升，只有一个例外：有证据的升级**。以 issue 的十列映射为上限；本轮只把来源被删、登记表删行、证据不解析或来源已历史化的行降级。**没有一条因为“规格说是当前”就升为「已验证」**：规格的「当前」说的是规则现行，不是实现验证过。语义重抽条目可以带 \`upgrade\` 把「未验证」「部分验证」升到「已验证」，条件是同时写出目标状态、能在当前树解析的 \`path::name\` 证据（模型、属性测试或具名用例）和变异或修复前的配置；\`--check\` 对缺证据或缺变异的升级报错，并逐条打印接受的升级。
 
 复核不判断规则文字的语义是否正确：它核对来源、锚点、证据路径和状态。**TRC 分区的 ${traceList ? traceList.rows.length : 0} 行与协议清单 ${registryLists.map(list => `\`${list.partition.id}\` 的 ${list.rows.length} 行`).join('、')}已在 §5 语义重抽**${semanticCurrent === total ? '：协议清单全部现行规则都有条目，规则文字仍是 issue 快照原文' : `；协议清单其余 ${total - semanticCurrent} 条现行规则仍是 issue 快照原文，逐条语义重抽尚未完成`}。
 
@@ -1129,7 +1173,7 @@ ${recheckUnmapped(rows)}
 
 - **已撤回**：issue 快照的 184 条之外，本轮按 0.19 / 0.22 删除的机制追加了 ${withdrawnNow} 条（见 §3 的「已撤回（本轮）」列与 §4 的缺口）。它们仍在 \`rules/protocol-*.md\` 里，统计不计入。
 - **未完成**：没有一行重写规则文字——协议清单的 ${total} 条现行规则仍是 issue 快照原文；远程没有对应的新规格，只有设计稿与指南（0.19 之后的连接行为在 \`design-remote-session-2026-10-28.md\`）。§6 按原因列出没有锚点的规则；写规格是 #635 的后续，不是这一轮能补的。
-- **证据**：只核对 \`现有形式化\` 列的具名引用；备注列里的旧路径（如 \`crates/rutis-bridge/src/cordis/server.rs\`）没有逐条清，重抽时一并处理。
+- **证据**：只核对 \`现有形式化\` 列的具名引用；备注列里的旧路径（如 \`crates/rutis-bridge/src/cordis/server.rs\`）没有逐条清，重抽时一并处理。${upgraded.length ? `\n- **升级**：${upgraded.length} 条协议行由语义重抽的 \`upgrade\` 从「未验证」/「部分验证」升为「已验证」（${upgraded.map(row => `\`${row.id}\``).join('、')}）；每条都写了模型或属性测试的证据与变异，\`--check\` 逐个核对证据路径和用例名。其余行没有升级。` : ''}
 - **语义**：TRC 分区（规则文字整体重写）与协议清单 ${registryLists.map(list => `\`${list.partition.id}\``).join('、')}（来源、锚点、证据、状态）已在 §5 全部重抽，协议清单没有剩下的分区；规则文字仍是 issue 快照原文。规则的「已撤回 / 明确不保证 / 未验证 / 部分验证 / 已验证」按上面的四件事定，不按记忆。
 `
 }
@@ -1240,12 +1284,43 @@ for (const { partition, rows: list } of semanticLists) {
     if (partition.translate) {
       if (!entry.en) say(`${at}: the semantic entry has no English rule`)
       if (!entry.gapEn) say(`${at}: the semantic entry has no English gap`)
+      if (entry.upgrade) say(`${at}: a trace row cannot carry an upgrade`)
     } else {
       if (!entry.evidence) say(`${at}: the semantic entry has no evidence`)
       if (!entry.why) say(`${at}: the semantic entry has no why`)
       if (!entry.whyEn) say(`${at}: the semantic entry has no whyEn`)
       if (!STATUSES.includes(entry.status)) say(`${at}: semantic status ${entry.status} is not one of ${STATUSES.join(', ')}`)
-      else if (entry.status !== row.状态) say(`${at}: semantic status ${entry.status} differs from the re-checked status ${row.状态}`)
+      else if (entry.status !== row.状态 && !entry.upgrade) say(`${at}: semantic status ${entry.status} differs from the re-checked status ${row.状态}`)
+      // An upgrade is the one way a row can move above its re-checked
+      // status. It needs a target above the re-check, resolving evidence
+      // (a `path::name`, not a bare file) and a mutation someone wrote.
+      const ladder = ['未验证', '部分验证', '已验证']
+      const base = row.recheck.baseStatus
+      const above = ladder.indexOf(entry.status) > ladder.indexOf(base)
+      if (above) {
+        const upgrade = entry.upgrade
+        if (!upgrade) say(`${at}: status ${entry.status} is above the re-checked ${base} without an upgrade block`)
+        else {
+          if (upgrade.status !== entry.status) say(`${at}: upgrade target ${upgrade.status} is not the semantic status ${entry.status}`)
+          if (upgrade.status !== '已验证') say(`${at}: upgrade target ${upgrade.status} is not 已验证`)
+          if (base !== '未验证' && base !== '部分验证') say(`${at}: cannot upgrade from ${base}`)
+          if (!Array.isArray(upgrade.evidence) || !upgrade.evidence.length) say(`${at}: upgrade has no evidence`)
+          else {
+            const found = upgradeEvidence(upgrade.evidence)
+            if (!found.length) say(`${at}: upgrade evidence names no path::name`)
+            for (const item of found) {
+              if (!item.name) say(`${at}: upgrade evidence ${item.token} names no test or model`)
+              else if (!exists(item.file)) say(`${at}: upgrade evidence ${item.token}: ${item.file} does not exist`)
+              else if (!defines(item.file, item.name)) say(`${at}: upgrade evidence ${item.token}: ${item.file} does not define ${item.name}`)
+            }
+          }
+          if (typeof upgrade.mutation !== 'string' || upgrade.mutation.trim().length < 20 || /^(?:—|未登记)$/.test(upgrade.mutation.trim())) {
+            say(`${at}: upgrade has no mutation`)
+          }
+        }
+      } else if (entry.upgrade) {
+        say(`${at}: an upgrade block on a row whose status ${entry.status} is not above the re-checked ${base}`)
+      }
       for (const token of backticked(entry.evidence)) {
         const [file, name] = token.split('::')
         if (!/\.(?:rs|mjs|ts|js|py|go|swift|kt|json|tla)$/.test(file)) continue
@@ -1463,6 +1538,19 @@ if (!process.argv.includes('--check')) {
   const reExtractedCurrent = SEMANTIC_PARTITIONS.filter(partition => !partition.translate)
     .reduce((total, partition) => total + semanticsOf(partition).filter(row => row.issueStatus !== '已取代').length, 0)
   console.log(`not semantically re-extracted: ${protocolCurrent - reExtractedCurrent} protocol rules, ${registerRows.length} register rows, 10 ECA rows\n`)
+}
+
+const upgradedRows = protocol.filter(row => row.recheck.upgraded)
+if (upgradedRows.length) {
+  const by = new Map()
+  for (const row of upgradedRows) {
+    const key = `${row.recheck.upgraded.from} → ${row.recheck.upgraded.to}`
+    by.set(key, (by.get(key) ?? 0) + 1)
+  }
+  console.log(`status upgrades: ${upgradedRows.length} rows (${[...by].map(([key, count]) => `${key} ${count}`).join(' · ')}); evidence and mutation checked`)
+  for (const row of upgradedRows) {
+    console.log(`  ${row.id}: ${row.recheck.upgraded.from} → ${row.recheck.upgraded.to}`)
+  }
 }
 
 if (process.argv.includes('--check') && (protocolCounts.unresolved || protocolCounts.ambiguous)) {
