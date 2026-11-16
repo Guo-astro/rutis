@@ -8,7 +8,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex, Weak};
 
 /// The locks the shuttle models interleave (#628): a call's table, the
-/// reference tables and the outbound queue. A plain build is std's.
+/// reference tables, the outbound queue, a future's state and a session's
+/// ordered event operations. A plain build is std's.
 #[cfg(rutis_shuttle)]
 use crate::sync::{Condvar as SeamCondvar, Mutex as SeamMutex};
 #[cfg(not(rutis_shuttle))]
@@ -189,7 +190,7 @@ impl Value {
             origin: current_path(),
             chain: caller().map(|source| source.tag().to_owned()),
             body: Body::Future(AsyncResult {
-                future: Mutex::new(FutureState {
+                future: SeamMutex::new(FutureState {
                     pending: Some(Box::pin(future)),
                     task: None,
                     cancellable: false,
@@ -484,6 +485,9 @@ struct Object {
     /// session, the origin is rebased to that one's terms.
     chain: Option<String>,
 }
+// Shuttle's mutex, which a model's `FutureState` is held in, is larger than
+// std's; the variant is not this size in a plain build.
+#[cfg_attr(rutis_shuttle, allow(clippy::large_enum_variant))]
 enum Body {
     Function(Arc<Callback>),
     Future(AsyncResult),
@@ -493,7 +497,7 @@ enum Body {
     Relay(Arc<Import>),
 }
 struct AsyncResult {
-    future: Mutex<FutureState>,
+    future: SeamMutex<FutureState>,
     result: watch::Sender<Option<Reply>>,
     /// The call this is the result of (`service.method`), once a far end's
     /// invocation returned it: a result that cannot be sent names it.
@@ -1359,7 +1363,7 @@ struct SessionState {
     activity: Arc<Activity>,
     /// The far end's `events.*` operations, run one after another in
     /// arrival order by one task, never on the reader ([`Ordered`]).
-    ordered: Mutex<Ordered>,
+    ordered: SeamMutex<Ordered>,
 }
 
 /// The event operations of a session waiting for their turn (events
@@ -1587,7 +1591,7 @@ impl Connection {
                 count: Mutex::new(0),
                 changed: Notify::new(),
             }),
-            ordered: Mutex::default(),
+            ordered: SeamMutex::default(),
         }))
     }
     /// The runtime the session was opened on, which runs its tasks.
@@ -1652,7 +1656,7 @@ impl Connection {
                 count: Mutex::new(0),
                 changed: Notify::new(),
             }),
-            ordered: Mutex::default(),
+            ordered: SeamMutex::default(),
         }));
         // Greet before reading (#239). A side that finds the far end's
         // greeting incompatible closes the channel; had it not greeted yet,

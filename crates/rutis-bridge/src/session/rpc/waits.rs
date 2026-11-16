@@ -32,8 +32,11 @@
 //! synchronous waits makes no hops: it is outside the check.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{LazyLock, Mutex};
+use std::sync::atomic::Ordering;
+#[cfg(not(rutis_shuttle))]
+use std::sync::LazyLock;
+
+use crate::sync::{Count, Mutex as SeamMutex};
 
 /// The record points below, for a test to check against the model (feature
 /// `testing`).
@@ -115,24 +118,76 @@ struct Waits {
     profiles: HashMap<String, Profile>,
 }
 
-static WAITS: LazyLock<Mutex<Waits>> = LazyLock::new(Mutex::default);
+/// The table of this process. Under `--cfg rutis_shuttle` it is the
+/// execution's: a shuttle model runs every task of one execution on one OS
+/// thread, and shuttle's primitives belong to one execution — a table shared
+/// by two models running at once would have both interleaving inside one
+/// mutex (#628, SYN-9-29).
+#[cfg(not(rutis_shuttle))]
+static WAITS: LazyLock<SeamMutex<Waits>> = LazyLock::new(SeamMutex::default);
+
+#[cfg(rutis_shuttle)]
+thread_local! {
+    static WAITS: &'static SeamMutex<Waits> = Box::leak(Box::new(SeamMutex::default()));
+}
+
+/// The table, as [`WAITS`] holds it.
+#[cfg(not(rutis_shuttle))]
+fn table() -> &'static SeamMutex<Waits> {
+    LazyLock::force(&WAITS)
+}
+
+#[cfg(rutis_shuttle)]
+fn table() -> &'static SeamMutex<Waits> {
+    WAITS.with(|waits| *waits)
+}
 
 /// How many hops and marked calls the table holds, readable without its
 /// lock: a host where no call is marked never takes it on a reply.
-static HOPS: AtomicUsize = AtomicUsize::new(0);
-static MARKS: AtomicUsize = AtomicUsize::new(0);
+#[cfg(not(rutis_shuttle))]
+static HOPS: Count = Count::new(0);
+#[cfg(not(rutis_shuttle))]
+static MARKS: Count = Count::new(0);
+
+#[cfg(rutis_shuttle)]
+thread_local! {
+    static HOPS: &'static Count = Box::leak(Box::new(Count::new(0)));
+    static MARKS: &'static Count = Box::leak(Box::new(Count::new(0)));
+}
+
+/// The hops' count ([`HOPS`]).
+#[cfg(not(rutis_shuttle))]
+fn hops() -> &'static Count {
+    &HOPS
+}
+
+#[cfg(rutis_shuttle)]
+fn hops() -> &'static Count {
+    HOPS.with(|count| *count)
+}
+
+/// The marked calls' count ([`MARKS`]).
+#[cfg(not(rutis_shuttle))]
+fn marks() -> &'static Count {
+    &MARKS
+}
+
+#[cfg(rutis_shuttle)]
+fn marks() -> &'static Count {
+    MARKS.with(|count| *count)
+}
 
 impl Waits {
     /// After a change, under the lock.
     fn counted(&self) {
-        HOPS.store(self.hops.len(), Ordering::SeqCst);
-        MARKS.store(self.marked.len(), Ordering::SeqCst);
+        hops().store(self.hops.len(), Ordering::SeqCst);
+        marks().store(self.marked.len(), Ordering::SeqCst);
     }
 }
 
 /// `session`'s far end, once it greeted.
 pub(super) fn profile(session: &str, profile: Profile) {
-    let mut waits = WAITS.lock().unwrap();
+    let mut waits = table().lock().unwrap();
     waits.profiles.insert(session.to_owned(), profile);
     // Recorded under the lock, like every operation here: a forward on
     // another thread must not be filed before what it read.
@@ -141,7 +196,7 @@ pub(super) fn profile(session: &str, profile: Profile) {
 
 /// A call `id` received on `session` whose caller waits synchronously.
 pub(super) fn marked(session: &str, id: &str) {
-    let mut waits = WAITS.lock().unwrap();
+    let mut waits = table().lock().unwrap();
     waits.marked.insert((session.to_owned(), id.to_owned()));
     waits.counted();
     trace::marked(session, id);
@@ -151,7 +206,7 @@ pub(super) fn marked(session: &str, id: &str) {
 /// which the process-wide one mixes with other tests' sessions.
 #[cfg(test)]
 pub(super) fn marks_of(session: &str) -> usize {
-    let waits = WAITS.lock().unwrap();
+    let waits = table().lock().unwrap();
     waits
         .marked
         .iter()
@@ -159,12 +214,20 @@ pub(super) fn marks_of(session: &str) -> usize {
         .count()
 }
 
+/// How many hops sent on `session` are recorded: a test's own count, for the
+/// same reason as [`marks_of`].
+#[cfg(all(test, rutis_shuttle))]
+pub(super) fn hops_of(session: &str) -> usize {
+    let waits = table().lock().unwrap();
+    waits.hops.keys().filter(|(tag, _)| tag == session).count()
+}
+
 /// Call `id` received on `session` was answered.
 pub(super) fn answered(session: &str, id: &str) {
-    if MARKS.load(Ordering::SeqCst) == 0 {
+    if marks().load(Ordering::SeqCst) == 0 {
         return;
     }
-    let mut waits = WAITS.lock().unwrap();
+    let mut waits = table().lock().unwrap();
     waits.marked.remove(&(session.to_owned(), id.to_owned()));
     waits.counted();
     trace::answered(session, id);
@@ -173,10 +236,10 @@ pub(super) fn answered(session: &str, id: &str) {
 /// The reply to call `id` that this side sent on `session` was read (or the
 /// call was cancelled): it waits for nothing any more.
 pub(super) fn returned(session: &str, id: &str) {
-    if HOPS.load(Ordering::SeqCst) == 0 {
+    if hops().load(Ordering::SeqCst) == 0 {
         return;
     }
-    let mut waits = WAITS.lock().unwrap();
+    let mut waits = table().lock().unwrap();
     waits.hops.remove(&(session.to_owned(), id.to_owned()));
     waits.counted();
     trace::returned(session, id);
@@ -184,7 +247,7 @@ pub(super) fn returned(session: &str, id: &str) {
 
 /// `session` ended: its calls wait for nothing, and nothing waits for them.
 pub(super) fn ended(session: &str) {
-    let mut waits = WAITS.lock().unwrap();
+    let mut waits = table().lock().unwrap();
     waits
         .hops
         .retain(|_, hop| hop.src != session && hop.dst != session);
@@ -231,12 +294,12 @@ pub(super) fn forward(
         );
         return Ok(false);
     }
-    if MARKS.load(Ordering::SeqCst) == 0 && !synchronous {
+    if marks().load(Ordering::SeqCst) == 0 && !synchronous {
         trace::forward_not_waited(dst, did, seq, path, synchronous, "nothing is marked");
         return Ok(false);
     }
     let rows = ROWS.with(|rows| rows.borrow().clone());
-    let mut waits = WAITS.lock().unwrap();
+    let mut waits = table().lock().unwrap();
     let mut chain = decode(path, dst);
     let caller = chain
         .last()
@@ -613,7 +676,7 @@ mod tests {
         })
         .unwrap();
         assert!(!recorded);
-        assert!(!WAITS
+        assert!(!table()
             .lock()
             .unwrap()
             .hops
@@ -632,7 +695,7 @@ mod tests {
         marked("hop_a", "node:1");
         let recorded = forward("hop_b", "rust:1", 1, &["hop_a/node:1".to_owned()], false).unwrap();
         assert!(recorded);
-        let entry = WAITS
+        let entry = table()
             .lock()
             .unwrap()
             .hops
@@ -653,7 +716,7 @@ mod tests {
     fn a_synchronous_call_without_a_chain_is_a_hop() {
         let recorded = forward("root_b", "rust:1", 1, &[], true).unwrap();
         assert!(recorded);
-        let entry = WAITS
+        let entry = table()
             .lock()
             .unwrap()
             .hops
@@ -708,7 +771,7 @@ mod tests {
         marked("call_a", "node:1");
         let recorded = forward("call_b", "rust:1", 2, &[], false).unwrap();
         assert!(recorded);
-        let entry = WAITS
+        let entry = table()
             .lock()
             .unwrap()
             .hops
@@ -1514,3 +1577,8 @@ mod tests {
         );
     }
 }
+
+/// The shuttle model of the fast path: an answer or a return that reads no
+/// table (#628, SYN-9-29).
+#[cfg(all(test, rutis_shuttle))]
+mod shuttle_tests;

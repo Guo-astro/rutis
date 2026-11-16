@@ -9,14 +9,23 @@
 //! to them is a point where a model may switch threads; a plain build is
 //! unchanged: these are std's types.
 //!
-//! Only the exit state takes these. The other locks in `pipe/spawn.rs` — the
+//! In `pipe/spawn.rs` only the exit state takes these. Its other locks — the
 //! manifest list, a process's end signal, the started processes' list — are
 //! not crossed by an interleaving a model needs, and a std lock entered and
 //! left without yielding is what a plain build does (the same rule as
-//! `crates/rutis/src/sync.rs`).
+//! `crates/rutis/src/sync.rs`). A session's call, reference, future and
+//! ordered-operation tables (`session/rpc.rs`), its wait graph
+//! (`session/rpc/waits.rs`) and the line framing's writer (`pipe/lines.rs`)
+//! take them too, for the same reason: a model interleaves there.
 
 #[cfg(not(rutis_shuttle))]
-pub(crate) use std::sync::{atomic::AtomicBool as Flag, Condvar, Mutex};
+pub(crate) use std::sync::{
+    atomic::{AtomicBool as Flag, AtomicUsize as Count},
+    Condvar, Mutex,
+};
 
 #[cfg(rutis_shuttle)]
-pub(crate) use shuttle::sync::{atomic::AtomicBool as Flag, Condvar, Mutex};
+pub(crate) use shuttle::sync::{
+    atomic::{AtomicBool as Flag, AtomicUsize as Count},
+    Condvar, Mutex,
+};

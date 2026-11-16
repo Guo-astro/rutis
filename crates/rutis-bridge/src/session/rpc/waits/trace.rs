@@ -147,7 +147,7 @@ pub fn capture() -> Capture {
     // The state and the recorder are taken under the table's lock: an
     // operation between the two would be neither in the state nor in the
     // events, and the replay would start from a table it cannot have.
-    let waits = super::WAITS.lock().unwrap();
+    let waits = super::table().lock().unwrap();
     let inner = Arc::new(Recorder {
         initial: check::Initial::of(&waits),
         events: Mutex::default(),

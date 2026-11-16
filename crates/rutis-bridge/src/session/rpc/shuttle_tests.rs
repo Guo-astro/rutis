@@ -1,13 +1,17 @@
-//! Shuttle models of a session's call table and reference tables (#628).
+//! Shuttle models of a session (#628): its call and reference tables, the
+//! claims of a call the far end sends back, the ordered event operations, and
+//! the state of a future this side runs.
 //!
 //! A session's reader, its waiting threads and the tasks that answer calls
-//! all touch the same two tables: `Calls` (what this side waits for, what
-//! the far end may still answer, what it cancelled) and `Exports`/`Imports`
-//! (what a reference id means on each side). The models run the production
-//! tables and the production `Connection::send`, `receive`, `cancel`,
-//! `close`, `encode` and `decode`; `crate::sync::Mutex` makes the call and
-//! reference tables shuttle's under `--cfg rutis_shuttle`, so a `send` and a
-//! reply, or a cancellation and a late reply, interleave at every lock.
+//! all touch the same tables: `Calls` (what this side waits for, what the
+//! far end may still answer, what it cancelled, what queued calls it has not
+//! claimed), `Exports`/`Imports` (what a reference id means on each side), the
+//! ordered queue of event operations and a future's `FutureState`. The models
+//! run the production tables and the production `Connection::send`, `receive`,
+//! `cancel`, `close`, `execute`, `encode` and `decode`; `crate::sync::Mutex`
+//! makes those tables shuttle's under `--cfg rutis_shuttle`, so a `send` and a
+//! reply, a claim and another claimant, or a waiter giving up and the task it
+//! would abort interleave at every lock.
 //!
 //! What stands in for the channel: the models take the frames `send` and
 //! `respond_to` queued and hand them to the other `Connection` through
@@ -15,7 +19,9 @@
 //! ends without a reader, writer or dispatched task; the frames are encoded
 //! and decoded by the production code. A far end's call is executed by the
 //! model with `Connection::execute`, which is what the session's executor
-//! would do.
+//! would do; the models that race a spawned task drive the session's runtime
+//! with `Runtime::block_on`, so the task the reader spawned runs where the
+//! production session would run it.
 //!
 //! Run (CONTRIBUTING.md):
 //!
@@ -30,17 +36,19 @@
 //! as the filter.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{mpsc, Arc};
 
+use serde_json::json;
 use shuttle::sync::Barrier;
 use shuttle::thread;
 use tokio::runtime::Builder;
 use tokio::sync::oneshot;
 
 use super::{
-    parse_frame, Connection, Dispatch, Error, Frame, Operation, Reply, Value, Waiting, WireValue,
-    MAX_DEPTH,
+    parse_frame, Body, Connection, Dispatch, Error, Frame, Message, Operation, Reference,
+    ReferenceInner, Reply, Value, Waiter, Waiting, WireValue, MAX_DEPTH,
 };
+use crate::sync::Mutex as ModelMutex;
 
 /// Iterations of each scheduler: `RUTIS_SHUTTLE_ITERATIONS`, or 1000.
 fn iterations() -> usize {
@@ -444,5 +452,323 @@ fn references_are_granted_released_and_cleared_once() {
             }
             other => panic!("the call ended as {other:?}"),
         }
+    });
+}
+
+/// Records what a session dispatched: the method, and the sequence an
+/// `events.*` operation carries in its argument.
+#[derive(Default)]
+struct Recorder {
+    calls: ModelMutex<Vec<(String, Option<u64>)>>,
+}
+
+impl Recorder {
+    fn recorded(&self) -> Vec<(String, Option<u64>)> {
+        self.calls.lock().unwrap().clone()
+    }
+}
+
+impl Dispatch for Recorder {
+    fn invoke(&self, _: &Connection, _: &str, method: &str, args: Value) -> Reply {
+        let sequence = match &args {
+            Value::Data(value) => value.as_u64(),
+            _ => None,
+        };
+        self.calls
+            .lock()
+            .unwrap()
+            .push((method.to_owned(), sequence));
+        Ok(Value::Undefined)
+    }
+}
+
+/// #628: a call the far end sends back while this side's own synchronous
+/// wait registers is claimed exactly once — by the reader that finds the
+/// waiter, by the waiting thread that finds the queued call, or by the
+/// executor task the reader spawned — and runs once, for the one that
+/// claimed it.
+#[test]
+fn an_incoming_call_is_claimed_once() {
+    explore(|| {
+        let runtime = Arc::new(runtime());
+        let recorder = Arc::new(Recorder::default());
+        let (_client, server) =
+            Connection::inert_pair_with(recorder.clone(), runtime.handle().clone());
+        let id = format!("{}1", server.remote_prefix());
+        let frame = Frame::Invoke {
+            id: id.clone(),
+            path: Vec::new(),
+            target: "svc".into(),
+            method: "go".into(),
+            args: WireValue::Undefined,
+            sync: false,
+        };
+        let (sender, receiver) = mpsc::channel();
+        let step = Arc::new(Barrier::new(3));
+        let receiving = {
+            let (server, step) = (server.clone(), step.clone());
+            thread::spawn(move || {
+                step.wait();
+                server.receive(frame)
+            })
+        };
+        let waiting = {
+            let (server, step, id) = (server.clone(), step.clone(), id.clone());
+            thread::spawn(move || {
+                step.wait();
+                server
+                    .send(
+                        Operation::Invoke("svc".into(), "other".into(), Value::Undefined),
+                        Waiting::Sync {
+                            sender,
+                            origins: vec![id],
+                        },
+                    )
+                    .expect("the session is ready")
+            })
+        };
+        let driving = {
+            let runtime = runtime.clone();
+            thread::spawn(move || {
+                step.wait();
+                for _ in 0..4 {
+                    runtime.block_on(async {
+                        for _ in 0..2 {
+                            tokio::task::yield_now().await;
+                        }
+                    });
+                    thread::yield_now();
+                }
+            })
+        };
+        receiving
+            .join()
+            .unwrap()
+            .expect("the reader takes the call");
+        waiting.join().unwrap();
+        driving.join().unwrap();
+        // What reached the waiting thread runs as `request_sync` runs it.
+        if let Ok(Message::Invoke(incoming)) = receiver.try_recv() {
+            server.execute(incoming, true);
+        }
+        // The reader may have spawned the claim task after the executor
+        // stopped.
+        runtime.block_on(async {
+            for _ in 0..8 {
+                tokio::task::yield_now().await;
+            }
+        });
+        let recorded = recorder.recorded();
+        assert_eq!(
+            recorded.len(),
+            1,
+            "the call ran {} times: {recorded:?}",
+            recorded.len()
+        );
+        assert_eq!(recorded[0].0, "go", "the waiter's own call ran here");
+        assert!(
+            receiver.try_recv().is_err(),
+            "the waiting thread was handed the call twice"
+        );
+        assert!(
+            server.0.calls.lock().unwrap().incoming.is_empty(),
+            "the claimed call stayed queued"
+        );
+    });
+}
+
+/// #628: the session's event operations each run exactly once, in arrival
+/// order, and the ordered task leaves the queue empty and `busy` clear.
+#[test]
+fn event_operations_take_their_turn_once() {
+    explore(|| {
+        let runtime = Arc::new(runtime());
+        let recorder = Arc::new(Recorder::default());
+        let (_client, server) =
+            Connection::inert_pair_with(recorder.clone(), runtime.handle().clone());
+        let step = Arc::new(Barrier::new(2));
+        let receiving = {
+            let (server, step) = (server.clone(), step.clone());
+            thread::spawn(move || {
+                step.wait();
+                for sequence in 1..=3 {
+                    server
+                        .receive(Frame::Invoke {
+                            id: format!("{}{sequence}", server.remote_prefix()),
+                            path: Vec::new(),
+                            target: String::new(),
+                            method: "events.on".into(),
+                            args: WireValue::Data(json!(sequence)),
+                            sync: false,
+                        })
+                        .expect("the reader takes the event operation");
+                }
+            })
+        };
+        let driving = {
+            let runtime = runtime.clone();
+            thread::spawn(move || {
+                step.wait();
+                for _ in 0..3 {
+                    runtime.block_on(async {
+                        for _ in 0..8 {
+                            tokio::task::yield_now().await;
+                        }
+                    });
+                    thread::yield_now();
+                }
+            })
+        };
+        receiving.join().unwrap();
+        driving.join().unwrap();
+        runtime.block_on(async {
+            for _ in 0..32 {
+                tokio::task::yield_now().await;
+            }
+        });
+        let recorded = recorder.recorded();
+        let sequences: Vec<Option<u64>> = recorded.iter().map(|(_, sequence)| *sequence).collect();
+        assert_eq!(
+            sequences,
+            vec![Some(1), Some(2), Some(3)],
+            "the event operations ran as {recorded:?}"
+        );
+        let ordered = server.0.ordered.lock().unwrap();
+        assert!(
+            !ordered.busy && ordered.queue.is_empty(),
+            "the ordered task left work behind"
+        );
+    });
+}
+
+/// Poll `future` once with a no-op waker.
+fn poll_once<F: std::future::Future>(future: std::pin::Pin<&mut F>) -> std::task::Poll<F::Output> {
+    let waker = std::task::Waker::noop();
+    std::future::Future::poll(future, &mut std::task::Context::from_waker(waker))
+}
+
+/// #628: a future's state once it runs (`FutureState`): the sync await that
+/// starts the task records its handle, and when the last waiter gives up
+/// the task is aborted — exactly once, by the last one.
+#[test]
+fn the_last_waiter_gives_up_on_the_future() {
+    explore(|| {
+        let runtime = runtime();
+        let _entered = runtime.enter();
+        let value = Value::cancellable_future(std::future::pending());
+        let Value::Reference(Reference(ReferenceInner::Local(object))) = value else {
+            panic!("a future is a local reference");
+        };
+        let Body::Future(state) = &object.body else {
+            panic!("a future reference is a future");
+        };
+        assert!(
+            object.ready_on_blocked_executor().is_err(),
+            "a blocked executor waits for nothing"
+        );
+        assert!(
+            state.future.lock().unwrap().task.is_some(),
+            "the sync await did not record the task it started"
+        );
+
+        // Two waiters, given up together: the last one aborts the task.
+        let step = Arc::new(Barrier::new(3));
+        let mut dropping = Vec::new();
+        for _ in 0..2 {
+            let (object, step) = (object.clone(), step.clone());
+            dropping.push(thread::spawn(move || {
+                let mut waiting = Box::pin(object.wait(false, Vec::new(), None));
+                assert!(
+                    poll_once(waiting.as_mut()).is_pending(),
+                    "a future that never finishes finished"
+                );
+                step.wait();
+                drop(waiting);
+            }));
+        }
+        step.wait();
+        for drop in dropping {
+            drop.join().unwrap();
+        }
+        let future = state.future.lock().unwrap();
+        assert_eq!(future.waiters, 0, "a waiter was left counted");
+        assert!(
+            future.task.is_none(),
+            "the last waiter did not abort the task it left running"
+        );
+        drop(future);
+        assert!(
+            state.result.borrow().is_none(),
+            "the future finished after its last waiter gave up"
+        );
+    });
+}
+
+/// #628: a future started by a sync await that cannot wait for it is
+/// cancelled when the last other waiter gives up, even while the sync await
+/// is between taking the future and recording the task it started
+/// (`ready_on_blocked_executor`): the drop finds `task` empty, and the task
+/// stored afterwards runs with nobody waiting for it.
+///
+/// The window is reachable: the future's own first poll runs here, and a
+/// poll may take any amount of work (a call into another session, a
+/// plugin's future). The model puts the waiter's drop inside it with a
+/// barrier.
+#[test]
+#[ignore = "known gap: the abort handle is recorded after the future is polled and spawned, so a waiter that gives up before that is lost (#1250)"]
+fn a_future_started_as_its_last_waiter_leaves_is_cancelled() {
+    explore(|| {
+        let runtime = runtime();
+        let _entered = runtime.enter();
+        let step = Arc::new(Barrier::new(2));
+        let first = {
+            let step = step.clone();
+            async move {
+                // The first poll of the future: the sync await is now
+                // between taking it and recording the task it starts.
+                step.wait();
+                std::future::pending().await
+            }
+        };
+        let value = Value::cancellable_future(first);
+        let Value::Reference(Reference(ReferenceInner::Local(object))) = value else {
+            panic!("a future is a local reference");
+        };
+        let Body::Future(state) = &object.body else {
+            panic!("a future reference is a future");
+        };
+
+        // The one waiter the future has, given up inside that poll.
+        let waiting = {
+            let (object, step) = (object.clone(), step.clone());
+            thread::spawn(move || {
+                let Body::Future(state) = &object.body else {
+                    panic!("a future reference is a future");
+                };
+                state.future.lock().unwrap().waiters += 1;
+                let waiter = Waiter(state);
+                step.wait();
+                drop(waiter);
+            })
+        };
+        // The sync await: it takes the future, polls it (where the waiter
+        // leaves) and only then records the task.
+        assert!(
+            object.ready_on_blocked_executor().is_err(),
+            "a blocked executor waits for nothing"
+        );
+        waiting.join().unwrap();
+
+        let future = state.future.lock().unwrap();
+        assert_eq!(future.waiters, 0, "a waiter was left counted");
+        assert!(
+            future.task.is_none(),
+            "the future runs with nobody waiting for it: the abort handle was recorded after \
+             the last waiter gave up"
+        );
+        assert!(
+            state.result.borrow().is_none(),
+            "the future finished after its last waiter gave up"
+        );
     });
 }
