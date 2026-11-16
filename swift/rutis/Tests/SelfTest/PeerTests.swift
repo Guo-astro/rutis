@@ -196,9 +196,9 @@ struct PeerTests {
         XCTAssertEqual(seen.methods, ["one", "two", "three"])
     }
 
-    /// The session ending writes what it already took: the frames queued then
-    /// are not dropped (#630).
-    func testTheSessionEndingWritesWhatWasQueued() async throws {
+    /// `close()` writes the frames it had taken before it returns: a process
+    /// that ends there, as a runtime's does, loses none (#630).
+    func testClosingWritesWhatWasQueuedBeforeItReturns() async throws {
         let seen = Recorder()
         let (host, runtime, channel) = try await stallingPair { _, method, _ in
             seen.add(method)
@@ -209,21 +209,21 @@ struct PeerTests {
             runtime.close()
             channel.close()
         }
-        channel.hold()
-        // One held in its write, one still queued behind it.
+        let before = channel.written.count
+        // A far end that reads, but slowly: each write takes a while.
+        channel.slow(100)
         let queued = Event()
         let emitter = Task {
-            host.notify(target: "t", method: "in-flight", args: [])
-            host.notify(target: "t", method: "queued", args: [])
+            for method in ["one", "two", "three"] { host.notify(target: "t", method: method, args: []) }
             queued.fire()
         }
         let returned = await queued.wait(seconds: 10)
         XCTAssertTrue(returned, "emitting waited for its write")
         host.close()
-        channel.unhold()
+        XCTAssertEqual(channel.written.count - before, 3, "close returned with frames still queued")
         _ = await emitter.value
-        for _ in 0 ..< 500 where seen.methods.count < 2 { try await Task.sleep(nanoseconds: 10_000_000) }
-        XCTAssertEqual(seen.methods, ["in-flight", "queued"])
+        for _ in 0 ..< 500 where seen.methods.count < 3 { try await Task.sleep(nanoseconds: 10_000_000) }
+        XCTAssertEqual(seen.methods, ["one", "two", "three"])
     }
 
     /// A write that fails ends the session: its frame was taken already, and
@@ -287,67 +287,6 @@ final class Recorder: @unchecked Sendable {
     private var seen: [String] = []
     func add(_ method: String) { lock.withLock { seen.append(method) } }
     var methods: [String] { lock.withLock { seen } }
-}
-
-/// A channel whose writes the test holds, as one to a far end that reads
-/// nothing; everything else goes to `inner` (#630).
-final class StallingChannel: Channel, @unchecked Sendable {
-    private let inner: Channel
-    private let condition = NSCondition()
-    private var flowing = true
-    private var closed = false
-    private var failing = false
-    /// Fired once a write is held.
-    let held = Event()
-
-    init(_ inner: Channel) { self.inner = inner }
-
-    /// Every write from now on waits, as one to a far end that reads nothing.
-    func hold() {
-        condition.lock()
-        flowing = false
-        condition.unlock()
-    }
-
-    /// The held write, and the ones queued after it, go out.
-    func unhold() {
-        condition.lock()
-        flowing = true
-        condition.broadcast()
-        condition.unlock()
-    }
-
-    /// A write that is let go fails: the far end went away while it waited.
-    func failWrites() {
-        condition.lock()
-        failing = true
-        condition.unlock()
-    }
-
-    func send(_ message: [UInt8]) throws {
-        condition.lock()
-        if !flowing, !closed {
-            condition.unlock()
-            held.fire()
-            condition.lock()
-            while !flowing, !closed { condition.wait() }
-        }
-        let (wasClosed, fails) = (closed, failing)
-        condition.unlock()
-        if wasClosed { throw ChannelError("the channel is closed") }
-        if fails { throw ChannelError("the far end stopped reading") }
-        try inner.send(message)
-    }
-
-    func receive() throws -> [UInt8]? { try inner.receive() }
-
-    func close() {
-        condition.lock()
-        closed = true
-        condition.broadcast()
-        condition.unlock()
-        inner.close()
-    }
 }
 
 /// A channel whose every read fails.

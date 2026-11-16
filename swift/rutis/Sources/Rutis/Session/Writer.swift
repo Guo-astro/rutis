@@ -4,46 +4,54 @@
 // thread that flushed it) returns once its frame is queued (#630).
 import Foundation
 
+/// How long a session's end waits for the frames it already took to be
+/// written. A far end that stopped reading ends the session at the channel's
+/// own write timeout instead (30s on a connection, 60s on a socket), which no
+/// `close()` waits for.
+package let writerDrainSeconds = 5.0
+
 /// The frames a session has for the far end, written in order on a thread of
 /// their own.
-final class Writer: @unchecked Sendable {
+package final class Writer: @unchecked Sendable {
     private let channel: Channel
-    private let lock = Lock()
+    /// Holds the queue, and the thread waits on it.
+    private let condition = NSCondition()
     /// The frames not written yet, from `head` on. No limit of its own: the
     /// queue only grows while this thread is held by a far end that stopped
-    /// reading, and the channel's write timeout (30s on a connection, 60s on
-    /// a socket) ends the session past it (#630).
+    /// reading, and that write times out.
     private var queue: [[UInt8]] = []
     private var head = 0
+    /// The thread is in `channel.send` for the frame it took.
+    private var writing = false
     private var running = false
-    /// `finish()` came: write what is queued, then stop.
+    /// `drain` came: write what is queued, then stop.
     private var stopping = false
     /// The thread is gone: nothing is taken from now on.
     private var ended = false
     private var failure: Error?
     /// What the session does with a failed write; see `onFailure`.
     private var failureHandler: (@Sendable (Error) -> Void)?
-    /// Wakes the thread for a queued frame, or for `finish()`.
-    private let ready = DispatchSemaphore(value: 0)
 
-    init(_ channel: Channel) { self.channel = channel }
+    package init(_ channel: Channel) { self.channel = channel }
 
     /// What the session does when a write fails: told once, from this thread,
     /// and the session ends there (as a write that failed on the sending
     /// thread used to, #630). Set before `start()` and `enqueue`.
-    func onFailure(_ handler: @escaping @Sendable (Error) -> Void) {
-        lock.withLock { failureHandler = handler }
+    package func onFailure(_ handler: @escaping @Sendable (Error) -> Void) {
+        condition.lock()
+        failureHandler = handler
+        condition.unlock()
     }
 
     /// Starts the thread; the frames queued from then on are written.
-    func start() {
-        lock.lock()
+    package func start() {
+        condition.lock()
         if running || ended {
-            lock.unlock()
+            condition.unlock()
             return
         }
         running = true
-        lock.unlock()
+        condition.unlock()
         let thread = Thread { [self] in write() }
         thread.name = "rutis writer"
         // One frame's bytes at a time: no recursion, no deep values here.
@@ -54,72 +62,84 @@ final class Writer: @unchecked Sendable {
     /// Queues `frame` behind the frames taken before it. The caller does not
     /// wait for the write: this is what keeps a far end that stopped reading
     /// off the cooperative pool (#630).
-    func enqueue(_ frame: [UInt8]) throws {
-        try lock.withLock {
-            if let failure { throw failure }
-            if ended || stopping { throw ChannelError("the session's writer stopped") }
-            guard running else { throw ChannelError("the session's writer is not started") }
-            queue.append(frame)
-        }
-        ready.signal()
+    package func enqueue(_ frame: [UInt8]) throws {
+        condition.lock()
+        defer { condition.unlock() }
+        if let failure { throw failure }
+        if ended || stopping { throw ChannelError("the session's writer stopped") }
+        guard running else { throw ChannelError("the session's writer is not started") }
+        queue.append(frame)
+        condition.broadcast()
     }
 
     /// The session is over: the frames taken before it go out all the same,
-    /// and the thread stops once the queue is empty. Returns at once: the
-    /// thread finishes the writes, not whoever ends the session.
-    func finish() {
-        lock.lock()
-        let wake = !ended && !stopping
+    /// and this waits (at most `seconds`) for that to be done. Whether nothing
+    /// is left with the writer: written, or given up on with the channel.
+    ///
+    /// The wait is what keeps a session's end from dropping the last frames:
+    /// a process that ends next, as a runtime's does, takes none of them along
+    /// (#630). A far end that reads nothing costs the bound, no more.
+    @discardableResult
+    package func drain(within seconds: Double) -> Bool {
+        condition.lock()
         stopping = true
-        lock.unlock()
-        if wake { ready.signal() }
-    }
-
-    /// The next frame to write; nil once none is queued.
-    private func take() -> [UInt8]? {
-        lock.withLock {
-            guard head < queue.count else {
-                queue = []
-                head = 0
-                return nil
-            }
-            defer { head += 1 }
-            return queue[head]
+        condition.broadcast()
+        let deadline = Date().addingTimeInterval(seconds)
+        while !ended, !(head >= queue.count && !writing) {
+            if !condition.wait(until: deadline) { break }
         }
+        let drained = ended || (head >= queue.count && !writing)
+        condition.unlock()
+        return drained
     }
 
     private func write() {
+        condition.lock()
         while true {
-            ready.wait()
-            while let frame = take() {
-                do {
-                    try channel.send(frame)
-                } catch {
-                    var handler: (@Sendable (Error) -> Void)? = nil
-                    lock.withLock {
-                        if ended { return }
-                        ended = true
-                        failure = error
-                        queue = []
-                        head = 0
-                        handler = failureHandler
-                    }
-                    // Not under the lock: the session answers by ending, and
-                    // ends this thread with it.
-                    handler?(error)
-                    return
-                }
+            while head >= queue.count, !stopping {
+                condition.wait()
             }
-            // Stopping with the queue empty, under the same lock `enqueue`
+            // Stopping with nothing left, under the same lock `enqueue`
             // appends with: no frame taken just before this is left behind.
-            let done = lock.withLock { () -> Bool in
-                guard stopping, head >= queue.count else { return false }
+            if head >= queue.count {
                 ended = true
                 queue = []
                 head = 0
-                return true
+                condition.broadcast()
+                condition.unlock()
+                return
             }
-            if done { return }
+            let frame = queue[head]
+            head += 1
+            writing = true
+            if head >= queue.count {
+                queue = []
+                head = 0
+            }
+            condition.unlock()
+            do {
+                try channel.send(frame)
+            } catch {
+                var handler: (@Sendable (Error) -> Void)? = nil
+                condition.lock()
+                if !ended {
+                    ended = true
+                    failure = error
+                    queue = []
+                    head = 0
+                    handler = failureHandler
+                }
+                writing = false
+                condition.broadcast()
+                condition.unlock()
+                // Not under the lock: the session answers by ending, and
+                // ends nothing else of this thread.
+                handler?(error)
+                return
+            }
+            condition.lock()
+            writing = false
+            condition.broadcast()
         }
     }
 }

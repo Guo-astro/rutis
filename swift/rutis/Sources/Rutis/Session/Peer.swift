@@ -577,9 +577,10 @@ package final class Peer: @unchecked Sendable {
         for event in draining { event.fire() }
         for call in running { call.task?.cancel() }
         _ = held
-        // What was taken before the session ended still goes out: the writing
-        // thread finishes the queue it has, then stops (#630).
-        writer.finish()
+        // What was taken before the session ended still goes out, and this
+        // waits for it: a process that ends at the session's end, as a
+        // runtime's does, loses no frame for it (#630).
+        writer.drain(within: writerDrainSeconds)
         closedEvent.fire()
     }
 
