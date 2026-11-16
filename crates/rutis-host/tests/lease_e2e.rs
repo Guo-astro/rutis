@@ -6,10 +6,10 @@
 //! cleaned up, a newer connection takes over only once that is done, and
 //! the old lease's calls are refused, not served by the new lease.
 //!
-//! Each runtime is a real one listening on loopback: Python, and Go and
-//! Bun when the run lists them (`RUTIS_TEST_RUNTIMES`, #624). Its plugin
-//! writes every start, call and cleanup to a log, and its cleanup waits
-//! for a gate the test opens: the log then says whether the new
+//! Each runtime is a real one listening on loopback: Python, and Go, Bun
+//! and Kotlin when the run lists them (`RUTIS_TEST_RUNTIMES`, #624). Its
+//! plugin writes every start, call and cleanup to a log, and its cleanup
+//! waits for a gate the test opens: the log then says whether the new
 //! controller was greeted before the old lease was gone, instead of the
 //! test guessing at timings.
 //!
@@ -20,6 +20,8 @@
 #![allow(clippy::await_holding_lock)]
 
 mod common;
+#[path = "../../rutis-bridge/tests/kotlin/mod.rs"]
+mod kotlin;
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
@@ -33,7 +35,8 @@ use rutis_test_support::{Guard, HANG_GUARD};
 use serde_json::{json, Value};
 use tokio::io::AsyncBufReadExt;
 
-/// Twice HANG_GUARD: the Python runtime starts cold (#238).
+/// Twice HANG_GUARD: the Python runtime starts cold (#238), the Kotlin
+/// one starts a JVM.
 const COLD: Guard = Guard(Duration::from_secs(HANG_GUARD.as_secs() * 2));
 
 /// The token the runtime listens with and the dial row presents.
@@ -134,18 +137,20 @@ fn python() -> String {
 enum Language {
     Python,
     Go,
+    Kotlin,
     /// Unix only: Bun on Windows is not a declared platform.
     #[cfg(unix)]
     Bun,
 }
 
 impl Language {
-    /// Whether this run has it: Python is the suite's own baseline, Go and
-    /// Bun only when `RUTIS_TEST_RUNTIMES` lists them (#624).
+    /// Whether this run has it: Python is the suite's own baseline, Go,
+    /// Kotlin and Bun only when `RUTIS_TEST_RUNTIMES` lists them (#624).
     fn enabled(self) -> bool {
         match self {
             Language::Python => true,
             Language::Go => rutis_test_support::runtimes::enabled("go"),
+            Language::Kotlin => rutis_test_support::runtimes::enabled("kotlin"),
             #[cfg(unix)]
             Language::Bun => rutis_test_support::runtimes::enabled("bun"),
         }
@@ -172,7 +177,7 @@ fn go_binary() -> &'static Path {
 }
 
 /// A runtime listening on loopback, its project holding the logger plugin
-/// [`PLUGIN`] for Python.
+/// [`PLUGIN`] for Python, or where the Go, Kotlin and Bun plugins write.
 struct Runtime {
     language: Language,
     _process: tokio::process::Child,
@@ -228,6 +233,22 @@ impl Runtime {
                 .kill_on_drop(true)
                 .spawn()
                 .unwrap(),
+            Language::Kotlin => {
+                // The conformance jar's plugin `kt_lease`, from the SDK's
+                // Gradle build or `RUTIS_KOTLIN_JAR`.
+                tokio::process::Command::new("java")
+                    .args(kotlin::JVM_OPTIONS)
+                    .arg("-jar")
+                    .arg(kotlin::jar())
+                    .args(["listen:ws://127.0.0.1:0/rutis"])
+                    .args(["--id", "remote", "--peer", "main"])
+                    .arg(project.path())
+                    .env("RUTIS_TOKEN", TOKEN)
+                    .stderr(std::process::Stdio::piped())
+                    .kill_on_drop(true)
+                    .spawn()
+                    .unwrap()
+            }
             #[cfg(unix)]
             Language::Bun => {
                 std::fs::write(project.path().join("package.json"), "{}").unwrap();
@@ -300,8 +321,8 @@ impl Runtime {
     /// one row of its plugin configured as `who`.
     async fn controller(&self, who: &str) -> Controller {
         // What the row says: its name, and where the plugin writes. The
-        // Python plugin has its paths in its source, Go and Bun in their
-        // config.
+        // Python plugin has its paths in its source, Go, Kotlin and Bun in
+        // their config.
         let row = match self.language {
             Language::Python => {
                 json!({ "id": "log", "name": "remote:logger", "config": { "who": who } })
@@ -309,6 +330,16 @@ impl Runtime {
             Language::Go => json!({
                 "id": "log",
                 "name": "remote:logger",
+                "config": {
+                    "who": who,
+                    "log": self.log,
+                    "stop": self.stop_gate,
+                    "hold": self.hold_gate,
+                }
+            }),
+            Language::Kotlin => json!({
+                "id": "log",
+                "name": "remote:kt_lease",
                 "config": {
                     "who": who,
                     "log": self.log,
@@ -500,4 +531,22 @@ async fn a_newer_bun_controller_takes_over_after_the_old_lease_and_the_old_call_
         return;
     }
     a_newer_controller_takes_over(Language::Bun).await;
+}
+
+/// guarantee: loader/remote-runtime-lease
+#[tokio::test(flavor = "multi_thread")]
+async fn kotlin_controllers_each_get_a_clean_lease() {
+    if !Language::Kotlin.enabled() {
+        return;
+    }
+    successive_controllers(Language::Kotlin).await;
+}
+
+/// guarantee: loader/remote-runtime-lease
+#[tokio::test(flavor = "multi_thread")]
+async fn a_newer_kotlin_controller_takes_over_after_the_old_lease_and_the_old_call_is_refused() {
+    if !Language::Kotlin.enabled() {
+        return;
+    }
+    a_newer_controller_takes_over(Language::Kotlin).await;
 }
