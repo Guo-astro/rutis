@@ -1,6 +1,7 @@
 use super::*;
 use crate::channel::Receiver;
 use crate::session::ENDPOINT_PROTOCOL;
+use proptest::prelude::*;
 use serde_json::json;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
@@ -1098,6 +1099,124 @@ fn rebase_tags_the_source_restores_the_target_and_keeps_third_sessions() {
     // Forwarding back restores the original chain.
     assert_eq!(rebase(&rebase(&path, "s1", "s2"), "s2", "s1"), path);
     assert!(rebase(&[], "s1", "s2").is_empty());
+}
+
+/// A native call id, as the runtimes write them: an endpoint of lowercase
+/// letters, digits and `-`, a colon, and a number without a leading zero.
+fn native_id() -> impl Strategy<Value = String> {
+    ("[a-z][a-z0-9-]{0,7}", 1u64..10_000)
+        .prop_map(|(endpoint, number)| format!("{endpoint}:{number}"))
+}
+
+/// A session tag on the wire: `s` and digits (a process draws a 15-digit
+/// nonce and a counter, but `rebase` treats every `s[0-9]+` alike).
+fn session_tag() -> impl Strategy<Value = String> {
+    "[1-9][0-9]{0,8}".prop_map(|digits| format!("s{digits}"))
+}
+
+/// An entry of a call chain: a native id, or another session's tagged id.
+fn chain_entry() -> impl Strategy<Value = String> {
+    prop_oneof![
+        2 => native_id(),
+        3 => (session_tag(), native_id()).prop_map(|(tag, id)| format!("{tag}/{id}")),
+    ]
+}
+
+fn no_entry_of(tag: &str, path: &[String]) -> bool {
+    path.iter()
+        .all(|entry| entry.split_once('/').is_none_or(|(t, _)| t != tag))
+}
+
+proptest! {
+    /// guarantee: bridge/call-chains-across-processes
+    ///
+    /// A chain rewritten for another session and back is the same chain:
+    /// a native id comes back native, the target's own entries come back
+    /// untagged to it, and entries of third sessions keep their tag. A
+    /// chain in one session's terms carries none of its own tags, so that
+    /// is the input the rewrite is a bijection on (SYN-5-12, M1-7.2-2).
+    #[test]
+    fn rewriting_a_chain_to_another_session_and_back_restores_it(
+        from in session_tag(),
+        to in session_tag(),
+        path in prop::collection::vec(chain_entry(), 0..=8),
+    ) {
+        prop_assume!(from != to);
+        prop_assume!(no_entry_of(&from, &path));
+        let rewritten = rebase(&path, &from, &to);
+        prop_assert_eq!(&rebase(&rewritten, &to, &from), &path);
+    }
+
+    /// guarantee: bridge/call-chains-across-processes
+    ///
+    /// The rewrite is the rule itself: a native entry gets the source's
+    /// tag, an entry of the target returns to its native id, and any other
+    /// entry is untouched. In particular no foreign tag becomes native.
+    #[test]
+    fn rewriting_keeps_foreign_tags_and_restores_only_the_targets(
+        from in session_tag(),
+        to in session_tag(),
+        path in prop::collection::vec(chain_entry(), 0..=8),
+    ) {
+        prop_assume!(from != to);
+        let rewritten = rebase(&path, &from, &to);
+        for (before, after) in path.iter().zip(&rewritten) {
+            let expected = match before.split_once('/') {
+                Some((tag, id)) if tag == to => id.to_owned(),
+                Some(_) => before.clone(),
+                None => format!("{from}/{before}"),
+            };
+            prop_assert_eq!(after, &expected);
+            if let Some((tag, _)) = before.split_once('/') {
+                if tag != to {
+                    prop_assert_eq!(after, before);
+                    prop_assert!(after.contains('/'), "{after} is not tagged");
+                }
+            } else {
+                prop_assert!(after.contains('/'), "{after} is not tagged");
+            }
+        }
+    }
+
+    /// guarantee: bridge/call-chains-across-processes
+    ///
+    /// An id belongs to one session: rewriting a chain is injective, so two
+    /// different chains never become one (and a call is never mistaken for
+    /// another).
+    #[test]
+    fn rewriting_a_chain_is_injective(
+        from in session_tag(),
+        to in session_tag(),
+        a in prop::collection::vec(chain_entry(), 0..=8),
+        b in prop::collection::vec(chain_entry(), 0..=8),
+    ) {
+        prop_assume!(from != to);
+        prop_assume!(a != b);
+        prop_assume!(no_entry_of(&from, &a) && no_entry_of(&from, &b));
+        prop_assert_ne!(rebase(&a, &from, &to), rebase(&b, &from, &to));
+    }
+
+    /// guarantee: bridge/call-chains-across-processes
+    ///
+    /// A chain that passes through k sessions and comes back the same way
+    /// is the chain it started as: each session restores only its own
+    /// entries (SYN-5-12).
+    #[test]
+    fn rewriting_through_k_sessions_and_back_restores_the_chain(
+        sessions in prop::collection::vec(session_tag(), 2..=5),
+        path in prop::collection::vec(chain_entry(), 0..=8),
+    ) {
+        prop_assume!(sessions.windows(2).all(|pair| pair[0] != pair[1]));
+        prop_assume!(no_entry_of(&sessions[0], &path));
+        let mut rewritten = path.clone();
+        for pair in sessions.windows(2) {
+            rewritten = rebase(&rewritten, &pair[0], &pair[1]);
+        }
+        for pair in sessions.windows(2).rev() {
+            rewritten = rebase(&rewritten, &pair[1], &pair[0]);
+        }
+        prop_assert_eq!(rewritten, path);
+    }
 }
 
 /// A call made into one session while another session's call is handled

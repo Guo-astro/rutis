@@ -236,8 +236,18 @@ impl Backoff {
 mod tests {
     use super::*;
     use crate::connect::testing::{lines, until, AsRow};
+    use proptest::prelude::*;
     use rutis::host::CtxHost;
     use std::collections::VecDeque;
+
+    /// A backoff with a seed the test chooses (xorshift needs a nonzero
+    /// one, as [`Backoff::new`] guarantees).
+    fn seeded(seed: u64) -> Backoff {
+        Backoff {
+            next: INITIAL,
+            seed: Mutex::new(seed | 1),
+        }
+    }
 
     #[test]
     fn backoff_doubles_to_its_cap_within_jitter_and_resets() {
@@ -252,6 +262,58 @@ mod tests {
         }
         backoff.reset();
         assert!(backoff.next() <= Duration::from_millis(600));
+    }
+
+    /// The two failure modes #631 suspected of a configurable `Retry`
+    /// cannot be given here: the parameters are constants, `JITTER` keeps
+    /// the multiplier non-negative (`Duration::mul_f64` panics below zero)
+    /// and `MAX` doubles without overflowing `Duration`. The `Retry` type
+    /// itself went away with the link plugin (#813).
+    #[test]
+    fn the_backoff_parameters_cannot_make_a_negative_wait_or_overflow() {
+        // The numbers the design fixes; none is an input.
+        assert_eq!(INITIAL, Duration::from_millis(500));
+        assert_eq!(MAX, Duration::from_secs(30));
+        assert_eq!(JITTER, 0.2);
+        assert_eq!(STABLE, Duration::from_secs(60));
+        assert_eq!(REJECTED, Duration::from_secs(30));
+        assert!((0.0..=1.0).contains(&JITTER));
+        assert!(INITIAL > Duration::ZERO);
+        assert!(MAX.checked_mul(2).is_some());
+    }
+
+    proptest! {
+        /// guarantee: bridge/dial-out-rules, host/connection-plugins
+        ///
+        /// For every seed the step doubles from 0.5 s to 30 s and stays
+        /// there; every wait is within ±20% of its step and never negative;
+        /// a reset starts over from 0.5 s. The generator walks past the cap
+        /// so seeds that draw the low end of the jitter are covered too.
+        #[test]
+        fn every_seed_backs_off_within_jitter_of_the_doubling_step(
+            seed in any::<u64>(),
+            steps in 1usize..40,
+            reset_after in 1usize..40,
+        ) {
+            let mut backoff = seeded(seed);
+            let mut base = INITIAL;
+            for step in 0..steps {
+                if step == reset_after {
+                    backoff.reset();
+                    base = INITIAL;
+                }
+                let wait = backoff.next().as_secs_f64();
+                let (low, high) = (base.as_secs_f64() * 0.8, base.as_secs_f64() * 1.2);
+                // `mul_f64` rounds to nanoseconds: allow that much slack.
+                prop_assert!(
+                    wait + 1e-9 >= low && wait <= high + 1e-9,
+                    "seed {seed}, step {step}: {wait} s is not within 20% of {}",
+                    base.as_secs_f64()
+                );
+                prop_assert!(wait > 0.0, "seed {seed}, step {step}: a non-positive wait");
+                base = (base * 2).min(MAX);
+            }
+        }
     }
 
     /// What each attempt gives, in order; the far ends of the channels it
