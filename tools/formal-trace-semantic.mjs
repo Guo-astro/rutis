@@ -2092,8 +2092,8 @@ export const SEMANTIC_REGISTRY_2 = {
       anchors: ['bridge/dial-out-rules'],
       evidence: '`rutis-host/tests/dial_conformance.rs`（`the_same_id_takes_over`）',
       status: '已验证',
-      why: '登记表记「已验证」；#634 快照记「已覆盖」，同 id 顶替的用例在上（接入点模型另见 #624），状态保持已验证',
-      whyEn: 'The register row is verified; the issue marked this split covered by the same-id takeover test (the access-point model is #624), so the status stays verified.',
+      why: '登记表记「已验证」；#634 快照记「已覆盖」，同 id 顶替的用例在上；接入点与 `OneInstancePerId` 在 0.19 删除（#695），模型改按 `rutis-host/listen` 的 `OnePluginSetPerId` 建，状态保持已验证',
+      whyEn: 'The register row is verified; the issue marked this split covered by the same-id takeover test; the access point and `OneInstancePerId` went in 0.19 (#695), and the model is now `OnePluginSetPerId` over `rutis-host/listen`, so the status stays verified.',
     },
     'bridge/dial-out-rules g': {
       source: 'guarantees.md §10',

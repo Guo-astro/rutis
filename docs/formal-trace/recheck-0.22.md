@@ -287,13 +287,13 @@
 | bridge/sync-wait-cycle-refused b | 部分验证 | 部分验证 | 保证登记表 §10；SYN §9 | — | 1/1 个具名引用解析 | 现行来源：保证登记表 §10；SYN §9；没有会话规格锚点 |
 | bridge/sync-wait-cycle-refused c | 未验证 | 未验证 | 保证登记表 §10；#597 | — | 无具名证据 | 现行来源：保证登记表 §10；#597；没有会话规格锚点；无具名证据 |
 | bridge/sync-wait-cycle-refused d | 明确不保证 | 明确不保证 | 保证登记表 §10；SYN §9 | — | 无具名证据 | — |
-| bridge/dial-out-rules a | 已验证 | 已验证 | 保证登记表 §10；DIA §6；NOD「连进来的运行时」 | — | 1/1 个具名引用解析 | 现行来源：保证登记表 §10；DIA §6；NOD「连进来的运行时」；没有会话规格锚点；接入点在 0.19 改名 `rutis-host/listen`；接受拨出、按 id 顶替的行为仍现行 |
+| bridge/dial-out-rules a | 已验证 | 已验证 | 保证登记表 §10；DIA §6；NOD「连进来的运行时」 | — | 1/1 个具名引用解析 | 现行来源：保证登记表 §10；DIA §6；NOD「连进来的运行时」；没有会话规格锚点；接入点在 0.19 删除（#695），监听改为 `rutis-host/listen` 行；接受拨出、按 id 顶替的行为仍现行 |
 | bridge/dial-out-rules b | 部分验证 | 部分验证 | 保证登记表 §10；DIA §6 | — | 具名证据是模块/用例名，不是文件路径；按原文保留 | 现行来源：保证登记表 §10；DIA §6；没有会话规格锚点 |
 | bridge/dial-out-rules c | 部分验证 | 部分验证 | 保证登记表 §10；DIA §6 | — | 具名证据是模块/用例名，不是文件路径；按原文保留 | 现行来源：保证登记表 §10；DIA §6；没有会话规格锚点 |
 | bridge/dial-out-rules d | 已验证 | 已验证 | 保证登记表 §10；DIA §6 | — | 具名证据是模块/用例名，不是文件路径；按原文保留 | 现行来源：保证登记表 §10；DIA §6；没有会话规格锚点 |
-| bridge/dial-out-rules e | 部分验证 | 部分验证 | 保证登记表 §10；DIA §6 | — | 具名证据是模块/用例名，不是文件路径；按原文保留 | 现行来源：保证登记表 §10；DIA §6；没有会话规格锚点；接入点在 0.19 改名 `rutis-host/listen`；断开先卸载行的行为仍现行 |
-| bridge/dial-out-rules f | 已验证 | 已验证 | 保证登记表 §10；DIA §6 | — | 具名证据是模块/用例名，不是文件路径；按原文保留 | 现行来源：保证登记表 §10；DIA §6；没有会话规格锚点；接入点在 0.19 改名 `rutis-host/listen`；同 id 顶替的行为仍现行 |
-| bridge/dial-out-rules g | 部分验证 | 部分验证 | 保证登记表 §10；DIA §6 | — | 具名证据是模块/用例名，不是文件路径；按原文保留 | 现行来源：保证登记表 §10；DIA §6；没有会话规格锚点；接入点在 0.19 改名 `rutis-host/listen`；停止不重连的行为仍现行 |
+| bridge/dial-out-rules e | 部分验证 | 部分验证 | 保证登记表 §10；DIA §6 | — | 具名证据是模块/用例名，不是文件路径；按原文保留 | 现行来源：保证登记表 §10；DIA §6；没有会话规格锚点；接入点在 0.19 删除（#695），监听改为 `rutis-host/listen` 行；断开先卸载行的行为仍现行 |
+| bridge/dial-out-rules f | 已验证 | 已验证 | 保证登记表 §10；DIA §6 | — | 具名证据是模块/用例名，不是文件路径；按原文保留 | 现行来源：保证登记表 §10；DIA §6；没有会话规格锚点；接入点在 0.19 删除（#695），监听改为 `rutis-host/listen` 行；同 id 顶替的行为仍现行 |
+| bridge/dial-out-rules g | 部分验证 | 部分验证 | 保证登记表 §10；DIA §6 | — | 具名证据是模块/用例名，不是文件路径；按原文保留 | 现行来源：保证登记表 §10；DIA §6；没有会话规格锚点；接入点在 0.19 删除（#695），监听改为 `rutis-host/listen` 行；停止不重连的行为仍现行 |
 | bridge/revocation-closes-only-its-connections a | 已撤回 | 部分验证 | 保证登记表（0.22 已无此行） | — | — | 已取代：0.19 删除 `Revocations` / `Revocable`、接入点与每条连接一个实例；断开现有连接靠停掉那一行（`design-remote-session-2026-10-28.md` §八、§十二） |
 | bridge/revocation-closes-only-its-connections b | 已撤回 | 未验证 | 保证登记表（0.22 已无此行） | — | — | 已取代：0.19 删除 `Revocations` / `Revocable`、接入点与每条连接一个实例；断开现有连接靠停掉那一行（`design-remote-session-2026-10-28.md` §八、§十二） |
 | bridge/revocation-refuses-reconnects a | 已撤回 | 部分验证 | 保证登记表（0.22 已无此行） | — | — | 已取代：0.19 删除 `Revocations` / `Revocable`、接入点与每条连接一个实例；断开现有连接靠停掉那一行（`design-remote-session-2026-10-28.md` §八、§十二） |
@@ -1597,7 +1597,7 @@
 | DIA-5-16 | 明确不保证 | 明确不保证 | 远程运行时拨出设计（DIA §五 第三项） | — | 无具名证据 | — |
 | DIA-6-1 | 部分验证 | 部分验证 | 远程运行时拨出设计（DIA §六 退避；§六 实现；NOD「一条 link」、「连进来的运行时」） | — | 具名证据是模块/用例名，不是文件路径；按原文保留 | 现行来源：远程运行时拨出设计（DIA §六 退避；§六 实现；NOD「一条 link」、「连进来的运行时」）；没有会话规格锚点 |
 | DIA-6-2 | 不单独计数 | 不单独计数 | 远程运行时拨出设计（DIA §六 退避；§六 实现；NOD「连进来的运行时」） | — | 无具名证据 | — |
-| DIA-6-3 | 部分验证 | 部分验证 | 远程运行时拨出设计（DIA §六 凭据被拒；§六 实现分类；NOD「一条 link」、「连进来的运行时」） | — | 具名证据是模块/用例名，不是文件路径；按原文保留 | 现行来源：远程运行时拨出设计（DIA §六 凭据被拒；§六 实现分类；NOD「一条 link」、「连进来的运行时」）；没有会话规格锚点；接入点在 0.19 改名 `rutis-host/listen`；4003 与“归为凭据被拒”仍现行 |
+| DIA-6-3 | 部分验证 | 部分验证 | 远程运行时拨出设计（DIA §六 凭据被拒；§六 实现分类；NOD「一条 link」、「连进来的运行时」） | — | 具名证据是模块/用例名，不是文件路径；按原文保留 | 现行来源：远程运行时拨出设计（DIA §六 凭据被拒；§六 实现分类；NOD「一条 link」、「连进来的运行时」）；没有会话规格锚点；接入点在 0.19 删除（#695），监听改为 `rutis-host/listen` 行；4003 与“归为凭据被拒”仍现行 |
 | DIA-6-4 | 不单独计数 | 不单独计数 | 远程运行时拨出设计（DIA §六 凭据被拒；NOD） | — | 无具名证据 | — |
 | DIA-6-5 | 部分验证 | 部分验证 | 远程运行时拨出设计（DIA §六 不兼容；§六 实现分类；NOD） | — | 具名证据是模块/用例名，不是文件路径；按原文保留 | 现行来源：远程运行时拨出设计（DIA §六 不兼容；§六 实现分类；NOD）；没有会话规格锚点 |
 | DIA-6-6 | 未验证 | 未验证 | 远程运行时拨出设计（DIA §六 实现分类） | — | 无具名证据 | 现行来源：远程运行时拨出设计（DIA §六 实现分类）；没有会话规格锚点；无具名证据 |
@@ -1607,8 +1607,8 @@
 | DIA-6-10 | 部分验证 | 部分验证 | 远程运行时拨出设计（DIA §六 主动停止；§六 实现；APP §四 stop()；NOD） | — | 具名证据是模块/用例名，不是文件路径；按原文保留 | 现行来源：远程运行时拨出设计（DIA §六 主动停止；§六 实现；APP §四 stop()；NOD）；没有会话规格锚点 |
 | DIA-6-11 | 部分验证 | 部分验证 | 远程运行时拨出设计（DIA §六 实现） | — | 无具名证据 | 现行来源：远程运行时拨出设计（DIA §六 实现）；没有会话规格锚点；无具名证据 |
 | DIA-6-12 | 部分验证 | 部分验证 | 远程运行时拨出设计（DIA §六 实现；NOD「连进来的运行时」） | — | 无具名证据 | 现行来源：远程运行时拨出设计（DIA §六 实现；NOD「连进来的运行时」）；没有会话规格锚点；无具名证据；0.19 的输出行随连接插件改；分类与重试节奏仍现行，逐字输出待重抽 |
-| DIA-6-13 | 不单独计数 | 不单独计数 | 远程运行时拨出设计（DIA §六 实现） | — | 无具名证据 | 接入点在 0.19 改名 `rutis-host/listen`；10 秒问候时限仍现行 |
-| DIA-6-14 | 明确不保证 | 明确不保证 | 远程运行时拨出设计（DIA §六 实现） | — | 无具名证据 | 接入点在 0.19 改名 `rutis-host/listen`；4003 的迟到拒绝仍明确不保证 |
+| DIA-6-13 | 不单独计数 | 不单独计数 | 远程运行时拨出设计（DIA §六 实现） | — | 无具名证据 | 接入点在 0.19 删除（#695），监听改为 `rutis-host/listen` 行；10 秒问候时限仍现行 |
+| DIA-6-14 | 明确不保证 | 明确不保证 | 远程运行时拨出设计（DIA §六 实现） | — | 无具名证据 | 接入点在 0.19 删除（#695），监听改为 `rutis-host/listen` 行；4003 的迟到拒绝仍明确不保证 |
 | DIA-6-15 | 明确不保证 | 明确不保证 | 远程运行时拨出设计（DIA §六 实现；NOD「连进来的运行时」） | — | 无具名证据 | — |
 | DIA-6-16 | 不单独计数 | 不单独计数 | 远程运行时拨出设计（DIA §六 实现 Python；NOD「安全」） | — | 无具名证据 | — |
 | DIA-6-17 | 部分验证 | 部分验证 | 远程运行时拨出设计（DIA §六 实现 Node、Bun；NOD「连进来的运行时」） | — | 无具名证据 | 现行来源：远程运行时拨出设计（DIA §六 实现 Node、Bun；NOD「连进来的运行时」）；没有会话规格锚点；无具名证据 |
@@ -1933,7 +1933,7 @@
 | bridge/dial-out-rules c | 部分验证 | guarantees.md §10 | bridge/dial-out-rules | `rutis-host/tests/dial_conformance.rs`（`a_wrong_token_is_retried_as_rejected`、`a_rejected_id_is_retried_as_rejected`，缩短的等待） | 登记表记「已验证」；#634 快照记「部分」，被拒后重试有用例，30 秒的真实等待没有测试，状态保持部分验证 |
 | bridge/dial-out-rules d | 已验证 | guarantees.md §10 | bridge/dial-out-rules | `rutis-host/tests/dial_conformance.rs`（`an_incompatible_listener_stops_the_dialer`、`an_invalid_id_is_refused_before_dialing`） | 登记表记「已验证」；#634 快照记「已覆盖」，协议不兼容与 id 不合法两种停止都有用例，状态保持已验证 |
 | bridge/dial-out-rules e | 部分验证 | guarantees.md §10 | bridge/dial-out-rules | `rutis-host/tests/dial_conformance.rs`（`it_backs_off_and_reconnects_as_a_new_session`：卸载、新会话、重新装载） | 登记表记「已验证」；#634 快照记「部分」，断开先卸载再重连有用例，但只有一行，清理逆序不可见，状态保持部分验证 |
-| bridge/dial-out-rules f | 已验证 | guarantees.md §10 | bridge/dial-out-rules | `rutis-host/tests/dial_conformance.rs`（`the_same_id_takes_over`） | 登记表记「已验证」；#634 快照记「已覆盖」，同 id 顶替的用例在上（接入点模型另见 #624），状态保持已验证 |
+| bridge/dial-out-rules f | 已验证 | guarantees.md §10 | bridge/dial-out-rules | `rutis-host/tests/dial_conformance.rs`（`the_same_id_takes_over`） | 登记表记「已验证」；#634 快照记「已覆盖」，同 id 顶替的用例在上；接入点与 `OneInstancePerId` 在 0.19 删除（#695），模型改按 `rutis-host/listen` 的 `OnePluginSetPerId` 建，状态保持已验证 |
 | bridge/dial-out-rules g | 部分验证 | guarantees.md §10 | bridge/dial-out-rules | `rutis-host/tests/dial_conformance.rs`（`stopping_ends_without_reconnecting`，只在 Unix） | 登记表记「已验证」；#634 快照记「部分」，停止只在 Unix 上测，Windows 没有；模型里停止是终态，应用托管可以再开始，状态保持部分验证 |
 | bridge/revocation-closes-only-its-connections a | 已撤回 | design-remote-session-2026-10-28.md §八 | —（登记表 0.22 已无这一行：0.19 删除 `Revocations` / `Revocable`，断开现有连接靠停掉那一行） | — | 0.19 删除吊销、接入点与每条连接一个实例（远程会话设计 §八、§十二）；#634 快照记「部分」，现行没有吊销范围这回事 |
 | bridge/revocation-closes-only-its-connections b | 已撤回 | design-remote-session-2026-10-28.md §八 | —（登记表 0.22 已无这一行：0.19 删除吊销；连接断开时的在途调用由 `bridge/in-flight-call-fails-once` 管） | — | 吊销已删，检查这一行没有对象；断链时在途调用失败一次的行为仍在 `bridge/in-flight-call-fails-once` |

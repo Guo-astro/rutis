@@ -523,7 +523,7 @@ CI：`ci.yml`（PR 按改动选择任务，每晚全部运行；Linux 全量与�
 | **FZ** | P2、E7、B5 | 有：会话帧、本地行分帧、错误图、WebSocket 升级请求（`fuzz/`，nightly，#179 → #425、#624） | 配置文件（B5，低优先级）、dylib 的目标文件解析（#631） |
 | **SH** | K2、RS1 | 有：内核 16 个模型（§7.3），`stress.yml` 每晚每个 100 万次迭代；Python 的可步进事件循环；Node 的帧泵 | 会话层、事件宿主、运行时监督与宿主重载的模型（#622）；Kotlin Fray、Swift TSan、Go 的显式闸门（#630） |
 | **TLA** | EV1–EV5、RL1、CL1、AH1、AH2、P10、C6、E4、E5 | 7 个目录、17 个模块、220 个配置（§7.2）；CI 的 `specs` 任务 | 逐条见 §7.2 的缺口一列 |
-| **TV** | EV2、EV3、EV5、AH2 | 会话通道的 trace validation（`trace_validation.rs`，#624）；等待图（`waits/trace.rs`、`waits/trace/check.rs`，#613） | 接入点、事件宿主的动作日志（#624） |
+| **TV** | EV2、EV3、EV5、AH2 | 会话通道的 trace validation（`trace_validation.rs`，#624）；等待图（`waits/trace.rs`、`waits/trace/check.rs`，#613） | 事件宿主的动作日志（#624）；接入点随 0.19 删除（#695）撤回，不适用 |
 | **KANI** | 值的范围与纯函数的边界 | 6 个 harness 在 `fuzz/kani/` | Kani 0.68.0 在这台机器上 90 分钟不收敛，没有结论（`fuzz/KANI-MIRI.md`）；`unsafe` 的证明（#631） |
 | **SK：宿主级浸泡** | L1、L3、D3、A5、H4 | 有：bridge 层两个；宿主进程级 S8（#192），带种子，每晚三个平台 | 每周更长时间的运行 |
 | **G：输出快照** | A6、A7、B6、B9、E13、F7、H3 | `rutis-host` 的常见错误、`check`、link 状态（#217、#336） | 状态输出整体；SDK 的错误；H3 等设计 |
@@ -593,7 +593,7 @@ CI：`ci.yml`（PR 按改动选择任务，每晚全部运行；Linux 全量与�
 | 对象 | 做法 | 现状 |
 | --- | --- | --- |
 | 会话通道 | `crates/rutis-bridge/tests/trace_validation.rs`：通道、帧与租约的步骤写成 trace，逐事件检查它是否被前面的事件允许（[会话追踪契约](formal-trace.md) §2–§4） | **有**（#624 第一块）：通道方向与结束、hello 只一次且最先、调用号与 `path`、答复至多一次、允许的悬空取消、租约的接管步骤 |
-| 接入点 | 用 `AccessEvent` 的结果对照 `AccessPoint.tla`，先补移交与吊销的日志点 | **无**（#624） |
+| 接入点（已撤回） | 对象在 0.19 删除（#695）：`AccessEvent` 日志、接入点与身份层吊销钩子一起删除；`AccessPoint.tla` 改为按 `rutis-host/listen` 建的最小模型，本侧只看到准入的结局 | **不适用**（#624 的接入点 TV 已撤回）：`trace_validation.rs` §3.8 的用例检查这一侧看到的 4003 吊销与 403 凭据拒绝，没有接入点自身的动作日志可对照 |
 | 等待图 | 记录 `waits.rs` 的六个操作与每次判定，对照 `CrossRuntimeSync.tla` | **有**（#613）：`waits/trace.rs` 记录、`waits/trace/check.rs` 按 `RustSucc` 重放；`sync_cycles.rs` 与 `rpc_callbacks.rs` 的真实运行上逐事件检查，改坏同一份日志必须报出 |
 | 事件宿主 | 用 `events-all` 运行中宿主的动作日志对照宿主模型 | **无**（#624 并入的 #616） |
 | 各语言运行时 | 一致性套件：`runtime_conformance`、`events_conformance`、`tracker_conformance`、`sync_cycles`、`host_gone` | **部分**：`sync_cycles` 有 Node / Python / Go / Swift 列，没有 Kotlin；`host_gone` 有 Node / Python / Go / Bun，没有 Swift / Kotlin（#624 未做：Swift 插件只在 macOS 上构建，Kotlin 要 JDK 17 与 `:rutis-conformance:fatJar`）；租约套件 `crates/rutis-host/tests/lease_e2e.rs` 有 Python、Go、Bun 列，同样缺 Swift、Kotlin；引用计数 PT 现在七种语言都有（`value_roundtrip.rs` 的 `*_releases_balance` / `*_reference_counts`，Go、Bun、Kotlin 只查本侧，#624）；授予与回滚的 PT 在 `grant_rollback.rs`（Rust 侧） |
@@ -826,7 +826,7 @@ E2E 发现并修复：#225、#226（#261、#217）。Node 最低版本降到 22�
 | 事件、调用、生命周期模型 | #613 | 7 个模型目录、17 个模块、220 个配置：`cross-runtime-sync`、`remote-lease`、`event-close`、`events` 四模块、`row-lifecycle`、`call-lifecycle`、`peer-rows`；逐目录的现状与缺口见 §7.2。模型发现的 bail/async/取消表/peer row 键等已转 issue 或实现修复 |
 | Rust 实现交错 | #622 | 内核 16 个 shuttle 模型通过（§7.3）：#1025 的 marker 发布、`Entry::live`、effect 登记与清理、在途卸载、并发子树关闭、root dispose/shutdown、依赖撤下、emit 链、监听器表、重启发布新代次；7 个确定性竞态用例。待补：会话层、事件宿主、运行时监督与宿主重载（Launcher 接缝）、dylib；`interleave.rs` 的顺序参考模型（#1190，本稿核对时 PR 仍 open）；#1194（干净的子 dispose 与根关闭竞争时 join 拿到 `Err(Closed)`）已报告并附复现模型，issue 仍 open |
 | 非 Rust 运行时调度 | #630 | 首块完成：Node 帧泵 4 个用例、Python 的 `SteppedLoop`；Bun/Go 只有现状盘点；Swift/Kotlin 本机无工具链，登记为环境缺口（§7.3） |
-| trace 与一致性 | #624 | 首块完成：Rust 通道/帧验证器 23 个用例（引用计数、错误图、调用范围、上限、替换/重连分类）；租约套件补了 Go、Bun 列（Python、Go、Bun 三列）；接入点、事件宿主的动作日志、`sync_cycles` 的 Kotlin 列与 `host_gone` 的 Swift / Kotlin 列待补（理由见 §7.5）；等待图已做（#613，§7.5） |
+| trace 与一致性 | #624 | 首块完成：Rust 通道/帧验证器 23 个用例（引用计数、错误图、调用范围、上限、替换/重连分类）；租约套件补了 Go、Bun 列（Python、Go、Bun 三列）；接入点 TV 随 0.19 删除（#695）撤回，不适用；事件宿主的动作日志、`sync_cycles` 的 Kotlin 列与 `host_gone` 的 Swift / Kotlin 列待补（理由见 §7.5）；等待图已做（#613，§7.5） |
 | 属性、模糊、Kani/Miri | #631 | 首块完成：引用授予回滚 6 个用例、值/帧/坏帧属性 5 个（proptest + corpus 重放）、监听器表模型属性；cargo-fuzz 实际跑 4 个目标无 crash；Miri 跑了会话帧与值路径（无 UB）；Kani 6 个 harness 没有结论（0.68.0 不收敛），不写成通过（`fuzz/KANI-MIRI.md`）。服务槽与五种分发的参考模型在 PR #1200（未合入） |
 | 一致性与普通测试 | #639 | 已关闭（2026-11-15，COMPLETED）：按追踪表补的一致性用例分批合入，虚拟时钟计时用例在 `rutis-host/src/connect/dial.rs`、`rutis-bridge/tests/session_plugin.rs` 里（§7.7）；追踪表的状态仍按复核结论计（§7.6），`M1-13-3` 等行仍记未验证 |
 | 统一收口 | #634 | 进行中：追踪表 1825 行（含 1368 条协议规则），`node tools/formal-trace.mjs --check` 零问题，rule tracker 检查已进 CI；协议规则已按 0.22 来源复核（§7.6、[复核表](formal-trace/recheck-0.22.md)），但规则文字仍是 issue 快照原文，没有按现行规格重写 |
@@ -869,7 +869,7 @@ E2E 发现并修复：#225、#226（#261、#217）。Node 最低版本降到 22�
 | loom 穷举 | 不采用 | shuttle 已覆盖内核的 16 个模型，loom 需要更大的代码改造；shuttle 发现问题但无法稳定复现时再考虑 |
 | SDK 各自运行通道契约、跨语言帧标准样本 | 不采用 | 与 Rust 驱动的一致性套件重叠；非法帧的部分已并入 P3 与 `malformed` 矩阵 |
 | `cargo public-api` | 不采用 | 与 `cargo semver-checks` 重复 |
-| TLA+ trace validation | 采用 | 重新考虑的条件（spec 与实现多次不一致）已满足：会话通道的验证器已落地（`crates/rutis-bridge/tests/trace_validation.rs`，#624），等待图也已落地（#613）；接入点、事件宿主的动作日志按 §7.5 待补。规则来自[会话追踪契约](formal-trace.md) |
+| TLA+ trace validation | 采用 | 重新考虑的条件（spec 与实现多次不一致）已满足：会话通道的验证器已落地（`crates/rutis-bridge/tests/trace_validation.rs`，#624），等待图也已落地（#613）；接入点 TV 随 0.19 删除（#695）撤回（§7.5），事件宿主的动作日志按 §7.5 待补。规则来自[会话追踪契约](formal-trace.md) |
 | TLA+ 用于内核状态机 | 不采用 | 单进程，历史问题都在实现层；进程内并发用 shuttle（§7.3） |
 | CI 上的性能回归阈值 | 不采用 | CI 机器噪声超过 15%，会反复误报；性能目前不是承诺。有固定基准机器时再考虑 |
 | 磁盘满、fd 上限、OOM 注入 | 不采用 | §4 中对应的风险都是低可能性；用户报告相关问题时再考虑 |
