@@ -1943,10 +1943,18 @@ jobs:
         run: cargo check --workspace --all-targets
       # After a failure, this instance's Go build cache goes (a job cut
       # short can leave it truncated, #374; tools/ci-self-hosted.sh does the
-      # same on the other self-hosted runners).
+      # same on the other self-hosted runners). Windows can still hold a
+      # file when this runs: retry, then leave it; a cleanup failure must not
+      # hide the test failure it follows.
       - name: self-hosted runner, end
         if: failure() && runner.environment == 'self-hosted'
-        run: rm -rf "$GOCACHE"
+        run: |
+          for attempt in 1 2 3 4 5; do
+            rm -rf "$GOCACHE" && break
+            sleep 2
+          done
+          [ -d "$GOCACHE" ] && echo "GOCACHE still present after 5 attempts; the next run empties it by size" || true
+          exit 0
 
   # Builds of the SDK on two separate runners compared by hash. The SDK
   # cannot come from a cache, so this stays off pull requests (Q12.6.3) and
