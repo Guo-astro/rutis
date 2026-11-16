@@ -197,7 +197,12 @@ async fn a_cancelled_dispatch_does_not_stop_a_javascript_listener() {
     )
     .await;
 
-    let mut dispatch = root.named(Slow::NAME).parallel(Slow);
+    // `serial`: the listener's call runs on the dispatch itself, so the
+    // dispatch's own poll takes the answer to it. `parallel` starts each
+    // listener in a task of its own, and the drop could land between that
+    // answer and the await the task then starts: nothing would be outstanding,
+    // and no reply would be discarded.
+    let mut dispatch = root.named(Slow::NAME).serial(Slow);
     tokio::select! {
         biased;
         ended = &mut dispatch => panic!("the dispatch only ends when cancelled: {ended:?}"),
@@ -206,6 +211,16 @@ async fn a_cancelled_dispatch_does_not_stop_a_javascript_listener() {
             "the listener started",
         ) => {}
     }
+    // A session's frames are handled in the order they were written, so the
+    // invoke's answer (the listener's Promise) was handled before the `started`
+    // answer above: this poll takes it, and the call awaits the Promise — the
+    // call the drop then cancels.
+    let polled =
+        std::future::poll_fn(|cx| std::task::Poll::Ready(dispatch.as_mut().poll(cx))).await;
+    assert!(
+        polled.is_pending(),
+        "the dispatch waits on the listener's Promise: {polled:?}"
+    );
     drop(dispatch);
 
     until(
