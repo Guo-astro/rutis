@@ -11,7 +11,9 @@ import { ENDPOINT_PROTOCOL } from './session.mjs'
 // WebSocket and the child's inherited socket, so a session's lease (its
 // rows, proxies, references, its Cordis Context) ends with that child. A
 // newer connection takes over: the old one is closed as replaced, the old
-// child cleans up and exits, and only then does a new child greet.
+// child cleans up and exits, and only then does a new child greet. The new
+// connection's heartbeat starts at that hello, not at the accept, so a
+// cleanup longer than the heartbeat timeout does not close it (#1182).
 //
 // The child gets its socket as fd 3; on Windows, where an inherited pipe is
 // not a socket, it dials a loopback address instead and presents a one-time
@@ -140,6 +142,10 @@ export async function serve({ spec, id, peer, anchor }) {
       closed: () => { if (current === session) ws.close('the runtime ended') },
     })
     link.attach(session.childChannel)
+    // Served: from here silence counts, not from the accept, so a cleanup
+    // longer than the heartbeat timeout does not close it before its hello
+    // (#1182).
+    ws.start()
     return session
   }
 

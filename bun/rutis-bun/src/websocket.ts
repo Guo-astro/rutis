@@ -21,12 +21,15 @@ export type Limits = typeof LIMITS
 export const GOING_AWAY = 1001, TOO_BIG = 1009, TLS_FAILED = 1015, REPLACED = 4002, REJECTED = 4003
 
 // A channel over an open WebSocket. `closed(reason, code)` gets the close
-// code received from the far end (1006 when none came).
+// code received from the far end (1006 when none came). `start()` starts
+// the heartbeat, at the session's hello: until then a connection waiting
+// for the old lease to be cleaned up is not silent (#1182).
 export interface Handlers {
   message(text: string): void
   closed(reason: string | undefined, code?: number): void
 }
 export interface WebSocketChannel {
+  start(): void
   send(text: string): void
   end(): void
   close(reason?: string): void
@@ -108,9 +111,11 @@ interface Socket {
 function wrap(socket: Socket, { message, closed }: Handlers, limits: Limits) {
   let ended = false
   let failure: string | undefined
-  let lastSeen = Date.now()
+  let beating = false
+  let lastSeen = 0
   const heartbeat = setInterval(() => {
-    if (Date.now() - lastSeen > limits.timeout) {
+    // Waiting for its hello to go out, a connection is not silent.
+    if (beating && Date.now() - lastSeen > limits.timeout) {
       failure = `no message from the far end for ${limits.timeout / 1000} s: heartbeat timeout`
       socket.terminate()
       return
@@ -143,6 +148,11 @@ function wrap(socket: Socket, { message, closed }: Handlers, limits: Limits) {
     },
   }
   const channel: WebSocketChannel = {
+    start() {
+      if (beating) return
+      beating = true
+      lastSeen = Date.now()
+    },
     send(text) {
       if (ended) return
       if (Buffer.byteLength(text) > limits.maxMessage) {
@@ -240,6 +250,8 @@ export function open(spec: string, handlers: Handlers, { protocol, token, ca, li
       socket.on('message', (data: Buffer | string, binary: boolean) => wrapped!.events.message(data, binary))
       socket.on('ping', () => wrapped!.events.seen())
       socket.on('pong', () => wrapped!.events.seen())
+      // Dialed: this side greets at once, so its heartbeat starts now.
+      wrapped.channel.start()
       resolve(wrapped.channel)
     })
     socket.on('close', (code: number, reason: Buffer | string) => {
@@ -268,7 +280,8 @@ export interface Listener {
 
 // Listen on `spec` (ws:// or wss://, loopback only without TLS) and accept
 // connections that present `token` and speak `protocol`; `accepted(channel)`
-// runs for each, with the channel's handlers from `handlers()`.
+// runs for each, with the channel's handlers from `handlers()`, and calls
+// `channel.start()` once the session's hello went out.
 export function listen(spec: string, { handlers, accepted }: { handlers(): Handlers, accepted(channel: WebSocketChannel): void }, { protocol, token, cert, key, limits = LIMITS }: Options = {}): Listener {
   const url = new URL(spec)
   const secure = url.protocol === 'wss:'

@@ -2,6 +2,7 @@ package rutis
 
 import (
 	"bufio"
+	"context"
 	"crypto/sha1"
 	"encoding/base64"
 	"encoding/binary"
@@ -288,7 +289,9 @@ func TestASilentControllerIsDropped(t *testing.T) {
 	t.Setenv("RUTIS_HEARTBEAT", "100,1000")
 	accepted, address := startListener(t)
 	c := dial(t, address)
-	accept(t, accepted)
+	conn := accept(t, accepted)
+	// A served connection: the session's hello went out (#1182).
+	conn.startHeartbeat()
 	pinged := false
 	// Pings keep coming until it is dropped: bound the whole wait.
 	deadline := time.Now().Add(testwait.HangGuard)
@@ -304,6 +307,40 @@ func TestASilentControllerIsDropped(t *testing.T) {
 		if opcode == 0x8 {
 			if code := int(binary.BigEndian.Uint16(payload)); code != goingAway || !pinged {
 				t.Fatalf("closed with %d, pinged %v", code, pinged)
+			}
+			return
+		}
+	}
+}
+
+// A connection accepted by the listener but not served yet is not silent:
+// its heartbeat starts only with the session's hello (#1182). Timing is what
+// this tests, as TestASilentControllerIsDropped: ping and timeout ten times
+// apart, and "waiting" counted in pings rather than a fixed time.
+func TestAConnectionWaitingForItsHelloIsNotDroppedForSilence(t *testing.T) {
+	t.Setenv("RUTIS_HEARTBEAT", "10,100")
+	accepted, address := startListener(t)
+	c := dial(t, address)
+	conn := accept(t, accepted)
+	defer conn.shut()
+	// Nothing from this side and no hello from it: past the timeout, again
+	// and again (fifty pings: five timeouts), it is still open.
+	for pings := 0; pings < 50; {
+		opcode, payload := c.next()
+		if opcode == 0x8 {
+			t.Fatalf("closed with %d before its hello", int(binary.BigEndian.Uint16(payload)))
+		}
+		if opcode == 0x9 {
+			pings++
+		}
+	}
+	// The session's hello went out: from here, silence is a lost far end.
+	conn.startHeartbeat()
+	for {
+		opcode, payload := c.next()
+		if opcode == 0x8 {
+			if code := int(binary.BigEndian.Uint16(payload)); code != goingAway {
+				t.Fatalf("closed with %d, not %d", code, goingAway)
 			}
 			return
 		}
@@ -327,5 +364,99 @@ func TestANewerControllerTakesOver(t *testing.T) {
 	dial(t, address)
 	if code := first.closed(); code != replaced {
 		t.Fatalf("the older connection closed with %d, not %d", code, replaced)
+	}
+}
+
+// A served session's silence counts once its hello went out: the listener
+// starts the connection's heartbeat there (#1182).
+func TestAServedConnectionSilentAfterItsHelloIsDropped(t *testing.T) {
+	t.Setenv("RUTIS_HEARTBEAT", "10,100")
+	t.Setenv("RUTIS_TOKEN", "secret")
+	addresses := make(chan string, 1)
+	previous := announce
+	announce = func(address string) { addresses <- address }
+	t.Cleanup(func() { announce = previous })
+	plugin := Define(Plugin[NoConfig]{Name: "noop", Apply: func(*Ctx, NoConfig) error { return nil }})
+	endpoint := &peer.Endpoint{Local: "runtime", Declare: []string{"runtime"}}
+	go func() { _ = listen("ws://127.0.0.1:0/rutis", endpoint, []*Definition{plugin}) }()
+	address := testwait.Within(t, "the listener's address", addresses)
+	c := dial(t, address)
+	for {
+		opcode, payload := c.next()
+		if opcode == 0x9 || opcode == 0xA {
+			continue
+		}
+		if opcode != 0x1 || !strings.Contains(string(payload), `"op":"hello"`) {
+			t.Fatalf("the session greets: %d %q", opcode, payload)
+		}
+		break
+	}
+	// Greeted, then this side says nothing: the heartbeat starts here.
+	if code := c.closed(); code != goingAway {
+		t.Fatalf("closed with %d, not %d", code, goingAway)
+	}
+}
+
+// A new connection waiting for the old lease to be cleaned up is not
+// closed by the heartbeat, even when the cleanup outlasts its timeout
+// (#1182). The old lease is a row whose cleanup takes 400 ms; the
+// heartbeat times out at 100 ms.
+func TestANewConnectionWaitingForTheOldLeaseIsNotClosedByTheHeartbeat(t *testing.T) {
+	t.Setenv("RUTIS_HEARTBEAT", "10,100")
+	t.Setenv("RUTIS_SHUTDOWN_TIMEOUT", "2")
+	t.Setenv("RUTIS_TOKEN", "secret")
+	addresses := make(chan string, 1)
+	previous := announce
+	announce = func(address string) { addresses <- address }
+	t.Cleanup(func() { announce = previous })
+	slow := Define(Plugin[NoConfig]{Name: "slow", Apply: func(c *Ctx, _ NoConfig) error {
+		// Its cleanup outlasts the heartbeat timeout; not cancelled.
+		c.Effect(func(context.Context) error {
+			time.Sleep(400 * time.Millisecond)
+			return nil
+		})
+		return nil
+	}})
+	endpoint := &peer.Endpoint{Local: "runtime", Declare: []string{"runtime"}}
+	go func() { _ = listen("ws://127.0.0.1:0/rutis", endpoint, []*Definition{slow}) }()
+	address := testwait.Within(t, "the listener's address", addresses)
+	conn, err := dialWebSocket(address, testProtocol, "secret", nil, 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close("the test ended")
+	// The old lease: a controller whose row cleanup outlasts the heartbeat.
+	host, err := peer.New(conn, peer.Options{
+		Endpoint: &peer.Endpoint{Local: "controller", Expected: "runtime"},
+		Dispatch: func(context.Context, string, string, []any) (any, error) { return nil, nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := host.Start(); err != nil {
+		t.Fatal(err)
+	}
+	testwait.Within(t, "the greeting", host.Ready())
+	ctx, cancel := context.WithTimeout(context.Background(), testwait.HangGuard)
+	defer cancel()
+	if _, err := host.Call(ctx, "", "rows.load", []any{
+		"row", "slow", nil, []any{}, []any{}, map[string]any{}, map[string]any{"scope": []any{}, "id": "row"},
+	}, true); err != nil {
+		t.Fatalf("loading the row: %v", err)
+	}
+	// A new connection takes over and waits for that cleanup: not silent.
+	second := dial(t, address)
+	defer second.conn.Close()
+	for {
+		opcode, payload := second.next()
+		if opcode == 0x9 || opcode == 0xA {
+			continue
+		}
+		if opcode == 0x8 {
+			t.Fatalf("the waiting connection was closed with %d before its hello", int(binary.BigEndian.Uint16(payload)))
+		}
+		if opcode == 0x1 && strings.Contains(string(payload), `"op":"hello"`) {
+			return
+		}
 	}
 }

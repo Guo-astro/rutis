@@ -2,7 +2,9 @@
 // framed here over a byte stream, as Go's runtime frames it: the listener
 // (Listen.swift) decides the HTTP status of every refusal itself, which
 // Network.framework's WebSocket protocol does not let it do. One message is
-// at most 16 MiB; pings keep a silent far end from holding the connection.
+// at most 16 MiB; pings keep a silent far end from holding the connection,
+// once `startHeartbeat()` said the session's hello went out: a connection
+// waiting for the old lease to be cleaned up is not silent (#1182).
 #if canImport(Network)
 import Foundation
 import Network
@@ -126,19 +128,26 @@ final class WebSocket: Channel, @unchecked Sendable {
     private let stateLock = Lock()
     private var shut = false
     private var lastSeen = Date()
+    /// Whether `startHeartbeat()` has come: until then silence is waiting
+    /// for the session's hello, not a lost far end.
+    private var beating = false
     /// The code of the far end's close frame, once it closed with one.
     private(set) var farClose: Int?
     private var heart: DispatchSourceTimer?
 
-    init(_ stream: ByteStream, client: Bool) {
+    /// `timing` is the heartbeat's ping interval and timeout; nil: the
+    /// environment's (tests shorten it).
+    init(_ stream: ByteStream, client: Bool, timing: (ping: Double, timeout: Double)? = nil) {
         self.stream = stream
         self.client = client
-        let (ping, timeout) = heartbeat()
+        let (ping, timeout) = timing ?? heartbeat()
         let timer = DispatchSource.makeTimerSource(queue: .global())
         timer.schedule(deadline: .now() + ping, repeating: ping)
         timer.setEventHandler { [weak self] in
             guard let self else { return }
-            if Date().timeIntervalSince(stateLock.withLock { self.lastSeen }) > timeout {
+            let (beating, lastSeen) = stateLock.withLock { (self.beating, self.lastSeen) }
+            // Waiting for its hello to go out, a connection is not silent.
+            if beating, Date().timeIntervalSince(lastSeen) > timeout {
                 closeWith(CloseCode.goingAway, "the far end stopped answering")
                 return
             }
@@ -146,6 +155,16 @@ final class WebSocket: Channel, @unchecked Sendable {
         }
         heart = timer
         timer.resume()
+    }
+
+    /// Starts its heartbeat, at the session's hello: from now on nothing
+    /// for the timeout closes it. A connection waiting for the old lease to
+    /// be cleaned up is not closed with 1001 before (#1182).
+    func startHeartbeat() {
+        stateLock.withLock {
+            beating = true
+            lastSeen = Date()
+        }
     }
 
     deinit { heart?.cancel() }

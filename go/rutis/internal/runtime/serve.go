@@ -246,6 +246,10 @@ func startRuntime(channel peer.Channel, endpoint *peer.Endpoint, rt *runtimeStat
 		}
 		return nil, err
 	}
+	// The hello went out: from here, silence counts (#1182).
+	if conn, ok := channel.(*wsConn); ok {
+		conn.startHeartbeat()
+	}
 	return &session{peer: p, runtime: rt}, nil
 }
 

@@ -37,7 +37,10 @@ async function pair(spec = 'ws://127.0.0.1:0/rutis', listening: Options = {}, di
   const accepted = new Promise<any>(resolve => { accept = resolve })
   const listener = listen(spec, { handlers: () => server.handlers, accepted: channel => accept(channel) }, { protocol: PROTOCOL, token: 'secret', ...listening })
   const dialed = await open(listener.url.replace('://127.0.0.1', dialing.ca ? '://localhost' : '://127.0.0.1'), client.handlers, { protocol: PROTOCOL, token: 'secret', ...dialing })
-  return { listener, dialed, accepted: await within('the accepted connection', accepted), server, client }
+  const served = await within('the accepted connection', accepted)
+  // Served: the session's hello went out (#1182).
+  served.start()
+  return { listener, dialed, accepted: served, server, client }
 }
 
 test('messages cross both ways and an orderly close is a normal end', async () => {
@@ -111,7 +114,7 @@ test('heartbeats drop a far end that went silent', async () => {
   const server = inbox()
   let accept!: () => void
   const accepted = new Promise<void>(resolve => { accept = resolve })
-  const listener = listen('ws://127.0.0.1:0/rutis', { handlers: () => server.handlers, accepted: () => accept() }, { protocol: PROTOCOL, token: 'secret', limits: quick })
+  const listener = listen('ws://127.0.0.1:0/rutis', { handlers: () => server.handlers, accepted: channel => { channel.start(); accept() } }, { protocol: PROTOCOL, token: 'secret', limits: quick })
   // A far end that upgrades, then never answers a ping.
   const silent = connect(Number(new URL(listener.url).port), '127.0.0.1')
   silent.on('error', () => {})
@@ -121,6 +124,36 @@ test('heartbeats drop a far end that went silent', async () => {
     `Sec-WebSocket-Protocol: ${PROTOCOL}`, 'Authorization: Bearer secret', '', '',
   ].join('\r\n'))
   await within('the silent connection to be accepted', accepted)
+  expect((await server.closedWith).reason).toContain('heartbeat timeout')
+  silent.destroy()
+  listener.stop()
+})
+
+// A connection accepted but not served yet is not silent: its heartbeat
+// starts only once the session's hello went out (#1182). Timing as above:
+// the wait is ten timeouts, so a stalled machine cannot fail it.
+test('a connection waiting for its hello is not silent; served, silence counts', async () => {
+  const quick = { ...LIMITS, ping: 10, timeout: 50 }
+  const server = inbox()
+  let accept!: (channel: any) => void
+  const accepted = new Promise<any>(resolve => { accept = resolve })
+  const listener = listen('ws://127.0.0.1:0/rutis', { handlers: () => server.handlers, accepted: channel => accept(channel) }, { protocol: PROTOCOL, token: 'secret', limits: quick })
+  // A far end that upgrades, then says nothing at all.
+  const silent = connect(Number(new URL(listener.url).port), '127.0.0.1')
+  silent.on('error', () => {})
+  silent.write([
+    'GET /rutis HTTP/1.1', 'Host: 127.0.0.1', 'Upgrade: websocket', 'Connection: Upgrade',
+    'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==', 'Sec-WebSocket-Version: 13',
+    `Sec-WebSocket-Protocol: ${PROTOCOL}`, 'Authorization: Bearer secret', '', '',
+  ].join('\r\n'))
+  const waiting = await within('the silent connection to be accepted', accepted)
+  // Waiting for its hello, it is not silent, even past ten timeouts.
+  let closed = false
+  server.closedWith.then(() => { closed = true }, () => {})
+  await Bun.sleep(500)
+  expect(closed).toBe(false)
+  // Served: the hello went out, and from here silence counts.
+  waiting.start()
   expect((await server.closedWith).reason).toContain('heartbeat timeout')
   silent.destroy()
   listener.stop()
