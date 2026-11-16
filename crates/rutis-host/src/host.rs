@@ -691,28 +691,14 @@ impl Host {
     /// restart started meanwhile too), not whichever ends first. A runtime
     /// that is down has none left, and returns at once.
     async fn stop_runtime_process(&mut self, name: &str) -> Result<(), Error> {
-        let processes = self
-            .processes
-            .iter()
-            .position(|(runtime, _)| runtime == name)
-            .map(|index| self.processes.remove(index).1);
+        // Taken out before stopping it, so a restart started meanwhile
+        // under the same name does not hand its process to this wait.
+        let processes = take_processes(&mut self.processes, name);
         self.stop_runtime(name).await?;
-        let Some(processes) = processes else {
-            return Ok(());
-        };
-        let ended = async {
-            while processes.running() {
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
-        };
-        tokio::time::timeout(RUNTIME_EXIT, ended)
-            .await
-            .map_err(|_| {
-                format!(
-                    "the {name} runtime's process did not end within {}s",
-                    RUNTIME_EXIT.as_secs()
-                )
-            })
+        match processes {
+            Some(processes) => runtime_process_ended(name, &processes).await,
+            None => Ok(()),
+        }
     }
 
     /// The configuration this host runs.
@@ -1028,6 +1014,53 @@ fn layer(rows: Vec<serde_json::Value>) -> Result<Layer, Error> {
 /// longer than the grace the local transport gives it before killing it.
 pub const RUNTIME_EXIT: Duration = Duration::from_secs(15);
 
+/// The processes runtime `name` started, taken out of the host's list: what
+/// it waits for once stopped, kept apart from a generation a restart starts
+/// meanwhile under the same name (57f536a0).
+fn take_processes(
+    processes: &mut Vec<(String, rutis_bridge::pipe::Processes)>,
+    name: &str,
+) -> Option<rutis_bridge::pipe::Processes> {
+    processes
+        .iter()
+        .position(|(runtime, _)| runtime == name)
+        .map(|index| processes.remove(index).1)
+}
+
+/// Wait (up to [`RUNTIME_EXIT`]) until the processes `processes` of runtime
+/// `name` have ended: its own generation's, not another runtime's.
+async fn runtime_process_ended(
+    name: &str,
+    processes: &rutis_bridge::pipe::Processes,
+) -> Result<(), Error> {
+    #[cfg(not(rutis_shuttle))]
+    {
+        let ended = async {
+            while processes.running() {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        };
+        tokio::time::timeout(RUNTIME_EXIT, ended)
+            .await
+            .map_err(|_| {
+                format!(
+                    "the {name} runtime's process did not end within {}s",
+                    RUNTIME_EXIT.as_secs()
+                )
+            })
+    }
+    #[cfg(rutis_shuttle)]
+    {
+        // The models end the process themselves, so there is nothing to
+        // time out: a process nobody ends is a deadlock shuttle reports.
+        let _ = name;
+        while processes.running() {
+            shuttle::thread::yield_now();
+        }
+        Ok(())
+    }
+}
+
 /// What [`Host::reload`] changed.
 #[derive(Debug, Default)]
 pub struct Reloaded {
@@ -1217,6 +1250,11 @@ impl DynPlugin for Released {
         Box::pin(async { Ok(Effect::Done) })
     }
 }
+
+/// The removed-runtime wait's shuttle model (#627).
+#[cfg(all(test, rutis_shuttle))]
+#[path = "host_shuttle_tests.rs"]
+mod shuttle_tests;
 
 #[cfg(test)]
 mod tests {

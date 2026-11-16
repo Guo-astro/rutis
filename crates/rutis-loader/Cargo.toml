@@ -51,6 +51,13 @@ rutis-bridge = { path = "../rutis-bridge", features = ["websocket", "testing"] }
 # selection, #659).
 rutis = { path = "../rutis", features = ["testing"] }
 
+# The shuttle model of the binary runtime's restart
+# (src/runtime/binary/shuttle_tests.rs, #627): built with
+# `RUSTFLAGS="--cfg rutis_shuttle"` only, never by a plain build.
+[target.'cfg(rutis_shuttle)'.dependencies]
+shuttle = "0.9.7"
+
 [lints.rust]
-# cargo-fuzz builds with `--cfg fuzzing` (src/runtime/binary.rs).
-unexpected_cfgs = { level = "warn", check-cfg = ["cfg(fuzzing)"] }
+# cargo-fuzz builds with `--cfg fuzzing` (src/runtime/binary.rs); the
+# supervision's shuttle model with `--cfg rutis_shuttle` (#627).
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(fuzzing)", "cfg(rutis_shuttle)"] }

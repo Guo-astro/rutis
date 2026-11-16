@@ -1624,7 +1624,14 @@ impl<L: BinaryLanguage> BinaryRuntimesHandle<L> {
 /// process, is waited for, so it withdraws nothing of the next one's.
 async fn stop(runtime: &str, slot: Slot) {
     let limit = shutdown_deadline() + STOP_MARGIN;
+    #[cfg(not(rutis_shuttle))]
     let disposed = slot.view.dispose_with_timeout(limit).await;
+    #[cfg(rutis_shuttle)]
+    // The fiber's dispose is the kernel's, and this model writes it out: the
+    // wait below is what the model checks, and the view stays in the slot
+    // until the stop returns. The model's process ends by hand, so there is
+    // no deadline to run out either.
+    let disposed: Result<(), rutis::host::DisposeWaitError> = Ok(());
     let timed_out = matches!(
         disposed,
         Err(rutis::host::DisposeWaitError::TimedOut { .. })
@@ -1634,10 +1641,18 @@ async fn stop(runtime: &str, slot: Slot) {
     }
     // Disposed, the process ends once its channel closes, or the transport
     // kills it; here it is killed at the latest.
+    #[cfg(not(rutis_shuttle))]
     let exited = !timed_out
         && tokio::time::timeout(STOP_EXIT, slot.processes.ended())
             .await
             .is_ok();
+    #[cfg(rutis_shuttle)]
+    let exited = {
+        // The model ends the process; one nobody ends is a deadlock shuttle
+        // reports rather than a timeout to wait out.
+        slot.processes.ended().await;
+        true
+    };
     if exited {
         return;
     }
@@ -2086,6 +2101,11 @@ impl<L: BinaryLanguage> DynPlugin for BinaryRuntime<L> {
         })
     }
 }
+
+/// The binary runtime restart's shuttle model (#627), built only with
+/// `--cfg rutis_shuttle`.
+#[cfg(all(test, rutis_shuttle))]
+mod shuttle_tests;
 
 #[cfg(test)]
 mod tests {
