@@ -6,7 +6,8 @@
 //! cleaned up, a newer connection takes over only once that is done, and
 //! the old lease's calls are refused, not served by the new lease.
 //!
-//! The runtime is a real Python one listening on loopback. Its plugin
+//! Each runtime is a real one listening on loopback: Python, and Go and
+//! Bun when the run lists them (`RUTIS_TEST_RUNTIMES`, #624). Its plugin
 //! writes every start, call and cleanup to a log, and its cleanup waits
 //! for a gate the test opens: the log then says whether the new
 //! controller was greeted before the old lease was gone, instead of the
@@ -20,8 +21,8 @@
 
 mod common;
 
-use std::path::PathBuf;
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use common::{environment, repo};
@@ -89,6 +90,38 @@ def apply(ctx, config):
     ctx.effect(stop)
 "#;
 
+#[cfg(unix)]
+const BUN: &str = r#"
+import { appendFileSync, existsSync } from 'node:fs'
+
+export const provides = { log: { who: 'sync', hold: 'async' } }
+
+function write(path, line) {
+  appendFileSync(path, line + '\n')
+}
+
+function sleep(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+}
+
+export function apply(ctx, config) {
+  write(config.log, `start ${config.who}`)
+  ctx.provide('log', {
+    who: () => config.who,
+    hold: async () => {
+      write(config.log, `hold ${config.who}`)
+      while (!existsSync(config.hold)) await new Promise((resolve) => setTimeout(resolve, 10))
+      return `held ${config.who}`
+    },
+  })
+  ctx.effect(() => {
+    write(config.log, `cleanup ${config.who}`)
+    while (!existsSync(config.stop)) sleep(10)
+    write(config.log, `stop ${config.who}`)
+  })
+}
+"#;
+
 /// The `python` to run: `RUTIS_PYTHON`, else `python3` (`python` on
 /// Windows, where setup-python installs no `python3`).
 fn python() -> String {
@@ -96,47 +129,123 @@ fn python() -> String {
         .unwrap_or_else(|_| if cfg!(windows) { "python" } else { "python3" }.into())
 }
 
-/// A Python runtime listening on loopback, its project holding [`PLUGIN`].
+/// Which runtime listens for its controller.
+#[derive(Clone, Copy, Debug)]
+enum Language {
+    Python,
+    Go,
+    /// Unix only: Bun on Windows is not a declared platform.
+    #[cfg(unix)]
+    Bun,
+}
+
+impl Language {
+    /// Whether this run has it: Python is the suite's own baseline, Go and
+    /// Bun only when `RUTIS_TEST_RUNTIMES` lists them (#624).
+    fn enabled(self) -> bool {
+        match self {
+            Language::Python => true,
+            Language::Go => rutis_test_support::runtimes::enabled("go"),
+            #[cfg(unix)]
+            Language::Bun => rutis_test_support::runtimes::enabled("bun"),
+        }
+    }
+}
+
+/// The Go binary of `go/rutis/internal/fixtures/lease`, built once with the
+/// `go` on PATH.
+fn go_binary() -> &'static Path {
+    static BINARY: OnceLock<PathBuf> = OnceLock::new();
+    BINARY.get_or_init(|| {
+        let directory = tempfile::tempdir().unwrap().keep();
+        let binary = directory.join(format!("lease{}", std::env::consts::EXE_SUFFIX));
+        let status = std::process::Command::new("go")
+            .args(["build", "-o"])
+            .arg(&binary)
+            .arg("./internal/fixtures/lease")
+            .current_dir(repo().join("go/rutis"))
+            .status()
+            .expect("go is on PATH");
+        assert!(status.success(), "go build ./internal/fixtures/lease");
+        binary
+    })
+}
+
+/// A runtime listening on loopback, its project holding the logger plugin
+/// [`PLUGIN`] for Python.
 struct Runtime {
+    language: Language,
     _process: tokio::process::Child,
     address: String,
     /// What the plugin writes, one line per event.
     log: PathBuf,
     /// Created, the plugin's cleanup may finish.
     stop_gate: PathBuf,
+    /// Created, a call of the lease that waits in `hold` finishes.
+    hold_gate: PathBuf,
     _project: tempfile::TempDir,
 }
 
 impl Runtime {
-    async fn start() -> Self {
+    async fn start(language: Language) -> Self {
         let project = tempfile::tempdir().unwrap();
         let log = project.path().join("lease.log");
         let (stop_gate, hold_gate) = (
             project.path().join("stop-gate"),
             project.path().join("hold-gate"),
         );
-        let source = PLUGIN
-            .replace("__LOG__", &format!("{:?}", log.display().to_string()))
-            .replace(
-                "__STOP__",
-                &format!("{:?}", stop_gate.display().to_string()),
-            )
-            .replace(
-                "__HOLD__",
-                &format!("{:?}", hold_gate.display().to_string()),
-            );
-        std::fs::write(project.path().join("logger.py"), source).unwrap();
-        let mut child = tokio::process::Command::new(python())
-            .args(["-m", "rutis", "listen:ws://127.0.0.1:0/rutis"])
-            .args(["--id", "remote", "--peer", "main"])
-            .arg(project.path())
-            .env("PYTHONPATH", repo().join("python/rutis"))
-            .env("RUTIS_TOKEN", TOKEN)
-            .current_dir(project.path())
-            .stderr(std::process::Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .unwrap();
+        let mut child = match language {
+            Language::Python => {
+                let source = PLUGIN
+                    .replace("__LOG__", &format!("{:?}", log.display().to_string()))
+                    .replace(
+                        "__STOP__",
+                        &format!("{:?}", stop_gate.display().to_string()),
+                    )
+                    .replace(
+                        "__HOLD__",
+                        &format!("{:?}", hold_gate.display().to_string()),
+                    );
+                std::fs::write(project.path().join("logger.py"), source).unwrap();
+                tokio::process::Command::new(python())
+                    .args(["-m", "rutis", "listen:ws://127.0.0.1:0/rutis"])
+                    .args(["--id", "remote", "--peer", "main"])
+                    .arg(project.path())
+                    .env("PYTHONPATH", repo().join("python/rutis"))
+                    .env("RUTIS_TOKEN", TOKEN)
+                    .current_dir(project.path())
+                    .stderr(std::process::Stdio::piped())
+                    .kill_on_drop(true)
+                    .spawn()
+                    .unwrap()
+            }
+            Language::Go => tokio::process::Command::new(go_binary())
+                .args(["listen:ws://127.0.0.1:0/rutis"])
+                .args(["--id", "remote", "--peer", "main"])
+                .arg(project.path())
+                .env("RUTIS_TOKEN", TOKEN)
+                .stderr(std::process::Stdio::piped())
+                .kill_on_drop(true)
+                .spawn()
+                .unwrap(),
+            #[cfg(unix)]
+            Language::Bun => {
+                std::fs::write(project.path().join("package.json"), "{}").unwrap();
+                std::fs::write(project.path().join("logger.ts"), BUN).unwrap();
+                tokio::process::Command::new("bun")
+                    .args(["--no-install", "--no-env-file"])
+                    .arg(repo().join("bun/rutis-bun/src/main.ts"))
+                    .args(["listen:ws://127.0.0.1:0/rutis"])
+                    .args(["--id", "remote", "--peer", "main"])
+                    .arg(project.path())
+                    .env("RUTIS_TOKEN", TOKEN)
+                    .current_dir(project.path())
+                    .stderr(std::process::Stdio::piped())
+                    .kill_on_drop(true)
+                    .spawn()
+                    .unwrap()
+            }
+        };
         let mut lines = tokio::io::BufReader::new(child.stderr.take().unwrap()).lines();
         let address = COLD
             .within("the runtime's address", async {
@@ -154,10 +263,12 @@ impl Runtime {
             }
         });
         Self {
+            language,
             _process: child,
             address,
             log,
             stop_gate,
+            hold_gate,
             _project: project,
         }
     }
@@ -188,11 +299,40 @@ impl Runtime {
     /// A host `main` whose dial row `remote` connects this runtime, with
     /// one row of its plugin configured as `who`.
     async fn controller(&self, who: &str) -> Controller {
+        // What the row says: its name, and where the plugin writes. The
+        // Python plugin has its paths in its source, Go and Bun in their
+        // config.
+        let row = match self.language {
+            Language::Python => {
+                json!({ "id": "log", "name": "remote:logger", "config": { "who": who } })
+            }
+            Language::Go => json!({
+                "id": "log",
+                "name": "remote:logger",
+                "config": {
+                    "who": who,
+                    "log": self.log,
+                    "stop": self.stop_gate,
+                    "hold": self.hold_gate,
+                }
+            }),
+            #[cfg(unix)]
+            Language::Bun => json!({
+                "id": "log",
+                "name": "remote:./logger.ts",
+                "config": {
+                    "who": who,
+                    "log": self.log,
+                    "stop": self.stop_gate,
+                    "hold": self.hold_gate,
+                }
+            }),
+        };
         let config: HostConfig = serde_json::from_value(json!({
             "id": "main",
             "rows": [
                 { "id": "remote", "name": "rutis-host/dial", "config": { "address": self.address } },
-                { "id": "log", "name": "remote:logger", "config": { "who": who } }
+                row
             ]
         }))
         .unwrap();
@@ -230,12 +370,10 @@ impl Controller {
 /// A controller leaves: the runtime cleans its rows up (all of them, in
 /// the log) and stays for the next controller, which gets a new lease and
 /// has its rows loaded there.
-/// guarantee: loader/remote-runtime-lease
-#[tokio::test(flavor = "multi_thread")]
-async fn successive_controllers_each_get_a_clean_lease() {
+async fn successive_controllers(language: Language) {
     let _environment = environment();
     std::env::set_var("RUTIS_TOKEN_REMOTE", TOKEN);
-    let runtime = Runtime::start().await;
+    let runtime = Runtime::start(language).await;
 
     let first = runtime.controller("a").await;
     assert_eq!(first.who().await, json!("a"));
@@ -259,12 +397,10 @@ async fn successive_controllers_each_get_a_clean_lease() {
 /// A newer connection takes over a connected controller only once the old
 /// lease is cleaned up; the old lease's call is refused (not answered by
 /// the new lease), and the new lease's rows work.
-/// guarantee: loader/remote-runtime-lease
-#[tokio::test(flavor = "multi_thread")]
-async fn a_newer_controller_takes_over_after_the_old_lease_and_the_old_call_is_refused() {
+async fn a_newer_controller_takes_over(language: Language) {
     let _environment = environment();
     std::env::set_var("RUTIS_TOKEN_REMOTE", TOKEN);
-    let runtime = Runtime::start().await;
+    let runtime = Runtime::start(language).await;
 
     let first = runtime.controller("a").await;
     assert_eq!(first.who().await, json!("a"));
@@ -314,4 +450,54 @@ async fn a_newer_controller_takes_over_after_the_old_lease_and_the_old_call_is_r
         !lines.iter().any(|line| line.starts_with("held")),
         "{lines:?}"
     );
+}
+
+/// guarantee: loader/remote-runtime-lease
+#[tokio::test(flavor = "multi_thread")]
+async fn successive_controllers_each_get_a_clean_lease() {
+    successive_controllers(Language::Python).await;
+}
+
+/// guarantee: loader/remote-runtime-lease
+#[tokio::test(flavor = "multi_thread")]
+async fn go_controllers_each_get_a_clean_lease() {
+    if !Language::Go.enabled() {
+        return;
+    }
+    successive_controllers(Language::Go).await;
+}
+
+/// guarantee: loader/remote-runtime-lease
+#[tokio::test(flavor = "multi_thread")]
+async fn a_newer_controller_takes_over_after_the_old_lease_and_the_old_call_is_refused() {
+    a_newer_controller_takes_over(Language::Python).await;
+}
+
+/// guarantee: loader/remote-runtime-lease
+#[tokio::test(flavor = "multi_thread")]
+async fn a_newer_go_controller_takes_over_after_the_old_lease_and_the_old_call_is_refused() {
+    if !Language::Go.enabled() {
+        return;
+    }
+    a_newer_controller_takes_over(Language::Go).await;
+}
+
+/// guarantee: loader/remote-runtime-lease
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn bun_controllers_each_get_a_clean_lease() {
+    if !Language::Bun.enabled() {
+        return;
+    }
+    successive_controllers(Language::Bun).await;
+}
+
+/// guarantee: loader/remote-runtime-lease
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_newer_bun_controller_takes_over_after_the_old_lease_and_the_old_call_is_refused() {
+    if !Language::Bun.enabled() {
+        return;
+    }
+    a_newer_controller_takes_over(Language::Bun).await;
 }
