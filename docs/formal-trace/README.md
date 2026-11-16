@@ -141,13 +141,13 @@ node tools/formal-trace.mjs --check    # 只检查，不打印统计
 | [guarantees-loader.md](rules/guarantees-loader.md) | `loader/*`、`swift/*` | 48 | 43 | 5 | 0 | 0 | 0 | 0 |
 | [trace-contract.md](rules/trace-contract.md) | 手写 | 44 | 0 | 34 | 0 | 9 | 1 | 0 |
 | [event-close-admission.md](rules/event-close-admission.md) | 手写 | 10 | 0 | 7 | 3 | 0 | 0 | 0 |
-| [protocol-registry-1.md](rules/protocol-registry-1.md) | #634 · registry-1 | 165 | 30 | 40 | 44 | 6 | 21 | 24 |
-| [protocol-registry-2.md](rules/protocol-registry-2.md) | #634 · registry-2 | 218 | 12 | 29 | 122 | 5 | 14 | 36 |
-| [protocol-events.md](rules/protocol-events.md) | #634 · events | 262 | 79 | 92 | 48 | 1 | 23 | 19 |
+| [protocol-registry-1.md](rules/protocol-registry-1.md) | #634 · registry-1 | 165 | 41 | 38 | 35 | 6 | 21 | 24 |
+| [protocol-registry-2.md](rules/protocol-registry-2.md) | #634 · registry-2 | 218 | 18 | 29 | 116 | 5 | 14 | 36 |
+| [protocol-events.md](rules/protocol-events.md) | #634 · events | 262 | 82 | 91 | 46 | 1 | 23 | 19 |
 | [protocol-session.md](rules/protocol-session.md) | #634 · session 上/下 | 350 | 13 | 99 | 86 | 7 | 118 | 27 |
-| [protocol-runtime.md](rules/protocol-runtime.md) | #634 · runtime | 309 | 8 | 38 | 139 | 10 | 51 | 63 |
+| [protocol-runtime.md](rules/protocol-runtime.md) | #634 · runtime | 309 | 20 | 38 | 127 | 10 | 51 | 63 |
 | [protocol-remote.md](rules/protocol-remote.md) | #634 · remote | 248 | 5 | 69 | 69 | 13 | 60 | 32 |
-| 合计 | — | 1825 | 327 | 426 | 511 | 61 | 296 | 204 |
+| 合计 | — | 1825 | 359 | 423 | 482 | 61 | 296 | 204 |
 <!-- index:end -->
 
 脚本还会打印这些数字（只算本表内的行）：

@@ -1108,6 +1108,80 @@ async fn subtree_shutdown_cancels_descendants_before_draining_listener_calls() {
     root.shutdown().await.unwrap();
 }
 
+/// What a subtree provided under its instance keys is withdrawn when that
+/// subtree closes, and only then (#622's `INS-6-1`): the root stays live, the
+/// provider's binding is released exactly once, and a child made afterwards
+/// gets a new instance ID and sees none of the old keys.
+///
+/// guarantee: instance/subtrees.2.2
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn closing_a_subtree_withdraws_the_instance_keys_it_provided() {
+    /// The provided value: dropping it is the provider's binding being released.
+    struct Tracked(Arc<AtomicUsize>);
+    impl Drop for Tracked {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    let root = Ctx::root().unwrap();
+    let (view, subtree) = child(&root).await;
+    let id = subtree.instance();
+    let dropped = Arc::new(AtomicUsize::new(0));
+    subtree
+        .provide_at(
+            Key::<Tracked>::of().instance(id),
+            Arc::new(Tracked(dropped.clone())),
+        )
+        .unwrap();
+    // A consumer inside the subtree reads the instance key it provides.
+    let key = Key::<u64>::of().instance(id);
+    subtree.provide_at(key.clone(), Arc::new(10u64)).unwrap();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let read = subtree.plugin(Read {
+        key: key.clone(),
+        seen: seen.clone(),
+    });
+    (&read).await.unwrap();
+    assert_eq!(read.state().state, FiberState::Active);
+    assert_eq!(*seen.lock().unwrap(), vec![10]);
+    assert_eq!(dropped.load(Ordering::SeqCst), 0);
+
+    // Closing this subtree, not the root: the root stays live and the child's
+    // instance keys go with it, exactly once.
+    view.shutdown().await.unwrap();
+    drop(view);
+    assert_eq!(
+        dropped.load(Ordering::SeqCst),
+        1,
+        "closing the subtree did not release its provided binding exactly once"
+    );
+    assert_eq!(read.state().state, FiberState::Disposed);
+    assert!(
+        subtree.get_at(&key).is_none(),
+        "a closed subtree still serves its key"
+    );
+    assert!(root.get_at(&key).is_none());
+    root.provide(7u64).unwrap();
+    assert_eq!(
+        *root.get::<u64>().unwrap(),
+        7,
+        "the root closed with its child"
+    );
+
+    // A child made afterwards is a new instance: the retired ID's keys are not
+    // its own, and nothing of the old subtree is left to serve them.
+    let (_new_view, new) = child(&root).await;
+    assert_ne!(new.instance(), id);
+    assert!(new.get_at(&key).is_none());
+    assert!(
+        new.get_at(&Key::<Tracked>::of().instance(id)).is_none(),
+        "the new child inherited the old instance's binding"
+    );
+    assert_eq!(dropped.load(Ordering::SeqCst), 1);
+    root.shutdown().await.unwrap();
+}
+
 /// A child mounted again is a new fiber with a new ID; the old ID stays
 /// retired and does not reach the new child's instance services.
 ///

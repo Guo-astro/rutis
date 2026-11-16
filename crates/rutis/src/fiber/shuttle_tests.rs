@@ -32,7 +32,8 @@
 //! orders one binding's `Provided` before its `Removed` (#622's third doubt).
 //! Model 25 runs the kernel's own `load` and `flush_status` on three fibers
 //! restarting at once, to check the order `FiberStatusChanged` is delivered in
-//! (`core/D24a`); model 26 runs a mount plugin's cleanup effect and
+//! (`core/D24a`) and that a delivery runs outside the transition lock
+//! (`core/D5a`); model 26 runs a mount plugin's cleanup effect and
 //! its service through the real reverse pass (`MNT-6-4`); model 27 unloads a row
 //! whose `Ctx` a method registered on, while another thread registers
 //! (`MNT-11-9b`). Models 26 and 27 install the spawn stand-in too, because the
@@ -6588,13 +6589,25 @@ fn status_restart(fiber: &Arc<FiberInner>) {
 /// does with each event afterwards is the emit chain's order — model 10,
 /// `core/D31a`: per name, one emit's calls start before the next emit's.
 ///
+/// The tap also asserts the fiber's transition lock is free (`core/D5a`: "回调在
+/// 锁外" — a delivery never runs under the lock the commit took): `try_lock`
+/// succeeds and the guard is dropped before anything is recorded. Were
+/// `flush_status` delivered from inside `set_state`'s critical section, the
+/// `try_lock` answers `WouldBlock` and the model fails with "the ... delivered
+/// ... while its transition lock was held". The admission is not asserted: `load`
+/// holds it across its `flush_status` on purpose (a per-root admission, one commit
+/// then one flush), so the lock the callback must not hold is the transition's.
+///
 /// Mutations this model catches: bumping `seq` after the push instead of before
 /// it (`set_state` — "the first delivered seq 0 as its 1th event: a status event
-/// was lost or delivered twice"), and dropping `load`'s final `flush_status`
-/// ("the first is Active but its last delivered event ends at Loading"). Notice
-/// what it cannot catch: `flush_status`'s loop reordered. The kernel flushes
-/// after every commit, so in this model — and in the kernel — a flush takes at
-/// most one event, and the order inside one flush has nothing to reorder.
+/// was lost or delivered twice"), dropping `load`'s final `flush_status`
+/// ("the first is Active but its last delivered event ends at Loading"), and
+/// moving the delivery inside `set_state`'s transition lock (the tap's
+/// `try_lock` answers `WouldBlock`: "the ... delivered ... while its transition
+/// lock was held"). Notice what it cannot catch: `flush_status`'s loop reordered. The
+/// kernel flushes after every commit, so in this model — and in the kernel — a
+/// flush takes at most one event, and the order inside one flush has nothing to
+/// reorder.
 #[test]
 fn shuttle_status_events_arrive_in_commit_order() {
     const RESTARTS: usize = 3;
@@ -6618,12 +6631,25 @@ fn shuttle_status_events_arrive_in_commit_order() {
             .collect();
         let delivered: Arc<std::sync::Mutex<Vec<StatusStep>>> = Arc::default();
 
-        // The tap: what the kernel hands the bus, at the point it hands it over,
-        // then a switch point — the scheduler may run another fiber's driver
-        // inside this one's flush.
+        // The tap: the fiber's transition lock is free while it runs (`core/D5a`;
+        // a delivery made inside `set_state` would find it held), then what the
+        // kernel hands the bus, at the point it hands it over, then a switch
+        // point: the scheduler may run another fiber's driver inside this one's
+        // flush.
         for fiber in &fibers {
             let tap = delivered.clone();
+            let observed = fiber.clone();
             fiber.watch_status(move |event: &FiberStatusChanged| {
+                let free = observed.transition.try_lock();
+                assert!(
+                    free.is_ok(),
+                    "the {} delivered {:?} → {:?} while its transition lock was held: a \
+                     delivery runs inside the lock",
+                    observed.name,
+                    event.from,
+                    event.to
+                );
+                drop(free);
                 tap.lock().unwrap().push(StatusStep::of(event));
                 switch_point();
             });
