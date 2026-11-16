@@ -61,7 +61,7 @@ pub struct EventSubscription {
 /// before it did (§5.5).
 struct Tail {
     generation: u64,
-    task: tokio::task::JoinHandle<()>,
+    task: crate::sync::Task<()>,
 }
 
 #[derive(Default)]
@@ -679,10 +679,10 @@ impl EventBus {
         };
         let spawn_handle = handle.clone();
         SPAWNING_EMIT.with(|spawning| spawning.set(true));
-        let task = handle.spawn(async move {
+        let task = crate::sync::spawn(&handle, async move {
             let _cleanup = cleanup;
             if let Some(prev) = prev {
-                let _ = prev.await;
+                let _ = prev.join().await;
             }
             let entries = if batch.is_some() {
                 match filter_any(&owned.name, entries.to_vec(), batch).await {
@@ -718,7 +718,7 @@ impl EventBus {
                 let call =
                     run::emit_call(owned.clone(), entry.clone(), flight, Some(ticket.clone()));
                 if let Started::Pending(rest) = first_poll(call).await {
-                    spawn_handle.spawn(rest);
+                    crate::sync::spawn(&spawn_handle, rest);
                 }
             }
             drop(ticket);

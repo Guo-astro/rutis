@@ -3,7 +3,7 @@ use std::sync::{Arc, Weak};
 
 use tokio::sync::Notify;
 
-use crate::error::{aggregate_arcs, join_panic_error, panic_error, Error, ErrorKind};
+use crate::error::{aggregate_arcs, panic_error, Error, ErrorKind};
 use crate::fiber::FiberInner;
 use crate::BoxFuture;
 
@@ -115,7 +115,7 @@ impl EffectRecord {
         if let Some(mut cleanups) = self.claim() {
             let this = self.clone();
             let runner = handle.clone();
-            handle.spawn(async move {
+            crate::sync::spawn(handle, async move {
                 // 清理全程 panic 兜底(评审 #7/#11):任何 panic 转为
                 // PluginFailed 错误,任务必定写回 Done,不卡 Draining
                 let err = run_cleanups(&mut cleanups, &runner).await;
@@ -219,13 +219,10 @@ pub(crate) async fn run_cleanups(
                         continue;
                     }
                 };
-                let joined = handle.spawn(fut);
-                match joined.await {
-                    Ok(r) => r,
-                    // 取消不是 panic:into_panic 在取消场景会二次 panic(评审 P2);
-                    // 无论哪种,EffectRecord 都最终进 Done,不卡 Draining
-                    Err(join_err) => Err(join_panic_error(join_err)),
-                }
+                let joined = crate::sync::spawn(handle, fut);
+                // 取消不是 panic:into_panic 在取消场景会二次 panic(评审 P2);
+                // 无论哪种,EffectRecord 都最终进 Done,不卡 Draining
+                joined.join().await.unwrap_or_else(Err)
             }
         };
         if let Err(e) = result {

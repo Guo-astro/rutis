@@ -12,7 +12,7 @@ use std::task::Poll;
 use super::table::{Body, CallFlight, Entry};
 use super::EventBus;
 use crate::ctx::Ctx;
-use crate::error::{join_panic_error, panic_error, Error, ErrorKind};
+use crate::error::{panic_error, Error, ErrorKind};
 use crate::events::{
     Candidate, CatchUnwind, FilterAnswer, ListenerInfo, ListenerKind, Mode, Payload, PayloadRef,
     RawTerminal, RemoteCall, RemoteNext, RemoteSyncCall, Value,
@@ -534,7 +534,7 @@ pub(crate) async fn run_parallel(
     handle: &tokio::runtime::Handle,
 ) -> Result<(), Error> {
     let mut results: Vec<(usize, Result<Option<Value>, Error>)> = Vec::new();
-    let mut set = tokio::task::JoinSet::new();
+    let mut set = crate::sync::TaskSet::new();
     for (index, entry) in entries.into_iter().enumerate() {
         let Some(flight) = owned.bus.start(&entry) else {
             continue;
@@ -555,7 +555,7 @@ pub(crate) async fn run_parallel(
     while let Some(joined) = set.join_next().await {
         match joined {
             Ok(result) => results.push(result),
-            Err(error) => results.push((usize::MAX, Err(join_panic_error(error)))),
+            Err(error) => results.push((usize::MAX, Err(error))),
         }
     }
     results.sort_by_key(|(index, _)| *index);
