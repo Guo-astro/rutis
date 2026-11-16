@@ -183,6 +183,12 @@ type runtimeState struct {
 	listeners   map[string][]*listener
 	byID        map[string]*listener
 	listenerSeq int64
+	// The listeners this runtime withdrew and told the host about
+	// (`events.off`), newest last, at most announcedRemembered: a dispatch
+	// the host picked one for before the off reached it still calls it, and
+	// the call answers as one that returns nothing (#1138).
+	goneIDs   map[string]struct{}
+	goneOrder []string
 	// The lowest and highest positions given (Prepend takes one below).
 	first, last int64
 	// What the host calls this runtime (mount `runtime`), for descriptors.
@@ -638,10 +644,21 @@ func (rt *runtimeState) unload(ctx context.Context, key string) error {
 func (rt *runtimeState) update(ctx context.Context, key string, config any) error {
 	rt.mu.Lock()
 	r := rt.rows[key]
-	rt.mu.Unlock()
 	if r == nil || r.unloading {
+		rt.mu.Unlock()
 		return fmt.Errorf("row %s is not loaded", key)
 	}
+	// The host keeps the row (`rows.update`), so its table still has the old
+	// listeners until the unload's `events.off`: a call it picked for one
+	// answers nothing (#1138).
+	ids := make([]string, 0, len(rt.byID))
+	for id, l := range rt.byID {
+		if l.row == r {
+			ids = append(ids, id)
+		}
+	}
+	rt.announcedGone(ids)
+	rt.mu.Unlock()
 	// Leaf plugins have no volatile fields: a new config restarts the row.
 	if err := rt.unload(ctx, key); err != nil {
 		return err

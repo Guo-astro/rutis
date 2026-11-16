@@ -119,6 +119,10 @@ package typealias EventCall = (_ mode: Mode, _ args: [Value], _ next: NextFuncti
 
 /// The events' rules the runtime checks.
 package enum Events {
+    /// How many ids a runtime remembers of listeners it withdrew and told the
+    /// host about (`events.off`, #1138): the oldest are forgotten.
+    package static let goneRemembered = 4096
+
     /// Refuses what no plugin may emit: `internal/*` (the runtime's own)
     /// and `rutis/*` (rutis's own, ReservedEvent).
     package static func checkEmit(_ name: String) throws {

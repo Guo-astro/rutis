@@ -140,6 +140,9 @@ extension Runtime {
             lock.lock()
             if !listener.withdrawn {
                 withdraw(listener)
+                // The host may pick it for a dispatch before its `events.off`
+                // arrives; the call then answers nothing (#1138).
+                announceGone([listener.id])
                 if live, let session {
                     post { session.notify(target: "", method: "events.off", args: [.data(.array([.string(listener.id)]))]) }
                 }
@@ -153,6 +156,20 @@ extension Runtime {
     func withdraw(_ listener: LocalListener) {
         listener.withdrawn = true
         byID[listener.id] = nil
+    }
+
+    /// Remembers `ids` as withdrawn here and told to the host (`events.off`);
+    /// `lock` is held. A dispatch the host picked one for before the off
+    /// reached it still calls it, and the call answers as one that returns
+    /// nothing (#1138).
+    func announceGone(_ ids: [String]) {
+        for id in ids where !goneSet.contains(id) {
+            goneSet.insert(id)
+            goneIDs.append(id)
+        }
+        while goneIDs.count > Events.goneRemembered {
+            goneSet.remove(goneIDs.removeFirst())
+        }
     }
 
     /// Withdraws a row's listeners as it unloads; `lock` is held, and
@@ -305,14 +322,29 @@ extension Runtime {
         }
         let values = record["args"]?.items ?? []
         let withdrawn = RutisError(name: RutisError.Name.bindingError, message: "listener \(id) of \(name) is withdrawn")
-        guard let listener = lock.withLock({ byID[id] }) else { return failed(withdrawn) }
+        let (listener, gone) = lock.withLock { (byID[id], goneSet.contains(id)) }
+        guard let listener else {
+            // Withdrawn here, and the `events.off` that says so may not have
+            // reached the host when it picked the listener for this dispatch:
+            // the listener is gone, and the call answers as one that returns
+            // nothing, instead of failing a dispatch that was already under
+            // way (#1138). An id this process never registered, and one the
+            // host withdrew itself (a row's unload), stay the protocol
+            // failure they were.
+            if gone { return goneCall(mode, record) }
+            return failed(withdrawn)
+        }
         if mode == .emit {
-            guard listener.reserve() else { return failed(withdrawn) }
+            guard listener.reserve() else {
+                if lock.withLock({ goneSet.contains(id) }) { return goneCall(mode, record) }
+                return failed(withdrawn)
+            }
             let done = ErrorEvent()
             listener.queue.push {
                 defer { listener.row.release() }
-                guard self.lock.withLock({ listener.live }) else {
-                    done.finish(withdrawn)
+                let (live, gone) = self.lock.withLock { (listener.live, self.goneSet.contains(id)) }
+                guard live else {
+                    if gone { done.finish(nil) } else { done.finish(withdrawn) }
                     return
                 }
                 do {
@@ -335,8 +367,21 @@ extension Runtime {
             }
             next = { try await settle(try await far.call([], sync: false)) }
         }
-        guard let call = listener.begin() else { return failed(withdrawn) }
+        guard let call = listener.begin() else {
+            if lock.withLock({ goneSet.contains(id) }) { return goneCall(mode, record) }
+            return failed(withdrawn)
+        }
         return { try await call(mode, values, next) }
+    }
+
+    /// What a listener withdrawn here answers a call already on its way
+    /// (#1138): nothing, as one that returns no result, and a waterfall's
+    /// `next` gives the rest of the chain, as if it had not been there.
+    private func goneCall(_ mode: Mode, _ record: Value) -> () async throws -> Value {
+        if mode == .waterfall, case let .remoteFunction(far) = record["next"] ?? .undefined {
+            return { try await settle(try await far.call([], sync: false)) }
+        }
+        return { .undefined }
     }
 }
 
