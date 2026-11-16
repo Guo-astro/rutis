@@ -812,7 +812,7 @@ class Runtime:
             return self.bus.row_id(found.pop())
         return None
 
-    async def unload(self, key: str) -> None:
+    async def unload(self, key: str, *, announced: bool = False) -> None:
         row = self.rows.get(key)
         if row is None or row.unloading:
             return
@@ -821,7 +821,11 @@ class Runtime:
         # them is refused (the host withdrew them already: telling it again
         # does no harm). The row itself stays loaded until the stack ends, so
         # the emissions its cleanups make still reach the other rows (§7.1).
-        self._withdrawn(self.bus.withdraw_row(key))
+        # `announced`: a restart (`update`) leaves the row loaded on the host,
+        # which kept its entries until this `events.off`: calls it already
+        # picked answer nothing (#1138).
+        ids = self.bus.withdraw_row(key, announced=announced)
+        self._withdrawn(ids)
         # From here on no other row sees what this one provides; it still
         # does, until each withdrawal's place on the unload stack comes (as
         # Rust's read_binding_as). The host hears the withdrawals now, before
@@ -867,7 +871,7 @@ class Runtime:
         if row is None or row.unloading:
             raise ValueError(f"row {key} is not loaded")
         id = self.bus.row_id(key)
-        await self.unload(key)
+        await self.unload(key, announced=True)
         await self.load(key, row.module, config, row.exports, row.isolate, row.scope, id, row.row_inject)
 
     def module(self, name: str, fresh: bool = True, check: Callable[[Any], Any] | None = None):
@@ -1007,7 +1011,7 @@ class Runtime:
         entry = self.bus.add(name, row.key, plugin, listener, row.scope, prepend, global_)
 
         def off() -> None:
-            if self.bus.withdraw(entry):
+            if self.bus.withdraw(entry, announced=True):
                 self._withdrawn([entry.id])
 
         if self._live():
@@ -1154,6 +1158,15 @@ class Runtime:
         id, name, mode = request.get("listener"), request.get("name"), request.get("mode")
         entry = self.bus.listener(id) if isinstance(id, str) else None
         if entry is None:
+            # Withdrawn here, and the `events.off` that says so may not have
+            # reached the host when it picked the listener for this dispatch:
+            # the listener is gone, and the call answers as one that returns
+            # nothing, instead of failing a dispatch that was already under
+            # way (#1138). An id this process never registered, and one the
+            # host withdrew itself (a row's unload), stay the protocol
+            # failure they were.
+            if isinstance(id, str) and self.bus.withdrew_here(id):
+                return self._gone_listener(request, mode)
             raise BindingError(f"the listener of {name} is withdrawn")
         name = entry.name
         args = request.get("args")
@@ -1176,6 +1189,15 @@ class Runtime:
         elif mode not in ("emit", "parallel", "serial"):
             raise ValueError(f"unknown event mode {mode}")
         return self._invocation(entry, name, mode, args)
+
+    def _gone_listener(self, request: dict, mode: Any) -> Any:
+        """What a listener withdrawn here answers a call already on its way
+        (#1138): nothing, as one that returns no result, and a waterfall's
+        `next` gives the rest of the chain, as if it had not been there."""
+        following = request.get("next")
+        if mode == "waterfall" and callable(following):
+            return start(_next(following))
+        return UNDEFINED
 
     async def _invocation(self, entry, name: str, mode: str, args: list) -> Any:
         # Started at once (the peer starts it eagerly): an `emit` listener

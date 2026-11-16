@@ -233,6 +233,14 @@ class RuntimeState(plugins: List<Plugin>, private val open: Boolean = false) {
     internal val byId = HashMap<String, LocalListener>()
     internal var listenerSeq = 0L
 
+    /**
+     * Ids of listeners this runtime withdrew and told the host about
+     * (`events.off`), newest last, at most 4096: a dispatch the host picked
+     * one for before the off reached it still calls it, and the call answers
+     * as one that returns nothing (#1138).
+     */
+    internal val gone = LinkedHashMap<String, Unit>()
+
     /** An application's own plugins, in order, with their configurations, and where each stands. */
     private var own: List<Pair<Plugin, Any?>> = emptyList()
     private val ownStates = HashMap<String, OwnState>()
@@ -866,8 +874,14 @@ class RuntimeState(plugins: List<Plugin>, private val open: Boolean = false) {
     internal suspend fun update(key: String, config: Any?) {
         // A row on its unload stack is on its way out: as for one already
         // gone, `rows.update` says it is not loaded.
-        val row = synchronized(lock) { rows[key]?.takeUnless { it.unloading } }
-            ?: throw IllegalStateException("row $key is not loaded")
+        val row = synchronized(lock) {
+            val row = rows[key]?.takeUnless { it.unloading } ?: throw IllegalStateException("row $key is not loaded")
+            // The host keeps the row (`rows.update`), so its table still has
+            // the old listeners until the unload's `events.off`: a call it
+            // picked for one answers nothing (#1138).
+            EventsRuntime.announcedGone(this, byId.values.filter { it.row === row }.map { it.id })
+            row
+        }
         // Leaf plugins have no volatile fields: a new config restarts the row.
         unload(key)
         load(key, row.name, row.entry, config, row.exports, row.isolate, row.scope, row.inject, row.plugin)

@@ -464,6 +464,59 @@ class CalledByTheHost(Session):
         self.host.answer(frame, "inner")
         self.assertEqual(await self.host.outcome(call), ("return", "Oslo:inner"))
 
+    # #1138: a listener this runtime withdrew, whose `events.off` the host has
+    # not applied, answers a call it already picked with no result.
+    async def test_a_listener_withdrawn_here_answers_a_call_already_on_its_way_with_nothing(self):
+        await self.mount()
+        offs = []
+        await self.load(
+            "a",
+            lambda ctx, config: (offs.append(ctx.on("t/x", lambda: "A")), ctx.on("t/y", lambda: "Y")),
+            registrations=2,
+        )
+        offs[0]()
+        withdrawal = await self.host.request("events.off")
+        self.assertEqual(withdrawal["value"], [["1"]])
+        # The listener is gone, and the call answers as one that returns
+        # nothing, so the dispatch under way goes on instead of failing.
+        for mode in ("emit", "serial", "parallel", "bail"):
+            self.assertEqual(await self.host.outcome(self.call("1", mode)), ("return", None), mode)
+        # A waterfall goes on with the rest of its chain, as if it had not
+        # been there.
+        call = self.host.invoke("events.call", {"type": "list", "value": [{"type": "record", "value": {
+            "listener": data("1"), "dispatch": data("d9"), "own": data(False), "name": data("t/x"),
+            "mode": data("waterfall"), "args": data([]),
+            "next": {"type": "reference", "value": {"id": 7, "kind": "function", "home": False, "origin": []}},
+        }}]})
+        following = await self.host.next(lambda f: f["op"] == "call")
+        self.assertEqual((following["reference"], value(following["args"])), (7, []))
+        self.host.answer(following, "rest")
+        self.assertEqual(await self.host.outcome(call), ("return", "rest"))
+        # An id this process never registered, and one a row's unload took
+        # (the host withdrew it itself), stay the protocol failure they were.
+        outcome, error = await self.host.outcome(self.call("9", "serial"))
+        self.assertEqual((error["name"], error["message"]), ("BindingError", "the listener of t/x is withdrawn"))
+        unloading = self.host.invoke("rows.unload", data(["a"]))
+        withdrawal = await self.host.request("events.off")
+        self.assertEqual(withdrawal["value"], [["2"]])
+        self.assertEqual(await self.host.outcome(unloading), ("return", None))
+        outcome, error = await self.host.outcome(self.call("2", "serial", name="t/y"))
+        self.assertEqual((error["name"], error["message"]), ("BindingError", "the listener of t/y is withdrawn"))
+
+    # #1138: `rows.update` keeps the row loaded on the host, whose table still
+    # has the old entries until `events.off`; a call it picked for one answers
+    # nothing.
+    async def test_a_restart_withdrawn_here_answers_a_call_already_on_its_way_with_nothing(self):
+        await self.mount()
+        await self.load("b", lambda ctx, config: ctx.on("t/x", lambda: "B"), registrations=1)
+        call = self.host.invoke("rows.update", data(["b", {}]))
+        withdrawal = await self.host.request("events.off")
+        self.assertEqual(withdrawal["value"], [["1"]])
+        registration = await self.host.request("events.on")
+        self.host.answer(registration)
+        self.assertEqual(await self.host.outcome(call), ("return", None))
+        self.assertEqual(await self.host.outcome(self.call("1", "serial")), ("return", None))
+
     async def test_a_synchronous_bail_refuses_an_async_listener(self):
         await self.mount()
 
