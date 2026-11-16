@@ -7,8 +7,17 @@
 //!     cargo kani
 //!
 //! Not verified yet: Kani 0.68.0 does not finish these harnesses here
-//! (each was still checking after 90 minutes). `fuzz/KANI-MIRI.md` records
-//! the runs; a harness whose inputs are held to a smaller range says so.
+//! (each was still checking after 90 minutes, and after 7 minutes again on
+//! 2026-11-17). `fuzz/KANI-MIRI.md` records the runs; a harness whose inputs
+//! are held to a smaller range says so.
+//!
+//! Why, minimized to no rutis code: `fuzz/kani/limits` — `format!` with one
+//! symbolic argument and `str::from_utf8` over one symbolic byte, both hanging
+//! next to the controls that finish in a second. Every path of these
+//! constructors formats its error that way, and the error branch is still
+//! explored when `kani::assume` makes it unreachable: its condition is
+//! symbolic. So no shape at the call site avoids it; `fuzz/KANI-MIRI.md`'s
+//! last section says what would.
 //!
 //! guarantee: bridge/value-tags, bridge/value-roundtrip
 #![cfg(kani)]
