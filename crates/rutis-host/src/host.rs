@@ -1254,6 +1254,62 @@ mod tests {
             .to_owned()
     }
 
+    /// A runtime a reload removes is waited for: its own processes, not
+    /// whichever process ends first (#57f536a0).
+    /// guarantee: host/reload-config c
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_removed_runtime_waits_for_its_own_process() {
+        use rutis_bridge::pipe::Processes;
+
+        struct Idle;
+
+        impl DynPlugin for Idle {
+            fn name(&self) -> &str {
+                "stopped runtime"
+            }
+
+            fn apply<'a>(&'a self, _ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, rutis::Error>> {
+                Box::pin(async { Ok(Effect::Done) })
+            }
+        }
+
+        let config = HostConfig {
+            format: crate::config::FORMAT,
+            id: "test".into(),
+            runtimes: Runtimes::default(),
+            listen: Vec::new(),
+            installed: Default::default(),
+            rows: Vec::new(),
+            warnings: Vec::new(),
+            unknown_row_fields: Vec::new(),
+        };
+        let mut host = Host::start(&config).await.unwrap();
+        let (own, process) = Processes::held();
+        let (_, other) = Processes::held();
+        host.fibers
+            .push(("py".to_owned(), host.root().plugin(Idle)));
+        host.processes.push(("py".to_owned(), own));
+
+        let stopping = tokio::spawn(async move { host.stop_runtime_process("py").await });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            !stopping.is_finished(),
+            "the stop ended before its process did"
+        );
+        other.end();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            !stopping.is_finished(),
+            "another runtime's process freed it"
+        );
+        process.end();
+        tokio::time::timeout(Duration::from_secs(5), stopping)
+            .await
+            .expect("the stop")
+            .unwrap()
+            .unwrap();
+    }
+
     /// Reloading a row runs the plugin's edited code, in Node and Python.
     /// guarantee: host/dev-reload
     #[tokio::test(flavor = "multi_thread")]

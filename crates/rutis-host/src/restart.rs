@@ -424,6 +424,38 @@ mod tests {
         root.shutdown().await.unwrap();
     }
 
+    /// A runtime that cannot start at all (its interpreter is not there) is
+    /// started again on every wait of the backoff, then given up on: a
+    /// start that fails is an end as any other, each round (#622).
+    /// guarantee: host/runtime-restart
+    #[tokio::test(start_paused = true)]
+    async fn a_runtime_that_cannot_start_is_retried_each_round_then_given_up() {
+        struct Missing {
+            starts: AtomicUsize,
+        }
+
+        impl Watched for Missing {
+            fn ended(&self) -> BoxFuture<'_, String> {
+                Box::pin(async { "cannot start it: No such file or directory".to_owned() })
+            }
+
+            fn start_again(&self) -> BoxFuture<'_, bool> {
+                self.starts.fetch_add(1, Ordering::SeqCst);
+                Box::pin(async { true })
+            }
+        }
+
+        let missing = Missing {
+            starts: AtomicUsize::new(0),
+        };
+        let started = Instant::now();
+        let supervised =
+            supervise("py", &missing, Restart::OnFailure, &mut Backoff::default()).await;
+        assert_eq!(supervised, Supervised::GaveUp);
+        assert_eq!(missing.starts.load(Ordering::SeqCst), LIMIT);
+        assert!(started.elapsed() >= Duration::from_secs(1 + 2 + 4 + 8 + 16));
+    }
+
     /// A Go or Swift runtime: its starts, and the starts its restarts
     /// make, each down at once when `crashing`.
     struct Binary {

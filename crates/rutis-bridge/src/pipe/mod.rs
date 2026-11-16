@@ -43,6 +43,9 @@ pub async fn given(channel: &str) -> Result<Channel, ConnectError> {
     spawn::given(channel).await
 }
 
+#[cfg(any(test, feature = "testing"))]
+#[doc(hidden)]
+pub use spawn::HeldProcess;
 pub use spawn::{
     isolate_manifest_command, kill_processes, processes_ended, running_processes, Handover,
     ManifestChild, Pipe, Processes, Spawn, Stdio, CHANNEL_FD, CHANNEL_TOKEN, HANDOVER_VARIABLE,
