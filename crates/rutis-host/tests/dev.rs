@@ -108,15 +108,24 @@ fn node_source(row: &str, version: &str) -> String {
         "weather" => " city=${config.city}",
         _ => "",
     };
+    // With an `out` in its configuration, the row records each cleanup: the
+    // instance a reload replaces is cleaned up exactly once, and the count is
+    // what `the_dev_loop` checks (`host/dev-reload b`).
+    let cleanup = "if (config && config.out) ctx.effect(() => appendFileSync(`\
+         ${config.out}/dev-cleanup.log`, `cleanup ROW VERSION\\n`))\n\
+         "
+    .replace("ROW", row)
+    .replace("VERSION", version);
     format!(
-        "import {{ definePlugin }} from '{}'\n\
+        "import {{ appendFileSync }} from 'node:fs'\n\
+         import {{ definePlugin }} from '{}'\n\
          export default definePlugin({{\n\
            inject: {inject},\n\
            provides: {provides},\n\
            apply(ctx, config) {{\n\
              console.log(`plugin {row} {version} applied{city} in ${{process.pid}}`)\n\
              {service}\n\
-           }},\n\
+             {cleanup}   }},\n\
          }})\n",
         sdk()
     )
@@ -157,6 +166,16 @@ fn python_source(row: &str, version: &str) -> String {
         "weather" => " city={config['city']}",
         _ => "",
     };
+    // With an `out` in its configuration, the row records each cleanup: the
+    // instance a reload replaces is cleaned up exactly once, and the count is
+    // what `the_dev_loop` checks (`host/dev-reload b`).
+    let cleanup = "\x20   if config and config.get(\"out\"):\n\
+         \x20       def cleanup():\n\
+         \x20           with open(os.path.join(config[\"out\"], \"dev-cleanup.log\"), \"a\") as f:\n\
+         \x20               f.write(\"cleanup ROW VERSION\\n\")\n\
+         \x20       ctx.effect(cleanup)\n"
+    .replace("ROW", row)
+    .replace("VERSION", version);
     format!(
         "import os, sys\n\
          from rutis import define_plugin\n\
@@ -169,6 +188,7 @@ fn python_source(row: &str, version: &str) -> String {
          \x20   sys.stdout.write(f\"plugin {row} {version} applied{city} in {{os.getpid()}}\\n\")\n\
          \x20   sys.stdout.flush()\n\
          \x20   {service}\n\
+         {cleanup}\
          \n\
          plugin = define_plugin(apply, inject={inject}, provides={provides})\n"
     )
@@ -243,11 +263,14 @@ fn project(dir: &Path, lang: &Lang) -> PathBuf {
     edit(&dir.join(lang.own), &(lang.source)("weather", "v1"));
     edit(&dir.join(lang.llm), &(lang.source)("llm", "v1"));
     edit(&dir.join(lang.caller), &(lang.source)("caller", "v1"));
+    // Each row records its cleanups in `dir`: `the_dev_loop` counts the
+    // instance a reload replaced (`host/dev-reload b`).
+    let out = dir.display().to_string();
     let dev = json!({
         "rows": [
-            { "id": "weather", "config": { "city": "Oslo" } },
-            { "id": "llm", "name": lang.names[0] },
-            { "id": "caller", "name": lang.names[1] },
+            { "id": "weather", "config": { "city": "Oslo", "out": out.clone() } },
+            { "id": "llm", "name": lang.names[0], "config": { "out": out.clone() } },
+            { "id": "caller", "name": lang.names[1], "config": { "out": out } },
         ]
     });
     let file = dir.join("rutis.dev.json");
@@ -310,6 +333,15 @@ fn the_dev_loop(lang: &Lang) {
         ],
     );
 
+    // The instance a reload replaces is cleaned up exactly once: what the
+    // old code registered on its own context is undone once, not skipped and
+    // not run twice (`host/dev-reload b`).
+    let cleanups = |line: &str| {
+        std::fs::read_to_string(dir.path().join("dev-cleanup.log"))
+            .map(|log| log.lines().filter(|read| *read == line).count())
+            .unwrap_or(0)
+    };
+
     // 1. The own plugin's file: it reloads, its user restarts, llm (which
     // it uses) does not; then the services again.
     edit(&own, &(lang.source)("weather", "v2"));
@@ -322,6 +354,11 @@ fn the_dev_loop(lang: &Lang) {
             "caller: restarted (weather reloaded)",
             services,
         ],
+    );
+    assert_eq!(
+        cleanups("cleanup weather v1"),
+        1,
+        "the instance the first reload replaced was not cleaned up exactly once"
     );
 
     // 2. The dev file: weather's config changes, and weather restarts with
@@ -430,6 +467,9 @@ fn the_dev_loop(lang: &Lang) {
     assert_eq!(count("weather: reloaded"), 1, "{context}");
     // Never the half-imported version (Python).
     assert_eq!(count("plugin weather v9"), 0, "{context}");
+    // The replaced instance was cleaned up once, and stayed at one: no
+    // cleanup ran again when nothing of that version was left.
+    assert_eq!(cleanups("cleanup weather v1"), 1, "{context}");
     assert!(!stderr.contains("cannot resolve row"), "{context}");
     // Never a cause the row does not use.
     assert_eq!(count("caller: restarted (llm"), 0, "{context}");

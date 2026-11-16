@@ -4,6 +4,7 @@
 //! the host's side of the wire on its own.
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -252,6 +253,65 @@ fn typed(seen: Arc<Mutex<Vec<Created>>>) -> impl Listener<Created> {
             Ok(Some(format!("rust saw {}", event.0)))
         }
     }
+}
+
+/// guarantee: events/remote
+///
+/// Dropping a dispatch's future cancels the call it started where it runs
+/// (events protocol §12.1): the remote listener is still waiting on its
+/// `signal`, and dropping the dispatch ends it — a Rust far end sees the
+/// cancellation as its future being dropped.
+#[tokio::test(flavor = "multi_thread")]
+async fn dropping_a_dispatch_cancels_the_remote_listener_it_started() {
+    /// Marks the listener's future as ended, whether it finished or was dropped.
+    struct Mark(Arc<AtomicBool>);
+    impl Drop for Mark {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+
+    within("cancel", async {
+        let rig = rig().await;
+        rig.load("chat", &[]).await;
+        let started = Arc::new(AtomicBool::new(false));
+        let ended = Arc::new(AtomicBool::new(false));
+        let behavior: Behavior = {
+            let (started, ended) = (started.clone(), ended.clone());
+            Arc::new(move |_| {
+                let (started, ended) = (started.clone(), ended.clone());
+                Ok(Value::future(async move {
+                    // Run once the host waits: the call is in flight from here.
+                    let _ended = Mark(ended);
+                    started.store(true, Ordering::SeqCst);
+                    std::future::pending::<Reply>().await
+                }))
+            })
+        };
+        rig.on("slow", "t/slow", Some("chat"), "async", behavior)
+            .await;
+
+        // Let the call reach the listener and be waited for, then give it up.
+        let mut pending = Box::pin(rig.dispatch(Some("chat"), "t/slow", "serial", vec![], None));
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !started.load(Ordering::SeqCst) {
+            tokio::select! {
+                ended = &mut pending => panic!("the dispatch ended before it was dropped: {ended:?}"),
+                () = tokio::time::sleep(Duration::from_millis(10)) => {}
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the listener never started: dropping the dispatch would cancel nothing"
+            );
+        }
+        drop(pending);
+        eventually(
+            || ended.load(Ordering::SeqCst),
+            "the dropped dispatch to cancel the call it started",
+        )
+        .await;
+    })
+    .await;
 }
 
 /// guarantee: events/hub-dispatch
