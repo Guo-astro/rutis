@@ -1883,9 +1883,31 @@ jobs:
       # The Kotlin SDK's jvm target, for the bridge's tests with `kotlin`
       # (loopback channels only on Windows).
       - uses: actions/setup-java@v5
+        if: runner.environment == 'github-hosted'
         with:
           distribution: temurin
           java-version: '17'
+      # setup-java writes a toolchains.xml that a self-hosted Windows runner
+      # rejects (Invalid XML name, seen on windows-runner-2), so these take
+      # the JDK already in the runner's tool cache instead.
+      - name: Java from the runner's tool cache (self-hosted)
+        if: runner.environment == 'self-hosted'
+        shell: powershell
+        run: |
+          $root = Join-Path $env:RUNNER_TOOL_CACHE 'Java_Temurin-Hotspot_jdk'
+          $jdk = Get-ChildItem $root -Directory |
+            Sort-Object Name -Descending |
+            ForEach-Object { Join-Path $_.FullName 'x64' } |
+            Where-Object { Test-Path (Join-Path $_ 'bin\java.exe') } |
+            Select-Object -First 1
+          if (-not $jdk) {
+            Write-Host "::error::no JDK 17 in $root"
+            exit 1
+          }
+          "JAVA_HOME=$jdk" >> $env:GITHUB_ENV
+          "$jdk\bin" >> $env:GITHUB_PATH
+          & "$jdk\bin\java.exe" -version
+          if ($LASTEXITCODE -ne 0) { exit 1 }
       - name: the Kotlin conformance jar
         working-directory: kotlin/rutis
         run: |
