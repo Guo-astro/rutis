@@ -188,7 +188,7 @@ export const SUPERSEDED = [
     by: 'docs/protocol-session.md',
   },
   {
-    ids: ['EVP-2.4-3', 'EVP-3-4', 'EVP-9-1', 'EVP-9-2', 'EVP-9-9', 'EVP-9-10', 'EVP-9-12', 'EVP-9-20'],
+    ids: ['EVP-2.4-3', 'EVP-3-4', 'EVP-9-1', 'EVP-9-2', 'EVP-9-9', 'EVP-9-10', 'EVP-9-12', 'EVP-9-20', 'NOD-3-1'],
     why: '0.19 删除节点的 `export` / `import` 名单，节点之间是一条总线、每个名字都在（`design-remote-session-2026-10-28.md` §八、§十二；登记表 `events/node-links` 重写）',
     by: 'docs/design-remote-session-2026-10-28.md',
   },
