@@ -1106,4 +1106,6 @@ fn report_filter(ctx: &Ctx, name: &str, error: Error) {
 }
 
 #[cfg(test)]
+mod prop_tests;
+#[cfg(test)]
 mod transient_tests;
