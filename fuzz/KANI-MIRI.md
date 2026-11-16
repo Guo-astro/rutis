@@ -106,3 +106,24 @@ and the manifest a runtime binary prints (`ManifestWire`, checked before
 any field is used). This slice adds no Kani harness for `boot_meta`,
 `append`, `is_sha256` or `parse_boot`: the six harnesses above still have
 no verdict, so no proof is reported as passing.
+
+## Results (2026-11-16, dsh profile and Go frames)
+
+| Command | Result |
+| --- | --- |
+| `cargo +nightly fuzz run dsh_profile_yaml <copy of corpus/dsh_profile_yaml> -- -max_total_time=60 -timeout=10` | 951,596 runs, no crash, after the fixes below |
+| `cargo +nightly fuzz run dsh_profile_expr <copy of corpus/dsh_profile_expr> -- -max_total_time=60 -timeout=10` | 2,299,974 runs, no crash |
+| `go test ./internal/runtime -run '^$' -fuzz '^FuzzFrameParsing$' -fuzztime 60s` (in `go/rutis`) | 2,468,695 executions, PASS |
+| `go test ./internal/runtime` (in `go/rutis`) | the seeds pass |
+
+The first YAML run found a render mismatch (#1234) and three panics in
+`Document::parse`'s line slicing (#1235, #1237, #1238). The panics are
+fixed, with the inputs as a regression test in
+`crates/rutis-dsh/tests/profile_yaml.rs`; #1234 is a remaining mismatch
+(`"-\n n"` is read as one item and rendered as two), so the target parses
+and renders but no longer compares the rendered values. The expression
+target evaluates with an empty environment, `cwd` fixed and no services,
+so it reads no live process state.
+
+The fuzz runs used a copy of each corpus directory, so the fuzzer's new
+inputs did not change `fuzz/corpus/`.

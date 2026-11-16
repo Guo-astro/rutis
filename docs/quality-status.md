@@ -23,7 +23,7 @@
 | Q5.2 | 故障清单逐项注入验证 | 部分 | 已注入：链路在调用中途断开、延迟下的取消与释放、重连期间的新调用、多跳（`fault_links.rs`，#285）；运行时 `kill -9`（S3，#317）；两个宿主之间断网、对端重启、换 token（S5，#322）；两个容器之间的真实网络：200 ms 延迟 + 5% 丢包、断网与恢复、换 token（S5 容器版，#433，nightly）；并发启动（`concurrent_launch.rs`，#215）；宿主收到信号（`signals.rs` #216；E2E 的 Ctrl-C、Windows Ctrl-Break #277）；协议版本不匹配（#288、#335）；畸形帧（`malformed`，25 个用例 × 七种实现）。运行中配置被改坏（`host/reload-config`，#274）；长时间运行中的反复故障：随机的增删改行与重新加载、被拒绝的配置、运行时 `kill -9` 后重启、断链重连（S8，#192）。缺：插件阻塞事件循环（`boundary/5.8` 部分验证） |
 | Q5.3.2 | 跨机加密、非回环必须 TLS | 部分 | 负向 TLS：证书过期、主机名不匹配、CA 不受信任，Rust（`websocket.rs`）与 Python（`test_websocket.py`）各自验证（#297）；两个宿主进程之间也验证（S5 第 6 步）；两个容器之间在非 loopback 地址上用测试时生成的 CA 走 `wss://`（S5 容器版，#433）。Windows 上客户端证书无效的类别已修（#300 → #334）。缺：无 TLS 的监听绑定到非回环地址是否被拒绝，未核对（B8） |
 | Q5.3.3 | 凭据不进输出 | 部分 | E2E 每个场景结束时检查全部捕获输出中没有本场景的凭据（#221、#277）；S5 被拒时 token 不出现在输出里（#322）。库级的日志、trace、诊断输出没有统一检查 |
-| Q5.3.4 | 外部输入有上限、畸形输入不崩溃 | 部分 | WebSocket 16 MiB 上限；本地行分帧有上限（#173 → #214）；值的嵌套深度上限 64 层，超限只让这次调用失败（#279 → #338）；畸形帧检查覆盖七种实现（含 #294 → #305 之后加入的 Go）；模糊测试：会话帧、本地行分帧、错误图、WebSocket 升级请求，`stress.yml` 每晚各跑一段时间（#179 → #425、#624） |
+| Q5.3.4 | 外部输入有上限、畸形输入不崩溃 | 部分 | WebSocket 16 MiB 上限；本地行分帧有上限（#173 → #214）；值的嵌套深度上限 64 层，超限只让这次调用失败（#279 → #338）；畸形帧检查覆盖七种实现（含 #294 → #305 之后加入的 Go）；模糊测试：会话帧、本地行分帧、错误图、WebSocket 升级请求、dylib 元数据与二进制清单、dsh profile 的 YAML 与表达式，以及 Go 的 RFC 6455 帧解析（Go 原生 fuzz），`stress.yml` 每晚各跑一段时间（#179 → #425、#624、#631） |
 | Q5.3.6 | 不安全代码集中、加载前校验 | 部分 | `unsafe` 集中在 dylib 加载与进程启动；dylib 校验由脚本验证，`design-dylib-sdk` §十三 5 项未勾选，需要对账 |
 | Q5.3.7 | 依赖漏洞与许可证检查 | 部分 | 每周 `deps.yml`：`cargo deny check advisories`、`npm audit`、`pip-audit`（#256），不阻止合并。许可证没有检查；新增依赖的理由没有固定的检查项 |
 | Q5.4.2 | 每个场景结束核对残余 | 部分 | E2E harness 每个场景结束时核对：宿主拉起的进程（Linux、macOS 按场景标记找，Windows 按 Job Object）、socket 文件、端口、临时目录、凭据（#221、#277）。测试进程的 fd、线程只在两个浸泡测试里查；tokio 任务数与 Linux 上的 OS 线程数在 `instance_subtrees.rs`、`instance_runtimes.rs`、`close_memory.rs` 查（#286、#191、#979）；运行时内部的注册由 Node、Python 运行时的测试控制方法 `inspect` 查询，只有 S7 用到（§5，#191） |
@@ -75,7 +75,7 @@
 | Q9.4 | 保证登记 | 部分 | [登记表](guarantees.md)已建立（#276、#310，之后各 PR 顺带登记），测试注释写 `guarantee: <编号>`；0.10 作为基线，Q9.4.4 从 0.11 起执行（方案 Q3）。规则按条登记在[追踪表](formal-trace/README.md)：1825 行，292 已验证、434 部分验证、539 未验证（§7.6）。登记表本身覆盖 §6–§15 共 219 行（#181 已关闭） |
 | Q10.2 | 支持矩阵最低与最新版本 | 满足 | Linux 任务用最低版本（Node 22、Python 3.12、websockets 15、Bun 1.4.0、Go oldstable），macOS、Windows 用最新版本；MSRV 1.88 由 `msrv` 任务验证（#204 → #256；ci.md §9）。运行时 × 通道 × 平台矩阵写在 ci.md §4，不运行的格子写原因（#176） |
 | Q11.3.2 | 不以覆盖率为门槛 | 满足 | — |
-| Q12.1 | 分级运行 | 部分 | PR 按改动选择；每晚（`nightly.yml`，main 有新提交时）运行全部任务、五平台安装（`install.yml`）、Windows dylib、MSRV、feature 组合、两机可复现，以及 `stress.yml`（内核多轮、多进程测试多轮 #245、两个浸泡、16 个 shuttle 模型每晚每个 100 万次迭代、四个模糊测试目标 #425、事件的全部放置 #464）；跨版本相遇（`ci.yml` 完整运行的 `e2e`，#209）、最新已发布 Cordis 插件的基线（只报告，#190）、S5 容器 + netem（只报告，#341 → #433）；每周依赖检查与 CI 度量。缺：每周的长时间宿主浸泡与基准测试（#192） |
+| Q12.1 | 分级运行 | 部分 | PR 按改动选择；每晚（`nightly.yml`，main 有新提交时）运行全部任务、五平台安装（`install.yml`）、Windows dylib、MSRV、feature 组合、两机可复现，以及 `stress.yml`（内核多轮、多进程测试多轮 #245、两个浸泡、16 个 shuttle 模型每晚每个 100 万次迭代、九个模糊测试目标 #425、事件的全部放置 #464）；跨版本相遇（`ci.yml` 完整运行的 `e2e`，#209）、最新已发布 Cordis 插件的基线（只报告，#190）、S5 容器 + netem（只报告，#341 → #433）；每周依赖检查与 CI 度量。缺：每周的长时间宿主浸泡与基准测试（#192） |
 | Q12.3 | 按改动选择 | 满足 | `changes` 任务按改动打开开关；每晚 `nightly.yml` 在 main 有新提交时运行全部任务（`ci.yml` 的 `all`），也可以手动运行（#203 → #213、#369；ci.md §3）。发布前：release.md 第 2 步确认发布的提交上有通过的每晚运行；`release.yml` 自己调用完整 CI 见 CI 重新设计的第 3 步 |
 | Q12.4 | 取消被取代的运行 | 满足 | PR 上新推送取消旧运行（#224）。合并到 main 不再运行；每晚的运行检查上一次成功的每晚运行以来合并的所有提交，不被取消；失败时开问题单（标签 `ci`），写明失败的任务和提交范围（#369；ci.md §7） |
 | Q12.5 | 统一的合入条件 | 满足 | `ci-ok` 是唯一必需检查（#213；ci.md §5） |
@@ -149,7 +149,7 @@
 | Swift | `swift/`，4 个文件 | 32 | — |
 | 设计模型 | `specs/` 7 个目录、17 个 `.tla`、220 个配置（§7.2） | — | — |
 | 可控调度 | 内核 16 个 shuttle 模型，`--cfg rutis_shuttle` 才编译（§7.3） | 16 | — |
-| 模糊测试 | `fuzz/fuzz_targets/`，4 个目标（§7.4） | 4 | — |
+| 模糊测试 | `fuzz/fuzz_targets/`，9 个目标（§7.4）；另有 Go 原生 fuzz | 9 | — |
 
 0.11 以后新增、现在仍有效的几块（细节在 §4、§5、§7）：
 
@@ -183,7 +183,7 @@
 | TLA+ | `specs/` 的 7 个模型目录、17 个模块、220 个配置（§7.2）。CI 的 `specs` 任务在改了 `specs/**` 的 PR 和每晚运行 | #222、#210，之后 #613 |
 | 保证登记表 | [guarantees.md](guarantees.md)：`core/`、`boundary/`、`instance/`、`bridge/`、`host/`、`dsh/`、`sdk/` 族；代码里 1162 处 `guarantee: <编号>` 标记（`tools/check-guarantees.mjs` 的计数）；规则追踪表 1825 行（§7.6） | #276、#310 → #634 |
 
-CI：`ci.yml`（PR 按改动选择任务，每晚全部运行；Linux 全量与最低版本、E2E、lint、macOS 与 Windows 的平台相关测试、Bun 与 Go 运行时、dylib、打包、semver、MSRV、feature 组合、可复现、7 个模型的 `specs` 任务）；`install.yml`（安装冒烟）；`nightly.yml`（每晚调用前面三个和 `stress.yml`，失败时开问题单）；`stress.yml`（每晚：内核多轮、多进程测试多轮、两个浸泡、16 个 shuttle 模型、4 个模糊测试目标、事件的全部放置）；`dylib-windows.yml`；`deps.yml`、`ci-stats.yml`（每周）。详见 [ci.md](ci.md)。CI 中仍然没有：actionlint、许可证检查。
+CI：`ci.yml`（PR 按改动选择任务，每晚全部运行；Linux 全量与最低版本、E2E、lint、macOS 与 Windows 的平台相关测试、Bun 与 Go 运行时、dylib、打包、semver、MSRV、feature 组合、可复现、7 个模型的 `specs` 任务）；`install.yml`（安装冒烟）；`nightly.yml`（每晚调用前面三个和 `stress.yml`，失败时开问题单）；`stress.yml`（每晚：内核多轮、多进程测试多轮、两个浸泡、16 个 shuttle 模型、9 个模糊测试目标、事件的全部放置）；`dylib-windows.yml`；`deps.yml`、`ci-stats.yml`（每周）。详见 [ci.md](ci.md)。CI 中仍然没有：actionlint、许可证检查。
 
 ## 3. 控制手段代号
 
@@ -585,8 +585,8 @@ CI：`ci.yml`（PR 按改动选择任务，每晚全部运行；Linux 全量与�
 | 会话 | `cycle_among` 的环检测，与按 TLA 定义建全部边的朴素实现做差分 | PT | **有**（#613）：[`crates/rutis-bridge/src/session/rpc/waits.rs`](../crates/rutis-bridge/src/session/rpc/waits.rs) 的 `cycle_among_agrees_with_the_models_graph`（最多 20 跳的随机图、随机 profile 与入口，默认 256 例，`PROPTEST_CASES`）与 `the_model_check_agrees_on_the_small_graphs` |
 | 加载器、宿主、dsh | 编辑流水线、待保存队列与多写者 CAS、配置求值、profile 层合成 | PT | **无**（#631 并入的 #629） |
 | 值的纯函数 | 日期、时间的构造与往返 | KANI | **无结论**：6 个 harness 在 `fuzz/kani/`；Kani 0.68.0 在这台机器上 90 分钟不收敛，`fuzz/KANI-MIRI.md` 有记录，不写成通过 |
-| 传输 | 会话帧、本地行分帧、错误图、WebSocket 升级请求 | FZ | **有**：`fuzz/fuzz_targets/` 四个目标，`stress.yml` 每晚各跑 `fuzz_secs`；其中三个另在 Miri 下按固定输入跑（`fuzz/miri/`） |
-| dylib | 目标文件解析（ELF / Mach-O / PE）、清单格式 | FZ | **无**（#631） |
+| 传输 | 会话帧、本地行分帧、错误图、WebSocket 升级请求 | FZ | **有**：`session_frame`、`session_frames`、`local_lines`、`websocket_upgrade`、`error_graph` 五个目标在 `fuzz/fuzz_targets/`，`stress.yml` 每晚各跑 `fuzz_secs`；其中三个另在 Miri 下按固定输入跑（`fuzz/miri/`）。Go 的 RFC 6455 帧解析有 `FuzzFrameParsing`（Go 原生 fuzz，种子随 `go test` 跑） |
+| dylib | 目标文件解析（ELF / Mach-O / PE）、清单格式 | FZ | **有**：`dylib_meta`、`binary_manifest`（#631） |
 
 ### 7.5 实现是否照模型做：TV 与一致性套件
 

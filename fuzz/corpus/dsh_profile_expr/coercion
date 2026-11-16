@@ -1,0 +1,1 @@
+'a' + 1 + 2 + Number('  12  ') + String(null) + Boolean([])

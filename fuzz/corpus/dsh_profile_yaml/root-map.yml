@@ -1,0 +1,5 @@
+# A document whose root is not a sequence: `yaml::parse` reads it,
+# `Document::parse` refuses it.
+web:
+  port: 3081
+  disabled: !!js "false"

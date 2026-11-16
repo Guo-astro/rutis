@@ -1,0 +1,1 @@
+process.getBuiltinModule('node:path').join('a', '..', 'b', '')

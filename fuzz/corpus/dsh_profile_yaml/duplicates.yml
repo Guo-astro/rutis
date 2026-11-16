@@ -1,0 +1,6 @@
+- id: one
+  id: two
+  name: duplicate keys
+  nested:
+    a: 1
+    a: 2

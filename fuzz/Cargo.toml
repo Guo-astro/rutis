@@ -18,6 +18,9 @@ rutis-bridge = { path = "../crates/rutis-bridge", default-features = false, feat
 rutis-dylib-meta = { path = "../crates/rutis-dylib-meta" }
 # The manifest a runtime binary prints, parsed before it is trusted (#631).
 rutis-loader = { path = "../crates/rutis-loader", features = ["binary"] }
+# dsh's profile configuration: its YAML dialect and `!!js` expressions
+# (#631).
+rutis-dsh = { path = "../crates/rutis-dsh" }
 
 [workspace]
 members = ["."]
@@ -67,6 +70,20 @@ bench = false
 [[bin]]
 name = "binary_manifest"
 path = "fuzz_targets/binary_manifest.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "dsh_profile_yaml"
+path = "fuzz_targets/dsh_profile_yaml.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "dsh_profile_expr"
+path = "fuzz_targets/dsh_profile_expr.rs"
 test = false
 doc = false
 bench = false

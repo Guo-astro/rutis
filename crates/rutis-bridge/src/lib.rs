@@ -35,7 +35,8 @@ pub mod session;
 pub mod websocket;
 
 // The fuzz targets' entry points (`fuzz/`, #179): only in a build by
-// cargo-fuzz, which sets `--cfg fuzzing`.
+// cargo-fuzz, which sets `--cfg fuzzing`. `session_frames` is left out
+// without `testing` (the session fixture it drives, `fuzzing.rs`).
 #[cfg(fuzzing)]
 #[doc(hidden)]
 pub mod fuzzing;

@@ -54,8 +54,11 @@ RUTIS_SHUTTLE_REPLAY=<调度> RUSTFLAGS="--cfg rutis_shuttle" cargo test -p ruti
 # 模糊测试目标（fuzz/，单独的 workspace）：需要 nightly Rust 和 cargo-fuzz
 cargo install cargo-fuzz
 cd fuzz
-cargo +nightly fuzz run session_frame -- -max_total_time=60   # 或 session_frames、local_lines、websocket_upgrade、error_graph、dylib_meta、binary_manifest
+cargo +nightly fuzz run session_frame -- -max_total_time=60   # 或 session_frames、local_lines、websocket_upgrade、error_graph、dylib_meta、binary_manifest、dsh_profile_yaml、dsh_profile_expr
 cargo +nightly fuzz run session_frame artifacts/session_frame/crash-…   # 复现一次失败
+
+# Go 手写的 RFC 6455 帧解析（Go 原生 fuzz），在 go/rutis 下；go test 会跑种子
+go test ./internal/runtime -run '^$' -fuzz '^FuzzFrameParsing$' -fuzztime 60s
 ```
 
 `cargo fuzz run <目标>` 会把新发现的输入加进 `fuzz/corpus/<目标>`；仓库里的只是少量种子，值得保留的才提交（例如修好的崩溃的输入，它同时要变成单元测试）。

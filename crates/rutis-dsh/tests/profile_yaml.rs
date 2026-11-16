@@ -120,3 +120,16 @@ fn edits_keep_comments_of_untouched_items() {
     let one = empty.render(&[json!({ "id": "x", "disabled": true })], |v| v.clone());
     assert_eq!(one, "# header\n- id: x\n  disabled: true\n");
 }
+
+#[test]
+fn line_spans_that_do_not_fit_are_rewritten() {
+    // #1235: the YAML parser counts `\r` as a line break while
+    // `split_inclusive('\n')` does not, so an item's start line can be past
+    // the last line. #1237: an anchor can give an item an earlier line than
+    // the one before it. Neither may be sliced into the source lines.
+    for source in ["\r-\r ", "\r- a\r- b", "- &i\n-", "#\r-\r- \0\n "] {
+        let doc = Document::parse(source).expect("a document");
+        let fresh = doc.render_fresh(&doc.values());
+        Document::parse(&fresh).expect("the rendered document");
+    }
+}

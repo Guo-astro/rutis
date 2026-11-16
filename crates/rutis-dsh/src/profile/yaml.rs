@@ -415,7 +415,17 @@ impl Document {
             }
         };
         let lines: Vec<&str> = source.split_inclusive('\n').collect();
-        if !block || items.is_empty() || starts.len() != items.len() {
+        // The start lines must be usable as slices of `lines`: each one
+        // inside them, and in item order (an anchor can give an earlier
+        // line, #1237). A YAML parser also counts `\r` as a line break,
+        // which `lines` above does not, so a line can be past the last one
+        // (#1235). Otherwise the document is rewritten from the values.
+        let spans_usable = block
+            && !items.is_empty()
+            && starts.len() == items.len()
+            && starts.iter().all(|&start| start < lines.len())
+            && starts.windows(2).all(|pair| pair[0] < pair[1]);
+        if !spans_usable {
             // Keep the leading comment block; the rest is rewritten.
             let header: String = lines
                 .iter()
@@ -449,6 +459,12 @@ impl Document {
             .collect();
         // The first item's comment block stays the file header.
         bounds[0] = starts[0];
+        // A later bound can reach above an earlier item's start when the
+        // lines above it are comments (#1238); clamping keeps the slices in
+        // order, at worst giving a comment line to the item before it.
+        for i in 1..bounds.len() {
+            bounds[i] = bounds[i].max(bounds[i - 1]);
+        }
         let header: String = lines[..bounds[0]].concat();
         let mut texts = Vec::new();
         for (i, &start) in bounds.iter().enumerate() {
