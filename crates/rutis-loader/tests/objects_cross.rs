@@ -28,7 +28,15 @@ use common::runtimes::{
 use rutis::host::CtxHost;
 use rutis::Ctx;
 use rutis_bridge::pipe::Processes;
+use rutis_bridge::runtime::RuntimeState;
 use rutis_bridge::session::{host_key, settle, HostDispatch, Reply, Value as RpcValue};
+use rutis_loader::report::EntryStatus;
+#[cfg(any(feature = "go", all(feature = "swift", target_os = "macos")))]
+use rutis_loader::runtime::binary::{BinaryLanguage, BinaryRuntimesHandle};
+#[cfg(feature = "go")]
+use rutis_loader::runtime::go::Go;
+#[cfg(all(feature = "swift", target_os = "macos"))]
+use rutis_loader::runtime::swift::Swift;
 use rutis_loader::runtime::SessionResolver;
 use rutis_loader::{Chain, Loader, LoaderOptions, LoaderPlugin, ServiceCatalog};
 use serde_json::{json, Value};
@@ -238,6 +246,12 @@ struct Fixture {
     bun: Option<Processes>,
     py: Processes,
     kt: Option<Processes>,
+    /// The compiled runtime of the case, to say how it ended when a call
+    /// fails (#1094).
+    #[cfg(feature = "go")]
+    go: Option<BinaryRuntimesHandle<Go>>,
+    #[cfg(all(feature = "swift", target_os = "macos"))]
+    swift: Option<BinaryRuntimesHandle<Swift>>,
     dir: PathBuf,
     _dir: tempfile::TempDir,
 }
@@ -374,32 +388,35 @@ async fn fixture_with_idle(other: Option<&str>, idle: bool) -> Fixture {
     if let Some(other @ ("bun" | "kt")) = other {
         rows_stage(&root, &sessions, other).await;
     }
-    // Stops two seconds after its last row is gone.
+    // The compiled runtimes of the case: their handles stay, so that a
+    // failed call can say how they ended (#1094). Their rows' stage is
+    // `rows_stage`'s; the runtime stops two seconds after its last row is
+    // gone when `idle`.
+    #[cfg(feature = "go")]
+    let mut go_runtimes = None;
     #[cfg(feature = "go")]
     if let Some(go) = go {
-        root.plugin(
-            rutis_loader::runtime::binary::BinaryRuntimes::<rutis_loader::runtime::go::Go>::new(
-                go,
-                dir.path(),
-                common::runtimes::spawner(),
-            )
-            .idle(idle.then_some(std::time::Duration::from_secs(2))),
+        let runtimes = rutis_loader::runtime::binary::BinaryRuntimes::<Go>::new(
+            go,
+            dir.path(),
+            common::runtimes::spawner(),
         )
-        .await
-        .unwrap();
+        .idle(idle.then_some(std::time::Duration::from_secs(2)));
+        go_runtimes = Some(runtimes.handle());
+        root.plugin(runtimes).await.unwrap();
     }
     #[cfg(all(feature = "swift", target_os = "macos"))]
+    let mut swift_runtimes = None;
+    #[cfg(all(feature = "swift", target_os = "macos"))]
     if let Some(swift) = swift {
-        root.plugin(
-            rutis_loader::runtime::binary::BinaryRuntimes::<rutis_loader::runtime::swift::Swift>::new(
-                swift,
-                dir.path(),
-                common::runtimes::spawner(),
-            )
-            .idle(idle.then_some(std::time::Duration::from_secs(2))),
+        let runtimes = rutis_loader::runtime::binary::BinaryRuntimes::<Swift>::new(
+            swift,
+            dir.path(),
+            common::runtimes::spawner(),
         )
-        .await
-        .unwrap();
+        .idle(idle.then_some(std::time::Duration::from_secs(2)));
+        swift_runtimes = Some(runtimes.handle());
+        root.plugin(runtimes).await.unwrap();
     }
     Fixture {
         root,
@@ -409,23 +426,117 @@ async fn fixture_with_idle(other: Option<&str>, idle: bool) -> Fixture {
         bun: bun_processes,
         py: py_processes,
         kt: kt_processes,
+        #[cfg(feature = "go")]
+        go: go_runtimes,
+        #[cfg(all(feature = "swift", target_os = "macos"))]
+        swift: swift_runtimes,
         dir: dir.path().to_owned(),
         _dir: dir,
     }
 }
 
+impl Fixture {
+    /// What the rows and the compiled runtimes were doing, for a failed call
+    /// to print (#1094). A runtime's line says which start it is (a number
+    /// that grows when it starts again, so a restart under the test shows)
+    /// and where it is: `Ready` (running), `Starting`, or `Down(why)` — it
+    /// ended by itself, and `why` says how. One the loader stopped has no
+    /// line at all ([`noted`]). A `Ready` one also says where its session
+    /// ended, when it did.
+    fn diagnostics(&self) -> String {
+        let mut lines = vec!["the rows:".to_owned()];
+        for entry in self.loader.entries() {
+            let state = match &entry.status {
+                EntryStatus::Disabled => "disabled".to_owned(),
+                EntryStatus::Inactive => "inactive".to_owned(),
+                EntryStatus::Stopped => "stopped".to_owned(),
+                EntryStatus::Unresolved(error) => format!("unresolved: {error}"),
+                EntryStatus::Running(_) => "running".to_owned(),
+                other => format!("{other:?}"),
+            };
+            let name = entry
+                .options
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or("?");
+            lines.push(format!("  {} {name}: {state}", entry.id));
+        }
+        let mut runtimes = Vec::new();
+        #[cfg(feature = "go")]
+        if let Some(go) = &self.go {
+            noted(&mut runtimes, go);
+        }
+        #[cfg(all(feature = "swift", target_os = "macos"))]
+        if let Some(swift) = &self.swift {
+            noted(&mut runtimes, swift);
+        }
+        if !runtimes.is_empty() {
+            lines.push("the runtimes:".to_owned());
+            lines.append(&mut runtimes);
+        }
+        lines.push(format!("the probe's lines: {:?}", self.probe.lines()));
+        lines.join("\n")
+    }
+}
+
+/// [`runtime_lines`], saying so when it lists nothing: a runtime the loader
+/// stopped has no slot any more (`BinaryRuntimes` takes it out before it
+/// stops one), which is itself the answer to who ended it.
+#[cfg(any(feature = "go", all(feature = "swift", target_os = "macos")))]
+fn noted<L: BinaryLanguage>(lines: &mut Vec<String>, handle: &BinaryRuntimesHandle<L>) {
+    if runtime_lines(lines, handle) == 0 {
+        lines.push(
+            "  (none: not started, or stopped — the loader takes the slot of one it stops out)"
+                .to_owned(),
+        );
+    }
+}
+
+/// One line per runtime `handle` knows: its name, which start it is, its
+/// state, and, for one still running, where its session ended and how its
+/// process went when they did. How many lines it wrote.
+#[cfg(any(feature = "go", all(feature = "swift", target_os = "macos")))]
+fn runtime_lines<L: BinaryLanguage>(
+    lines: &mut Vec<String>,
+    handle: &BinaryRuntimesHandle<L>,
+) -> usize {
+    let before = lines.len();
+    for (name, state, started) in handle.states_started() {
+        let mut said = format!("  {name}: start {started}, {state:?}");
+        if let RuntimeState::Ready(process) = &state {
+            if let Some(reason) = process.connection().close_reason() {
+                said.push_str(&format!(", its session ended: {reason}"));
+            }
+            if let Some(status) = process.exit_status() {
+                said.push_str(&format!(", its process: {status}"));
+            }
+        }
+        lines.push(said);
+    }
+    lines.len() - before
+}
+
 /// Call `service.method` from the host, as Rust code does: its result.
 /// The service is waited for: a row's service is there once the row runs,
-/// which may be just after `reconcile` returns.
-async fn call(root: &Ctx, service: &str, method: &str) -> Value {
+/// which may be just after `reconcile` returns. A call that fails prints
+/// what the rows and the runtimes were doing ([`Fixture::diagnostics`]):
+/// `runtime swift-multilang exited during the call` alone does not say
+/// whether this side stopped it or it went by itself (#1094).
+async fn call(fixture: &Fixture, service: &str, method: &str) -> Value {
     let dispatch = COLD
         .eventually(
-            || root.get_at::<dyn HostDispatch>(&host_key(service)),
+            || fixture.root.get_at::<dyn HostDispatch>(&host_key(service)),
             &format!("the service {service}"),
         )
         .await;
     let reply = dispatch.invoke(method, RpcValue::List(vec![])).unwrap();
-    let value = settle(reply).await.unwrap();
+    let value = match settle(reply).await {
+        Ok(value) => value,
+        Err(error) => panic!(
+            "calling {service}.{method} failed: {error}\n{}",
+            fixture.diagnostics()
+        ),
+    };
     rutis_bridge::session::decode_value(value).unwrap()
 }
 
@@ -514,13 +625,13 @@ async fn objects_cross(owner: &str, holder: &str) {
     // same proxy; passed back, the original; a missing method is the
     // owner's to answer; a plain object with a function goes by reference.
     assert_eq!(
-        call(&fixture.root, "owner", "run").await,
+        call(&fixture, "owner", "run").await,
         json!(
             "3 {\"data\":1} true true 3 pong | no-method: Counter has no method nope (methods: inc, value)"
         )
     );
     // As an event argument: the same proxy.
-    call(&fixture.root, "owner", "announce").await;
+    call(&fixture, "owner", "announce").await;
     fixture.probe.wait_for("event: true 3").await;
     // The owner's row unloads: the object is still callable.
     fixture
@@ -528,7 +639,7 @@ async fn objects_cross(owner: &str, holder: &str) {
         .reconcile(layer(rows(&fixture, owner, holder, false)), None)
         .await
         .unwrap();
-    assert_eq!(call(&fixture.root, "holder", "after").await, json!("4"));
+    assert_eq!(call(&fixture, "holder", "after").await, json!("4"));
     // The owner's runtime is gone: peer-gone, saying where from.
     // A Go or Swift runtime stops by itself, idle; another is killed.
     let said = match owner {
@@ -546,13 +657,13 @@ async fn objects_cross(owner: &str, holder: &str) {
     };
     let mut answer = Value::Null;
     for _ in 0..200 {
-        answer = call(&fixture.root, "holder", "after").await;
+        answer = call(&fixture, "holder", "after").await;
         if answer == json!(said) {
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
-    assert_eq!(answer, json!(said));
+    assert_eq!(answer, json!(said), "{}", fixture.diagnostics());
     fixture.root.shutdown().await.unwrap();
 }
 
@@ -644,7 +755,7 @@ async fn a_go_parameter_that_takes_no_object_says_so() {
         .await
         .unwrap();
     assert_eq!(
-        call(&fixture.root, "owner", "wrongs").await,
+        call(&fixture, "owner", "wrongs").await,
         json!(
             "bad-argument: holder.wrong: argument 1: an object is received only as a struct of function fields or any | \
              bad-argument: holder.text: argument 1: an object cannot be decoded as string"
@@ -676,20 +787,20 @@ async fn runtime_exited(owner: &str) {
         .reconcile(layer(rows(&fixture, owner, "node", true)), None)
         .await
         .unwrap();
-    call(&fixture.root, "owner", "run").await;
-    assert_eq!(call(&fixture.root, "owner", "die").await, json!("dying"));
+    call(&fixture, "owner", "run").await;
+    assert_eq!(call(&fixture, "owner", "die").await, json!("dying"));
     let said = format!(
         "peer-gone: a call on an object from {owner}-multilang failed: runtime {owner}-multilang exited"
     );
     let mut answer = Value::Null;
     for _ in 0..200 {
-        answer = call(&fixture.root, "holder", "after").await;
+        answer = call(&fixture, "holder", "after").await;
         if answer == json!(said) {
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
-    assert_eq!(answer, json!(said));
+    assert_eq!(answer, json!(said), "{}", fixture.diagnostics());
     fixture.root.shutdown().await.unwrap();
 }
 
