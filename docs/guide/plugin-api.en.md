@@ -1424,13 +1424,13 @@ export default definePlugin({
     const ws = new WebSocket(config.url)
     ws.binaryType = 'arraybuffer'
     await new Promise(ok => ws.addEventListener('open', ok, { once: true }))
-    const near = await ctx.use('rutis/sessions').open({
+    const near = ctx.use('rutis/sessions').open({
       send: m => ws.send(m),
       close: why => ws.close(why.kind === 'rejected' ? 4003 : why.kind === 'replaced' ? 4002 : 1000),
     })
     ws.onmessage = e => near.receive(new Uint8Array(e.data))
     ws.onclose = () => near.end({ kind: 'done' })
-    ctx.effect(() => () => ws.close())
+    ctx.effect(() => ws.close())
   },
 })
 ```

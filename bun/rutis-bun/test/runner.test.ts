@@ -423,6 +423,17 @@ test('unload aborts the row signal and waits for its running listeners', () => e
   await running
 }))
 
+// guarantee: sdk/unload-order
+// #1143: as Rust's InactiveEffect and Python's #1149, a service a row on its
+// way out provides is refused: nothing is registered, and the host is not
+// told about it.
+test('a service provided after the unload started is refused', () => eventRows(async (runtime, _a, b, host) => {
+  const unloading = runtime.unload('b')
+  expect(() => b.provide('late', { ping: () => 'pong' })).toThrow('row b is not active')
+  await unloading
+  expect(host.sent.filter(([method, [first]]) => method === 'service' && first === 'late')).toEqual([])
+}))
+
 // guarantee: sdk/leaf-events (a row's unload stack still emits, §7.1)
 test('a row emits from its unload stack, and the other rows hear it', () => eventRows(async (runtime, a, b, host) => {
   const received: number[] = []

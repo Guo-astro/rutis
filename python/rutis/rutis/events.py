@@ -36,6 +36,10 @@ from .peer import (
 
 MODES = ("emit", "parallel", "serial", "waterfall", "bail")
 
+# How many ids this process remembers of listeners it withdrew and told the
+# host about (`events.off`, #1138): the oldest are forgotten.
+ANNOUNCED = 4096
+
 
 def reserved(name: str, *, listening: bool = False) -> str:
     """`name`, unless a plugin may not use it: `internal/*` is each
@@ -176,6 +180,10 @@ class Bus:
         # `awaited=False`: a synchronous dispatch, which refuses an awaitable.
         self.within: Callable[..., Any] = lambda _row, call, awaited=True: call()
         self._ids = 0
+        # Ids withdrawn here and told to the host (`events.off`), oldest
+        # first: a dispatch the host picked one for before the off reached it
+        # still calls it (`Runner._call_listener`).
+        self.gone: dict[str, None] = {}
         # The id each row's configuration gives it, by row key (`rows.load`'s
         # `id`): descriptors and reported lines call the row so (§4.2).
         self.row_ids: dict[str, str] = {}
@@ -205,25 +213,46 @@ class Bus:
             self.by_id[entry.id] = entry
         return entry
 
-    def withdraw(self, entry: Entry) -> bool:
+    def withdraw(self, entry: Entry, *, announced: bool = False) -> bool:
         """Take `entry` off the table: it starts no invocation any more.
-        False when it was off already."""
+        False when it was off already. `announced`: the host is told
+        (`events.off`), so a dispatch it already picked answers nothing
+        (#1138)."""
         with self._lock:
             if not entry.alive:
                 return False
             entry.alive = False
             self.entries.remove(entry)
             del self.by_id[entry.id]
+            if announced:
+                self._announce([entry.id])
             return True
 
-    def withdraw_row(self, row: str) -> list[str]:
-        """Take the row's listeners off the table; their ids."""
+    def _announce(self, ids: list[str]) -> None:
+        # `events.off` is on its way; the lock is held.
+        for id in ids:
+            self.gone[id] = None
+        while len(self.gone) > ANNOUNCED:
+            del self.gone[next(iter(self.gone))]
+
+    def withdrew_here(self, id: str) -> bool:
+        """Whether `id` is one this process withdrew and told the host about
+        (`events.off`)."""
+        with self._lock:
+            return id in self.gone
+
+    def withdraw_row(self, row: str, *, announced: bool = False) -> list[str]:
+        """Take the row's listeners off the table; their ids. `announced`:
+        the host is told (`events.off`), so calls it already picked answer
+        nothing (#1138)."""
         with self._lock:
             mine = [entry for entry in self.entries if entry.row == row]
             for entry in mine:
                 entry.alive = False
                 self.entries.remove(entry)
                 del self.by_id[entry.id]
+            if announced:
+                self._announce([entry.id for entry in mine])
         return [entry.id for entry in mine]
 
     def clear(self) -> None:

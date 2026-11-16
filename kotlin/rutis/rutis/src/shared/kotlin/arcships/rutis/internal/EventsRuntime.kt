@@ -87,6 +87,9 @@ internal class LocalListener(
 }
 
 internal object EventsRuntime {
+    /** How many ids this runtime remembers of listeners it withdrew and told the host about (`events.off`, #1138). */
+    private const val ANNOUNCED_REMEMBERED = 4096
+
     /** Registers a listener of `row` (Ctx.on). */
     fun on(rt: RuntimeState, row: Row, name: String, prepend: Boolean, global: Boolean, fn: suspend (EventArgs) -> Any?): () -> Unit {
         checkListen(name)
@@ -124,10 +127,27 @@ internal object EventsRuntime {
             synchronized(rt.lock) {
                 if (!listener.withdrawn) {
                     withdraw(rt, listener)
+                    // The host may pick it for a dispatch before its `events.off`
+                    // arrives; the call then answers nothing (#1138).
+                    announcedGone(rt, listOf(listener.id))
                     val session = rt.session
                     if (session != null && !rt.closing) session.notify("", "events.off", listOf(listOf(listener.id)))
                 }
             }
+        }
+    }
+
+    /**
+     * Remembers `ids` as withdrawn here and told to the host (`events.off`);
+     * rt.lock is held. A dispatch the host picked one for before the off
+     * reached it still calls it, and the call answers as one that returns
+     * nothing (#1138).
+     */
+    fun announcedGone(rt: RuntimeState, ids: List<String>) {
+        for (id in ids) {
+            if (rt.gone.containsKey(id)) continue
+            rt.gone[id] = Unit
+            while (rt.gone.size > ANNOUNCED_REMEMBERED) rt.gone.remove(rt.gone.keys.first())
         }
     }
 
@@ -292,15 +312,30 @@ internal object EventsRuntime {
             else -> return { throw IllegalArgumentException("events.call args: not a list") }
         }
         val withdrawn = RutisException(RutisException.BINDING_ERROR, "listener $id of $name is withdrawn")
-        val listener = synchronized(rt.lock) { rt.byId[id] } ?: return { throw withdrawn }
+        val (listener, gone) = synchronized(rt.lock) { rt.byId[id] to rt.gone.containsKey(id) }
+        if (listener == null) {
+            // Withdrawn here, and the `events.off` that says so may not have
+            // reached the host when it picked the listener for this dispatch:
+            // the listener is gone, and the call answers as one that returns
+            // nothing, instead of failing a dispatch that was already under way
+            // (#1138). An id this process never registered, and one the host
+            // withdrew itself (a row's unload), stay the protocol failure they
+            // were.
+            if (gone) return goneCall(mode, record)
+            return { throw withdrawn }
+        }
         if (mode == Mode.Emit) {
-            if (!listener.reserve()) return { throw withdrawn }
+            if (!listener.reserve()) {
+                if (synchronized(rt.lock) { rt.gone.containsKey(id) }) return goneCall(mode, record)
+                return { throw withdrawn }
+            }
             val done = CompletableFuture<Throwable?>()
             val chain = CallChain.current()
             listener.queue.push {
                 try {
-                    if (!synchronized(rt.lock) { listener.live() }) {
-                        done.complete(withdrawn)
+                    val (live, gone) = synchronized(rt.lock) { listener.live() to rt.gone.containsKey(id) }
+                    if (!live) {
+                        done.complete(if (gone) null else withdrawn)
                     } else {
                         val failure = try {
                             runBlocking(CallChain.element(chain)) { listener.run(mode, values, null) }
@@ -326,7 +361,24 @@ internal object EventsRuntime {
             val remote = record["next"] as? RemoteFunction ?: return { throw IllegalArgumentException("events.call: a ${mode.wire} needs next") }
             next = { remote.peer.callFunctionSuspend(remote, emptyList(), false) }
         }
-        val call = listener.begin() ?: return { throw withdrawn }
+        val call = listener.begin()
+        if (call == null) {
+            if (synchronized(rt.lock) { rt.gone.containsKey(id) }) return goneCall(mode, record)
+            return { throw withdrawn }
+        }
         return { call(mode, values, next) }
+    }
+
+    /**
+     * What a listener withdrawn here answers a call already on its way
+     * (#1138): nothing, as one that returns no result, and a waterfall's
+     * `next` gives the rest of the chain, as if it had not been there.
+     */
+    private fun goneCall(mode: Mode, record: Map<String, Any?>): suspend () -> Any? {
+        if (mode.waterfall) {
+            val remote = record["next"] as? RemoteFunction
+            if (remote != null) return { remote.peer.callFunctionSuspend(remote, emptyList(), false) }
+        }
+        return { null }
     }
 }

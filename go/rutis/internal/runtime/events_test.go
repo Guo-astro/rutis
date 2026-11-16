@@ -318,19 +318,54 @@ func TestFailedApplyAndUpdateRemoveListeners(t *testing.T) {
 }
 
 // guarantee: sdk/leaf-events (a call for a listener no longer there)
-func TestACallForAWithdrawnListenerFails(t *testing.T) {
+// A listener this runtime withdrew and told the host about answers the call
+// the host already picked with nothing (#1138); an unknown id, and one a
+// row's unload took, stay the protocol failure they were.
+func TestACallForAWithdrawnListenerAnswersNothing(t *testing.T) {
 	rt, rows := eventRows(t, "")
+	ctx := context.Background()
 	off := rows[0].On("t/gone", func(context.Context, ...any) (any, error) { return "x", nil })
-	call := func() error {
-		_, err := rt.control(context.Background(), "events.call", []any{map[string]any{"listener": "1", "dispatch": "d1", "own": false, "name": "t/gone", "mode": "serial", "args": []any{}}})
-		return err
+	call := func(id string) (any, error) {
+		return rt.control(ctx, "events.call", []any{map[string]any{"listener": id, "dispatch": "d1", "own": false, "name": "t/gone", "mode": "serial", "args": []any{}}})
 	}
-	if err := call(); err != nil {
-		t.Fatal(err)
+	if value, err := call("1"); err != nil || value != "x" {
+		t.Fatalf("live listener: %v, %v", value, err)
 	}
 	off()
-	if err := call(); !errors.Is(err, ErrBinding) || err.Error() != "listener 1 of t/gone is withdrawn" {
-		t.Fatalf("withdrawn: %v", err)
+	if value, err := call("1"); err != nil || value != nil {
+		t.Fatalf("withdrawn listener: %v, %v", value, err)
+	}
+	if _, err := call("999"); !errors.Is(err, ErrBinding) || err.Error() != "listener 999 of t/gone is withdrawn" {
+		t.Fatalf("unknown listener: %v", err)
+	}
+}
+
+func TestACallForARowUnloadedListenerFails(t *testing.T) {
+	rt, rows := eventRows(t, "")
+	ctx := context.Background()
+	rows[0].On("t/gone", func(context.Context, ...any) (any, error) { return "x", nil })
+	if err := rt.unload(ctx, "r0"); err != nil {
+		t.Fatal(err)
+	}
+	_, err := rt.control(ctx, "events.call", []any{map[string]any{"listener": "1", "dispatch": "d1", "own": false, "name": "t/gone", "mode": "serial", "args": []any{}}})
+	if !errors.Is(err, ErrBinding) || err.Error() != "listener 1 of t/gone is withdrawn" {
+		t.Fatalf("unloaded row's listener: %v", err)
+	}
+}
+
+// A restart (`rows.update`) keeps the row loaded on the host, whose table
+// still has the old listeners until `events.off`: calls it picked for them
+// answer nothing (#1138).
+func TestACallForARestartWithdrawnListenerAnswersNothing(t *testing.T) {
+	rt, rows := eventRows(t, "")
+	ctx := context.Background()
+	rows[0].On("t/gone", func(context.Context, ...any) (any, error) { return "x", nil })
+	if err := rt.update(ctx, "r0", nil); err != nil {
+		t.Fatal(err)
+	}
+	value, err := rt.control(ctx, "events.call", []any{map[string]any{"listener": "1", "dispatch": "d1", "own": false, "name": "t/gone", "mode": "serial", "args": []any{}}})
+	if err != nil || value != nil {
+		t.Fatalf("restart-withdrawn listener: %v, %v", value, err)
 	}
 }
 

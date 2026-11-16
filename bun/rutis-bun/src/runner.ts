@@ -236,6 +236,11 @@ export class Runtime {
   }
 
   provide(row: Row, name: string, value: unknown): () => void {
+    // As `ctx.on` and `ctx.effect`, and Rust's InactiveEffect: the withdrawal
+    // this would put on the unload stack would never run once the unload took
+    // it, leaving the service with no row and telling the host about it
+    // (#1143).
+    if (this.#rows.get(row.key) !== row) throw new Error(`row ${row.key} is not active`)
     const id = idIn(row, name)
     const current = this.#services.get(id)
     // `forecast is already provided by a: rename one of them` (§8.1 row

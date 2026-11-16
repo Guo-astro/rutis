@@ -1757,10 +1757,45 @@ jobs:
     runs-on: ${{ fromJSON(vars.WINDOWS_RUNNER || '"windows-2025"') }}
     defaults:
       run:
-        # Git's bash (on PATH, self-hosted too: docs/ci.md §11).
+        # Git's bash; the step after checkout puts it on PATH when the
+        # runner has none (docs/ci.md §11).
         shell: bash
     steps:
       - uses: actions/checkout@v4
+      # A self-hosted runner may have Git while its bin directory is not on
+      # the system PATH (docs/ci.md §11 wants it there): one instance ran
+      # every step below as `bash: command not found`, `cargo`, `npm` and
+      # `rm` included. Add Git's bin for this job's remaining steps; a
+      # runner that has bash already (windows-2025 puts Git's bin on PATH)
+      # passes through and prints its version.
+      - name: Git Bash on PATH
+        shell: powershell
+        run: |
+          if (-not (Get-Command bash -ErrorAction SilentlyContinue)) {
+            $candidates = @()
+            foreach ($root in @($env:ProgramFiles, ${env:ProgramFiles(x86)})) {
+              if ($root) {
+                $candidates += (Join-Path $root 'Git\bin')
+                $candidates += (Join-Path $root 'Git\usr\bin')
+              }
+            }
+            $dir = $candidates |
+              Where-Object { Test-Path (Join-Path $_ 'bash.exe') } |
+              Select-Object -First 1
+            if (-not $dir) {
+              Write-Host "::error::no bash on PATH and no Git Bash in: $($candidates -join ', ')"
+              Write-Host "This runner needs Git Bash (docs/ci.md, self-hosted Windows runners)."
+              exit 1
+            }
+            Add-Content -Path $env:GITHUB_PATH -Value $dir
+            $env:PATH = "$dir;$env:PATH"
+            Write-Host "bash from $dir"
+          }
+          bash --version
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::bash is on PATH but does not run: $((Get-Command bash).Source)"
+            exit 1
+          }
       # Several runner instances share the machine: each keeps its own
       # target and scenario directories (outside the checkout, which
       # `checkout` cleans), and takes its share of the CPUs
@@ -1847,10 +1882,32 @@ jobs:
           cd go/rutis && go test ./...
       # The Kotlin SDK's jvm target, for the bridge's tests with `kotlin`
       # (loopback channels only on Windows).
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
+        if: runner.environment == 'github-hosted'
         with:
           distribution: temurin
           java-version: '17'
+      # setup-java writes a toolchains.xml that a self-hosted Windows runner
+      # rejects (Invalid XML name, seen on windows-runner-2), so these take
+      # the JDK already in the runner's tool cache instead.
+      - name: Java from the runner's tool cache (self-hosted)
+        if: runner.environment == 'self-hosted'
+        shell: powershell
+        run: |
+          $root = Join-Path $env:RUNNER_TOOL_CACHE 'Java_Temurin-Hotspot_jdk'
+          $jdk = Get-ChildItem $root -Directory |
+            Sort-Object Name -Descending |
+            ForEach-Object { Join-Path $_.FullName 'x64' } |
+            Where-Object { Test-Path (Join-Path $_ 'bin\java.exe') } |
+            Select-Object -First 1
+          if (-not $jdk) {
+            Write-Host "::error::no JDK 17 in $root"
+            exit 1
+          }
+          "JAVA_HOME=$jdk" >> $env:GITHUB_ENV
+          "$jdk\bin" >> $env:GITHUB_PATH
+          & "$jdk\bin\java.exe" -version
+          if ($LASTEXITCODE -ne 0) { exit 1 }
       - name: the Kotlin conformance jar
         working-directory: kotlin/rutis
         run: |
@@ -1908,10 +1965,18 @@ jobs:
         run: cargo check --workspace --all-targets
       # After a failure, this instance's Go build cache goes (a job cut
       # short can leave it truncated, #374; tools/ci-self-hosted.sh does the
-      # same on the other self-hosted runners).
+      # same on the other self-hosted runners). Windows can still hold a
+      # file when this runs: retry, then leave it; a cleanup failure must not
+      # hide the test failure it follows.
       - name: self-hosted runner, end
         if: failure() && runner.environment == 'self-hosted'
-        run: rm -rf "$GOCACHE"
+        run: |
+          for attempt in 1 2 3 4 5; do
+            rm -rf "$GOCACHE" && break
+            sleep 2
+          done
+          [ -d "$GOCACHE" ] && echo "GOCACHE still present after 5 attempts; the next run empties it by size" || true
+          exit 0
 
   # Builds of the SDK on two separate runners compared by hash. The SDK
   # cannot come from a cache, so this stays off pull requests (Q12.6.3) and

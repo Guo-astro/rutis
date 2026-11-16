@@ -97,6 +97,24 @@ export function apply(ctx) {
   expect(written.join('')).toContain('rutis: row nested is not active: cleanup is not registered\n')
 }))
 
+// #1143: as Rust's InactiveEffect and Python's #1149, a service a cleanup
+// provides on its way out is refused, not registered.
+test('a cleanup providing a service is refused', () => withRuntime({
+  'late.ts': `
+export function apply(ctx) {
+  ctx.provide('tally', { count: () => 1 })
+  ctx.effect(() => {
+    try { ctx.provide('late', { ping: () => 'pong' }) } catch (error) { globalThis.lateRefusal = error.message }
+  })
+}
+`,
+}, async runtime => {
+  ;(globalThis as any).lateRefusal = null
+  await runtime.load('late', './late.ts', {}, null, null)
+  await runtime.unload('late')
+  expect((globalThis as any).lateRefusal).toBe('row late is not active')
+}))
+
 test('an old withdrawal leaves a new registration of the name alone', () => withRuntime({
   'again.ts': `
 import { read } from './read.ts'
