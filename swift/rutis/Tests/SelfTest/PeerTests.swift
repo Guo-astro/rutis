@@ -131,6 +131,223 @@ struct PeerTests {
         for _ in 0 ..< 200 where !channel.isClosed { try await Task.sleep(nanoseconds: 10_000_000) }
         XCTAssertTrue(channel.isClosed, "the channel is still open after a read error")
     }
+
+    /// A plugin emits inside a Task: with a far end that stopped reading, the
+    /// emit queues its frames and returns, so no write is made on the thread
+    /// the tasks run on (#630). One emitter: more blocked emits than the pool
+    /// has threads would hold up this very wait, and a test that hangs says
+    /// less than one that fails.
+    func testAnEmitDoesNotWaitForTheWrite() async throws {
+        let seen = Recorder()
+        let (host, runtime, channel) = try await stallingPair { _, method, _ in
+            seen.add(method)
+            return .undefined
+        }
+        defer {
+            host.close()
+            runtime.close()
+            channel.close()
+        }
+        channel.hold()
+        let queued = Event()
+        let emitter = Task {
+            for index in 0 ..< 8 { host.notify(target: "t", method: "m\(index)", args: []) }
+            queued.fire()
+        }
+        let returned = await queued.wait(seconds: 10)
+        XCTAssertTrue(returned, "an emit waited for its write")
+        XCTAssertEqual(seen.methods, [], "a frame was written while the far end read nothing")
+        // A write is really held: the emits returned while it waits.
+        let held = await channel.held.wait(seconds: 5)
+        XCTAssertTrue(held, "no write was held")
+        // Let go whatever the emits did: a test that hung could not say what
+        // went wrong.
+        channel.unhold()
+        _ = await emitter.value
+        for _ in 0 ..< 500 where seen.methods.count < 8 { try await Task.sleep(nanoseconds: 10_000_000) }
+        XCTAssertEqual(seen.methods.count, 8, "queued frames went missing: \(seen.methods)")
+    }
+
+    /// The frames a session took while the far end read nothing go out in the
+    /// order they were taken (#630).
+    func testQueuedFramesGoOutInOrder() async throws {
+        let seen = Recorder()
+        let (host, runtime, channel) = try await stallingPair { _, method, _ in
+            seen.add(method)
+            return .undefined
+        }
+        defer {
+            host.close()
+            runtime.close()
+            channel.close()
+        }
+        channel.hold()
+        let queued = Event()
+        let emitter = Task {
+            for method in ["one", "two", "three"] { host.notify(target: "t", method: method, args: []) }
+            queued.fire()
+        }
+        let returned = await queued.wait(seconds: 10)
+        XCTAssertTrue(returned, "emitting waited for its write")
+        XCTAssertEqual(seen.methods, [])
+        channel.unhold()
+        _ = await emitter.value
+        for _ in 0 ..< 500 where seen.methods.count < 3 { try await Task.sleep(nanoseconds: 10_000_000) }
+        XCTAssertEqual(seen.methods, ["one", "two", "three"])
+    }
+
+    /// The session ending writes what it already took: the frames queued then
+    /// are not dropped (#630).
+    func testTheSessionEndingWritesWhatWasQueued() async throws {
+        let seen = Recorder()
+        let (host, runtime, channel) = try await stallingPair { _, method, _ in
+            seen.add(method)
+            return .undefined
+        }
+        defer {
+            host.close()
+            runtime.close()
+            channel.close()
+        }
+        channel.hold()
+        // One held in its write, one still queued behind it.
+        let queued = Event()
+        let emitter = Task {
+            host.notify(target: "t", method: "in-flight", args: [])
+            host.notify(target: "t", method: "queued", args: [])
+            queued.fire()
+        }
+        let returned = await queued.wait(seconds: 10)
+        XCTAssertTrue(returned, "emitting waited for its write")
+        host.close()
+        channel.unhold()
+        _ = await emitter.value
+        for _ in 0 ..< 500 where seen.methods.count < 2 { try await Task.sleep(nanoseconds: 10_000_000) }
+        XCTAssertEqual(seen.methods, ["in-flight", "queued"])
+    }
+
+    /// A write that fails ends the session: its frame was taken already, and
+    /// the emitter only queued it (#630).
+    func testAWriteThatFailsEndsTheSession() async throws {
+        let seen = Recorder()
+        let (host, runtime, channel) = try await stallingPair { _, method, _ in
+            seen.add(method)
+            return .undefined
+        }
+        defer {
+            host.close()
+            runtime.close()
+            channel.close()
+        }
+        channel.hold()
+        channel.failWrites()
+        let queued = Event()
+        let emitter = Task {
+            host.notify(target: "t", method: "x", args: [])
+            queued.fire()
+        }
+        let held = await channel.held.wait(seconds: 5)
+        XCTAssertTrue(held, "no write reached the channel")
+        let returned = await queued.wait(seconds: 10)
+        XCTAssertTrue(returned, "emitting waited for its write")
+        channel.unhold()
+        _ = await emitter.value
+        for _ in 0 ..< 500 where !host.isClosed { try await Task.sleep(nanoseconds: 10_000_000) }
+        XCTAssertTrue(host.isClosed, "the session went on after a failed write")
+        XCTAssertTrue("\(host.error.map { "\($0)" } ?? "")".contains("the far end stopped reading"),
+                      "\(String(describing: host.error))")
+        XCTAssertEqual(seen.methods, [])
+    }
+}
+
+/// A session whose host writes through `channel`, which the test can hold: a
+/// far end that stopped reading (#630). `dispatch` serves the runtime side,
+/// where the frames land once they are let through.
+func stallingPair(_ dispatch: @escaping (String, String, [Value]) async throws -> Value)
+    async throws -> (host: Peer, runtime: Peer, channel: StallingChannel)
+{
+    let (a, b) = try Channels.pair()
+    let channel = StallingChannel(b)
+    var runtimeOptions = PeerOptions(endpoint: Endpoint(local: "swift", expected: "main"))
+    runtimeOptions.dispatch = dispatch
+    let runtime = try Peer(channel: a, options: runtimeOptions)
+    var hostOptions = PeerOptions(endpoint: Endpoint(local: "main", expected: "swift"))
+    hostOptions.host = true
+    let host = try Peer(channel: channel, options: hostOptions)
+    try runtime.start()
+    try host.start()
+    await host.ready()
+    await runtime.ready()
+    return (host, runtime, channel)
+}
+
+/// The methods the runtime side was called with, in order.
+final class Recorder: @unchecked Sendable {
+    private let lock = Lock()
+    private var seen: [String] = []
+    func add(_ method: String) { lock.withLock { seen.append(method) } }
+    var methods: [String] { lock.withLock { seen } }
+}
+
+/// A channel whose writes the test holds, as one to a far end that reads
+/// nothing; everything else goes to `inner` (#630).
+final class StallingChannel: Channel, @unchecked Sendable {
+    private let inner: Channel
+    private let condition = NSCondition()
+    private var flowing = true
+    private var closed = false
+    private var failing = false
+    /// Fired once a write is held.
+    let held = Event()
+
+    init(_ inner: Channel) { self.inner = inner }
+
+    /// Every write from now on waits, as one to a far end that reads nothing.
+    func hold() {
+        condition.lock()
+        flowing = false
+        condition.unlock()
+    }
+
+    /// The held write, and the ones queued after it, go out.
+    func unhold() {
+        condition.lock()
+        flowing = true
+        condition.broadcast()
+        condition.unlock()
+    }
+
+    /// A write that is let go fails: the far end went away while it waited.
+    func failWrites() {
+        condition.lock()
+        failing = true
+        condition.unlock()
+    }
+
+    func send(_ message: [UInt8]) throws {
+        condition.lock()
+        if !flowing, !closed {
+            condition.unlock()
+            held.fire()
+            condition.lock()
+            while !flowing, !closed { condition.wait() }
+        }
+        let (wasClosed, fails) = (closed, failing)
+        condition.unlock()
+        if wasClosed { throw ChannelError("the channel is closed") }
+        if fails { throw ChannelError("the far end stopped reading") }
+        try inner.send(message)
+    }
+
+    func receive() throws -> [UInt8]? { try inner.receive() }
+
+    func close() {
+        condition.lock()
+        closed = true
+        condition.broadcast()
+        condition.unlock()
+        inner.close()
+    }
 }
 
 /// A channel whose every read fails.
