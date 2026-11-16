@@ -75,7 +75,7 @@ memory peer mac: closed: done
 
 **边界 — reconnect 是新会话。** 旧会话及其 row 先 dispose，新 pair 才能变为 active；仅握手的会话不共享插件或服务，替换连接只有在旧会话卸载后才挂载（`crates/rutis-bridge/tests/session_plugin.rs:182-270`）。正常承载结果是传输线程的 `Ok(())`/`Ok(None)`，而本地会话状态另行是 `Disposed`；不得把这些观察合并为一个握手结果。
 
-生命周期追踪状态：上述会话/row 顺序是当前实现证据，但不主张跨 runtime 统一的 row-failure 策略；公告错误由各 SDK 以不同方式处理，见服务公告设计。对象引用不按能力协商：协议 4 没有 `objects` 能力（[会话协议规格](protocol-session.md) `SESS-16`、`SESS-53`），所有协议 4 实现都收对象引用（`SESS-52`）；#639 的“Rust 中继不查 `objects`”在协议 4 没有可触发的检查点，0.18 及更早的对端在握手时已被拒绝（`SESS-79`）。
+生命周期追踪状态：上述会话/row 顺序是当前实现证据，但不主张跨 runtime 统一的 row-failure 策略；行协议的现行规则（装载、更新、卸载、服务与租约、自行结束与失败）见[行协议规格](protocol-rows.md)。公告错误由各 SDK 以不同方式处理，见服务公告设计。对象引用不按能力协商：协议 4 没有 `objects` 能力（[会话协议规格](protocol-session.md) `SESS-16`、`SESS-53`），所有协议 4 实现都收对象引用（`SESS-52`）；#639 的“Rust 中继不查 `objects`”在协议 4 没有可触发的检查点，0.18 及更早的对端在握手时已被拒绝（`SESS-79`）。
 
 ### 3.1 帧
 

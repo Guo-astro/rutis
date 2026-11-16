@@ -167,8 +167,8 @@ export const SEMANTIC = {
     'TRC-CANCEL-2': {
       source: 'formal-trace.md §3.4',
       anchors: ['SESS-57', 'SESS-60', 'SESS-61'],
-      en: 'A method may reply late: the host receives and drops the reply, counts it (`orphans()`), and then handles the next call in order; the caller gets its context error and the session stays open (`SESS-57`, `SESS-60`); whether the callee replies after a cancel is still not a uniform promise (`SESS-61`).',
-      gapEn: 'Go test only; the reply rule after a cancel waits for #626 to write it back into the specification (#624, #626).',
+      en: 'A method may reply late: the host receives and drops the reply, counts it (`orphans()`), and then handles the next call in order; the caller gets its context error and the session stays open (`SESS-57`, `SESS-60`); after a cancel the callee may reply or not, and the caller must take either (`SESS-61`).',
+      gapEn: 'Go test only; cleaning up the cancelled table and a cancel acknowledgement are #1099 (#624, #1099).',
     },
     'TRC-CANCEL-3': {
       source: 'formal-trace.md §3.4',
@@ -329,7 +329,7 @@ export const SEMANTIC = {
     'TRC-NG-5': {
       source: 'formal-trace.md §1',
       anchors: ['SESS-45', 'SESS-61'],
-      en: 'A call deadline is not guaranteed: the protocol has no deadline and the caller implements timeouts itself; the `cancel` rules here do not include a deadline (`SESS-45`), and whether the callee replies after a cancel is decided separately (`SESS-61`).',
+      en: 'A call deadline is not guaranteed: the protocol has no deadline and the caller implements timeouts itself; the `cancel` rules here do not include a deadline (`SESS-45`), and after a cancel the callee may reply or not, neither being promised (`SESS-61`).',
       gapEn: 'Timing promises belong to the virtual clock of #639; nothing may be written as a guarantee before the specification has a deadline.',
     },
     'TRC-NG-6': {
@@ -1780,8 +1780,8 @@ export const SEMANTIC_REGISTRY_2 = {
       anchors: ['bridge/cancel-reaches-callee'],
       evidence: '`rutis-bridge/tests/fault_links.rs::under_delay_a_cancellation_and_a_release_reach_the_callee`',
       status: '部分验证',
-      why: '登记表记「已验证」；#634 快照记「部分」，K 只在构造的时序下查取消到达，与回复交错时怎样没有成文规则，状态保持部分验证',
-      whyEn: 'The register row is verified; the issue marked this split partial because K checks cancellation only under constructed timing, and what happens when a reply interleaves has no written rule.',
+      why: '登记表记「已验证」；#634 快照记「部分」，K 只在构造的时序下查取消到达，取消之后被调方可能回也可能不回（`SESS-61`），取消表清理归 #1099，状态保持部分验证',
+      whyEn: 'The register row is verified; the issue marked this split partial because K checks cancellation only under constructed timing, and after a cancel the callee may reply or not (`SESS-61`), with the cancelled table #1099’s.',
     },
     'bridge/cancel-reaches-callee b': {
       source: 'guarantees.md §10',
@@ -4590,12 +4590,12 @@ export const SEMANTIC_SESSION = {
       source: '0.22 无此条',
       sourceEn: '0.22 has no such rule',
       anchors: [],
-      whyNoAnchor: '没有 `call/finished` 帧：取消之后是否回复见 `SESS-61`',
-      whyNoAnchorEn: 'There is no `call/finished` frame: whether the callee replies after a cancel is `SESS-61`',
+      whyNoAnchor: '没有 `call/finished` 帧：取消之后是否回复见 `SESS-61`（可能回也可能不回）',
+      whyNoAnchorEn: 'There is no `call/finished` frame: whether the callee replies after a cancel is `SESS-61` (it may or may not)',
       evidence: '—',
       status: '已撤回',
-      why: '没有 finished 确认；取消后的回复规则仍未定（`SESS-61`、#626）；#634 快照记「已取代」',
-      whyEn: 'There is no finished acknowledgement; the reply-after-cancel rule is still open (`SESS-61`, #626); the issue marked it replaced.',
+      why: '没有 finished 确认；取消之后可能回也可能不回，调用方必须接受两种（`SESS-61`）；取消表清理与取消确认归 #1099；#634 快照记「已取代」',
+      whyEn: 'There is no finished acknowledgement; after a cancel the callee may reply or not, and the caller must take either (`SESS-61`); cleaning the cancelled table and a cancel acknowledgement are #1099; the issue marked it replaced.',
     },
     'SES-10-11': {
       source: '0.22 无此条',
@@ -10186,8 +10186,8 @@ export const SEMANTIC_RUNTIME = {
       anchors: ['bridge/cancel-reaches-callee'],
       evidence: '`crates/rutis-bridge/src/session/testing.rs`（`session::testing` 套件）（取消中止信号；含 `rust_meets_the_session_contract`）',
       status: '部分验证',
-      why: '登记表 `bridge/cancel-reaches-callee` 规定 `cancel` 到达被调方；套件覆盖一条直连，取消之后被调方要不要回复没有成文规则（#626）；issue 快照记「部分」',
-      whyEn: 'The register row `bridge/cancel-reaches-callee` makes `cancel` reach the callee; the suite covers one direct hop and no written rule says whether the callee replies after a cancel (#626); the issue marked it partial.',
+      why: '登记表 `bridge/cancel-reaches-callee` 规定 `cancel` 到达被调方；套件覆盖一条直连，取消之后被调方可能回也可能不回（`SESS-61`），取消表清理归 #1099；issue 快照记「部分」',
+      whyEn: 'The register row `bridge/cancel-reaches-callee` makes `cancel` reach the callee; the suite covers one direct hop, and after a cancel the callee may reply or not (`SESS-61`), with the cancelled table #1099’s; the issue marked it partial.',
     },
     'MNT-3-10': {
       source: 'guarantees.md §10',
