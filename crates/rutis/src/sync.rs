@@ -5,9 +5,34 @@
 //! explore use shuttle's primitives, so every access to them is a point where
 //! shuttle may switch threads: a fiber driver's `alive` flag (`post_join`
 //! against the driver's exit), an effect record's state (claiming its
-//! cleanups) and a spawned task's result. Everything else keeps std's. A plain
-//! build is unchanged: these are std's types and [`spawn`] is the host
-//! runtime's.
+//! cleanups), the admission, transition, effects and flight locks, and a
+//! spawned task's result. Everything else keeps std's. A plain build is
+//! unchanged: these are std's types and [`spawn`] is the host runtime's.
+//!
+//! # The locks
+//!
+//! [`Mutex`] and [`RwLock`] follow the same seam: shuttle's behind the cfg,
+//! std's otherwise. Only the locks whose critical sections the models
+//! interleave are built with them:
+//!
+//! - `Shared.admission` (`ctx.rs`): mount admission. `spawn_fiber_inner` and
+//!   `Ctx::register_mount_effect` check `is_closed()` and commit a child under
+//!   it, while a root close sets `Shared.closing` and fixes the subtree under
+//!   the same lock. Both sides touch [`AtomicBool`]s inside the section, so a
+//!   std mutex would park the second shuttle thread for real while the first
+//!   is stopped at a switch point (the deadlock model 7's note describes): a
+//!   shuttle mutex parks it on the scheduler instead, which then runs the
+//!   holder to the end of the section.
+//! - a fiber's `transition`, `effects` and `event_flights` (`fiber.rs`): the
+//!   registration/close path nests them (admission → transition → effects),
+//!   and an unload's `wait_events` waits on the flight count.
+//! - the event bus's `transcoder` (`bus.rs`), the kernel's only `RwLock`; an
+//!   emit reads it from a task a model drives, so it takes the same seam.
+//!
+//! The kernel's other `Mutex`es (`children`, a fiber's slots, the bus state)
+//! keep std's: no two interleaved paths take them across a shuttle switch
+//! point, and a std lock must be entered and left without yielding in
+//! between.
 //!
 //! # The spawn stand-in
 //!
@@ -51,10 +76,10 @@ pub(crate) use spawned::{spawn, Task, TaskSet};
 pub(crate) use spawned::SpawnScope;
 
 #[cfg(not(rutis_shuttle))]
-pub(crate) use std::sync::{atomic::AtomicBool, Mutex};
+pub(crate) use std::sync::{atomic::AtomicBool, Mutex, RwLock};
 
 #[cfg(rutis_shuttle)]
-pub(crate) use shuttle::sync::{atomic::AtomicBool, Mutex};
+pub(crate) use shuttle::sync::{atomic::AtomicBool, Mutex, RwLock};
 
 /// A point where shuttle may switch threads, in a window a model must be
 /// able to stop in that no shuttle primitive opens (shuttle switches just
