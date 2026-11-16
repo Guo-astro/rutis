@@ -12,8 +12,8 @@ use rutis::Ctx;
 use rutis_bridge::channel::{Channel, ChannelError, Receiver};
 use rutis_bridge::events::{ArgValue, Args, ServiceEvent};
 use rutis_bridge::session::{
-    call_service, host_key, Dispatch, Endpoint, Error as SessionError, Handshake, HostDispatch,
-    Reply, SessionOptions, Value, ENDPOINT_PROTOCOL,
+    call_service, host_key, settle, Dispatch, Endpoint, Error as SessionError, Handshake,
+    HostDispatch, Reply, SessionOptions, Value, ENDPOINT_PROTOCOL,
 };
 use rutis_bridge::{
     catalog_key, session_key, Installed, LocalId, PeerId, PluginCatalog, Session, StaticCatalog,
@@ -1188,6 +1188,246 @@ async fn run_on_a_rutis_kernel() {
         error.contains("runtime lone: this connection does not contain plugin contacts"),
         "{error}"
     );
+}
+
+/// A catalog whose first lookup waits for the test: a `rows.load` can be
+/// held between its arrival and its row's start.
+struct SlowCatalog {
+    inner: StaticCatalog,
+    /// Notified when a lookup waits for the test.
+    looking: tokio::sync::Notify,
+    /// Whether lookups go on.
+    released: tokio::sync::watch::Sender<bool>,
+}
+
+impl SlowCatalog {
+    fn new(inner: StaticCatalog) -> Arc<Self> {
+        Arc::new(Self {
+            inner,
+            looking: tokio::sync::Notify::new(),
+            released: tokio::sync::watch::channel(false).0,
+        })
+    }
+
+    /// Until a lookup waits for the test.
+    async fn waiting(&self) {
+        self.looking.notified().await;
+    }
+
+    fn release(&self) {
+        self.released.send_replace(true);
+    }
+}
+
+impl PluginCatalog for SlowCatalog {
+    fn find<'a>(&'a self, name: &'a str) -> BoxFuture<'a, Option<Installed>> {
+        Box::pin(async move {
+            if !*self.released.borrow() {
+                self.looking.notify_one();
+                let mut released = self.released.subscribe();
+                while !*released.borrow_and_update() {
+                    released.changed().await.ok()?;
+                }
+            }
+            self.inner.find(name).await
+        })
+    }
+}
+
+/// A far end scripted by the test: it hears what this end offers, and
+/// answers everything else `undefined`.
+struct Scripted {
+    offered: tokio::sync::watch::Sender<Vec<String>>,
+}
+
+impl Scripted {
+    /// The far end, and the families this end offered it.
+    fn new() -> (Arc<Self>, tokio::sync::watch::Receiver<Vec<String>>) {
+        let (offered, seen) = tokio::sync::watch::channel(Vec::new());
+        (Arc::new(Self { offered }), seen)
+    }
+}
+
+impl Dispatch for Scripted {
+    fn invoke(
+        &self,
+        _: &rutis_bridge::session::Connection,
+        target: &str,
+        method: &str,
+        args: Value,
+    ) -> Reply {
+        if target.is_empty() && method == "link.offers" {
+            let families = args
+                .json()
+                .ok()
+                .and_then(|announced| announced.get(0)?.get("families").cloned())
+                .and_then(|families| serde_json::from_value(families).ok())
+                .unwrap_or_default();
+            self.offered.send_replace(families);
+        }
+        Ok(Value::Undefined)
+    }
+}
+
+/// Until this end offers `family` to `far`.
+async fn offered(far: &mut tokio::sync::watch::Receiver<Vec<String>>, family: &str) {
+    within("the offer", async {
+        loop {
+            if far
+                .borrow_and_update()
+                .iter()
+                .any(|offered| offered == family)
+            {
+                return;
+            }
+            far.changed().await.expect("the session ends");
+        }
+    })
+    .await;
+}
+
+/// `rows.load(key, plugin)` at `far`, settled: its row started, or why not.
+async fn load_row(far: &rutis_bridge::session::Connection, key: &str, plugin: &str) -> Reply {
+    let reply = far
+        .invoke_async(
+            "",
+            "rows.load",
+            Value::List(vec![
+                Value::Data(json!(key)),
+                Value::Data(json!(plugin)),
+                Value::Data(Json::Null),
+            ]),
+        )
+        .await?;
+    settle(reply).await
+}
+
+/// `rows.unload(key)` at `far`, settled.
+async fn unload_row(far: &rutis_bridge::session::Connection, key: &str) -> Reply {
+    let reply = far
+        .invoke_async(
+            "",
+            "rows.unload",
+            Value::List(vec![Value::Data(json!(key))]),
+        )
+        .await?;
+    settle(reply).await
+}
+
+/// guarantee: loader/peer-rows
+/// An unload that arrives while its load is still looking the plugin up is
+/// remembered: the load is refused and no row is left running here (#1101;
+/// `specs/peer-rows/hosted-mut-unload-first.cfg`). A tombstone is its
+/// key's: the next load, a new key, starts.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unload_ahead_of_its_load_leaves_no_row() {
+    let office = kernel("office");
+    let catalog = SlowCatalog::new(StaticCatalog::new().with("contacts", Installed::new(Contacts)));
+    let provided: Arc<dyn PluginCatalog> = catalog.clone();
+    let _catalog = office.provide_at(catalog_key(), provided).unwrap();
+    let (ours, theirs) = rutis_bridge::memory::pair();
+    let (far, mut seen) = Scripted::new();
+    let mut endpoint = Endpoint::rust(id("far"));
+    endpoint.capabilities.push("node".into());
+    let far = rutis_bridge::session::Connection::open(theirs, far, endpoint).unwrap();
+    let _at_office = office.plugin(Session::new(ours));
+    offered(&mut seen, "rows").await;
+
+    // The lookup holds the load after it arrived.
+    let loading = tokio::spawn({
+        let far = far.clone();
+        async move { load_row(&far, "contacts#0", "contacts").await }
+    });
+    catalog.waiting().await;
+    // The far end gave the row up: its unload overtakes the load.
+    within("the unload", unload_row(&far, "contacts#0"))
+        .await
+        .unwrap();
+    catalog.release();
+    let error = within("the load", loading)
+        .await
+        .unwrap()
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("contacts#0 was unloaded"), "{error}");
+    assert!(
+        plugin(&office, "contacts").is_none(),
+        "the row the far end unloaded is not left here"
+    );
+
+    // The next generation takes its own key: a tombstone refuses the load
+    // it was written for, not the row.
+    within("the next load", load_row(&far, "contacts#1", "contacts"))
+        .await
+        .unwrap();
+    eventually(
+        || {
+            plugin(&office, "contacts")
+                .filter(|plugin| plugin.0 == FiberState::Active)
+                .map(|_| ())
+        },
+        "contacts running at office",
+    )
+    .await;
+}
+
+/// guarantee: loader/peer-rows
+/// A session's tombstone is its own: the old session unloading a key it was
+/// still loading does not refuse a new session's load of it (#1101).
+#[tokio::test(flavor = "multi_thread")]
+async fn an_old_sessions_unload_does_not_refuse_a_new_sessions_load() {
+    let office = kernel("office");
+    let catalog = SlowCatalog::new(StaticCatalog::new().with("contacts", Installed::new(Contacts)));
+    let provided: Arc<dyn PluginCatalog> = catalog.clone();
+    let _catalog = office.provide_at(catalog_key(), provided).unwrap();
+
+    // The old session: its load is still looking the plugin up when the far
+    // end gives it up, and the load is refused.
+    let (ours, theirs) = rutis_bridge::memory::pair();
+    let (old, mut seen) = Scripted::new();
+    let mut endpoint = Endpoint::rust(id("old"));
+    endpoint.capabilities.push("node".into());
+    let old = rutis_bridge::session::Connection::open(theirs, old, endpoint).unwrap();
+    let _old_at_office = office.plugin(Session::new(ours));
+    offered(&mut seen, "rows").await;
+    let loading = tokio::spawn({
+        let old = old.clone();
+        async move { load_row(&old, "contacts", "contacts").await }
+    });
+    catalog.waiting().await;
+    within("the old unload", unload_row(&old, "contacts"))
+        .await
+        .unwrap();
+    catalog.release();
+    let error = within("the old load", loading)
+        .await
+        .unwrap()
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("contacts was unloaded"), "{error}");
+    assert!(plugin(&office, "contacts").is_none());
+
+    // The new session loads the same key: the tombstone went with the old
+    // session, not into the new one.
+    let (ours, theirs) = rutis_bridge::memory::pair();
+    let (new, mut seen) = Scripted::new();
+    let mut endpoint = Endpoint::rust(id("new"));
+    endpoint.capabilities.push("node".into());
+    let new = rutis_bridge::session::Connection::open(theirs, new, endpoint).unwrap();
+    let _new_at_office = office.plugin(Session::new(ours));
+    offered(&mut seen, "rows").await;
+    within("the new load", load_row(&new, "contacts", "contacts"))
+        .await
+        .unwrap();
+    eventually(
+        || {
+            plugin(&office, "contacts")
+                .filter(|plugin| plugin.0 == FiberState::Active)
+                .map(|_| ())
+        },
+        "contacts running at office",
+    )
+    .await;
 }
 
 /// `run` before the session is mounted fails at once.

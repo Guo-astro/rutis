@@ -22,19 +22,19 @@
 
 | 模型部分 | 设计 | 实现 |
 | --- | --- | --- |
-| 每个控制会话有自己的已装载表；同一个键在一个会话里只装载一次 | 远程插件 §4.4（每个运行时实例只有一个活动会话） | `crates/rutis-bridge/src/session/plugin/rows.rs:61`（`Server.loaded`）、`:110-112`（已装载则拒绝） |
+| 每个控制会话有自己的已装载表；同一个键在一个会话里只装载一次 | 远程插件 §4.4（每个运行时实例只有一个活动会话） | `crates/rutis-bridge/src/session/plugin/rows.rs:67-76`（`Table.loaded`、`Table.unloaded`）、`:125-129`（已卸载则拒绝、已装载则拒绝） |
 | 行按实例键装载，键跨重启不变；代次是模型给一次装载起的名字 | 远程插件 §5.3；issue #613 的疑点；#1100 | 旧 `PeerRow` 用 `ctx.instance()`；当前 `run` 行用 `plugin#n`（`crates/rutis-bridge/src/session/plugin/run.rs:168`），`crates/rutis-bridge/src/session/plugin/rows.rs` 按 key 记 |
-| `rows.ended` 只由这一代还没被对端卸载的行发出；会话取消后不发 | 远程会话 §4.3 | `crates/rutis-bridge/src/session/plugin/rows.rs:138-175`（`follow`：`loaded.remove(&key)`，`ended && !cancelled`） |
+| `rows.ended` 只由这一代还没被对端卸载的行发出；会话取消后不发 | 远程会话 §4.3 | `crates/rutis-bridge/src/session/plugin/rows.rs:155-193`（`follow`：`loaded.remove(&key)`，`ended && !cancelled`） |
 | `rows.failed` 每代一次，宿主保留这一行，由对端卸载后重装 | 远程插件 §4.2；#688 | `crates/rutis-bridge/src/runtime/process.rs:1400-1418`；`crates/rutis-bridge/src/session/plugin/run.rs:171-175` |
-| `rows.unload` 幂等：行已不在就只回答 | 行契约 `rows.v2` | `crates/rutis-bridge/src/session/plugin/rows.rs:197-209`（“Already gone: unloading is idempotent”） |
+| `rows.unload` 幂等：行已不在就只回答，并记下这个键 | 行契约 `rows.v2`；#1101 | `crates/rutis-bridge/src/session/plugin/rows.rs:216-228`（不在表里就只回答，并记墓碑；后到的同名 `load` 在 `:125-126` 被拒绝） |
 | 顶替：关旧会话、不再读它的帧、清理旧租约的行和服务，再回答新 `hello` | 远程插件 §4.4；远程会话 §4.2 | 运行时监听端的顺序；`crates/rutis-bridge/src/session/plugin/rows.rs` 每个会话一个 `Server`；`crates/rutis-bridge/src/session/plugin/mod.rs:334-430` |
 | 行随会话停止、下一个会话再装载 | 远程会话 §4.3、§7 | `crates/rutis-bridge/src/session/plugin/run.rs` 的 `RowHandle`/`RunRow`；`crates/rutis-loader/tests/session_rows.rs::rows_run_on_the_session_of_their_connection_row`、`::a_far_session_unloading_first_leaves_the_row_waiting` |
 | 服务的导入随行：行卸载、结束或会话没了就撤销 | 远程插件 §2.6 决定 1、§5.3 | `crates/rutis-bridge/src/session/plugin/services.rs:232-378`（每个会话的 `Imports`）；`crates/rutis-bridge/src/runtime/process.rs:1306-1314`（`forget_exports`）、`:1356-1366`（`unload_row` 之后 `forget_exports`/`imports.forget_row`） |
 | 旧会话的迟到指令不作用于新租约 | 远程插件 §4.4 | 会话各自一个处理器；`PeerRows.tla` 用代次匹配写它 |
 | `link.offers` 版本递增、旧宣告被忽略；每个族带登记编号 `since`，撤回后重新登记是新的一次提供 | 远程插件 §5.2（`link.offers`、`since`） | `crates/rutis-bridge/src/peer.rs:44-67`（`Offers`、`epoch`）、`:131-153`（`announce`）、`:160-178`（旧版本忽略）、`:253-289`（`register` 把 handler 与 `since` 一起记）；回归用例 `:309` `a_family_is_announced_only_with_its_offer` |
 | 对端宣告 `plugins` 后查 schema、刷新解析再提供 `PeerRows`；行在声明完整前不启动；离线时等待而不是 Unresolved；撤回 `plugins` 时撤销 `PeerRows`，Peer 与其他功能照常 | 远程插件 §5.3 | 当前等价路径是 `run` 行：`crates/rutis-bridge/src/session/plugin/run.rs:89` 先 `describe`，`:168` 换新键，`:186` 装载；`crates/rutis-bridge/src/session/plugin/mod.rs:432-461` 等对端提供 `rows` 后才建立进程；`crates/rutis-bridge/src/peer.rs` 的 `offers` 观察 `plugins` 的 epoch |
-| `plugins.describe`/`rows.schema` 返回插件声明，未安装为 NotFound；`load` 按 `isolate`/`inject` 装载；`update`、`unload` 只作用于已装载的键 | 远程插件 §5.2 | `crates/rutis-bridge/src/session/plugin/rows.rs:83-97`（`schema`）、`:99-135`（`load`）、`:177-195`（`update`）、`:197-209`（`unload`） |
-| 装载中被取消、或卸载先于装载到达时，不留下没人管的插件（#625 疑点） | 远程插件 §5.1、§5.3 | `crates/rutis-bridge/src/session/plugin/rows.rs:99-135`（先插入表再等 apply；失败时移除并 dispose）、`:197-209`（卸载幂等）；`crates/rutis-bridge/src/session/plugin/run.rs:42-51`（`RowHandle::drop` 中止装载并 dispose 已挂上的 fiber） |
+| `plugins.describe`/`rows.schema` 返回插件声明，未安装为 NotFound；`load` 按 `isolate`/`inject` 装载；`update`、`unload` 只作用于已装载的键 | 远程插件 §5.2 | `crates/rutis-bridge/src/session/plugin/rows.rs:96-110`（`schema`）、`:112-153`（`load`）、`:195-214`（`update`）、`:216-237`（`unload`） |
+| 装载中被取消、或卸载先于装载到达时，不留下没人管的插件（#625 的疑点、#1101） | 远程插件 §5.1、§5.3 | `crates/rutis-bridge/src/session/plugin/rows.rs:112-153`（键先插入表再等 apply；失败时移除并 dispose）、`:216-228`（不在表里的卸载记墓碑，后到的 `load` 拒绝），墓碑随会话的表消失；`crates/rutis-bridge/src/session/plugin/run.rs:42-51`（`RowHandle::drop` 中止装载并 dispose 已挂上的 fiber）；回归用例 `crates/rutis-bridge/tests/session_plugin.rs::an_unload_ahead_of_its_load_leaves_no_row`、`::an_old_sessions_unload_does_not_refuse_a_new_sessions_load` |
 | 服务公告/撤销的版本取自会话级单一递增序列；导入方保留撤销的版本，旧公告不恢复 | 远程插件 §5.2 | `crates/rutis-bridge/src/services.rs:33-135`（`ExportOne`、`next_version`）；`crates/rutis-bridge/src/session/plugin/services.rs:239-245`（版本不增则忽略）、`:335-378`（撤回与墓碑） |
 | 两个节点互相代装；功能插件只依赖会话就绪，不等待远程行 | 远程插件 §5.1 第 1 条、§10 | `crates/rutis-bridge/src/session/plugin/mod.rs:334-430`（`mount` 先登记 rows 再回答）、`crates/rutis-bridge/src/session/plugin/rows.rs:318-333`（每个会话的 `Rows`） |
 | 断开时本链接代装的行停下等待；重连后重新装载 | 远程插件 §3.2、§5.3 | `crates/rutis-loader/tests/session_rows.rs` 的两个用例；`crates/rutis-bridge/src/session/plugin/run.rs` 的行随会话 |
@@ -195,10 +195,10 @@ TLC 2.19（tla2tools v1.7.4），Java 21.0.12（Temurin），32 核，`-workers 
 - 对端只按“这条通知属于哪一次装载”处置 `rows.ended`/`rows.failed`：旧代迟到的结束不会结束新代，迟到失败的不重启新代。键跨重启不变时，这必须靠通知与装载的对应关系；只按行键就正好是 `lateEnding` 的反例。当前 `run` 行用每次新键避开这一点，但也失去同一实例跨重启的身份（#1100）。
 - `link.offers` 的版本和 `since` 在穷举范围内足够：旧宣告被忽略；同一登记不会出现“有族、无 epoch”的中间快照；撤回只撤 `PeerRows` 和它的行，Peer 不受影响；新登记最终被跟上。
 - `PeerRows` 门控的规则成立：schema 刷新完才开门；离线时行等待、回来再装载；门控在 apply 前撤下时行不会停在 Failed（#438 的形状）。
-- 宿主的代装操作按规则成立：describe 与目录一致；load 只装载 describe 找到的插件；update 不作用于还在 apply 的行；取消装载或先到的卸载不会留下孤儿——前提是宿主记墓碑、对端为装载中的行发卸载（#625 的两半）。
+- 宿主的代装操作按规则成立：describe 与目录一致；load 只装载 describe 找到的插件；update 不作用于还在 apply 的行；取消装载或先到的卸载不会留下孤儿——模型要求宿主记墓碑、对端为装载中的行发卸载（#625 的两半）。宿主现在记墓碑（#1101）：`rows.unload` 找不到行时记下这个键，后到的同名 `load` 被拒绝；墓碑按会话的表存放，随会话消失，也不跨键，`run` 行的下一代用新键照常装载。对端为装载中的行发卸载那一半仍未由代码保证（`RowHandle::drop` 中止装载，不发卸载），见下面“模型没有证明的”。
 - 两个节点互相代装、同时冷启动时不会互相等待：回答 `hello` 不依赖自己的出站行；断链后行停下，旧行清理完才回答下一轮，之后两行重新运行。
 - 服务的版本与墓碑成立：旧公告不恢复已撤销的服务。
-- 模型没有证明的：同一 id 的并发握手与接入点接管顺序（`remote-lease`、`access-*` 覆盖）、真实退避与计时、多跳服务（#626）、`plugins.describe` 的字段内容、服务调用的形状与引用释放、事件与代理、各语言运行时的监听端差异、内存序和真实调度；以及当前代码是否真的会出现“卸载先于装载插入”的交错——模型允许它，`rows.rs` 的 `unload` 对未知键不记墓碑，所以这条 #625 疑点仍未由代码关闭。
+- 模型没有证明的：同一 id 的并发握手与接入点接管顺序（`remote-lease`、`access-*` 覆盖）、真实退避与计时、多跳服务（#626）、`plugins.describe` 的字段内容、服务调用的形状与引用释放、事件与代理、各语言运行时的监听端差异、内存序和真实调度；以及“卸载先于装载插入”的交错是否真会由某个对端发出——模型允许它，`rows.rs` 现在靠墓碑关闭它（#1101），但 `RowHandle::drop` 在装载中不发卸载（#625 的另一半），不依赖这一点的对端（例如重试或另一个 SDK）仍可能走到它。
 
 ## 怎么运行
 
