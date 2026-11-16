@@ -1,0 +1,6 @@
+- id: 'quoted with "double" and \'single\''
+  name: "escaped\t\n\\"
+  config:
+    empty: ""
+    nulls: [null, Null, NULL, ~]
+    bools: [true, True, TRUE, false, False, FALSE]

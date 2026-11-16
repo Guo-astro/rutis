@@ -55,8 +55,12 @@ RUTIS_SHUTTLE_REPLAY=<schedule> RUSTFLAGS="--cfg rutis_shuttle" cargo test -p ru
 # The fuzz targets (fuzz/, its own workspace): nightly Rust and cargo-fuzz.
 cargo install cargo-fuzz
 cd fuzz
-cargo +nightly fuzz run session_frame -- -max_total_time=60   # or session_frames, local_lines, websocket_upgrade, error_graph, dylib_meta, binary_manifest
+cargo +nightly fuzz run session_frame -- -max_total_time=60   # or session_frames, local_lines, websocket_upgrade, error_graph, dylib_meta, binary_manifest, dsh_profile_yaml, dsh_profile_expr
 cargo +nightly fuzz run session_frame artifacts/session_frame/crash-…   # reproduce a failure
+
+# The Go hand-written RFC 6455 frame parser (Go's native fuzzing), from
+# go/rutis; go test runs the seeds.
+go test ./internal/runtime -run '^$' -fuzz '^FuzzFrameParsing$' -fuzztime 60s
 ```
 
 `cargo fuzz run <target>` adds what it finds to `fuzz/corpus/<target>`; the inputs checked in there are a small set of seeds, so commit a new one only when it is worth keeping (for example the input of a fixed crash, which also becomes a unit test).

@@ -250,6 +250,11 @@ fn written(value: &Json) -> usize {
 /// once may close the session while a call that returns a future is still
 /// answered; the future holds the session and the export it lands in after
 /// the close: #1216.)
+///
+/// Built only with `testing` (the conformance fixture it drives): cargo-fuzz
+/// sets `--cfg fuzzing` for build dependencies too, and those do not enable
+/// the feature.
+#[cfg(feature = "testing")]
 pub fn session_frames(data: &[u8]) {
     use crate::channel::{Channel, Close, PeerId};
     use crate::session::rpc::{Connection, Dispatch, Endpoint};

@@ -1,0 +1,13 @@
+# The user layer: a bundle's rows and dsh's own switches.
+- id: web
+  name: '@deepseek-ai/dsh-web'
+  config:
+    port: 3081
+    host: 127.0.0.1
+    trustedHosts:
+      - a.test
+- id: model
+  name: '@deepseek-ai/dsh-llm'
+  disabled: !!js "process.platform === 'win32'"
+  config:
+    route: deepseek-chat

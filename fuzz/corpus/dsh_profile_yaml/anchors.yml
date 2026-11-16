@@ -1,0 +1,8 @@
+- id: anchors
+  name: a
+  config: &defaults
+    port: 1
+    host: localhost
+- id: alias
+  name: b
+  config: *defaults

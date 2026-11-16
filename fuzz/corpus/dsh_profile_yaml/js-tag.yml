@@ -1,0 +1,4 @@
+- id: tagged
+  name: one
+  config: !!js "process.env.DSH_PROFILE === 'web' ? { a: 1 } : null"
+- !!js 'ctx.get(“webStartup”).port'

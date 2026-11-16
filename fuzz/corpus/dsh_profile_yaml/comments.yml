@@ -1,0 +1,7 @@
+# Leading comments belong to the file header.
+- id: first
+  # A comment above the item.
+  name: one
+- id: second
+  name: two
+# A trailing comment.

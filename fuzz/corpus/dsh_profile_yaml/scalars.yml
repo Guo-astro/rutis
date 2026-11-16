@@ -1,0 +1,20 @@
+- id: scalars
+  name: one
+  config:
+    hex: 0x1f
+    octal: 0o17
+    binary: 0b1010
+    float: -12.5e+3
+    inf: .inf
+    nan: .NaN
+    quoted: 'a # not a comment'
+    empty:
+    tilde: ~
+    literal: |
+      line one
+      line two
+    folded: >
+      folded
+      text
+- id: unicode
+  name: '目录 café'

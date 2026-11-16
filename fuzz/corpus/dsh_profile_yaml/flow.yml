@@ -1,0 +1,4 @@
+- {id: web, name: dsh-web, config: {port: 3081, trustedHosts: [a.test, b.test]}}
+- {id: llm, name: dsh-llm, disabled: false}
+- []
+- {}
