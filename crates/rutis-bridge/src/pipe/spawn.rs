@@ -938,6 +938,12 @@ impl Exit {
         self.1.notify_all();
     }
 
+    /// Test only: the process has ended and been waited for.
+    #[cfg(any(test, feature = "testing"))]
+    fn gone_here(&self) {
+        self.3.send_replace(true);
+    }
+
     /// Waits for the process to end, so the channel's end can say how,
     /// however long that takes (#246): a process that closed its channel is
     /// ending, one whose channel was closed here is killed after [`GRACE`].
@@ -1026,6 +1032,33 @@ impl Processes {
         for exit in started {
             exit.gone().await;
         }
+    }
+
+    /// A set of one process a test ends by hand ([`HeldProcess::end`]):
+    /// for code that waits for a runtime's own process, with no process
+    /// started (#627).
+    #[cfg(any(test, feature = "testing"))]
+    #[doc(hidden)]
+    pub fn held() -> (Self, HeldProcess) {
+        let exit = Arc::new(Exit::default());
+        let processes = Self(Arc::new(Mutex::new(vec![exit.clone()])));
+        (processes, HeldProcess(exit))
+    }
+}
+
+/// One process of [`Processes::held`], running until a test ends it: a
+/// runtime's process, without a process.
+#[cfg(any(test, feature = "testing"))]
+#[doc(hidden)]
+#[derive(Clone)]
+pub struct HeldProcess(Arc<Exit>);
+
+#[cfg(any(test, feature = "testing"))]
+impl HeldProcess {
+    /// End it, as a process that exited: whoever waits for it goes on.
+    pub fn end(&self) {
+        self.0.record("exited normally".to_owned());
+        self.0.gone_here();
     }
 }
 

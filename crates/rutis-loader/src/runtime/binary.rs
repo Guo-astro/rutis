@@ -734,8 +734,18 @@ pub struct BinaryResolver<L: BinaryLanguage> {
     reserved: HashSet<String>,
     state: Mutex<State>,
     runtimes: Mutex<Weak<Inner<L>>>,
+    /// Test only (#627): what [`BinaryResolver::read`] answers for a
+    /// runtime, how often it answered, so a test starts a runtime without
+    /// running a binary.
+    #[cfg(test)]
+    prepared: Mutex<HashMap<String, PreparedBinary>>,
     language: PhantomData<fn() -> L>,
 }
+
+/// A binary a test prepared: its path, its manifest, and how often a start
+/// read it.
+#[cfg(test)]
+type PreparedBinary = (PathBuf, BinaryManifest, Arc<std::sync::atomic::AtomicUsize>);
 
 impl<L: BinaryLanguage> BinaryResolver<L> {
     pub fn new(binaries: Binaries) -> Self {
@@ -745,6 +755,8 @@ impl<L: BinaryLanguage> BinaryResolver<L> {
             reserved: HashSet::new(),
             state: Mutex::default(),
             runtimes: Mutex::new(Weak::new()),
+            #[cfg(test)]
+            prepared: Mutex::default(),
             language: PhantomData,
         }
     }
@@ -945,6 +957,20 @@ impl<L: BinaryLanguage> BinaryResolver<L> {
     /// own meanwhile. A failure names the file it failed on, or the file
     /// the runtime last had when it is gone.
     fn read(&self, runtime: &str) -> Result<(PathBuf, Launched), StartFailure> {
+        #[cfg(test)]
+        if let Some((path, manifest, reads)) = self.prepared.lock().unwrap().get(runtime).cloned() {
+            reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let Some(stamp) = stamp(&path) else {
+                return Err((Some(path), "there is no such file".into()));
+            };
+            return Ok((
+                path,
+                Launched {
+                    stamp,
+                    manifest: Arc::new(manifest),
+                },
+            ));
+        }
         let last = self
             .state
             .lock()
@@ -1021,6 +1047,16 @@ impl<L: BinaryLanguage> BinaryResolver<L> {
             .get(runtime)
             .cloned()
             .unwrap_or_default()
+    }
+
+    /// Test only: how often a start read the binary of `runtime` (#627).
+    #[cfg(test)]
+    fn reads(&self, runtime: &str) -> usize {
+        self.prepared
+            .lock()
+            .unwrap()
+            .get(runtime)
+            .map_or(0, |entry| entry.2.load(std::sync::atomic::Ordering::SeqCst))
     }
 
     fn resolve_now(&self, name: &str) -> Result<Resolved, LoaderError> {
@@ -2049,6 +2085,7 @@ mod tests {
     }
 
     use super::*;
+    use rutis_bridge::runtime::RuntimeStates;
 
     fn busy() -> std::io::Error {
         std::io::Error::from_raw_os_error(26)
@@ -2313,5 +2350,323 @@ mod tests {
             "{error}"
         );
         assert!(observed.is_some());
+    }
+
+    // ── Supervision without processes (#627) ─────────────────────────
+    //
+    // The launcher seam: a runtime's process is a `Processes` a test ends
+    // by hand, and a binary is read without being run, so the supervision
+    // above can be driven through its orderings with no process at all.
+
+    /// A compiled language of tests: its binaries are never run.
+    struct Recorded;
+
+    impl BinaryLanguage for Recorded {
+        const PREFIX: &'static str = "rec";
+        const TITLE: &'static str = "Record";
+        const MARKER: &'static [u8] = b"rutis-recorded-runtime:1";
+        const PLUGIN_API: u64 = 1;
+
+        fn runtime_name(path: &Path) -> String {
+            runtime_name(Self::PREFIX, path)
+        }
+
+        fn launch(binary: &Path, _project: &Path) -> Launcher {
+            Launcher::new(binary)
+        }
+    }
+
+    /// The runtime these tests start.
+    const RUNTIME: &str = "rec-record";
+
+    /// What happened to a runtime's process, in order: the stand-in for
+    /// `rutis-host/spawn` records each start here.
+    type Log = Arc<Mutex<Vec<&'static str>>>;
+
+    /// A runtime plugin that was applied: its process "started".
+    struct Started {
+        log: Log,
+    }
+
+    impl DynPlugin for Started {
+        fn name(&self) -> &str {
+            "recorded runtime"
+        }
+
+        fn platform(&self) -> bool {
+            true
+        }
+
+        fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
+            Box::pin(async move {
+                self.log.lock().unwrap().push("started");
+                ctx.effect(|| async { Ok(()) })?;
+                Ok(Effect::Done)
+            })
+        }
+    }
+
+    /// A plugin with nothing to do: a runtime that ran before.
+    struct Idle;
+
+    impl DynPlugin for Idle {
+        fn name(&self) -> &str {
+            "old runtime"
+        }
+
+        fn platform(&self) -> bool {
+            true
+        }
+
+        fn apply<'a>(&'a self, _ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
+            Box::pin(async { Ok(Effect::Done) })
+        }
+    }
+
+    /// A resolver that reads `path` as the runtime `runtime` without
+    /// running it.
+    fn prepared<L: BinaryLanguage>(path: &Path, runtime: &str) -> BinaryResolver<L> {
+        let resolver = BinaryResolver::<L>::new(Binaries::new());
+        resolver.prepared.lock().unwrap().insert(
+            runtime.to_owned(),
+            (
+                path.to_owned(),
+                BinaryManifest {
+                    sdk: "test".into(),
+                    plugin_api: L::PLUGIN_API,
+                    plugins: BTreeMap::new(),
+                    platform: None,
+                },
+                Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            ),
+        );
+        resolver
+    }
+
+    /// The runtimes of [`Recorded`] in `dir`, each start a [`Started`] and
+    /// its own processes.
+    fn runtimes(dir: &Path, log: Log) -> Arc<Inner<Recorded>> {
+        let spawn: Spawn = Arc::new(move |name: &str, _launcher, anchor: &Path| {
+            let processes = Processes::default();
+            let states = RuntimeStates::new(name, anchor).processes(processes.clone());
+            states.starting();
+            Spawned {
+                handle: states.handle(),
+                processes,
+                plugin: Box::new(Started { log: log.clone() }),
+            }
+        });
+        let binary = dir.join("record");
+        let resolver = Arc::new(prepared::<Recorded>(&binary, RUNTIME));
+        BinaryRuntimes::<Recorded>::new(resolver, dir, spawn).inner
+    }
+
+    /// The slot of a runtime that runs now, its process one a test ends.
+    fn slot(root: &Ctx, binary: &Path, processes: Processes) -> Slot {
+        let states = RuntimeStates::new(RUNTIME, binary.parent().unwrap());
+        states.starting();
+        Slot {
+            view: root.plugin(Idle),
+            handle: states.handle(),
+            processes,
+            stamp: stamp(binary),
+            binary: binary.to_owned(),
+            last_used: Instant::now(),
+            stopped: None,
+            generation: 1,
+        }
+    }
+
+    /// A restart starts the new process only once the old one ended: one
+    /// name may name one process only, and another runtime's process
+    /// ending frees nothing (#307).
+    /// guarantee: loader/go-runtimes
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_restart_starts_the_new_process_only_after_the_old_one_ended() {
+        let dir = tempfile::tempdir().unwrap();
+        let binary = dir.path().join("record");
+        std::fs::write(&binary, b"a binary").unwrap();
+        let root = Ctx::root().unwrap();
+        let log: Log = Arc::default();
+        let inner = runtimes(dir.path(), log.clone());
+        *inner.ctx.lock().unwrap() = Some(root.clone());
+        let (own, process) = Processes::held();
+        let (_, other) = Processes::held();
+        inner
+            .slots
+            .lock()
+            .unwrap()
+            .running
+            .insert(RUNTIME.to_owned(), slot(&root, &binary, own));
+
+        let busy = Busy::take(&inner, RUNTIME).expect("the runtime is not busy");
+        let restart = tokio::spawn({
+            let inner = inner.clone();
+            async move { inner.restart_now(RUNTIME, busy).await }
+        });
+        // Taken out of the slots, the old runtime is stopped: its process
+        // has not ended yet.
+        let taken = async {
+            while inner.slots.lock().unwrap().running.contains_key(RUNTIME) {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        };
+        tokio::time::timeout(Duration::from_secs(5), taken)
+            .await
+            .expect("the old runtime is being stopped");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            log.lock().unwrap().is_empty(),
+            "a process started before the old one ended"
+        );
+        assert!(
+            !restart.is_finished(),
+            "the restart went on without the old process"
+        );
+        // Neither does another runtime's process ending free the name.
+        other.end();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            log.lock().unwrap().is_empty(),
+            "another runtime's process freed the name"
+        );
+        log.lock().unwrap().push("old ended");
+        process.end();
+        tokio::time::timeout(Duration::from_secs(5), restart)
+            .await
+            .expect("the restart")
+            .unwrap()
+            .unwrap();
+        let started = async {
+            while !log.lock().unwrap().contains(&"started") {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        };
+        tokio::time::timeout(Duration::from_secs(5), started)
+            .await
+            .expect("the new process starts");
+        assert_eq!(*log.lock().unwrap(), ["old ended", "started"]);
+        assert!(inner.slots.lock().unwrap().running.contains_key(RUNTIME));
+    }
+
+    /// Stopping a runtime waits for its own process, not for another
+    /// runtime's: the name is free only once that process is gone (#448).
+    /// guarantee: loader/go-runtimes
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_stop_waits_for_its_own_process_not_anothers() {
+        let dir = tempfile::tempdir().unwrap();
+        let binary = dir.path().join("record");
+        std::fs::write(&binary, b"a binary").unwrap();
+        let root = Ctx::root().unwrap();
+        let (own, process) = Processes::held();
+        let (_, other) = Processes::held();
+        let stopping = tokio::spawn({
+            let slot = slot(&root, &binary, own);
+            async move { stop(RUNTIME, slot).await }
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            !stopping.is_finished(),
+            "the stop ended before its process did"
+        );
+        other.end();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            !stopping.is_finished(),
+            "another runtime's process freed it"
+        );
+        process.end();
+        tokio::time::timeout(Duration::from_secs(5), stopping)
+            .await
+            .expect("the stop")
+            .unwrap();
+    }
+
+    /// A start that failed because its binary was missing is not tried on
+    /// every sweep: only once the file appears (guarantee
+    /// `loader/go-runtimes`).
+    /// guarantee: loader/go-runtimes
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_missing_binary_is_started_again_only_once_its_file_appears() {
+        let dir = tempfile::tempdir().unwrap();
+        let binary = dir.path().join("record");
+        let root = Ctx::root().unwrap();
+        let log: Log = Arc::default();
+        let inner = runtimes(dir.path(), log.clone());
+        *inner.ctx.lock().unwrap() = Some(root.clone());
+
+        // What a sweep does each round, the binary still gone.
+        for _ in 0..10 {
+            inner.want(RUNTIME);
+        }
+        assert!(
+            log.lock().unwrap().is_empty(),
+            "a runtime without its binary started"
+        );
+        assert!(inner.slots.lock().unwrap().failed.contains_key(RUNTIME));
+        assert_eq!(
+            inner.resolver.reads(RUNTIME),
+            1,
+            "a sweep read the missing binary again"
+        );
+
+        // The file is there: the next sweep starts it, once.
+        std::fs::write(&binary, b"a binary").unwrap();
+        inner.want(RUNTIME);
+        let started = async {
+            while log.lock().unwrap().is_empty() {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        };
+        tokio::time::timeout(Duration::from_secs(5), started)
+            .await
+            .expect("the runtime starts once its binary is there");
+        assert_eq!(*log.lock().unwrap(), ["started"]);
+        assert_eq!(inner.resolver.reads(RUNTIME), 2);
+        assert!(inner.slots.lock().unwrap().running.contains_key(RUNTIME));
+        assert!(!inner.slots.lock().unwrap().failed.contains_key(RUNTIME));
+        // Later sweeps leave the running runtime alone.
+        for _ in 0..10 {
+            inner.want(RUNTIME);
+        }
+        assert_eq!(*log.lock().unwrap(), ["started"]);
+        assert_eq!(
+            inner.resolver.reads(RUNTIME),
+            2,
+            "a sweep read a running runtime again"
+        );
+    }
+
+    /// A runtime wanted while its name is taken (a stop or restart in
+    /// progress) is started once that is over: the request is not lost
+    /// (#627).
+    /// guarantee: loader/go-runtimes
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_runtime_wanted_while_busy_starts_once_it_is_free() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("record"), b"a binary").unwrap();
+        let root = Ctx::root().unwrap();
+        let log: Log = Arc::default();
+        let inner = runtimes(dir.path(), log.clone());
+        *inner.ctx.lock().unwrap() = Some(root.clone());
+
+        let busy = Busy::take(&inner, RUNTIME).expect("the runtime is not busy");
+        inner.want(RUNTIME);
+        assert!(inner.slots.lock().unwrap().rewanted.contains(RUNTIME));
+        assert!(
+            log.lock().unwrap().is_empty(),
+            "a runtime started while its name was taken"
+        );
+        drop(busy);
+        let started = async {
+            while !log.lock().unwrap().contains(&"started") {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        };
+        tokio::time::timeout(Duration::from_secs(5), started)
+            .await
+            .expect("the runtime wanted meanwhile starts once it is free");
+        assert_eq!(*log.lock().unwrap(), ["started"]);
+        assert!(!inner.slots.lock().unwrap().rewanted.contains(RUNTIME));
     }
 }
