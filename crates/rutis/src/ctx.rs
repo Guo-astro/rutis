@@ -27,7 +27,8 @@ use crate::registry::{Binding, Registry, StoredValue, ValueSlot};
 use crate::writer::ServiceWriter;
 
 pub(crate) struct Shared {
-    pub admission: Mutex<()>,
+    /// `crate::sync`: a shuttle mutex in the shuttle models (#622 item 1).
+    pub admission: crate::sync::Mutex<()>,
     pub handle: Handle,
     pub bus: EventBus,
     pub registry: Registry,
@@ -893,7 +894,10 @@ impl Ctx {
         })))
     }
 
-    fn register_mount_effect(
+    /// The mount admission a child's registration commits under (#622 item 1):
+    /// the shuttle models split it from the spawn and drive the close
+    /// against it.
+    pub(crate) fn register_mount_effect(
         &self,
         child: &Arc<FiberInner>,
         make: impl FnOnce() -> Effect,
@@ -1171,7 +1175,7 @@ impl crate::host::CtxHost for Ctx {
 
     fn root_with_sink(handle: Handle, sink: ErrorSink) -> Ctx {
         let shared = Arc::new(Shared {
-            admission: Mutex::new(()),
+            admission: crate::sync::Mutex::new(()),
             handle,
             bus: EventBus::new(),
             registry: Registry::new(),

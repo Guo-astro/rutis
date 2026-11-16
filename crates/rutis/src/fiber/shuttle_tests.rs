@@ -23,12 +23,14 @@
 //! transition's result across its driver's exit (#1194);
 //! model 19 adds a restart inside the dependency window model 9 covers; model
 //! 20 installs the spawn stand-in (`crate::sync::SpawnScope`), so the tasks
-//! the kernel spawns run on shuttle's executor and a model drives them. Built
-//! with `--cfg rutis_shuttle`, `crate::sync` makes the driver's `alive` flag, a
-//! fiber's `lineage_closed` marker, an effect record's state and a spawned
-//! task's result shuttle primitives; the tokio channels in between (`watch`,
-//! `mpsc`, `Notify`) need no runtime and are single steps to shuttle. Shuttle
-//! switches just before an operation on its primitives, so
+//! the kernel spawns run on shuttle's executor and a model drives them; model
+//! 21 mounts a child on the root while the root closes, over the real admission
+//! and transition locks. Built with `--cfg rutis_shuttle`, `crate::sync` makes
+//! the driver's `alive` flag, a fiber's `lineage_closed` marker, an effect
+//! record's state, a spawned task's result and the admission, transition,
+//! effects and flight locks shuttle primitives; the tokio channels in between
+//! (`watch`, `mpsc`, `Notify`) need no runtime and are single steps to shuttle.
+//! Shuttle switches just before an operation on its primitives, so
 //! the windows the code guards that no primitive opens are marked with
 //! `crate::sync::switch_point()` (nothing in a plain build): between
 //! `post_join`'s check and its send, between an effect join's check and its
@@ -46,12 +48,10 @@
 //!   runtime. A shuttle thread that parks on that mailbox stops shuttle's
 //!   scheduler, so a model would have to write the driver out — and a
 //!   reference model compared against a written-out driver tests the copy, not
-//!   the kernel. Its one kernel-only piece, a panic in the driver, is out too:
-//!   `recover_driver_panic` stores `alive` (a shuttle primitive) while holding
-//!   the transition lock (`fiber.rs:1440`), so a waiter that takes that lock
-//!   through `stopped_error` parks on a real mutex while the holder is stopped
-//!   at the switch point and the model hangs (observed before it was written).
-//!   It is pinned by `crates/rutis/tests/contract.rs::driver_panic_completes_waiters_with_error`.
+//!   the kernel. Its one kernel-only piece, a panic in the driver, is out for
+//!   the same reason: `recover_driver_panic` is the code a written-out driver
+//!   would replace. It is pinned by
+//!   `crates/rutis/tests/contract.rs::driver_panic_completes_waiters_with_error`.
 //! - **The kernel side of a child process ending (#623).** The kernel sees it
 //!   only as an event call that never returns; its part is the unload deadline:
 //!   `wait_events` gives up at `shutdown_deadline()` (`fiber.rs:582`), fed by
@@ -59,18 +59,9 @@
 //!   `ListenersStillRunning`. The timer is a real `std::thread` with
 //!   `recv_timeout` and has no seam a model can drive; the variable is
 //!   process-wide, so shortening it for one model would shorten it for model 6
-//!   too — a timing gamble, not an interleaving. Pinned end to end by
+//!   too — a timing gamble, not an interleaving; the deadline timer is the rest
+//!   of `#622` item 1's stand-ins. Pinned end to end by
 //!   `crates/rutis/tests/unload_deadline.rs::an_unload_gives_up_on_running_listeners_at_the_deadline`.
-//! - **The kernel side of a host reload (#627).** It is mount admission:
-//!   `spawn_fiber_inner` and `Ctx::register_mount_effect` check `is_closed()`
-//!   under `Shared.admission`, a **std** mutex (`ctx.rs:30`), and inside that
-//!   critical section they touch `crate::sync::AtomicBool` — a shuttle switch
-//!   point. A second shuttle thread taking that lock parks on a real mutex and
-//!   the model hangs, as model 7's note says, so the race cannot be modelled
-//!   until `Shared.admission` is a stand-in (`#622` item 1, outside these
-//!   files). Pinned deterministically by
-//!   `crates/rutis/src/ctx.rs::child_created_before_root_closes_but_mounted_afterward_never_applies`,
-//!   which splits the public mount path at its two admission points.
 //!
 //! Run (CONTRIBUTING.md):
 //!
@@ -5695,5 +5686,213 @@ fn shuttle_spawned_tasks_interleave_and_a_task_set_collects_them() {
             block_on(sibling.join()).expect("a spawned task failed");
         }
         block_on(collector.join()).expect("the collecting task failed");
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Model 21: mount admission against a root close (#622 item 1, the race
+// `ctx.rs::child_created_before_root_closes_but_mounted_afterward_never_applies`
+// pins deterministically)
+
+/// What the mount thread did: the child it spawned, and whether the mount
+/// record committed (`Ctx::mount_fiber`'s `Ok` branch). A child whose spawn
+/// already saw `Shared.closing` is born closed, never enters the parent's
+/// children, and is never mounted (`mount_fiber` returns before registering).
+struct MountAttempt {
+    child: Arc<FiberInner>,
+    born_closed: bool,
+    committed: bool,
+}
+
+/// `FiberInner::unload`'s terminal pass with the cleanup pass `drain_effects`
+/// runs: `Unloading` under the admission and transition locks together (which
+/// publishes `NOT_LIVE`), the cancel, the kernel's `wait_events`, the records
+/// in reverse order, then `Disposed`. The mount cleanup this model registers
+/// is synchronous, so the model runs it on its own thread instead of through
+/// `record.drain`'s spawned runner.
+fn close_unload(fiber: &Arc<FiberInner>) {
+    {
+        let _admission = fiber.ctx.shared().admission.lock().unwrap();
+        let mut tr = fiber.transition.lock().unwrap();
+        fiber.set_state(&mut tr, FiberState::Unloading);
+    }
+    fiber.cancel_current();
+    block_on(fiber.wait_events());
+    drain_model_effects(fiber);
+    let mut tr = fiber.transition.lock().unwrap();
+    fiber.set_state(&mut tr, FiberState::Disposed);
+}
+
+/// Model 21, mount admission against a root close (#622 item 1; the kernel
+/// side of a host reload's mount): a child is spawned on the root and its
+/// mount record registered while a root close fixes the subtree and sets
+/// `Shared.closing`. Both sides take `Shared.admission`; the mount then takes
+/// the parent's transition lock and commits into the parent's effects, and the
+/// close's unload takes that transition lock and drains the same list. Both
+/// critical sections touch shuttle atomics (`alive`, `lineage_closed`), so
+/// with a std mutex the second shuttle thread would park for real at a switch
+/// point and the model would hang — the reason this race had no model. The
+/// lock stand-in (`crate::sync::Mutex`) parks it on shuttle's scheduler
+/// instead, and every interleaving ends.
+///
+/// The invariant is the pinned test's: a mount that did not commit leaves no
+/// record, so a child created before the close and mounted after it never
+/// applies (generation 0, no cleanup); a committed mount's cleanup runs
+/// exactly once, because the close drains it; and the child ends `Disposed`
+/// either way. The model runs `spawn_fiber_inner`, `register_mount_effect`,
+/// `mark_subtree_lineage`, `publish_subtree_closing` (and through it
+/// `pre_cancel`), `set_state`, `wait_events`, the effect records'
+/// `claim`/`finish`/`join` and the admission and transition locks as the
+/// kernel's own; what is written out is the mount cleanup's body (the kernel's
+/// disposes the child through its driver, which the model does not run), the
+/// close's unload of each fixed member, and `mount_fiber`'s refusal branch: the
+/// model lets the close unload the child instead of posting and dropping the
+/// `Shutdown` intent the kernel posts there, which reaches the same terminal
+/// state.
+///
+/// Mutations this model catches: dropping the commit into the parent's effects
+/// (`parent.push_effect`; a committed mount's cleanup never runs, so `runs`
+/// stays 0), and dropping the commit into the child's mount slot (the slot no
+/// longer says `committed`). The seam itself is pinned by putting
+/// `std::sync::Mutex` back for `Shared.admission`: the mounter then parks a
+/// real thread at a shuttle switch point inside the section and the model never
+/// finishes (observed: still running after a minute), which is why this race
+/// had no model before the lock stand-in.
+#[test]
+fn shuttle_mount_admission_races_root_close() {
+    explore(|| {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("a current-thread runtime");
+        let ctx = Ctx::root_with(runtime.handle().clone());
+        let root = ctx.root_view().expect("the root view").inner.clone();
+        // Cleanups are std atomics on purpose: the checks after the joins must
+        // not be shuttle switch points that could hide an early return.
+        let runs = Arc::new(AtomicUsize::new(0));
+
+        let mount = {
+            let (ctx, runs) = (ctx.clone(), runs.clone());
+            thread::spawn(move || {
+                // `Ctx::plugin`: the spawn, then the mount. The spawn takes
+                // the admission lock first; a child created after the close
+                // is born closed.
+                switch_point();
+                let child = spawn_fiber(
+                    ctx.shared(),
+                    Some(&ctx),
+                    Some(Arc::new(Named("mounted")) as Arc<dyn crate::DynPlugin>),
+                    false,
+                );
+                let born_closed = !child.alive.load(Ordering::SeqCst);
+                if born_closed {
+                    return MountAttempt {
+                        child,
+                        born_closed,
+                        committed: false,
+                    };
+                }
+                switch_point();
+                // `Ctx::mount_fiber` → `register_mount_effect`: admission, the
+                // parent's transition, then the commit into the parent's
+                // effects and the child's mount slot.
+                match ctx.register_mount_effect(&child, || {
+                    Effect::Disposer(Box::new(move || {
+                        runs.fetch_add(1, Ordering::SeqCst);
+                        Ok(())
+                    }))
+                }) {
+                    Ok(record) => {
+                        // Mount ownership was committed under the admission lock.
+                        drop(record);
+                        child.post(Intent::RefreshDeps);
+                        MountAttempt {
+                            child,
+                            born_closed,
+                            committed: true,
+                        }
+                    }
+                    Err(_) => MountAttempt {
+                        child,
+                        born_closed,
+                        committed: false,
+                    },
+                }
+            })
+        };
+
+        let close = {
+            let (ctx, root) = (ctx.clone(), root.clone());
+            thread::spawn(move || {
+                switch_point();
+                // `CtxHost::shutdown`'s synchronous part: the fixed set and
+                // the closing flags under admission. `publish_subtree_closing`
+                // takes each member's transition lock (`pre_cancel`) while the
+                // admission lock is held.
+                let subtree = {
+                    let _admission = ctx.shared().admission.lock().unwrap();
+                    let subtree = mark_subtree_lineage(&root);
+                    ctx.shared().closing.store(true, Ordering::SeqCst);
+                    publish_subtree_closing(&subtree);
+                    subtree
+                };
+                // `drive`'s `Shutdown` arm, written out: every member of the
+                // fixed set unloads once, in the postorder the kernel collects.
+                for member in &subtree {
+                    close_unload(member);
+                }
+                subtree
+            })
+        };
+
+        let attempt = mount.join().unwrap();
+        let subtree = close.join().unwrap();
+
+        // `spawn_fiber_inner`'s closing check and the close's fixed set share
+        // the admission lock: a child spawned before the close is in the set,
+        // one spawned after is born closed and is not.
+        let in_set = subtree
+            .iter()
+            .any(|member| Arc::ptr_eq(member, &attempt.child));
+        assert_eq!(
+            in_set, !attempt.born_closed,
+            "a child spawned before the close is missing from its fixed set, or one spawned \
+             after it is in the set"
+        );
+        if attempt.committed {
+            assert!(
+                in_set,
+                "a committed mount's child was not in the close's fixed set"
+            );
+            assert_eq!(
+                runs.load(Ordering::SeqCst),
+                1,
+                "the close did not run the committed mount's cleanup exactly once"
+            );
+        } else {
+            assert_eq!(
+                runs.load(Ordering::SeqCst),
+                0,
+                "a mount that did not commit left a cleanup to run"
+            );
+        }
+        assert!(
+            root.effects.lock().unwrap().is_empty(),
+            "the close left an effect record in the root's effects"
+        );
+        assert_eq!(
+            attempt.child.mount.lock().unwrap().is_some(),
+            attempt.committed,
+            "the child's mount slot does not match whether the mount committed"
+        );
+        let snapshot = attempt.child.state_snapshot();
+        assert_eq!(
+            snapshot.generation, 0,
+            "a child that never loaded ran a generation"
+        );
+        assert_eq!(
+            snapshot.state,
+            FiberState::Disposed,
+            "the child did not end Disposed"
+        );
     });
 }

@@ -373,7 +373,9 @@ pub(crate) struct FiberInner {
     /// cleared by a generation reload. `Entry::live` reads it instead of
     /// walking the context parent chain.
     pub lineage_closed: crate::sync::AtomicBool,
-    pub event_flights: Mutex<usize>,
+    /// `crate::sync`: a shuttle mutex in the shuttle models, which count
+    /// flights (`begin_event`/`finish_event`) and wait on them (#622 item 1).
+    pub event_flights: crate::sync::Mutex<usize>,
     pub event_flights_tx: watch::Sender<usize>,
     _event_flights_rx: watch::Receiver<usize>,
     pub shutdown_task: Mutex<Option<Arc<TransitionTask>>>,
@@ -387,12 +389,16 @@ pub(crate) struct FiberInner {
     /// `ctx.cancelled()`: the driver is serial, and without this the intent
     /// would wait for `apply` forever.
     pub token: Mutex<CancellationToken>,
-    pub transition: Mutex<Trans>,
+    /// `crate::sync`: a shuttle mutex in the shuttle models, whose admission
+    /// and close paths take it (#622 item 1).
+    pub transition: crate::sync::Mutex<Trans>,
     pub snapshot_tx: watch::Sender<Snapshot>,
     /// A receiver kept alive so the watch channel stays open (with no
     /// receiver, `send` fails silently); [`FiberView::watch`] clones it.
     pub snapshot_rx: watch::Receiver<Snapshot>,
-    pub effects: Mutex<Vec<Arc<EffectRecord>>>,
+    /// `crate::sync`: a shuttle mutex in the shuttle models, whose unload and
+    /// registration commit into it (#622 item 1).
+    pub effects: crate::sync::Mutex<Vec<Arc<EffectRecord>>>,
     /// The plugin definitions this fiber's current generation made or
     /// handed over: their copies end before its cleanups run.
     pub definitions: Mutex<Vec<Weak<crate::definition::Inner>>>,
@@ -1652,11 +1658,11 @@ fn spawn_fiber_inner(
             children: Mutex::new(Vec::new()),
             closing,
             lineage_closed: crate::sync::AtomicBool::new(closed),
-            event_flights: Mutex::new(0),
+            event_flights: crate::sync::Mutex::new(0),
             event_flights_tx,
             _event_flights_rx: event_flights_rx,
             token: Mutex::new(token),
-            transition: Mutex::new(Trans {
+            transition: crate::sync::Mutex::new(Trans {
                 generation: 0,
                 state: initial,
                 error: closed_error,
@@ -1668,7 +1674,7 @@ fn spawn_fiber_inner(
             }),
             snapshot_tx: snapshot_tx.clone(),
             snapshot_rx,
-            effects: Mutex::new(Vec::new()),
+            effects: crate::sync::Mutex::new(Vec::new()),
             definitions: Mutex::new(Vec::new()),
             effect_index: Mutex::new(Vec::new()),
             drained_errors: Mutex::new(Vec::new()),

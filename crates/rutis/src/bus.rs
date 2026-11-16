@@ -10,7 +10,7 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use run::{
@@ -82,7 +82,8 @@ struct BusCore {
     /// Taken while `state` is held, never the other way round.
     notices: Mutex<Notices>,
     delivered: std::sync::Condvar,
-    transcoder: RwLock<Arc<dyn Transcoder>>,
+    /// `crate::sync`: a shuttle rwlock in the shuttle models (#622 item 1).
+    transcoder: crate::sync::RwLock<Arc<dyn Transcoder>>,
     next_dispatch: AtomicU64,
 }
 
@@ -188,7 +189,7 @@ impl EventBus {
                 state: Mutex::new(BusState::default()),
                 notices: Mutex::default(),
                 delivered: std::sync::Condvar::new(),
-                transcoder: RwLock::new(Arc::new(JsonTranscoder)),
+                transcoder: crate::sync::RwLock::new(Arc::new(JsonTranscoder)),
                 next_dispatch: AtomicU64::new(1),
             }),
         }
