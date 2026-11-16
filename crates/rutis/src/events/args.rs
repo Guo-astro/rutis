@@ -295,3 +295,6 @@ mod tests {
         assert_eq!(city.downcast::<City>().unwrap().city, "Oslo");
     }
 }
+
+#[cfg(test)]
+mod prop_tests;
