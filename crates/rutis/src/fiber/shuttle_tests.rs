@@ -18,7 +18,11 @@
 //! model 15 mirrors `load`/`unload` to check the live generation the kernel
 //! publishes across restarts; model 16 closes a real fiber tree while its
 //! listeners dispatch, so `CloseTree for FiberInner` and the walk over the real
-//! child lists run, not a stand-in. Built with `--cfg rutis_shuttle`,
+//! child lists run, not a stand-in. Model 17 closes a root with the child it
+//! mounted, through the mount record that owns it; model 18 pins one
+//! transition's result across its driver's exit (#1194);
+//! model 19 adds a restart inside the dependency window model 9 covers. Built
+//! with `--cfg rutis_shuttle`,
 //! `crate::sync` makes the driver's `alive` flag, a fiber's `lineage_closed`
 //! marker and an effect record's state shuttle primitives; the tokio channels
 //! in between (`watch`, `mpsc`, `Notify`) need no runtime and are single steps
@@ -96,7 +100,7 @@ use super::{
 };
 use crate::bus::run::{Inv, SyncNext};
 use crate::bus::table::{Body, Entry, Selected, Table};
-use crate::effect::{run_cleanups, Effect, EffectRecord, Origin};
+use crate::effect::{run_cleanups, Cleanup, Effect, EffectRecord, Origin};
 use crate::error::{aggregate_arcs, Error, ErrorKind};
 use crate::events::{ErasedSync, Event, ListenerInfo, TableChange, TableEntry, Value};
 use crate::host::CtxHost;
@@ -862,9 +866,8 @@ fn request_shutdown(fiber: &Arc<ShutdownFiber>, admission: &SyncMutex<()>) -> Ar
 /// point, and the check after the join must not be one, or a driver could run
 /// inside it and hide an early return. The `terminal_task` slot is not
 /// exercised here: concurrent shutdowns alone already serialize on
-/// `shutdown_task`, so only a dispose racing a shutdown can post twice — that
-/// belongs to the "root close and root dispose" model, which does not exist
-/// yet (#622).
+/// `shutdown_task`, so only a dispose racing a shutdown can post twice, which
+/// model 8 (root only) and model 17 (root with the child it mounted) cover.
 #[test]
 fn shuttle_concurrent_subtree_shutdowns_run_each_cleanup_once() {
     explore(|| {
@@ -1907,6 +1910,35 @@ fn complete_consumer_task(inner: &ConsumerInner, task: Arc<TransitionTask>) {
     task.complete(error);
 }
 
+/// `FiberView::restart` for the model's consumer: the closed check, the
+/// terminal check (a non-root fiber needs a live driver and no registered
+/// dispose), the pre-cancel and the count under the transition lock, then
+/// `post_join`. The model has no root close, so `closing` stands for both
+/// flags.
+fn consumer_restart(consumer: &Arc<Consumer>) -> Restart {
+    let inner = &consumer.inner;
+    {
+        let mut tr = inner.transition.lock().unwrap();
+        if inner.closing.load(Ordering::SeqCst) {
+            return Restart::Refused(Arc::new(ErrorKind::Closed));
+        }
+        if tr.terminal_task.is_some() || !inner.alive.load(Ordering::SeqCst) {
+            return Restart::Refused(Arc::new(ErrorKind::InactiveEffect));
+        }
+        tr.pending_restarts += 1;
+        tr.pre_cancelled = true;
+    }
+    let task = TransitionTask::new();
+    let sent = post_join_to(
+        &inner.alive,
+        &consumer.intents,
+        task.clone(),
+        Intent::Restart,
+        || consumer_stopped_error(inner),
+    );
+    Restart::Posted(task, sent)
+}
+
 /// The consumer's driver: one intent at a time, so a load and an unload
 /// never overlap and the notifications queue in the mailbox order.
 fn drive_consumer(
@@ -1929,6 +1961,52 @@ fn drive_consumer(
                         .flatten()
                 };
                 task.complete(error);
+            }
+            Intent::Restart(task) => {
+                // `drive`'s `Intent::Restart` arm for a non-root fiber.
+                {
+                    let mut tr = inner.transition.lock().unwrap();
+                    tr.pending_restarts = tr.pending_restarts.saturating_sub(1);
+                }
+                if inner.closing.load(Ordering::SeqCst) {
+                    task.complete(Some(Arc::new(ErrorKind::Closed)));
+                    continue;
+                }
+                if inner.transition.lock().unwrap().terminal_task.is_some() {
+                    // A dispose registered first wins: this restart does not
+                    // happen and reports what `restart()` reports behind one.
+                    if inner.state() != FiberState::Disposed {
+                        unload(&world, &inner, ConsumerNext::Disposed);
+                    }
+                    task.complete(Some(Arc::new(ErrorKind::InactiveEffect)));
+                    continue;
+                }
+                let state = inner.state();
+                if state == FiberState::Disposed {
+                    // A non-root fiber is Disposed only with a dispose
+                    // registered, which the check above refused.
+                    task.complete(inner.transition.lock().unwrap().error.clone());
+                    continue;
+                }
+                if !matches!(state, FiberState::Pending) {
+                    unload(&world, &inner, ConsumerNext::Pending);
+                }
+                let before = inner.transition.lock().unwrap().generation;
+                refresh_deps(&world, &inner);
+                let started = inner.transition.lock().unwrap().generation != before;
+                if !started && inner.transition.lock().unwrap().terminal_task.is_some() {
+                    // Registered while this restart was unloading: no new
+                    // generation started (`load` checks it).
+                    task.complete(Some(Arc::new(ErrorKind::InactiveEffect)));
+                    continue;
+                }
+                if !started {
+                    // Waiting for its dependencies: no generation ran, so none
+                    // failed.
+                    task.complete(None);
+                    continue;
+                }
+                complete_consumer_task(&inner, task);
             }
             Intent::Dispose => {
                 // The non-root `Dispose` arm: unload to `Disposed`, stop the
@@ -1964,15 +2042,21 @@ fn pre_cancel(inner: &ConsumerInner) {
 /// have each re-check (`RefreshDepsJoin`) and join them, notify the rest,
 /// then remove the binding only if the slot still holds it. The model has
 /// no `provided` table and no scopes (the quad's scope is always `None`).
+///
+/// `in_window` runs after the removal is marked and before the consumers are
+/// read: the one window a restart can land in and still see this binding as
+/// the one being removed (model 19). Model 9 passes an empty closure.
 fn withdraw(
     world: &Arc<DepWorld>,
     provider: &Arc<DepProvider>,
     binding: &Arc<DepBinding>,
     removal: &Notify,
+    in_window: &dyn Fn(),
 ) {
     provider.set(FiberState::Unloading);
     world.registry.mark_removing_if(&world.key, binding);
     removal.notify_one();
+    in_window();
     let old_quad = (provider.id, binding.provider_gen, world.key.clone(), None);
     let consumers = world.registry.consumers_of(&world.key, old_quad);
     let mut tasks = Vec::new();
@@ -2094,7 +2178,7 @@ fn shuttle_dependency_withdrawal_stops_the_loading_consumer() {
             );
             thread::spawn(move || {
                 switch_point();
-                withdraw(&world, &provider, &first, &removal);
+                withdraw(&world, &provider, &first, &removal, &|| {});
                 let state = consumer.inner.state();
                 let stale = {
                     let last = consumer.inner.last_deps.lock().unwrap();
@@ -3726,8 +3810,7 @@ fn shuttle_effect_record_owner_reports_each_cleanup_error_once() {
 // 多个完成方")
 
 /// Model 14, `TransitionTask::complete` called more than once (#622, item 3 of
-/// "加强现有模型"; the same shape as the suspicion it lists: a clean dispose and
-/// a root close racing leave a late join with `Err(Closed)`). `complete` sends
+/// "加强现有模型"; the primitive behind #1194's overwrite). `complete` sends
 /// the result into the task's watch channel, so:
 ///
 /// - a completion before anyone joined is kept (the keep-alive receiver), and
@@ -3735,11 +3818,11 @@ fn shuttle_effect_record_owner_reports_each_cleanup_error_once() {
 /// - every join returns one of the results someone announced, never a made-up
 ///   error;
 /// - the **last** completion is what a later join reads — the overwrite. The
-///   model asserts the current behaviour and says so: the first joiner sees the
-///   driver's result, a joiner that comes after the poster's own completion
-///   sees the poster's `Closed`, even though the transition itself succeeded.
-///   #622 lists that as a suspicion, so the model does not promise it is right;
-///   a fix would change the late assertion, not the early one.
+///   kernel's late `alive` rechecks no longer use `complete`: they complete
+///   only a `Running` task (`complete_if_running`, #1194). This model pins the
+///   primitive's last-write behaviour: the first joiner sees the driver's
+///   result, a joiner that comes after a later `complete` sees the later
+///   result.
 ///
 /// Mutations this model catches (each one made in the kernel and reverted): a
 /// task with no keep-alive receiver — the completion before any subscriber is
@@ -3803,9 +3886,10 @@ fn shuttle_transition_task_several_completions() {
             );
         }
 
-        // A clean completion, then a late `Closed` (the suspicion): the
-        // overwrite turns a successful transition into an error for every join
-        // that comes after it.
+        // A clean completion, then a later `Closed`: `complete` overwrites, so
+        // a joiner after the second call reads the error. The kernel's late
+        // `alive` rechecks use `complete_if_running` and keep the clean result
+        // (#1194); this pins the primitive they build on.
         let clean = TransitionTask::new();
         clean.complete(None);
         assert!(
@@ -4345,6 +4429,1143 @@ fn shuttle_subtree_close_marks_every_member_of_a_real_tree() {
             running[2].load(Ordering::SeqCst),
             0,
             "the sibling left a call body running"
+        );
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Model 17: the root's close and the child it owns (#622, "根关闭与根
+// dispose", "子树关闭", `core/features.shutdown-state` a,
+// `core/features.errors`)
+
+/// What a `restart()` registration did: refused at its checks, or counted and
+/// posted to the driver. A caller that drops the future waits for neither.
+enum Restart {
+    Refused(Arc<ErrorKind>),
+    /// The posted task, and whether `post_join` sent it (`false`: the driver
+    /// had already stopped, and the task is complete).
+    Posted(Arc<TransitionTask>, bool),
+}
+
+/// `Shared`'s close state: what `CtxHost::shutdown`, `Ctx::is_shutting_down`
+/// and a root dispose share.
+struct CloseShared {
+    /// `Shared.admission`. A **std** mutex in the kernel; shuttle's here (as in
+    /// models 7 and 8), so the steps the kernel takes as separate calls can be
+    /// interleaved without parking a thread in a real mutex.
+    admission: SyncMutex<()>,
+    /// `Shared.closing`: what `CtxHost::is_shutting_down()` reads.
+    closing: SyncBool,
+    /// `Shared.shutdown_task`: the one task every root shutdown caller gets.
+    shutdown_task: SyncMutex<Option<Arc<TransitionTask>>>,
+}
+
+/// The fields of `Trans` the close paths touch.
+struct NodeTrans {
+    state: FiberState,
+    generation: u64,
+    terminal_task: Option<Arc<TransitionTask>>,
+    pending_restarts: usize,
+    pre_cancelled: bool,
+    error: Option<Arc<ErrorKind>>,
+}
+
+/// One member of the model's tree. The root and the child it mounted are the
+/// same type, so the kernel's own passes work on a real tree: the marker and
+/// closing passes through [`CloseTree`], and the recursion over `children`
+/// that `begin_subtree_shutdown_locked` does.
+struct CloseNode {
+    is_root: bool,
+    shared: Arc<CloseShared>,
+    children: SyncMutex<Vec<Arc<CloseNode>>>,
+    lineage_closed: SyncBool,
+    closing: SyncBool,
+    alive: SyncBool,
+    transition: SyncMutex<NodeTrans>,
+    /// `FiberInner::shutdown_task`: the task every caller of this fiber's
+    /// `shutdown()` gets (children; the root's is `shared.shutdown_task`).
+    shutdown_task: SyncMutex<Option<Arc<TransitionTask>>>,
+    /// `FiberInner::shutdown_inner`: the task `begin_subtree_shutdown_locked`
+    /// records, and what the parent's mount cleanup joins. Joining the public
+    /// result instead would wait for that mount to detach while the mount
+    /// waits for this cleanup.
+    shutdown_inner: SyncMutex<Option<Arc<TransitionTask>>>,
+    /// `FiberInner::mount`: the record in the parent's effects that owns this
+    /// child. `None` for the root.
+    mount: SyncMutex<Option<Arc<EffectRecord>>>,
+    intents: mpsc::UnboundedSender<Intent>,
+    effects: SyncMutex<Vec<Arc<EffectRecord>>>,
+    /// Where a non-terminal unload's cleanup errors go: the kernel's ErrorSink.
+    sink_errors: Arc<AtomicUsize>,
+    /// Std counters: read right after a join, where a shuttle load would be a
+    /// scheduling point and could run a driver inside the check.
+    cleanups: Arc<AtomicUsize>,
+    dispose_posts: AtomicUsize,
+    shutdown_posts: AtomicUsize,
+    restart_posts: AtomicUsize,
+}
+
+impl CloseTree for CloseNode {
+    fn close_children(&self) -> Vec<Arc<Self>> {
+        self.children.lock().unwrap().clone()
+    }
+
+    fn mark_lineage(&self) {
+        self.lineage_closed.store(true, Ordering::SeqCst);
+    }
+
+    fn publish_closing(&self) {
+        self.closing.store(true, Ordering::SeqCst);
+        // `FiberInner::publish_closing` pre-cancels the running generation.
+        self.transition.lock().unwrap().pre_cancelled = true;
+    }
+}
+
+fn set_node_state(tr: &mut NodeTrans, new: FiberState) {
+    // `set_state`: only a change is a state change (the watch publication is
+    // not part of this model).
+    if tr.state != new {
+        tr.state = new;
+    }
+}
+
+fn node_state(node: &CloseNode) -> FiberState {
+    node.transition.lock().unwrap().state
+}
+
+fn node_stopped_error(node: &CloseNode) -> Option<Arc<ErrorKind>> {
+    node.transition.lock().unwrap().error.clone().or_else(|| {
+        node.shared
+            .closing
+            .load(Ordering::SeqCst)
+            .then(|| Arc::new(ErrorKind::Closed))
+    })
+}
+
+/// `run_cleanups` for the model: the record's cleanups are run here, on the
+/// claimer's thread. The kernel `handle.spawn`s an async cleanup on the
+/// runtime, which the model never drives, so awaiting it here is the same
+/// order without a task in between. Panics go where the kernel sends them.
+fn run_cleanups_here(cleanups: &mut Vec<Cleanup>) -> Option<Arc<ErrorKind>> {
+    let mut errors = Vec::new();
+    while let Some(cleanup) = cleanups.pop() {
+        let result = match cleanup {
+            Cleanup::Sync(run) => std::panic::catch_unwind(std::panic::AssertUnwindSafe(run))
+                .unwrap_or_else(|panic| Err(crate::error::panic_error(panic))),
+            Cleanup::Async(run) => {
+                match std::panic::catch_unwind(std::panic::AssertUnwindSafe(run)) {
+                    Ok(future) => block_on(future),
+                    Err(panic) => Err(crate::error::panic_error(panic)),
+                }
+            }
+        };
+        if let Err(error) = result {
+            errors.push(error);
+        }
+    }
+    aggregate_arcs(errors.into_iter().map(Error::shared).collect())
+}
+
+/// `EffectRecord::drain` for the model: claim, run, finish, then join — the
+/// claimer runs the cleanups, and every other drain of the same record joins
+/// its result.
+fn drain_record(record: &Arc<EffectRecord>) -> Result<(), Arc<ErrorKind>> {
+    if let Some(mut cleanups) = record.claim() {
+        let error = run_cleanups_here(&mut cleanups);
+        record.finish(error);
+    }
+    block_on(record.join())
+}
+
+/// A node with one effect of its own (its `apply`'s cleanup), and the mailbox
+/// its driver reads.
+fn new_close_node(
+    shared: &Arc<CloseShared>,
+    is_root: bool,
+    sink_errors: &Arc<AtomicUsize>,
+) -> (Arc<CloseNode>, mpsc::UnboundedReceiver<Intent>) {
+    let (intents, mailbox) = mpsc::unbounded_channel();
+    let cleanups = Arc::new(AtomicUsize::new(0));
+    let record = EffectRecord::from(
+        Effect::Disposer(Box::new({
+            let cleanups = cleanups.clone();
+            move || {
+                cleanups.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }
+        })),
+        "model node effect".into(),
+        Origin::Other,
+        Weak::new(),
+    );
+    let node = Arc::new(CloseNode {
+        is_root,
+        shared: shared.clone(),
+        children: SyncMutex::new(Vec::new()),
+        lineage_closed: SyncBool::new(false),
+        closing: SyncBool::new(false),
+        alive: SyncBool::new(true),
+        transition: SyncMutex::new(NodeTrans {
+            state: FiberState::Active,
+            generation: 0,
+            terminal_task: None,
+            pending_restarts: 0,
+            pre_cancelled: false,
+            error: None,
+        }),
+        shutdown_task: SyncMutex::new(None),
+        shutdown_inner: SyncMutex::new(None),
+        mount: SyncMutex::new(None),
+        intents,
+        effects: SyncMutex::new(vec![record]),
+        sink_errors: sink_errors.clone(),
+        cleanups,
+        dispose_posts: AtomicUsize::new(0),
+        shutdown_posts: AtomicUsize::new(0),
+        restart_posts: AtomicUsize::new(0),
+    });
+    (node, mailbox)
+}
+
+/// `Ctx::plugin`'s mount effect: what the parent's unload runs for the child it
+/// mounted. It joins the child's own cleanup when a subtree shutdown recorded
+/// one, and disposes the child otherwise; an error of that dispose goes to the
+/// ErrorSink (`sink_errors`), not to the parent's cleanup result, because the
+/// dispose's own caller already reports it.
+fn mount_record(
+    child: &Arc<CloseNode>,
+    runs: &Arc<AtomicUsize>,
+    sink_errors: &Arc<AtomicUsize>,
+) -> Arc<EffectRecord> {
+    let (child, runs, sink_errors) = (child.clone(), runs.clone(), sink_errors.clone());
+    EffectRecord::from(
+        Effect::AsyncDisposer(Box::new(move || {
+            let (child, runs, sink_errors) = (child.clone(), runs.clone(), sink_errors.clone());
+            Box::pin(async move {
+                runs.fetch_add(1, Ordering::SeqCst);
+                let closing = {
+                    let _admission = child.shared.admission.lock().unwrap();
+                    child.shutdown_inner.lock().unwrap().clone()
+                };
+                if let Some(task) = closing {
+                    // The child's own cleanup, not its public shutdown result:
+                    // the latter waits for this mount to detach.
+                    let _ = join_task(&task).await;
+                    return Ok(());
+                }
+                let delivered = node_state(&child) == FiberState::Disposed;
+                if join_task(&node_dispose(&child)).await.is_err() && !delivered {
+                    sink_errors.fetch_add(1, Ordering::SeqCst);
+                }
+                Ok(())
+            })
+        })),
+        "plugin mount: model child".into(),
+        Origin::Mount,
+        Weak::new(),
+    )
+}
+
+/// `FiberInner::post` for the model's node, counting the intents a driver will
+/// see.
+fn post_node(node: &Arc<CloseNode>, intent: Intent) -> bool {
+    if !node.alive.load(Ordering::SeqCst) {
+        complete_intent(&intent, node_stopped_error(node));
+        return false;
+    }
+    let counter = match &intent {
+        Intent::Dispose => Some(&node.dispose_posts),
+        Intent::Shutdown(_) => Some(&node.shutdown_posts),
+        _ => None,
+    };
+    match node.intents.send(intent) {
+        Ok(()) => {
+            if let Some(counter) = counter {
+                counter.fetch_add(1, Ordering::SeqCst);
+            }
+            true
+        }
+        Err(error) => {
+            complete_intent(&error.0, node_stopped_error(node));
+            false
+        }
+    }
+}
+
+/// `register_dispose` for a node: one terminal task, one `Intent::Dispose`.
+fn node_dispose(node: &Arc<CloseNode>) -> Arc<TransitionTask> {
+    let (task, newly_registered) = {
+        let mut tr = node.transition.lock().unwrap();
+        match &tr.terminal_task {
+            Some(task) => (task.clone(), false),
+            None => {
+                tr.pre_cancelled = true;
+                let task = TransitionTask::new();
+                tr.terminal_task = Some(task.clone());
+                (task, true)
+            }
+        }
+    };
+    if newly_registered {
+        post_node(node, Intent::Dispose);
+        if !node.alive.load(Ordering::SeqCst) {
+            task.complete_if_running(node_stopped_error(node));
+        }
+    }
+    task
+}
+
+/// `CtxHost::shutdown`, mirrored: under the admission lock one shared task, the
+/// marker pass over the real tree, `Shared.closing` (so `is_shutting_down()` is
+/// true as soon as the call is made), the existing `closing` flags, then one
+/// `Intent::Shutdown` for the root. The mounted children are shut down by the
+/// root's unload draining their mount records, not by a second post here.
+fn root_close(root: &Arc<CloseNode>) -> Arc<TransitionTask> {
+    let _admission = root.shared.admission.lock().unwrap();
+    let mut slot = root.shared.shutdown_task.lock().unwrap();
+    if let Some(task) = slot.as_ref() {
+        return task.clone();
+    }
+    let task = TransitionTask::new();
+    *slot = Some(task.clone());
+    let subtree = mark_subtree_lineage(root);
+    root.shared.closing.store(true, Ordering::SeqCst);
+    publish_subtree_closing(&subtree);
+    post_node(root, Intent::Shutdown(task.clone()));
+    task
+}
+
+/// `FiberView::dispose`'s root branch, mirrored: deciding and registering share
+/// the admission lock, so a dispose that sees the close joins the shutdown's
+/// task instead of registering behind it.
+fn tree_root_dispose(root: &Arc<CloseNode>) -> (Arc<TransitionTask>, bool) {
+    let _admission = root.shared.admission.lock().unwrap();
+    if root.shared.closing.load(Ordering::SeqCst) {
+        let task = root
+            .shared
+            .shutdown_task
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("shutdown stores its task before closing admission");
+        return (task, true);
+    }
+    // A scheduling point inside the admission critical section: the kernel's
+    // thread can be preempted here, and every other root-close caller then
+    // waits for admission. A restart does not take it, so it may run.
+    switch_point();
+    (node_dispose(root), false)
+}
+
+/// `FiberView::shutdown`'s non-root branch (#1025): under the admission lock,
+/// the marker pass over the subtree, the existing `closing` flags, then the
+/// per-fiber tasks.
+fn subtree_shutdown(node: &Arc<CloseNode>) -> Arc<TransitionTask> {
+    let _admission = node.shared.admission.lock().unwrap();
+    let subtree = mark_subtree_lineage(node);
+    publish_subtree_closing(&subtree);
+    begin_node_shutdown(node)
+}
+
+/// `begin_subtree_shutdown_locked`, mirrored: one public task per fiber, one
+/// recursive call per child, one `Intent::Shutdown` per driver, and the joiner
+/// that completes the public task: its own task first, then the child tasks, so
+/// a caller returns only after the whole subtree cleaned up. The kernel's
+/// joiner also awaits the driver handle (a panic collector), and
+/// `release_transient` there detaches the mount; the model drains the node's
+/// mount record here instead, which is the detach the public result waits for.
+fn begin_node_shutdown(node: &Arc<CloseNode>) -> Arc<TransitionTask> {
+    let public = {
+        let mut slot = node.shutdown_task.lock().unwrap();
+        if let Some(task) = slot.as_ref() {
+            return task.clone();
+        }
+        let task = TransitionTask::new();
+        *slot = Some(task.clone());
+        task
+    };
+
+    let children: Vec<Arc<CloseNode>> = node.children.lock().unwrap().clone();
+    let child_tasks: Vec<Arc<TransitionTask>> = children.iter().map(begin_node_shutdown).collect();
+
+    let (inner, needs_post) = {
+        let mut tr = node.transition.lock().unwrap();
+        match tr.terminal_task.as_ref() {
+            Some(task) => (task.clone(), false),
+            None => {
+                let task = TransitionTask::new();
+                tr.terminal_task = Some(task.clone());
+                (task, true)
+            }
+        }
+    };
+    *node.shutdown_inner.lock().unwrap() = Some(inner.clone());
+    if needs_post {
+        post_node(node, Intent::Shutdown(inner.clone()));
+    }
+    let result = public.clone();
+    let owner = node.clone();
+    thread::spawn(move || {
+        let mut errors = Vec::new();
+        if let Err(error) = block_on(join_task(&inner)) {
+            errors.push(error);
+        }
+        for child in child_tasks {
+            if let Err(error) = block_on(join_task(&child)) {
+                errors.push(error);
+            }
+        }
+        let mount = owner.mount.lock().unwrap().clone();
+        if let Some(mount) = mount {
+            if let Err(error) = drain_record(&mount) {
+                errors.push(error);
+            }
+        }
+        drop(owner);
+        result.complete(aggregate_arcs(errors));
+    });
+    public
+}
+
+/// `FiberView::restart`, mirrored: the closed checks and the pre-cancel share
+/// the transition lock with the count, so a generation `load` starts after the
+/// registration starts pre-cancelled too, then `post_join`.
+fn node_restart(node: &Arc<CloseNode>) -> Restart {
+    {
+        let mut tr = node.transition.lock().unwrap();
+        if node.shared.closing.load(Ordering::SeqCst) || node.closing.load(Ordering::SeqCst) {
+            return Restart::Refused(Arc::new(ErrorKind::Closed));
+        }
+        if !node.is_root && (tr.terminal_task.is_some() || !node.alive.load(Ordering::SeqCst)) {
+            return Restart::Refused(Arc::new(ErrorKind::InactiveEffect));
+        }
+        tr.pending_restarts += 1;
+        tr.pre_cancelled = true;
+    }
+    let task = TransitionTask::new();
+    let sent = post_join_to(
+        &node.alive,
+        &node.intents,
+        task.clone(),
+        Intent::Restart,
+        || node_stopped_error(node),
+    );
+    if sent {
+        node.restart_posts.fetch_add(1, Ordering::SeqCst);
+    }
+    Restart::Posted(task, sent)
+}
+
+/// What `unload` moves to: `NextState` from the kernel.
+enum NodeNext {
+    Pending,
+    Disposed,
+}
+
+/// `drain_effects`: take the list, drain each record in reverse order (LIFO),
+/// and return what their joins reported.
+fn drain_node_effects(node: &Arc<CloseNode>) -> Option<Arc<ErrorKind>> {
+    let effects: Vec<Arc<EffectRecord>> = std::mem::take(&mut *node.effects.lock().unwrap());
+    let mut errors = Vec::new();
+    for record in effects.into_iter().rev() {
+        if let Err(error) = drain_record(&record) {
+            errors.push(error);
+        }
+    }
+    aggregate_arcs(errors)
+}
+
+/// `FiberInner::unload` for a node: `Unloading` under the admission and
+/// transition locks, the (empty) event wait, the cleanup pass, then the next
+/// state. A non-terminal unload reports its cleanup errors to the sink.
+fn unload_node(node: &Arc<CloseNode>, next: NodeNext) {
+    {
+        let _admission = node.shared.admission.lock().unwrap();
+        let mut tr = node.transition.lock().unwrap();
+        set_node_state(&mut tr, FiberState::Unloading);
+    }
+    let error = drain_node_effects(node);
+    let mut tr = node.transition.lock().unwrap();
+    match next {
+        NodeNext::Pending => {
+            if error.is_some() {
+                node.sink_errors.fetch_add(1, Ordering::SeqCst);
+            }
+            set_node_state(&mut tr, FiberState::Pending);
+        }
+        NodeNext::Disposed => {
+            tr.error = error;
+            set_node_state(&mut tr, FiberState::Disposed);
+        }
+    }
+}
+
+/// `release_transient`: the mount record this node holds in its parent's
+/// effects is drained, so the mount detaches. The model has no inject index.
+fn release_transient_node(node: &Arc<CloseNode>) {
+    let mount = node.mount.lock().unwrap().clone();
+    if let Some(mount) = mount {
+        let _ = drain_record(&mount);
+    }
+}
+
+/// The node's driver, mirroring `drive`'s `Restart`, `Dispose` and `Shutdown`
+/// arms, the terminal-dispose exit of a non-root fiber, and the shutdown exit.
+/// A non-root driver completes its own task before `release_transient` and the
+/// terminal task after it; the root's shared task is completed last.
+fn drive_node(node: Arc<CloseNode>, mut mailbox: mpsc::UnboundedReceiver<Intent>) {
+    let mut disposal = false;
+    let mut shutdown = None;
+    while let Some(intent) = block_on(mailbox.recv()) {
+        match intent {
+            Intent::Restart(task) => {
+                {
+                    let mut tr = node.transition.lock().unwrap();
+                    tr.pending_restarts = tr.pending_restarts.saturating_sub(1);
+                }
+                let closing = node.shared.closing.load(Ordering::SeqCst)
+                    || node.closing.load(Ordering::SeqCst);
+                if closing {
+                    task.complete(Some(Arc::new(ErrorKind::Closed)));
+                    continue;
+                }
+                if node.transition.lock().unwrap().terminal_task.is_some() {
+                    // A dispose registered first wins: this restart does not
+                    // happen and reports what `restart()` reports behind one.
+                    unload_node(&node, NodeNext::Disposed);
+                    task.complete(Some(Arc::new(ErrorKind::InactiveEffect)));
+                    continue;
+                }
+                let state = node_state(&node);
+                if state == FiberState::Disposed {
+                    // Only the root gets here: a non-root fiber is Disposed
+                    // only with a terminal task registered.
+                    assert!(
+                        node.is_root,
+                        "a non-root node was Disposed without a dispose"
+                    );
+                    {
+                        let mut tr = node.transition.lock().unwrap();
+                        tr.error = None;
+                        tr.terminal_task = None;
+                        set_node_state(&mut tr, FiberState::Active);
+                    }
+                    let error = node.transition.lock().unwrap().error.clone();
+                    task.complete(error);
+                    continue;
+                }
+                if state != FiberState::Pending {
+                    unload_node(&node, NodeNext::Pending);
+                }
+                // `refresh_deps` returns at its plugin check for the model's
+                // nodes: no generation starts, so the restart reports the
+                // fiber's error (none here).
+                let error = node.transition.lock().unwrap().error.clone();
+                task.complete(error);
+            }
+            Intent::Dispose => {
+                if node_state(&node) != FiberState::Disposed {
+                    unload_node(&node, NodeNext::Disposed);
+                }
+                let (terminal, error) = {
+                    let tr = node.transition.lock().unwrap();
+                    (tr.terminal_task.clone(), tr.error.clone())
+                };
+                if let Some(terminal) = terminal {
+                    terminal.complete(error);
+                }
+                if !node.is_root {
+                    disposal = true;
+                    break;
+                }
+            }
+            Intent::Shutdown(task) => {
+                if node_state(&node) != FiberState::Disposed {
+                    unload_node(&node, NodeNext::Disposed);
+                }
+                shutdown = Some(task);
+                break;
+            }
+            _ => {}
+        }
+    }
+    if let Some(task) = shutdown {
+        node.alive.store(false, Ordering::SeqCst);
+        let (terminal, error) = {
+            let tr = node.transition.lock().unwrap();
+            (tr.terminal_task.clone(), tr.error.clone())
+        };
+        while let Ok(intent) = mailbox.try_recv() {
+            let completion = match &intent {
+                Intent::Settle(_) => None,
+                Intent::Shutdown(_) => error.clone(),
+                _ => Some(Arc::new(ErrorKind::Closed)),
+            };
+            complete_intent(&intent, completion);
+        }
+        if !node.is_root {
+            // The mount cleanup may join this one. Publish it before
+            // `release_transient` drains that same mount record.
+            task.complete(error.clone());
+            release_transient_node(&node);
+        }
+        if let Some(terminal) = terminal {
+            terminal.complete(error.clone());
+        }
+        drop(node);
+        task.complete(error);
+        return;
+    }
+    if disposal {
+        node.alive.store(false, Ordering::SeqCst);
+        let terminal_error = node.transition.lock().unwrap().error.clone();
+        while let Ok(intent) = mailbox.try_recv() {
+            let error = if matches!(intent, Intent::Settle(_)) {
+                None
+            } else {
+                terminal_error.clone()
+            };
+            complete_intent(&intent, error);
+        }
+        release_transient_node(&node);
+    }
+}
+
+/// Model 17, the root's close and the child it owns (#622, "根关闭与根
+/// dispose", "子树关闭"): two root shutdown callers and a root dispose race
+/// with a restart whose future is dropped at its await, while the root closes
+/// the child it mounted. Every join returns: the two shutdown callers share one
+/// task, the dispose registered before admission closed joins that task and
+/// never reports `Closed`, and each shutdown returns only after the whole
+/// subtree it named ran its cleanups — the root's only after its mount record
+/// ran and the child cleaned up, exactly once each. Dropping the restart's
+/// future stops neither the unload it queued nor the close behind it, and
+/// `is_shutting_down()` is true from the shutdown call on.
+///
+/// This is a reference model. `CtxHost::shutdown`, `FiberView::dispose` and
+/// `FiberView::shutdown` take `Shared.admission`, a **std** mutex, and then store
+/// shuttle-visible markers; two shuttle threads entering them would park in the
+/// std mutex while the first waits at a switch point (models 7 and 8 say the
+/// same). The kernel's own passes and types run: `mark_subtree_lineage` /
+/// `publish_subtree_closing` through `CloseTree` over a real parent/child tree,
+/// `TransitionTask`, `post_join_to`, `join_task`, `complete_intent`, and
+/// `EffectRecord::{claim, finish, join}`. Mirrored: the admission-locked
+/// sequences, `begin_subtree_shutdown_locked`'s recursion and joiner, the mount
+/// effect's cleanup (`ctx.rs`, an `AsyncDisposer`), `unload`/`drain_effects` and
+/// `drive`'s arms. The nodes have no plugin, so `refresh_deps` returns at its
+/// plugin check and no generation ever starts (`generation` stays 0).
+///
+/// Mutations this model catches: dropping the admission lock from the root
+/// dispose (a dispose that saw `closing == false` registers behind the finished
+/// shutdown and joins a task completed with `Closed`), dropping the
+/// `shared_shutdown_task` early return (two tasks, so the `Arc::ptr_eq` fails),
+/// and completing the root's shared task before its unload (a caller returns
+/// before the subtree's cleanups ran). Run: the three fail at the default 1000
+/// iterations with `a dispose registered before admission closed got
+/// Err(Closed)`, `two shutdown callers got different tasks`, and `a root
+/// shutdown returned before its subtree cleaned up`.
+#[test]
+fn shuttle_root_close_owns_the_child_it_mounted() {
+    explore(|| {
+        let shared = Arc::new(CloseShared {
+            admission: SyncMutex::new(()),
+            closing: SyncBool::new(false),
+            shutdown_task: SyncMutex::new(None),
+        });
+        let sink_errors = Arc::new(AtomicUsize::new(0));
+        let (root, root_mailbox) = new_close_node(&shared, true, &sink_errors);
+        let (child, child_mailbox) = new_close_node(&shared, false, &sink_errors);
+        root.children.lock().unwrap().push(child.clone());
+        let mount_runs = Arc::new(AtomicUsize::new(0));
+        let mount = mount_record(&child, &mount_runs, &sink_errors);
+        *child.mount.lock().unwrap() = Some(mount.clone());
+        // Registered after the root's own effect, and `drain_effects` runs the
+        // list in reverse: the mount drains first, as it does for a host that
+        // registered its own effect before mounting the plugin.
+        root.effects.lock().unwrap().push(mount);
+
+        let root_driver = {
+            let root = root.clone();
+            thread::spawn(move || drive_node(root, root_mailbox))
+        };
+        let child_driver = {
+            let child = child.clone();
+            thread::spawn(move || drive_node(child, child_mailbox))
+        };
+
+        let shutdowns: Vec<_> = (0..2)
+            .map(|_| {
+                let (root, child) = (root.clone(), child.clone());
+                let mount_runs = mount_runs.clone();
+                thread::spawn(move || {
+                    switch_point();
+                    let task = root_close(&root);
+                    // `is_shutting_down()` from the call on, before any cleanup
+                    // finished.
+                    assert!(
+                        root.shared.closing.load(Ordering::SeqCst),
+                        "is_shutting_down() is false after shutdown() returned"
+                    );
+                    let result = block_on(join_task(&task));
+                    // Right after the join, with no yield in between: the
+                    // subtree this close owns has cleaned up. The counters are
+                    // std atomics for that reason.
+                    let cleanups = (
+                        root.cleanups.load(Ordering::SeqCst),
+                        child.cleanups.load(Ordering::SeqCst),
+                        mount_runs.load(Ordering::SeqCst),
+                    );
+                    (task, result, cleanups)
+                })
+            })
+            .collect();
+
+        let disposer = {
+            let root = root.clone();
+            thread::spawn(move || {
+                switch_point();
+                let (task, joined_shutdown) = tree_root_dispose(&root);
+                let result = block_on(join_task(&task));
+                (task, joined_shutdown, result)
+            })
+        };
+        // The restart's future is dropped at its await: its registration and
+        // post already happened, and neither the unload it queues nor the close
+        // behind it waits for a joiner.
+        let restarter = {
+            let root = root.clone();
+            thread::spawn(move || {
+                switch_point();
+                match node_restart(&root) {
+                    Restart::Refused(error) => {
+                        assert!(
+                            matches!(&*error, ErrorKind::Closed | ErrorKind::InactiveEffect),
+                            "a restart in the close reported {error:?}"
+                        );
+                        None
+                    }
+                    Restart::Posted(task, _sent) => Some(task),
+                }
+            })
+        };
+        let mut shutdown_tasks = Vec::new();
+        for (task, result, cleanups) in shutdowns.into_iter().map(|caller| caller.join().unwrap()) {
+            assert!(result.is_ok(), "a shutdown returned {result:?}");
+            assert_eq!(
+                cleanups,
+                (1, 1, 1),
+                "a root shutdown returned before its subtree cleaned up"
+            );
+            shutdown_tasks.push(task);
+        }
+        assert!(
+            Arc::ptr_eq(&shutdown_tasks[0], &shutdown_tasks[1]),
+            "two shutdown callers got different tasks"
+        );
+
+        let (dispose_task, joined_shutdown, dispose_result) = disposer.join().unwrap();
+        assert!(
+            dispose_result.is_ok(),
+            "a dispose registered before admission closed got {dispose_result:?}"
+        );
+        if joined_shutdown {
+            assert!(
+                Arc::ptr_eq(&dispose_task, &shutdown_tasks[0]),
+                "a dispose that joined the shutdown got another task"
+            );
+        }
+        // A restart whose future was dropped still completes: the driver takes
+        // it up before the close, or the close's drain completes it with the
+        // terminal result. Neither waits for the joiner.
+        if let Some(task) = restarter.join().unwrap() {
+            match block_on(join_task(&task)) {
+                Ok(()) => {}
+                Err(error) => assert!(
+                    matches!(&*error, ErrorKind::Closed | ErrorKind::InactiveEffect),
+                    "a dropped restart's task reported {error:?}"
+                ),
+            }
+        }
+
+        assert_eq!(
+            mount_runs.load(Ordering::SeqCst),
+            1,
+            "the child's mount record ran more than once"
+        );
+        // The mount cleanup reports a child dispose error to the sink unless the
+        // child was already `Disposed` when it asked, and a successful cleanup
+        // reports nothing: `register_dispose` keeps the driver's result instead
+        // of replacing it with `Closed` (#1194).
+        assert_eq!(
+            sink_errors.load(Ordering::SeqCst),
+            0,
+            "the mount cleanup reported an error to the sink"
+        );
+        assert_eq!(
+            root.shutdown_posts.load(Ordering::SeqCst),
+            1,
+            "the root's driver was posted more than one shutdown"
+        );
+        assert!(
+            root.dispose_posts.load(Ordering::SeqCst) <= 1,
+            "the root's driver was posted more than one dispose"
+        );
+        assert!(
+            root.restart_posts.load(Ordering::SeqCst) <= 1,
+            "one restart posted more than one intent"
+        );
+        assert!(
+            child.shutdown_posts.load(Ordering::SeqCst) <= 1,
+            "the child's driver was posted more than one shutdown"
+        );
+
+        root_driver.join().unwrap();
+        child_driver.join().unwrap();
+
+        // Both drivers ended: a fiber's own result may complete inside its
+        // driver's unload, before the driver stops taking intents.
+        for (name, node) in [("the root", &root), ("the child", &child)] {
+            assert!(
+                !node.alive.load(Ordering::SeqCst),
+                "{name}'s driver is still taking intents"
+            );
+            assert_eq!(
+                node.cleanups.load(Ordering::SeqCst),
+                1,
+                "{name}'s cleanup did not run exactly once"
+            );
+            assert_eq!(
+                node_state(node),
+                FiberState::Disposed,
+                "{name} did not end Disposed"
+            );
+            assert_eq!(
+                node.transition.lock().unwrap().generation,
+                0,
+                "a close started a generation for {name}"
+            );
+            assert!(
+                node.closing.load(Ordering::SeqCst) && node.lineage_closed.load(Ordering::SeqCst),
+                "{name} was not marked and closed"
+            );
+        }
+
+        // The flag stays true, and a restart after the close is refused
+        // without posting anything.
+        assert!(root.shared.closing.load(Ordering::SeqCst));
+        let posts = root.restart_posts.load(Ordering::SeqCst);
+        match node_restart(&root) {
+            Restart::Refused(error) => assert!(
+                matches!(&*error, ErrorKind::Closed),
+                "a restart after the close reported {error:?}"
+            ),
+            Restart::Posted(..) => panic!("a closed root accepted a restart"),
+        }
+        assert_eq!(root.restart_posts.load(Ordering::SeqCst), posts);
+        assert_eq!(root.cleanups.load(Ordering::SeqCst), 1);
+    });
+}
+
+/// Model 18, one transition's result across its driver's exit (#1194, #622's
+/// "待复现的疑点": "`complete` 后写覆盖先写：干净的子 dispose 与根关闭竞争时，晚到的
+/// join 拿到 `Err(Closed)`"): a child's dispose and a child subtree shutdown
+/// race while the root is closing. `register_dispose` posts the dispose and
+/// then looks at `alive`; a driver that finished the dispose in between already
+/// completed the terminal task with the cleanup's result. The late check must
+/// not complete that task again: `stopped_error()` is `Closed` while
+/// `Shared.closing` is set, so the overwrite would turn a successful cleanup
+/// into an error for every join that attaches after it and make the mount
+/// cleanup report a false error to the sink. The fix completes only while the
+/// task is still `Running`; the driver completes before it clears `alive`, so a
+/// check made after reading `alive == false` sees `Done` and keeps the result.
+#[test]
+fn shuttle_dispose_result_survives_the_driver_exit() {
+    explore(|| {
+        // The root's close is in progress: `Shared.closing` is what turns the
+        // late completion's `stopped_error()` into `Closed`.
+        let shared = Arc::new(CloseShared {
+            admission: SyncMutex::new(()),
+            closing: SyncBool::new(true),
+            shutdown_task: SyncMutex::new(None),
+        });
+        let sink_errors = Arc::new(AtomicUsize::new(0));
+        let (node, mailbox) = new_close_node(&shared, false, &sink_errors);
+        let driver = {
+            let node = node.clone();
+            thread::spawn(move || drive_node(node, mailbox))
+        };
+
+        let disposer = {
+            let node = node.clone();
+            thread::spawn(move || {
+                switch_point();
+                block_on(join_task(&node_dispose(&node)))
+            })
+        };
+        let closer = {
+            let node = node.clone();
+            thread::spawn(move || {
+                switch_point();
+                let task = subtree_shutdown(&node);
+                block_on(join_task(&task))
+            })
+        };
+
+        let dispose_result = disposer.join().unwrap();
+        let close_result = closer.join().unwrap();
+        driver.join().unwrap();
+        assert_eq!(
+            node.cleanups.load(Ordering::SeqCst),
+            1,
+            "the child's cleanup did not run exactly once"
+        );
+        assert_eq!(
+            node_state(&node),
+            FiberState::Disposed,
+            "the child did not end Disposed"
+        );
+        assert!(
+            dispose_result.is_ok(),
+            "the child's dispose reported {dispose_result:?} although its cleanup ran"
+        );
+        assert!(
+            close_result.is_ok(),
+            "the child's close reported {close_result:?} although its cleanup ran"
+        );
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Model 19: a restart inside the dependency window (#622, Bug B,
+// `core/typed.lost-dependency-restart`, `core/features.errors`)
+
+/// Model 19, a restart inside the dependency window (#622, Bug B / #620): a
+/// provider leaves while its consumer is between `Pending` and `Loading`, a
+/// restart is registered in that window and its future is dropped at the await,
+/// a second restart is joined while the withdrawal runs, and the provider comes
+/// back. The consumer must never be `Active` on the withdrawn generation when a
+/// withdrawal or a restart returns, must end bound to the returned generation,
+/// and every unloaded generation's cleanup must run exactly once. The dropped
+/// restart's task still completes: the unload and the reload it queued do not
+/// depend on a waiter.
+///
+/// Reference model for the same reason as model 9: the gate window runs no
+/// plugin code and takes std locks only. `load`, `refresh_deps`, `unload`, the
+/// registry methods, `evict_and_finalize` and `drive`'s `Restart` arm are
+/// mirrored; `TransitionTask`, `post_join_to`, `join_task`, `complete_intent`
+/// and `EffectRecord` are the kernel's.
+///
+/// Mutations this model catches: dropping the `pending_restarts` decrement from
+/// the restart's take-up (the count a later `load` reads never clears: `a
+/// restart was left counted after the driver took it up`, left 2). Dropping
+/// `load`'s second gate resolve or the withdrawal's consumer join loop does not
+/// fail here: the restart's own unload to `Pending` takes the consumer out of
+/// the window before either can be observed, which is why model 9 pins those
+/// two by itself. This model pins what a restart that lands in the window does
+/// and leaves behind.
+#[test]
+fn shuttle_dependency_restart_in_the_window_returns_to_the_returned_generation() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .expect("a current-thread runtime");
+    let handle = runtime.handle().clone();
+    explore(move || {
+        let key = TypeKey::of::<u32>();
+        let world = Arc::new(DepWorld {
+            key: key.clone(),
+            registry: DepRegistry::new(),
+            admission: SyncMutex::new(()),
+            handle: handle.clone(),
+        });
+        let provider = Arc::new(DepProvider {
+            id: PluginId(7),
+            state: SyncMutex::new(FiberState::Active),
+        });
+        provider.set(FiberState::Loading);
+        let first = world
+            .registry
+            .insert(&key, &provider, 1)
+            .expect("the first provide");
+        provider.set(FiberState::Active);
+
+        let (consumer, mailbox) = new_consumer(&world);
+        world.registry.register_inject(&key, &consumer);
+        let driver = {
+            let (world, inner) = (world.clone(), consumer.inner.clone());
+            thread::spawn(move || drive_consumer(world, inner, mailbox))
+        };
+        // The mount posts the first refresh.
+        post_consumer(&consumer, Intent::RefreshDeps);
+
+        let removal = Arc::new(Notify::new());
+        // The restart registered in the window, whose future is dropped: its
+        // task is kept only to check that the driver completed it anyway.
+        let window_restart = Arc::new(SyncMutex::new(None::<Arc<TransitionTask>>));
+        let leaver = {
+            let (world, provider, first, removal, consumer, window_restart) = (
+                world.clone(),
+                provider.clone(),
+                first.clone(),
+                removal.clone(),
+                consumer.clone(),
+                window_restart.clone(),
+            );
+            thread::spawn(move || {
+                let in_window = || {
+                    switch_point();
+                    match consumer_restart(&consumer) {
+                        Restart::Refused(error) => {
+                            panic!("a restart in the window was refused: {error:?}")
+                        }
+                        Restart::Posted(task, sent) => {
+                            assert!(sent, "the consumer's driver was not alive");
+                            *window_restart.lock().unwrap() = Some(task);
+                        }
+                    }
+                };
+                withdraw(&world, &provider, &first, &removal, &in_window);
+                // Bug B: the withdrawal returns only after the consumer
+                // stopped or saw the removal.
+                let state = consumer.inner.state();
+                let stale = {
+                    let last = consumer.inner.last_deps.lock().unwrap();
+                    last.as_ref().is_some_and(|deps| {
+                        deps.contains(&(provider.id, 1, world.key.clone(), None))
+                    })
+                };
+                assert!(
+                    !(state == FiberState::Active && stale),
+                    "the withdrawal returned while the consumer still ran on the \
+                     withdrawn generation"
+                );
+            })
+        };
+        let returner = {
+            let (world, provider, removal) = (world.clone(), provider.clone(), removal.clone());
+            thread::spawn(move || {
+                // `notify_one`'s permit is kept when it fires before the wait,
+                // so the return never starts before the removal is marked.
+                block_on(removal.notified());
+                provide(&world, &provider, 2)
+            })
+        };
+        // A restart that waits for its result, racing the whole withdrawal.
+        let restarter = {
+            let consumer = consumer.clone();
+            thread::spawn(move || {
+                switch_point();
+                match consumer_restart(&consumer) {
+                    Restart::Refused(error) => Some(error),
+                    Restart::Posted(task, sent) => {
+                        assert!(sent, "the consumer's driver was not alive");
+                        block_on(join_task(&task)).err()
+                    }
+                }
+            })
+        };
+
+        leaver.join().unwrap();
+        let returned = returner.join().unwrap();
+        assert!(
+            restarter.join().unwrap().is_none(),
+            "a restart outside a dispose reported an error"
+        );
+
+        // Settle after every notification the threads posted: the consumer
+        // handles what is queued before the barrier.
+        let settle = TransitionTask::new();
+        let sent = post_join_to(
+            &consumer.inner.alive,
+            &consumer.intents,
+            settle.clone(),
+            Intent::Settle,
+            || consumer_stopped_error(&consumer.inner),
+        );
+        assert!(sent, "the consumer's driver was not alive");
+        assert!(block_on(join_task(&settle)).is_ok());
+
+        let inner = consumer.inner.clone();
+        let applies = inner.applies.load(Ordering::SeqCst);
+        let cleanups = inner.cleanups.load(Ordering::SeqCst);
+        assert!(
+            applies >= 1,
+            "the consumer never loaded, so nothing was evicted"
+        );
+        assert_eq!(
+            inner.state(),
+            FiberState::Active,
+            "the consumer did not reload on the returned generation"
+        );
+        // The generation that is still Active has not been unloaded: its
+        // record is still in the list and its cleanup is not due. Every
+        // earlier generation's cleanup ran exactly once, no matter how often a
+        // restart unloaded and reloaded in between.
+        assert_eq!(
+            cleanups,
+            applies - 1,
+            "an unloaded generation's cleanup did not run exactly once ({cleanups} \
+             cleanups for {applies} applies, one still active)"
+        );
+        assert_eq!(
+            inner.effects.lock().unwrap().len(),
+            1,
+            "the active generation's record is not the only one left"
+        );
+        let expected: HashSet<DepQuad> =
+            std::iter::once((provider.id, 2, key.clone(), None)).collect();
+        assert_eq!(
+            inner.last_deps.lock().unwrap().as_ref(),
+            Some(&expected),
+            "the consumer is not bound to the returned generation"
+        );
+        assert_eq!(
+            inner.transition.lock().unwrap().pending_restarts,
+            0,
+            "a restart was left counted after the driver took it up"
+        );
+        let now = world.registry.lookup(&key).expect("the returned binding");
+        assert!(
+            Arc::ptr_eq(&now, &returned),
+            "the withdrawal removed or replaced the new binding"
+        );
+        assert!(!now.removing.load(Ordering::SeqCst));
+
+        // The dropped restart's task completed: dropping the future stopped
+        // neither the queued unload nor the reload behind it.
+        if let Some(task) = window_restart.lock().unwrap().take() {
+            assert!(
+                block_on(join_task(&task)).is_ok(),
+                "the window restart's task never completed"
+            );
+        }
+
+        // Dispose the loaded generation too: its cleanup must run exactly
+        // once, and the record list must end empty.
+        post_consumer(&consumer, Intent::Dispose);
+        let settle = TransitionTask::new();
+        let _ = post_join_to(
+            &inner.alive,
+            &consumer.intents,
+            settle.clone(),
+            Intent::Settle,
+            || consumer_stopped_error(&inner),
+        );
+        assert!(block_on(join_task(&settle)).is_ok());
+        drop(consumer);
+        driver.join().unwrap();
+        assert_eq!(
+            inner.state(),
+            FiberState::Disposed,
+            "the dispose did not end"
+        );
+        assert_eq!(
+            inner.cleanups.load(Ordering::SeqCst),
+            applies,
+            "the active generation's cleanup did not run exactly once"
+        );
+        assert!(
+            inner.effects.lock().unwrap().is_empty(),
+            "a generation's effect record was left behind"
         );
     });
 }
