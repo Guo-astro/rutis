@@ -483,6 +483,7 @@ class RuntimeOnASteppedLoop(background.TestCase):
         release.set()
         self.step_until("the unload", unloading.done)
 
+    # guarantee: sdk/unload-order
     # `ctx.provide` has the guard `ctx.on` / `ctx.effect` have, as Rust's
     # InactiveEffect (#1143): the service of a row on its way out is not
     # registered and the host is not told about it.
