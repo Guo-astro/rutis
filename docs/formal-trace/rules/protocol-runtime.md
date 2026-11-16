@@ -4,7 +4,7 @@
 
 本文件把 #634 的 `runtime` 分区评论（[评论 6384933883](https://github.com/arcships/rutis/issues/634#issuecomment-6384933883)）里的 Markdown 表格导出到仓库。表格内容原样保留；单元格里的 `|` 按 Markdown 表格规则转义为 `\|`，渲染后文字不变。列的含义见 #634 正文：编号、来源、规则、参与方、手段、对应、现有形式化、状态、归属 issue、备注。
 
-抽取基线：`main` `3496669b`（issue 正文的统计口径）。表格保持 issue 原文；这 309 行已按 0.22 现行来源复核，并在追踪表的语义重抽里逐行重抽来源、锚点、证据与状态（见 `README.md` §1 与[复核表](../recheck-0.22.md) §5）。状态列仍是 issue 的词汇，`node tools/formal-trace.mjs` 在统计时按 `README.md` §3 的映射换成追踪表状态；映射与复核都只降不升，不改写本文件。
+抽取基线：`main` `3496669b`（issue 正文的统计口径）。表格保持 issue 原文；这 309 行已按 0.22 现行来源复核，并在追踪表的语义重抽里逐行重抽来源、锚点、证据与状态（见 `README.md` §1 与[复核表](../recheck-0.22.md) §5）。状态列仍是 issue 的词汇，`node tools/formal-trace.mjs` 在统计时按 `README.md` §3 的映射换成追踪表状态；映射与复核都只降不升，不改写本文件。行协议的现行规格是[行协议规格](../../protocol-rows.md)；本分区的行生命周期与服务规则在追踪表里仍以登记表行作锚点（见 `README.md` 2026-11-16），尚未改成 `ROWS-*`。
 
 2026-11-16（#1212）：`INS-5-1` 的备注按 0.19 删除的机制改写。节点的 `export` / `import` 名单与 `HostPlugin` 在 0.19 删除（`design-remote-session-2026-10-28.md` §八、§十二；`migration-0.19.md`），按实例映射导出、导入与宿主名字没有对象；备注里「#631 export / import 收窄 PT」没有对象，记「不适用」。状态列不改。
 

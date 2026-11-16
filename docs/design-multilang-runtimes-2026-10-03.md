@@ -157,9 +157,9 @@ SDK 只做这几件事：
 
 ## 九、行协议、同步等待与明确不保证
 
-会话层（帧、值、引用、取消、大小上限、畸形帧）的现行规格是[会话协议规格](protocol-session.md)。这一节只写多语言相关的部分：行经哪些控制调用装载，跨语言同步等待怎么检测，以及实现有意不承诺什么。
+会话层（帧、值、引用、取消、大小上限、畸形帧）的现行规格是[会话协议规格](protocol-session.md)；行协议（`rows.*`、`hosts.*`、`mount`、`service`、行的结束与失败）的现行规格是[行协议规格](protocol-rows.md)。这一节只写多语言相关的部分：跨语言的服务投递、同步等待怎么检测，以及实现有意不承诺什么。
 
-**现行行协议。** 行和宿主之间只用 `invoke` 的控制调用（`target` 为空）：宿主发 `rows.schema`、`rows.load`、`rows.update`、`rows.unload`、`hosts.provide`、`hosts.withdraw`、`plugins.read`，运行时发 `rows.ended`、`rows.failed`、`events.on`、`events.off`、`events.dispatch`。`mount` 的回复里带 `features`，宿主只要求 `rows.v2` 和 `hosts`（`crates/rutis-bridge/src/runtime/process.rs:13,1458`）；`leaf`、`scopes`、`rows.announce` 由各运行时声明，宿主按用途读取。方法形状跟着服务走：`HostDispatch::methods()`，没有时由租用它的地方给出（M1 §4.1）。事件不分语言，见[事件协议](design-events-protocol-2026-10-18.md)。调用号的本地前缀是本端端点 id（宿主给运行时的名字，如 `node`、`py`），不再是写死的 `node:`。
+**行协议的多语言落点。** 方法形状跟着服务走：`HostDispatch::methods()`，没有时由租用它的地方给出（M1 §4.1）。事件不分语言，见[事件协议](design-events-protocol-2026-10-18.md)。调用号的本地前缀是本端端点 id（宿主给运行时的名字，如 `node`、`py`），不再是写死的 `node:`。
 
 **同步等待的检测。** 只有标了同步的调用可能计入等待图：调用帧（`invoke`、`call`、`get`、`await`）带 `sync: true` 时，调用方在同步等待它（Cordis 插件的 `emit` 与 `waterfall` 也这样发）。握手能力 `reentrant-sync` 与 `sync-stack` 决定运行时的等待形状：不声明 `reentrant-sync` 的按不可重入处理；"延后"和"栈顺序"两类边只用于声明了 `sync-stack` 的对端。宿主按 `crates/rutis-bridge/src/session/rpc/waits.rs` 的 `forward` 给每次转发分类：
 

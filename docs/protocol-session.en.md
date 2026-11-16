@@ -2,10 +2,10 @@
 
 [中文](protocol-session.md)
 
-Status: current specification. Date: 2026-11-09.
+Status: current specification. Date: 2026-11-16 (first version 2026-11-09; this revision changes §1's pointers, `SESS-61` and G3).
 Issue: [#635](https://github.com/arcships/rutis/issues/635), part of step 4 of [#183](https://github.com/arcships/rutis/issues/183); the work plan is [the 0.22 formal coverage plan](plan/formal-verification-0.22.en.md) WS2. Trace and verification vocabulary: [session trace contract](formal-trace.en.md).
 
-This is the only current specification of the session layer: what two ends exchange on one channel, what happens on errors and cancellation, which messages fail only one call and which end the session. Rows, service announcement, events, authentication, reconnect backoff and runtime supervision are out of scope; each has its own current specification. This file is also the source from which #634's trace table extracts its `session` partition.
+This is the only current specification of the session layer: what two ends exchange on one channel, what happens on errors and cancellation, which messages fail only one call and which end the session. Rows, service announcement, events, authentication, reconnect backoff and runtime supervision are out of scope; each has its own current specification: the [row protocol](protocol-rows.en.md) for rows, host-service leases, and a row ending or failing; the [events protocol](design-events-protocol-2026-10-18.en.md) for events; the [remote lease model](../specs/remote-lease/README.en.md) and the [remote session design](design-remote-session-2026-10-28.en.md) for remote leases and reconnection. This file is also the source from which #634's trace table extracts its `session` partition.
 
 Every rule has an id (`SESS-*`) and one of three states:
 
@@ -214,7 +214,7 @@ Receivers are not equally strict: Node, Bun, Go, Swift and Kotlin require `^[1-9
 
 `SESS-60` **Current.** Cancellation itself does not close the session; other calls go on. `crates/rutis-bridge/src/session/rpc.rs:2702-2721`; `go/rutis/internal/peer/peer_test.go:135-170`; `go/rutis/internal/peer/objects_test.go:66-103`
 
-`SESS-61` **Not guaranteed.** Whether a callee replies after a cancellation is not yet one rule across implementations: Rust does not reply to queued calls and awaits, runs an admitted `emit` dispatch and lets the caller discard its reply, and replies as usual to a synchronous call already running; the other languages leave it to the method and the signal. The rule is written back here once the #626 model decides it. `bridge/cancel-reaches-callee` in `docs/guarantees.en.md` only promises that cancellation arrives, not a reply; #626; the cancel-table cleanup and cancel-ack rule is #1099.
+`SESS-61` **Not guaranteed.** After a cancellation the callee may reply or not; both are legal, and the caller must take either — it cannot rely on a reply to clean up its state, and a missing reply is not an error. Current behaviour: Rust does not reply to a queued call or a cancelled `await`, runs an admitted `emit` dispatch to the end and lets the caller discard that reply, and replies as usual to a synchronous call already running; the other languages decide by method and signal. `bridge/cancel-reaches-callee` in `docs/guarantees.en.md` only promises that the cancellation arrives. When the caller's cancelled table (`calls.cancelled`) is cleaned up, and whether a cancel acknowledgement frame is added, is #1099's to decide; until then no side's behaviour here is a cross-implementation reply promise (the #626 model verifies both reply rules as settled at most once with no reference leaked).
 
 `SESS-62` **Superseded.** "Cancellation is closing the transport" and "a cancelled session is unusable". Cancellation affects only one call.
 
@@ -447,9 +447,11 @@ Every call-level failure ends at the call or the value. Handshake and transport 
 - Done: the matrix grew from 13 cases to 25, 13 single frames in `MALFORMED` and 12 multi-frame/ordered cases in `MALFORMED_SEQUENCES`; the original list (a request before the handshake, a duplicate `hello`, `get` on an unknown reference, a released reference, a `release` count of 0 or above the grants, wrong field types in `cancel`/`throw`, a `throw` for an unknown call, a `path` containing the frame's id, a call id that does not increase) is covered, with the call-id item covering a repeated id only, plus an invocation with no `id` (`SESS-21`, `SESS-22`, `SESS-33`, `SESS-47`, `SESS-48`; `SESS-64`). Implementation: `MALFORMED`, `MALFORMED_SEQUENCES` and `malformed` in `crates/rutis-bridge/src/session/testing.rs`; Swift's cases compile only on macOS and run in CI's `runtimes-swift` job.
 - Still outside the matrix: a method call or property read on a non-object reference; a call id that goes backwards, is not numeric, exceeds 2^53−1 or lacks the far end's prefix; `throw.error` missing `name`/`message`; a frame deeper than 208 levels; a message over the channel's limit. Code and other tests verify these (§8.1, §8.2).
 
-### G3 The reply-after-cancel rule (#626)
+### G3 The reply-after-cancel rule: decided (2026-11-16)
 
-Whether a callee replies after cancellation is not one rule (`SESS-61`). The #626 call-lifecycle model must decide it before it is written back here and into the seven implementations; until then no side's behaviour is a cross-implementation promise.
+- Decision: neither "always reply" nor "never reply" is made a cross-implementation requirement. After a cancellation the callee may reply or not, and the caller must take either (`SESS-61`). The #626 model ([call-lifecycle](../specs/call-lifecycle/README.en.md)) runs both: each settles at most once and leaks no reference.
+- This file writes down current behaviour only; it adds no promise on this.
+- Still open: cleaning up the caller's cancelled table (`calls.cancelled`) and whether a cancel acknowledgement frame is added are #1099's ([cancel-table cleanup and the reply rule after a cancel](https://github.com/arcships/rutis/issues/1099)).
 
 ### G4 Capabilities and formats that no longer exist in older documents
 

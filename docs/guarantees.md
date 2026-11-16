@@ -384,6 +384,8 @@ PR 模板中有对应的检查项。CI 的 `links` 任务运行 `node tools/chec
 
 出处的简称：「loader」= [rutis-loader 设计](design-rutis-loader-2026-10-02.md)，「实例」= [按需创建插件实例](design-loader-instance-mounts-and-services-2026-10-07.md)，「实例服务」= [实例内的服务名](design-instance-services-2026-10-08.md)（`instance/services` 的设计，其中 loader 的行为登记在这里），「多语言」= [多语言运行时](design-multilang-runtimes-2026-10-03.md)，以及用户文档 [rutis-host](guide/rutis-host.md)、[在 Rust 应用里嵌入](guide/rust-host.md)、[连接节点](guide/nodes.md)。
 
+行协议的现行规格是[行协议规格](protocol-rows.md)（`ROWS-*`）：本节行生命周期与服务的条目按它核对；两处不一致时先改规格再改本表。
+
 | 编号 | 出处 | 内容 | 级别 | 状态 | 验证 | 说明 |
 | --- | --- | --- | --- | --- | --- | --- |
 | `loader/reconcile` | loader §八「reconcile」 | `reconcile` 按顺序合成各层，按 id 与运行态对比：新增的行装载，消失的卸载，只改 `config` 的原地 update，`disabled` 变化时卸载或装载；等到稳定才返回（Pending、Failed、Unresolved 都算稳定，依赖没到位不会让调用方一直等）；`new_failures` 只算这次新出现的失败行；外部给的层原样应用、不回滚，起不来的行保留 | 契约行为 | 已验证 | `rutis-loader/tests/loader.rs::reconcile_paths_and_failure_accounting`、`::pending_dependency_counts_as_settled`、`::disable_and_enable`、`rutis-loader/tests/regressions.rs::first_load_validates_the_config`、`::rejected_external_update_is_reported` | 换 `name`、改 `isolate` / `inject` 见 `loader/update-in-place-or-respawn` |
