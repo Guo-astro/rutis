@@ -6,7 +6,16 @@
 
 use std::io::{BufRead, BufReader, IoSlice, Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, PoisonError, TryLockError};
+use std::sync::{Arc, PoisonError, TryLockError};
+
+#[cfg(rutis_shuttle)]
+use crate::sync::{Flag, Mutex as SeamMutex};
+/// The handle and the flag a release crosses (#628): shuttle's under
+/// `--cfg rutis_shuttle`, std's otherwise.
+#[cfg(not(rutis_shuttle))]
+use std::sync::atomic::AtomicBool as Flag;
+#[cfg(not(rutis_shuttle))]
+use std::sync::Mutex as SeamMutex;
 
 use crate::channel::{Channel, ChannelError, Close, Closer, Receiver, Sender};
 
@@ -72,16 +81,20 @@ impl<W> Releasing<W> {
 }
 
 /// The handle the sender writes with, until the channel lets go of it.
+///
+/// The handle and the flag are locks the shuttle models interleave (#628):
+/// a send holding the handle and a closer letting go of it from another
+/// thread. A plain build is std's.
 struct Writer<W> {
-    stream: Mutex<Option<W>>,
-    released: AtomicBool,
+    stream: SeamMutex<Option<W>>,
+    released: Flag,
 }
 
 impl<W> Writer<W> {
     fn new(stream: W) -> Self {
         Self {
-            stream: Mutex::new(Some(stream)),
-            released: AtomicBool::new(false),
+            stream: SeamMutex::new(Some(stream)),
+            released: Flag::new(false),
         }
     }
 
@@ -581,3 +594,7 @@ mod tests {
         assert!(returned.is_ok(), "close waited for the blocked send");
     }
 }
+
+/// The shuttle model of a release, a close and a send (#628).
+#[cfg(all(test, rutis_shuttle))]
+mod shuttle_tests;
