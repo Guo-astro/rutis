@@ -921,10 +921,9 @@ async fn an_edit_dropped_with_its_save_in_flight_stays_queued() {
 ///
 /// An edit's future dropped at any suspension point: the editable layer must
 /// be the stored layer with the queue applied — never changed in the loader
-/// alone. This is the `commit` window: layers are set before the reconcile it
-/// waits for, and the edit reaches the queue only after that.
+/// alone. The `commit` window: the edit joins the queue in the same critical
+/// section as the layer change, before the reconcile is awaited (#1229).
 #[tokio::test]
-#[ignore = "issue #1229: dropping an edit after commit set state.layers leaves it unsaved and unqueued"]
 async fn an_edit_dropped_at_any_await_is_never_lost() {
     let mut completed = false;
     for steps in 1..=8 {
@@ -963,10 +962,10 @@ fn row_config(patches: &[Patch], id: &str) -> Option<Value> {
 ///
 /// A queued edit from an earlier operation is saved only when a flush really
 /// finishes. Dropping the flush at any suspension point must leave the edit
-/// queued or stored, never neither. This is the `persist_queue` window: the
-/// queue is taken before the replay's reconcile is awaited.
+/// queued or stored, never neither. The `persist_queue` window: the replay
+/// works on a copy of the queue, and a dropped future puts the old layer and
+/// queue back (#1229).
 #[tokio::test]
-#[ignore = "issue #1229: persist_queue takes the queue before the replay's reconcile, a dropped flush loses it"]
 async fn a_flush_dropped_at_any_await_keeps_the_queue() {
     let mut completed = false;
     for steps in 1..=8 {
@@ -1030,14 +1029,102 @@ async fn a_flush_dropped_at_any_await_keeps_the_queue() {
 
 /// guarantee: loader/persist-queue
 ///
-/// [`Loader::reconcile`] takes the queue and replaces the layers before it
-/// awaits the reconcile. Dropping it there must not lose edits an earlier
-/// operation left queued.
+/// A conflict replays the whole queue on the latest content. Dropping the
+/// flush at any suspension point of that replay must keep every queued edit
+/// (or have stored all of them), and a later flush writes them all, in order,
+/// once (#1229).
 #[tokio::test]
-#[ignore = "issue #1229: reconcile takes the queue before its reconcile, a dropped future loses it"]
+async fn a_replay_dropped_at_any_await_keeps_every_queued_edit() {
+    let mut completed = false;
+    for steps in 1..=32 {
+        let store = MemStore::default();
+        let (h1, h2) = (Harness::new(), Harness::new());
+        let (_r1, one) = mount(h1.resolver(), store.clone()).await;
+        let (_r2, two) = mount(h2.resolver(), store.clone()).await;
+        reconcile(&one, base(), &store).await;
+        reconcile(&two, base(), &store).await;
+
+        store.set_fail(true);
+        let first = Edit::Update {
+            id: "a".into(),
+            config: json!({ "label": "A" }),
+        };
+        let second = Edit::Update {
+            id: "c".into(),
+            config: json!({ "label": "C" }),
+        };
+        for (id, label) in [("a", "A"), ("c", "C")] {
+            assert!(matches!(
+                one.update(id, json!({ "label": label })).await,
+                Err(LoaderError::PersistFailed(_))
+            ));
+        }
+        store.set_fail(false);
+        assert_eq!(one.pending(), vec![first.clone(), second.clone()]);
+        two.set_disabled("c", true).await.unwrap();
+
+        let outcome = drop_after(one.flush(), steps).await;
+        if let Some(result) = outcome {
+            result.unwrap();
+            completed = true;
+        } else {
+            let queued = one.pending() == vec![first.clone(), second.clone()];
+            let stored = [("a", "A"), ("c", "C")].iter().all(|(id, label)| {
+                row_config(&store.patches(), id) == Some(json!({ "label": label }))
+            });
+            assert!(
+                queued || stored,
+                "step {steps}: a dropped replay lost a queued edit: pending {:?}",
+                one.pending()
+            );
+        }
+        within("the flush after the dropped one", one.flush())
+            .await
+            .unwrap();
+        assert!(one.pending().is_empty());
+        assert_eq!(
+            row_config(&store.patches(), "a"),
+            Some(json!({ "label": "A" }))
+        );
+        assert_eq!(
+            row_config(&store.patches(), "c"),
+            Some(json!({ "label": "C" })),
+            "the second queued edit is not in the store"
+        );
+        assert_eq!(
+            editable_patches(&one),
+            store.patches(),
+            "the loader and the store disagree after the replay"
+        );
+        let saves = store.inner.lock().unwrap().saves.clone();
+        assert_eq!(
+            saves.last(),
+            Some(&vec![first.clone(), second.clone()]),
+            "the queue was not written in order, or an edit was dropped"
+        );
+        assert_eq!(
+            saves.iter().filter(|batch| batch.len() == 2).count(),
+            1,
+            "the replay wrote the queue more than once"
+        );
+        if completed {
+            break;
+        }
+    }
+    assert!(completed, "the flush never completed within the sweep");
+}
+
+/// guarantee: loader/persist-queue
+///
+/// [`Loader::reconcile`] replaces the layers and replays the queue on them.
+/// Dropping it while that is awaited must not lose edits an earlier operation
+/// left queued (#1229).
+#[tokio::test]
 async fn a_reconcile_dropped_at_any_await_keeps_the_queue() {
     let mut completed = false;
-    for steps in 1..=8 {
+    // The replay after the replacement layers adds suspension points, so this
+    // window needs a wider sweep than the two above.
+    for steps in 1..=16 {
         let (_harness, store, _root, loader) = setup().await;
         store.set_fail(true);
         let queued = Edit::Update {
