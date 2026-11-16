@@ -2,7 +2,15 @@
 //! async side (the connection task). Either end may close it, waking both.
 
 use std::collections::VecDeque;
-use std::sync::{Condvar, Mutex};
+
+#[cfg(rutis_shuttle)]
+use crate::sync::{Condvar, Mutex};
+#[cfg(rutis_shuttle)]
+use shuttle::sync::MutexGuard;
+/// The lock and the wakeup of the pipe's queue, which the shuttle model
+/// interleaves (#628). A plain build is std's.
+#[cfg(not(rutis_shuttle))]
+use std::sync::{Condvar, Mutex, MutexGuard};
 
 use crate::channel::ChannelError;
 use tokio::sync::Notify;
@@ -21,6 +29,9 @@ struct State {
     queue: VecDeque<Vec<u8>>,
     bytes: usize,
     ending: Option<Ending>,
+    /// Threads waiting on this pipe, for the model (#628).
+    #[cfg(all(test, rutis_shuttle))]
+    waiting: usize,
 }
 
 pub(crate) struct Pipe {
@@ -39,6 +50,8 @@ impl Pipe {
                 queue: VecDeque::new(),
                 bytes: 0,
                 ending: None,
+                #[cfg(all(test, rutis_shuttle))]
+                waiting: 0,
             }),
             capacity,
             changed: Condvar::new(),
@@ -49,6 +62,29 @@ impl Pipe {
     fn has_room(&self, state: &State, size: usize) -> bool {
         // One message always fits, however large.
         state.queue.is_empty() || state.bytes + size <= self.capacity
+    }
+
+    /// Wait for a change, counted in `waiting` under test.
+    fn wait<'a>(&self, state: MutexGuard<'a, State>) -> MutexGuard<'a, State> {
+        #[cfg(all(test, rutis_shuttle))]
+        let mut state = state;
+        #[cfg(all(test, rutis_shuttle))]
+        {
+            state.waiting += 1;
+        }
+        #[allow(unused_mut)]
+        let mut state = self.changed.wait(state).unwrap();
+        #[cfg(all(test, rutis_shuttle))]
+        {
+            state.waiting -= 1;
+        }
+        state
+    }
+
+    /// How many threads wait on this pipe now.
+    #[cfg(all(test, rutis_shuttle))]
+    fn waiting(&self) -> usize {
+        self.state.lock().unwrap().waiting
     }
 
     fn admit(&self, state: &mut State, message: Vec<u8>) {
@@ -79,7 +115,7 @@ impl Pipe {
                 self.admit(&mut state, message.to_vec());
                 return Ok(());
             }
-            state = self.changed.wait(state).unwrap();
+            state = self.wait(state);
         }
     }
 
@@ -112,7 +148,7 @@ impl Pipe {
             match &state.ending {
                 Some(Ending::Finished) => return Ok(None),
                 Some(ending) => return Err(closed(ending)),
-                None => state = self.changed.wait(state).unwrap(),
+                None => state = self.wait(state),
             }
         }
     }
@@ -158,3 +194,7 @@ fn closed(ending: &Ending) -> ChannelError {
         },
     }
 }
+
+/// The shuttle model of the pipe's blocking side (#628).
+#[cfg(all(test, rutis_shuttle))]
+mod shuttle_tests;

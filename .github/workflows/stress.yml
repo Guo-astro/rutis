@@ -670,7 +670,7 @@ jobs:
           case "$RUTIS_SHUTTLE_ITERATIONS" in ""|*[!0-9]*) echo "::error::shuttle_iterations must be a number"; exit 1;; esac
           mkdir -p "$RUNNER_TEMP/shuttle"
           cargo test -p rutis --lib --target-dir "${CARGO_TARGET_DIR:-target}/shuttle" shuttle 2>&1 | tee "$RUNNER_TEMP/shuttle/shuttle.txt"
-          cargo test -p rutis-bridge --lib --target-dir "${CARGO_TARGET_DIR:-target}/shuttle" shuttle 2>&1 | tee "$RUNNER_TEMP/shuttle/shuttle-bridge.txt"
+          cargo test -p rutis-bridge --features websocket --lib --target-dir "${CARGO_TARGET_DIR:-target}/shuttle" shuttle 2>&1 | tee "$RUNNER_TEMP/shuttle/shuttle-bridge.txt"
           echo "shuttle: $RUTIS_SHUTTLE_ITERATIONS iterations of each scheduler per model (rutis and rutis-bridge), passed" >> "$GITHUB_STEP_SUMMARY"
       - name: Say how to replay
         if: failure()

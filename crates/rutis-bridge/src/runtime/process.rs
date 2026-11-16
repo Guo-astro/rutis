@@ -722,6 +722,10 @@ pub struct Process {
     owned: Arc<Mutex<Vec<rutis::Definition>>>,
     /// The runtime's name, as the mount gave it, for messages.
     name: Option<String>,
+    /// The handles the projection's model saw released (test only): a
+    /// handle released more than once shows up twice.
+    #[cfg(all(test, rutis_shuttle))]
+    released: Arc<std::sync::Mutex<Vec<String>>>,
 }
 
 /// What a plugin module declares, for rutis-loader (see
@@ -999,6 +1003,8 @@ impl Process {
             definitions: Mutex::default(),
             owned: Arc::default(),
             name: runtime.clone(),
+            #[cfg(all(test, rutis_shuttle))]
+            released: Arc::default(),
         });
         let _ = process.imports.process.set(Arc::downgrade(&process));
         // The plugin definitions the process owns end with its session.
@@ -1636,6 +1642,8 @@ impl Process {
     /// Tell the Cordis side that no Rust proxy uses `handle` any longer.
     /// Best effort: a closed session has already released everything.
     pub fn release(&self, handle: &str) {
+        #[cfg(all(test, rutis_shuttle))]
+        self.released.lock().unwrap().push(handle.to_owned());
         let peer = self.peer.clone();
         let handle = handle.to_owned();
         self.runtime.spawn(async move {
@@ -1743,6 +1751,54 @@ impl Process {
     /// by disposal or because the process went away.
     pub async fn closed(&self) {
         self.peer.closed().await
+    }
+}
+
+/// A process with no session behind it, for the projection's shuttle model
+/// (#628): its slots are `slots` (a name, its current handle), it releases
+/// handles into `released`, and calls into it go nowhere.
+#[cfg(all(test, rutis_shuttle))]
+impl Process {
+    pub(crate) fn inert(
+        executor: tokio::runtime::Handle,
+        slots: Vec<(String, String)>,
+        released: Arc<std::sync::Mutex<Vec<String>>>,
+    ) -> Arc<Self> {
+        let mut current = HashMap::new();
+        for (name, handle) in slots {
+            current.insert(name, (Some(handle), 1));
+        }
+        let imports = Imports {
+            slots: Arc::new(Mutex::new(current)),
+            events: None,
+            exported: Mutex::default(),
+            rows: Mutex::default(),
+            hosts: Mutex::default(),
+            bus: std::sync::OnceLock::new(),
+            ended: Mutex::default(),
+            failed: Mutex::default(),
+            names: Mutex::default(),
+            process: std::sync::OnceLock::new(),
+        };
+        let process = Arc::new(Self {
+            peer: Connection::inert(executor.clone()),
+            calls: Arc::default(),
+            imports: Arc::new(imports),
+            runtime: executor,
+            processes: None,
+            features: std::sync::OnceLock::new(),
+            about: std::sync::OnceLock::new(),
+            plugins: std::sync::OnceLock::new(),
+            host_changes: tokio::sync::Mutex::new(()),
+            routed: None,
+            scope: Vec::new(),
+            definitions: Mutex::default(),
+            owned: Arc::default(),
+            name: Some("fake".into()),
+            released,
+        });
+        let _ = process.imports.process.set(Arc::downgrade(&process));
+        process
     }
 }
 
