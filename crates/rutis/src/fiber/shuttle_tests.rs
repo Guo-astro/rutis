@@ -30,6 +30,13 @@
 //! timer, which the model moves (`crate::sync::Clock`); model 23 races a
 //! restart against a terminal dispose (#622's "待复现的疑点"), and model 24
 //! orders one binding's `Provided` before its `Removed` (#622's third doubt).
+//! Model 25 runs the kernel's own `load` and `flush_status` on three fibers
+//! restarting at once, to check the order `FiberStatusChanged` is delivered in
+//! (`core/D24a`); model 26 runs a mount plugin's cleanup effect and
+//! its service through the real reverse pass (`MNT-6-4`); model 27 unloads a row
+//! whose `Ctx` a method registered on, while another thread registers
+//! (`MNT-11-9b`). Models 26 and 27 install the spawn stand-in too, because the
+//! cleanup pass they run is the kernel's.
 //! Built with `--cfg rutis_shuttle`, `crate::sync` makes the driver's `alive`
 //! flag, a fiber's `lineage_closed` marker, an effect record's state, a spawned
 //! task's result and the admission, transition, effects and flight locks
@@ -95,8 +102,8 @@ use tokio::sync::{mpsc, watch, Notify};
 
 use super::{
     complete_intent, join_task, mark_subtree_lineage, post_join_to, publish_subtree_closing,
-    shutdown_deadline, spawn_fiber, CloseTree, FiberInner, FiberState, Intent, NextState, PluginId,
-    TransitionTask, NOT_LIVE,
+    shutdown_deadline, spawn_fiber, CloseTree, FiberInner, FiberState, FiberStatusChanged, Intent,
+    NextState, PluginId, TransitionTask, NOT_LIVE,
 };
 use crate::bus::run::{Inv, SyncNext};
 use crate::bus::table::{Body, Entry, Selected, Table};
@@ -6488,6 +6495,647 @@ fn shuttle_a_bindings_provided_is_announced_before_its_removed() {
                 crate::ServiceChange::Removed
             ],
             "the binding's Provided was announced after its Removed"
+        );
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Model 25: the order the status queue is delivered in (#622's `core/D24a`)
+
+/// One `FiberStatusChanged` by the fields `core/D24a` is about: whose event,
+/// its place in that plugin's own sequence, and the states it goes between.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct StatusStep {
+    plugin: PluginId,
+    seq: u64,
+    from: FiberState,
+    to: FiberState,
+}
+
+impl StatusStep {
+    fn of(event: &FiberStatusChanged) -> Self {
+        Self {
+            plugin: event.plugin_id,
+            seq: event.seq,
+            from: event.from,
+            to: event.to,
+        }
+    }
+}
+
+/// `FiberInner::unload` to `Pending`, where it is synchronous: `Unloading`
+/// under the admission and transition locks (the commit `set_state` makes),
+/// then the kernel's `flush_status`, the cancel, the kernel's `wait_events`, the
+/// cleanup pass, then `Pending` and its flush. The cleanup pass is the mirror
+/// models 15 and 16 use (`drain_model_effects`): `EffectRecord::drain` spawns its
+/// runner on the host runtime, which a shuttle model does not pump. What this
+/// model is about — every commit and every delivery — is the kernel's.
+fn status_unload(fiber: &Arc<FiberInner>) {
+    {
+        let _admission = fiber.ctx.shared().admission.lock().unwrap();
+        let mut tr = fiber.transition.lock().unwrap();
+        fiber.set_state(&mut tr, FiberState::Unloading);
+    }
+    fiber.flush_status();
+    fiber.cancel_current();
+    block_on(fiber.wait_events());
+    if let Some(error) = aggregate_arcs(drain_model_effects(fiber)) {
+        (fiber.ctx.error_sink())(error);
+    }
+    {
+        let mut tr = fiber.transition.lock().unwrap();
+        fiber.set_state(&mut tr, FiberState::Pending);
+    }
+    fiber.flush_status();
+}
+
+/// The driver's `Restart` arm where it is synchronous: unload to `Pending`
+/// unless the fiber is already there (as `drive()` skips the unload), then load
+/// again through the kernel's own `load`.
+fn status_restart(fiber: &Arc<FiberInner>) {
+    if fiber.state() != FiberState::Pending {
+        status_unload(fiber);
+    }
+    block_on(FiberInner::load(fiber, HashSet::new()));
+    assert_eq!(
+        fiber.state(),
+        FiberState::Active,
+        "the {} did not end its restart Active",
+        fiber.name
+    );
+}
+
+/// Model 25, `FiberStatusChanged` delivered in commit order (#622's
+/// `core/D24a`; the one piece models 5, 12, 15 and 16 wrote out as "not
+/// modelled": `flush_status`'s emits). Each plugin's `seq` is continuous from 1,
+/// each event's `from` is the previous event's `to`, the chain ends in the state
+/// the fiber is in, and every committed event was delivered — however many
+/// fibers commit and flush at once.
+///
+/// The model runs the kernel's own `load` and `flush_status` on three real
+/// fibers that restart on their own threads: `load` commits under the transition
+/// lock (`set_state`: the state, the sequence number and the queue entry in one
+/// critical section) and flushes outside it (take the whole queue, then emit in
+/// order). `unload` is mirrored where the driver is (`status_unload`): its
+/// commits and its two `flush_status` calls are the kernel's, its cleanup pass is
+/// the mirror models 15 and 16 use, because `EffectRecord::drain` spawns its
+/// runner on a runtime a shuttle model does not pump.
+///
+/// `deliver_status` hands each event to the bus; `FiberInner::watch_status`
+/// gives the model a tap there, so what it records is what the bus is given, in
+/// the order it is given it, and a switch point after each delivery lets the
+/// scheduler run another fiber's driver inside this one's flush. What the bus
+/// does with each event afterwards is the emit chain's order — model 10,
+/// `core/D31a`: per name, one emit's calls start before the next emit's.
+///
+/// Mutations this model catches: bumping `seq` after the push instead of before
+/// it (`set_state` — "the first delivered seq 0 as its 1th event: a status event
+/// was lost or delivered twice"), and dropping `load`'s final `flush_status`
+/// ("the first is Active but its last delivered event ends at Loading"). Notice
+/// what it cannot catch: `flush_status`'s loop reordered. The kernel flushes
+/// after every commit, so in this model — and in the kernel — a flush takes at
+/// most one event, and the order inside one flush has nothing to reorder.
+#[test]
+fn shuttle_status_events_arrive_in_commit_order() {
+    const RESTARTS: usize = 3;
+    explore(|| {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("a current-thread runtime");
+        let ctx = Ctx::root_with(runtime.handle().clone());
+        // Children start `Pending`, so their first restart commits `Loading` and
+        // `Active`, and every later one four states.
+        let fibers: Vec<Arc<FiberInner>> = ["first", "second", "third"]
+            .into_iter()
+            .map(|name| {
+                spawn_fiber(
+                    ctx.shared(),
+                    Some(&ctx),
+                    Some(Arc::new(Named(name)) as Arc<dyn crate::DynPlugin>),
+                    false,
+                )
+            })
+            .collect();
+        let delivered: Arc<std::sync::Mutex<Vec<StatusStep>>> = Arc::default();
+
+        // The tap: what the kernel hands the bus, at the point it hands it over,
+        // then a switch point — the scheduler may run another fiber's driver
+        // inside this one's flush.
+        for fiber in &fibers {
+            let tap = delivered.clone();
+            fiber.watch_status(move |event: &FiberStatusChanged| {
+                tap.lock().unwrap().push(StatusStep::of(event));
+                switch_point();
+            });
+        }
+        let drivers: Vec<_> = fibers
+            .iter()
+            .map(|fiber| {
+                let fiber = fiber.clone();
+                thread::spawn(move || {
+                    for _ in 0..RESTARTS {
+                        switch_point();
+                        status_restart(&fiber);
+                    }
+                })
+            })
+            .collect();
+        for driver in drivers {
+            driver.join().unwrap();
+        }
+
+        let delivered = delivered.lock().unwrap().clone();
+        for fiber in &fibers {
+            let steps: Vec<StatusStep> = delivered
+                .iter()
+                .filter(|step| step.plugin == fiber.id)
+                .copied()
+                .collect();
+            assert!(
+                steps.len() >= 2 * RESTARTS,
+                "the {} delivered {} status events, too few for {RESTARTS} restarts",
+                fiber.name,
+                steps.len()
+            );
+            let mut from = FiberState::Pending;
+            for (index, step) in steps.iter().enumerate() {
+                assert_eq!(
+                    step.seq,
+                    index as u64 + 1,
+                    "the {} delivered seq {} as its {}th event: a status event was lost or \
+                     delivered twice",
+                    fiber.name,
+                    step.seq,
+                    index + 1
+                );
+                assert_eq!(
+                    step.from, from,
+                    "the {} delivered {:?} → {:?} after ending at {from:?}: the events are not \
+                     delivered in commit order",
+                    fiber.name, step.from, step.to
+                );
+                from = step.to;
+            }
+            let snapshot = fiber.state_snapshot();
+            assert_eq!(
+                from, snapshot.state,
+                "the {} is {:?} but its last delivered event ends at {from:?}",
+                fiber.name, snapshot.state
+            );
+            let tr = fiber.transition.lock().unwrap();
+            assert_eq!(
+                tr.seq,
+                steps.len() as u64,
+                "the {} committed {} status events and delivered {}",
+                fiber.name,
+                tr.seq,
+                steps.len()
+            );
+            assert!(
+                tr.status_queue.is_empty(),
+                "the {} left {} status event(s) queued",
+                fiber.name,
+                tr.status_queue.len()
+            );
+        }
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Model 26: a mount's cleanup against the services it provides (#622's
+// `MNT-6-4`, design-protocol-plugin-mount §6)
+
+/// What one mount's process did, in the order it did it: the service withdrawn,
+/// the process closed. Std mutex: nothing is asserted while it is held, and a
+/// push is never a switch point.
+type MountLog = Arc<std::sync::Mutex<Vec<&'static str>>>;
+
+/// The process behind a mount: open until the mount's cleanup closes it, and the
+/// thing a service call reaches. `gate` makes a call atomic with the close, so
+/// the model can ask whether a call ever found a closed process behind a service
+/// it could still get.
+struct MountProcess {
+    log: MountLog,
+    open: StdBool,
+    gate: SyncMutex<()>,
+}
+
+/// The service a mount provides (`projection.attach`'s binding). Dropping it is
+/// the withdrawal: the kernel drops the binding's value when it finalizes the
+/// binding, inside the cleanup record the provide registered.
+struct MountService(Arc<MountProcess>);
+
+impl MountService {
+    /// Whether a call would reach the process. The caller holds the gate, so
+    /// this cannot interleave with the close.
+    fn answers(&self) -> bool {
+        self.0.open.load(Ordering::SeqCst)
+    }
+}
+
+impl Drop for MountService {
+    fn drop(&mut self) {
+        self.0.log.lock().unwrap().push("withdraw");
+    }
+}
+
+/// Two services, so one model can provide both orders: the generated order, and
+/// the order the design forbids.
+trait Mounted: Send + Sync {
+    /// What a call of the service asks the process.
+    fn call(&self) -> bool;
+}
+
+/// The second mount's service: only its binding and its withdrawal matter.
+trait Mismounted: Send + Sync {}
+
+impl Mounted for MountService {
+    fn call(&self) -> bool {
+        self.answers()
+    }
+}
+
+impl Mismounted for MountService {}
+
+/// A mount's cleanup effect: the last thing an unload runs when the effect was
+/// registered first, which is what the design asks for.
+fn mount_cleanup(process: &Arc<MountProcess>) -> Effect {
+    let process = process.clone();
+    Effect::AsyncDisposer(Box::new(move || {
+        let process = process.clone();
+        Box::pin(async move {
+            // Under the gate a call takes: no call can be between getting the
+            // service and calling it while the process closes.
+            let _gate = process.gate.lock().unwrap();
+            process.log.lock().unwrap().push("close");
+            process.open.store(false, Ordering::SeqCst);
+            Ok(())
+        })
+    }))
+}
+
+/// Model 26, the order between a mount's cleanup effect and the services it
+/// provides (#622's `MNT-6-4`; the generated mount's `apply`, §6: "挂载插件先登记
+/// 清理 effect、再注册服务。rutis 逆序清理，所以先撤销服务、执行消费者的 disposer
+/// （此时仍可调用远端服务），最后才关闭 Node 进程").
+///
+/// The model runs the kernel's own pieces of that order on a real fiber: the
+/// mount's cleanup is a real `Ctx::effect` (through `effect_raw`, which registers
+/// the same record), its service a real `Ctx::provide_as` — the registration
+/// `projection.attach` makes through `provide_at`, as
+/// `session/plugin/services.rs` does — and the unload is `FiberInner::unload`, so
+/// the reverse pass is `drain_effects`'s; `SpawnScope` drives the runners it
+/// spawns. One fiber registers the two in the generated order, one in the order
+/// the design forbids, and a third thread keeps calling the service while the
+/// first mount unloads.
+///
+/// The assertions are the order and its consequence: the withdrawal (the binding
+/// value dropped) before the close in the generated order, the close before the
+/// withdrawal in the other, and no call that can still get the service finding
+/// its process closed.
+///
+/// Mutations this model catches: draining the records in registration order
+/// instead of in reverse (`drain_effects`'s `rev()` dropped made the model report
+/// "a call found the service with the process already closed": the process closes
+/// before its service is withdrawn, so a call that still gets the service finds
+/// it dead). The second fiber registers the same two the other way round, and the
+/// model reads that order as `close` then `withdraw` — so the assertions are
+/// about the order, not about one fiber's shape.
+///
+/// Not modelled: the consumer's own disposer, which the withdrawal stops
+/// (`evict_and_finalize` posts to the consumer's driver and joins it — a driver
+/// a shuttle model does not run). It is model 9's subject (a withdrawal returns
+/// with the consumer stopped) and
+/// `instance_subtrees.rs::closing_subtree_disposes_consumer_before_provider`
+/// pins the order over a real tree.
+#[test]
+fn shuttle_mount_cleanup_runs_after_its_services() {
+    explore(|| {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("a current-thread runtime");
+        let scope = SpawnScope::new();
+        let ctx = Ctx::root_with(runtime.handle().clone());
+        // Both mount plugins exist before the scope goes in: a fiber's driver
+        // waits on its mailbox, and a driver in the scope would never finish.
+        let mounted = spawn_fiber(
+            ctx.shared(),
+            Some(&ctx),
+            Some(Arc::new(Named("mount")) as Arc<dyn crate::DynPlugin>),
+            false,
+        );
+        let wrong = spawn_fiber(
+            ctx.shared(),
+            Some(&ctx),
+            Some(Arc::new(Named("wrong")) as Arc<dyn crate::DynPlugin>),
+            false,
+        );
+        // The cleanup pass spawns its runners (`EffectRecord::drain`,
+        // `run_cleanups`), so the model installs the spawn stand-in and drives
+        // them.
+        let _entered = scope.enter();
+        block_on(FiberInner::load(&mounted, HashSet::new()));
+        block_on(FiberInner::load(&wrong, HashSet::new()));
+
+        // The mounted plugin as the generator registers it: the cleanup effect
+        // first, the service after it.
+        let log: MountLog = Arc::default();
+        let process = Arc::new(MountProcess {
+            log: log.clone(),
+            open: StdBool::new(true),
+            gate: SyncMutex::new(()),
+        });
+        let close = mount_cleanup(&process);
+        mounted
+            .ctx
+            .effect_raw(move || close)
+            .expect("the mount's cleanup effect was refused");
+        mounted
+            .ctx
+            .provide_as::<dyn Mounted>(Arc::new(MountService(process.clone())) as Arc<dyn Mounted>)
+            .expect("the mount's service was refused");
+
+        // A call of the mounted process, while the mount unloads: what a
+        // consumer's disposer does before the process closes.
+        let done = Arc::new(SyncBool::new(false));
+        let caller = {
+            let (caller_ctx, done, gate) = (mounted.ctx.clone(), done.clone(), process.clone());
+            thread::spawn(move || {
+                let mut calls = 0usize;
+                while !done.load(Ordering::SeqCst) {
+                    // Under the gate the close takes. The binding serves until
+                    // the withdrawal finalizes it, and the process closes only
+                    // after that: a call that still gets the service must find
+                    // the process open.
+                    let gate_held = gate.gate.lock().unwrap();
+                    if let Some(service) = caller_ctx.get::<dyn Mounted>() {
+                        assert!(
+                            service.call(),
+                            "a call found the service with the process already closed"
+                        );
+                        calls += 1;
+                    }
+                    drop(gate_held);
+                    switch_point();
+                }
+                calls
+            })
+        };
+
+        // The mount's unload: the kernel's own, so the reverse pass over the
+        // two registrations is `drain_effects`'s.
+        block_on(FiberInner::unload(&mounted, NextState::Disposed));
+        done.store(true, Ordering::SeqCst);
+        scope.run();
+        caller.join().unwrap();
+        assert_eq!(
+            *log.lock().unwrap(),
+            vec!["withdraw", "close"],
+            "the mount's cleanup did not run after its service was withdrawn: {:?}",
+            *log.lock().unwrap()
+        );
+        assert!(
+            mounted.effects.lock().unwrap().is_empty(),
+            "the mount kept an effect record after its unload"
+        );
+        assert!(
+            mounted.ctx.get::<dyn Mounted>().is_none(),
+            "the withdrawn mount still serves its service"
+        );
+
+        // The same two registrations the other way round, which the design
+        // forbids: the model tells the two orders apart, so it is not vacuous.
+        let wrong_log: MountLog = Arc::default();
+        let wrong_process = Arc::new(MountProcess {
+            log: wrong_log.clone(),
+            open: StdBool::new(true),
+            gate: SyncMutex::new(()),
+        });
+        wrong
+            .ctx
+            .provide_as::<dyn Mismounted>(
+                Arc::new(MountService(wrong_process.clone())) as Arc<dyn Mismounted>
+            )
+            .expect("the wrong order's service was refused");
+        let wrong_close = mount_cleanup(&wrong_process);
+        wrong
+            .ctx
+            .effect_raw(move || wrong_close)
+            .expect("the wrong order's cleanup effect was refused");
+        block_on(FiberInner::unload(&wrong, NextState::Disposed));
+        scope.run();
+        assert_eq!(
+            *wrong_log.lock().unwrap(),
+            vec!["close", "withdraw"],
+            "a service registered before its cleanup was still withdrawn after it: the model \
+             cannot tell the design's order from the other"
+        );
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Model 27: what a method registers on the calling row's context (#622's
+// `MNT-11-9b`)
+
+/// Emit the model's event and run what the emit spawned: the listeners of a
+/// fiber that is live hear it; a fiber that is not has none.
+fn emit_model_event(ctx: &Ctx, scope: &SpawnScope) {
+    ctx.emit(ModelEvent).expect("the emit was refused");
+    scope.run();
+}
+
+/// Register a listener on `ctx` that counts into `calls`: what a method taking
+/// the calling row's `&Ctx` does with it (§11's "effect、监听").
+fn listen_row(ctx: &Ctx, calls: &Arc<AtomicUsize>) -> Result<(), Error> {
+    let calls = calls.clone();
+    ctx.on_sync::<ModelEvent>(move |_, _| {
+        calls.fetch_add(1, Ordering::SeqCst);
+        Ok(None)
+    })
+    .map(drop)
+}
+
+/// Model 27, a row's registrations go with the row (#622's `MNT-11-9b`; mount
+/// design §11: "方法在调用方 `Ctx` 上登记的东西（effect、监听）随该行卸载或重启而
+/// 移除，运行时照常运行").
+///
+/// A method of a Rust service that takes the calling row's `&Ctx` registers on
+/// that row's fiber, not on its own (`CallerRow::ctx`, `session/services.rs`).
+/// The model runs the kernel's side of that promise on two real rows: a listener
+/// and an effect registered on one row's `Ctx` through `Ctx::on_sync` and
+/// `Ctx::effect`, then the row's `unload` — the real one, so the listener is
+/// withdrawn and the effect runs in `drain_effects` — and a second thread
+/// registers on the same `Ctx` while that unload runs. Every registration the row
+/// took is a cleanup of that row: it is run once by an unload of the row and
+/// never left behind, and a listener of the row is not called after it. The other
+/// row — the runtime — still hears the event, across the row's unload and
+/// restart. A row in a terminal state takes no registration at all; a restarted
+/// one takes them again.
+///
+/// Mutations this model catches: dropping the terminal state check in
+/// `register_effect_named` (both of them: `Ctx::effect` on a `Disposed` row then
+/// returns `Ok` and leaves a cleanup nothing will run — the model reports "a
+/// pulled-down row accepted a registration: effect true, listener false"). The
+/// bounds around the race pin the rest: a cleanup never runs twice, a record the
+/// row kept is at most the registrations it took, and nothing of the method's is
+/// left when the row has ended.
+///
+/// Not modelled: the dispatcher that reads `caller_row()` and the method that
+/// registers — `crates/rutis-bridge/tests/caller_rows.rs` drives those over a real
+/// runtime. What this model adds is the lifecycle half: what a registration on a
+/// row's `Ctx` does when the row unloads, restarts or ends.
+#[test]
+fn shuttle_row_registrations_go_with_the_row() {
+    explore(|| {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("a current-thread runtime");
+        let scope = SpawnScope::new();
+        let ctx = Ctx::root_with(runtime.handle().clone());
+        // The runtime row keeps running; the row whose call the model makes
+        // goes. Both before the scope goes in: a fiber's driver waits on its
+        // mailbox, and a driver in the scope would never finish.
+        let runtime_row = spawn_fiber(
+            ctx.shared(),
+            Some(&ctx),
+            Some(Arc::new(Named("runtime")) as Arc<dyn crate::DynPlugin>),
+            false,
+        );
+        let row = spawn_fiber(
+            ctx.shared(),
+            Some(&ctx),
+            Some(Arc::new(Named("row")) as Arc<dyn crate::DynPlugin>),
+            false,
+        );
+        // The cleanup pass and the emit chain spawn their runners
+        // (`EffectRecord::drain`, an emit's calls), so the model installs the
+        // spawn stand-in and drives them.
+        let _entered = scope.enter();
+        block_on(FiberInner::load(&runtime_row, HashSet::new()));
+        block_on(FiberInner::load(&row, HashSet::new()));
+
+        // Std atomics: read after the joins and the emits, where a shuttle load
+        // would itself be a scheduling point.
+        let runtime_calls = Arc::new(AtomicUsize::new(0));
+        let row_calls = Arc::new(AtomicUsize::new(0));
+        let cleanups: Arc<std::sync::Mutex<Vec<&'static str>>> = Arc::default();
+        listen_row(&runtime_row.ctx, &runtime_calls)
+            .expect("the runtime row's listener was refused");
+        listen_row(&row.ctx, &row_calls).expect("the row's listener was refused");
+        emit_model_event(&ctx, &scope);
+        assert_eq!(
+            (
+                runtime_calls.load(Ordering::SeqCst),
+                row_calls.load(Ordering::SeqCst)
+            ),
+            (1, 1),
+            "an emit before the row unloaded did not reach both rows"
+        );
+
+        // The method's registrations on the row's context, racing the row's
+        // unload: a listener and an effect, as a method of §11 would register
+        // them.
+        let registrar = {
+            let (row_ctx, cleanups, calls) = (row.ctx.clone(), cleanups.clone(), row_calls.clone());
+            thread::spawn(move || {
+                switch_point();
+                let listener = listen_row(&row_ctx, &calls);
+                switch_point();
+                let effect = row_ctx.effect(move || {
+                    let cleanups = cleanups.clone();
+                    async move {
+                        cleanups.lock().unwrap().push("method cleanup");
+                        Ok(())
+                    }
+                });
+                (listener.is_ok(), effect.is_ok())
+            })
+        };
+        switch_point();
+        // The row unloads: the kernel's `unload`, whose cleanup pass is
+        // `drain_effects`'s reverse one.
+        block_on(FiberInner::unload(&row, NextState::Pending));
+        scope.run();
+        let (listener, effect) = registrar.join().unwrap();
+        let accepted = usize::from(listener) + usize::from(effect);
+        let ran = cleanups.lock().unwrap().len();
+        let left = row.effects.lock().unwrap().len();
+        // A registration the unload took is gone with it; one that came after it
+        // (the row was already `Pending`) is still the row's, and a later unload
+        // runs it. `ctx.effect` runs the cleanup it is given even when it then
+        // refuses the registration (the generation went between its two checks),
+        // so a refusal may still have run it — never twice, though, and never a
+        // record that is not the row's.
+        assert!(ran <= 1, "the method's cleanup ran {ran} times");
+        assert!(
+            left <= accepted,
+            "the row kept {left} record(s) for {accepted} registration(s)"
+        );
+        if effect {
+            assert!(
+                ran == 1 || left >= 1,
+                "the row took the method's effect and neither ran it nor kept it"
+            );
+        }
+
+        // The row's listeners went with it; the runtime row's did not.
+        emit_model_event(&ctx, &scope);
+        assert_eq!(
+            runtime_calls.load(Ordering::SeqCst),
+            2,
+            "the runtime row stopped hearing events"
+        );
+        assert_eq!(
+            row_calls.load(Ordering::SeqCst),
+            1,
+            "a listener of the unloaded row was called"
+        );
+
+        // The row restarts: the new generation's registrations are the new
+        // row's, and the runtime row was never touched.
+        block_on(FiberInner::load(&row, HashSet::new()));
+        listen_row(&row.ctx, &row_calls).expect("the restarted row's listener was refused");
+        emit_model_event(&ctx, &scope);
+        assert_eq!(
+            row_calls.load(Ordering::SeqCst),
+            2,
+            "the restarted row does not hear events"
+        );
+        assert_eq!(
+            runtime_calls.load(Ordering::SeqCst),
+            3,
+            "the restarted row's emit did not reach the runtime row"
+        );
+        assert_eq!(
+            runtime_row.state(),
+            FiberState::Active,
+            "the runtime row stopped running"
+        );
+
+        // A row that has ended takes nothing more: an effect or a listener
+        // registered on it would be a cleanup nothing would ever run.
+        block_on(FiberInner::unload(&row, NextState::Disposed));
+        scope.run();
+        let late_effect = row.ctx.effect(|| async { Ok(()) });
+        let late_listener = listen_row(&row.ctx, &row_calls);
+        assert!(
+            late_effect.is_err() && late_listener.is_err(),
+            "a pulled-down row accepted a registration: effect {:?}, listener {:?}",
+            late_effect.is_ok(),
+            late_listener.is_ok()
+        );
+        assert!(
+            row.effects.lock().unwrap().is_empty(),
+            "the ended row kept {} effect record(s), which no unload will run",
+            row.effects.lock().unwrap().len()
+        );
+        assert!(
+            !effect || cleanups.lock().unwrap().len() == 1,
+            "the row took the method's effect and never ran its cleanup"
+        );
+        assert!(
+            cleanups.lock().unwrap().len() <= 1,
+            "the method's cleanup ran more than once"
         );
     });
 }
