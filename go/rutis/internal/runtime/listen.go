@@ -100,15 +100,39 @@ var announce = func(address string) {
 	fmt.Fprintf(os.Stderr, "rutis: listening on %s\n", address)
 }
 
-// listen serves one controller at a time on a WebSocket address: a newer
-// connection takes over, and is greeted only once the old lease is gone.
-// Its heartbeat starts at that hello, not at the accept: a cleanup longer
-// than the heartbeat timeout does not close it (#1182).
+// listen serves one controller at a time on a WebSocket address.
 func listen(spec string, endpoint *peer.Endpoint, defs []*Definition) error {
-	accepted, _, err := listenWebSocket(spec, fmt.Sprintf("rutis.%d", peer.EndpointProtocol), os.Getenv("RUTIS_TOKEN"), os.Getenv("RUTIS_CERT"), os.Getenv("RUTIS_KEY"))
+	listener, err := listenWebSocket(spec, fmt.Sprintf("rutis.%d", peer.EndpointProtocol), os.Getenv("RUTIS_TOKEN"), os.Getenv("RUTIS_CERT"), os.Getenv("RUTIS_KEY"))
 	if err != nil {
 		return err
 	}
+	return listener.serve(endpoint, defs)
+}
+
+// wsListener is a listening endpoint: the connections it accepts, the
+// address it is bound to, and Stop. A runtime listens until the process
+// ends; a test stops it.
+type wsListener struct {
+	accepted chan *wsConn
+	address  string
+	server   *http.Server
+	// stop is closed by Stop: the handler stops handing out the connection
+	// it upgraded, and serve returns.
+	stop chan struct{}
+	// served is closed once Serve returned, after Stop closed the server.
+	served chan struct{}
+	once   sync.Once
+	// mu guards conns: the accepted connections not closed yet.
+	mu    sync.Mutex
+	conns map[*wsConn]struct{}
+}
+
+// serve serves one controller at a time: a newer connection takes over, and
+// is greeted only once the old lease is gone. Its heartbeat starts at that
+// hello, not at the accept: a cleanup longer than the heartbeat timeout
+// does not close it (#1182).
+func (l *wsListener) serve(endpoint *peer.Endpoint, defs []*Definition) error {
+	defer l.Stop()
 	var current *session
 	var currentConn *wsConn
 	for {
@@ -117,11 +141,12 @@ func listen(spec string, endpoint *peer.Endpoint, defs []*Definition) error {
 			closed = current.peer.Closed()
 		}
 		select {
-		case conn := <-accepted:
+		case conn := <-l.accepted:
 			if current != nil {
 				currentConn.closeWith(replaced, "replaced by a new connection")
 				current.end(errors.New("replaced by a new connection"))
 			}
+			var err error
 			current, err = startSession(conn, endpoint, defs)
 			currentConn = conn
 			if err != nil {
@@ -134,16 +159,51 @@ func listen(spec string, endpoint *peer.Endpoint, defs []*Definition) error {
 				return refused
 			}
 			current, currentConn = nil, nil
+		case <-l.stop:
+			if current != nil {
+				currentConn.closeWith(goingAway, "the listener stopped")
+				current.end(nil)
+			}
+			return nil
 		}
 	}
 }
 
+// Stop stops the listener: the server closes (idle and in-flight
+// connections included), the connections it accepted close, their
+// heartbeats end, and serve returns. It is a test's: a runtime listens
+// until the process ends.
+func (l *wsListener) Stop() {
+	l.once.Do(func() {
+		l.mu.Lock()
+		conns := make([]*wsConn, 0, len(l.conns))
+		for conn := range l.conns {
+			conns = append(conns, conn)
+		}
+		close(l.stop)
+		l.mu.Unlock()
+		_ = l.server.Close()
+		for _, conn := range conns {
+			conn.closeWith(goingAway, "the listener stopped")
+		}
+		<-l.served
+	})
+}
+
+// forget drops `conn` from the listener's set, once it closed.
+func (l *wsListener) forget(conn *wsConn) {
+	l.mu.Lock()
+	delete(l.conns, conn)
+	l.mu.Unlock()
+}
+
 // listenWebSocket listens on `spec` for connections presenting `token` and
-// speaking `protocol`; it returns them, and the address it is bound to.
-func listenWebSocket(spec, protocol, token, cert, key string) (<-chan *wsConn, string, error) {
+// speaking `protocol`; it returns the listener, with the address it is bound
+// to.
+func listenWebSocket(spec, protocol, token, cert, key string) (*wsListener, error) {
 	address, err := url.Parse(spec)
 	if err != nil || (address.Scheme != "ws" && address.Scheme != "wss") {
-		return nil, "", fmt.Errorf("%s is not a ws:// or wss:// address", spec)
+		return nil, fmt.Errorf("%s is not a ws:// or wss:// address", spec)
 	}
 	secure := address.Scheme == "wss"
 	host := address.Hostname()
@@ -151,7 +211,7 @@ func listenWebSocket(spec, protocol, token, cert, key string) (<-chan *wsConn, s
 		host = "127.0.0.1"
 	}
 	if !secure && host != "127.0.0.1" && host != "::1" && host != "localhost" {
-		return nil, "", fmt.Errorf("%s: only a loopback listener may go without TLS", spec)
+		return nil, fmt.Errorf("%s: only a loopback listener may go without TLS", spec)
 	}
 	port := address.Port()
 	if port == "" {
@@ -163,17 +223,17 @@ func listenWebSocket(spec, protocol, token, cert, key string) (<-chan *wsConn, s
 	}
 	listener, err := net.Listen("tcp", net.JoinHostPort(host, port))
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
 	if secure {
 		if cert == "" || key == "" {
 			listener.Close()
-			return nil, "", fmt.Errorf("%s: wss needs a certificate and key (RUTIS_CERT, RUTIS_KEY)", spec)
+			return nil, fmt.Errorf("%s: wss needs a certificate and key (RUTIS_CERT, RUTIS_KEY)", spec)
 		}
 		pair, err := tls.LoadX509KeyPair(cert, key)
 		if err != nil {
 			listener.Close()
-			return nil, "", err
+			return nil, err
 		}
 		listener = tls.NewListener(listener, &tls.Config{Certificates: []tls.Certificate{pair}, MinVersion: tls.VersionTLS12})
 	}
@@ -184,7 +244,13 @@ func listenWebSocket(spec, protocol, token, cert, key string) (<-chan *wsConn, s
 	}
 	boundAddress := fmt.Sprintf("%s://%s:%d%s", address.Scheme, shown, bound.Port, path)
 	announce(boundAddress)
-	accepted := make(chan *wsConn)
+	l := &wsListener{
+		accepted: make(chan *wsConn),
+		address:  boundAddress,
+		stop:     make(chan struct{}),
+		served:   make(chan struct{}),
+		conns:    map[*wsConn]struct{}{},
+	}
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != path {
 			http.Error(w, "no rutis endpoint here", http.StatusNotFound)
@@ -233,11 +299,29 @@ func listenWebSocket(spec, protocol, token, cert, key string) (<-chan *wsConn, s
 			return
 		}
 		ws := newWSConn(conn, buffered.Reader)
-		accepted <- ws
+		ws.onClose = func() { l.forget(ws) }
+		l.mu.Lock()
+		select {
+		case <-l.stop:
+			l.mu.Unlock()
+			ws.shut()
+			return
+		default:
+		}
+		l.conns[ws] = struct{}{}
+		l.mu.Unlock()
+		select {
+		case l.accepted <- ws:
+		case <-l.stop:
+			ws.shut()
+		}
 	})
-	server := &http.Server{Handler: handler, ReadHeaderTimeout: 10 * time.Second}
-	go func() { _ = server.Serve(listener) }()
-	return accepted, boundAddress, nil
+	l.server = &http.Server{Handler: handler, ReadHeaderTimeout: 10 * time.Second}
+	go func() {
+		_ = l.server.Serve(listener)
+		close(l.served)
+	}()
+	return l, nil
 }
 
 // wsConn is a WebSocket connection carrying text messages: accepted by a
@@ -267,6 +351,9 @@ type wsConn struct {
 	// connection is open and the write: it makes the interleaving where a
 	// close lands in between happen every time. Nil in production.
 	sendGate func()
+	// onClose, when set, runs once as the connection closes: its listener
+	// forgets it.
+	onClose func()
 }
 
 func newWSConn(conn net.Conn, reader *bufio.Reader) *wsConn {
@@ -479,6 +566,9 @@ func (ws *wsConn) closeWith(code int, reason string) {
 		payload := binary.BigEndian.AppendUint16(nil, uint16(code))
 		_ = ws.writeFrame(0x8, append(payload, reason...))
 		close(ws.done)
+		if ws.onClose != nil {
+			ws.onClose()
+		}
 		go func() {
 			time.Sleep(200 * time.Millisecond)
 			ws.conn.Close()
@@ -491,6 +581,9 @@ func (ws *wsConn) shut() {
 		ws.closing.Store(true)
 		close(ws.done)
 		ws.conn.Close()
+		if ws.onClose != nil {
+			ws.onClose()
+		}
 	})
 }
 

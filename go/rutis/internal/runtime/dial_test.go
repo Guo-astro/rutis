@@ -150,7 +150,8 @@ func dialFailure(t *testing.T, address, token string) *dialError {
 }
 
 func TestADialIsClassifiedByItsStatus(t *testing.T) {
-	_, address := startListener(t)
+	listener := startListener(t)
+	address := listener.address
 	for _, c := range []struct {
 		address, token string
 		want           failure
@@ -166,34 +167,31 @@ func TestADialIsClassifiedByItsStatus(t *testing.T) {
 		}
 	}
 	// Another session protocol: the access point says which end to upgrade.
-	accepted, other, err := listenWebSocket("ws://127.0.0.1:0/rutis", "rutis.9", "secret", "", "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	_ = accepted
-	failed := dialFailure(t, other, "secret")
+	other := startListenerSpeaking(t, "rutis.9")
+	failed := dialFailure(t, other.address, "secret")
 	if failed.failure != incompatible || !strings.Contains(failed.reason, "400: this endpoint speaks rutis.9, the dialer offered rutis.4: upgrade the dialer") {
 		t.Fatalf("%v %s", failed.failure, failed.reason)
 	}
 	// Nothing listening: retryable.
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	socket, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	closed := fmt.Sprintf("ws://%s/rutis", listener.Addr())
-	listener.Close()
+	closed := fmt.Sprintf("ws://%s/rutis", socket.Addr())
+	socket.Close()
 	if failed := dialFailure(t, closed, "secret"); failed.failure != retryable {
 		t.Fatalf("%v %s", failed.failure, failed.reason)
 	}
 }
 
 func TestADialedConnectionCarriesMessagesBothWays(t *testing.T) {
-	accepted, address := startListener(t)
-	conn, err := dialWebSocket(address, testProtocol, "secret", nil, 5*time.Second)
+	listener := startListener(t)
+	conn, err := dialWebSocket(listener.address, testProtocol, "secret", nil, 5*time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := accept(t, accepted)
+	t.Cleanup(func() { conn.Close("") })
+	server := accept(t, listener.accepted)
 	for _, size := range []int{2, 200, 70_000} {
 		message := []byte(strings.Repeat("x", size))
 		if err := conn.Send(message); err != nil {
@@ -220,12 +218,13 @@ func TestADialedConnectionCarriesMessagesBothWays(t *testing.T) {
 }
 
 func TestADialerClosesWithGoingAway(t *testing.T) {
-	accepted, address := startListener(t)
-	conn, err := dialWebSocket(address, testProtocol, "secret", nil, 5*time.Second)
+	listener := startListener(t)
+	conn, err := dialWebSocket(listener.address, testProtocol, "secret", nil, 5*time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := accept(t, accepted)
+	t.Cleanup(func() { conn.Close("") })
+	server := accept(t, listener.accepted)
 	conn.Close("the runtime stopped")
 	if _, err := recv(t, server); !errors.Is(err, io.EOF) {
 		t.Fatal(err)
@@ -276,16 +275,17 @@ func TestAnUntrustedCertificateIsRejectedAndRUTISCATrustsIt(t *testing.T) {
 	cert, key := selfSigned(t)
 	previous := announce
 	announce = func(string) {}
-	accepted, address, err := listenWebSocket("wss://127.0.0.1:0/rutis", testProtocol, "secret", cert, key)
+	listener, err := listenWebSocket("wss://127.0.0.1:0/rutis", testProtocol, "secret", cert, key)
 	announce = previous
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(listener.Stop)
 	system, err := clientTLS("")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := dialWebSocket(address, testProtocol, "secret", system, 5*time.Second); err == nil {
+	if _, err := dialWebSocket(listener.address, testProtocol, "secret", system, 5*time.Second); err == nil {
 		t.Fatal("an untrusted certificate is accepted")
 	} else if failed := (*dialError)(nil); !errors.As(err, &failed) || failed.failure != authRejected {
 		t.Fatalf("%v", err)
@@ -294,11 +294,12 @@ func TestAnUntrustedCertificateIsRejectedAndRUTISCATrustsIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	conn, err := dialWebSocket(address, testProtocol, "secret", trusting, 5*time.Second)
+	conn, err := dialWebSocket(listener.address, testProtocol, "secret", trusting, 5*time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := accept(t, accepted)
+	t.Cleanup(func() { conn.Close("") })
+	server := accept(t, listener.accepted)
 	if err := conn.Send([]byte("over TLS")); err != nil {
 		t.Fatal(err)
 	}

@@ -21,25 +21,46 @@ import (
 
 const testProtocol = "rutis.4"
 
-func startListener(t *testing.T) (<-chan *wsConn, string) {
+func startListener(t *testing.T) *wsListener {
+	return startListenerSpeaking(t, testProtocol)
+}
+
+func startListenerSpeaking(t *testing.T, protocol string) *wsListener {
 	t.Helper()
 	var announced string
 	previous := announce
 	announce = func(address string) { announced = address }
 	defer func() { announce = previous }()
-	accepted, address, err := listenWebSocket("ws://127.0.0.1:0/rutis", testProtocol, "secret", "", "")
+	listener, err := listenWebSocket("ws://127.0.0.1:0/rutis", protocol, "secret", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if announced != address || !strings.HasPrefix(address, "ws://127.0.0.1:") {
-		t.Fatalf("announced %q, bound %q", announced, address)
+	t.Cleanup(listener.Stop)
+	if announced != listener.address || !strings.HasPrefix(listener.address, "ws://127.0.0.1:") {
+		t.Fatalf("announced %q, bound %q", announced, listener.address)
 	}
-	return accepted, address
+	return listener
+}
+
+// serveListener serves sessions from the listener until the test ends.
+func serveListener(t *testing.T, listener *wsListener, endpoint *peer.Endpoint, defs []*Definition) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = listener.serve(endpoint, defs)
+	}()
+	t.Cleanup(func() {
+		listener.Stop()
+		testwait.Within(t, "the serving listener to stop", done)
+	})
 }
 
 func TestARefusedConnectionSaysWhy(t *testing.T) {
-	_, address := startListener(t)
-	base := "http" + strings.TrimPrefix(address, "ws")
+	listener := startListener(t)
+	base := "http" + strings.TrimPrefix(listener.address, "ws")
+	client := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
+	t.Cleanup(client.CloseIdleConnections)
 	for _, c := range []struct {
 		path, auth, protocol string
 		status               int
@@ -58,7 +79,7 @@ func TestARefusedConnectionSaysWhy(t *testing.T) {
 		if c.protocol != "" {
 			request.Header.Set("Sec-WebSocket-Protocol", c.protocol)
 		}
-		response, err := http.DefaultClient.Do(request)
+		response, err := client.Do(request)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -73,8 +94,10 @@ func TestARefusedConnectionSaysWhy(t *testing.T) {
 // (standard Q6.2.4).
 // guarantee: bridge/version-refusal
 func TestAProtocolRefusalSaysWhichEndToUpgrade(t *testing.T) {
-	_, address := startListener(t)
-	base := "http" + strings.TrimPrefix(address, "ws")
+	listener := startListener(t)
+	base := "http" + strings.TrimPrefix(listener.address, "ws")
+	client := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
+	t.Cleanup(client.CloseIdleConnections)
 	for protocol, want := range map[string]string{
 		"rutis.99": "this endpoint speaks " + testProtocol + ", the dialer offered rutis.99: upgrade this endpoint (Go module github.com/arcships/rutis/go/rutis)",
 		"rutis.1":  "this endpoint speaks " + testProtocol + ", the dialer offered rutis.1: upgrade the dialer",
@@ -84,7 +107,7 @@ func TestAProtocolRefusalSaysWhichEndToUpgrade(t *testing.T) {
 		request, _ := http.NewRequest("GET", base, nil)
 		request.Header.Set("Authorization", "Bearer secret")
 		request.Header.Set("Sec-WebSocket-Protocol", protocol)
-		response, err := http.DefaultClient.Do(request)
+		response, err := client.Do(request)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -97,10 +120,10 @@ func TestAProtocolRefusalSaysWhichEndToUpgrade(t *testing.T) {
 }
 
 func TestOnlyALoopbackListenerGoesWithoutTLS(t *testing.T) {
-	if _, _, err := listenWebSocket("ws://0.0.0.0:0/rutis", testProtocol, "t", "", ""); err == nil || !strings.Contains(err.Error(), "only a loopback listener") {
+	if _, err := listenWebSocket("ws://0.0.0.0:0/rutis", testProtocol, "t", "", ""); err == nil || !strings.Contains(err.Error(), "only a loopback listener") {
 		t.Fatalf("%v", err)
 	}
-	if _, _, err := listenWebSocket("wss://127.0.0.1:0/rutis", testProtocol, "t", "", ""); err == nil || !strings.Contains(err.Error(), "certificate and key") {
+	if _, err := listenWebSocket("wss://127.0.0.1:0/rutis", testProtocol, "t", "", ""); err == nil || !strings.Contains(err.Error(), "certificate and key") {
 		t.Fatalf("%v", err)
 	}
 }
@@ -226,7 +249,8 @@ func recv(t *testing.T, conn *wsConn) ([]byte, error) {
 }
 
 func TestMessagesCrossInBothDirections(t *testing.T) {
-	accepted, address := startListener(t)
+	listener := startListener(t)
+	accepted, address := listener.accepted, listener.address
 	c := dial(t, address)
 	conn := accept(t, accepted)
 	// A message in two fragments.
@@ -254,7 +278,8 @@ func TestMessagesCrossInBothDirections(t *testing.T) {
 }
 
 func TestBrokenFramesCloseWithTheirCode(t *testing.T) {
-	accepted, address := startListener(t)
+	listener := startListener(t)
+	accepted, address := listener.accepted, listener.address
 	for _, c := range []struct {
 		name string
 		send func(*client)
@@ -287,7 +312,8 @@ func TestBrokenFramesCloseWithTheirCode(t *testing.T) {
 // first ping; no bound on how fast it is dropped (only a hang guard).
 func TestASilentControllerIsDropped(t *testing.T) {
 	t.Setenv("RUTIS_HEARTBEAT", "100,1000")
-	accepted, address := startListener(t)
+	listener := startListener(t)
+	accepted, address := listener.accepted, listener.address
 	c := dial(t, address)
 	conn := accept(t, accepted)
 	// A served connection: the session's hello went out (#1182).
@@ -319,7 +345,8 @@ func TestASilentControllerIsDropped(t *testing.T) {
 // apart, and "waiting" counted in pings rather than a fixed time.
 func TestAConnectionWaitingForItsHelloIsNotDroppedForSilence(t *testing.T) {
 	t.Setenv("RUTIS_HEARTBEAT", "10,100")
-	accepted, address := startListener(t)
+	listener := startListener(t)
+	accepted, address := listener.accepted, listener.address
 	c := dial(t, address)
 	conn := accept(t, accepted)
 	defer conn.shut()
@@ -348,20 +375,15 @@ func TestAConnectionWaitingForItsHelloIsNotDroppedForSilence(t *testing.T) {
 }
 
 func TestANewerControllerTakesOver(t *testing.T) {
-	addresses := make(chan string, 1)
-	previous := announce
-	announce = func(address string) { addresses <- address }
-	t.Cleanup(func() { announce = previous })
-	t.Setenv("RUTIS_TOKEN", "secret")
 	plugin := Define(Plugin[NoConfig]{Name: "noop", Apply: func(*Ctx, NoConfig) error { return nil }})
 	endpoint := &peer.Endpoint{Local: "runtime", Declare: []string{"runtime"}}
-	go func() { _ = listen("ws://127.0.0.1:0/rutis", endpoint, []*Definition{plugin}) }()
-	address := testwait.Within(t, "the listener's address", addresses)
-	first := dial(t, address)
+	listener := startListener(t)
+	serveListener(t, listener, endpoint, []*Definition{plugin})
+	first := dial(t, listener.address)
 	if opcode, payload := first.next(); opcode != 0x1 || !strings.Contains(string(payload), `"op":"hello"`) {
 		t.Fatalf("the session greets: %d %q", opcode, payload)
 	}
-	dial(t, address)
+	dial(t, listener.address)
 	if code := first.closed(); code != replaced {
 		t.Fatalf("the older connection closed with %d, not %d", code, replaced)
 	}
@@ -371,16 +393,11 @@ func TestANewerControllerTakesOver(t *testing.T) {
 // starts the connection's heartbeat there (#1182).
 func TestAServedConnectionSilentAfterItsHelloIsDropped(t *testing.T) {
 	t.Setenv("RUTIS_HEARTBEAT", "10,100")
-	t.Setenv("RUTIS_TOKEN", "secret")
-	addresses := make(chan string, 1)
-	previous := announce
-	announce = func(address string) { addresses <- address }
-	t.Cleanup(func() { announce = previous })
 	plugin := Define(Plugin[NoConfig]{Name: "noop", Apply: func(*Ctx, NoConfig) error { return nil }})
 	endpoint := &peer.Endpoint{Local: "runtime", Declare: []string{"runtime"}}
-	go func() { _ = listen("ws://127.0.0.1:0/rutis", endpoint, []*Definition{plugin}) }()
-	address := testwait.Within(t, "the listener's address", addresses)
-	c := dial(t, address)
+	listener := startListener(t)
+	serveListener(t, listener, endpoint, []*Definition{plugin})
+	c := dial(t, listener.address)
 	for {
 		opcode, payload := c.next()
 		if opcode == 0x9 || opcode == 0xA {
@@ -404,11 +421,6 @@ func TestAServedConnectionSilentAfterItsHelloIsDropped(t *testing.T) {
 func TestANewConnectionWaitingForTheOldLeaseIsNotClosedByTheHeartbeat(t *testing.T) {
 	t.Setenv("RUTIS_HEARTBEAT", "10,100")
 	t.Setenv("RUTIS_SHUTDOWN_TIMEOUT", "2")
-	t.Setenv("RUTIS_TOKEN", "secret")
-	addresses := make(chan string, 1)
-	previous := announce
-	announce = func(address string) { addresses <- address }
-	t.Cleanup(func() { announce = previous })
 	slow := Define(Plugin[NoConfig]{Name: "slow", Apply: func(c *Ctx, _ NoConfig) error {
 		// Its cleanup outlasts the heartbeat timeout; not cancelled.
 		c.Effect(func(context.Context) error {
@@ -418,13 +430,13 @@ func TestANewConnectionWaitingForTheOldLeaseIsNotClosedByTheHeartbeat(t *testing
 		return nil
 	}})
 	endpoint := &peer.Endpoint{Local: "runtime", Declare: []string{"runtime"}}
-	go func() { _ = listen("ws://127.0.0.1:0/rutis", endpoint, []*Definition{slow}) }()
-	address := testwait.Within(t, "the listener's address", addresses)
-	conn, err := dialWebSocket(address, testProtocol, "secret", nil, 5*time.Second)
+	listener := startListener(t)
+	serveListener(t, listener, endpoint, []*Definition{slow})
+	conn, err := dialWebSocket(listener.address, testProtocol, "secret", nil, 5*time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close("the test ended")
+	t.Cleanup(func() { conn.Close("the test ended") })
 	// The old lease: a controller whose row cleanup outlasts the heartbeat.
 	host, err := peer.New(conn, peer.Options{
 		Endpoint: &peer.Endpoint{Local: "controller", Expected: "runtime"},
@@ -445,7 +457,7 @@ func TestANewConnectionWaitingForTheOldLeaseIsNotClosedByTheHeartbeat(t *testing
 		t.Fatalf("loading the row: %v", err)
 	}
 	// A new connection takes over and waits for that cleanup: not silent.
-	second := dial(t, address)
+	second := dial(t, listener.address)
 	defer second.conn.Close()
 	for {
 		opcode, payload := second.next()
