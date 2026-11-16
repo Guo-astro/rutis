@@ -1414,7 +1414,7 @@ checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 
 [[package]]
 name = "rutis"
-version = "0.21.0"
+version = "0.22.0"
 dependencies = [
  "erased-serde",
  "rutis-macros",
@@ -1428,7 +1428,7 @@ dependencies = [
 
 [[package]]
 name = "rutis-bridge"
-version = "0.21.0"
+version = "0.22.0"
 dependencies = [
  "futures-util",
  "getrandom 0.2.17",
@@ -1439,6 +1439,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "shuttle",
  "socket2",
  "tempfile",
  "thiserror 2.0.21",
@@ -1473,7 +1474,7 @@ dependencies = [
 
 [[package]]
 name = "rutis-dylib-meta"
-version = "0.21.0"
+version = "0.22.0"
 dependencies = [
  "object",
 ]
@@ -1491,7 +1492,7 @@ dependencies = [
 
 [[package]]
 name = "rutis-loader"
-version = "0.21.0"
+version = "0.22.0"
 dependencies = [
  "libc",
  "rutis",
@@ -1499,13 +1500,14 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
+ "shuttle",
  "thiserror 2.0.21",
  "tokio",
 ]
 
 [[package]]
 name = "rutis-macros"
-version = "0.21.0"
+version = "0.22.0"
 dependencies = [
  "proc-macro2",
  "quote",

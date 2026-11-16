@@ -157,6 +157,6 @@ Node and Bun now count only unanswered synchronous calls when deciding whether a
 
 - The session protocol is still 4, `rutis.json`'s `format` is still 1 and the plugin API is still 3: no new capability requirement, no new required frame field, and the handshake is unchanged.
 - Old and new versions mix: an old runtime package keeps the old behaviour on its side (old Kotlin/Swift still ignore unknown fields, the old heartbeat still starts at accept, old Python/Bun still accept a `provide` after unload); the new side does not end the session because the other side is old. `services.announce`'s `row` is optional.
-- `rutis.json` and the dsh user layer have no format change: the persisted samples are copied from 0.21.0 and the expectations do not change. The release PR creates `tests/fixtures/persisted/0.22.0/`.
+- `rutis.json` and the dsh user layer have no format change: the persisted sample is in `tests/fixtures/persisted/0.22.0/`, copied from 0.21.0, and the expectations do not change.
 - A dylib plugin is rebuilt with 0.22.0's SDK, as with every release.
 - No network smoke or release-gate result is part of this draft; run the normal process in [release.md](release.en.md) before the release.
