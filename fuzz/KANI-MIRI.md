@@ -92,3 +92,17 @@ inputs did not change `fuzz/corpus/`.
 
 The Kani harnesses are committed as the properties to prove once a Kani
 release finishes them; the run above is the current state, not a pass.
+
+## Results (2026-11-16, dylib)
+
+| Command | Result |
+| --- | --- |
+| `cargo +nightly fuzz run dylib_meta <copy of corpus/dylib_meta> -- -max_total_time=60` | 1,715,852 runs, no crash |
+| `cargo +nightly fuzz run binary_manifest <copy of corpus/binary_manifest> -- -max_total_time=60` | 4,114,060 runs, no crash |
+
+The two targets read what the dylib loader checks before `dlopen`
+(`crates/rutis-dylib-meta`: ELF, Mach-O and PE identity and dependencies)
+and the manifest a runtime binary prints (`ManifestWire`, checked before
+any field is used). This slice adds no Kani harness for `boot_meta`,
+`append`, `is_sha256` or `parse_boot`: the six harnesses above still have
+no verdict, so no proof is reported as passing.

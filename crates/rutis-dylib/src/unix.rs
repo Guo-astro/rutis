@@ -43,11 +43,23 @@ pub(crate) unsafe fn open_library(path: &Path) -> Result<Handle, String> {
         path.as_ptr(),
         libc::RTLD_NOW | libc::RTLD_LOCAL,
     ))
-    .ok_or_else(|| {
-        CStr::from_ptr(libc::dlerror())
+    .ok_or_else(take_dl_error)
+}
+
+/// The message of the last failed `dlopen`, or that there is none.
+///
+/// POSIX does not promise that a failed `dlopen` leaves a message, and
+/// `CStr::from_ptr` on the null `dlerror` then returns is undefined
+/// behaviour. `find_symbol` checks the same thing.
+pub(crate) fn take_dl_error() -> String {
+    let message = unsafe { libc::dlerror() };
+    if message.is_null() {
+        "no error message from dlerror".into()
+    } else {
+        unsafe { CStr::from_ptr(message) }
             .to_string_lossy()
             .into_owned()
-    })
+    }
 }
 
 /// `name` must end with a NUL byte.

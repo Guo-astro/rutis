@@ -54,7 +54,7 @@ RUTIS_SHUTTLE_REPLAY=<调度> RUSTFLAGS="--cfg rutis_shuttle" cargo test -p ruti
 # 模糊测试目标（fuzz/，单独的 workspace）：需要 nightly Rust 和 cargo-fuzz
 cargo install cargo-fuzz
 cd fuzz
-cargo +nightly fuzz run session_frame -- -max_total_time=60   # 或 session_frames、local_lines、websocket_upgrade、error_graph
+cargo +nightly fuzz run session_frame -- -max_total_time=60   # 或 session_frames、local_lines、websocket_upgrade、error_graph、dylib_meta、binary_manifest
 cargo +nightly fuzz run session_frame artifacts/session_frame/crash-…   # 复现一次失败
 ```
 
