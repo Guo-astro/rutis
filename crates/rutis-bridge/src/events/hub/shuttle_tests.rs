@@ -27,6 +27,8 @@
 //! RUSTFLAGS="--cfg rutis_shuttle" cargo test -p rutis-bridge --lib \
 //!     --target-dir target/shuttle shuttle
 //! ```
+//!
+//! guarantee: events/hub-lifecycle, events/emit
 
 use std::future::poll_fn;
 use std::sync::Arc;

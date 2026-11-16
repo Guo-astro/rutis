@@ -23,6 +23,8 @@
 //! RUSTFLAGS="--cfg rutis_shuttle" cargo test -p rutis-bridge --lib \
 //!     --target-dir target/shuttle shuttle
 //! ```
+//!
+//! guarantee: boundary/5.1
 
 use std::future::Future;
 use std::sync::{Arc, Mutex as StdMutex};
