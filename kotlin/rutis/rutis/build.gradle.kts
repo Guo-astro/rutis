@@ -30,25 +30,24 @@ plugins {
     id("org.pastalab.fray.gradle")
 }
 
-// Fray registers `frayTest` for a task named `test` and copies that task's
-// classes and classpath; the jvm target's own test task is `jvmTest`. `test`
-// is only that template: it is never run.
+// Fray configures the task named in `testTask` with its agent; a task named
+// `test` collides with the Kotlin/Android target and broke every Gradle build,
+// so the controlled-scheduling task has its own name.
 fray {
-    testTask = "test"
+    testTask = "frayTest"
 }
 
 if (androidSdk) {
     apply(plugin = "com.android.library")
 }
 
-// Fray's template (see `fray` above): the jvm test task's inputs under the
-// name Fray looks for, without a second run of the jvm tests.
-tasks.register<Test>("test") {
+// Fray configures the task named in `testTask` with its agent; `test` collides
+// with a Kotlin/Android target, so the controlled-scheduling task is its own.
+tasks.register<Test>("frayTest") {
     val jvm = tasks.named<Test>("jvmTest")
     testClassesDirs = jvm.get().testClassesDirs
     classpath = jvm.get().classpath
     useJUnitPlatform()
-    enabled = false
 }
 
 kotlin {
