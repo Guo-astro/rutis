@@ -10,6 +10,8 @@
 
 2026-11-16：EVP-15.33-2 按 #1171 的修复更新「现有形式化」「状态」「备注」：节点导入的服务带提供方的行 id（无行时不带），两个会话用例覆盖有行与无行，状态从「部分」改为「已覆盖」。
 
+2026-11-16：EVP-5.5-9、EVP-4.1-2、EVP-5.4-2、EVP-5.5-17 按 #613 的 `specs/events` 更新「备注」（EVP-5.5-9 同时更新「现有形式化」）：`emit-python-deferred`（`Defer = "nextRound"`，FIFO）通过，只把调用开始推到下一轮；`emit-mut-future-reply` 以变异建「调用未开始就回复」，违反 `EmitOrder`。状态都不变。
+
 分区合计：现行 253 条，已取代 9 条，共 262 行（与 issue 正文的统计表一致）。
 
 ## 分区 `events`
@@ -50,7 +52,7 @@
 | EVP-3-10 | §三 | 叶子插件的 `isolate` 标签（服务作用域、U+0001 租约）与事件作用域无关 | 纯逻辑 | K | — | — | 未覆盖 | #639 ※ | 写法接近说明；可按 Q5.1.1 降为说明，或补一个 isolate 行的 `filterSees` 用例 |
 | EVP-3-S1 | §三（2026-10-18 原文） | 作用域链为 L 的条目收到在链 E 发出的分发，当且仅当 L 是 E 的前缀；根收到全部，租户 t1 收不到 t2 的 | — | — | events/scope、events/hub-scope（已撤回） | — | 已取代 | — | 0.15.1 平总线（#604、#605；1f0a7b3b） |
 | EVP-4.1-1 | §4.1 | 事件消息都是 `target` 为空的 `invoke` 帧（控制操作），属于 `events` 族 | 纯逻辑 | K | events/hub-dispatch | K（全部经宿主的用例都经这些帧） | 已覆盖 | — | FZ `session_frame` 只到帧解析与值，不解释 `events.*` |
-| EVP-4.1-2 | §4.1 | 运行时一侧就地、按帧的顺序处理 `events.on` / `events.off` / `events.elsewhere`，处理完再读下一帧 | 跨进程 | TLA + SH | events/presence | — | 未覆盖 | #613、#630 | Python 把 invoke 帧（含 `events.elsewhere`、`events.call`）经 `loop.call_soon` 推迟（`peer.py:1375`），与本条不符：#613 配置 `python-deferred`、#630 的 Python 可控事件循环 |
+| EVP-4.1-2 | §4.1 | 运行时一侧就地、按帧的顺序处理 `events.on` / `events.off` / `events.elsewhere`，处理完再读下一帧 | 跨进程 | TLA + SH | events/presence | — | 未覆盖 | #613、#630 | Python 把 invoke 帧（含 `events.elsewhere`、`events.call`）经 `loop.call_soon` 推迟（`peer.py:1375`），与本条不符；#613 的 `emit-python-deferred` 只建推迟后的开始顺序，不建“就地处理”本身；#630 的 Python 可控事件循环 |
 | EVP-4.1-3 | §4.1、§15.30 | 宿主一侧按帧序在会话的有序任务上处理事件操作（表操作与 emit 方式的 `events.dispatch` / `events.call` 轮到时就地执行，其余轮到时作为任务开始），不在读线程上；读线程从不执行插件代码 | 进程内并发 | SH + TV | events/hub-dispatch、events/hub-lifecycle | — | 未覆盖 | #616、#628 | `rpc.rs:2382–2500`（`run_ordered` / `drain_ordered`）；与 §4.1 "处理完再读下一帧"字面不符（宿主读线程先读下一帧） |
 | EVP-4.1-4 | §4.1 | 每条事件消息以 `return undefined` 或 `throw` 回复 | 纯逻辑 | K | events/hub-dispatch | K（全部用例） | 已覆盖 | — |  |
 | EVP-4.1-5 | §4.1 | `events.on` 在条目已进表、且它引起的 `events.elsewhere` 已排进其他每个会话之后才回复 | 跨进程 | TLA + TV | events/presence | — | 未覆盖 | #613、#616 | `RegisteredThenSeen` 依赖它（§4.4 第 3 条） |
@@ -107,7 +109,7 @@
 | EVP-5.3-16 | §5.3 | 本进程自己发出的事件经 Cordis 自己的 `dispatch()` 触发 `internal/dispatch`；它抛出时这次调用失败 | 进程内并发 | K | — | — | 未覆盖 | #639 ※ |  |
 | EVP-5.3-17 | §5.3 | Cordis `events.dispatch(type, args)` 原语：名字非 `internal/*`、`type` 为 `emit`/`serial`/`bail` 时返回回调，以调用时的参数在总线上按 `parallel`/`serial`/`bail` 分发（本进程或经宿主） | 跨进程 | K | — | — | 未覆盖 | #639 ※ | 只有 Node 的普通测试 |
 | EVP-5.4-1 | §5.4 emit | `emit`：按登记顺序开始每个调用，不等任何一个 | 跨进程 | K + TLA | events/emit | K `emit/reaches-all`、`emit/does-not-wait` | 部分 | #613 | 跨进程的开始先后由 `OneOrder` 管 |
-| EVP-5.4-2 | §5.4 emit | `emit`：每个调用都开始之后才回复 `events.dispatch`；发出方的 API 早已返回（`void`/`None`/`nil`/`Ok(())`） | 跨进程 | TLA + TV + K | events/emit、events/remote | K `emit/does-not-wait`、`modes/no-listeners` | 部分 | #613、#616 | `before-future-reply` 配置 |
+| EVP-5.4-2 | §5.4 emit | `emit`：每个调用都开始之后才回复 `events.dispatch`；发出方的 API 早已返回（`void`/`None`/`nil`/`Ok(())`） | 跨进程 | TLA + TV + K | events/emit、events/remote | K `emit/does-not-wait`、`modes/no-listeners` | 部分 | #613、#616 | #613 的 `emit-mut-future-reply` 以变异建“调用未开始就回复”，违反 `EmitOrder`；本条“每个调用都开始之后才回复”仍没有直接检查 |
 | EVP-5.4-3 | §5.4 parallel | `parallel`：按登记顺序开始每个调用，再等全部完成；全部成功时 `undefined` | 跨进程 | K + PT | events/parallel | K `parallel/all-ok`、`kinds/sync-listener-every-mode`、`modes/no-listeners` | 已覆盖 | — |  |
 | EVP-5.4-4 | §5.4 parallel | `parallel` 有失败时 `throw` `AggregateError`，子错误为各失败、按登记顺序（非完成顺序），只有一个失败也如此 | 跨进程 | K + PT | events/parallel、events/hub-errors | K `parallel/errors-in-registration-order`、`parallel/one-error-is-aggregated`、`disconnect/parallel-aggregates` | 已覆盖 | — |  |
 | EVP-5.4-5 | §5.4 serial | `serial`：一次开始一个、逐个等待；返回第一个有结果的值；都没有结果时 `undefined` | 跨进程 | K + PT | events/serial-bail | K `serial/first-result`、`serial/no-result`、`serial/zero-is-a-result` | 已覆盖 | — |  |
@@ -133,7 +135,7 @@
 | EVP-5.5-6 | §5.5 第 2 条 | 被丢弃或放开的 emit 的 `events.dispatch` 照样得到回复；会话的其他 emit（别的行或挂载本身的）按顺序继续 | 跨进程 | TLA + TV | — | — | 未覆盖 | #613、#616 | "不卡住" |
 | EVP-5.5-7 | §5.5 第 2 条 | 会话结束时它的所有 emit 都这样处理 | 跨进程 | TLA + SH | events/hub-lifecycle | — | 未覆盖 | #613、#628 | `hub.rs` `leave()` |
 | EVP-5.5-8 | §5.5 第 2 条 | 运行中 panic 的 emit 像正常结束一样收尾：下一个照常开始 | 进程内并发 | SH | — | — | 未覆盖 | #628 | `hub.rs` `EmitRun`；#628 宿主 emit 队列"panic 后下一个照常" |
-| EVP-5.5-9 | §5.5 第 3 条 | 运行时按到达顺序开始 `emit` 方式的调用：Node / Bun / Python 在处理下一帧之前调用监听器（同步执行到第一个 `await`） | 跨进程 | TLA + SH | events/emit | K `emit/order-per-listener`、`emit/order-across-fast-path` | 部分 | #613、#630 | Python 现在经 `loop.call_soon` 推迟（`peer.py:1375`），与本条不符；`runner.py:754` 的注释称已做到；#613 `python-deferred` |
+| EVP-5.5-9 | §5.5 第 3 条 | 运行时按到达顺序开始 `emit` 方式的调用：Node / Bun / Python 在处理下一帧之前调用监听器（同步执行到第一个 `await`） | 跨进程 | TLA + SH | events/emit | K `emit/order-per-listener`、`emit/order-across-fast-path`；TLA `emit-python-deferred`（通过） | 部分 | #613、#630 | Python 经 `loop.call_soon` 推迟（`peer.py:1375`），与本条不符；`runner.py:754` 的注释称已做到。`emit-python-deferred`（`Defer = "nextRound"`，FIFO）通过：延迟只把开始推到下一轮，模型本来就允许任意晚，同一监听器上的先后不变，所以它不能验证本条；“宿主把这次调用算作已开始”与“监听器函数体开始”两步的分离、EVP-4.1-2 的就地处理性质都未建 |
 | EVP-5.5-10 | §5.5 第 3 条 | 不可重入的 Node 在自己的同步调用等待期间，扣住 `emit` 方式的 `events.call`（同其他不在等待链上的调用），等待结束后按帧序执行 | 跨进程 | TLA + SH | events/emit | K `emit/order-across-fast-path-sync-wait`；TLA `cross-runtime-sync` `policy-b-posts-node`（只查放到一边不卡死，不查顺序） | 部分 | #613、#630 | R1 |
 | EVP-5.5-11 | §5.5 第 3 条 | 扣住期间本进程快速路径上发出的同名 emit 排在被扣住的调用之后，不抢先（2026-10-21 修订） | 跨进程 | TLA + SH | events/emit | K `emit/order-across-fast-path-sync-wait` | 部分 | #613、#630 | `before-held-emit`、`before-later-overtakes`；疑点：Node 的 behind 任务在发出行卸载时不丢弃（#613） |
 | EVP-5.5-12 | §5.5 第 3 条 | Go 按监听器排队 emit 调用，一个接一个执行（不同监听器并发） | 进程内并发 | TLA + SH | events/emit | K `emit/order-per-listener`（Go 列） | 部分 | #613 | R2b（Go、Swift、Kotlin）的 EventsEmit 配置；#630 的 Go 闸门只列了撤下之后不再开始，不含按监听器排队 |
@@ -141,7 +143,7 @@
 | EVP-5.5-14 | §5.5 第 4 条 | 快速路径上 N 的 emit 等过滤器时，本进程之后 N 的 emit（无论有无过滤器、来自哪一行）排在它后面，轮到时再决定走哪条路径 | 进程内并发 | TLA + SH | events/emit | K `emit/order-filtered-then-unfiltered` | 部分 | #613、#630 | EventsEmit 的运行时本地队列；疑点：Bun 的过滤器在同步调用里泵帧，嵌套的较晚 emit 先开始 |
 | EVP-5.5-15 | §5.5 第 4 条 | 运行时排队的 emit 属于发出它的行：行卸载时丢弃它排队的 emit，放开正在跑过滤器的那一个（之后过滤器回答也什么都不开始、不报告） | 进程内并发 | TLA + SH | （登记表无对应条目） | — | 未覆盖 | #613 | `UnloadedRowEmitsNothing`（两侧）；81e30688 修了 Swift、Go |
 | EVP-5.5-16 | §5.5 第 5 条 | 运行时经宿主发出 N 的一次 emit 后，在它得到回复之前，N 的后续 emit 都继续经宿主 | 跨进程 | TLA + K | events/one-bus | K `emit/order-across-fast-path` | 部分 | #613 | `EmitOrder` |
-| EVP-5.5-17 | §5.5 第 5 条 | 宿主在开始各调用之后才回复，所以这次 emit 的 `events.call` 先于任何后来的 N 的快速路径 emit 到达运行时 | 跨进程 | TLA + TV | events/emit | K `emit/order-across-fast-path` | 部分 | #613、#616 | `before-future-reply` |
+| EVP-5.5-17 | §5.5 第 5 条 | 宿主在开始各调用之后才回复，所以这次 emit 的 `events.call` 先于任何后来的 N 的快速路径 emit 到达运行时 | 跨进程 | TLA + TV | events/emit | K `emit/order-across-fast-path` | 部分 | #613、#616 | #613 的 `emit-mut-future-reply` 找到反例（提前回复使后来的快速路径 emit 先开始）；本条的正向性质仍未直接检查 |
 | EVP-5.5-18 | §5.5 第 6 条、§15.29 | emit 的回复是普通值 `undefined`，不是 future，在各调用开始之后写出 | 跨进程 | TV + TLA | events/emit | — | 未覆盖 | #613、#616 | `rpc.rs` `execute`：emit 的 future 先 `settle` 再回复，与规格一致；c2c1b7e8 之前宿主答 future |
 | EVP-5.5-19 | §5.5 第 6 条 | 运行时像 `events.elsewhere` 一样就地、按帧序接收 emit 的回复：读到回复帧时即记为已得到回复，处理完再读下一帧 | 跨进程 | TLA + SH | events/one-bus | K `emit/order-across-fast-path`（`answered`） | 部分 | #613、#630 | `FastPathByFrame`、`before-reply-async` |
 | EVP-5.5-20 | §5.5 第 6 条 | 宿主在发出某一帧之前已回复的 dispatch，不再让 N 留在经宿主的路径上：之后帧引起的操作都看到它已得到回复 | 跨进程 | TLA + K | events/one-bus | K `emit/order-across-fast-path`、`emit/order-across-fast-path-sync-wait` | 部分 | #613 | `FastPathByFrame` |
