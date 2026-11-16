@@ -1819,6 +1819,10 @@ class Peer:
                 task.cancel()
             elif call in self._starting:
                 self._cancel_early.add(call)
+            else:
+                # Read before the loop ran it: dropped, never answered
+                # (session protocol §7, SESS-57; #630).
+                self._drop_queued(call)
             return
         if op == "release":
             entry = self._export(frame.get("reference"))
@@ -1887,6 +1891,20 @@ class Peer:
 
     def _related(self, job: _Job) -> bool:
         return any(call in job.frame["path"] for call in self._waiting)
+
+    def _drop_queued(self, call: str) -> None:
+        """Drop the call `call` if the loop has not started it yet: it never
+        runs and is never answered, as Rust's callee does (session protocol
+        §7, SESS-57). A running one is left to its signal and its task. The
+        arguments go with it, so the references they carry are released as
+        any other value's are."""
+        for job in list(self._queued):
+            if job.frame["id"] == call:
+                del self._queued[job]
+                self._signals.pop(call, None)
+                if job.business:
+                    self._finish()
+                return
 
     def _run(self, job: _Job) -> None:
         if job not in self._queued:

@@ -177,6 +177,68 @@ class CancelTests(background.TestCase):
             )
             peer.close()
 
+    # guarantee: bridge/cancel-reaches-callee
+    def test_a_cancel_read_before_the_deferred_call_runs_drops_it_without_an_answer(self):
+        # The frame was read, but the loop has not run its job: a cancel read
+        # first must not be lost. Under SESS-57 a call not started is dropped
+        # and never answered, as Rust's callee does.
+        with self.loop.entered():
+            def dispatch(target, method, args):
+                self.events.append(("started", method))
+                return method
+
+            peer = Peer(self.channel, dispatch, endpoint=LOCAL)
+            peer.receive(hello())
+            peer.receive(invoke("main:1", "work"))
+            peer.receive({"op": "cancel", "id": "main:1"})
+            self.assertEqual(self.events, [], "the method has not started when the cancel is read")
+            self.loop.run_until_idle()
+            self.assertEqual(self.events, [], "a call cancelled while queued never runs")
+            self.assertEqual(self.channel.pending(), [], "and is not answered (SESS-57)")
+            # Dropping it settles the call here: nothing stays in flight.
+            draining = self.loop.create_task(peer.drain())
+            self.loop.run_until_idle()
+            self.assertTrue(draining.done(), "a call dropped before it started is not left in flight")
+            # A cancel for a call this side does not have is ignored (SESS-58).
+            peer.receive({"op": "cancel", "id": "main:99"})
+            self.assertIsNone(peer.closed_error, "an unknown cancel does not end the session")
+            # The session goes on: the call behind it runs and is answered.
+            peer.receive(invoke("main:2", "later"))
+            self.loop.run_until_idle()
+            self.assertEqual(self.events, [("started", "later")])
+            self.assertEqual(
+                self.channel.pending(),
+                [{"op": "return", "id": "main:2", "value": data("later")}],
+            )
+            peer.close()
+
+    # guarantee: bridge/cancel-reaches-callee
+    def test_a_cancel_read_before_a_deferred_await_runs_drops_it_without_an_answer(self):
+        # SESS-57's second bullet: an `await` not started is dropped without a
+        # reply too, and it settles the call the session counts as active.
+        with self.loop.entered():
+            async def later():
+                return "value"
+
+            def dispatch(target, method, args):
+                self.events.append(("started", method))
+                return later()
+
+            peer = Peer(self.channel, dispatch, endpoint=LOCAL)
+            peer.receive(hello())
+            peer.receive(invoke("main:1", "later"))
+            self.loop.run_until_idle()
+            reference = self.channel.take("the reply", lambda frame: frame["op"] == "return")["value"]
+            self.assertEqual(reference["value"]["kind"], "future")
+            peer.receive({"op": "await", "id": "main:2", "path": [], "reference": reference["value"]["id"]})
+            peer.receive({"op": "cancel", "id": "main:2"})
+            self.loop.run_until_idle()
+            self.assertEqual(self.channel.pending(), [], "an await cancelled while queued is not answered")
+            draining = self.loop.create_task(peer.drain())
+            self.loop.run_until_idle()
+            self.assertTrue(draining.done(), "the dropped await is settled")
+            peer.close()
+
 
 class SynchronousWaitTests(background.TestCase):
     """A synchronous call blocks the loop thread and pumps the frames its
