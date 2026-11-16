@@ -1435,7 +1435,7 @@ proptest! {
 }
 
 proptest! {
-    /// guarantee: CHN-2-8; SESS-23, SESS-24
+    /// guarantee: bridge/version-refusal (CHN-2-8; SESS-23, SESS-24)
     ///
     /// Both ends of one real exchange decide as the same table: each one
     /// checks the other's greeting against what it expects, and the two
