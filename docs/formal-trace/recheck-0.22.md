@@ -52,19 +52,19 @@
 | [protocol-events.md](rules/protocol-events.md) | #634 · events | 253 | 75 | 92 | 52 | 1 | 19 | 9 | 14 | 0 | 0 |
 | [protocol-session.md](rules/protocol-session.md) | #634 · session 上/下 | 246 | 13 | 99 | 86 | 7 | 27 | 104 | 14 | 161 | 2 |
 | [protocol-runtime.md](rules/protocol-runtime.md) | #634 · runtime | 264 | 8 | 38 | 140 | 10 | 63 | 45 | 5 | 0 | 68 |
-| [protocol-remote.md](rules/protocol-remote.md) | #634 · remote | 231 | 4 | 69 | 71 | 13 | 32 | 17 | 42 | 0 | 137 |
-| 合计 | — | 1368 | 112 | 375 | 537 | 42 | 201 | 184 | 101 | 161 | 261 |
+| [protocol-remote.md](rules/protocol-remote.md) | #634 · remote | 231 | 4 | 69 | 70 | 13 | 32 | 17 | 43 | 0 | 137 |
+| 合计 | — | 1368 | 112 | 375 | 536 | 42 | 201 | 184 | 102 | 161 | 261 |
 <!-- recheck-index:end -->
 
 状态怎么变：
 
 | 快照映射状态 | 复核后状态 | 条数 |
 | --- | --- | --- |
-| 未验证 | 未验证 | 537 |
+| 未验证 | 未验证 | 536 |
 | 部分验证 | 部分验证 | 374 |
 | 不单独计数 | 不单独计数 | 201 |
 | 已验证 | 已验证 | 112 |
-| 未验证 | 已撤回 | 46 |
+| 未验证 | 已撤回 | 47 |
 | 明确不保证 | 明确不保证 | 42 |
 | 部分验证 | 已撤回 | 34 |
 | 不单独计数 | 已撤回 | 13 |
@@ -1640,7 +1640,7 @@
 | NOD-1-3 | 部分验证 | 部分验证 | 连接节点指南（NOD「一条 link」） | — | 无具名证据 | 现行来源：连接节点指南（NOD「一条 link」）；没有会话规格锚点；无具名证据 |
 | NOD-1-4 | 不单独计数 | 不单独计数 | 连接节点指南（NOD「一条 link」） | — | 无具名证据 | 0.19 的 link 状态行改为连接插件的输出；类别、不带 token 仍现行 |
 | NOD-1-5 | 明确不保证 | 明确不保证 | 连接节点指南（NOD「一条 link」） | — | 无具名证据 | — |
-| NOD-3-1 | 未验证 | 未验证 | 连接节点指南（NOD「节点之间的事件」） | — | 无具名证据 | 现行来源：连接节点指南（NOD「节点之间的事件」）；没有会话规格锚点；无具名证据 |
+| NOD-3-1 | 已撤回 | 未验证 | 连接节点指南（NOD「节点之间的事件」） | — | — | 已取代：0.19 删除节点的 `export` / `import` 名单，节点之间是一条总线、每个名字都在（`design-remote-session-2026-10-28.md` §八、§十二；登记表 `events/node-links` 重写） |
 | NOD-3-2 | 已验证 | 已验证 | 连接节点指南（NOD「节点之间的事件」；「安全」末条） | — | 具名证据是模块/用例名，不是文件路径；按原文保留 | 现行来源：连接节点指南（NOD「节点之间的事件」；「安全」末条）；没有会话规格锚点 |
 | NOD-3-3 | 已验证 | 已验证 | 连接节点指南（NOD「节点之间的事件」） | — | 具名证据是模块/用例名，不是文件路径；按原文保留 | 现行来源：连接节点指南（NOD「节点之间的事件」）；没有会话规格锚点 |
 | NOD-3-4 | 部分验证 | 部分验证 | 连接节点指南（NOD「节点之间的事件」） | — | 具名证据是模块/用例名，不是文件路径；按原文保留 | 现行来源：连接节点指南（NOD「节点之间的事件」）；没有会话规格锚点 |
@@ -2072,41 +2072,41 @@
 | host/env-tokens-not-revocable | 已撤回 | design-remote-session-2026-10-28.md §八 | —（登记表 0.22 已无这一行：0.19 删除吊销，token 的生命周期只由环境变量与行的重启决定） | — | 吊销已删（远程会话设计 §八）；"环境变量给的 token 不能吊销"不再是一条保证，换成"要切断就换 token 后重启" |
 | host/row-state-lines | 不单独计数 | guarantees.md §15 | host/row-state-lines | `rutis-host/tests/waiting.rs::a_waiting_row_says_what_it_waits_for_and_why`、`rutis-host/src/status.rs::tests::a_row_waiting_for_its_runtime_names_it`、`rutis-loader/tests/waits.rs::a_misspelt_name_is_waited_for_with_the_name_it_meant` | 登记表记「部分验证」，running 与 waiting 的逐字用例在上；#634 快照记「不适用」（文字输出；`starting`、`failed`、`disabled` 与副本写法没有测试），不单独计数 |
 | host/go-add | 不单独计数 | guarantees.md §15 | —（登记表 0.22 没有这一行：`go add` 是宿主的一条命令，登记表未登记） | `rutis-host/src/main.rs`、`rutis-host/tests/`（命令面；没有 `go add` 的测试） | 登记表没有这一行（快照备注写"登记表未验证"）；本行是调用本机 Go 工具链的外部命令，#634 快照记「不适用」，不单独计数 |
-| bridge/cancellation | 未验证 | guarantees.md §10 | —（登记表没有这一行：测试里用了，登记表未登记（#634 快照记「未登记」）） | `rutis-bridge/tests/swift_runtime.rs`（#634 快照指第 125 行） | 登记表未登记；#634 把它归 `bridge/cancel-reaches-callee` 并等 #624 补登记，现无登记的证据，状态保持未验证 |
-| bridge/frame-limits | 未验证 | guarantees.md §10 | —（登记表没有这一行：测试里用了，登记表未登记（#634 快照记「未登记」）） | `rutis-bridge/tests/swift_remote.rs`、`rutis-bridge/tests/kotlin_remote.rs`（#634 快照指第 298、282 行） | 登记表未登记；#634 快照记「未登记」，FZ 只有 Rust 的升级请求、各语言帧解码器的 FZ 归 #631，状态保持未验证 |
-| events/12.1-args | 未验证 | guarantees.md §7 | —（登记表没有这一行：测试里用了，登记表未登记（#634 快照记「未登记」）） | `rutis/src/events/args.rs`（#634 快照指第 265 行；登记表没有这一行） | 登记表未登记；#634 快照记「未登记」，参数形状的 PT 归 #631，现行只有固定用例，状态保持未验证 |
-| events/async-listener | 未验证 | guarantees.md §7 | —（登记表没有这一行：测试里用了，登记表未登记（#634 快照记「未登记」）） | `rutis/tests/events.rs`（#634 快照指第 528 行；登记表没有这一行） | 登记表未登记；#634 快照记「未登记」但注明 K 已覆盖，K 用例名不在当前树的路径里，按未登记与无登记证据记，状态保持未验证 |
-| events/bail | 未验证 | guarantees.md §7 | —（登记表没有这一行：测试里用了，登记表未登记（#634 快照记「未登记」）） | `go/rutis/events_session_test.go`、`go/rutis/internal/runtime/events_test.go`（#634 快照指的 go/rutis/events_test.go 在 0.22 已不在） | 登记表未登记；快照记「未登记」并注明 K 已覆盖，但快照指的 Go 文件已不在，现无登记的证据，状态保持未验证 |
-| events/bun-runtime | 未验证 | guarantees.md §8a | —（登记表没有这一行：测试里用了，登记表未登记（#634 快照记「未登记」）） | `bun/rutis-bun/test/runner.test.ts`（#634 快照指第 125 行等；登记表没有这一行） | 登记表未登记；#634 快照记「未登记」，Bun 总线的规则散在 `events/*` 与 #613、#630，没有单列的登记证据，状态保持未验证 |
-| events/cancel | 未验证 | guarantees.md §7 | —（登记表没有这一行：测试里用了，登记表未登记（#634 快照记「未登记」）） | `go/rutis/internal/runtime/events_test.go`（#634 快照指的 go/rutis/events_test.go 已不在；登记表没有这一行） | 登记表未登记；#634 快照记「未登记」，取消监听器有 Go 用例，"取消后调用 next 失败"没有 K 用例，状态保持未验证 |
-| events/cordis | 未验证 | guarantees.md §8a | —（登记表没有这一行：测试里用了，登记表未登记（#634 快照记「未登记」）） | `node/rutis-runtime/test/cordis-events.test.mjs`（#634 快照指第 1 行；登记表没有这一行） | 登记表未登记；#634 快照记「未登记」并注明 K 覆盖一部分，`ctx.rutis` 没有 K 用例，状态保持未验证 |
-| events/emit-order | 未验证 | guarantees.md §7 | —（登记表没有这一行：测试里用了，登记表未登记（#634 快照记「未登记」）） | `rutis/tests/events.rs`、`go/rutis/events_session_test.go`（#634 快照指第 329、267 行；登记表没有这一行） | 登记表未登记；#634 快照记「未登记」，同名 emit 的顺序与 `events/emit` 重叠，模型归 #613、#622，没有登记证据，状态保持未验证 |
-| events/emit-reported | 未验证 | guarantees.md §8a | —（登记表没有这一行：测试里用了，登记表未登记（#634 快照记「未登记」）） | `go/rutis/events_session_test.go`（#634 快照指第 426 行；登记表没有这一行） | 登记表未登记；#634 快照记「未登记」，测试工具看到的失败报告与运行时相同只有部分 K 用例，报告文字不在 K，状态保持未验证 |
-| events/filter-emit | 未验证 | guarantees.md §7 | —（登记表没有这一行：测试里用了，登记表未登记（#634 快照记「未登记」）） | `rutis/tests/events.rs`（#634 快照指第 1002 行；登记表没有这一行） | 登记表未登记；#634 快照记「未登记」并注明 K 已覆盖，但没有登记表证据，状态保持未验证 |
-| events/handshake | 未验证 | guarantees.md §8a | —（登记表没有这一行：测试里用了，登记表未登记（#634 快照记「未登记」）） | `go/rutis/events_session_test.go`（#634 快照指第 453 行；登记表没有这一行） | 登记表未登记；#634 快照记「未登记」，与 `events/v2-required`、`events/old-peer-refused` 重叠，握手判定表 PT 归 #631，状态保持未验证 |
-| events/js-bus | 未验证 | guarantees.md §8a | —（登记表没有这一行：测试里用了，登记表未登记（#634 快照记「未登记」）） | `node/rutis-runtime/test/events.test.mjs`（#634 快照指第 1 行；登记表没有这一行） | 登记表未登记；#634 快照记「未登记」，工具与运行时共用 `events.mjs`、可能同错，#630 的帧泵与调度器仍开着，状态保持未验证 |
-| events/liveness | 未验证 | guarantees.md §7 | —（登记表没有这一行：测试里用了，登记表未登记（#634 快照记「未登记」）） | `rutis/tests/events.rs`（#634 快照指第 1108 行；登记表没有这一行） | 登记表未登记；#634 快照记「未登记」，在途计数归 #622、`WithdrawnStaysOut` 归 #613，没有登记证据，状态保持未验证 |
-| events/next | 未验证 | guarantees.md §7 | —（登记表没有这一行：测试里用了，登记表未登记（#634 快照记「未登记」）） | `go/rutis/events_session_test.go`（#634 快照指的 go/rutis/events_test.go 已不在；登记表没有这一行） | 登记表未登记；快照记「未登记」并注明 K 已覆盖，但快照指的 Go 文件已不在，状态保持未验证 |
-| events/next-misuse | 未验证 | guarantees.md §7 | —（登记表没有这一行：测试里用了，登记表未登记（#634 快照记「未登记」）） | `rutis/tests/events.rs`（#634 快照指第 206 行；登记表没有这一行） | 登记表未登记；#634 快照记「未登记」并注明 K 已覆盖，但没有登记表证据，状态保持未验证 |
-| events/no-result | 未验证 | guarantees.md §7 | —（登记表没有这一行：测试里用了，登记表未登记（#634 快照记「未登记」）） | `rutis/tests/events.rs`、`go/rutis/internal/events/events_test.go`（#634 快照指第 433、10 行；登记表没有这一行） | 登记表未登记；#634 快照记「未登记」并注明 K 已覆盖，结果判定的 PT 归 #631，状态保持未验证 |
-| events/node-runtime | 未验证 | guarantees.md §8a | —（登记表没有这一行：测试里用了，登记表未登记（#634 快照记「未登记」）） | `node/rutis-runtime/test/runner-events.test.mjs`（#634 快照指第 1 行；登记表没有这一行） | 登记表未登记；#634 快照记「未登记」，与 `sdk/leaf-events` 重叠，`RunningRowHeard` 归 #613、扣住归 #630，状态保持未验证 |
-| events/old-host-refused | 未验证 | guarantees.md §8a | —（登记表没有这一行：测试里用了，登记表未登记（#634 快照记「未登记」）） | `rutis-bridge/tests/kotlin_runtime.rs`（#634 快照指第 76 行；登记表没有这一行） | 登记表未登记；#634 快照记「未登记」，同 `events/handshake`，握手判定表 PT 归 #631，状态保持未验证 |
-| events/raw | 未验证 | guarantees.md §7 | —（登记表没有这一行：测试里用了，登记表未登记（#634 快照记「未登记」）） | `rutis/tests/events.rs`（#634 快照指第 1527 行；登记表没有这一行） | 登记表未登记；#634 快照记「未登记」，原始 API 的擦除分发只有固定用例，PT 归 #631，状态保持未验证 |
-| events/registration | 未验证 | guarantees.md §8a | —（登记表没有这一行：测试里用了，登记表未登记（#634 快照记「未登记」）） | `go/rutis/internal/runtime/events_host_test.go`、`go/rutis/internal/runtime/events_test.go`（#634 快照指 events_host_test.go 第 182、231 行；登记表没有这一行） | 登记表未登记；#634 快照记「未登记」，读线程不等写归 #630、`RunningRowHeard` 归 #613，状态保持未验证 |
-| events/remote-entry | 未验证 | guarantees.md §7 | —（登记表没有这一行：测试里用了，登记表未登记（#634 快照记「未登记」）） | `rutis/tests/events.rs`（#634 快照指第 1249 行；登记表没有这一行） | 登记表未登记；#634 快照记「未登记」，远程条目按表条目处理只有固定用例，监听器表 PT 归 #631，状态保持未验证 |
-| events/remote-next | 未验证 | guarantees.md §7 | —（登记表没有这一行：测试里用了，登记表未登记（#634 快照记「未登记」）） | `rutis/tests/events.rs`（#634 快照指第 1334 行；登记表没有这一行） | 登记表未登记；#634 快照记「未登记」，只运行一次的 next 有 K 用例，"条目调用结束后再调用失败"没有 K 用例，状态保持未验证 |
-| events/remote-sync | 未验证 | guarantees.md §7 | —（登记表没有这一行：测试里用了，登记表未登记（#634 快照记「未登记」）） | `rutis/tests/events.rs`（#634 快照指第 1431 行；登记表没有这一行） | 登记表未登记；#634 快照记「未登记」，同步方式就地调用远程条目与 #614 的等待图相关，但没有登记证据，状态保持未验证 |
-| events/reports | 未验证 | guarantees.md §8a | —（登记表没有这一行：测试里用了，登记表未登记（#634 快照记「未登记」）） | `go/rutis/internal/runtime/events_test.go`（#634 快照指的 go/rutis/events_test.go 已不在；登记表没有这一行） | 登记表未登记；#634 快照记「未登记」，被拒的 emit 与登记有 Go 用例，没有 K 用例，状态保持未验证 |
-| events/serial | 未验证 | guarantees.md §7 | —（登记表没有这一行：测试里用了，登记表未登记（#634 快照记「未登记」）） | `go/rutis/events_session_test.go`、`go/rutis/internal/runtime/events_test.go`（#634 快照指的 go/rutis/events_test.go 已不在；登记表没有这一行） | 登记表未登记；快照记「未登记」并注明 K 已覆盖，但快照指的 Go 文件已不在，状态保持未验证 |
-| events/serial-error | 未验证 | guarantees.md §7 | —（登记表没有这一行：测试里用了，登记表未登记（#634 快照记「未登记」）） | `rutis/tests/events.rs`（#634 快照指第 496 行；登记表没有这一行） | 登记表未登记；#634 快照记「未登记」并注明 K 已覆盖，但没有登记表证据，状态保持未验证 |
-| events/session | 未验证 | guarantees.md §8a | —（登记表没有这一行：测试里用了，登记表未登记（#634 快照记「未登记」）） | `go/rutis/events_session_test.go`（#634 快照指第 27 行；登记表没有这一行） | 登记表未登记；#634 快照记「未登记」，调用链在等待图模型里（#614），其余只有固定用例，状态保持未验证 |
-| events/table-watch | 未验证 | guarantees.md §7 | —（登记表没有这一行：测试里用了，登记表未登记（#634 快照记「未登记」）） | `rutis/tests/events.rs`（#634 快照指第 1472 行；登记表没有这一行） | 登记表未登记；#634 快照记「未登记」，表的观察者由 #622 的监听器表模型管、`RegisteredThenSeen` 归 #613，现无登记证据，状态保持未验证 |
-| events/tool | 未验证 | guarantees.md §8a | —（登记表没有这一行：测试里用了，登记表未登记（#634 快照记「未登记」）） | `go/rutis/events_session_test.go`（#634 快照指第 384 行；登记表没有这一行） | 登记表未登记；#634 快照记「未登记」，测试工具的具体行为含计时，快照自己标「不适用」，但没有登记行，按未验证记 |
-| events/unload | 未验证 | guarantees.md §8a | —（登记表没有这一行：测试里用了，登记表未登记（#634 快照记「未登记」）） | `go/rutis/events_session_test.go`、`go/rutis/internal/runtime/events_test.go`（#634 快照指第 421、780、355 行；登记表没有这一行） | 登记表未登记；#634 快照记「未登记」，卸载取消并等待监听器归 #613、#630，截止时间是计时，状态保持未验证 |
-| events/unload-waits | 未验证 | guarantees.md §7 | —（登记表没有这一行：测试里用了，登记表未登记（#634 快照记「未登记」）） | `rutis/tests/events.rs`（#634 快照指第 1056 行；登记表没有这一行） | 登记表未登记；#634 快照记「未登记」，在途计数归 #622，且没有登记表证据，状态保持未验证 |
-| events/via-host | 未验证 | guarantees.md §8a | —（登记表没有这一行：测试里用了，登记表未登记（#634 快照记「未登记」）） | `go/rutis/events_session_test.go`（#634 快照指第 176、224 行；登记表没有这一行） | 登记表未登记；#634 快照记「未登记」，两条路径结果相同归 #613，没有登记表证据，状态保持未验证 |
-| events/waterfall-sync | 未验证 | guarantees.md §7 | —（登记表没有这一行：测试里用了，登记表未登记（#634 快照记「未登记」）） | `rutis/tests/events.rs`（#634 快照指第 685 行；登记表没有这一行） | 登记表未登记；#634 快照记「未登记」并注明 K 已覆盖，但没有登记表证据，状态保持未验证 |
-| events/withdrawn | 未验证 | guarantees.md §7 | —（登记表没有这一行：测试里用了，登记表未登记（#634 快照记「未登记」）） | `go/rutis/internal/runtime/events_test.go`（#634 快照指的 go/rutis/events_test.go 已不在；登记表没有这一行） | 登记表未登记；#634 快照记「未登记」，已撤下的监听器回复失败有 Go 用例，`WithdrawnStaysOut` 归 #613，状态保持未验证 |
+| bridge/cancellation | 未验证 | guarantees.md §10 | bridge/cancel-reaches-callee | `rutis-bridge/tests/swift_runtime.rs`（#634 快照指第 125 行） | 编号本身从未登记（#634 快照记「未登记」）；规则现由登记表 §10 的 `bridge/cancel-reaches-callee` 承载，测试带它的标记。状态沿用快照的「未验证」，不按登记表那一行的状态上调。 |
+| bridge/frame-limits | 未验证 | guarantees.md §10 | —（登记表没有同号的这一行：编号本身从未登记（#634 快照记「未登记」）。规则现在是两处——超过 16 MiB 以 1009 关闭通道在 `bridge/large-and-deep-values`（§10），未掩码 1002、二进制 1003、非 UTF-8 1007 是 RFC 6455 对 WebSocket 承载的要求，登记表不收 RFC 的转述） | `rutis-bridge/tests/swift_remote.rs`、`rutis-bridge/tests/kotlin_remote.rs`（#634 快照指第 298、282 行） | 编号本身从未登记（#634 快照记「未登记」）；1009 那一条由登记表 §10 的 `bridge/large-and-deep-values` 承载，测试带它的标记。各语言帧解码器的 FZ 仍归 #631；状态沿用快照的「未验证」，不按登记表那一行的状态上调。 |
+| events/12.1-args | 未验证 | guarantees.md §7 | events/by-name | `rutis/src/events/args.rs`（#634 快照指第 265 行；登记表没有这一行） | 编号本身从未登记（#634 快照记「未登记」）；规则现由登记表 §7 的 `events/by-name` 承载，测试带它的标记。参数形状的 PT 仍归 #631，现行只有固定用例；状态沿用快照的「未验证」，不按登记表那一行的状态上调。 |
+| events/async-listener | 未验证 | guarantees.md §7 | events/serial-bail | `rutis/tests/events.rs`（#634 快照指第 528 行；登记表没有这一行） | 编号本身从未登记（#634 快照记「未登记」）；规则现由登记表 §7 的 `events/serial-bail` 承载，测试带它的标记。状态沿用快照的「未验证」，不按登记表那一行的状态上调。 |
+| events/bail | 未验证 | guarantees.md §7 | events/serial-bail | `go/rutis/events_session_test.go`、`go/rutis/internal/runtime/events_test.go`（#634 快照指的 go/rutis/events_test.go 在 0.22 已不在） | 编号本身从未登记（#634 快照记「未登记」）；规则现由登记表 §7 的 `events/serial-bail` 承载，测试带它的标记。状态沿用快照的「未验证」，不按登记表那一行的状态上调。 |
+| events/bun-runtime | 未验证 | guarantees.md §12 | sdk/leaf-events | `bun/rutis-bun/test/runner.test.ts`（#634 快照指第 125 行等；登记表没有这一行） | 编号本身从未登记（#634 快照记「未登记」）；规则现由登记表 §12 的 `sdk/leaf-events` 承载，测试带它的标记。状态沿用快照的「未验证」，不按登记表那一行的状态上调。 |
+| events/cancel | 未验证 | guarantees.md §12 | sdk/leaf-events | `go/rutis/internal/runtime/events_test.go`（#634 快照指的 go/rutis/events_test.go 已不在；登记表没有这一行） | 编号本身从未登记（#634 快照记「未登记」）；规则现由登记表 §12 的 `sdk/leaf-events` 承载，测试带它的标记。状态沿用快照的「未验证」，不按登记表那一行的状态上调。 |
+| events/cordis | 未验证 | guarantees.md §8a | events/one-bus | `node/rutis-runtime/test/cordis-events.test.mjs`（#634 快照指第 1 行；登记表没有这一行） | 编号本身从未登记（#634 快照记「未登记」）；规则现由登记表 §8a 的 `events/one-bus` 承载，测试带它的标记。状态沿用快照的「未验证」，不按登记表那一行的状态上调。 |
+| events/emit-order | 未验证 | guarantees.md §7 | events/emit | `rutis/tests/events.rs`、`go/rutis/events_session_test.go`（#634 快照指第 329、267 行；登记表没有这一行） | 编号本身从未登记（#634 快照记「未登记」）；规则现由登记表 §7 的 `events/emit` 承载，测试带它的标记。状态沿用快照的「未验证」，不按登记表那一行的状态上调。 |
+| events/emit-reported | 未验证 | guarantees.md §15 | host/test-command | `go/rutis/events_session_test.go`（#634 快照指第 426 行；登记表没有这一行） | 编号本身从未登记（#634 快照记「未登记」）；规则现由登记表 §15 的 `host/test-command` 承载，测试带它的标记。状态沿用快照的「未验证」，不按登记表那一行的状态上调。 |
+| events/filter-emit | 未验证 | guarantees.md §7 | events/filter | `rutis/tests/events.rs`（#634 快照指第 1002 行；登记表没有这一行） | 编号本身从未登记（#634 快照记「未登记」）；规则现由登记表 §7 的 `events/filter` 承载，测试带它的标记。状态沿用快照的「未验证」，不按登记表那一行的状态上调。 |
+| events/handshake | 未验证 | guarantees.md §8a | events/old-peer-refused | `go/rutis/events_session_test.go`（#634 快照指第 453 行；登记表没有这一行） | 编号本身从未登记（#634 快照记「未登记」）；规则现由登记表 §8a 的 `events/old-peer-refused` 承载，测试带它的标记。握手判定表的 PT 仍归 #631；状态沿用快照的「未验证」，不按登记表那一行的状态上调。 |
+| events/js-bus | 未验证 | guarantees.md §12 | sdk/leaf-events | `node/rutis-runtime/test/events.test.mjs`（#634 快照指第 1 行；登记表没有这一行） | 编号本身从未登记（#634 快照记「未登记」）；规则现由登记表 §12 的 `sdk/leaf-events` 承载，测试带它的标记。状态沿用快照的「未验证」，不按登记表那一行的状态上调。 |
+| events/liveness | 未验证 | guarantees.md §7 | events/lifecycle | `rutis/tests/events.rs`（#634 快照指第 1108 行；登记表没有这一行） | 编号本身从未登记（#634 快照记「未登记」）；规则现由登记表 §7 的 `events/lifecycle` 承载，测试带它的标记。在途计数归 #622、`WithdrawnStaysOut` 归 #613；状态沿用快照的「未验证」，不按登记表那一行的状态上调。 |
+| events/next | 未验证 | guarantees.md §7 | events/waterfall | `go/rutis/events_session_test.go`（#634 快照指的 go/rutis/events_test.go 已不在；登记表没有这一行） | 编号本身从未登记（#634 快照记「未登记」）；规则现由登记表 §7 的 `events/waterfall` 承载，测试带它的标记。状态沿用快照的「未验证」，不按登记表那一行的状态上调。 |
+| events/next-misuse | 未验证 | guarantees.md §7 | events/one-table | `rutis/tests/events.rs`（#634 快照指第 206 行；登记表没有这一行） | 编号本身从未登记（#634 快照记「未登记」）；规则现由登记表 §7 的 `events/one-table` 承载，测试带它的标记。状态沿用快照的「未验证」，不按登记表那一行的状态上调。 |
+| events/no-result | 未验证 | guarantees.md §7 | events/serial-bail | `rutis/tests/events.rs`、`go/rutis/internal/events/events_test.go`（#634 快照指第 433、10 行；登记表没有这一行） | 编号本身从未登记（#634 快照记「未登记」）；规则现由登记表 §7 的 `events/serial-bail` 承载，测试带它的标记。结果判定的 PT 仍归 #631；状态沿用快照的「未验证」，不按登记表那一行的状态上调。 |
+| events/node-runtime | 未验证 | guarantees.md §12 | sdk/leaf-events | `node/rutis-runtime/test/runner-events.test.mjs`（#634 快照指第 1 行；登记表没有这一行） | 编号本身从未登记（#634 快照记「未登记」）；规则现由登记表 §12 的 `sdk/leaf-events` 承载，测试带它的标记。状态沿用快照的「未验证」，不按登记表那一行的状态上调。 |
+| events/old-host-refused | 未验证 | guarantees.md §8a | events/old-peer-refused | `rutis-bridge/tests/kotlin_runtime.rs`（#634 快照指第 76 行；登记表没有这一行） | 编号本身从未登记（#634 快照记「未登记」）；规则现由登记表 §8a 的 `events/old-peer-refused` 承载，测试带它的标记。状态沿用快照的「未验证」，不按登记表那一行的状态上调。 |
+| events/raw | 未验证 | guarantees.md §7 | events/remote | `rutis/tests/events.rs`（#634 快照指第 1527 行；登记表没有这一行） | 编号本身从未登记（#634 快照记「未登记」）；规则现由登记表 §7 的 `events/remote` 承载，测试带它的标记。原始分发的 PT 仍归 #631；状态沿用快照的「未验证」，不按登记表那一行的状态上调。 |
+| events/registration | 未验证 | guarantees.md §12 | sdk/leaf-events | `go/rutis/internal/runtime/events_host_test.go`、`go/rutis/internal/runtime/events_test.go`（#634 快照指 events_host_test.go 第 182、231 行；登记表没有这一行） | 编号本身从未登记（#634 快照记「未登记」）；规则现由登记表 §12 的 `sdk/leaf-events` 承载，测试带它的标记。状态沿用快照的「未验证」，不按登记表那一行的状态上调。 |
+| events/remote-entry | 未验证 | guarantees.md §7 | events/remote | `rutis/tests/events.rs`（#634 快照指第 1249 行；登记表没有这一行） | 编号本身从未登记（#634 快照记「未登记」）；规则现由登记表 §7 的 `events/remote` 承载，测试带它的标记。监听器表的 PT 仍归 #631；状态沿用快照的「未验证」，不按登记表那一行的状态上调。 |
+| events/remote-next | 未验证 | guarantees.md §7 | events/remote | `rutis/tests/events.rs`（#634 快照指第 1334 行；登记表没有这一行） | 编号本身从未登记（#634 快照记「未登记」）；规则现由登记表 §7 的 `events/remote` 承载，测试带它的标记。状态沿用快照的「未验证」，不按登记表那一行的状态上调。 |
+| events/remote-sync | 未验证 | guarantees.md §7 | events/remote | `rutis/tests/events.rs`（#634 快照指第 1431 行；登记表没有这一行） | 编号本身从未登记（#634 快照记「未登记」）；规则现由登记表 §7 的 `events/remote` 承载，测试带它的标记。状态沿用快照的「未验证」，不按登记表那一行的状态上调。 |
+| events/reports | 未验证 | guarantees.md §12 | sdk/leaf-events | `go/rutis/internal/runtime/events_test.go`（#634 快照指的 go/rutis/events_test.go 已不在；登记表没有这一行） | 编号本身从未登记（#634 快照记「未登记」）；规则现由登记表 §12 的 `sdk/leaf-events` 承载，测试带它的标记。状态沿用快照的「未验证」，不按登记表那一行的状态上调。 |
+| events/serial | 未验证 | guarantees.md §7 | events/serial-bail | `go/rutis/events_session_test.go`、`go/rutis/internal/runtime/events_test.go`（#634 快照指的 go/rutis/events_test.go 已不在；登记表没有这一行） | 编号本身从未登记（#634 快照记「未登记」）；规则现由登记表 §7 的 `events/serial-bail` 承载，测试带它的标记。状态沿用快照的「未验证」，不按登记表那一行的状态上调。 |
+| events/serial-error | 未验证 | guarantees.md §7 | events/serial-bail | `rutis/tests/events.rs`（#634 快照指第 496 行；登记表没有这一行） | 编号本身从未登记（#634 快照记「未登记」）；规则现由登记表 §7 的 `events/serial-bail` 承载，测试带它的标记。状态沿用快照的「未验证」，不按登记表那一行的状态上调。 |
+| events/session | 未验证 | guarantees.md §12 | sdk/leaf-events | `go/rutis/events_session_test.go`（#634 快照指第 27 行；登记表没有这一行） | 编号本身从未登记（#634 快照记「未登记」）；规则现由登记表 §12 的 `sdk/leaf-events` 承载，测试带它的标记。状态沿用快照的「未验证」，不按登记表那一行的状态上调。 |
+| events/table-watch | 未验证 | guarantees.md §7 | events/remote | `rutis/tests/events.rs`（#634 快照指第 1472 行；登记表没有这一行） | 编号本身从未登记（#634 快照记「未登记」）；规则现由登记表 §7 的 `events/remote` 承载，测试带它的标记。表的模型归 #622、`RegisteredThenSeen` 归 #613；状态沿用快照的「未验证」，不按登记表那一行的状态上调。 |
+| events/tool | 未验证 | guarantees.md §15 | host/test-command | `go/rutis/events_session_test.go`（#634 快照指第 384 行；登记表没有这一行） | 编号本身从未登记（#634 快照记「未登记」）；规则现由登记表 §15 的 `host/test-command` 承载，测试带它的标记。状态沿用快照的「未验证」，不按登记表那一行的状态上调。 |
+| events/unload | 未验证 | guarantees.md §12 | sdk/leaf-events | `go/rutis/events_session_test.go`、`go/rutis/internal/runtime/events_test.go`（#634 快照指第 421、780、355 行；登记表没有这一行） | 编号本身从未登记（#634 快照记「未登记」）；规则现由登记表 §12 的 `sdk/leaf-events` 承载，测试带它的标记。状态沿用快照的「未验证」，不按登记表那一行的状态上调。 |
+| events/unload-waits | 未验证 | guarantees.md §7 | events/lifecycle | `rutis/tests/events.rs`（#634 快照指第 1056 行；登记表没有这一行） | 编号本身从未登记（#634 快照记「未登记」）；规则现由登记表 §7 的 `events/lifecycle` 承载，测试带它的标记。在途计数归 #622；状态沿用快照的「未验证」，不按登记表那一行的状态上调。 |
+| events/via-host | 未验证 | guarantees.md §12 | sdk/leaf-events | `go/rutis/events_session_test.go`（#634 快照指第 176、224 行；登记表没有这一行） | 编号本身从未登记（#634 快照记「未登记」）；规则现由登记表 §12 的 `sdk/leaf-events` 承载，测试带它的标记。状态沿用快照的「未验证」，不按登记表那一行的状态上调。 |
+| events/waterfall-sync | 未验证 | guarantees.md §7 | events/waterfall | `rutis/tests/events.rs`（#634 快照指第 685 行；登记表没有这一行） | 编号本身从未登记（#634 快照记「未登记」）；规则现由登记表 §7 的 `events/waterfall` 承载，测试带它的标记。状态沿用快照的「未验证」，不按登记表那一行的状态上调。 |
+| events/withdrawn | 未验证 | guarantees.md §12 | sdk/leaf-events | `go/rutis/internal/runtime/events_test.go`（#634 快照指的 go/rutis/events_test.go 已不在；登记表没有这一行） | 编号本身从未登记（#634 快照记「未登记」）；规则现由登记表 §12 的 `sdk/leaf-events` 承载，测试带它的标记。`WithdrawnStaysOut` 归 #613；状态沿用快照的「未验证」，不按登记表那一行的状态上调。 |
 
 ### 协议清单 session（350 行）
 
@@ -3289,7 +3289,7 @@
 | NOD-1-3 | 部分验证 | guarantees.md §13 | host/link-state-output | `crates/rutis-bridge/tests/websocket.rs::authentication_routing_and_compatibility_failures_carry_their_category`、`crates/rutis-host/tests/dial_conformance.rs::python::an_incompatible_listener_stops_the_dialer` | link 凭据被拒（403、证书不受信任）按退避重试、协议不兼容时停止并报告，由登记表 `host/link-state-output`（§13）的输出行与 `bridge/websocket-refusal-categories`（§10）的类别承载；节点 link 与拨出的运行时走同一套 `rutis-host/dial` 规则；「每 30 秒」的节奏在 `dial_conformance` 里是缩短过的；issue 快照记「部分」 |
 | NOD-1-4 | 不单独计数 | guarantees.md §13 | host/link-state-output | `crates/rutis-host/tests/remote_runtimes.rs::run_says_when_a_dial_row_connects_and_disconnects` | `rutis-host run` 在 link 状态变化时打印一行，由登记表 `host/link-state-output`（§13）承载；0.19 起这行改为连接插件的输出，类别与「不带 token」仍现行，逐字文字待重抽；这是输出格式，不单独计数；issue 快照记「不适用」 |
 | NOD-1-5 | 明确不保证 | guarantees.md §15 | host/row-state-lines | — | 明确不保证：节点行自己的 `running` 只说明这一行在运行，不说明连上了；连接状态另有一行（登记表 `host/link-state-output`，§13）；issue 快照记「明确不保证」 |
-| NOD-3-1 | 未验证 | 0.22 无此条 | —（导出 / 导入名单在 0.19 删除（`design-remote-session-2026-10-28.md` §八、§十二）：节点之间是一条总线、每个名字都在，没有名单可写名字或 `*` 前缀） | — | 没有名单，前缀写法的规则就没有对象；状态沿用复核结论（未验证），下一轮应改为「已撤回」；issue 快照记「未覆盖」 |
+| NOD-3-1 | 已撤回 | 0.22 无此条 | —（导出 / 导入名单在 0.19 删除（`design-remote-session-2026-10-28.md` §八、§十二）：节点之间是一条总线、每个名字都在，没有名单可写名字或 `*` 前缀） | — | 没有名单，前缀写法的规则就没有对象；0.19 删除了导出 / 导入名单（`design-remote-session-2026-10-28.md` §八、§十二；`migration-0.19.md`），#1212 改记已撤回；issue 快照记「未覆盖」 |
 | NOD-3-2 | 已验证 | guarantees.md §8a | events/node-links | `crates/rutis-host/tests/nodes.rs::two_hosts_as_nodes_share_services_events_and_run_rows`、`crates/rutis-bridge/tests/session_plugin.rs::events_reach_both_ways` | 本条写给的是导出 / 导入名单（「两端都写了才共享」），名单在 0.19 删除；现行规则是登记表 `events/node-links`（§8a）：一个名字在节点总线上，连接建立即到、断开即走，同一个名字两个方向都能用。证据解析，状态沿用复核结论（已验证），下一轮按 `events/node-links` 重写文字；issue 快照记「已覆盖」 |
 | NOD-3-3 | 已验证 | guarantees.md §8a | events/node-links、events/one-bus | `crates/rutis-loader/tests/events_conformance.rs::events_with_x_a_node_leaf_plugin` | 对端的监听器是本节点总线上的条目，规则与本机相同：五种方式、过滤、所有值类型，由登记表 `events/node-links` 与 `events/one-bus`（§8a）两行承载，事件一致性用例的 `node` 位置覆盖；issue 快照记「已覆盖」，证据解析 |
 | NOD-3-4 | 部分验证 | guarantees.md §8a | events/node-links | `crates/rutis-bridge/tests/session_plugin.rs::events_reach_both_ways`、`crates/rutis-bridge/tests/fault_links.rs::a_call_in_flight_when_the_connection_drops_fails_and_ran_once` | 连接断开时对端条目离开总线、进行中的调用失败一次：前半由登记表 `events/node-links`（§8a）承载，后半由 `bridge/in-flight-call-fails-once`（§10）承载，两半各有一个用例，断链时条目离开没有跨节点的具名用例；issue 快照记「部分」 |
@@ -3328,7 +3328,7 @@
 
 ## 7. 这一轮改了什么、还剩什么
 
-- **已撤回**：issue 快照的 184 条之外，本轮按 0.19 / 0.22 删除的机制追加了 101 条（见 §3 的「已撤回（本轮）」列与 §4 的缺口）。它们仍在 `rules/protocol-*.md` 里，统计不计入。
+- **已撤回**：issue 快照的 184 条之外，本轮按 0.19 / 0.22 删除的机制追加了 102 条（见 §3 的「已撤回（本轮）」列与 §4 的缺口）。它们仍在 `rules/protocol-*.md` 里，统计不计入。
 - **未完成**：没有一行重写规则文字——协议清单的 1368 条现行规则仍是 issue 快照原文；远程没有对应的新规格，只有设计稿与指南（0.19 之后的连接行为在 `design-remote-session-2026-10-28.md`）。§6 按原因列出没有锚点的规则；写规格是 #635 的后续，不是这一轮能补的。
 - **证据**：只核对 `现有形式化` 列的具名引用；备注列里的旧路径（如 `crates/rutis-bridge/src/cordis/server.rs`）没有逐条清，重抽时一并处理。
 - **语义**：TRC 分区（规则文字整体重写）与协议清单 `registry-1`、`registry-2`、`session`、`events`、`runtime`、`remote`（来源、锚点、证据、状态）已在 §5 全部重抽，协议清单没有剩下的分区；规则文字仍是 issue 快照原文。规则的「已撤回 / 明确不保证 / 未验证 / 部分验证 / 已验证」按上面的四件事定，不按记忆。

@@ -1654,6 +1654,9 @@ async fn evict_and_finalize(
 }
 
 #[cfg(test)]
+mod lookup_decision_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};

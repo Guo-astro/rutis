@@ -1,0 +1,4 @@
+{"op":"invoke","id":"far:1","path":[],"target":"conformance","method":"make","args":{"type":"list","value":[]}}
+{"op":"invoke","id":"far:2","path":[],"target":"conformance","method":"apply","args":{"type":"list","value":[{"type":"reference","value":{"id":1,"home":true,"kind":"function","origin":[]}},{"type":"data","value":"x"}]}}
+{"op":"release","reference":1,"count":1}
+{"op":"cancel","id":"far:2"}

@@ -1171,6 +1171,67 @@ mod tests {
         ));
     }
 
+    /// A build that fails keeps the build the runtime runs: nothing is
+    /// replaced and no restart is asked for, and the next change tries
+    /// again (#627, `host/dev-failed-reload-keeps-old`).
+    /// guarantee: host/dev-failed-reload-keeps-old
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_failed_rebuild_keeps_the_old_build() {
+        use rutis::host::CtxHost;
+
+        struct Failing {
+            binary: PathBuf,
+        }
+
+        impl DevBuild for Failing {
+            fn name(&self) -> &str {
+                "demo"
+            }
+
+            fn runtime(&self) -> &str {
+                "go-demo"
+            }
+
+            fn rebuild(&self, _n: u32) -> rutis::host::BoxFuture<'_, Result<PathBuf, String>> {
+                Box::pin(async { Err("main.go:3:1: a syntax error".to_owned()) })
+            }
+
+            fn binary(&self, n: u32) -> PathBuf {
+                self.binary.with_file_name(format!("demo-{n}"))
+            }
+
+            fn is_source(&self, path: &Path) -> bool {
+                path.extension().is_some_and(|extension| extension == "go")
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let binary = dir.path().join("demo-1");
+        let config: HostConfig = serde_json::from_value(serde_json::json!({
+            "id": "test",
+            "runtimes": { "go": { "binaries": [binary.clone()] } },
+        }))
+        .unwrap();
+        let host = Host::start(&config).await.unwrap();
+        let mut project = Project {
+            dir: dir.path().to_owned(),
+            own: "demo".into(),
+            compiled: Some(("go", Box::new(Failing { binary }))),
+            build: 1,
+            debug: false,
+            prefix_output: false,
+            stale: Vec::new(),
+            previous: Previous::default(),
+            warned: HashSet::new(),
+        };
+        project.rebuild(&host).await;
+        assert_eq!(project.build, 1, "the build it runs changed");
+        assert!(project.stale.is_empty(), "a build was dropped");
+        let runtimes = host.binaries_of("go").unwrap();
+        assert!(runtimes.states().is_empty(), "a runtime was restarted");
+        host.root().shutdown().await.unwrap();
+    }
+
     /// The runtime a row runs in: its prefix, or Node; none for a peer, or
     /// a runtime not local.
     #[test]

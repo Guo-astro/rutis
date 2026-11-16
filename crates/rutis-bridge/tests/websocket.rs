@@ -656,6 +656,7 @@ fn connected(server: &Server, client: &Client) -> (Channel, Channel, Registered)
     (dialed, accepted, registered)
 }
 
+/// guarantee: bridge/large-and-deep-values
 #[test]
 fn messages_over_the_limit_close_the_channel_either_way() {
     let small = Limits {

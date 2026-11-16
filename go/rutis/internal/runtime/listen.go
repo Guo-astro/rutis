@@ -77,6 +77,9 @@ const (
 	rejected = 4003
 )
 
+// errClosed is what a write after the connection's close frame says.
+var errClosed = errors.New("connection closed")
+
 // heartbeat is the ping interval and how long a silent far end is kept
 // (RUTIS_HEARTBEAT=<ping ms>,<timeout ms> shortens them for tests).
 func heartbeat() (time.Duration, time.Duration) {
@@ -257,6 +260,13 @@ type wsConn struct {
 	// farClose is the code of the far end's close frame, once it closed
 	// with one.
 	farClose atomic.Int32
+	// closing says this side has sent (or is sending) its close frame: from
+	// then on no other frame goes out (RFC 6455 §5.5.1).
+	closing atomic.Bool
+	// sendGate, when a test sets it, runs in Send between the check that the
+	// connection is open and the write: it makes the interleaving where a
+	// close lands in between happen every time. Nil in production.
+	sendGate func()
 }
 
 func newWSConn(conn net.Conn, reader *bufio.Reader) *wsConn {
@@ -322,6 +332,11 @@ func (ws *wsConn) writeFrame(opcode byte, payload []byte) error {
 	}
 	ws.writeMu.Lock()
 	defer ws.writeMu.Unlock()
+	// A Send that passed its check before closeWith set closing waits here and
+	// gives up, so no frame is written after the close frame.
+	if opcode != 0x8 && ws.closing.Load() {
+		return errClosed
+	}
 	_ = ws.conn.SetWriteDeadline(time.Now().Add(30 * time.Second))
 	if _, err := ws.conn.Write(append(header, payload...)); err != nil {
 		return err
@@ -337,8 +352,11 @@ func (ws *wsConn) Send(message []byte) error {
 	}
 	select {
 	case <-ws.done:
-		return errors.New("connection closed")
+		return errClosed
 	default:
+	}
+	if ws.sendGate != nil {
+		ws.sendGate()
 	}
 	return ws.writeFrame(0x1, message)
 }
@@ -452,6 +470,9 @@ func (ws *wsConn) readFrame() (bool, byte, []byte, error) {
 // closeWith sends a close frame with `code` and closes the connection.
 func (ws *wsConn) closeWith(code int, reason string) {
 	ws.once.Do(func() {
+		// Set before the close frame is written: a frame writer waiting for
+		// writeMu gives up instead of writing after it.
+		ws.closing.Store(true)
 		if len(reason) > 123 {
 			reason = reason[:123]
 		}
@@ -467,6 +488,7 @@ func (ws *wsConn) closeWith(code int, reason string) {
 
 func (ws *wsConn) shut() {
 	ws.once.Do(func() {
+		ws.closing.Store(true)
 		close(ws.done)
 		ws.conn.Close()
 	})

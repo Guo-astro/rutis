@@ -3398,6 +3398,7 @@ name = "rutis-loader"
 version = "0.21.0"
 dependencies = [
  "libc",
+ "proptest",
  "rutis",
  "rutis-bridge",
  "rutis-test-support",

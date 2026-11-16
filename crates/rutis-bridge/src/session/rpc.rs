@@ -3139,7 +3139,15 @@ impl Connection {
         waits::answered(&self.0.tag, &id);
         let result = {
             let mut queued = self.0.outbound.queued.lock().unwrap();
-            let (frame, grants) = match &result {
+            // The session ended before the answer was encoded: nothing can
+            // be written, and a reference the answer grants would be put
+            // back in the export table the ended session cleared. The
+            // answer's future holds the connection that made it, so that
+            // entry would keep the session alive for good (#1216).
+            if self.0.calls.lock().unwrap().closed.is_some() {
+                return;
+            }
+            let (frame, mut grants) = match &result {
                 Ok(value) => match self.encode_granting(value, MAX_DEPTH) {
                     Ok((value, grants)) => (
                         Frame::Return {
@@ -3176,7 +3184,7 @@ impl Connection {
             let bytes = match self.serialized(&frame, self.0.max_message, &described) {
                 Ok(bytes) => Ok(bytes),
                 Err(error) => {
-                    self.ungrant(grants);
+                    self.ungrant(std::mem::take(&mut grants));
                     serde_json::to_vec(&Frame::Throw {
                         id,
                         error: error.into(),
@@ -3184,7 +3192,19 @@ impl Connection {
                     .map_err(transport)
                 }
             };
-            bytes.and_then(|bytes| self.write_bytes_locked(&mut queued, bytes))
+            match bytes {
+                Ok(bytes) => match self.write_bytes_locked(&mut queued, bytes) {
+                    Ok(()) => Ok(()),
+                    Err(error) => {
+                        // Nothing went out, and the session may have ended
+                        // while the answer was encoded: give back what it
+                        // granted, or it stays exported for good (#1216).
+                        self.ungrant(grants);
+                        Err(error)
+                    }
+                },
+                Err(error) => Err(error),
+            }
         };
         if let Err(error) = result {
             self.close(error);

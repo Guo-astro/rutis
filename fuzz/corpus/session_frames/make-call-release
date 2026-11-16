@@ -1,0 +1,3 @@
+{"op":"invoke","id":"far:1","path":[],"target":"conformance","method":"make","args":{"type":"list","value":[]}}
+{"op":"call","id":"far:2","path":[],"reference":1,"args":{"type":"list","value":[{"type":"data","value":1}]}}
+{"op":"release","reference":1,"count":1}

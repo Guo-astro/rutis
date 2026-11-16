@@ -166,13 +166,10 @@ func TestARefusedReplyReleasesItsReference(t *testing.T) {
 }
 
 // rule: SESS-47, SES-10-4, specs/call-lifecycle (the reader write-back),
-// #630. The reader writes a refused reply's release itself. While another
-// frame's write is held, that write holds writeMu, and the reader stops
-// reading the frames behind it: a reader that writes its write-back
-// directly does not read on under backpressure.
+// #630, #1210. A refused reply's release is written by the session's writer,
+// not by the reader: while another frame's write is held, that write holds
+// writeMu, and the reader goes on reading the frames behind it.
 func TestTheReaderDoesNotWaitForAReleaseWrite(t *testing.T) {
-	// The issue has the interleaving; remove this skip when it is fixed.
-	t.Skip("blocked on #1210: the reader writes releaseAll on the reading goroutine")
 	session, channel, arrived := openBlockedSession(t)
 	wait, err := session.Send(context.Background(), "x", "m", nil, false)
 	if err != nil {

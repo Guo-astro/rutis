@@ -275,12 +275,14 @@ pub fn apply_patches(layers: &[Layer]) -> Composed {
         for (patch_index, patch) in layer.patches.iter().enumerate() {
             let id = patch.id.as_deref().filter(|id| !id.is_empty());
             if let Some(insert) = &patch.insert {
-                let built: Vec<Child> = insert
-                    .iter()
-                    .map(|value| arena.build(value.clone(), layer_index))
-                    .collect();
                 match id {
-                    None => root.extend(built),
+                    None => {
+                        let built: Vec<Child> = insert
+                            .iter()
+                            .map(|value| arena.build(value.clone(), layer_index))
+                            .collect();
+                        root.extend(built);
+                    }
                     Some(id) => {
                         let Some(&target) = arena.index.get(id) else {
                             warn(
@@ -290,8 +292,7 @@ pub fn apply_patches(layers: &[Layer]) -> Composed {
                             );
                             continue;
                         };
-                        let node = &mut arena.nodes[target];
-                        if !node.fields.get("group").is_some_and(truthy) {
+                        if !arena.nodes[target].fields.get("group").is_some_and(truthy) {
                             warn(
                                 layer_index,
                                 patch_index,
@@ -299,6 +300,15 @@ pub fn apply_patches(layers: &[Layer]) -> Composed {
                             );
                             continue;
                         }
+                        // Only rows an insert reaches are indexed, so that
+                        // later patches can address them — as JavaScript's
+                        // `buildMap` runs on an insert only when it is
+                        // applied.
+                        let built: Vec<Child> = insert
+                            .iter()
+                            .map(|value| arena.build(value.clone(), layer_index))
+                            .collect();
+                        let node = &mut arena.nodes[target];
                         let config = std::mem::replace(&mut node.config, Config::Absent);
                         let mut children = match config {
                             Config::Children(children) => children,

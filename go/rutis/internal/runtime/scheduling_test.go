@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-// rule: events/cancel, events/registration ("撤下之后不再开始", #630).
+// guarantee: sdk/leaf-events ("撤下之后不再开始", #630、#1138).
 // A listener withdrawn while one of its emits is still queued starts no
 // invocation: the queued one re-checks that its listener is live after the
 // gate the test holds opens, and answers nothing, the withdrawal it raced

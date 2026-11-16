@@ -245,6 +245,15 @@ impl TransitionTask {
     pub(crate) fn complete(&self, err: Option<Arc<ErrorKind>>) {
         let _ = self.done_tx.send(TaskDone::Done(err));
     }
+
+    /// Complete only while the task is still `Running`: for a caller that
+    /// checks `alive` after posting, where the driver may already have
+    /// completed the task with the transition's real result (#1194).
+    pub(crate) fn complete_if_running(&self, err: Option<Arc<ErrorKind>>) {
+        if matches!(*self.done_tx.borrow(), TaskDone::Running) {
+            self.complete(err);
+        }
+    }
 }
 
 pub(crate) enum Intent {
@@ -293,7 +302,9 @@ pub(crate) fn post_join_to(
     match intents.send(make(task.clone())) {
         Ok(()) => {
             if !alive.load(Ordering::SeqCst) {
-                task.complete(stopped_error());
+                // The driver may have handled the intent and completed the
+                // task before it cleared `alive` (#1194): keep that result.
+                task.complete_if_running(stopped_error());
             }
             true
         }
@@ -668,11 +679,13 @@ impl FiberInner {
 
     /// Post an intent that carries a completion task. `alive` is checked again
     /// after sending: if the send landed after the driver drained its mailbox
-    /// (so nothing will handle the intent), the task completes at once.
-    /// Completing twice leaves no waiter behind. This closes the race "alive
-    /// checked, driver exits and drains, send lands". The task completes with
-    /// the fiber's error (or `Closed` while the instance is closing), not with
-    /// `Ok`: a driver that stopped in Failed must not report success.
+    /// (so nothing will handle the intent), the task completes at once. A task
+    /// the driver already completed keeps its result (only a `Running` task is
+    /// completed here), so every join sees the transition's own result
+    /// (#1194). This closes the race "alive checked, driver exits and drains,
+    /// send lands". The task completes with the fiber's error (or `Closed`
+    /// while the instance is closing), not with `Ok`: a driver that stopped in
+    /// Failed must not report success.
     pub(crate) fn post_join(
         &self,
         task: Arc<TransitionTask>,
@@ -1943,7 +1956,11 @@ impl FiberView {
         if newly_registered {
             self.inner.post(Intent::Dispose);
             if !self.inner.alive.load(Ordering::SeqCst) {
-                task.complete(self.inner.stopped_error());
+                // The driver completes the terminal task before it clears
+                // `alive`, so a task still `Running` here was not handled:
+                // completing it again would overwrite the cleanup's result
+                // with `Closed` for every later join (#1194).
+                task.complete_if_running(self.inner.stopped_error());
             }
         }
         Ok(task)
@@ -2359,6 +2376,34 @@ mod transient_tests;
 // (`crate::sync`; CONTRIBUTING.md says how to run them).
 #[cfg(all(test, rutis_shuttle))]
 mod shuttle_tests;
+
+#[cfg(test)]
+mod completion_tests {
+    use super::*;
+
+    /// A late `alive` recheck (`register_dispose`, `post_join_to`) may not
+    /// replace a result the driver already published: completing the finished
+    /// task again with `stopped_error()` would turn a successful cleanup into
+    /// `Closed` for every join that attaches after it (#1194).
+    #[tokio::test]
+    async fn complete_if_running_keeps_a_published_result() {
+        let task = TransitionTask::new();
+        task.complete(None);
+        task.complete_if_running(Some(Arc::new(ErrorKind::Closed)));
+        join_task(&task)
+            .await
+            .expect("the driver's clean result was overwritten");
+
+        // A task still `Running` is completed: the driver never touched it.
+        let running = TransitionTask::new();
+        let closed = Arc::new(ErrorKind::Closed);
+        running.complete_if_running(Some(closed.clone()));
+        let error = join_task(&running)
+            .await
+            .expect_err("a running task was not completed");
+        assert!(Arc::ptr_eq(&error, &closed), "a join got another error");
+    }
+}
 
 #[cfg(test)]
 mod running_tests {

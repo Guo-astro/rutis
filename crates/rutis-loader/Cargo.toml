@@ -41,6 +41,8 @@ libc = "0.2"
 [dev-dependencies]
 # Path only: cargo publish drops it.
 rutis-test-support = { path = "../rutis-test-support" }
+# Random layers against the JavaScript original, and malformed patches (#631).
+proptest = { version = "1.12.0", default-features = false, features = ["std"] }
 tokio = { workspace = true, features = ["full", "test-util"] }
 tempfile = "3"
 url = "2"

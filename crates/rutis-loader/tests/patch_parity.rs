@@ -70,6 +70,56 @@ fn inputs_are_not_modified_and_dropping_a_layer_reverts() {
 
 /// guarantee: loader/patch-parity
 #[test]
+fn a_skipped_insert_does_not_make_its_rows_addressable() {
+    // The JavaScript's `buildMap` runs on an insert only when the insert
+    // is applied; a skipped one leaves its rows out of the id index, so a
+    // later patch aimed at one of them warns instead of quietly changing
+    // nothing.
+    for target in ["missing", "leaf"] {
+        let layers = vec![
+            Layer::new(
+                "base",
+                serde_json::from_value(json!([{ "insert": [{ "id": "leaf", "name": "pl" }] }]))
+                    .unwrap(),
+            ),
+            Layer::new(
+                "skip",
+                serde_json::from_value(json!([{
+                    "insert": [{ "id": "x", "name": "px", "group": true }],
+                    "id": target
+                }]))
+                .unwrap(),
+            ),
+            Layer::new(
+                "late",
+                serde_json::from_value(json!([{ "id": "x", "disabled": true }])).unwrap(),
+            ),
+        ];
+        let composed = apply_patches(&layers);
+        assert_eq!(composed.rows, vec![json!({ "id": "leaf", "name": "pl" })]);
+        assert!(
+            composed
+                .flat
+                .iter()
+                .all(|row| row.id.as_deref() != Some("x")),
+            "the skipped rows are not in the tree: {:?}",
+            composed.flat
+        );
+        let messages: Vec<&str> = composed
+            .warnings
+            .iter()
+            .map(|warning| warning.message.as_str())
+            .collect();
+        assert_eq!(messages.len(), 2, "{target}: {messages:?}");
+        assert_eq!(
+            messages[1], "patch: entry \"x\" not found",
+            "{target}: {messages:?}"
+        );
+    }
+}
+
+/// guarantee: loader/patch-parity
+#[test]
 fn flat_rows_carry_owner_parent_and_overrides() {
     let composed = apply_patches(&[
         Layer::new(
