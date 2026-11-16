@@ -1758,6 +1758,123 @@ impl Drop for Process {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
+
+    /// A name or label `check_scoped` accepts as one part of a scope: no
+    /// NUL. Labels are separate, and may not be empty ([`scope_label`]).
+    fn scope_text() -> impl Strategy<Value = String> {
+        prop::string::string_regex(r"[^\x00]{0,24}").unwrap()
+    }
+
+    fn scope_label() -> impl Strategy<Value = Option<String>> {
+        prop::option::of(prop::string::string_regex(r"[^\x00]{1,24}").unwrap())
+    }
+
+    /// A configured isolate label: #637 refuses U+0001 in one, and a NUL is
+    /// refused everywhere.
+    fn configured_label() -> impl Strategy<Value = Option<String>> {
+        prop::option::of(prop::string::string_regex(r"[^\x00\x01]{1,24}").unwrap())
+    }
+
+    /// A row key: neither separator, NUL or U+0001.
+    fn row_key() -> impl Strategy<Value = String> {
+        prop::string::string_regex(r"[^\x00\x01]{0,24}").unwrap()
+    }
+
+    proptest! {
+        /// guarantee: loader/instance-services
+        ///
+        /// Different (name, label) pairs never share an id: `scoped_id`
+        /// joins them with a NUL, and `check_scoped` refuses names and
+        /// labels with one, so an id decodes back to exactly one pair
+        /// (INS-4.2-2).
+        #[test]
+        fn different_scopes_never_share_an_id(
+            a in (scope_text(), scope_label()),
+            b in (scope_text(), scope_label()),
+        ) {
+            prop_assume!(a != b);
+            let a_id = scoped_id(&a.0, a.1.as_deref());
+            let b_id = scoped_id(&b.0, b.1.as_deref());
+            prop_assert_ne!(&a_id, &b_id);
+            prop_assert_eq!(name_of(&a_id), a.0.as_str());
+            prop_assert_eq!(
+                scoped_id(name_of(&a_id), a_id.split_once('\0').map(|(_, label)| label)),
+                a_id
+            );
+        }
+
+        /// guarantee: loader/instance-services
+        ///
+        /// `check_scoped` accepts exactly the pairs whose id is one pair's:
+        /// no NUL anywhere, no empty label. U+0001 is accepted because a
+        /// row's own lease label contains it; the loader refuses it in
+        /// configured labels instead (#637).
+        #[test]
+        fn check_scoped_refuses_exactly_what_would_collide(
+            name in ".*",
+            label in prop::option::of(".*"),
+        ) {
+            let expected = !name.contains('\0')
+                && label
+                    .as_deref()
+                    .is_none_or(|label| !label.is_empty() && !label.contains('\0'));
+            prop_assert_eq!(check_scoped(&name, label.as_deref()).is_ok(), expected);
+        }
+
+        /// guarantee: loader/instance-services
+        ///
+        /// Two different rows (or two labels of one row) do not share a
+        /// lease label: a configured label carries no U+0001 and a row key
+        /// neither separator, so the first U+0001 marks where the key
+        /// starts and `row_label` is injective too.
+        #[test]
+        fn different_rows_and_labels_get_different_lease_labels(
+            a in (configured_label(), row_key()),
+            b in (configured_label(), row_key()),
+        ) {
+            prop_assume!(a != b);
+            let a_label = row_label(a.0.as_deref(), &a.1);
+            let b_label = row_label(b.0.as_deref(), &b.1);
+            prop_assert_ne!(&a_label, &b_label);
+            prop_assert!(check_scoped("svc", Some(&a_label)).is_ok());
+        }
+
+        /// guarantee: loader/instance-services
+        ///
+        /// A row's own lease label is its configured label (or nothing)
+        /// followed by U+0001 and `row:<key>`; `check_scoped` accepts it
+        /// and `scoped_id` keeps it apart from every other pair.
+        #[test]
+        fn a_rows_lease_label_is_its_configured_label_and_row(
+            label in scope_label(),
+            key in scope_text(),
+        ) {
+            let own = row_label(label.as_deref(), &key);
+            prop_assert_eq!(
+                &own,
+                &format!("{}\u{1}row:{key}", label.as_deref().unwrap_or_default())
+            );
+            prop_assert!(check_scoped("svc", Some(&own)).is_ok());
+            prop_assert_eq!(scoped_id("svc", Some(&own)), format!("svc\0{own}"));
+            if let Some(label) = label {
+                prop_assert_ne!(own, label);
+            }
+        }
+    }
+
+    /// The literal case of #631: `row_label(Some("x"), key)` is
+    /// `x\u{1}row:<key>`, and without a configured label only the part
+    /// after the configured one is left.
+    #[test]
+    fn a_row_label_is_the_configured_label_tagged_with_the_row() {
+        assert_eq!(row_label(Some("x"), "key"), "x\u{1}row:key");
+        assert_eq!(row_label(None, "key"), "\u{1}row:key");
+        // A row label is not a configured one: `check_scoped` accepts it,
+        // whatever the configured label was.
+        assert!(check_scoped("svc", Some("x\u{1}row:key")).is_ok());
+        assert!(check_scoped("svc", Some("\u{1}row:key")).is_ok());
+    }
 
     struct Ignore;
 

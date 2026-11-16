@@ -300,6 +300,7 @@ impl Watched for Compiled {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
     use rutis::host::CtxHost;
     use rutis::host::{BoxFuture, DynPlugin, Effect};
     use rutis::{Ctx, Error};
@@ -324,6 +325,7 @@ mod tests {
                 5
             )
         );
+        assert!(LONGEST.checked_mul(2).is_some(), "the step doubles safely");
         let start = Instant::now();
         let secs = Duration::from_secs;
         // Ending at once each time: 1, 2, 4, 8, 16 s, then giving up.
@@ -353,6 +355,46 @@ mod tests {
         assert_eq!(backoff.next(start, Duration::ZERO), Some(secs(1)));
         assert_eq!(backoff.next(start + secs(2), Duration::ZERO), Some(secs(2)));
         assert_eq!(backoff.next(start + secs(70), secs(60)), Some(secs(1)));
+    }
+
+    proptest! {
+        /// guarantee: host/runtime-restart
+        ///
+        /// For any sequence of endings and running times: the wait is 1 s,
+        /// doubling to 30 s and staying there; a runtime that ran 60 s
+        /// starts over from 1 s; and once five restarts are still within
+        /// five minutes the next end gives up. The deadlines are kept in
+        /// plain `Duration`s here, not in the implementation's deque, so
+        /// the window arithmetic is checked against a second account.
+        #[test]
+        fn any_sequence_of_ends_follows_the_backoff(
+            ends in prop::collection::vec((0u64..=500, 0u64..=120), 1..=12),
+        ) {
+            let start = Instant::now();
+            let mut backoff = Backoff::default();
+            let mut now = Duration::ZERO;
+            let mut expected = FIRST;
+            let mut restarts: Vec<Duration> = Vec::new();
+            let mut waits: Vec<Duration> = Vec::new();
+            for (extra, ran) in ends {
+                let ran = Duration::from_secs(ran);
+                if ran >= STABLE {
+                    expected = FIRST;
+                }
+                restarts.retain(|deadline| now.saturating_sub(*deadline) < WINDOW);
+                let got = backoff.next(start + now, ran);
+                if restarts.len() >= LIMIT {
+                    prop_assert_eq!(got, None);
+                    break;
+                }
+                prop_assert_eq!(got, Some(expected));
+                waits.push(expected);
+                restarts.push(now + expected);
+                expected = (expected * 2).min(LONGEST);
+                now += waits.last().copied().unwrap() + Duration::from_secs(extra);
+            }
+            prop_assert!(waits.iter().all(|wait| (FIRST..=LONGEST).contains(wait)));
+        }
     }
 
     /// A runtime that ends whenever it starts, as one whose plugin crashes
