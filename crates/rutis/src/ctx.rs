@@ -976,7 +976,7 @@ impl Ctx {
                 // 立即排干该记录的清理并返失败
                 let sink = self.error_sink();
                 let drain_handle = handle.clone();
-                handle.spawn(async move {
+                crate::sync::spawn(&handle, async move {
                     if let Err(e) = record.drain(&drain_handle).await {
                         sink(e);
                     }

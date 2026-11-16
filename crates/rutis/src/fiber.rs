@@ -378,7 +378,9 @@ pub(crate) struct FiberInner {
     _event_flights_rx: watch::Receiver<usize>,
     pub shutdown_task: Mutex<Option<Arc<TransitionTask>>>,
     pub shutdown_inner: Mutex<Option<Arc<TransitionTask>>>,
-    pub driver: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// The task running this fiber's `drive` loop (`crate::sync`'s spawn
+    /// stand-in: the host runtime's, or shuttle's in a model).
+    pub driver: Mutex<Option<crate::sync::Task<()>>>,
     /// The cancellation token of the current generation: each load creates a
     /// new one, and an unload cancels it. Dispose, restart and withdrawal cancel
     /// it before queueing their intent, so a running `apply` can return through
@@ -1702,7 +1704,7 @@ fn spawn_fiber_inner(
                 shared.registry.register_inject(key.clone(), &this);
             }
         }
-        let driver = shared.handle.spawn(drive(this.clone(), rx));
+        let driver = crate::sync::spawn(&shared.handle, drive(this.clone(), rx));
         *this.driver.lock().unwrap() = Some(driver);
     }
     this
@@ -2286,8 +2288,8 @@ fn begin_subtree_shutdown_locked(fiber: &Arc<FiberInner>) -> Arc<TransitionTask>
         }
         let driver = { owner.driver.lock().unwrap().take() };
         if let Some(driver) = driver {
-            if let Err(error) = driver.await {
-                errors.push(crate::error::join_panic_error(error).shared());
+            if let Err(error) = driver.join().await {
+                errors.push(error.shared());
             }
         }
         for child in child_tasks {

@@ -21,19 +21,21 @@
 //! child lists run, not a stand-in. Model 17 closes a root with the child it
 //! mounted, through the mount record that owns it; model 18 pins one
 //! transition's result across its driver's exit (#1194);
-//! model 19 adds a restart inside the dependency window model 9 covers. Built
-//! with `--cfg rutis_shuttle`,
-//! `crate::sync` makes the driver's `alive` flag, a fiber's `lineage_closed`
-//! marker and an effect record's state shuttle primitives; the tokio channels
-//! in between (`watch`, `mpsc`, `Notify`) need no runtime and are single steps
-//! to shuttle. Shuttle switches just before an operation on its primitives, so
+//! model 19 adds a restart inside the dependency window model 9 covers; model
+//! 20 installs the spawn stand-in (`crate::sync::SpawnScope`), so the tasks
+//! the kernel spawns run on shuttle's executor and a model drives them. Built
+//! with `--cfg rutis_shuttle`, `crate::sync` makes the driver's `alive` flag, a
+//! fiber's `lineage_closed` marker, an effect record's state and a spawned
+//! task's result shuttle primitives; the tokio channels in between (`watch`,
+//! `mpsc`, `Notify`) need no runtime and are single steps to shuttle. Shuttle
+//! switches just before an operation on its primitives, so
 //! the windows the code guards that no primitive opens are marked with
 //! `crate::sync::switch_point()` (nothing in a plain build): between
 //! `post_join`'s check and its send, between an effect join's check and its
 //! wait, and inside an effect factory, between the two registration checks.
-//! What stands in for the rest of the fiber (the driver's exit, `drain()`'s
-//! spawned runner, the unload's async steps) is written out below, each next
-//! to the code it follows.
+//! What stands in for the rest of the fiber (the driver's exit, the unload's
+//! async steps) is written out below, each next to the code it follows;
+//! `drain()`'s spawned runner is the kernel's (`crate::sync::spawn`).
 //!
 //! What is *not* modelled here, and why (#622's remaining items):
 //!
@@ -106,7 +108,7 @@ use crate::events::{ErasedSync, Event, ListenerInfo, TableChange, TableEntry, Va
 use crate::host::CtxHost;
 use crate::internal::CtxInternal;
 use crate::key::{ScopeId, TypeKey};
-use crate::sync::{switch_point, AtomicBool as SyncBool, Mutex as SyncMutex};
+use crate::sync::{switch_point, AtomicBool as SyncBool, Mutex as SyncMutex, SpawnScope, TaskSet};
 use crate::Ctx;
 
 /// Iterations of each scheduler: `RUTIS_SHUTTLE_ITERATIONS`, or 1000.
@@ -5567,5 +5569,131 @@ fn shuttle_dependency_restart_in_the_window_returns_to_the_returned_generation()
             inner.effects.lock().unwrap().is_empty(),
             "a generation's effect record was left behind"
         );
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Model 20: the spawn stand-in (#622 item 1)
+
+/// Model 20, the spawn stand-in (#622 item 1): under a [`SpawnScope`] the
+/// kernel's spawns go to shuttle's executor instead of the host runtime, and
+/// [`SpawnScope::run`] is the scheduler that drives them. Two tasks interleave
+/// their steps, a third collects two more through a `TaskSet` the way
+/// `run_parallel` does from inside the emit chain, and every task runs exactly
+/// once. The kernel's handles still join after the scheduler ran their tasks,
+/// and `run` waits for the tasks whose handles the kernel dropped (the refused
+/// record's drain, an emit's listener call) too. The runtime is never pumped:
+/// a spawn that fell back to it would leave its step missing.
+///
+/// Mutations this model catches: a spawn that goes to the host runtime while a
+/// scope is installed (`runs` stays short), a `run` that only waits for the
+/// handles the kernel joins (the set's tasks and their collector never finish),
+/// and a `join` or `TaskSet::join_next` that loses a result or returns one
+/// twice.
+#[test]
+fn shuttle_spawned_tasks_interleave_and_a_task_set_collects_them() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .expect("a current-thread runtime");
+    let handle = runtime.handle().clone();
+    explore(move || {
+        let scope = SpawnScope::new();
+        let runs = Arc::new(AtomicUsize::new(0));
+        let order = Arc::new(SyncMutex::new(Vec::new()));
+        let collected = Arc::new(SyncMutex::new(Vec::new()));
+        let done = Arc::new(SyncBool::new(false));
+
+        let entered = scope.enter();
+
+        // Two tasks with a switch point between their steps: the other can
+        // run in that window, so the two interleave. Each task's own steps
+        // stay in order and happen once, whichever way the scheduler goes.
+        let mut siblings = Vec::new();
+        for who in 0..2u8 {
+            let runs = runs.clone();
+            let order = order.clone();
+            siblings.push(crate::sync::spawn(&handle, async move {
+                for step in 0..2u8 {
+                    order.lock().unwrap().push((who, step));
+                    switch_point();
+                    runs.fetch_add(1, Ordering::SeqCst);
+                }
+            }));
+        }
+
+        // A task of its own runs a `TaskSet`, as `run_parallel` does from
+        // inside the emit chain: the set's tasks are spawned from a task, are
+        // joined through the set, and only then does the task finish.
+        let collector = {
+            let runs = runs.clone();
+            let collected = collected.clone();
+            let done = done.clone();
+            let handle = handle.clone();
+            let task_handle = handle.clone();
+            crate::sync::spawn(&task_handle, async move {
+                let mut set = TaskSet::new();
+                for who in 0..2u8 {
+                    let runs = runs.clone();
+                    set.spawn_on(
+                        async move {
+                            switch_point();
+                            runs.fetch_add(1, Ordering::SeqCst);
+                            who
+                        },
+                        &handle,
+                    );
+                }
+                let mut got = Vec::new();
+                while let Some(joined) = set.join_next().await {
+                    got.push(joined.expect("a task of the set failed"));
+                }
+                *collected.lock().unwrap() = got;
+                done.store(true, Ordering::SeqCst);
+            })
+        };
+
+        drop(entered);
+        scope.run();
+
+        assert!(
+            done.load(Ordering::SeqCst),
+            "the task that joined its set did not finish"
+        );
+        assert_eq!(
+            runs.load(Ordering::SeqCst),
+            6,
+            "a spawn did not run exactly once"
+        );
+        {
+            let order = order.lock().unwrap();
+            assert_eq!(order.len(), 4, "a spawned task's steps were lost");
+            for who in 0..2u8 {
+                let steps: Vec<u8> = order
+                    .iter()
+                    .filter(|(task, _)| *task == who)
+                    .map(|(_, step)| *step)
+                    .collect();
+                assert_eq!(
+                    steps,
+                    vec![0, 1],
+                    "a task's steps ran out of order or twice"
+                );
+            }
+        }
+        {
+            let mut got = collected.lock().unwrap().clone();
+            got.sort();
+            assert_eq!(
+                got,
+                vec![0, 1],
+                "the task set lost a spawn or returned one twice"
+            );
+        }
+        // The kernel's handles join after the scheduler ran their tasks, with
+        // the same result the task produced.
+        for sibling in siblings {
+            block_on(sibling.join()).expect("a spawned task failed");
+        }
+        block_on(collector.join()).expect("the collecting task failed");
     });
 }
