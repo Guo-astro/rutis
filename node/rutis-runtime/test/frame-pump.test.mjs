@@ -10,7 +10,7 @@
 //
 // The bus over the session appears here once, to drive a Cordis filter's
 // synchronous call; the same-name hold is the session's `holds` seam
-// (src/runner.mjs:1197).
+// (src/runner.mjs:1200).
 //
 // What this does not cover: the process's own pump (`receiveMessageOnPort`
 // plus `Atomics.wait`, src/client.mjs:30-35) and the runner around it, which

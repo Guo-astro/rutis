@@ -40,7 +40,6 @@ export async function run({
   handlers = true,
   watchdog = true,
 } = {}) {
-
 // `<channel> --id <endpoint> [--peer <endpoint>] <first plugin or anchor>`.
 // The session greets as `--id`, expecting `--peer` as the controller when
 // given, on a local channel (`fd:3`, a socket path) or a network one.
