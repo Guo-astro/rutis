@@ -167,7 +167,11 @@ type Peer struct {
 	opts    Options
 
 	writeMu sync.Mutex
-	mu      sync.Mutex
+	// writeBack carries the frames the reader hands to writeBackLoop: the
+	// releases a refused reply carried, which the reader must not write
+	// itself (#1210). maxWriteBack bounds it.
+	writeBack chan []byte
+	mu        sync.Mutex
 
 	local  string
 	remote string
@@ -214,6 +218,7 @@ func New(channel Channel, opts Options) (*Peer, error) {
 		signals:    map[string]*Signal{},
 		ready:      make(chan struct{}),
 		closed:     make(chan struct{}),
+		writeBack:  make(chan []byte, maxWriteBack),
 	}
 	p.base, p.cancelBase = context.WithCancel(context.Background())
 	if opts.Endpoint == nil {
@@ -226,8 +231,10 @@ func New(channel Channel, opts Options) (*Peer, error) {
 	return p, nil
 }
 
-// Start sends the handshake and starts reading.
+// Start sends the handshake, starts reading, and starts the writer of the
+// frames the reader hands over.
 func (p *Peer) Start() error {
+	go p.writeBackLoop()
 	go p.read()
 	hello := map[string]any{
 		"op":             "hello",
@@ -317,6 +324,29 @@ func marshal(frame any) ([]byte, error) {
 		return nil, err
 	}
 	return bytes.TrimRight(buffer.Bytes(), "\n"), nil
+}
+
+// maxWriteBack is how many frames the reader may hand to writeBackLoop
+// while the writer cannot write them. Past it the session ends, as one
+// whose far end stopped reading (SESS-75, #1210): the queue is bounded, and
+// no frame is silently dropped.
+const maxWriteBack = 64
+
+// writeBackLoop writes the frames the reader handed over. The reader does
+// not write them itself, so a write held by a far end that stopped reading
+// does not stop the reader (#1210).
+func (p *Peer) writeBackLoop() {
+	for {
+		select {
+		case data := <-p.writeBack:
+			if err := p.write(data); err != nil {
+				p.fault(err)
+				return
+			}
+		case <-p.closed:
+			return
+		}
+	}
 }
 
 func (p *Peer) send(frame any) error {
@@ -557,12 +587,15 @@ func (p *Peer) releaseAll(records []*imported) {
 	}
 }
 
-func (p *Peer) release(record *imported) {
+// releaseFrame marks `record` released and builds its `release` frame; `ok`
+// is false when there is nothing to send (it was released already, or the
+// session ended). p.mu is not held.
+func (p *Peer) releaseFrame(record *imported) (data []byte, ok bool) {
 	p.mu.Lock()
 	if record.released || p.closeErr != nil {
 		record.released = true
 		p.mu.Unlock()
-		return
+		return nil, false
 	}
 	record.released = true
 	if p.imports[record.id] == record {
@@ -570,9 +603,43 @@ func (p *Peer) release(record *imported) {
 	}
 	count := record.grants
 	p.mu.Unlock()
-	if err := p.send(map[string]any{"op": "release", "reference": record.id, "count": count}); err != nil {
+	data, err := marshal(map[string]any{"op": "release", "reference": record.id, "count": count})
+	if err != nil {
+		// The frame is an op and two numbers: marshaling cannot fail.
+		p.fault(err)
+		return nil, false
+	}
+	return data, true
+}
+
+func (p *Peer) release(record *imported) {
+	data, ok := p.releaseFrame(record)
+	if !ok {
+		return
+	}
+	if err := p.write(data); err != nil {
 		p.fault(err)
 	}
+}
+
+// queueReleaseAll gives back the references a refused reply carried,
+// handing the frames to writeBackLoop instead of writing them here: the
+// reader must not wait for writeMu (#1210). Past maxWriteBack queued
+// frames the session ends, as one whose far end stopped reading (SESS-75):
+// no write-back is dropped.
+func (p *Peer) queueReleaseAll(records []*imported) error {
+	for _, record := range records {
+		data, ok := p.releaseFrame(record)
+		if !ok {
+			continue
+		}
+		select {
+		case p.writeBack <- data:
+		default:
+			return fmt.Errorf("the far end is not reading: %d messages waited for it", maxWriteBack+1)
+		}
+	}
+	return nil
 }
 
 // marked reports whether `value` holds a reference or a tagged value, so
@@ -1516,7 +1583,7 @@ func badFrame(op string, fields []string) error {
 		"unknown field %s in %s", quotedFields(fields), op)
 }
 
-func (p *Peer) receive(f *frame, ignored []string) error {
+func (p *Peer) receive(f *frame, ignored []string) (err error) {
 	p.mu.Lock()
 	if p.closeErr != nil {
 		p.mu.Unlock()
@@ -1578,17 +1645,21 @@ func (p *Peer) receive(f *frame, ignored []string) error {
 		}
 		var outcome result
 		if f.Op == "return" {
-			value, d, err := p.decode(f.Value, "")
-			if err != nil {
+			value, d, decodeErr := p.decode(f.Value, "")
+			if decodeErr != nil {
 				p.mu.Unlock()
-				return err
+				return decodeErr
 			}
 			outcome.value = value
 			if d.refused != nil {
 				// A value this side cannot take fails the call waiting for
 				// it; the references it carried go back.
 				outcome = result{err: d.refused}
-				defer p.releaseAll(d.fresh)
+				defer func() {
+					if release := p.queueReleaseAll(d.fresh); release != nil && err == nil {
+						err = release
+					}
+				}()
 			}
 		} else {
 			outcome.err = decodeError(f.Error)
