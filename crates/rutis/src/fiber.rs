@@ -350,6 +350,10 @@ pub(crate) struct Trans {
     pub pre_cancelled: bool,
 }
 
+/// What a status delivery goes to in a shuttle model (`core/D24a`, model 25).
+#[cfg(all(test, rutis_shuttle))]
+type StatusTap = Arc<dyn Fn(&FiberStatusChanged) + Send + Sync>;
+
 pub(crate) struct FiberInner {
     pub id: PluginId,
     pub instance: InstanceId,
@@ -450,6 +454,12 @@ pub(crate) struct FiberInner {
     /// The generation whose wait for missing services is watched
     /// (`waiting`): reported once per wait.
     pub waiting_watch: Mutex<Option<u64>>,
+    /// Where the shuttle model of the status queue sees this fiber's deliveries
+    /// (`deliver_status`); nothing in a plain build. A std mutex: a delivery
+    /// takes it under the admission lock, where a shuttle mutex would open a
+    /// switch point the kernel does not have.
+    #[cfg(all(test, rutis_shuttle))]
+    pub status_tap: std::sync::Mutex<Option<StatusTap>>,
 }
 
 /// [`FiberInner::live_generation`] while no listener of the generation is
@@ -808,10 +818,39 @@ impl FiberInner {
             std::mem::take(&mut tr.status_queue)
         };
         for event in queue {
-            if let Err(error) = self.ctx.emit(event) {
+            if let Err(error) = self.deliver_status(event) {
                 self.ctx.error_sink()(error.shared());
             }
         }
+    }
+
+    /// Hands one queued status event to the bus. A delivery is one emit of
+    /// `rutis::FiberStatusChanged`, in the order the queue had them; the
+    /// shuttle model of the status queue (#622, `core/D24a`, model 25) installs
+    /// a tap to compare that order with the commits. A plain build, and a model
+    /// without a tap, only emits.
+    fn deliver_status(&self, event: FiberStatusChanged) -> Result<(), Error> {
+        #[cfg(all(test, rutis_shuttle))]
+        if let Some(tap) = self.watch_status_tap() {
+            tap(&event);
+        }
+        self.ctx.emit(event)
+    }
+
+    /// The tap this fiber's deliveries go to, if a shuttle model installed one
+    /// (`core/D24a`, model 25). The tap is cloned out of the cell before it runs:
+    /// it is a switch point, and a later delivery must find the cell free.
+    #[cfg(all(test, rutis_shuttle))]
+    fn watch_status_tap(&self) -> Option<StatusTap> {
+        self.status_tap.lock().unwrap().clone()
+    }
+
+    /// Have a shuttle model watch this fiber's status deliveries: `tap` gets
+    /// every event this fiber hands the bus, in the order it does
+    /// (`core/D24a`, model 25).
+    #[cfg(all(test, rutis_shuttle))]
+    pub(crate) fn watch_status(&self, tap: impl Fn(&FiberStatusChanged) + Send + Sync + 'static) {
+        *self.status_tap.lock().unwrap() = Some(Arc::new(tap));
     }
 
     fn resolve_deps(
@@ -1718,6 +1757,8 @@ fn spawn_fiber_inner(
             shutdown_task: Mutex::new(None),
             shutdown_inner: Mutex::new(None),
             driver: Mutex::new(None),
+            #[cfg(all(test, rutis_shuttle))]
+            status_tap: std::sync::Mutex::new(None),
         }
     });
 
