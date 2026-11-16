@@ -134,7 +134,7 @@ pub fn parse(source: &str) -> Result<Value, YamlError> {
 
 /// The value plus, for a top-level sequence, the start line (0-based) of
 /// each item and whether the sequence is in block style.
-fn parse_spanned(source: &str) -> Result<(Value, Vec<usize>, bool), YamlError> {
+fn parse_spanned(source: &str) -> Result<(Value, Vec<usize>, bool, Option<usize>), YamlError> {
     enum Frame {
         Seq(Vec<Value>, usize),
         Map(Map<String, Value>, Option<String>, usize),
@@ -144,6 +144,7 @@ fn parse_spanned(source: &str) -> Result<(Value, Vec<usize>, bool), YamlError> {
     let mut root = None;
     let mut item_lines = Vec::new();
     let mut block = true;
+    let mut sequence_indent = None;
 
     fn push(
         stack: &mut [Frame],
@@ -220,6 +221,7 @@ fn parse_spanned(source: &str) -> Result<(Value, Vec<usize>, bool), YamlError> {
                 }
                 if stack.is_empty() {
                     block = source_char_at(source, span.start.index()) != Some('[');
+                    sequence_indent = Some(span.start.col());
                 }
                 stack.push(Frame::Seq(Vec::new(), anchor));
             }
@@ -281,11 +283,46 @@ fn parse_spanned(source: &str) -> Result<(Value, Vec<usize>, bool), YamlError> {
             | Event::Nothing => {}
         }
     }
-    Ok((root.unwrap_or(Value::Null), item_lines, block))
+    Ok((
+        root.unwrap_or(Value::Null),
+        item_lines,
+        block,
+        sequence_indent,
+    ))
 }
 
 fn source_char_at(source: &str, index: usize) -> Option<char> {
     source.chars().nth(index)
+}
+
+fn is_sequence_entry(line: &str, indent: usize) -> bool {
+    let mut chars = line.chars();
+    if !(0..indent).all(|_| chars.next() == Some(' ')) || chars.next() != Some('-') {
+        return false;
+    }
+    chars.next().is_none_or(char::is_whitespace)
+}
+
+/// Map each node's start line to the line carrying its top-level `-`.
+///
+/// A node begins on its sequence marker's line when the marker has an inline
+/// value. With a bare marker, the node starts on a later line, so using the
+/// node span as the item start would leave that marker in the document header.
+fn sequence_item_starts(
+    lines: &[&str],
+    node_starts: &[usize],
+    indent: usize,
+) -> Option<Vec<usize>> {
+    let mut starts = Vec::with_capacity(node_starts.len());
+    let mut floor = 0;
+    for &node_start in node_starts {
+        let start = (floor..=node_start)
+            .rev()
+            .find(|&line| is_sequence_entry(lines[line], indent))?;
+        starts.push(start);
+        floor = node_start + 1;
+    }
+    Some(starts)
 }
 
 // ── writing ─────────────────────────────────────────────────────
@@ -404,7 +441,7 @@ pub struct Document {
 impl Document {
     /// Read a document whose root is a sequence (or empty).
     pub fn parse(source: &str) -> Result<Self, YamlError> {
-        let (value, starts, block) = parse_spanned(source)?;
+        let (value, node_starts, block, sequence_indent) = parse_spanned(source)?;
         let items = match value {
             Value::Array(items) => items,
             Value::Null => Vec::new(),
@@ -419,13 +456,21 @@ impl Document {
         // inside them, and in item order (an anchor can give an earlier
         // line, #1237). A YAML parser also counts `\r` as a line break,
         // which `lines` above does not, so a line can be past the last one
-        // (#1235). Otherwise the document is rewritten from the values.
-        let spans_usable = block
+        // (#1235). The node span can also start below a bare `-` marker.
+        // Otherwise the document is rewritten from the values.
+        let starts = if block
             && !items.is_empty()
-            && starts.len() == items.len()
-            && starts.iter().all(|&start| start < lines.len())
-            && starts.windows(2).all(|pair| pair[0] < pair[1]);
-        if !spans_usable {
+            && node_starts.len() == items.len()
+            && node_starts.iter().all(|&start| start < lines.len())
+            && node_starts.windows(2).all(|pair| pair[0] < pair[1])
+        {
+            sequence_indent
+                .and_then(|indent| sequence_item_starts(&lines, &node_starts, indent))
+                .filter(|starts| starts.windows(2).all(|pair| pair[0] < pair[1]))
+        } else {
+            None
+        };
+        let Some(starts) = starts else {
             // Keep the leading comment block; the rest is rewritten.
             let header: String = lines
                 .iter()
@@ -440,7 +485,7 @@ impl Document {
                 header,
                 items: texts.into_iter().zip(items).collect(),
             });
-        }
+        };
         // Comments and blank lines directly above an item belong to it.
         let mut bounds: Vec<usize> = starts
             .iter()

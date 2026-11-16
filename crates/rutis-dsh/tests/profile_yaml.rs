@@ -133,3 +133,19 @@ fn line_spans_that_do_not_fit_are_rewritten() {
         Document::parse(&fresh).expect("the rendered document");
     }
 }
+
+#[test]
+fn bare_sequence_marker_is_part_of_the_item_span() {
+    for source in ["-\n n", "-\n  key: value", "-\n  - nested"] {
+        let doc = Document::parse(source).expect("a document");
+        let values = doc.values();
+
+        assert_eq!(doc.render(&values, |v| v.clone()), format!("{source}\n"));
+        let fresh = doc.render_fresh(&values);
+        assert_eq!(
+            yaml::parse(&fresh).expect("fresh output"),
+            Value::Array(values),
+            "{source:?}"
+        );
+    }
+}
