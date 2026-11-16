@@ -1506,6 +1506,7 @@ macro_rules! __on_load {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     /// A type "rebuilt" by later images, as a dylib rebuilt without a version
     /// bump keeps its `TypeId`.
@@ -1763,5 +1764,399 @@ mod tests {
         assert_eq!(short_name::<Box<dyn std::error::Error>>(), "Box");
         assert!(opaque_debug::<Box<dyn std::error::Error>>());
         assert_eq!(debug_ident("Invalid { field: \"x\" }"), "Invalid");
+    }
+
+    // ── the code of an `Err(e)`, against the generator's table (#631) ──
+
+    /// How serde tags an enum's variants, as the source says.
+    #[derive(Debug, Clone, Copy)]
+    enum Tagging {
+        /// No `tag` / `content`: the variant's name is the key.
+        External,
+        Internal(&'static str),
+        Adjacent(&'static str, &'static str),
+        Untagged,
+    }
+
+    /// A variant's fields, one text each where it has one.
+    #[derive(Debug, Clone)]
+    enum Fields {
+        Unit,
+        Newtype(String),
+        Struct { field: &'static str, text: String },
+    }
+
+    /// One variant: its Rust name (`Debug` prints it), what serde writes
+    /// for it, whether the marker renamed it to a name unrelated to it, and
+    /// its fields.
+    #[derive(Debug, Clone)]
+    struct Variant {
+        ident: &'static str,
+        serde_name: &'static str,
+        unrelated: bool,
+        fields: Fields,
+    }
+
+    #[derive(Debug, Clone)]
+    enum Kind {
+        /// A `#[derive(Serialize)]` enum's value.
+        Serde(Tagging, Variant),
+        /// A `#[derive(Serialize)]` struct of one text field.
+        Struct { field: &'static str, text: String },
+        /// `#[serde(transparent)]`: serializes as its text.
+        Transparent { text: String },
+    }
+
+    /// An error value of one shape, and the type's name (`short_name`) it
+    /// is thrown with.
+    #[derive(Debug, Clone)]
+    struct Shape {
+        ty: &'static str,
+        kind: Kind,
+    }
+
+    /// A struct of one text field, the content of an adjacently tagged
+    /// variant.
+    struct Fields1<'a> {
+        field: &'static str,
+        text: &'a str,
+    }
+
+    impl Serialize for Fields1<'_> {
+        fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+            use serde::ser::SerializeStruct;
+            let mut st = s.serialize_struct("", 1)?;
+            st.serialize_field(self.field, self.text)?;
+            st.end()
+        }
+    }
+
+    /// The value of a [`Shape`]: serde writes it as its source would, and
+    /// `Debug` prints it as a derived one does.
+    struct Value(Shape);
+
+    impl std::fmt::Debug for Value {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            match (&self.0.ty, &self.0.kind) {
+                (_, Kind::Serde(_, variant)) => match &variant.fields {
+                    Fields::Unit => f.write_str(variant.ident),
+                    Fields::Newtype(text) => write!(f, "{}({:?})", variant.ident, text),
+                    Fields::Struct { field, text } => {
+                        write!(f, "{} {{ {}: {:?} }}", variant.ident, field, text)
+                    }
+                },
+                (ty, Kind::Struct { field, text }) => {
+                    write!(f, "{ty} {{ {field}: {text:?} }}")
+                }
+                (ty, Kind::Transparent { text }) => write!(f, "{ty}({text:?})"),
+            }
+        }
+    }
+
+    impl Serialize for Value {
+        fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+            use serde::ser::{SerializeStruct, SerializeStructVariant};
+            let ty = self.0.ty;
+            let Kind::Serde(tagging, variant) = &self.0.kind else {
+                return match &self.0.kind {
+                    Kind::Struct { field, text } => {
+                        let mut st = s.serialize_struct(ty, 1)?;
+                        st.serialize_field(field, text)?;
+                        st.end()
+                    }
+                    Kind::Transparent { text } => s.serialize_str(text),
+                    Kind::Serde(..) => unreachable!(),
+                };
+            };
+            let name = variant.serde_name;
+            match (tagging, &variant.fields) {
+                (Tagging::External, Fields::Unit) => s.serialize_unit_variant(ty, 0, name),
+                (Tagging::External, Fields::Newtype(text)) => {
+                    s.serialize_newtype_variant(ty, 0, name, text)
+                }
+                (Tagging::External, Fields::Struct { field, text }) => {
+                    let mut st = s.serialize_struct_variant(ty, 0, name, 1)?;
+                    st.serialize_field(field, text)?;
+                    st.end()
+                }
+                (Tagging::Internal(tag), fields) => {
+                    // A unit variant is the tag alone; another the tag and
+                    // its fields beside it.
+                    let mut st = s.serialize_struct(
+                        ty,
+                        match fields {
+                            Fields::Unit => 1,
+                            _ => 2,
+                        },
+                    )?;
+                    st.serialize_field(tag, name)?;
+                    match fields {
+                        Fields::Unit => {}
+                        Fields::Struct { field, text } => st.serialize_field(field, text)?,
+                        Fields::Newtype(_) => {
+                            unreachable!("an internally tagged variant is a map")
+                        }
+                    }
+                    st.end()
+                }
+                (Tagging::Adjacent(tag, content), fields) => match fields {
+                    Fields::Unit => {
+                        let mut st = s.serialize_struct(ty, 1)?;
+                        st.serialize_field(tag, name)?;
+                        st.end()
+                    }
+                    Fields::Newtype(text) => {
+                        let mut st = s.serialize_struct(ty, 2)?;
+                        st.serialize_field(tag, name)?;
+                        st.serialize_field(content, text)?;
+                        st.end()
+                    }
+                    Fields::Struct { field, text } => {
+                        let mut st = s.serialize_struct(ty, 2)?;
+                        st.serialize_field(tag, name)?;
+                        st.serialize_field(content, &Fields1 { field, text })?;
+                        st.end()
+                    }
+                },
+                (Tagging::Untagged, Fields::Unit) => s.serialize_unit(),
+                (Tagging::Untagged, Fields::Newtype(text)) => s.serialize_str(text),
+                (Tagging::Untagged, Fields::Struct { field, text }) => {
+                    let mut st = s.serialize_struct(ty, 1)?;
+                    st.serialize_field(field, text)?;
+                    st.end()
+                }
+            }
+        }
+    }
+
+    /// What the `build.rs` generator says a serde error's code is, read
+    /// from the source (the table in `guide/rust-host.md`, the
+    /// `<Name>Thrown` codes `rutis-types` writes): at run time [`serde_code`]
+    /// must give it for the value.
+    fn generator_code(shape: &Shape) -> String {
+        match &shape.kind {
+            Kind::Serde(tagging, variant) => match tagging {
+                // The key serde writes: the variant's name.
+                Tagging::External => variant.serde_name.to_owned(),
+                // The tag, unless the marker renamed the variant to a name
+                // with nothing of its own left: then its Rust name.
+                Tagging::Internal(_) | Tagging::Adjacent(..) => match variant.unrelated {
+                    true => variant.ident.to_owned(),
+                    false => variant.serde_name.to_owned(),
+                },
+                Tagging::Untagged => variant.ident.to_owned(),
+            },
+            // A struct's text was its code in the generator; one that
+            // serializes to a map is its type's name.
+            Kind::Struct { .. } => shape.ty.to_owned(),
+            Kind::Transparent { text } => text.clone(),
+        }
+    }
+
+    const SHAPE_TYPES: [&str; 3] = ["NotesError", "StoreFailure", "SyncError"];
+    const VARIANTS: [&str; 3] = ["TooBig", "Missing", "Late"];
+    /// A variant's serde name in four casings: the letters are the Rust
+    /// name's, which is what makes the tag a rename of it.
+    const SERDE_NAMES: [[&str; 4]; 3] = [
+        ["TooBig", "too_big", "too-big", "TOO_BIG"],
+        ["Missing", "missing", "MISSING", "missing"],
+        ["Late", "late", "LATE", "late"],
+    ];
+    /// Names a variant is renamed to with none of its own letters left.
+    const UNRELATED: [&str; 3] = ["boom", "other", "wrong"];
+    /// Field names and texts. A text shares no letter with [`VARIANTS`] or
+    /// [`SHAPE_TYPES`]: a struct or untagged variant whose text said one of
+    /// those names would be the tag the caller tells apart by, which the
+    /// table below does not pin.
+    const FIELDS: [&str; 3] = ["field", "value", "reason"];
+    const TEXTS: [&str; 3] = ["denied", "gone", ""];
+
+    fn variant(ident: usize, casing: usize, unrelated: bool, fields: Fields) -> Variant {
+        Variant {
+            ident: VARIANTS[ident],
+            serde_name: match unrelated {
+                true => UNRELATED[(ident + casing) % UNRELATED.len()],
+                false => SERDE_NAMES[ident][casing],
+            },
+            unrelated,
+            fields,
+        }
+    }
+
+    /// A variant's fields: one text where it has one.
+    fn fields() -> impl Strategy<Value = Fields> {
+        let struct_fields =
+            (0..FIELDS.len(), 0..TEXTS.len()).prop_map(|(field, text)| Fields::Struct {
+                field: FIELDS[field],
+                text: TEXTS[text].to_owned(),
+            });
+        prop_oneof![
+            Just(Fields::Unit),
+            (0..TEXTS.len()).prop_map(|text| Fields::Newtype(TEXTS[text].to_owned())),
+            struct_fields,
+        ]
+    }
+
+    fn shapes() -> impl Strategy<Value = Shape> {
+        let ty = 0..SHAPE_TYPES.len();
+        let ident = 0..VARIANTS.len();
+        let casing = 0..SERDE_NAMES[0].len();
+        let unrelated = any::<bool>();
+        let field = 0..FIELDS.len();
+        let text = 0..TEXTS.len();
+        let external = (
+            ident.clone(),
+            casing.clone(),
+            unrelated,
+            fields(),
+            ty.clone(),
+        )
+            .prop_map(|(ident, casing, unrelated, fields, ty)| Shape {
+                ty: SHAPE_TYPES[ty],
+                kind: Kind::Serde(Tagging::External, variant(ident, casing, unrelated, fields)),
+            });
+        // An internally tagged variant is a map: a unit one, or one with
+        // fields.
+        let internal = (
+            ident.clone(),
+            casing.clone(),
+            unrelated,
+            field.clone(),
+            text.clone(),
+            ty.clone(),
+            any::<bool>(),
+        )
+            .prop_map(|(ident, casing, unrelated, field, text, ty, unit)| Shape {
+                ty: SHAPE_TYPES[ty],
+                kind: Kind::Serde(
+                    Tagging::Internal("kind"),
+                    variant(
+                        ident,
+                        casing,
+                        unrelated,
+                        match unit {
+                            true => Fields::Unit,
+                            false => Fields::Struct {
+                                field: FIELDS[field],
+                                text: TEXTS[text].to_owned(),
+                            },
+                        },
+                    ),
+                ),
+            });
+        let adjacent = (
+            ident.clone(),
+            casing.clone(),
+            unrelated,
+            fields(),
+            ty.clone(),
+            any::<bool>(),
+        )
+            .prop_map(|(ident, casing, unrelated, fields, ty, swap)| Shape {
+                ty: SHAPE_TYPES[ty],
+                kind: Kind::Serde(
+                    match swap {
+                        true => Tagging::Adjacent("content", "kind"),
+                        false => Tagging::Adjacent("kind", "content"),
+                    },
+                    variant(ident, casing, unrelated, fields),
+                ),
+            });
+        let untagged = (
+            ident.clone(),
+            casing.clone(),
+            unrelated,
+            fields(),
+            ty.clone(),
+        )
+            .prop_map(|(ident, casing, unrelated, fields, ty)| Shape {
+                ty: SHAPE_TYPES[ty],
+                kind: Kind::Serde(Tagging::Untagged, variant(ident, casing, unrelated, fields)),
+            });
+        let plain = (ty.clone(), field.clone(), text.clone()).prop_map(|(ty, field, text)| Shape {
+            ty: SHAPE_TYPES[ty],
+            kind: Kind::Struct {
+                field: FIELDS[field],
+                text: TEXTS[text].to_owned(),
+            },
+        });
+        let transparent = (ty, text).prop_map(|(ty, text)| Shape {
+            ty: SHAPE_TYPES[ty],
+            kind: Kind::Transparent {
+                text: TEXTS[text].to_owned(),
+            },
+        });
+        prop_oneof![
+            4 => external,
+            2 => internal,
+            3 => adjacent,
+            3 => untagged,
+            2 => plain,
+            2 => transparent,
+        ]
+    }
+
+    /// The code of an error value, as the thrown error carries it, against
+    /// the generator's table (`MNT-11-7b`, #631).
+    ///
+    /// A shape's type name is never one of its variants' names: a type
+    /// whose name is its untagged newtype variant's is the one shape the
+    /// table leaves open (a struct and that variant serializing to one text
+    /// look alike to the caller).
+    #[test]
+    fn the_code_of_a_serde_error_matches_the_generators_table() {
+        check_codes("serde error codes", shapes(), |shape| {
+            let value = Value(shape.clone());
+            let debug = debug_ident(&format!("{value:?}"));
+            let code = serde_code(shape.ty, &debug, capture::code(&value));
+            prop_assert_eq!(&code, &generator_code(&shape), "{:?}, {:?}", shape, debug);
+            Ok(())
+        });
+    }
+
+    /// Run `test` over `strategy` with a seed from `RUTIS_PROPTEST_SEED` or a
+    /// fresh one; on failure, panic with the seed and the shrunk input.
+    fn check_codes<S: Strategy>(
+        name: &str,
+        strategy: S,
+        test: impl Fn(S::Value) -> Result<(), proptest::test_runner::TestCaseError>,
+    ) where
+        S::Value: std::fmt::Debug,
+    {
+        use proptest::test_runner::{Config, RngAlgorithm, TestRng, TestRunner};
+        let seed: u64 = match std::env::var("RUTIS_PROPTEST_SEED") {
+            Ok(seed) => seed.parse().expect("RUTIS_PROPTEST_SEED is a u64"),
+            Err(_) => {
+                use std::hash::{BuildHasher, Hasher};
+                let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
+                hasher.write_u128(
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_nanos(),
+                );
+                hasher.finish()
+            }
+        };
+        let mut bytes = [0u8; 32];
+        for chunk in bytes.chunks_mut(8) {
+            chunk.copy_from_slice(&seed.to_le_bytes());
+        }
+        // `Config::default()` reads PROPTEST_CASES (256 when unset).
+        let config = Config {
+            failure_persistence: None,
+            ..Config::default()
+        };
+        let cases = config.cases;
+        let mut runner =
+            TestRunner::new_with_rng(config, TestRng::from_seed(RngAlgorithm::ChaCha, &bytes));
+        let started = std::time::Instant::now();
+        if let Err(error) = runner.run(&strategy, test) {
+            panic!("{name}: {error}\nreplay with RUTIS_PROPTEST_SEED={seed}");
+        }
+        eprintln!(
+            "{name}: {cases} cases in {:?} (seed {seed})",
+            started.elapsed()
+        );
     }
 }
