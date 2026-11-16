@@ -6,6 +6,8 @@
 
 抽取基线：`main` `3496669b`（issue 正文的统计口径）。表格保持 issue 原文；这 309 行已按 0.22 现行来源复核，并在追踪表的语义重抽里逐行重抽来源、锚点、证据与状态（见 `README.md` §1 与[复核表](../recheck-0.22.md) §5）。状态列仍是 issue 的词汇，`node tools/formal-trace.mjs` 在统计时按 `README.md` §3 的映射换成追踪表状态；映射与复核都只降不升，不改写本文件。
 
+2026-11-16（#1212）：`INS-5-1` 的备注按 0.19 删除的机制改写。节点的 `export` / `import` 名单与 `HostPlugin` 在 0.19 删除（`design-remote-session-2026-10-28.md` §八、§十二；`migration-0.19.md`），按实例映射导出、导入与宿主名字没有对象；备注里「#631 export / import 收窄 PT」没有对象，记「不适用」。状态列不改。
+
 分区合计：现行 264 条，已取代 45 条，共 309 行（与 issue 正文的统计表一致）。
 
 ## 分区 `runtime`
@@ -289,7 +291,7 @@
 | INS-4.2-8 | INS §4.2 | Rust 只在确实用到标签时要求运行时支持 `scopes`；缺少它的运行时用实例内服务时报错 | 纯逻辑 | PT | loader/instance-services | — | 未覆盖 | #631 ※ | 报错文字对任何语言都写"the Node runtime lacks `scopes`"（`process.rs:1184-1190`），与规格的"需要支持 `scopes` 的运行时"不同 |
 | INS-4.2-9 | INS §4.2 | 全部运行时实现 `scopes` 与 `isolate`（规格写 Node 与 Python） | 跨进程 | K | loader/instance-services | — | 未覆盖 | #639 ※ | 现在 Go、Bun、Swift、Kotlin 也实现（bridge/caller-row 依赖它）；一致性套件没有 `scopes` 用例 |
 | INS-4.2-10 | INS §4.2「顺带修复」 | isolate 了某个名字的语言行能看到为它租用的宿主代理；两行各自 isolate 同一名字并导出时第二行不被拒绝 | 跨进程 | K | loader/instance-services | — | 未覆盖 | #639 ※ |  |
-| INS-5-1 | INS §5、§8 | 实例里的节点连接每个实例一条：导出、导入和宿主按该行所在实例映射名字（`ServiceKeys`，默认 `host_key(name)`）；宿主为对方装载的插件按该行的实例链生成工厂 | 纯逻辑 | PT | loader/instance-links | — | 未覆盖 | #631 ※ | #631 的"export / import 收窄"只查匹配，不含按实例映射 |
+| INS-5-1 | INS §5、§8 | 实例里的节点连接每个实例一条：导出、导入和宿主按该行所在实例映射名字（`ServiceKeys`，默认 `host_key(name)`）；宿主为对方装载的插件按该行的实例链生成工厂 | 纯逻辑 | PT | loader/instance-links | — | 未覆盖 | #631 ※ | 不适用（#1212）：0.19 删除节点的 `export` / `import` 名单与 `HostPlugin`（`design-remote-session-2026-10-28.md` §八、§十二；`migration-0.19.md`），按实例映射导出、导入与宿主名字没有对象；「每个实例一条连接」由 INS-5-2 承载；现行来源 §5 仍写 `ExportPlugin` / `ImportPlugin`，本行待按 0.22 重抽（复核表仍记未验证） |
 | INS-5-2 | INS §5 | 每个实例的连接提供的 `Peer#<id>` 以该实例的标签 isolate，同一配置在多个实例里各有一条连接互不冲突 | 纯逻辑 | PT | loader/instance-links | — | 未覆盖 | #631 ※ |  |
 | INS-5-3 | INS §5 | 对端按身份区分连接：同一对端无法同时接受同一节点的两条连接 | 跨进程 | TLA | loader/instance-links | — | 未覆盖 | #615 ※ | `RemoteLease` `OneLease` / `AccessPoint` `OneInstancePerId` 是运行时租约与接入点，不含节点之间的 link；peer 协议暂停（#612 T6） |
 | INS-5-4 | INS §5、§8 | 放在实例外的连接导出或导入实例内名字时连接行报错（说明要放进哪个分组）；实例里的连接不能开启 `rows` 或 `runtime` | 纯逻辑 | PT + 测试 | loader/instance-links | — | 未覆盖 | #631 ※ | 错误文字是测试 |
