@@ -46,6 +46,7 @@ mod identity;
 mod marked;
 mod peer;
 mod services;
+mod sync;
 
 pub use catalog::{Installed, PluginCatalog, StaticCatalog};
 pub use channel::{Channel, Close, ConnectError, PeerId};

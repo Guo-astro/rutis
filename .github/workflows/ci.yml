@@ -513,6 +513,14 @@ jobs:
           RUSTFLAGS: --cfg rutis_shuttle
         run: cargo test -p rutis --lib --target-dir "${CARGO_TARGET_DIR:-target}/shuttle" shuttle
 
+      # The shuttle models of the subprocess exit state (#623,
+      # crates/rutis-bridge/src/pipe/spawn/shuttle_tests.rs), same iterations
+      # and cfg, in the same target directory (the flag is the same).
+      - name: cargo test (rutis-bridge shuttle models)
+        env:
+          RUSTFLAGS: --cfg rutis_shuttle
+        run: cargo test -p rutis-bridge --lib --target-dir "${CARGO_TARGET_DIR:-target}/shuttle" shuttle
+
       # The fuzz entry points (crates/rutis-bridge/src/fuzzing.rs, #179)
       # compile only under cargo-fuzz's --cfg fuzzing, which the nightly
       # stress.yml uses: checked here (no run), in a target directory of

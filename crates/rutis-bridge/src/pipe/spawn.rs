@@ -11,12 +11,15 @@ use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::channel::{Channel, ChannelError, Close, Closer, ConnectError, Receiver, Sender};
 use std::collections::BTreeSet;
 use tokio::sync::{oneshot, watch};
+
+// The exit state's locks: std's, or shuttle's in the models (crate::sync).
+use crate::sync::{Condvar as ExitCondvar, Flag as ExitFlag, Mutex as ExitMutex};
 
 use crate::pipe::lines;
 
@@ -905,11 +908,15 @@ impl Sender for EndedSender {
 /// be blocked in a synchronous call. The fourth field: the process has been
 /// waited for, and is gone. The fifth: notified to kill it now. The last:
 /// its process id, when the system gave one.
+///
+/// The mutex, condition variable and `closed` flag are the models' seam
+/// (`crate::sync`): std's in a plain build, shuttle's under
+/// `--cfg rutis_shuttle`, where `spawn/shuttle_tests.rs` interleaves them.
 #[derive(Default)]
 struct Exit(
-    Mutex<Option<String>>,
-    Condvar,
-    AtomicBool,
+    ExitMutex<Option<String>>,
+    ExitCondvar,
+    ExitFlag,
     watch::Sender<bool>,
     tokio::sync::Notify,
     std::sync::OnceLock<u32>,
@@ -1495,3 +1502,8 @@ mod tests {
         assert!(begun.elapsed() < Duration::from_secs(1));
     }
 }
+
+// The shuttle models of the exit state (#623): built with
+// `--cfg rutis_shuttle` only, like the kernel's (crates/rutis/src/sync.rs).
+#[cfg(all(test, rutis_shuttle))]
+mod shuttle_tests;

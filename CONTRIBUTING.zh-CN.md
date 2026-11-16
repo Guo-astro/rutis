@@ -47,6 +47,8 @@ npm --prefix node/rutis-runtime ci && npm --prefix node/rutis-runtime test
 ```bash
 # 内核的 shuttle 模型（crates/rutis/src/fiber/shuttle_tests.rs）：用单独的 cfg 构建，放在单独的编译目录里
 RUSTFLAGS="--cfg rutis_shuttle" cargo test -p rutis --lib --target-dir target/shuttle shuttle
+# 桥的子进程退出状态模型（#623）：同一个 cfg，同一个编译目录
+RUSTFLAGS="--cfg rutis_shuttle" cargo test -p rutis-bridge --lib --target-dir target/shuttle shuttle
 # 增加迭代次数（默认 1000），或重放失败时打印的调度
 RUTIS_SHUTTLE_ITERATIONS=1000000 RUSTFLAGS="--cfg rutis_shuttle" cargo test -p rutis --lib --target-dir target/shuttle shuttle
 RUTIS_SHUTTLE_REPLAY=<调度> RUSTFLAGS="--cfg rutis_shuttle" cargo test -p rutis --lib --target-dir target/shuttle <测试名>
