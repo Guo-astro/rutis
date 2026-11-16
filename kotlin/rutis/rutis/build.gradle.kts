@@ -25,17 +25,40 @@ plugins {
     id("com.android.library") apply false
     id("com.vanniktech.maven.publish")
     id("org.jetbrains.kotlinx.binary-compatibility-validator")
+    // The controlled-scheduling tests (#630): `frayTest` runs what is tagged
+    // FrayTest; the jvm tests themselves are unchanged.
+    id("org.pastalab.fray.gradle")
+}
+
+// Fray registers `frayTest` for a task named `test` and copies that task's
+// classes and classpath; the jvm target's own test task is `jvmTest`. `test`
+// is only that template: it is never run.
+fray {
+    testTask = "test"
 }
 
 if (androidSdk) {
     apply(plugin = "com.android.library")
 }
 
+// Fray's template (see `fray` above): the jvm test task's inputs under the
+// name Fray looks for, without a second run of the jvm tests.
+tasks.register<Test>("test") {
+    val jvm = tasks.named<Test>("jvmTest")
+    testClassesDirs = jvm.get().testClassesDirs
+    classpath = jvm.get().classpath
+    useJUnitPlatform()
+    enabled = false
+}
+
 kotlin {
     jvmToolchain(17)
     jvm {
         testRuns["test"].executionTask.configure {
-            useJUnitPlatform()
+            useJUnitPlatform {
+                // Fray's controlled-scheduling tests are for `frayTest` (#630).
+                excludeTags("FrayTest")
+            }
             // Tests that start sessions in this process: a hung one fails
             // instead of holding the build.
             systemProperty("junit.jupiter.execution.timeout.default", "120s")
@@ -77,6 +100,12 @@ kotlin {
                 implementation(kotlin("test"))
                 implementation("org.junit.jupiter:junit-jupiter:5.11.4")
                 runtimeOnly("org.junit.platform:junit-platform-launcher:1.11.4")
+                // Controlled thread scheduling (#630): @FrayTest, run by
+                // `frayTest` with Fray's agent. The runtime classes are on
+                // the classpath so JUnit can read the annotation here too.
+                implementation("org.pastalab.fray:fray-junit:0.9.2")
+                implementation("org.pastalab.fray:fray-core:0.9.2")
+                implementation("org.pastalab.fray:fray-runtime:0.9.2")
             }
         }
         if (androidSdk) {
