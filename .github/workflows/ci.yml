@@ -631,6 +631,11 @@ jobs:
         with:
           go-version: oldstable
           cache-dependency-path: go/rutis/go.mod
+      # The Go plugin scenarios serve the SDK's own test dependency (goleak)
+      # from this cache through a file proxy; download it before isolating
+      # the scenario cache.
+      - name: Go module cache for the SDK's test dependency
+        run: cd go/rutis && go mod download
       - name: cargo test (end-to-end scenarios)
         env:
           # S7's tenants created and closed (tests/e2e/tests/embedding.rs):

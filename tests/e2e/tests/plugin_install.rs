@@ -533,6 +533,24 @@ fn module(s: &Scenario, src: &Path, module: &str, version: &str) {
     );
 }
 
+/// Serves a module the SDK's tests require (its go.mod's `require`) from
+/// Go's module cache, so a plugin's `go mod tidy` resolves it without the
+/// network. CI downloads it before the scenarios; the scenario's own
+/// `GOMODCACHE` stays isolated.
+fn module_from_cache(s: &Scenario, name: &str, version: &str) {
+    let cache = std::process::Command::new("go")
+        .args(["env", "GOMODCACHE"])
+        .output()
+        .expect("go env GOMODCACHE");
+    let cache = String::from_utf8_lossy(&cache.stdout).trim().to_owned();
+    let src = Path::new(&cache).join(format!("{name}@{version}"));
+    assert!(
+        src.is_dir(),
+        "{name} {version} is not in {cache}; run `go mod download` in go/rutis"
+    );
+    module(s, &src, name, version);
+}
+
 /// Go with the module proxy of the scenario only, and its own module
 /// cache.
 fn go_env(s: &Scenario) -> Vec<(&'static str, String)> {
@@ -590,6 +608,19 @@ fn a_go_plugin_installs_runs_upgrades_and_goes() {
         "github.com/arcships/rutis/go/rutis",
         &sdk,
     );
+    // The SDK's own test dependency (its internal/testleak imports goleak),
+    // which a plugin's `go mod tidy` resolves through the proxy too.
+    let sdk_module = std::fs::read_to_string(repo().join("go/rutis/go.mod")).unwrap();
+    let goleak = sdk_module
+        .lines()
+        .find_map(|line| {
+            line.trim()
+                .strip_prefix("require go.uber.org/goleak ")
+        })
+        .expect("the SDK requires goleak")
+        .trim()
+        .to_owned();
+    module_from_cache(&s, "go.uber.org/goleak", &goleak);
     publish_go(&s, 1, &env);
     let probe = configuration(&s);
 
