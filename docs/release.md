@@ -90,9 +90,9 @@ cargo run -p rutis-bridge --features websocket --example smoke -- \
 - `tools/install/local-artifacts.sh` 建出这一平台的 5 个 npm 包、`rutis` 与 `rutis-host` 两个 wheel、`rutis-host-0.22.0-x86_64-unknown-linux-gnu.tar.gz`；sha256 对得上，解出的二进制 `--version` 是 `rutis-host 0.22.0`。
 - 用这些文件跑 `RUTIS_E2E_ARTIFACTS=<目录> cargo test -p rutis-e2e --test install -- --ignored --test-threads=1`：npm、PyPI（含 `rutis[network]` 起一个远程运行时）、发布二进制（带 Go 行）三个场景都通过。本机 `/usr/bin/python3` 没有 `python3-venv`，要让 `PATH` 前面的 `python3` 能建带 pip 的 venv（`uv python install 3.12` 装的那个可以）。
 - `cargo test -p rutis-host --test persisted` 与 `cargo test -p rutis-dsh --test persisted` 通过（0.22.0 的样本读出的就是期望）。
-- `tools/check-guarantees.mjs`（219 行、1226 个标记）、`tools/formal-trace.mjs --check`、`tools/check-faults.mjs`、`tools/check-model-pr.mjs --self-test`、`tools/doc-examples.mjs --check` 都是 0 problem。
+- `tools/check-guarantees.mjs`（219 行、1232 个标记）、`tools/formal-trace.mjs --check`、`tools/check-faults.mjs`、`tools/check-model-pr.mjs --self-test`、`tools/doc-examples.mjs --check` 都是 0 problem。
 
-只能在 CI 上跑的是整套发布门：`gh workflow run release.yml --ref <分支> -f dry-run=true`（`ci.yml` 的全部任务、五个平台的打包与安装、Windows 的 dylib 测试），macOS、Windows、arm64 都在这里。
+整套发布门已在 CI 上演练通过（2026-11-17，`gh workflow run release.yml --ref main -f dry-run=true`，run [44086850364](https://github.com/arcships/rutis/actions/runs/44086850364)）：70 个任务里 59 个成功、11 个只在发布时跑的任务跳过（crates、npm、PyPI、`rutis-host` 的 PyPI、Maven、Go、GitHub Release、发布后验证与汇总）；五个平台（linux-x64、linux-arm64、darwin-x64、darwin-arm64、win32-x64）的打包与安装都通过，Windows 的 dylib 测试跑在 GitHub 托管的 `windows-2025` 上，macOS 的 Swift 用例与其余 macOS 任务跑在自托管 macOS runner 上（`macos-1`，标签 `rutis-release`；`install / plan` 落在 `macos-2`）。第一次尝试时只有 `network-macos` 的 `dev_follows_a_python_project`（`crates/rutis-host/tests/dev.rs:467`）失败（汇总任务 `ci-ok` 跟着报失败），同一提交重跑通过，原因未查明。
 
 这一版的网络冒烟只在本机回环跑过（见[冒烟](#冒烟)）：clock、证书与 CA、错误 token 的 403、不信任 CA 的 `UnknownIssuer`、杀掉监听方后重拨都看到了；两台机器和断网那一半没跑，心跳超时与恢复由 `netem.yml` 的两个容器跑。发布前的 agent 试用（#663）也还没做。
 
