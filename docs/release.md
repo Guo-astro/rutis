@@ -80,7 +80,7 @@ cargo run -p rutis-bridge --features websocket --example smoke -- \
 
 ## 0.22.0
 
-0.22 把形式化覆盖并进本版：会话协议有了现行规格（`docs/protocol-session.md`，83 条 `SESS-*`），1368 条现行协议规则按 0.22 来源重抽进追踪表，TLA+ 模型与内核 shuttle 模型按 0.22 对账，事件监听者的关闭接纳改成子树关闭时发布永久 marker、`Entry::live` 不再每次遍历祖先链；另外修了关闭、撤下、心跳与未知字段的边界。所有包均为 0.22.0；见[发布说明](releases/0.22.0.md)与[迁移到 0.22](migration-0.22.md)。
+0.22 把形式化覆盖并进本版：会话协议有了现行规格（`docs/protocol-session.md`，82 条 `SESS-*`），1368 条现行协议规则按 0.22 来源重抽进追踪表，TLA+ 模型与内核 shuttle 模型按 0.22 对账，事件监听者的关闭接纳改成子树关闭时发布永久 marker、`Entry::live` 不再每次遍历祖先链；另外修了关闭、撤下、心跳与未知字段的边界。所有包均为 0.22.0；见[发布说明](releases/0.22.0.md)与[迁移到 0.22](migration-0.22.md)。
 
 0.x 的次版本号变化允许不兼容的改动：`cargo semver-checks` 与 0.21.0 比较时，0.21.0 → 0.22.0 是次版本变化，工具按 major 处理，`rutis`、`rutis-bridge`、`rutis-loader` 都报 `0 checks: 0 pass, 260 skip`；加 `--release-type minor` 强制按次版本比较时，三个 crate 各跑 202 条 lint、全部通过，即 Rust 公开 API 没有不兼容改动。`crates/rutis/public-api.txt` 的快照不变，但要按 CI 固定的 `nightly-2026-10-16` 跑（`RUTIS_PUBLIC_API_TOOLCHAIN=nightly-2026-10-16 tools/public-api.sh`）：默认的 `nightly` 会多出 nightly 新加的 `impl core::marker::Forget` 行，那是 rustdoc 的变化，不是 API 变化。`rutis.json` 的 `format` 仍是 1，配置没有变化：持久化样本从 0.21.0 复制，两份期望不变；dsh 的用户层没变，`cordis.patch.yml` 原样复制。会话协议仍是 4，没有新的能力，插件 API 仍是 3：发布门的跨版本测试（`RUTIS_E2E_ONLY_OLDER=1`）与 0.21.0 相遇，两边都说协议 4，相遇正常工作。Kotlin SDK 随列车一起打版本；Maven Central 按 `release.yml` 的规则发（environment `maven` 的四个 secret，缺一个时 `maven` 任务跳过）。
 
