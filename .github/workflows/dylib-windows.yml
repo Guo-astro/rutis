@@ -65,6 +65,33 @@ jobs:
           }
           bash --version
           if ($LASTEXITCODE -ne 0) { exit 1 }
+          # Set rustc's linker here too: some runners skip the separate
+          # MSVC step, and cargo would then use Git Bash's coreutils `link`.
+          $link = $null
+          $command = Get-Command link.exe -ErrorAction SilentlyContinue
+          if ($command -and $command.Source -notmatch '\\Git\\') { $link = $command.Source }
+          if (-not $link) {
+            $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+            if (Test-Path $vswhere) {
+              $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+              $msvc = Get-ChildItem (Join-Path $vs 'VC\Tools\MSVC') -Directory | Sort-Object Name -Descending | Select-Object -First 1
+              if ($msvc) {
+                $candidate = Join-Path $msvc.FullName 'bin\Hostx64\x64\link.exe'
+                if (Test-Path $candidate) { $link = $candidate }
+              }
+            }
+          }
+          if (-not $link) {
+            foreach ($root in @("${env:ProgramFiles(x86)}\Microsoft Visual Studio", "$env:ProgramFiles\Microsoft Visual Studio")) {
+              if (Test-Path $root) {
+                $candidate = Get-ChildItem $root -Recurse -Filter link.exe -ErrorAction SilentlyContinue |
+                  Where-Object { $_.FullName -match 'Hostx64\\x64\\link.exe$' } |
+                  Select-Object -First 1
+                if ($candidate) { $link = $candidate.FullName; break }
+              }
+            }
+          }
+          if ($link) { "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=$link" >> $env:GITHUB_ENV }
       # Git Bash's coreutils `link` shadows MSVC's; cargo fails with
       # "extra operand" without this. Point rustc at MSVC's linker by path.
       - name: MSVC linker for cargo
