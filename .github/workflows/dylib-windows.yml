@@ -65,6 +65,26 @@ jobs:
           }
           bash --version
           if ($LASTEXITCODE -ne 0) { exit 1 }
+      # Git Bash's coreutils `link` shadows MSVC's; cargo fails with
+      # "extra operand" without this. Point rustc at MSVC's linker by path.
+      - name: MSVC linker for cargo
+        shell: powershell
+        run: |
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          if (-not (Test-Path $vswhere)) {
+            Write-Host "::error::vswhere not found; cannot locate MSVC"
+            exit 1
+          }
+          $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          $msvc = Get-ChildItem (Join-Path $vs 'VC\Tools\MSVC') -Directory |
+            Sort-Object Name -Descending | Select-Object -First 1
+          $link = Join-Path $msvc.FullName 'bin\Hostx64\x64\link.exe'
+          if (-not (Test-Path $link)) {
+            Write-Host "::error::no x64 MSVC link.exe under $($msvc.FullName)"
+            exit 1
+          }
+          "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=$link" >> $env:GITHUB_ENV
+          Write-Host "cargo linker: $link"
       # Several runner instances share the machine: each keeps its own
       # target directory (the one runtimes-windows uses, outside the
       # checkout, which `checkout` cleans) and takes its share of the CPUs
