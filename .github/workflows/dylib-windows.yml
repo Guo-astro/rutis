@@ -70,17 +70,33 @@ jobs:
       - name: MSVC linker for cargo
         shell: powershell
         run: |
+          $link = $null
           $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
-          if (-not (Test-Path $vswhere)) {
-            Write-Host "::error::vswhere not found; cannot locate MSVC"
-            exit 1
+          if (Test-Path $vswhere) {
+            $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+            $msvc = Get-ChildItem (Join-Path $vs 'VC\Tools\MSVC') -Directory |
+              Sort-Object Name -Descending | Select-Object -First 1
+            if ($msvc) {
+              $candidate = Join-Path $msvc.FullName 'bin\Hostx64\x64\link.exe'
+              if (Test-Path $candidate) { $link = $candidate }
+            }
           }
-          $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
-          $msvc = Get-ChildItem (Join-Path $vs 'VC\Tools\MSVC') -Directory |
-            Sort-Object Name -Descending | Select-Object -First 1
-          $link = Join-Path $msvc.FullName 'bin\Hostx64\x64\link.exe'
-          if (-not (Test-Path $link)) {
-            Write-Host "::error::no x64 MSVC link.exe under $($msvc.FullName)"
+          if (-not $link) {
+            $command = Get-Command link.exe -ErrorAction SilentlyContinue
+            if ($command -and $command.Source -notmatch '\\Git\\') { $link = $command.Source }
+          }
+          if (-not $link) {
+            foreach ($root in @("${env:ProgramFiles(x86)}\Microsoft Visual Studio", "$env:ProgramFiles\Microsoft Visual Studio")) {
+              if (Test-Path $root) {
+                $candidate = Get-ChildItem $root -Recurse -Filter link.exe -ErrorAction SilentlyContinue |
+                  Where-Object { $_.FullName -match 'Hostx64\\x64\\link.exe$' } |
+                  Select-Object -First 1
+                if ($candidate) { $link = $candidate.FullName; break }
+              }
+            }
+          }
+          if (-not $link) {
+            Write-Host "::error::no x64 MSVC link.exe found (vswhere, PATH or Visual Studio directories)"
             exit 1
           }
           "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=$link" >> $env:GITHUB_ENV
