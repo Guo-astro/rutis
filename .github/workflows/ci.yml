@@ -1914,11 +1914,10 @@ jobs:
         with:
           node-version: '26'
       - run: npm --prefix node/rutis-runtime ci
-      # setup-python's Windows installer needs an administrator, which the
-      # self-hosted runners are not: they take the machine's Python, in a
-      # virtual environment with pip.
+      # The Windows runners have no python on PATH; setup-python installs or
+      # finds it in the tool cache. The virtual environment below then pins
+      # the packages without touching the machine's site-packages.
       - uses: actions/setup-python@v5
-        if: runner.environment == 'github-hosted'
         with:
           python-version: '3.x'
       - name: Python in a virtual environment (self-hosted)
