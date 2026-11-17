@@ -56,10 +56,14 @@ fn says(s: &Scenario, args: &[&str], env: &[(&str, &str)], lines: &[&str]) -> St
 /// A program run to its end in the project's `dir`, which has to succeed.
 fn program(s: &Scenario, dir: &str, program: &str, args: &[&str], env: &[(&str, &str)]) {
     let mut run = s.program(dir, program, args, env);
-    assert!(
-        run.wait_exit_within(build_guard()).success(),
-        "{program} {args:?}"
-    );
+    let ok = run.wait_exit_within(build_guard()).success();
+    let said = run
+        .lines()
+        .iter()
+        .map(|line| line.text.clone())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(ok, "{program} {args:?} failed:\n{said}");
 }
 
 /// `rutis-host new demo --lang <lang>` in the project.
