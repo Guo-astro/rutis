@@ -10,6 +10,13 @@ mod common;
 use std::sync::Arc;
 
 use common::runtimes::{greet_as_main, layer, row_state, rows_stage, Probe, TestRuntime, COLD};
+
+/// `ExitStatus` reads this way on each family: Windows says "exit code",
+/// Unix "exit status". The reason travels through the error text unchanged.
+#[cfg(windows)]
+const EXIT_STATUS: &str = "exit code";
+#[cfg(not(windows))]
+const EXIT_STATUS: &str = "exit status";
 use rutis::host::{CtxHost, FiberState};
 use rutis::Ctx;
 use rutis_bridge::runtime::RuntimeHandle;
@@ -204,7 +211,7 @@ async fn an_exit_code_ends_the_rows_and_the_call_in_progress() {
         .await;
     assert_eq!(
         reason,
-        "runtime ended: the process exited with exit status: 7"
+        format!("runtime ended: the process exited with {EXIT_STATUS}: 7")
     );
 
     let error = COLD
@@ -222,7 +229,7 @@ async fn an_exit_code_ends_the_rows_and_the_call_in_progress() {
         .data()
         .map(|data| data.to_string())
         .unwrap_or_default();
-    assert!(data.contains("exit status: 7"), "{data}");
+    assert!(data.contains(&format!("{EXIT_STATUS}: 7")), "{data}");
 
     // Its rows wait for the runtime; none failed.
     COLD.until(
