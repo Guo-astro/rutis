@@ -1969,9 +1969,9 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit 1 }
       # Git Bash puts its own `link` in front of MSVC's; cargo then runs the
       # coreutils link and fails with "extra operand". Point rustc at MSVC's
-      # linker by full path instead of fighting PATH order.
-      - name: MSVC linker for cargo (self-hosted)
-        if: runner.environment == 'self-hosted'
+      # linker by full path instead of fighting PATH order. Unconditional: a
+      # self-hosted runner may report an environment that skips the condition.
+      - name: MSVC linker for cargo
         shell: powershell
         run: |
           $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
