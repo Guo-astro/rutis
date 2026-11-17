@@ -1258,7 +1258,7 @@ jobs:
           # (direction and length) and how that channel ended — `closed: done`
           # when this side closed it, `ended` when the far end did — so a
           # runtime that goes during a call says which side went first.
-          RUTIS_TRACE: '1' cargo test -p rutis-loader --all-features --test objects_cross swift
+          RUTIS_TRACE=1 cargo test -p rutis-loader --all-features --test objects_cross swift
           cargo test -p rutis-loader --all-features --test plugin_values swift
       # runtimes.swift in rutis-host (rows, restart, check), and the plugin
       # author's loop: new --lang swift, swift test, check, dev rebuilding;
