@@ -1924,7 +1924,14 @@ jobs:
       - name: Python in a virtual environment (self-hosted)
         if: runner.environment == 'self-hosted'
         run: |
-          python -m venv "$RUNNER_TEMP/venv"
+          if command -v python >/dev/null 2>&1; then
+            python -m venv "$RUNNER_TEMP/venv"
+          elif command -v py >/dev/null 2>&1; then
+            py -3 -m venv "$RUNNER_TEMP/venv"
+          else
+            echo "::error::no python or py on PATH; install Python 3 for this runner"
+            exit 1
+          fi
           cygpath -w "$RUNNER_TEMP/venv/Scripts" >> "$GITHUB_PATH"
       - run: python -m pip install "websockets>=15"
       - uses: actions/setup-go@v5
