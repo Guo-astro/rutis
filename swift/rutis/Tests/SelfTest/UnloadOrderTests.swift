@@ -2,7 +2,7 @@
 // services a row provides, in the order they were registered (Rust's
 // drain_effects; docs/design-unload-order-2026-11-01.md).
 import Foundation
-import RutisTest
+@testable import RutisTest
 @testable import Rutis
 
 /// A service of the test's own.
@@ -157,6 +157,13 @@ struct UnloadOrderTests {
         try await closing.unload()
         for _ in 0..<100 where !heard.all.contains("listening:bye") {
             try await Task.sleep(nanoseconds: 50_000_000)
+        }
+        if !heard.all.contains("listening:bye") {
+            // #1088: the host's lines say whether the cleanup's emit was
+            // refused (and by what) or never arrived.
+            if let host = try? await TestHost.shared() {
+                print("host lines during aRowsCleanupStillEmits: \(host.lines)")
+            }
         }
         XCTAssertEqual(heard.all, ["listening:bye"])
         let error = Self.failure { try late.value?.emit("t/bye", "late") }
