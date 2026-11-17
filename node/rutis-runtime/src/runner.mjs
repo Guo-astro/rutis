@@ -1276,5 +1276,7 @@ function shutdownDeadline() {
 }
 
 // The CLI: this file as a program is the runtime on the channel it is given.
-// Imported, it is `run` alone: a test's process is not a runtime's.
-if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) await run()
+// Imported, it is `run` alone: a test's process is not a runtime's. Compare
+// URLs, not path strings: on Windows the two sides can differ in case or
+// separators, and a false negative makes the runtime exit 0 before connecting.
+if (process.argv[1] && pathToFileURL(realpathSync(process.argv[1])).href === import.meta.url) await run()
