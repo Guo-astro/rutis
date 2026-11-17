@@ -613,10 +613,7 @@ fn a_go_plugin_installs_runs_upgrades_and_goes() {
     let sdk_module = std::fs::read_to_string(repo().join("go/rutis/go.mod")).unwrap();
     let goleak = sdk_module
         .lines()
-        .find_map(|line| {
-            line.trim()
-                .strip_prefix("require go.uber.org/goleak ")
-        })
+        .find_map(|line| line.trim().strip_prefix("require go.uber.org/goleak "))
         .expect("the SDK requires goleak")
         .trim()
         .to_owned();
