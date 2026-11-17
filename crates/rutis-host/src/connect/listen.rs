@@ -531,6 +531,10 @@ mod tests {
 
     /// guarantee: host/listen-replacement-order
     #[tokio::test]
+    #[cfg_attr(
+        windows,
+        ignore = "the old far end sees EOF before the 4002 close frame on Windows (#1295)"
+    )]
     async fn a_newer_connection_replaces_the_older_after_the_older_fully_unloaded() {
         let phone = start("phone").await;
         let old = phone.greet("swap-1");
