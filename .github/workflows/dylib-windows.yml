@@ -38,6 +38,33 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@v4
+      # A self-hosted runner may have Git while its bin directory is not on
+      # the system PATH (docs/ci.md §11): every `shell: bash` step below then
+      # fails with `bash: command not found`. Add Git's bin for this job;
+      # a runner that has bash already passes through.
+      - name: Git Bash on PATH
+        shell: powershell
+        run: |
+          if (-not (Get-Command bash -ErrorAction SilentlyContinue)) {
+            $candidates = @()
+            foreach ($root in @($env:ProgramFiles, ${env:ProgramFiles(x86)})) {
+              if ($root) {
+                $candidates += (Join-Path $root 'Git\bin')
+                $candidates += (Join-Path $root 'Git\usr\bin')
+              }
+            }
+            $dir = $candidates |
+              Where-Object { Test-Path (Join-Path $_ 'bash.exe') } |
+              Select-Object -First 1
+            if (-not $dir) {
+              Write-Host "::error::no bash on PATH and no Git Bash in: $($candidates -join ', ')"
+              exit 1
+            }
+            Add-Content -Path $env:GITHUB_PATH -Value $dir
+            $env:PATH = "$dir;$env:PATH"
+          }
+          bash --version
+          if ($LASTEXITCODE -ne 0) { exit 1 }
       # Several runner instances share the machine: each keeps its own
       # target directory (the one runtimes-windows uses, outside the
       # checkout, which `checkout` cleans) and takes its share of the CPUs
