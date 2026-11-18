@@ -91,9 +91,18 @@ shutdown 已在标记子树并开始关闭时持有 `Shared.admission`（`crates
 
 - **计数改成按 dispatch/owner。** `FiberInner::event_flights`（互斥锁）和 `event_flights_tx`（watch）换成 `EventFlights`：一个原子计数加一个 `Notify`，只在计数归零且有等待者时唤醒。一次 dispatch 用 `DispatchFlight` 对遇到的 owner 各计一次（`counted_by` 记住本 dispatch 已计过谁），只对真正 `start` 的监听器计数，跳过的当场退回；异步 `emit` 监听器的任务、`parallel` 和远程入口仍按调用计数（`EventBus::start_alone`）。卸载的等待粒度因此从单回调变成 dispatch/owner，等待只会变长。
 - **状态字。** `OwnerState` 把 `alive`、`closing`、`lineage_closed` 和 `live_generation` 放进一个 `AtomicU64`；一次调用一次 `SeqCst` 读（原来是四次 marker 读加一次 `withdrawn`）。`FiberInner` 保留四个字段给其它读者，所有写点都同时写状态字，测试 `the_word_matches_the_markers` 在静默点比对两者。
-- **顺序。** `Entry::start` 变成一次 `Weak::upgrade`、先计数再读状态字；准入/排空的论证写在 `crates/rutis/src/fiber/state.rs` 的模块注释里。shuttle 模型 6 现在能抓到“先检查再计数”的顺序错误（计数改成 shuttle 可见的原子后才有这个切换点）。
+- **顺序。** `Entry::start` 当时变成一次 `Weak::upgrade`、先计数再读状态字（#1126 已去掉这次 upgrade，见下节）；准入/排空的论证写在 `crates/rutis/src/fiber/state.rs` 的模块注释里。shuttle 模型 6 现在能抓到“先检查再计数”的顺序错误（计数改成 shuttle 可见的原子后才有这个切换点）。
 - **数字（本机 release，Linux x86-64，32 核，同一 target 上 base 与分支交替三次取中位数）：** `close_cpu` 1000 instance 创建 16.47 s → 5.69 s，关闭 10.85 s → 1.44 s；`cargo bench -p rutis --bench events` 的 `bail_sync` 64 监听器每次 116.8 ns → 29.8 ns。`CREATE_RATIO`、`CLOSE_RATIO`、`IDLE_SHARE` 仍通过。
 - **诊断口径不变：** `EventSubscription::calls` 仍是“已开始的调用数”，仍是一次 `Relaxed` 加（实测约 1.4 ns/次）；`listener_table_model` 用它做精确比对，所以没有改成按 dispatch 汇总的近似值。
+
+### 2026-11-18 进展（#1126）
+
+- **owner 单独成对象。** `OwnerState`、`EventFlights` 和 `counted_by` 从 `FiberInner` 移进 `Owner`；fiber 持一个 `Arc<Owner>`，每个监听 entry 再持一个，不再持 `Weak<FiberInner>`。一次调用因此不再 `Weak::upgrade`（每次都是对 fiber 强计数的一次读-改-写），也不再碰 fiber 本身：状态字、计数和 `counted_by` 是 64 字节对齐对象的头三个字段，落在同一条 cache line。
+- **`DispatchFlight` 记借来的 owner。** 它按 dispatch 对每个 owner 计一次，记的是从正在调用的 entry 借来的 `&Owner`；entry 活得比 flight 久，所以“一个 owner 一个监听器”的 dispatch 不再克隆和释放 `Arc`。持有 `Arc` 的变体实测过：`close_cpu` 的关闭阶段每个监听器各有自己的 owner，那种写法慢约 40%，所以保留借用。
+- **“fiber 已消失”仍然否决调用。** 以前由 `Weak::upgrade` 失败表达，现在 `impl Drop for FiberInner` 清掉状态字里的 `alive`。entry 持有的是 owner 而不是 fiber，所以驱动没走到退出路径就被丢掉的 fiber 也承认不了任何调用。
+- **不做 arena，也不做 id 快照。** 实测一次调用的成本在原子操作（一次 `withdrawn` 读、一次状态字读、每 dispatch/owner 一次计数加、一次 `calls` 加），不在快照持有的 `Arc<Entry>`：无过滤的 `emit` 本来就复用同名 emit 共享的一张列表（#977、#980），只在重建时克隆。只存 `EntryId` 的 `Selected` 要在调用时把 id 解析成存活的 `&Entry`；槽位一旦可复用，这个解析就需要 hazard pointer 或 epoch 回收（本 crate 没有 `unsafe`，也没有这类依赖），而解析本身仍是一次 `Arc` 克隆或一次 hazard 注册，在这个负载上没有收益可测。ABA 也不存在：`withdrawn` 只从 false 变 true，owner 的 generation 跟着 `Owner` 对象走，槽位和 id 都不复用。
+- **数字（本机 release，Linux x86-64，32 核；base 与分支交替三轮取中位数；这台机器的 `close_cpu` 基线在这四次测量之间从 4.77 s 漂到 6.07 s）。** `close_cpu` 1000 instance：创建 5.24 s → 3.95 s（-25%），关闭 1.42 s → 1.21 s（-15%）；此前三次同样方式测得创建 -19% 到 -25%、关闭 -20% 到 -24%；100 instance 落在同一批测量的噪声里。`cargo bench -p rutis --bench events`：`bail_sync` 64 监听器 1787 ns → 1861 ns 每次 dispatch，即 27.9 → 29.1 ns 每次调用（+4%；同一对二进制的空监听器用例也移动 +11%，这就是这台机器上微基准的噪声底，#1125 那一轮测到的 29.8 ns 每次调用也在今天的波动范围内），`serial`、`parallel` 64 监听器 -7%，`emit` 接受 -29%。`CREATE_RATIO`、`CLOSE_RATIO`、`IDLE_SHARE` 仍通过。
+- **诊断口径不变。** `EventSubscription::owner` 仍是注册它的 fiber，只是改成通过 context 自带的 `Weak` 读；`calls` 仍是每次已开始的调用一次 `Relaxed` 加；远程 entry id 和 `ListenerInfo` 未动。
 
 ## 7. 设计哲学检查
 

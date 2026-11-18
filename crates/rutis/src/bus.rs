@@ -342,7 +342,7 @@ impl EventBus {
                 origin,
                 body,
                 ctx: owner_ctx,
-                owner: Arc::downgrade(fiber),
+                owner: fiber.owner.clone(),
                 generation,
                 withdrawn: Default::default(),
                 claimed: Default::default(),
@@ -451,7 +451,7 @@ impl EventBus {
                 id: entry.id,
                 name: entry.name.to_string(),
                 prefix: entry.prefix,
-                owner: entry.owner.upgrade().map(|fiber| fiber.id),
+                owner: entry.ctx.weak_fiber().upgrade().map(|fiber| fiber.id),
                 kind: entry.kind(),
                 remote: matches!(entry.body, Body::Remote(_)),
                 once: entry.once,
@@ -578,7 +578,7 @@ impl EventBus {
     /// first call that starts, not when a dispatch selects it: one a filter
     /// dropped, or a `serial` / `bail` ended before, stays for the next
     /// dispatch.
-    pub(crate) fn start(&self, entry: &Arc<Entry>, flight: &mut DispatchFlight) -> bool {
+    pub(crate) fn start<'a>(&self, entry: &'a Arc<Entry>, flight: &mut DispatchFlight<'a>) -> bool {
         flight.admit(entry) && self.claimed(entry)
     }
 
