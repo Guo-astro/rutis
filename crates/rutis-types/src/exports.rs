@@ -892,25 +892,17 @@ impl Generator<'_> {
         };
         self.py_declarations.push(py_declaration);
         let docs = jsdoc(&attrs, "");
-        let declaration = match body {
-            Body::Object {
-                fields, flattened, ..
-            } if flattened.is_empty() => {
-                format!(
-                    "{docs}export interface {header} {}\n",
-                    object(&fields, false)
-                )
-            }
-            body => {
-                let expression = body.inline(false);
-                let space = if expression.starts_with('\n') {
-                    ""
-                } else {
-                    " "
-                };
-                format!("{docs}export type {header} ={space}{expression}\n")
-            }
+        // A data object is a `type` alias, not an `interface`: an interface
+        // is open to declaration merging, so TypeScript gives it no implicit
+        // index signature, and it does not fit a recursive data type with a
+        // string index signature (#1289).
+        let expression = body.inline(false);
+        let space = if expression.starts_with('\n') {
+            ""
+        } else {
+            " "
         };
+        let declaration = format!("{docs}export type {header} ={space}{expression}\n");
         self.declarations.push(declaration);
         Ok(name)
     }
@@ -3333,6 +3325,65 @@ impl Jot {
         )
     }
 
+    /// A data object is a `type` alias, not an `interface` (#1289): an
+    /// interface is open to declaration merging, so TypeScript gives it no
+    /// implicit index signature, and it cannot be assigned to a recursive
+    /// data type with a string index signature under `tsc --strict`.
+    /// Services and `RustError` stay interfaces.
+    #[test]
+    fn data_objects_are_type_aliases() {
+        let source = r#"
+use serde::{Deserialize, Serialize};
+
+#[derive(Serialize, Deserialize)]
+pub struct Leaf {
+    pub name: String,
+    pub at: u64,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct Nested {
+    pub leaf: Leaf,
+    pub more: Vec<Leaf>,
+    pub note: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct Page<T> {
+    pub items: Vec<T>,
+    pub next: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct Tree {
+    pub children: Vec<Tree>,
+}
+
+pub struct Calendar;
+
+#[rutis::service]
+impl Calendar {
+    pub fn get(&self) -> Nested { todo!() }
+    pub fn page(&self) -> Page<Leaf> { todo!() }
+    pub fn tree(&self) -> Tree { todo!() }
+}
+"#;
+        let generated = generate(Exports::new(), &[("lib.rs", source)]).unwrap();
+        let ts = &generated.typescript;
+        for expected in [
+            "export type Leaf = {\n  name: string\n  at: number | bigint\n}",
+            "export type Nested = {\n  leaf: Leaf\n  more: Leaf[]\n  note?: string | null\n}",
+            "export type Page<T> = {\n  items: T[]\n  next?: string | null\n}",
+            "export type Tree = {\n  children: Tree[]\n}",
+            "export interface Calendar {",
+            "export interface RustError<",
+            "export interface Services {",
+        ] {
+            assert!(ts.contains(expected), "{expected}\n---\n{ts}");
+        }
+        assert!(generated.warnings.is_empty(), "{:?}", generated.warnings);
+    }
+
     /// A type re-exported from a private module, with methods in another
     /// module, aliases followed and serde's attributes read.
     #[test]
@@ -3348,7 +3399,7 @@ impl Jot {
             "  tied(n: number): Promise<void>",
             "  /** @throws {StringThrown} */\n  count(): Promise<number | bigint>",
             "export type Item = {\n  itemName: string\n  n: number | bigint\n  pages: Page<number[]>\n} & Meta",
-            "export interface Page<T> {\n  items: T\n  next?: string | null\n}",
+            "export type Page<T> = {\n  items: T\n  next?: string | null\n}",
             "export type Problem = { kind: \"not-there\" } | { kind: \"too-big\"; detail: number | bigint }",
             "export type ProblemThrown = RustError<\"Problem\", \"not-there\" | \"too-big\", Problem>",
             "export interface Services {\n  store: Store\n}",
@@ -3520,7 +3571,7 @@ impl Jot {
         assert!(
             generated
                 .typescript
-                .contains("export interface Item6 {\n  at?: string | null\n}"),
+                .contains("export type Item6 = {\n  at?: string | null\n}"),
             "{}",
             generated.typescript
         );

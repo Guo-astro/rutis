@@ -9,7 +9,7 @@ An application whose TypeScript and Python rows use, by name, Rust services **wh
 | [src/lib.rs](src/lib.rs) | The wrapping `Calendar` and `Notes`: the mark, the forwarding methods and their doc comments |
 | [build.rs](build.rs) | Writes the declarations to `rows/services.d.ts` on every build (the services themselves need no build step) |
 | [rows/services.d.ts](rows/services.d.ts) | The TypeScript declarations generated from the Rust definitions (the build rewrites it; commit it) |
-| [rows/calendar.ts](rows/calendar.ts) | A Node row: serde structs in and out, async methods, errors with `code` and `data`, a bigint, functions passed by reference, a subscription on the calling row's `Ctx` |
+| [rows/calendar.ts](rows/calendar.ts) | A Node row: serde structs in and out, async methods, errors with `code` and `data`, a bigint, functions passed by reference, a subscription on the calling row's `Ctx`, and the generated DTOs forwarded as recursive data under `tsc --strict` |
 | [rows/notes.ts](rows/notes.ts) | A Node row inside each `session` instance, using its instance's `Notes` |
 | [rows/calendar_row.py](rows/calendar_row.py) | A Python row calling the same `Calendar` |
 | [tests/rows.rs](tests/rows.rs) | The host: the wrapped services provided as usual (`Notes` by a row inside the instance), and the checks (`tsc --strict` on the declarations included) |
