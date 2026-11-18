@@ -1021,6 +1021,64 @@ async fn unloaded_listeners_are_not_called() {
     root.shutdown().await.unwrap();
 }
 
+/// Once a listener's disposer has returned, no dispatch calls it again, also
+/// while other threads dispatch on the same bus.
+///
+/// A call an emit started before the disposer returned is allowed (§5.1 step
+/// 3); a call that starts after it is not. The entry a dispatch holds is
+/// resolved through the owner it holds (#1126): the owner's state word, not
+/// a `Weak` to the fiber, is what says the listener is gone.
+///
+/// guarantee: events/lifecycle, core/D28
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_disposed_listener_is_not_called_after_its_disposer_returns() {
+    let root = Ctx::root().unwrap();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let disposers: Vec<_> = (0..8)
+        .map(|_| {
+            let calls = calls.clone();
+            root.on_sync::<Ping>(move |_, _| {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Ok(None)
+            })
+            .unwrap()
+        })
+        .collect();
+    // Heard at least once, so the check below is about the disposals.
+    root.bail(Ping(0)).unwrap();
+    // Dispatched from a task of its own while the disposers run: a call that
+    // starts before a disposer returns is fine, one after is not.
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let emitting = root.clone();
+    let flag = stop.clone();
+    let spinner = tokio::spawn(async move {
+        while !flag.load(Ordering::SeqCst) {
+            let _ = emitting.bail(Ping(0));
+            tokio::task::yield_now().await;
+        }
+    });
+    for disposer in disposers {
+        disposer.dispose().await.unwrap();
+    }
+    stop.store(true, Ordering::SeqCst);
+    spinner.await.unwrap();
+    let heard = calls.load(Ordering::SeqCst);
+    assert!(heard > 0, "the listeners were never called at all");
+    for _ in 0..100 {
+        root.bail(Ping(0)).unwrap();
+    }
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        heard,
+        "a disposed listener was called after its disposer returned"
+    );
+    assert!(
+        root.events().subscriptions().is_empty(),
+        "a disposed listener stayed in the table"
+    );
+    root.shutdown().await.unwrap();
+}
+
 // ── remote entries ──────────────────────────────────────────────
 
 struct Remote {

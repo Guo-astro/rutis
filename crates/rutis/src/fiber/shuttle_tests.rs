@@ -481,7 +481,7 @@ fn shuttle_effect_registration_and_dispose_clean_up_exactly_once() {
             "a record was left in the fiber's effect index"
         );
         assert_eq!(
-            fiber.flights.count(),
+            fiber.owner.flights.count(),
             0,
             "the registration's event flight was never released"
         );
@@ -522,7 +522,7 @@ fn model_entry(ctx: &Ctx, fiber: &Arc<FiberInner>) -> Entry {
         origin: None,
         body: Body::Sync(Arc::new(NeverCalled)),
         ctx: ctx.clone(),
-        owner: Arc::downgrade(fiber),
+        owner: fiber.owner.clone(),
         generation: 0,
         withdrawn: StdBool::new(false),
         claimed: StdBool::new(false),
@@ -640,7 +640,7 @@ fn shuttle_unload_waits_for_in_flight_listener_calls() {
         }
         unloader.join().unwrap();
         assert_eq!(
-            fiber.flights.count(),
+            fiber.owner.flights.count(),
             0,
             "an event flight was never finished"
         );
@@ -3662,7 +3662,7 @@ fn close_race(with_restart: bool) {
         "a generation's effect record was left in the index"
     );
     assert_eq!(
-        fiber.flights.count(),
+        fiber.owner.flights.count(),
         0,
         "a listener call was never finished"
     );
@@ -4168,7 +4168,7 @@ fn shuttle_restart_publishes_the_live_generation() {
             "the last generation is not the published one"
         );
         assert_eq!(
-            fiber.flights.count(),
+            fiber.owner.flights.count(),
             0,
             "a listener call was never finished"
         );
@@ -4439,7 +4439,7 @@ fn shuttle_subtree_close_marks_every_member_of_a_real_tree() {
                 "the {name} of the closed subtree was not closed"
             );
             assert_eq!(
-                member.flights.count(),
+                member.owner.flights.count(),
                 0,
                 "the {name} left a call flight behind"
             );
@@ -6080,7 +6080,7 @@ fn deadline_waits(calls_first: bool) {
     claimed.wait();
     for fiber in [&one, &two] {
         assert_eq!(
-            fiber.fiber.flights.count(),
+            fiber.fiber.owner.flights.count(),
             2,
             "the model's two calls were not both counted on the fiber"
         );
@@ -6173,7 +6173,7 @@ fn deadline_waits(calls_first: bool) {
 
     for fiber in [&one, &two] {
         assert_eq!(
-            fiber.fiber.flights.count(),
+            fiber.fiber.owner.flights.count(),
             0,
             "an event flight was never finished"
         );

@@ -74,7 +74,7 @@ async fn an_old_generation_listener_is_not_called() {
     // withdrawn as well; this pins the word's own check.
     let inner = root.root_view().unwrap().inner;
     inner.live_generation.store(1, Ordering::SeqCst);
-    inner.state.publish_live(1);
+    inner.owner.state.publish_live(1);
     check(&inner);
     assert!(root.bail(Ping).is_ok());
     assert_eq!(
@@ -82,7 +82,11 @@ async fn an_old_generation_listener_is_not_called() {
         1,
         "a listener of the old generation was called"
     );
-    assert_eq!(inner.flights.count(), 0, "a flight outlived its dispatch");
+    assert_eq!(
+        inner.owner.flights.count(),
+        0,
+        "a flight outlived its dispatch"
+    );
 }
 
 /// One dispatch counts its owner once, however many of its listeners it
@@ -95,7 +99,7 @@ async fn one_dispatch_counts_an_owner_once() {
         let seen = seen.clone();
         root.on_sync::<Ping>(move |_, call: crate::events::SyncCall<'_, Ping>| {
             let fiber = call.ctx().weak_fiber().upgrade().expect("the owner");
-            seen.lock().unwrap().push(fiber.flights.count());
+            seen.lock().unwrap().push(fiber.owner.flights.count());
             Ok(None)
         })
         .unwrap();
@@ -103,5 +107,9 @@ async fn one_dispatch_counts_an_owner_once() {
     root.bail(Ping).unwrap();
     assert_eq!(*seen.lock().unwrap(), [1, 1], "one count per dispatch");
     let fiber = root.root_view().unwrap().inner;
-    assert_eq!(fiber.flights.count(), 0, "the dispatch released its count");
+    assert_eq!(
+        fiber.owner.flights.count(),
+        0,
+        "the dispatch released its count"
+    );
 }
