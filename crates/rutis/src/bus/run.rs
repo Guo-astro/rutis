@@ -326,7 +326,9 @@ impl AsyncNext {
 /// with the rest after it as its `next`; the terminal when none is left.
 async fn run_from(chain: &Arc<Chain>, from: usize) -> Result<Option<Value>, Error> {
     let inv = chain.inv.inv();
-    let mut flight = DispatchFlight::new(inv.dispatch, chain.entries.len());
+    // The rest of the chain: this call reaches the first entry that admits it
+    // and hands the rest to that entry's `next`, so one owner at most.
+    let mut flight = DispatchFlight::new(inv.dispatch, 1);
     for index in from..chain.entries.len() {
         let entry = &chain.entries[index];
         // Withdrawn since the snapshot: skipped, as if never selected.
@@ -479,7 +481,9 @@ pub(crate) struct SyncNext<'a> {
 
 impl SyncNext<'_> {
     pub fn invoke(self) -> Result<Option<Value>, Error> {
-        let mut flight = DispatchFlight::new(self.inv.dispatch, self.chain.len());
+        // One owner at most: the first entry that admits this call ends the
+        // walk, and its `next` starts the rest.
+        let mut flight = DispatchFlight::new(self.inv.dispatch, 1);
         for (index, entry) in self.chain.iter().enumerate() {
             if !self.inv.bus.start(entry, &mut flight) {
                 continue;
