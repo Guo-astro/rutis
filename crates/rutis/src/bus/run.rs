@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::Poll;
 
-use super::table::{Body, CallFlight, Entry};
+use super::table::{Body, CallFlight, DispatchFlight, Entry};
 use super::EventBus;
 use crate::ctx::Ctx;
 use crate::error::{panic_error, Error, ErrorKind};
@@ -326,12 +326,15 @@ impl AsyncNext {
 /// with the rest after it as its `next`; the terminal when none is left.
 async fn run_from(chain: &Arc<Chain>, from: usize) -> Result<Option<Value>, Error> {
     let inv = chain.inv.inv();
+    // The rest of the chain: this call reaches the first entry that admits it
+    // and hands the rest to that entry's `next`, so one owner at most.
+    let mut flight = DispatchFlight::new(inv.dispatch, 1);
     for index in from..chain.entries.len() {
         let entry = &chain.entries[index];
         // Withdrawn since the snapshot: skipped, as if never selected.
-        let Some(flight) = inv.bus.start(entry) else {
+        if !inv.bus.start(entry, &mut flight) {
             continue;
-        };
+        }
         let next = AsyncNext {
             chain: chain.clone(),
             from: index + 1,
@@ -478,17 +481,19 @@ pub(crate) struct SyncNext<'a> {
 
 impl SyncNext<'_> {
     pub fn invoke(self) -> Result<Option<Value>, Error> {
+        // One owner at most: the first entry that admits this call ends the
+        // walk, and its `next` starts the rest.
+        let mut flight = DispatchFlight::new(self.inv.dispatch, 1);
         for (index, entry) in self.chain.iter().enumerate() {
-            let Some(flight) = self.inv.bus.start(entry) else {
+            if !self.inv.bus.start(entry, &mut flight) {
                 continue;
-            };
+            }
             let next = SyncNext {
                 inv: self.inv,
                 chain: &self.chain[index + 1..],
                 terminal: self.terminal,
             };
             let out = call_sync(entry, self.inv, Some(next));
-            drop(flight);
             return out;
         }
         user_call(self.inv.emitter, || self.terminal.call(self.inv))
@@ -536,7 +541,7 @@ pub(crate) async fn run_parallel(
     let mut results: Vec<(usize, Result<Option<Value>, Error>)> = Vec::new();
     let mut set = crate::sync::TaskSet::new();
     for (index, entry) in entries.into_iter().enumerate() {
-        let Some(flight) = owned.bus.start(&entry) else {
+        let Some(flight) = owned.bus.start_alone(&entry) else {
             continue;
         };
         let owned = owned.clone();
@@ -578,12 +583,12 @@ pub(crate) async fn run_serial(
     inv: &Inv<'_>,
     entries: &[Arc<Entry>],
 ) -> Result<Option<Value>, Error> {
+    let mut flight = DispatchFlight::new(inv.dispatch, entries.len());
     for entry in entries {
-        let Some(flight) = inv.bus.start(entry) else {
+        if !inv.bus.start(entry, &mut flight) {
             continue;
-        };
+        }
         let out = call_async(entry, inv, None).await;
-        drop(flight);
         match out? {
             Some(value) if !value.is_no_result() => return Ok(Some(value)),
             _ => {}
@@ -593,12 +598,12 @@ pub(crate) async fn run_serial(
 }
 
 pub(crate) fn run_bail(inv: &Inv<'_>, entries: &[Arc<Entry>]) -> Result<Option<Value>, Error> {
+    let mut flight = DispatchFlight::new(inv.dispatch, entries.len());
     for entry in entries {
-        let Some(flight) = inv.bus.start(entry) else {
+        if !inv.bus.start(entry, &mut flight) {
             continue;
-        };
+        }
         let out = call_sync(entry, inv, None);
-        drop(flight);
         match out? {
             Some(value) if !value.is_no_result() => return Ok(Some(value)),
             _ => {}
