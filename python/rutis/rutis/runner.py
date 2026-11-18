@@ -1573,12 +1573,19 @@ def _stamp(module) -> tuple | None:
 
 def _forget_bytecode(modules) -> None:
     """Remove the bytecode Python cached for `modules`, so their sources are
-    compiled again (`Runtime.module`'s reload path, #1080)."""
+    compiled again (`Runtime.module`'s reload path, #1080).
+
+    The path is computed from the source: Python 3.15 no longer sets a
+    module's `__cached__`."""
     for module in modules:
         if module is None:
             continue
-        cached = getattr(module, "__cached__", None)
-        if not cached:
+        source = getattr(module, "__file__", None)
+        if not source:
+            continue
+        try:
+            cached = importlib.util.cache_from_source(source)
+        except (NotImplementedError, ValueError):
             continue
         try:
             os.unlink(cached)
