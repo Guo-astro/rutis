@@ -764,7 +764,7 @@ Rust 服务由各语言的行（TypeScript、JavaScript、Python、Go）按名�
 | `Box<T>`、`Arc<T>`、`Rc<T>`、`Cow<T>` | `T` | |
 | `serde_json::Value` | `unknown` | |
 | `rutis_bridge::session::{Instant, Bytes, BigInt, ValueMap, ValueSet}` | `Date`、`Uint8Array`、`bigint`、`Map`、`Set` | 带标签的值 |
-| derive 了 `Serialize` / `Deserialize` 的 struct 或 enum | `interface` 或联合类型，按 serde 写出的样子 | `rename`、`rename_all`、`rename_all_fields`、`tag`、`content`、`untagged`、`transparent`、`flatten`、`skip`、`default`、`skip_serializing_if`；泛型类型在 TypeScript 里也是泛型；文档注释变成 JSDoc |
+| derive 了 `Serialize` / `Deserialize` 的 struct 或 enum | `type` 别名或联合类型，按 serde 写出的样子 | `rename`、`rename_all`、`rename_all_fields`、`tag`、`content`、`untagged`、`transparent`、`flatten`、`skip`、`default`、`skip_serializing_if`；泛型类型在 TypeScript 里也是泛型；文档注释变成 JSDoc |
 | `impl Fn(A, ..) -> BoxFuture<'static, Result<X, E>>`、泛型 `F: Fn(..)`、`Arc<dyn Fn .. + Send + Sync>`、`Box<dyn Fn .. + Send>`（含别名） | `(arg0: A, ..) => X \| Promise<X>` | 按引用传的函数；最多四个参数，按值取 |
 | `async fn`，或返回 `BoxFuture<'_, T>`、`Pin<Box<dyn Future<Output = T> ..>>`、`impl Future<Output = T>` | `Promise<T>` | 对调用方而言每个方法都返回 `Promise` |
 
@@ -794,7 +794,9 @@ Rust 服务由各语言的行（TypeScript、JavaScript、Python、Go）按名�
 
 ### 声明
 
-`rutis-host types` 和 `.typescript(…)` 写出的文件包含每个服务类型的接口、它用到的数据类型、`RustError`、各 `<Name>Thrown` 类型，以及按名字列出服务的 `Services`：`ctx.use<Services['calendar']>('calendar')`。它能通过 `tsc --strict`（两个示例都会检查）。写出的文件要提交：Rust 一侧变了，`build.rs` 会改写它；用 `rutis-host types` 的，再运行一次。
+`rutis-host types` 和 `.typescript(…)` 写出的文件包含每个服务类型的接口、每个数据类型的 `type` 别名、`RustError`、各 `<Name>Thrown` 类型，以及按名字列出服务的 `Services`：`ctx.use<Services['calendar']>('calendar')`。它能通过 `tsc --strict`（两个示例都会检查）。写出的文件要提交：Rust 一侧变了，`build.rs` 会改写它；用 `rutis-host types` 的，再运行一次。
+
+数据类型是 `type` 别名，不是 `interface`（#1289）。TypeScript 不给接口隐式索引签名——声明合并随时可能加字段——所以接口在 `tsc --strict` 下不能赋给带字符串索引签名的递归 data 值（`{ [key: string]: Data }`）：`Index signature for type 'string' is missing`。这样插件就没法把生成的 DTO 作为参数或结果转发给要求 `data` 的接口。代价是数据类型不能再被声明合并扩展：`declare module './services.js' { interface Entry { … } }` 不再给它加字段。需要加字段时在旁边写 `type EntryWithExtra = Entry & { extra: string }`。服务、`RustError` 和 `Services` 仍是接口。
 
 宿主把插件交给别人（或别的团队）用 Python 写时，同时写出 Python 类型，和插件模板一起给出：
 

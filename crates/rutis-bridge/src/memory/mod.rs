@@ -45,6 +45,21 @@ impl Direction {
         self.changed.notify_all();
     }
 
+    /// Set the close reason; the waiters wake only once every direction has
+    /// it ([`MemoryCloser::close`]).
+    fn mark_closed(&self, why: &Close) {
+        self.state
+            .lock()
+            .unwrap()
+            .closed
+            .get_or_insert_with(|| why.clone());
+    }
+
+    /// Wake every thread waiting on this direction.
+    fn wake(&self) {
+        self.changed.notify_all();
+    }
+
     /// Wait for a change, counted in `waiting` under test.
     fn wait<'a>(&self, state: MutexGuard<'a, State>) -> MutexGuard<'a, State> {
         #[cfg(test)]
@@ -151,7 +166,8 @@ struct Pair {
     /// reads the rejection even when this end's own teardown (`Done`) closes
     /// at the same time.
     reason: Mutex<Option<Close>>,
-    /// A test's step between a close's two directions (#624).
+    /// A test's step after a close has taken its reason on both directions
+    /// and before either is woken (#624).
     #[cfg(test)]
     between: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
 }
@@ -172,17 +188,22 @@ impl Closer for MemoryCloser {
             reason.get_or_insert(why).clone()
         };
         *self.own.lock().unwrap() = true;
-        for direction in [&self.incoming, &self.outgoing] {
-            direction.update(|state| {
-                state.closed.get_or_insert_with(|| why.clone());
-            });
-            #[cfg(test)]
-            {
-                let between = self.pair.between.lock().unwrap().take();
-                if let Some(between) = between {
-                    between();
-                }
+        // Both directions take the reason before either wakes a waiter: this
+        // end's reader wakes first otherwise, drops its sender, and the far
+        // end woken by that reads a plain end (`Ok(None)`) in the gap before
+        // the outgoing direction is closed (#1295).
+        for direction in [&self.outgoing, &self.incoming] {
+            direction.mark_closed(&why);
+        }
+        #[cfg(test)]
+        {
+            let between = self.pair.between.lock().unwrap().take();
+            if let Some(between) = between {
+                between();
             }
+        }
+        for direction in [&self.outgoing, &self.incoming] {
+            direction.wake();
         }
     }
 }

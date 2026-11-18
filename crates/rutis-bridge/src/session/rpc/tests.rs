@@ -3938,3 +3938,4 @@ fn eval_once<F: std::future::Future + ?Sized>(future: std::pin::Pin<&mut F>) -> 
 }
 
 mod objects;
+mod workers;

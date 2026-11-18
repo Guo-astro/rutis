@@ -10,7 +10,7 @@ export interface RustError<Name extends string = string, Code extends string = s
 export type Kind = "meeting" | "reminder" | "all_day"
 
 /** An entry to add: an [`Entry`] without its id. */
-export interface NewEntry {
+export type NewEntry = {
   title: string
   startsAt: number | bigint
   tags?: string[]
@@ -18,7 +18,7 @@ export interface NewEntry {
 }
 
 /** An entry of the calendar. */
-export interface Entry {
+export type Entry = {
   id: number | bigint
   title: string
   /** Milliseconds since the Unix epoch. */

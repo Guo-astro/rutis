@@ -8,7 +8,7 @@ export interface RustError<Name extends string = string, Code extends string = s
 }
 
 /** A calendar entry. */
-export interface Entry {
+export type Entry = {
   title: string
   /** Milliseconds since the Unix epoch. */
   startsAt: number | bigint
@@ -20,7 +20,7 @@ export type CalendarError = { NotFound: { id: number | bigint } }
 export type Repeat = "never" | "daily" | "weekly"
 
 /** A reminder before a planned entry. */
-export interface Reminder {
+export type Reminder = {
   minutesBefore: number
   /** Off when left out. */
   sound?: boolean

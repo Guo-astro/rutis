@@ -186,52 +186,43 @@ impl Loader {
     /// own group fiber is not listed. An unknown or removed instance has
     /// none. Each call reads the current state, so rows and nested
     /// instances created or removed since the last call are reflected; it
-    /// builds no row configuration or schemas.
+    /// builds no row configuration or schemas, and its cost is the rows of
+    /// this instance and of the instances inside it, not those of the
+    /// instances beside them (#1076).
     pub fn instance_rows(&self, instance: rutis::host::InstanceId) -> Vec<(String, FiberView)> {
         let state = self.inner.state.lock().unwrap();
-        let Some(root) = state
-            .instances
-            .iter()
-            .find_map(|(number, record)| (record.kernel == instance).then_some(*number))
-        else {
+        let Some(root) = state.instance_of_kernel(instance) else {
             return Vec::new();
         };
-        let inside = |number: u64| {
-            let mut scope = Some(number);
-            while let Some(number) = scope {
-                if number == root {
-                    return true;
-                }
-                scope = state
-                    .instances
-                    .get(&number)
-                    .and_then(|record| record.parent.as_ref())
-                    .and_then(|parent| parent.scope);
-            }
-            false
-        };
-        let mut scopes: Vec<u64> = state
-            .instances
-            .keys()
-            .copied()
-            .filter(|number| inside(*number))
-            .collect();
-        scopes.sort_unstable();
+        // The instance and those created inside it, then the rows running
+        // in each: the query reads what the instance holds, not what the
+        // process holds (#1076).
         let mut rows = Vec::new();
-        for row in &state.desired.rows {
-            for scope in &scopes {
+        for scope in state.instance_tree(root) {
+            let Some(ids) = state.running_rows.get(&Some(scope)) else {
+                continue;
+            };
+            for id in ids {
+                let Some(&index) = state.desired.by_id.get(id) else {
+                    continue;
+                };
                 let slot = Slot {
-                    row: row.id.clone(),
-                    scope: Some(*scope),
+                    row: id.clone(),
+                    scope: Some(scope),
                 };
                 if let Some(running) = state.running.get(&slot) {
                     if running.view.instance() != instance {
-                        rows.push((row.id.clone(), running.view.clone()));
+                        rows.push((index, scope, id.clone(), running.view.clone()));
                     }
                 }
             }
         }
-        rows
+        // Configuration order, then instance creation order: the order a
+        // scan of the desired rows and the instance's scopes gave.
+        rows.sort_unstable_by_key(|(index, scope, _, _)| (*index, *scope));
+        rows.into_iter()
+            .map(|(_, _, id, view)| (id, view))
+            .collect()
     }
 
     /// Resolve a module name with this loader's resolvers, as a row naming
@@ -523,7 +514,7 @@ impl Loader {
                         .collect();
                     copies
                         .into_iter()
-                        .filter_map(|slot| state.running.remove(&slot))
+                        .filter_map(|slot| state.remove_running(&slot))
                         .map(|running| running.view.dispose())
                         .collect()
                 };

@@ -564,6 +564,133 @@ async fn nested_instances_are_created_from_inside_and_read_outer_services() {
     assert_eq!(s.rows(&b).len(), 5);
 }
 
+/// The nested instance inside `parent` whose group row is `group`, as the
+/// copies a level down name it: the chain of `page`'s own copy is
+/// `[("page", the page), ("doc", parent)]`.
+fn nested_inside(s: &Setup, parent: &Instance, group: &str) -> rutis::host::InstanceId {
+    s.loader
+        .entries()
+        .into_iter()
+        .find_map(|entry| {
+            if entry.id != group {
+                return None;
+            }
+            let chain = entry.instance?.chain;
+            let at = chain.iter().position(|(id, _)| id == group)?;
+            let above = chain.get(at + 1)?;
+            (above.1 == parent.view.instance()).then_some(chain[at].1)
+        })
+        .unwrap_or_else(|| panic!("{group} inside {:?} is not listed", parent.plugin))
+}
+
+/// A row query stops at the instance it names: the instance's own rows and
+/// those of the instances nested in it, never the rows of the instance
+/// above it, of its siblings, or of their nested ones.
+///
+/// guarantee: loader/instances
+#[tokio::test]
+async fn instance_rows_stop_at_the_instance_asked_for() {
+    let s = setup(NESTED).await;
+    let a = s.create("A").await;
+    let b = s.create("B").await;
+    let ids = |instance: rutis::host::InstanceId| {
+        s.loader
+            .instance_rows(instance)
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect::<Vec<_>>()
+    };
+    let a_page = nested_inside(&s, &a, "page");
+    let b_page = nested_inside(&s, &b, "page");
+    assert_ne!(a_page, b_page);
+    // The page inside A: its own rows, not A's (its group fiber included).
+    assert_eq!(ids(a_page), ["page-scope", "page-reader"]);
+    assert_eq!(
+        ids(a.view.instance()),
+        ["doc-scope", "creator", "page", "page-scope", "page-reader"]
+    );
+    assert_eq!(ids(b.view.instance()), ids(a.view.instance()));
+    // Removing A takes the page inside it, and B keeps its own.
+    s.loader.remove_instance(a.plugin).await.unwrap();
+    assert!(ids(a_page).is_empty());
+    assert!(ids(a.view.instance()).is_empty());
+    assert_eq!(ids(b_page), ["page-scope", "page-reader"]);
+    assert_eq!(ids(b.view.instance()).len(), 5);
+}
+
+const WITH_IDLE: &str = r#"[{ "insert": [
+    { "id": "doc", "group": true, "instanced": true, "config": [
+        { "id": "off", "name": "echo", "disabled": true, "config": { "label": "off" } },
+        { "id": "on", "name": "echo", "config": { "label": "on" } }
+    ] },
+    { "id": "idle", "group": true, "instanced": true, "config": [
+        { "id": "idle-off", "name": "echo", "disabled": true, "config": { "label": "idle" } }
+    ] }
+] }]"#;
+
+/// An instance with no running rows lists none, and is no reason for
+/// another instance to list the wrong rows.
+///
+/// guarantee: loader/instances
+#[tokio::test]
+async fn an_instance_with_no_running_rows_lists_none() {
+    let s = setup(WITH_IDLE).await;
+    let doc = s.create("A").await;
+    let idle = s.loader.create_instance(&s.root, "idle").await.unwrap();
+    let ids = |instance: &Instance| {
+        s.rows(instance)
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(ids(&doc), ["on"]);
+    assert!(ids(&idle).is_empty());
+    let another = s.create("B").await;
+    assert_eq!(ids(&another), ["on"]);
+    assert_eq!(ids(&doc), ["on"]);
+    assert!(ids(&idle).is_empty());
+}
+
+/// Instances created at once each list their own rows: the index a query
+/// reads is the state's, not a copy one creation made for itself.
+///
+/// guarantee: loader/instances
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_creations_each_list_their_own_rows() {
+    let s = setup(DOC).await;
+    let mut tasks = Vec::new();
+    for title in ["A", "B", "C", "D"] {
+        let loader = s.loader.clone();
+        let root = s.root.clone();
+        tasks.push(tokio::spawn(async move {
+            loader
+                .create_instance(&root, "doc")
+                .with(Title(title.into()))
+                .await
+        }));
+    }
+    let mut instances = Vec::new();
+    for task in tasks {
+        instances.push(task.await.unwrap().unwrap());
+    }
+    let mut seen: Vec<PluginId> = Vec::new();
+    for instance in &instances {
+        let rows = s.rows(instance);
+        assert_eq!(
+            rows.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(),
+            ["doc-scope", "reader"]
+        );
+        for (_, plugin) in rows {
+            assert!(
+                !seen.contains(&plugin),
+                "another instance's copy {plugin:?} is listed"
+            );
+            seen.push(plugin);
+        }
+    }
+    assert_eq!(seen.len(), instances.len() * 2);
+}
+
 /// guarantee: loader/instance-edits-all-or-none
 #[tokio::test]
 async fn edits_reach_every_instance_or_none() {
@@ -1123,7 +1250,7 @@ async fn creating_an_instance_is_closed_as_soon_as_root_shutdown_starts() {
 #[tokio::test]
 #[ignore = "manual performance sample"]
 async fn instance_creation_cost_with_live_instances() {
-    for live in [32, 256, 768] {
+    for live in [32, 256, 1000] {
         let s = setup(DOC).await;
         for _ in 0..live {
             s.create("resident").await;
@@ -1151,5 +1278,45 @@ async fn instance_creation_cost_with_live_instances() {
             samples[90]
         );
         s.root.shutdown().await.unwrap();
+    }
+}
+
+/// One `instance_rows` call with `live` instances in the process (#1076):
+/// what a per-instance query costs, by how many instances are loaded.
+///
+/// Local reference measurements, without a timing threshold. Run with:
+/// `cargo test -p rutis-loader --release --test instances instance_rows_cost -- --ignored --nocapture`
+#[tokio::test]
+#[ignore = "manual performance sample"]
+async fn instance_rows_cost_with_live_instances() {
+    for (shape, base) in [("flat", DOC), ("nested", NESTED)] {
+        for live in [1usize, 100, 1000] {
+            let s = setup(base).await;
+            let mut target = None;
+            for _ in 0..live {
+                let instance = s.create("resident").await;
+                target.get_or_insert(instance);
+            }
+            let instance = target.unwrap();
+            let id = instance.view.instance();
+            let rows = s.rows(&instance).len();
+            // Warm up 20 times, then sample 200 calls.
+            for _ in 0..20 {
+                std::hint::black_box(s.loader.instance_rows(id));
+            }
+            let mut samples = Vec::new();
+            for _ in 0..200 {
+                let start = std::time::Instant::now();
+                let rows = s.loader.instance_rows(id);
+                samples.push(start.elapsed().as_nanos());
+                std::hint::black_box(rows);
+            }
+            samples.sort_unstable();
+            println!(
+                "shape={shape} live={live} rows={rows} median_ns={} p10_ns={} p90_ns={}",
+                samples[100], samples[20], samples[180]
+            );
+            s.root.shutdown().await.unwrap();
+        }
     }
 }
