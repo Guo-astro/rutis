@@ -613,7 +613,7 @@ CI：`ci.yml`（PR 按改动选择任务，每晚全部运行；Linux 全量与�
 
 按 B 口径（#622 原文的「手段」列）先收窄范围：21 条只有具名用例的规则（按编号拆开 22 条）逐条的手段决定在[手段复核](formal-trace/means-0.23.md)。第一批 7 条 loader／host 集成层规则（`loader/rows-gate-on-services a`、`b`、`loader/row-unload-leaves-nothing a`、`host/dev-reload b`、`MNT-5-3`、`MNT-5-7`、`MNT-11-4`）按 #622 完成条件第三项把手段改为**测试**并写明理由：内核式 shuttle 只能测到替身，这些规则的判据在真实子进程、进程身份与跨进程的租借上（§7.1「SH 证明不了」那一栏）。`MNT-11-4` 的「跟随替换」与「实例里的等待／停止」补了两处断言（`crates/rutis-loader/tests/row_inject_gate.rs`、`crates/rutis-loader/tests/instance_runtimes.rs`）。其余 15 条内核／事件规则留在下一个 PR；在那之前它们的手段列仍是 `SH`／`PT`，不写成「已覆盖」。
 
-第二批 15 条内核／事件规则落地在同一个手段复核文档：`core/D7a` 新增模型 28（内核自己的 `unload`：Unloading 先于清理、清理看到取消、LIFO、Disposed 最后），`core/D14a` 新增 `eviction_drains_every_consumer_before_the_provider`（两个消费者都回 Pending、清理先于提供方），`core/D7b` 的 update 那一半与其余确定性行为写「测试」并说明理由；`events/framework c`、`EVP-7.1-5` 以 K 为主证据，`instance/subtrees.5` 的手段列本来就写了测试，`EVP-12.1-6`、`EVP-12.1-10` 的 TV 那一半仍归 #624。内核 emit 链的 panic 模型这一轮没有写成（在 spawn 替身下驱动真实 emit 链时，同名两次 emit 的开始顺序在个别调度下反了，成因未定），因此 `core/D31b` 记为测试加宿主队列模型；复现条件写在[手段复核](formal-trace/means-0.23.md) §5。
+第二批 15 条内核／事件规则落地在同一个手段复核文档：`core/D7a` 新增模型 28（内核自己的 `unload`：Unloading 先于清理、清理看到取消、LIFO、Disposed 最后），`core/D14a` 新增 `eviction_drains_every_consumer_before_the_provider`（两个消费者都回 Pending、清理先于提供方），`core/D7b` 的 update 那一半与其余确定性行为写「测试」并说明理由；`events/framework c`、`EVP-7.1-5` 以 K 为主证据，`instance/subtrees.5` 的手段列本来就写了测试，`EVP-12.1-6`、`EVP-12.1-10` 的 TV 那一半仍归 #624。内核 emit 链的 panic 模型没有写成：在 spawn 替身下驱动真实 emit 链时，同名两次 emit 的开始顺序在个别调度下反了；#1332 复现后定论为替身限制（scope 的任务在同一条 OS 线程上，spawn 窗口里跑完的任务会误置内核的 `DROPPED_INLINE`），真实执行器上不可见，因此 `core/D31b` 记为测试加宿主队列模型；根因、失败序列与数字写在[手段复核](formal-trace/means-0.23.md) §5。
 
 ### 7.7 形式化手段覆盖不到的
 
