@@ -13,7 +13,7 @@ This document describes how CI runs today and what to do when changing it. The r
 5. A check runs in one job only.
 6. A pull request that changes the CI configuration runs every job.
 7. Rust build caches are saved only by runs on main (the nightly runs); pull requests read main's caches and save none of their own.
-8. Time target: an ordinary code pull request gets its result within 15 minutes of the push, queueing included (it measured about 17.5 minutes before the platform jobs were narrowed; this change is re-measured with `ci-stats` and the target tightened to the measurement, #577).
+8. Time target: an ordinary code pull request gets its result within **15–20 minutes** of the push, queueing included. Successful pull requests measured about 17.5 minutes; `network-macos` at 12–15 minutes and `runtimes-windows` at 12.5–13 minutes are the fixed lower bounds, so the target is no longer 10 minutes. Update this line from `ci-stats` measurements (#577).
 
 ## 2. Workflows
 
@@ -228,7 +228,7 @@ CI gets slow one added check at a time. Before adding a check (a new job, a new 
 1. **What problem does it prevent, and in which tier does it run?** The tiers are pull requests, nightly (`nightly.yml`: the full run of `ci.yml`, `install.yml`, `dylib-windows.yml`, `stress.yml`) and weekly. The default is nightly; only problems that must be stopped before a merge go on pull requests. A nightly check still finds the problem, a little later, and a failure there is fixed first (§7).
 2. **On pull requests, how much time does it take?** It must not make the critical path (the slowest job) longer: put it in a parallel Linux job, or replace something in an existing job. No new macOS or Windows jobs; macOS and Windows run only the tests that depend on the platform (§4).
 3. **Replace rather than add.** For example, the oldest version of a support matrix: switch the Linux job to the oldest version and keep macOS on the latest, instead of adding a job for the oldest version.
-4. **Target: an ordinary code pull request gets its result within 15 minutes of the push, queueing included.** After narrowing the macOS and Windows platform jobs, measure it again with `node tools/ci-stats.mjs [runs] [workflow] [--since date]` (the weekly `ci-stats.yml` runs it too) and read the "ordinary code" row: first attempts that ran `rust` but neither `checks` nor a `dylib-` job; tighten the target to the measurement (#577).
+4. **Target: an ordinary code pull request gets its result within 15–20 minutes of the push, queueing included.** Measure it with `node tools/ci-stats.mjs [runs] [workflow] [--since date]` (the weekly `ci-stats.yml` runs it too) and read the "ordinary code" row: first attempts that ran `rust` but neither `checks` nor a `dylib-` job. Successful samples measured about 17.5 minutes; the 12–15 minutes of `network-macos` and `runtimes-windows` are fixed lower bounds, so the target is no longer 10 minutes (#577).
 5. **Checks whose result changes with outside data stay off pull requests.** Advisory databases and new releases can fail a PR whose code did not change; such checks run weekly (`deps.yml`).
 
 Write the answers in the pull request description.
