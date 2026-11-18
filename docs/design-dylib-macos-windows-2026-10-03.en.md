@@ -48,7 +48,7 @@ Expand the five items in #102; deviations from the issue are called out.
 
 Add `rutis-dylib-meta`, depending only on `object` (features `read_core`, `elf`, `macho`, `pe`, `std`) and not on `rutis` or `rutis-sdk`. It provides `read_boot(bytes, target) -> Result<BootMeta, String>` and `check_deps(bytes, policy) -> Result<(), String>` (§3.3), shared by `rutis-dylib` and `xtask pack-plugin`.
 
-The separate crate lets xtask inspect artifacts for any target without linking the SDK dylib and dynamic libstd as it would through `rutis-dylib`. The SDK must not depend on this crate because that would change the SDK dependency tree and identity. Therefore `BOOT_MAGIC` and `BOOT_SIZE` are duplicated on both sides, with a test in `rutis-dylib` asserting that the values match.
+The separate crate lets xtask inspect artifacts for any target without linking the SDK dylib and dynamic libstd as it would through `rutis-dylib`. The SDK must not depend on this crate because that would change the SDK dependency tree and identity. Therefore `BOOT_MAGIC` and `BOOT_SIZE` are duplicated on both sides, with a test in `rutis-dylib` asserting that the values match. The SDK's copy lives in `rutis-abi` since 0.23 (#1271): no dependency, no build script, so `cargo kani` builds it; `rutis-sdk` re-exports it to plugins and hosts. `rutis-dylib-meta`'s copy is unchanged.
 
 Select the section name by target format in `export_plugin!` with `cfg_attr`:
 

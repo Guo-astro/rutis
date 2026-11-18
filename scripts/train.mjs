@@ -17,6 +17,7 @@ export const crates = [
   'rutis-macros',
   'rutis',
   'rutis-dylib-meta',
+  'rutis-abi',
   'rutis-sdk',
   'rutis-bridge',
   'rutis-loader',

@@ -15,6 +15,9 @@ doctest = false
 
 [dependencies]
 rutis = { path = "../rutis", version = "0.22.0" }
+# The const part of the ABI: nothing to build and no dependency, so Kani can
+# prove it (#1271). Re-exported below; plugin and host builds see no change.
+rutis-abi = { path = "../rutis-abi", version = "0.22.0" }
 tokio = { workspace = true, features = ["full"] }
 tokio-util = { workspace = true, features = ["full"] }
 serde_json = { version = "1", features = ["preserve_order"] }

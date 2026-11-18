@@ -3187,6 +3187,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "rutis-abi"
+version = "0.22.0"
+
+[[package]]
 name = "rutis-agent"
 version = "0.6.0"
 dependencies = [
@@ -3431,6 +3435,7 @@ name = "rutis-sdk"
 version = "0.22.0"
 dependencies = [
  "rutis",
+ "rutis-abi",
  "serde_json",
  "sha2",
  "tokio",
