@@ -8,6 +8,12 @@ interface Probe {
   record(line: string): void
 }
 
+// A recursive data value, the shape a plugin forwards to a `data`-typed API.
+// A generated data object fits its string index signature only as a `type`
+// alias: an `interface` is open to declaration merging and has no implicit
+// index signature (#1289).
+type Data = string | number | bigint | boolean | null | undefined | Data[] | { [key: string]: Data }
+
 const delay = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))
 
 export default definePlugin({
@@ -22,6 +28,9 @@ export default definePlugin({
     // An async method.
     const got = await calendar.get(added.id)
     probe.record(`got ${got.title} at ${got.startsAt}`)
+    // The generated data objects forward as recursive data, a real service
+    // result included (#1289).
+    const forwarded: Data = got
     // `Err(e)` is thrown: code, message and data.
     try {
       await calendar.get(99_999)
@@ -38,6 +47,7 @@ export default definePlugin({
     // An optional parameter left out; a `&str` parameter.
     const listed = await calendar.list()
     probe.record(`listed ${listed.some(entry => entry.id === added.id)}`)
+    const forwardedList: Data = listed
     probe.record(`tagged ${(await calendar.list('team')).length > 0}`)
     probe.record(`renamed ${(await calendar.rename(added.id, 'Retro')).title}`)
     // Beyond 2^53 an integer arrives as a bigint.
@@ -54,10 +64,13 @@ export default definePlugin({
     // A subscriber to the calendar's changes: the Rust side's publish is
     // done only once this handler settled, and fails when it throws.
     await calendar.subscribe(async (change: Change) => {
+      const forwardedChange: Data = change
+      void forwardedChange
       await delay(50)
       if (change.type === 'removed' && change.id === 13) throw new Error('handler refused')
       await probe.record(change.type === 'added' ? `handled added ${change.entry.title}` : `handled removed ${change.id}`)
     })
     probe.record('subscribed')
+    void [forwarded, forwardedList]
   },
 })

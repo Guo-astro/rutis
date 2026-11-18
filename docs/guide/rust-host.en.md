@@ -765,7 +765,7 @@ The generator finds the marked types in the crate and in the crates it uses that
 | `Box<T>`, `Arc<T>`, `Rc<T>`, `Cow<T>` | `T` | |
 | `serde_json::Value` | `unknown` | |
 | `rutis_bridge::session::{Instant, Bytes, BigInt, ValueMap, ValueSet}` | `Date`, `Uint8Array`, `bigint`, `Map`, `Set` | the tagged values |
-| A struct or enum deriving `Serialize` / `Deserialize` | an `interface` or a union, as serde writes it | `rename`, `rename_all`, `rename_all_fields`, `tag`, `content`, `untagged`, `transparent`, `flatten`, `skip`, `default`, `skip_serializing_if`; generic types are generic in TypeScript; docs become JSDoc |
+| A struct or enum deriving `Serialize` / `Deserialize` | a `type` alias or a union, as serde writes it | `rename`, `rename_all`, `rename_all_fields`, `tag`, `content`, `untagged`, `transparent`, `flatten`, `skip`, `default`, `skip_serializing_if`; generic types are generic in TypeScript; docs become JSDoc |
 | `impl Fn(A, ..) -> BoxFuture<'static, Result<X, E>>`, a generic `F: Fn(..)`, `Arc<dyn Fn ..+ Send + Sync>`, `Box<dyn Fn .. + Send>` (aliases too) | `(arg0: A, ..) => X \| Promise<X>` | a function passed by reference; up to four arguments, taken by value |
 | `async fn`, or a return type `BoxFuture<'_, T>`, `Pin<Box<dyn Future<Output = T> ..>>`, `impl Future<Output = T>` | `Promise<T>` | every method is `Promise`-returning for the caller |
 
@@ -795,7 +795,9 @@ A method returning `Result<T, E>` (`std::result::Result`, an alias of it, `anyho
 
 ### Declarations
 
-The file `rutis-host types` or `.typescript(…)` writes has an interface per service type, the data types it uses, `RustError`, the `<Name>Thrown` types, and `Services`, the services by name: `ctx.use<Services['calendar']>('calendar')`. It passes `tsc --strict` (both examples check it). Commit it: `build.rs` rewrites it when the Rust side changes; with `rutis-host types`, run it again.
+The file `rutis-host types` or `.typescript(…)` writes has an interface per service type, a `type` alias per data type, `RustError`, the `<Name>Thrown` types, and `Services`, the services by name: `ctx.use<Services['calendar']>('calendar')`. It passes `tsc --strict` (both examples check it). Commit it: `build.rs` rewrites it when the Rust side changes; with `rutis-host types`, run it again.
+
+A data object is a `type` alias rather than an `interface` (#1289). TypeScript gives an interface no implicit index signature — declaration merging could add a field at any time — so an interface cannot be assigned to a recursive data value with a string index signature (`{ [key: string]: Data }`) under `tsc --strict`: `Index signature for type 'string' is missing`. A plugin could then not forward a generated DTO to a `data`-typed API, as an argument or a result. The cost is that a data object cannot be reopened: `declare module './services.js' { interface Entry { … } }` no longer adds a field to it. Write the widened type beside it instead: `type EntryWithExtra = Entry & { extra: string }`. The services, `RustError` and `Services` stay interfaces.
 
 When the host hands plugins to others (or another team) to write in Python, it writes the Python types too, and ships them with the plugin template:
 

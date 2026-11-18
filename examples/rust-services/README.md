@@ -9,7 +9,7 @@
 | [src/lib.rs](src/lib.rs) | 包好的 `Calendar` 和 `Notes`：标注、逐个转发的方法和它们的文档注释 |
 | [build.rs](build.rs) | 每次构建把声明写进 `rows/services.d.ts`（服务本身不需要构建步骤） |
 | [rows/services.d.ts](rows/services.d.ts) | 从 Rust 定义生成的 TypeScript 声明（构建会改写它，要提交） |
-| [rows/calendar.ts](rows/calendar.ts) | Node 行：serde 结构体参数和返回值、异步方法、带 `code` 和 `data` 的错误、bigint、按引用传的函数、登记在调用方行 `Ctx` 上的订阅 |
+| [rows/calendar.ts](rows/calendar.ts) | Node 行：serde 结构体参数和返回值、异步方法、带 `code` 和 `data` 的错误、bigint、按引用传的函数、登记在调用方行 `Ctx` 上的订阅，以及 `tsc --strict` 下把生成的 DTO 当递归 data 转发 |
 | [rows/notes.ts](rows/notes.ts) | 每个 `session` 实例里的 Node 行，使用本实例的 `Notes` |
 | [rows/calendar_row.py](rows/calendar_row.py) | 调用同一个 `Calendar` 的 Python 行 |
 | [tests/rows.rs](tests/rows.rs) | 宿主：照常提供包好的服务（`Notes` 由实例里的一行提供），以及各项检查（含对声明的 `tsc --strict`） |
