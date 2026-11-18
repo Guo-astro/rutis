@@ -71,7 +71,7 @@ public let plugin = Rutis.define(Plugin(
 ))
 ```
 
-- `Rutis.define(Plugin(...))` defines the plugin; `name` is its name in the binary. When a host loads the plugin and starts it, it calls `apply`.
+- `Rutis.define(Plugin(...))` defines the plugin; `name` is its name in the binary. When a host loads the plugin and starts it, it calls `apply`. In the Swift 6 language mode top-level code (`main.swift`) is `@MainActor`, so a plugin defined there has a `@MainActor` `apply` and the runtime would call it on the main thread: write `apply: { @Sendable ctx, config in … }` (as `RutisAppFixture` does), or keep the plugin in a file of its own as the template does, and it runs on the runtime's own tasks.
 - `@RutisService` makes each public method of the class a method of the service (`hello`), and `ctx.provide("greeter", …)` provides the service: a plugin in any language can call it by the name `greeter`, and it is withdrawn when the plugin unloads.
 - `provides` says which services the plugin provides, so the host knows without running it.
 

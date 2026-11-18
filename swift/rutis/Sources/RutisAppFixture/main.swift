@@ -63,7 +63,13 @@ let device = Rutis.define(Plugin(
     name: "device",
     provides: ["device": .of(Device.self, sync: ["name"])],
     config: DeviceConfig.self,
-    apply: { ctx, config in
+    // `@Sendable`: this `Plugin` is formed in top-level code, which the
+    // Swift 6 language mode makes `@MainActor`; without it the `apply`
+    // closure would be MainActor-isolated, and the runtime's call of it
+    // would wait for the main thread — which this process blocks in
+    // `readLine()` (#1337's regression in swift_app, #1273). Marking it
+    // `@Sendable` makes it nonisolated, as `Rutis.serve` needs.
+    apply: { @Sendable ctx, config in
         ctx.provide(config.service, Device(id: config.name))
         ctx.effect { try? await Task.sleep(nanoseconds: 300_000_000) }
     }))
