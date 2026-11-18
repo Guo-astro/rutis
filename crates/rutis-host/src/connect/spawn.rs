@@ -22,7 +22,8 @@ use rutis::internal::CtxInternal;
 use rutis::{Ctx, Error};
 use rutis_bridge::pipe::Processes;
 use rutis_bridge::runtime::{
-    ended_status, Launcher, RuntimeHandle, RuntimeState, RuntimeStates, Stdio, GREETING,
+    ended_status, Launcher, RuntimeHandle, RuntimeState, RuntimeStates, Stdio, UndeclaredPolicy,
+    GREETING,
 };
 use rutis_bridge::session::SessionOptions;
 use rutis_bridge::{session_key, PeerId, Session};
@@ -39,6 +40,9 @@ pub struct SpawnPlugin {
     greeting: Duration,
     /// The limits its session runs with.
     session: SessionOptions,
+    /// What the host does with the services its rows provide without
+    /// declaring them.
+    undeclared: UndeclaredPolicy,
     /// What watches the running session, until the plugin unloads.
     watching: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
 }
@@ -63,6 +67,7 @@ impl SpawnPlugin {
             processes,
             greeting: GREETING,
             session: SessionOptions::default(),
+            undeclared: UndeclaredPolicy::default(),
             watching: Arc::default(),
         }
     }
@@ -82,6 +87,17 @@ impl SpawnPlugin {
     /// ending its session (`docs/design-remote-session-2026-10-28.md` §三).
     pub fn session(mut self, options: SessionOptions) -> Self {
         self.session = options;
+        self
+    }
+
+    /// What the host does with the services the runtime's rows provide
+    /// without declaring them ([`UndeclaredPolicy`]):
+    /// [`UndeclaredPolicy::Publish`], as Cordis does, unless set. A host that
+    /// loads plugins it did not write refuses them, or allows only the names
+    /// it expects; a refused name is not published, and its row fails
+    /// (#1040).
+    pub fn undeclared(mut self, undeclared: UndeclaredPolicy) -> Self {
+        self.undeclared = undeclared;
         self
     }
 
@@ -177,7 +193,11 @@ impl DynPlugin for SpawnPlugin {
                     return Ok(Effect::Done);
                 }
             };
-            let session = ctx.plugin(Session::new(channel).options(self.session.clone()));
+            let session = ctx.plugin(
+                Session::new(channel)
+                    .options(self.session.clone())
+                    .undeclared(self.undeclared.clone()),
+            );
             // Running once the session is: it greeted, and runs plugins.
             let mut states = session.watch();
             loop {

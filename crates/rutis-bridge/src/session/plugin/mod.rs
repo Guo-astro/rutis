@@ -35,7 +35,7 @@ use rutis::{Ctx, Error as RutisError};
 use crate::channel::{Channel, Close, PeerId};
 use crate::peer::Operations;
 use crate::peer::{peer_key, Peer};
-use crate::runtime::{Mount, Process};
+use crate::runtime::{Mount, Process, UndeclaredPolicy};
 use crate::session::rpc::{Connection, SessionOptions};
 use crate::session::Error;
 
@@ -72,6 +72,7 @@ fn failed(error: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> RutisEr
 pub struct Session {
     channel: Mutex<Option<Channel>>,
     options: SessionOptions,
+    undeclared: UndeclaredPolicy,
 }
 
 impl Session {
@@ -79,6 +80,7 @@ impl Session {
         Self {
             channel: Mutex::new(Some(channel)),
             options: SessionOptions::default(),
+            undeclared: UndeclaredPolicy::default(),
         }
     }
 
@@ -86,6 +88,15 @@ impl Session {
     /// none by default.
     pub fn options(mut self, options: SessionOptions) -> Self {
         self.options = options;
+        self
+    }
+
+    /// What the host does with the services the far end's rows provide
+    /// without declaring them ([`UndeclaredPolicy`]):
+    /// [`UndeclaredPolicy::Publish`], as Cordis does, unless set. A refused
+    /// name is not published, and its row fails (#1040).
+    pub fn undeclared(mut self, undeclared: UndeclaredPolicy) -> Self {
+        self.undeclared = undeclared;
         self
     }
 
@@ -121,6 +132,17 @@ impl Session {
         channel: Channel,
         options: SessionOptions,
     ) -> Result<Greeted, Error> {
+        Self::open(ctx, channel, options, UndeclaredPolicy::default()).await
+    }
+
+    /// [`Session::handshake_with`], with what the host does with the
+    /// services the far end's rows provide without declaring them.
+    async fn open(
+        ctx: &Ctx,
+        channel: Channel,
+        options: SessionOptions,
+        undeclared: UndeclaredPolicy,
+    ) -> Result<Greeted, Error> {
         let Some(local) = ctx.get::<LocalId>() else {
             channel.closer.close(Close::Done);
             return Err(Error::refused(
@@ -148,6 +170,7 @@ impl Session {
                 connection,
                 operations,
             })),
+            undeclared,
         })
     }
 }
@@ -166,9 +189,10 @@ impl DynPlugin for Session {
             let channel = self.channel.lock().unwrap().take().ok_or_else(|| {
                 failed("a session runs once: its channel is gone with the first run")
             })?;
-            let greeted = Session::handshake_with(ctx, channel, self.options.clone())
-                .await
-                .map_err(failed)?;
+            let greeted =
+                Session::open(ctx, channel, self.options.clone(), self.undeclared.clone())
+                    .await
+                    .map_err(failed)?;
             greeted.mount(ctx).await
         })
     }
@@ -180,6 +204,7 @@ impl DynPlugin for Session {
 pub struct Greeted {
     shared: Arc<Shared>,
     start: Mutex<Option<Start>>,
+    undeclared: UndeclaredPolicy,
 }
 
 impl Greeted {
@@ -203,7 +228,7 @@ impl Greeted {
             .unwrap()
             .take()
             .ok_or_else(|| failed("a session runs once: it ended with its first run"))?;
-        mount(self.shared.clone(), start, ctx).await
+        mount(self.shared.clone(), start, ctx, self.undeclared.clone()).await
     }
 }
 
@@ -331,7 +356,12 @@ impl SessionHandle {
 static SESSIONS: AtomicU64 = AtomicU64::new(0);
 
 /// Bring the far end of `start` in, from `ctx`, the session's fiber.
-async fn mount(shared: Arc<Shared>, start: Start, ctx: &Ctx) -> Result<Effect, RutisError> {
+async fn mount(
+    shared: Arc<Shared>,
+    start: Start,
+    ctx: &Ctx,
+    undeclared: UndeclaredPolicy,
+) -> Result<Effect, RutisError> {
     // From now on the far end hears what this end offers.
     start.operations.attach(start.connection.clone());
     let far = shared.far.clone();
@@ -371,6 +401,7 @@ async fn mount(shared: Arc<Shared>, start: Start, ctx: &Ctx) -> Result<Effect, R
         let mount = Mount {
             ctx: Some(scoped.clone()),
             runtime: Some(far.to_string()),
+            undeclared: undeclared.clone(),
             ..Mount::default()
         };
         let process = Process::over(crate::runtime::peer_session(peer.clone()), mount)
@@ -392,6 +423,7 @@ async fn mount(shared: Arc<Shared>, start: Start, ctx: &Ctx) -> Result<Effect, R
                 peer: peer.clone(),
                 rows,
             },
+            undeclared.clone(),
         )));
     }
     // What this end provides, to every far end: announced to one that
@@ -430,7 +462,13 @@ async fn mount(shared: Arc<Shared>, start: Start, ctx: &Ctx) -> Result<Effect, R
 
 /// This end's process on a far rutis kernel, once that kernel serves rows:
 /// a far end that never does (a Cordis node) runs nothing from here.
-async fn client_once_served(ctx: Ctx, scoped: Ctx, handle: SessionHandle, client: rows::Client) {
+async fn client_once_served(
+    ctx: Ctx,
+    scoped: Ctx,
+    handle: SessionHandle,
+    client: rows::Client,
+    undeclared: UndeclaredPolicy,
+) {
     let mut offers = client.peer.offers();
     if offers
         .wait_for(|offers| offers.epoch("rows").is_some())
@@ -443,6 +481,7 @@ async fn client_once_served(ctx: Ctx, scoped: Ctx, handle: SessionHandle, client
     let mount = Mount {
         ctx: Some(scoped),
         runtime: Some(far.clone()),
+        undeclared,
         ..Mount::default()
     };
     match Process::over_without_bus(Arc::new(client), mount).await {

@@ -482,6 +482,33 @@ runtimes:
 
 On Windows a process has an id here only once it has connected to the host, so the line reads `wordcount: starting`.
 
+### Undeclared services
+
+A row may provide a service it does not declare in `rutis.provides`: a published Cordis package does (`ctx.provide`), and so may any plugin. By default rutis publishes each such name host-wide, under the same key as a declared one; the first provider wins, and that is not a permission. A host that loads plugins it did not write can refuse them, or allow only the names it expects:
+
+```rust,no_run
+# use rutis_host::connect::SpawnPlugin;
+# use rutis_host::languages;
+# let app = std::path::PathBuf::from("/srv/app");
+use rutis_bridge::runtime::UndeclaredPolicy;
+
+let runtime_package = app.join("node_modules/@arcships/rutis-runtime");
+// Refuse every name the plugin does not declare.
+let strict = SpawnPlugin::new("thirdparty", languages::node::launcher(&runtime_package), app.join("package.json"))
+    .undeclared(UndeclaredPolicy::Refuse);
+// Or let it publish `tools` and `notes` only.
+let market = SpawnPlugin::new("market", languages::node::launcher(&runtime_package), app.join("package.json"))
+    .undeclared(UndeclaredPolicy::allow(["tools", "notes"]));
+```
+
+`UndeclaredPolicy::Publish` is the default and Cordis's behaviour. Declared services are not affected. A refused name is not published anywhere; its object goes back to the runtime, and the row fails as a row that provides a name another provider has:
+
+```text
+wordcount: failed: llm is provided by row wordcount without declaring it; the host does not let a runtime publish names it does not declare
+```
+
+With `allow`: `wordcount: failed: llm is provided by row wordcount without declaring it; the host lets a runtime publish only tools, notes`. The runtime and its other rows go on. A host that mounts a session itself sets the same policy with `Session::undeclared`; `rutis_bridge::runtime::Mount::undeclared` is the form for a process the bridge starts. The policy covers rows of runtime sessions: services a peer rutis kernel provides are not checked against it, since the declarations of its plugins are not known here.
+
 ### What is not a limit
 
 - rutis does not limit calls: the caller limits its own (Rust's `tokio::time::timeout`, Python's `asyncio.wait_for` and so on). For a plugin stuck in synchronous code that a cancellation cannot stop, end its process with `kill()` on `SpawnPlugin::processes()`, then call `restart()` on the fiber `root.plugin(runtime)` returned: a new process, its rows loaded again.
