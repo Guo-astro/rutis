@@ -3,6 +3,13 @@ import Foundation
 /// A value as the session carries it: data, tagged values, and references.
 /// The plugin API converts between these and Swift values
 /// (`RutisEncoder` / `RutisDecoder`); the session only moves them.
+///
+/// `@unchecked Sendable`, and every case is safe to share: data, tagged
+/// values and lists are value types; a function, object or plugin is an
+/// immutable reference to code the SDK calls concurrently by contract
+/// (design §5, "plugin requirements"), or to a `Far*` whose mutable state
+/// is behind its peer's lock. The enum itself is never mutated after it is
+/// built.
 package indirect enum Value: @unchecked Sendable {
     /// The wire's `undefined`: an omitted argument or field.
     case undefined
@@ -175,6 +182,13 @@ package indirect enum Value: @unchecked Sendable {
 }
 
 /// A function this side exports: the far end calls it with its arguments.
+///
+/// `@unchecked Sendable`, and safe as far as this class goes: `body` is
+/// assigned once in `init` and never written again, so two tasks calling it
+/// read the same closure. What the closure captures is its builder's: the
+/// SDK's own closures capture `Sendable` state (a `Peer`, a `Runtime`, a
+/// `Value`), and a plugin's handler runs concurrently by the contract
+/// (design §5, "plugin requirements").
 package final class SessionFunction: @unchecked Sendable {
     package let body: ([Value]) async throws -> Value
 
@@ -194,59 +208,54 @@ package protocol SessionObject: AnyObject, Sendable {
 
 /// Continuations waiting for something, each resumed once: by the thing,
 /// or by its task's cancellation.
-final class Waiters: @unchecked Sendable {
-    private let lock = Lock()
-    private var done = false
-    private var next = 0
-    private var waiting: [Int: CheckedContinuation<Void, Never>] = [:]
-
-    var isDone: Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return done
+///
+/// `Sendable` without an escape hatch: its one mutable state is the
+/// `Locked` box, whose lock every access takes.
+package final class Waiters: Sendable {
+    private struct State {
+        var done = false
+        var next = 0
+        var waiting: [Int: CheckedContinuation<Void, Never>] = [:]
     }
+
+    private let state = Locked(State())
+
+    var isDone: Bool { state.read { $0.done } }
 
     /// Marks it done and resumes every waiter; false if it already was.
     @discardableResult
     func finish() -> Bool {
-        lock.lock()
-        if done {
-            lock.unlock()
-            return false
+        var waiting: [Int: CheckedContinuation<Void, Never>] = [:]
+        let first = state.withLock { state in
+            guard !state.done else { return false }
+            state.done = true
+            waiting = state.waiting
+            state.waiting = [:]
+            return true
         }
-        done = true
-        let waiting = self.waiting
-        self.waiting = [:]
-        lock.unlock()
         for continuation in waiting.values { continuation.resume() }
-        return true
+        return first
     }
 
     /// Returns once done, or once the calling task is cancelled.
     func wait() async {
-        lock.lock()
-        if done {
-            lock.unlock()
-            return
+        let id: Int? = state.withLock { state in
+            guard !state.done else { return nil }
+            state.next += 1
+            return state.next
         }
-        next += 1
-        let id = next
-        lock.unlock()
+        guard let id else { return }
         await withTaskCancellationHandler {
             await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-                lock.lock()
-                if done || Task.isCancelled {
-                    lock.unlock()
-                    continuation.resume()
-                    return
+                let resumeNow = state.withLock { state in
+                    guard !state.done, !Task.isCancelled else { return true }
+                    state.waiting[id] = continuation
+                    return false
                 }
-                waiting[id] = continuation
-                lock.unlock()
+                if resumeNow { continuation.resume() }
             }
         } onCancel: {
-            lock.lock()
-            let continuation = waiting.removeValue(forKey: id)
-            lock.unlock()
+            let continuation = state.withLock { $0.waiting.removeValue(forKey: id) }
             continuation?.resume()
         }
     }
@@ -265,37 +274,35 @@ final class Waiters: @unchecked Sendable {
 }
 
 /// The cancellation a call received: aborted once the caller cancels.
-package final class Signal: @unchecked Sendable {
-    private let lock = Lock()
+///
+/// `Sendable` without an escape hatch: the abort state is a `Waiters` and
+/// the handlers a `Locked` box; both take their lock on every access.
+package final class Signal: Sendable {
     private let waiters = Waiters()
-    private var handlers: [() -> Void] = []
+    private let handlers = Locked<[() -> Void]>([])
 
     package init() {}
 
     package var isAborted: Bool { waiters.isDone }
 
     package func abort() {
-        lock.lock()
-        guard waiters.finish() else {
-            lock.unlock()
-            return
+        guard waiters.finish() else { return }
+        let handlers = self.handlers.withLock { handlers in
+            let taken = handlers
+            handlers = []
+            return taken
         }
-        let handlers = self.handlers
-        self.handlers = []
-        lock.unlock()
         for handler in handlers { handler() }
     }
 
     /// Runs `handler` once aborted (at once if it already is).
     package func onAbort(_ handler: @escaping () -> Void) {
-        lock.lock()
-        if waiters.isDone {
-            lock.unlock()
-            handler()
-            return
+        let ran = handlers.withLock { handlers in
+            guard !waiters.isDone else { return false }
+            handlers.append(handler)
+            return true
         }
-        handlers.append(handler)
-        lock.unlock()
+        if !ran { handler() }
     }
 
     /// Returns once aborted, or once the calling task is cancelled.
@@ -303,7 +310,7 @@ package final class Signal: @unchecked Sendable {
 }
 
 /// A one-shot event tasks can wait for.
-package final class Event: @unchecked Sendable {
+package final class Event: Sendable {
     private let waiters = Waiters()
 
     package init() {}
@@ -319,7 +326,7 @@ package final class Event: @unchecked Sendable {
     package func wait(seconds: Double) async -> Bool { await waiters.wait(seconds: seconds) }
 
     /// Blocks the calling thread until `body` returns (never from a task).
-    package static func blockUntil(_ body: @escaping () async -> Void) {
+    package static func blockUntil(_ body: @escaping @Sendable () async -> Void) {
         let semaphore = DispatchSemaphore(value: 0)
         Task.detached {
             await body()
@@ -331,8 +338,9 @@ package final class Event: @unchecked Sendable {
     /// Blocks the calling thread until it fires (never from a task).
     package func block() {
         let semaphore = DispatchSemaphore(value: 0)
+        let waiter = self
         Task.detached {
-            await self.wait()
+            await waiter.wait()
             semaphore.signal()
         }
         semaphore.wait()

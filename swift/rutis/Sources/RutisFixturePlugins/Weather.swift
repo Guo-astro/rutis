@@ -81,7 +81,11 @@ struct Overdrawn: Error, LocalizedError {
 }
 
 /// The values only Swift makes, by name (`samples` in the expectations).
-let weatherSamples: [String: () throws -> Any?] = [
+///
+/// `nonisolated(unsafe)` for the compiler, safe for the reader: the table
+/// and every closure in it are immutable after start, and each call makes a
+/// new value.
+nonisolated(unsafe) let weatherSamples: [String: () throws -> Any?] = [
     "swift/value-instant": { Date(timeIntervalSince1970: 1_760_498_535.123456) },
     "swift/value-struct": {
         Reading(raw: Data("hello".utf8), at: Date(timeIntervalSince1970: 1_760_498_535), n: 1 << 60)

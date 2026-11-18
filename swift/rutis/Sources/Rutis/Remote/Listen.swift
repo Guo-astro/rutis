@@ -162,6 +162,10 @@ struct DERReader {
 
 /// Listens on a WebSocket address for controllers presenting `token` and
 /// speaking `protocol`, handing each upgraded connection to `accepted`.
+/// `@unchecked Sendable`: `address`, `listener`, `token`, `protocolName`,
+/// `queue`, `upgradeTimeout`, `maxUpgrading` and `timing` are fixed at init;
+/// `upgrading` is one `Locked` count, and `stopped` a `Sendable` `Flag`.
+/// `NWListener`'s own handlers run on `queue`, one at a time.
 final class WebSocketListener: @unchecked Sendable {
     let address: ListenAddress
     private let listener: NWListener
@@ -178,8 +182,7 @@ final class WebSocketListener: @unchecked Sendable {
     /// (tests shorten it).
     let timing: (ping: Double, timeout: Double)?
     private let stopped = Flag()
-    private let upgradingLock = Lock()
-    private var upgrading = 0
+    private let upgrading = Locked(0)
 
     /// `identity` gives the TLS identity of a wss:// address, or says why
     /// there is none.
@@ -281,17 +284,17 @@ final class WebSocketListener: @unchecked Sendable {
     }
 
     private func reserve() -> Bool {
-        upgradingLock.withLock {
-            guard upgrading < maxUpgrading else { return false }
-            upgrading += 1
+        upgrading.withLock {
+            guard $0 < maxUpgrading else { return false }
+            $0 += 1
             return true
         }
     }
 
-    private func release() { upgradingLock.withLock { upgrading -= 1 } }
+    private func release() { upgrading.withLock { $0 -= 1 } }
 
     /// Connections upgrading now.
-    var pendingUpgrades: Int { upgradingLock.withLock { upgrading } }
+    var pendingUpgrades: Int { upgrading.read { $0 } }
 
     /// Stops listening; returns once the listener is cancelled (its port
     /// free, so that a `start()` right after a `stop()` binds it again),
@@ -366,16 +369,19 @@ final class WebSocketListener: @unchecked Sendable {
 
 /// One connection's upgrade: ended once, by its deadline, its failure or
 /// its answer; the first to end it acts.
-final class UpgradeAttempt: @unchecked Sendable {
-    private let lock = Lock()
-    private var ended = false
-    private let done: () -> Void
+///
+/// `Sendable` without an escape hatch: `ended` is one `Locked` box; `done`
+/// is assigned once in `init` and only called from the thread that saw
+/// `ended` go from false to true.
+final class UpgradeAttempt: Sendable {
+    private let ended = Locked(false)
+    private let done: @Sendable () -> Void
 
-    init(_ done: @escaping () -> Void) { self.done = done }
+    init(_ done: @escaping @Sendable () -> Void) { self.done = done }
 
     /// Whether this call ended it.
     func finish() -> Bool {
-        let first: Bool = lock.withLock {
+        let first = ended.withLock { ended in
             defer { ended = true }
             return !ended
         }
@@ -392,7 +398,10 @@ func constantTimeEqual(_ a: [UInt8], _ b: [UInt8]) -> Bool {
 }
 
 /// One controller's session: its runtime and its connection.
-final class ControllerSession: @unchecked Sendable {
+///
+/// `Sendable` without an escape hatch: three immutable references to
+/// `Sendable` types.
+final class ControllerSession: Sendable {
     let peer: Peer
     let runtime: Runtime
     let socket: Channel

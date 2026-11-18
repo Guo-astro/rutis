@@ -1,4 +1,4 @@
-// swift-tools-version:5.9
+// swift-tools-version:6.0
 // The Swift SDK of rutis (swift/rutis): the library `Rutis` that writes
 // plugins and runs them as a runtime, its macros, and the testing tool
 // `RutisTest`. Design: docs/design-swift-sdk-2026-10-12.md. SwiftPM takes a
@@ -7,17 +7,11 @@
 import CompilerPluginSupport
 import PackageDescription
 
-// Swift 6's strict concurrency, as a warning (#630). `swiftLanguageVersions`
-// below stays Swift 5, so these diagnostics do not fail a build: a target
-// moves when its count reaches zero. The library `Rutis`, its test tool
-// `RutisTest`, the fixture plugins and `RutisSelfTest` have the checking on;
-// the executables that carry the plugins follow. What is left in each is
-// printed by `tools/swift-strict-concurrency.sh`. Not `unsafeFlags`: SwiftPM
-// rejects those in a package that is a git dependency.
-let strictConcurrency: [SwiftSetting] = [
-    .enableUpcomingFeature("StrictConcurrency"),
-]
-
+// Swift 6's strict concurrency, enforced (#630, #1273): `swiftLanguageModes`
+// below is `.v6` for every target, so a diagnostic `tools/swift-strict-
+// concurrency.sh` lists fails the build; the ones the compiler cannot prove
+// (`@unchecked Sendable`) say in place why they are safe. Tools version 6.0
+// is what makes `.v6` available.
 let package = Package(
     name: "rutis",
     platforms: [.macOS(.v14), .iOS(.v17)],
@@ -55,13 +49,11 @@ let package = Package(
             name: "Rutis",
             dependencies: ["RutisMacros"],
             path: "swift/rutis/Sources/Rutis",
-            swiftSettings: strictConcurrency
         ),
         .target(
             name: "RutisTest",
             dependencies: ["Rutis"],
             path: "swift/rutis/Sources/RutisTest",
-            swiftSettings: strictConcurrency
         ),
         // The test plugins: the conformance plugins the Rust suites and
         // RutisTest are checked with.
@@ -69,7 +61,6 @@ let package = Package(
             name: "RutisFixturePlugins",
             dependencies: ["Rutis"],
             path: "swift/rutis/Sources/RutisFixturePlugins",
-            swiftSettings: strictConcurrency
         ),
         // The test plugins in one binary (weather, probe, conformance-events).
         .executableTarget(
@@ -128,8 +119,7 @@ let package = Package(
                 .product(name: "SwiftSyntaxMacroExpansion", package: "swift-syntax"),
             ],
             path: "swift/rutis/Tests/SelfTest",
-            swiftSettings: strictConcurrency
         ),
     ],
-    swiftLanguageVersions: [.v5]
+    swiftLanguageModes: [.v6]
 )

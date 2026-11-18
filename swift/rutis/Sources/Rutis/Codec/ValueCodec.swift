@@ -382,7 +382,9 @@ package enum ValueCodec {
 extension Rutis._Generated {
     /// A value encoded for the session: what generated code passes as an
     /// argument or returns as a result.
-    public struct Encoded: @unchecked Sendable {
+    ///
+    /// `Sendable` without an escape hatch: it holds one `Value`.
+    public struct Encoded: Sendable {
         package let value: Value
         package init(_ value: Value) { self.value = value }
     }
@@ -397,7 +399,11 @@ extension Rutis._Generated {
 extension Rutis.Advanced {
     /// A function of another process, received where a value of type `Any`
     /// was expected.
-    public final class RemoteFunction: @unchecked Sendable {
+    /// A function of another process, as a value.
+    ///
+    /// `Sendable` without an escape hatch: it holds one `Value` (itself
+    /// `@unchecked Sendable` for the plugin closures it may carry).
+    public final class RemoteFunction: Sendable {
         /// The function as the session holds it.
         let value: Value
         init(_ far: FarFunction) { value = .remoteFunction(far) }

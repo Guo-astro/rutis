@@ -5,7 +5,9 @@ extension Rutis {
     /// passes no context anywhere else: the call chain travels with the
     /// Task (a task-local), and the row's Tasks are cancelled when it
     /// unloads.
-    public final class Ctx: @unchecked Sendable {
+    /// `Sendable` without an escape hatch: the runtime and the row it
+    /// carries are both `Sendable`; it has no other state.
+    public final class Ctx: Sendable {
         let runtime: Runtime
         let row: Row
 
@@ -202,6 +204,10 @@ extension Rutis {
 
 extension Rutis.Advanced {
     /// Emits events, filtered: `ctx.filter` makes one.
+    ///
+    /// `@unchecked Sendable`: `ctx` is `Sendable`, and `keep` is the
+    /// plugin's own predicate, called by whichever task emits; plugin code
+    /// may run concurrently (design §5, "plugin requirements").
     public struct Emitter: @unchecked Sendable {
         let ctx: Rutis.Ctx
         let keep: ((Listener) async throws -> Bool)?

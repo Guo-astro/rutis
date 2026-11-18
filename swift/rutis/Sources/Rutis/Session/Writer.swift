@@ -12,6 +12,13 @@ package let writerDrainSeconds = 5.0
 
 /// The frames a session has for the far end, written in order on a thread of
 /// their own.
+///
+/// `@unchecked Sendable`, and its one owner is the condition: every field
+/// (`queue`, `head`, `writing`, `running`, `stopping`, `ended`, `failure`,
+/// `failureHandler`) is read and written only while `condition` is held, by
+/// `enqueue` (a sender's task), `drain` (the session's end) or `write` (the
+/// thread); no section awaits, and `write` unlocks around the one blocking
+/// call (`channel.send`). `channel` is a `Sendable` `Channel` fixed at init.
 package final class Writer: @unchecked Sendable {
     private let channel: Channel
     /// Holds the queue, and the thread waits on it.

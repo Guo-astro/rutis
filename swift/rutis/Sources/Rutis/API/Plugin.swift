@@ -116,7 +116,10 @@ extension Rutis.Advanced {
 
 extension Rutis._Generated {
     /// A configuration's JSON Schema.
-    public struct Schema: @unchecked Sendable {
+    ///
+    /// `Sendable` without an escape hatch: it holds one `JSON`, which is a
+    /// value type of `Sendable` pieces.
+    public struct Schema: Sendable {
         package let json: JSON
 
         package init(_ json: JSON) { self.json = json }
@@ -278,6 +281,11 @@ extension Dictionary: SchemaDictionary {
 
 extension Rutis {
     /// A defined plugin, to serve in a binary or host in an app.
+    ///
+    /// `@unchecked Sendable`: every stored property is assigned once in
+    /// `init` and never written again; `apply` is the plugin's own closure,
+    /// called once per row load, and plugin code is callable concurrently
+    /// by contract (design §5, "plugin requirements").
     public final class Definition: @unchecked Sendable {
         public let name: String
         let inject: [String]

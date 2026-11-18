@@ -120,6 +120,13 @@ final class HandleEntry {
 }
 
 /// A loaded row.
+///
+/// `@unchecked Sendable`, and the split is fixed by ownership: the fields
+/// without `private` (`steps`, `provided`, `announced`, `pending`, `loading`,
+/// `failure`, `order`, `unloading`) are only read and written while the
+/// owning `Runtime`'s `lock` is held (`Runtime.load`, `listen`, `unload`,
+/// `dispatch`); the private ones are under this row's `lock`; the other
+/// stored properties are `let` after `init`.
 final class Row: @unchecked Sendable {
     let key: String
     /// The row's id in the configuration (rows.load's `id`; the key when
@@ -218,9 +225,12 @@ final class Row: @unchecked Sendable {
     /// or the caller gives up.
     func track(_ body: @escaping () async throws -> Value) async throws -> Value {
         let result = ResultBox()
+        // The body runs in this one task and nowhere else: that is the
+        // hand-over `Transferred` states.
+        let handed = Transferred(body)
         let task: Task<Void, Never> = Task {
             do {
-                result.set(.success(try await body()))
+                result.set(.success(try await handed.value()))
             } catch {
                 result.set(.failure(error))
             }
@@ -246,9 +256,10 @@ final class Row: @unchecked Sendable {
         nextTask += 1
         let id = nextTask
         let name = self.name
+        let handed = Transferred(body)
         let task = Task {
             do {
-                try await body()
+                try await handed.value()
             } catch is CancellationError {
             } catch {
                 self.settings.log("rutis: a task of row \(name) failed: \(Events.failure(error))")
@@ -299,11 +310,13 @@ final class Row: @unchecked Sendable {
     }
 }
 
-final class ResultBox: @unchecked Sendable {
-    private let lock = Lock()
-    private var result: Result<Value, Error> = .failure(CancellationError())
-    func set(_ value: Result<Value, Error>) { lock.withLock { result = value } }
-    func get() throws -> Value { try lock.withLock { result }.get() }
+/// The result of a call run in a Task of its own, taken by its caller.
+///
+/// `Sendable` without an escape hatch: the result is one `Locked` box.
+final class ResultBox: Sendable {
+    private let result = Locked<Result<Value, Error>>(.failure(CancellationError()))
+    func set(_ value: Result<Value, Error>) { result.withLock { $0 = value } }
+    func get() throws -> Value { try result.read { $0 }.get() }
 }
 
 /// Where an app's own plugin stands.
@@ -326,6 +339,21 @@ struct FarService {
 }
 
 /// The rows one controller loads into this process.
+///
+/// `@unchecked Sendable`, and its state has three owners:
+///
+/// - `lock` guards everything from `rows` to `far` below and the `Row`
+///   objects it holds: all of the runtime's tables, `version`, `loaded`,
+///   `closing`, `byID`, `listenerSequence`, the `goneIDs` pair, and the
+///   fields of `Slot`/`Provided`/`HandleEntry`; every read and write is
+///   inside `lock` and no section awaits.
+/// - `outLock` guards `outbox`, and `sendLock` makes `flush` run the queued
+///   sends in order.
+/// - `session` is assigned once, in `Serve.startSession`, before the
+///   session starts reading (so before any row, listener or control call
+///   exists) and is never written again; after that it is only read.
+///
+/// `definitions`, `shelf`, `project` and `settings` are `let`.
 final class Runtime: @unchecked Sendable {
     let definitions: [String: Rutis.Definition]
     /// The plugins added while it runs, instead of `definitions` (RutisTest).
@@ -1174,6 +1202,12 @@ final class Runtime: @unchecked Sendable {
 extension Rutis.Advanced {
     /// A service used by name: calls its methods across the session (or on
     /// the provider's object, when it is in this process).
+    ///
+    /// `@unchecked Sendable`: every stored property is assigned once in
+    /// `init`; `invoke` is a closure over `Sendable` state (a session, an
+    /// object) or over a method table of a service that is callable
+    /// concurrently by contract (design §5). `owns` is a static table behind
+    /// `ownLock`.
     public final class Client: @unchecked Sendable {
         /// The service's name; empty for an object of another process.
         public let name: String
@@ -1207,6 +1241,9 @@ extension Rutis.Advanced {
         }
 
         private static let ownLock = Lock()
+        /// A client per object while it is held. `nonisolated(unsafe)` for
+        /// the compiler, safe for the reason the lock is here: every read
+        /// and write, in `of(own:)`, is inside `ownLock`.
         nonisolated(unsafe) private static var owns: [ObjectIdentifier: WeakClient] = [:]
 
         /// The client of `own`, one per object while it is held (as

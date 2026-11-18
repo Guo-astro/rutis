@@ -1,9 +1,12 @@
 // The self-test runner's tests, in order (convert_tests.py lists them;
 // a new test is added here).
 
-let registry: [(String, () async throws -> Void)] = everywhere + onTheTestHost
+/// The test list, built once at start and only read: `nonisolated(unsafe)`
+/// for the compiler; the closures are `Sendable` in nothing but their
+/// captures, and each runs alone.
+nonisolated(unsafe) let registry: [(String, () async throws -> Void)] = everywhere + onTheTestHost
 
-private let everywhere: [(String, () async throws -> Void)] = [
+nonisolated(unsafe) private let everywhere: [(String, () async throws -> Void)] = [
     ("ErrorTextTests.anObjectRefusesAMethodByItsTypeName", { try await ErrorTextTests().anObjectRefusesAMethodByItsTypeName() }),
     ("ErrorTextTests.useSaysWhyAServiceIsNotThere", { try await ErrorTextTests().useSaysWhyAServiceIsNotThere() }),
     ("ErrorTextTests.aCallFailsSayingTheHostDisconnected", { try await ErrorTextTests().aCallFailsSayingTheHostDisconnected() }),
@@ -15,6 +18,12 @@ private let everywhere: [(String, () async throws -> Void)] = [
     ("OptionalDepsTests.rutisTestGivesTheOptionalServicesTheTestGives", { try await OptionalDepsTests().rutisTestGivesTheOptionalServicesTheTestGives() }),
     ("OptionalDepsTests.aHandleWhoseRowStoppedIsNotAvailable", { try await OptionalDepsTests().aHandleWhoseRowStoppedIsNotAvailable() }),
     ("OptionalDepsTests.aServiceOfARowLoadedAgainHasANewHandle", { try await OptionalDepsTests().aServiceOfARowLoadedAgainHasANewHandle() }),
+    ("ConcurrencyTests.testWaitersResumeEachWaiterOnce", { try await ConcurrencyTests().testWaitersResumeEachWaiterOnce() }),
+    ("ConcurrencyTests.testCancellingAWaitRemovesIt", { try await ConcurrencyTests().testCancellingAWaitRemovesIt() }),
+    ("ConcurrencyTests.testSignalRunsEachAbortHandlerOnce", { try await ConcurrencyTests().testSignalRunsEachAbortHandlerOnce() }),
+    ("ConcurrencyTests.testSerialQueueRunsOneAtATime", { try await ConcurrencyTests().testSerialQueueRunsOneAtATime() }),
+    ("ConcurrencyTests.testFlagIsSetOnce", { ConcurrencyTests().testFlagIsSetOnce() }),
+    ("ConcurrencyTests.testConcurrentCallsKeepTheirAnswers", { try await ConcurrencyTests().testConcurrentCallsKeepTheirAnswers() }),
     ("PeerTests.testCallsAndCallbacks", { try await PeerTests().testCallsAndCallbacks() }),
     ("PeerTests.testCancellingAnAsyncCallAbortsTheCallee", { try await PeerTests().testCancellingAnAsyncCallAbortsTheCallee() }),
     ("PeerTests.testTheSessionEndingCancelsTheCallsRunning", { try await PeerTests().testTheSessionEndingCancelsTheCallsRunning() }),
@@ -111,7 +120,7 @@ private let everywhere: [(String, () async throws -> Void)] = [
 /// checks the config of, more rows of a plugin, undeclared services. On a
 /// device the test tool is an app installing its own plugins.
 #if os(macOS)
-private let onTheTestHost: [(String, () async throws -> Void)] = [
+nonisolated(unsafe) private let onTheTestHost: [(String, () async throws -> Void)] = [
     ("ErrorTextTests.aRefusedCallNamesTheServiceMethodAndArgument", { try await ErrorTextTests().aRefusedCallNamesTheServiceMethodAndArgument() }),
     ("ErrorTextTests.aTakenNameAndAMissingMethodSayWhoseTheyAre", { try ErrorTextTests().aTakenNameAndAMissingMethodSayWhoseTheyAre() }),
     ("EventsConformanceTests.rutisTestMeetsTheEventExpectations", { try await EventsConformanceTests().rutisTestMeetsTheEventExpectations() }),
@@ -121,5 +130,5 @@ private let onTheTestHost: [(String, () async throws -> Void)] = [
     ("ConfigSchemaTests.aConfigTypeWithoutASchemaIsOnlyDecoded", { try await ConfigSchemaTests().aConfigTypeWithoutASchemaIsOnlyDecoded() }),
 ]
 #else
-private let onTheTestHost: [(String, () async throws -> Void)] = []
+nonisolated(unsafe) private let onTheTestHost: [(String, () async throws -> Void)] = []
 #endif

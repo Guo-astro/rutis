@@ -20,7 +20,10 @@ extension Rutis._Generated {
     public typealias Method = (Rutis._Generated.Arguments) async throws -> Rutis._Generated.Encoded
 
     /// The arguments of a call, decoded by the declared types.
-    public struct Arguments: @unchecked Sendable {
+    ///
+    /// `Sendable` without an escape hatch: a list of `Value`s and the
+    /// callee, which are `Sendable` themselves.
+    public struct Arguments: Sendable {
         package let values: [Value]
         /// The service (or object) and method called, which a refused
         /// argument names.
@@ -138,11 +141,17 @@ extension Rutis._Generated {
 }
 
 /// A @RutisService instance as the session exports it.
+///
+/// `@unchecked Sendable` for one reason: `service` is the plugin's own
+/// object, and `RutisExportable` does not require `Sendable` (the contract
+/// asks a service to be safe to call concurrently: an actor or a
+/// `Sendable` type, design §5). Everything of the SDK's here is
+/// `Sendable`: `identity` is fixed, and the method table is behind a
+/// `Locked` box, made once.
 final class ServiceObject: SessionObject, @unchecked Sendable {
     let service: RutisExportable
     let identity: ObjectIdentifier
-    private let lock = Lock()
-    private var table: [String: Rutis._Generated.Method]?
+    private let table = Locked<[String: Rutis._Generated.Method]?>(nil)
 
     init(_ service: RutisExportable) {
         self.service = service
@@ -152,12 +161,12 @@ final class ServiceObject: SessionObject, @unchecked Sendable {
     private final class Box {}
 
     var methods: [String: Rutis._Generated.Method] {
-        lock.lock()
-        defer { lock.unlock() }
-        if let table { return table }
-        let made = service.rutisMethods()
-        table = made
-        return made
+        table.withLock { table in
+            if let table { return table }
+            let made = service.rutisMethods()
+            table = made
+            return made
+        }
     }
 
     func call(method: String, args: [Value]) async throws -> Value {

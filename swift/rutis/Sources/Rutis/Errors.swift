@@ -8,6 +8,13 @@ import Foundation
 /// `String(describing:)`), and, when the error has stored properties named
 /// `code` (a String) and `data`, those too. Received, it is a `RutisError`;
 /// thrown on as it is, its whole error graph crosses again.
+///
+/// `@unchecked Sendable`, and this is the one public place the SDK cannot
+/// check: `data` is `Any?` by the protocol (what a thrown error carried),
+/// and `RutisError` is mutable (`var message`, …) as the protocol's other
+/// SDKs are. The SDK builds and reads an error on one task; code that
+/// shares one and mutates it from two tasks races, as with any `Sendable`
+/// type that holds a reference inside `Any`.
 public struct RutisError: Error, CustomStringConvertible, LocalizedError, @unchecked Sendable {
     /// The names of rutis's own errors.
     public enum Name {
@@ -168,16 +175,15 @@ func isNilOptional(_ value: Any?) -> Bool {
 /// stack, so the generated method table records the declaration of the
 /// method that threw, and the error crosses with that one frame. The error
 /// itself is never wrapped: code catching it in process sees it as thrown.
-package final class ThrowSite: @unchecked Sendable {
-    private let lock = NSLock()
-    private var recorded: String?
+package final class ThrowSite: Sendable {
+    private let recorded = Locked<String?>(nil)
 
     package init() {}
 
     /// The frame line, `    at Type.method (file:line)`, if a method threw.
-    package var frame: String? { lock.withLock { recorded } }
+    package var frame: String? { recorded.read { $0 } }
 
-    func record(_ frame: String) { lock.withLock { recorded = frame } }
+    func record(_ frame: String) { recorded.withLock { $0 = frame } }
 
     /// The site of the call the running Task serves.
     @TaskLocal package static var current: ThrowSite?

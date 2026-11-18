@@ -158,7 +158,7 @@ root.plugin(SwiftRuntimes::new(swift, project).idle(Duration::from_secs(60)).res
 
 ## 四、Swift SDK（共享核心）
 
-位于 `swift/rutis`（SwiftPM 目标 `Rutis`），Swift 5 语言模式，工具链 5.9 及以上，部署目标 macOS 14 / iOS 17。分层：
+位于 `swift/rutis`（SwiftPM 目标 `Rutis`），Swift 6 语言模式（`swift-tools-version:6.0`，`swiftLanguageModes: [.v6]`），工具链 6.2 及以上，部署目标 macOS 14 / iOS 17。分层：
 
 | 层 | 内容 | 平台 |
 | --- | --- | --- |
@@ -483,7 +483,7 @@ await rutis.stop()        // 全部插件逆序清理，然后断开
 | 依赖方写法 | 插件作者与应用同一条：`.package(url: "https://github.com/arcships/rutis", from: "0.15.0")` + `.product(name: "Rutis", package: "rutis")`；应用在 Xcode 里直接添加包（第一次构建时 Xcode 要求信任宏，CI 用 `-skipMacroValidation`，写进指南） |
 | 依赖 | `Rutis` 仅 Foundation 与系统的 Network.framework（监听）；`RutisMacros` 编译期依赖 swift-syntax（版本范围跟两个支持的工具链）；不引入 uniffi / swift-bridge（附录 B） |
 | 兼容 | 同一协议版本内，任意 SDK 版本的二进制 / 应用可在任意宿主版本运行，前提是插件 API 不高于宿主支持、双方都声明 `events-v2`（rutis 0.13 起） |
-| 语言模式 | Swift 5 模式起步，API 按 Sendable 友好设计；工具链策略同 Go："当前两个稳定版"（今日为 6.3、6.4） |
+| 语言模式 | Swift 6 模式（`swift-tools-version:6.0`，`swiftLanguageModes: [.v6]`，严格并发是错误而不是警告，#1273）；API 按 Sendable 友好设计；工具链策略同 Go："当前两个稳定版"（今日为 6.3、6.4） |
 | 文档 | `docs/guide/swift-plugin.md`（形态①）、`docs/guide/swift-app.md`（形态②，含本地网络权限等接入注意事项），中英；`docs/guide/plugin-api.md` 加 Swift 列（声明、ctx、事件各语言写法、十种值、错误、测试工具差异） |
 
 ## 十三、平台

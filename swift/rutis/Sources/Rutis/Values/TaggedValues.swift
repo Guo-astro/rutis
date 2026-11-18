@@ -428,6 +428,12 @@ extension Rutis.Advanced {
 
 /// A value this side cannot send or take: only the call carrying it fails,
 /// and the session goes on. It crosses named `Error`.
+/// A value this side cannot send or take.
+///
+/// `@unchecked Sendable`: `data` carries `Any` values (the argument's part,
+/// as a user type), but a `ValueError` is created at the throw site and
+/// read there, or crosses as a `RutisError` (which copies it); the error
+/// itself is never handed to another task while being mutated.
 struct ValueError: Error, CustomStringConvertible, @unchecked Sendable {
     let description: String
     /// bad-value, with `{argument?, part, reason, limit?}`, when it is of a
