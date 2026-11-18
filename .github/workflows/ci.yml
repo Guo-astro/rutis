@@ -167,6 +167,7 @@ jobs:
               - crates/rutis-cli/build.rs
               - crates/rutis-cli/src/**
               - crates/rutis-cli/Cargo.toml
+              - crates/rutis-abi/**
               - crates/rutis-dylib/**
               - crates/rutis-dylib-meta/**
               - crates/rutis-dylib-launcher/**
@@ -224,6 +225,7 @@ jobs:
               - tools/swift-strict-concurrency.sh
               - tools/public-api-swift.sh
               - tools/public-api-check.sh
+              - crates/rutis-bridge/tests/host_gone.rs
               - crates/rutis-bridge/tests/swift_remote.rs
               - crates/rutis-bridge/tests/swift_runtime.rs
               - crates/rutis-loader/src/runtime/swift.rs
@@ -232,6 +234,7 @@ jobs:
               - crates/rutis-loader/tests/objects_cross.rs
               - crates/rutis-loader/tests/plugin_values.rs
               - crates/rutis-host/src/languages/swift.rs
+              - crates/rutis-host/tests/lease_e2e.rs
               - crates/rutis-host/tests/swift.rs
               - crates/rutis-host/tests/swift_app.rs
               - tests/e2e/tests/dev_loop.rs
@@ -239,6 +242,7 @@ jobs:
             # changes reach the SDK too, but are checked in full runs
             # (Q12.6.3).
             repro:
+              - crates/rutis-abi/**
               - crates/rutis-sdk/**
               - crates/rutis-cli/build.rs
               - tools/test-dylib-repro.sh
@@ -1176,30 +1180,31 @@ jobs:
           set -o pipefail
           swift build 2>&1 | tee .build/swift-build.log
           RUTIS_HOST="${CARGO_TARGET_DIR:-$PWD/target}/debug/rutis-host" swift run RutisSelfTest
-      # Swift 6 strict concurrency (#630): the diagnostics `Rutis`, `RutisTest`,
-      # `RutisFixturePlugins` and `RutisSelfTest` still have, read from the log
-      # of the build above. Package.swift turns the checking on for those four
-      # in the Swift 5 language mode, so they are warnings: the report says how
-      # far each one is from Swift 6, and does not fail this job (a build that
-      # fails of its own does).
-      - name: strict concurrency report (#630)
+      # Swift 6 strict concurrency (#630, #1273): `Package.swift` is
+      # `swift-tools-version:6.0` with `swiftLanguageModes: [.v6]`, so the
+      # build above already fails on any strict-concurrency diagnostic of
+      # `Rutis`, `RutisTest`, `RutisFixturePlugins` or `RutisSelfTest`. This
+      # step prints them target by target (with the `@unchecked Sendable`
+      # declarations that say in place why they are safe) and does not fail
+      # the job on its own: the build is the gate.
+      - name: strict concurrency report (#630, #1273)
         continue-on-error: true
         run: tools/swift-strict-concurrency.sh --log .build/swift-build.log
       # The session's concurrent parts under ThreadSanitizer (#630): the
       # reading and writing threads, the calls they run and cancel, the event
-      # host's concurrent emitters, and an app's start and stop. The SDK's
-      # tests are a program (see above), so this is `swift run
-      # --sanitize=thread`, not `swift test`; the program runs the tests whose
-      # name starts with its argument, so only those four suites run. A race
-      # is printed with both stacks, and `halt_on_error=1` ends the run with a
-      # non-zero status, failing this job. The build directory is its own: the
-      # instrumented products do not replace the ones the steps after this one
-      # use, and the runs share them.
-      - name: ThreadSanitizer over the session, writer, events and app tests
+      # host's concurrent emitters, an app's start and stop, and the shared
+      # primitives (#1273). The SDK's tests are a program (see above), so this
+      # is `swift run --sanitize=thread`, not `swift test`; the program runs
+      # the tests whose name starts with its argument, so only those suites
+      # run. A race is printed with both stacks, and `halt_on_error=1` ends
+      # the run with a non-zero status, failing this job. The build directory
+      # is its own: the instrumented products do not replace the ones the
+      # steps after this one use, and the runs share them.
+      - name: ThreadSanitizer over the session, writer, events, app and concurrency tests
         run: |
           export RUTIS_HOST="${CARGO_TARGET_DIR:-$PWD/target}/debug/rutis-host"
           export TSAN_OPTIONS=halt_on_error=1
-          for suite in PeerTests WriterTests EventsConformanceTests AppTests; do
+          for suite in PeerTests WriterTests EventsConformanceTests AppTests ConcurrencyTests; do
             echo "::group::RutisSelfTest $suite under ThreadSanitizer"
             swift run --sanitize=thread --build-path .build/tsan RutisSelfTest "$suite"
             echo "::endgroup::"
@@ -1236,6 +1241,15 @@ jobs:
         env:
           RUTIS_TEST_RUNTIMES: swift
         run: cargo test -p rutis-bridge --all-features --test swift_runtime
+      # What a session's end leaves: a runtime whose host went away (the
+      # local channel, RUTIS_SHUTDOWN_TIMEOUT) and a listening runtime whose
+      # lease a newer controller takes over (#624, the Swift columns).
+      - name: cargo test (the lease and host-gone suites with Swift)
+        env:
+          RUTIS_TEST_RUNTIMES: swift
+        run: |
+          cargo test -p rutis-host --test lease_e2e swift
+          cargo test -p rutis-bridge --all-features --test host_gone swift
       # Swift rows beside Node and Python ones: their runtimes too.
       - uses: actions/setup-node@v4
         with:
@@ -1691,6 +1705,8 @@ jobs:
         if: runner.environment == 'github-hosted'
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: boot blob layout and SHA-256 text
+        run: cargo test -p rutis-abi
       - name: dylib host child environment
         run: cargo test -p rutis-cli --features dylib-plugins --bin rutis-cli
       - name: plugin swap and pre-dlopen rejection

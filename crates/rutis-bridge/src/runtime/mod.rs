@@ -20,6 +20,7 @@ mod rows;
 mod state;
 #[cfg(feature = "testing")]
 pub mod testing;
+mod undeclared;
 
 /// Where a runtime process's standard streams go ([`Launcher::stdin`],
 /// [`Launcher::stdout`]).
@@ -35,6 +36,7 @@ pub use process::{
 pub use projection::Projection;
 pub use rows::{row_projection, row_projection_of, row_projection_with, RowService};
 pub use state::{ended_status, RuntimeHandle, RuntimeState, RuntimeStates};
+pub use undeclared::UndeclaredPolicy;
 
 use std::sync::Arc;
 

@@ -149,6 +149,7 @@
 //! guarantee: bridge/value-tags
 //! guarantee: bridge/object-refs
 //! guarantee: bridge/unknown-fields
+//! guarantee: loader/announced-services
 
 use std::collections::{BTreeMap, VecDeque};
 use std::path::Path;
@@ -161,7 +162,7 @@ use rutis::internal::CtxInternal;
 use rutis::{Ctx, Error as RutisError, Event};
 use rutis_bridge::channel::{Channel, ChannelError, Close, Closer, PeerId, Receiver, Sender};
 use rutis_bridge::events::{report_line, Args};
-use rutis_bridge::runtime::{row_projection, row_projection_of, Process};
+use rutis_bridge::runtime::{row_projection, row_projection_of, Process, UndeclaredPolicy};
 use rutis_bridge::session::{
     call_service, host_key, host_key_in, settle, BigInt, Connection, Date, DateTime, Decimal,
     Dispatch, Endpoint, Error, HostDispatch, Instant, Reference, Reply, TimeOfDay, Uuid, Value,
@@ -5271,6 +5272,149 @@ async fn isolate_names_stay_in_the_rows_scope() {
         "the call reaches the announced object"
     );
     assert!(far.close_reason().is_none(), "the session goes on");
+}
+
+/// A host that opens itself to third parties refuses the service names a
+/// runtime row provides without declaring them (#1040): the name is not
+/// published, and the row's projection is told why, so the row fails.
+/// `UndeclaredPolicy::Allow` publishes the names it lists and refuses the
+/// others.
+/// guarantee: loader/announced-services
+#[tokio::test(flavor = "multi_thread")]
+async fn a_host_refuses_the_names_a_row_does_not_declare() {
+    let runtime = Scripted::new(json!({}));
+    let root = common::runtime::root();
+    let (ours, theirs) = rutis_bridge::memory::pair();
+    let mut endpoint = Endpoint::rust(id("rt"));
+    endpoint.capabilities.push("runtime".into());
+    let far = Connection::open(theirs, runtime, endpoint).unwrap();
+    let process = common::runtime::attached_with(&root, "rt", ours, UndeclaredPolicy::Refuse)
+        .await
+        .unwrap();
+    let declared = json!({ "sunny": { "today": "sync" } });
+    let exports = declared.as_object().unwrap();
+    let projection = row_projection_of("w", exports, host_key);
+    projection.attach(&root, process.clone()).unwrap();
+    process
+        .load_row_exporting(
+            "w",
+            Path::new("w.js"),
+            json!({}),
+            &[],
+            &[],
+            exports,
+            projection.clone(),
+            &[],
+        )
+        .await
+        .unwrap();
+    far.invoke_async("", "service", json!(["sunny", "sunny#1", 1]).into())
+        .await
+        .unwrap();
+    far.invoke_async(
+        "",
+        "service",
+        json!(["store", "store#1", 1, { "row": "w", "methods": { "get": "async" } }]).into(),
+    )
+    .await
+    .unwrap();
+    assert!(
+        root.get_at::<dyn HostDispatch>(&host_key("store"))
+            .is_none(),
+        "an undeclared name is not a host service"
+    );
+    assert_eq!(
+        projection.take_refused().as_deref(),
+        Some(
+            "store is provided by row w without declaring it; the host does not let a runtime \
+             publish names it does not declare"
+        )
+    );
+    assert!(
+        root.get_at::<dyn HostDispatch>(&host_key("sunny"))
+            .is_some(),
+        "a declared service is unaffected"
+    );
+    assert!(far.close_reason().is_none(), "the session goes on");
+    process.dispose().await.unwrap();
+    root.shutdown().await.unwrap();
+}
+
+/// `Allow` publishes the announced names it lists and refuses the others;
+/// inside an instance they are the instance's (`host_key_in`), never the
+/// root's (#1040).
+/// guarantee: loader/announced-services
+#[tokio::test(flavor = "multi_thread")]
+async fn an_allowed_announcement_inside_an_instance_is_the_instances_only() {
+    let root = common::runtime::root();
+    let (instance, ctx) = tenant(&root).await;
+    let runtime = Scripted::new(json!({}));
+    let (ours, theirs) = rutis_bridge::memory::pair();
+    let mut endpoint = Endpoint::rust(id("rt2"));
+    endpoint.capabilities.push("runtime".into());
+    let far = Connection::open(theirs, runtime, endpoint).unwrap();
+    let process = common::runtime::attached_with(
+        &ctx,
+        "rt2",
+        ours,
+        UndeclaredPolicy::Allow(vec!["store".into()]),
+    )
+    .await
+    .unwrap();
+    let scope = ctx.scope();
+    let declared = json!({ "moon": { "today": "sync" } });
+    let exports = declared.as_object().unwrap();
+    let projection = row_projection_of("w", exports, move |name| host_key_in(name, instance));
+    projection.attach(&ctx, process.clone()).unwrap();
+    process
+        .load_row_exporting(
+            "w",
+            Path::new("w.js"),
+            json!({}),
+            &[],
+            &[],
+            exports,
+            projection.clone(),
+            &scope,
+        )
+        .await
+        .unwrap();
+    far.invoke_async(
+        "",
+        "service",
+        json!(["store", "store#1", 1, { "row": "w", "methods": { "get": "async" } }]).into(),
+    )
+    .await
+    .unwrap();
+    assert!(
+        ctx.get_at::<dyn HostDispatch>(&host_key_in("store", instance))
+            .is_some(),
+        "an allowed announced name is the instance's"
+    );
+    assert!(
+        root.get_at::<dyn HostDispatch>(&host_key("store"))
+            .is_none(),
+        "and not the root's"
+    );
+    far.invoke_async(
+        "",
+        "service",
+        json!(["secret", "secret#1", 1, { "row": "w", "methods": { "get": "async" } }]).into(),
+    )
+    .await
+    .unwrap();
+    assert!(
+        ctx.get_at::<dyn HostDispatch>(&host_key_in("secret", instance))
+            .is_none(),
+        "a name the host does not allow is not published"
+    );
+    assert_eq!(
+        projection.take_refused().as_deref(),
+        Some("secret is provided by row w without declaring it; the host lets a runtime publish only store")
+    );
+    assert!(far.close_reason().is_none(), "the session goes on");
+    process.dispose().await.unwrap();
+    root.shutdown().await.unwrap();
 }
 
 /// Rows loaded in an instance carry its scope chain and their isolate table

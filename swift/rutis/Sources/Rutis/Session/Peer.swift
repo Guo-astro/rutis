@@ -135,6 +135,12 @@ package struct Greeting {
     package var capabilities: [String]
 }
 
+/// A reference this side holds of the far end's.
+///
+/// `@unchecked Sendable`: `grants` and `released` are read and written only
+/// while the owning `Peer`'s `lock` is held (`check`, `release`,
+/// `releaseAll`); the `let`s are fixed at init; the weak references are
+/// assigned only in `Peer.receive`, under that same lock.
 final class Imported: @unchecked Sendable {
     let id: Int64
     let kind: String
@@ -173,7 +179,10 @@ final class Exported {
 }
 
 /// A function of the far end.
-package final class FarFunction: @unchecked Sendable {
+///
+/// `Sendable` without an escape hatch: two immutable references to
+/// `Sendable` types; the record's state is the peer's, under its lock.
+package final class FarFunction: Sendable {
     let peer: Peer
     let record: Imported
 
@@ -208,7 +217,8 @@ package final class FarObject: @unchecked Sendable {
     let peer: Peer
     let record: Imported
     let lock = Lock()
-    /// Its client, while one is held: one object is one client.
+    /// Its client, while one is held: one object is one client. Only read
+    /// and written under `lock` (`Rutis.Advanced.Client.of`).
     weak var client: Rutis.Advanced.Client?
 
     init(peer: Peer, record: Imported) {
@@ -237,7 +247,10 @@ package final class FarObject: @unchecked Sendable {
 /// A plugin definition of the far end, held by a test host (RutisTest):
 /// it can only be handed back. `local` is the definition itself when the
 /// runtime is in this process.
-package final class FarPlugin: @unchecked Sendable {
+///
+/// `Sendable` without an escape hatch: three immutable references to
+/// `Sendable` types.
+package final class FarPlugin: Sendable {
     let peer: Peer
     let record: Imported
     package let local: Rutis.Definition?
@@ -255,11 +268,12 @@ package final class FarPlugin: @unchecked Sendable {
 }
 
 /// An asynchronous result of the far end.
-package final class FarFuture: @unchecked Sendable {
+///
+/// `Sendable` without an escape hatch: the result is one `Locked` box.
+package final class FarFuture: Sendable {
     let peer: Peer
     let record: Imported
-    private let lock = Lock()
-    private var result: Result<Value, Error>?
+    private let result = Locked<Result<Value, Error>?>(nil)
 
     init(peer: Peer, record: Imported) {
         self.peer = peer
@@ -273,25 +287,16 @@ package final class FarFuture: @unchecked Sendable {
 
     /// Waits for the result; cancelling the Task stops waiting.
     package func value() async throws -> Value {
-        lock.lock()
-        if let result {
-            lock.unlock()
-            return try result.get()
-        }
-        lock.unlock()
+        if let result = result.read({ $0 }) { return try result.get() }
         try peer.check(record)
         do {
             let value = try await peer.call(op: "await", fields: [("reference", .int(record.id))], args: nil,
                                             origin: record.origin, cancellable: true)
-            lock.lock()
-            result = .success(value)
-            lock.unlock()
+            self.result.withLock { $0 = .success(value) }
             return value
         } catch {
             if !(error is CancellationError) {
-                lock.lock()
-                result = .failure(error)
-                lock.unlock()
+                result.withLock { $0 = .failure(error) }
             }
             throw error
         }
@@ -308,11 +313,17 @@ package func settle(_ value: Value) async throws -> Value {
 }
 
 /// The wait for one outgoing call's answer.
-final class Pending: @unchecked Sendable {
+///
+/// `Sendable` without an escape hatch: the outcome and the continuation are
+/// one `Locked` state.
+final class Pending: Sendable {
     let id: String
-    private let lock = Lock()
-    private var outcome: Result<Value, Error>?
-    private var continuation: CheckedContinuation<Value, Error>?
+    private struct State {
+        var outcome: Result<Value, Error>?
+        var continuation: CheckedContinuation<Value, Error>?
+    }
+
+    private let state = Locked(State())
     /// Told the answer where it is taken (the reader, as it reads the
     /// reply's frame), before the waiter.
     private let answered: (@Sendable (Result<Value, Error>) -> Void)?
@@ -325,15 +336,15 @@ final class Pending: @unchecked Sendable {
     /// Answers the call; false if it already was.
     @discardableResult
     func resolve(_ result: Result<Value, Error>) -> Bool {
-        lock.lock()
-        if outcome != nil {
-            lock.unlock()
-            return false
+        var continuation: CheckedContinuation<Value, Error>?
+        let first = state.withLock { state in
+            guard state.outcome == nil else { return false }
+            state.outcome = result
+            continuation = state.continuation
+            state.continuation = nil
+            return true
         }
-        outcome = result
-        let continuation = self.continuation
-        self.continuation = nil
-        lock.unlock()
+        guard first else { return false }
         answered?(result)
         continuation?.resume(with: result)
         return true
@@ -341,14 +352,12 @@ final class Pending: @unchecked Sendable {
 
     func wait() async throws -> Value {
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Value, Error>) in
-            lock.lock()
-            if let outcome {
-                lock.unlock()
-                continuation.resume(with: outcome)
-                return
+            let outcome = state.withLock { state -> Result<Value, Error>? in
+                if let outcome = state.outcome { return outcome }
+                state.continuation = continuation
+                return nil
             }
-            self.continuation = continuation
-            lock.unlock()
+            if let outcome { continuation.resume(with: outcome) }
         }
     }
 }
@@ -387,6 +396,22 @@ struct Malformed: Error, CustomStringConvertible {
 }
 
 /// One session.
+///
+/// `@unchecked Sendable`, and its state has three owners, by construction:
+///
+/// - `lock` guards every field declared between it and `writer` below
+///   (`local`, `remote`, `next`, `received`, `ref`, `handshake`, `greeting`,
+///   `declared`, `pending`, `exports`, `identities`, `imports`,
+///   `heldPlugins`, `running`, `signals`, `active`, `draining`,
+///   `closeError`) and the `Imported` records those tables hold; every
+///   access is inside `lock.lock()`/`withLock`, and no section awaits.
+/// - `writeLock` spans taking a call id and queueing its frame, so ids go
+///   out in order.
+/// - `writer` (a `Sendable` `Writer`) owns the outgoing frames; `readyEvent`
+///   and `closedEvent` are `Sendable` events.
+///
+/// The reading thread is one, and it is the only thread that mutates
+/// `received`; every other thread goes through `lock`.
 package final class Peer: @unchecked Sendable {
     package let channel: Channel
     let options: PeerOptions
@@ -1320,6 +1345,12 @@ package final class Peer: @unchecked Sendable {
         }
     }
 
+    /// One incoming call, from its frame to its Task.
+    ///
+    /// `@unchecked Sendable`: the reading thread creates it and fills every
+    /// field (`invocation`, `receive`) before the Task that runs it starts;
+    /// from then on only that Task touches it, and `then` is the only
+    /// closure it carries, made there. No two tasks ever see one job.
     final class Job: @unchecked Sendable {
         let op: String
         let id: String

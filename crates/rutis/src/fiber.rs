@@ -19,7 +19,7 @@ use crate::{BoxFuture, DynPlugin, PluginFactory};
 
 mod state;
 
-pub(crate) use state::{EventFlights, OwnerState, NOT_LIVE};
+pub(crate) use state::{Owner, NOT_LIVE};
 
 /// The states of a fiber.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -431,19 +431,14 @@ pub(crate) struct FiberInner {
     /// every call checked every listener, and the snapshot is another
     /// allocation to read for each.
     pub live_generation: std::sync::atomic::AtomicU64,
-    /// The four listener markers above and `live_generation` in one word,
-    /// which a listener call reads once instead of five times (#1125). Every
-    /// write to `alive`, `closing`, `lineage_closed` and `live_generation`
-    /// writes this word too, in this file and nowhere else; the event bus
-    /// reads only this word. [`OwnerState`] holds the admission order.
-    pub state: OwnerState,
-    /// The dispatch that last counted a flight on this fiber (#1125): a
-    /// dispatch counts an owner once, and a stale value only counts it again
-    /// (a longer wait, never a shorter one).
-    pub counted_by: std::sync::atomic::AtomicU64,
-    /// The calls started on this fiber and not finished yet; its unload waits
-    /// for them ([`EventFlights`]).
-    pub flights: EventFlights,
+    /// The four listener markers above and `live_generation` in one word, the
+    /// calls an unload waits for, and the dispatch that last counted one, in
+    /// an object of their own (#1125, #1126). Every write to `alive`,
+    /// `closing`, `lineage_closed` and `live_generation` writes this word too,
+    /// in this file and nowhere else; the event bus reads only this object.
+    /// A listener entry holds the other `Arc<Owner>`, so a call reaches it
+    /// without upgrading a `Weak` to this fiber ([`Owner`]).
+    pub owner: Arc<Owner>,
     /// The `(key, scope)` pairs this fiber provides.
     pub provided: Mutex<Vec<(TypeKey, Option<crate::key::ScopeId>)>>,
     /// The dependencies the last load resolved, including a load that failed:
@@ -472,6 +467,18 @@ pub(crate) struct FiberInner {
     /// switch point the kernel does not have.
     #[cfg(all(test, rutis_shuttle))]
     pub status_tap: std::sync::Mutex<Option<StatusTap>>,
+}
+
+impl Drop for FiberInner {
+    /// A fiber that is gone admits no listener, whatever its markers said: a
+    /// call that reaches the owner through an entry's `Arc<Owner>` must see
+    /// what a failed `Weak::upgrade` showed before (#1126), including a fiber
+    /// that is dropped without its driver ever running its exit path.
+    /// Entries hold the owner, not the fiber, so this is the last word on
+    /// whether the fiber exists.
+    fn drop(&mut self) {
+        self.owner.state.stop();
+    }
 }
 
 /// The type-erased interface of a generic `PluginFactory<C>`, used inside
@@ -600,11 +607,11 @@ impl FiberInner {
     }
 
     pub(crate) fn begin_event(&self) {
-        self.flights.begin();
+        self.owner.begin_event();
     }
 
     pub(crate) fn finish_event(&self) {
-        self.flights.finish();
+        self.owner.finish_event();
     }
 
     /// Wait for the event calls counted on this fiber (listener calls,
@@ -613,7 +620,7 @@ impl FiberInner {
     /// `listeners of … still running after <s>s; unloading anyway` error
     /// goes to the error sink and the unload goes on without them.
     pub(crate) async fn wait_events(&self) {
-        if self.flights.count() == 0 {
+        if self.owner.flights.count() == 0 {
             return;
         }
         let limit = shutdown_deadline();
@@ -625,11 +632,11 @@ impl FiberInner {
         let Some(deadline) = crate::sync::deadline(limit) else {
             // No timer could be started: wait for the calls without a
             // deadline, as there is nothing to report them past.
-            self.flights.wait_zero().await;
+            self.owner.flights.wait_zero().await;
             return;
         };
         tokio::select! {
-            () = self.flights.wait_zero() => {}
+            () = self.owner.flights.wait_zero() => {}
             Ok(()) = deadline.passed() => {
                 let listeners = match self.ctx.row() {
                     Some(row) => format!("row {row}"),
@@ -776,27 +783,27 @@ impl FiberInner {
             _ => NOT_LIVE,
         };
         self.live_generation.store(live, Ordering::SeqCst);
-        self.state.publish_live(live);
+        self.owner.state.publish_live(live);
     }
 
     /// The driver's `alive` flag went false: the state word a call reads says
     /// so too.
     fn stop_driver(&self) {
         self.alive.store(false, Ordering::SeqCst);
-        self.state.stop();
+        self.owner.state.stop();
     }
 
     /// The `closing` flag went true: the state word a call reads says so too.
     fn close_marker(&self) {
         self.closing.store(true, Ordering::SeqCst);
-        self.state.publish_closing();
+        self.owner.state.publish_closing();
     }
 
     /// The permanent lineage marker went true (#1025): the state word a call
     /// reads says so too.
     fn lineage_marker(&self) {
         self.lineage_closed.store(true, Ordering::SeqCst);
-        self.state.mark_lineage_closed();
+        self.owner.state.mark_lineage_closed();
     }
 
     /// The state word and the four markers agree: the word is the copy every
@@ -806,7 +813,7 @@ impl FiberInner {
     /// path.
     #[cfg(all(test, debug_assertions))]
     pub(crate) fn markers_agree(&self) -> Result<(), String> {
-        let word = &self.state;
+        let word = &self.owner.state;
         let flags = [
             ("alive", word.alive(), self.alive.load(Ordering::SeqCst)),
             (
@@ -1797,9 +1804,7 @@ fn spawn_fiber_inner(
             intents_tx: tx.clone(),
             alive: crate::sync::AtomicBool::new(!closed),
             live_generation: std::sync::atomic::AtomicU64::new(initial_live),
-            state: OwnerState::new(!closed, closed, initial_live),
-            counted_by: std::sync::atomic::AtomicU64::new(0),
-            flights: EventFlights::new(),
+            owner: Arc::new(Owner::new(!closed, closed, initial_live)),
             provided: Mutex::new(Vec::new()),
             last_deps: Mutex::new(None),
             accesses: Mutex::new(Vec::new()),

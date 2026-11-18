@@ -36,6 +36,13 @@ import Security
 /// every connection is new: the plugins clean up when it is lost, latest
 /// first, and are installed again on the next. `state` says where it is, for the app to show: nothing here acts
 /// on it, nor on the app going to the background (the app's business).
+///
+/// `@unchecked Sendable`: `lock` guards every mutable field below it
+/// (`current`, `watchers`, `run`, `latest`, `tail`, `stops`, `boundListen`);
+/// every access is inside `lock` and no section awaits. The stored
+/// configuration (`plugins`, `configs`, `mode`, `id`, `peer`, `token`,
+/// `project`, `settings`, `heartbeatTiming`) is `let` after `init`; the
+/// observation registrar is `Sendable`.
 public final class RutisApp: Observable, @unchecked Sendable {
     /// Where the connection is.
     public enum State: Equatable, Sendable, CustomStringConvertible {
@@ -60,7 +67,7 @@ public final class RutisApp: Observable, @unchecked Sendable {
 
     enum Mode {
         case dial(String, trust: [SecCertificate])
-        case listen(String, identity: () throws -> sec_identity_t)
+        case listen(String, identity: @Sendable () throws -> sec_identity_t)
     }
 
     /// How a run of the connection ended.
@@ -74,6 +81,10 @@ public final class RutisApp: Observable, @unchecked Sendable {
     }
 
     /// A started connection.
+    ///
+    /// `@unchecked Sendable`: `task`, `wake` and `ending` are only read and
+    /// written under `RutisApp.lock` (`begin`, `end`, `ended`), after the
+    /// run was published there; `stop` is a `Sendable` `StopSignal`.
     final class Run: @unchecked Sendable {
         let stop = StopSignal()
         var task: Task<Ending, Never>?
@@ -154,8 +165,11 @@ public final class RutisApp: Observable, @unchecked Sendable {
                             certificate: SecIdentity? = nil, peer: String? = nil, shutdownTimeout: Double = 10,
                             log: @escaping @Sendable (String) -> Void = RutisApp.standardError)
     {
-        let identity = { () throws -> sec_identity_t in
-            guard let certificate, let identity = sec_identity_create(certificate) else {
+        // A SecIdentity is a CF object: immutable after creation, but not
+        // `Sendable`; `Immutable` carries it into the closure.
+        let certificate = Immutable(certificate)
+        let identity: @Sendable () throws -> sec_identity_t = {
+            guard let certificate = certificate.value, let identity = sec_identity_create(certificate) else {
                 throw ChannelError("\(listen): wss needs a certificate (RutisApp's certificate:)")
             }
             return identity
@@ -286,10 +300,13 @@ public final class RutisApp: Observable, @unchecked Sendable {
             } catch {
                 throw RutisError(name: "Error", message: "\(error)")
             }
-            body = { [self] in await dial(spec, anchors: spec.hasPrefix("wss:") ? trust : [], installing, stop: started.stop) }
+            // `[SecCertificate]` is not `Sendable`: the list is made once
+            // here and read by the connection's task.
+            let anchors = Immutable(spec.hasPrefix("wss:") ? trust : [])
+            body = { [self] in await dial(spec, anchors: anchors, installing, stop: started.stop) }
         case let .listen(spec, identity):
             let (events, continuation) = AsyncStream<ListenEvent>.makeStream()
-            let bind = { [token] () throws -> WebSocketListener in
+            let bind: @Sendable () throws -> WebSocketListener = { [token] in
                 let address = self.lock.withLock { self.boundListen } ?? spec
                 let listener = try WebSocketListener(address, protocol: "rutis.\(endpointProtocol)", token: token, identity: identity,
                                                      timing: self.heartbeatTiming)
@@ -355,7 +372,8 @@ public final class RutisApp: Observable, @unchecked Sendable {
 
     /// Dials `spec` and stays connected, by the rules, until stopped or
     /// refused as incompatible.
-    private func dial(_ spec: String, anchors: [SecCertificate], _ installing: [(definition: Rutis.Definition, config: Value)],
+    private func dial(_ spec: String, anchors: Immutable<[SecCertificate]>,
+                      _ installing: [(definition: Rutis.Definition, config: Value)],
                       stop: StopSignal) async -> Ending
     {
         let endpoint = Endpoint(local: id, expected: peer, declare: ["runtime"])
@@ -370,7 +388,8 @@ public final class RutisApp: Observable, @unchecked Sendable {
             publish(.connecting)
             do {
                 guard let socket = try await stop.race({ [token] in
-                    try await DialedSocket.dial(spec, protocol: protocolName, token: token, anchors: anchors, timeout: retry.handshake)
+                    try await DialedSocket.dial(spec, protocol: protocolName, token: token, anchors: anchors.value,
+                                                timeout: retry.handshake)
                 }, discard: { $0.close("stopped") }) else { return .stopped }
                 let started: (Peer, Runtime)
                 do {

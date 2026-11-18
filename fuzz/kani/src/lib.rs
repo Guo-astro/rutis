@@ -1,33 +1,44 @@
 //! Bounded proofs of the session's pure date and time-of-day logic
-//! (#631; `crates/rutis-bridge/src/session/values.rs`). Each proof is
-//! checked over every value of its inputs, not a sample.
+//! (#631; `crates/rutis-bridge/src/session/values.rs`) and of the plugin boot
+//! blob's const ABI (#1271; `fuzz/kani/src/boot.rs`). Each proof is checked
+//! over every value of its inputs, not a sample.
 //!
 //! Run from this directory, with Kani installed (`cargo kani setup`):
 //!
 //!     cargo kani
 //!
-//! Not verified yet: Kani 0.68.0 does not finish these harnesses here
-//! (each was still checking after 90 minutes, and after 7 minutes again on
-//! 2026-11-17). `fuzz/KANI-MIRI.md` records the runs; a harness whose inputs
-//! are held to a smaller range says so.
+//! The constructors call the predicates these prove: `Date::try_new`,
+//! `TimeOfDay::try_new`, `Date::try_from_days_since_unix_epoch`,
+//! `Instant::try_from_unix` and `Instant::try_from_unix_nanos`, which check
+//! the fields and return `None` where `new`/`from_unix` build an error
+//! message. Kani 0.68.0 does not finish `format!` over a symbolic number
+//! (`fuzz/kani/limits`), so the message is off the proved path;
+//! `constructors_accept_what_the_predicates_accept` in `values.rs` checks
+//! that each constructor accepts exactly what its predicate accepts and
+//! rejects with the message it had.
 //!
-//! Why, minimized to no rutis code: `fuzz/kani/limits` — `format!` with one
-//! symbolic argument and `str::from_utf8` over one symbolic byte, both hanging
-//! next to the controls that finish in a second. Every path of these
-//! constructors formats its error that way, and the error branch is still
-//! explored when `kani::assume` makes it unreachable: its condition is
-//! symbolic. So no shape at the call site avoids it; `fuzz/KANI-MIRI.md`'s
-//! last section says what would.
+//! A harness whose inputs are held to a smaller range says so, and
+//! `fuzz/KANI-MIRI.md` records every run: the toolchain, the command and how
+//! long it took.
 //!
 //! guarantee: bridge/value-tags, bridge/value-roundtrip
 #![cfg(kani)]
 
 use rutis_bridge::session::{Date, Instant, TimeOfDay};
 
+mod boot;
+
 /// The days `Date::from_days_since_unix_epoch` spans: 0001-01-01 to
 /// 9999-12-31.
 const MIN_DAYS: i64 = -719_162;
 const MAX_DAYS: i64 = 2_932_896;
+
+/// The range the nanosecond round trip is proved over: 10 000 seconds either
+/// side of 1970 (2h46m40s). Symbolic 128-bit division is what costs here — a
+/// day either side had no verdict after 15 minutes on 2026-11-18 — so this is
+/// the range proved, not all of `i128`.
+const MIN_NANOS: i128 = -10_000_000_000_000;
+const MAX_NANOS: i128 = 10_000_000_000_000 + 999_999_999;
 
 /// A date the constructor accepts keeps the fields it was given and stays
 /// in the range the `date` tag can carry (years 0001–9999, months 1–12,
@@ -37,7 +48,7 @@ fn date_new_keeps_valid_fields() {
     let year: u16 = kani::any();
     let month: u8 = kani::any();
     let day: u8 = kani::any();
-    if let Ok(date) = Date::new(year, month, day) {
+    if let Some(date) = Date::try_new(year, month, day) {
         assert!((1..=9999).contains(&year));
         assert!((1..=12).contains(&month));
         assert!((1..=31).contains(&day));
@@ -54,7 +65,7 @@ fn date_new_rejects_month_and_day_zero() {
     let month: u8 = kani::any();
     let day: u8 = kani::any();
     if month == 0 || day == 0 {
-        assert!(Date::new(year, month, day).is_err());
+        assert!(Date::try_new(year, month, day).is_none());
     }
 }
 
@@ -66,9 +77,9 @@ fn date_new_rejects_month_and_day_zero() {
 fn days_from_epoch_roundtrip() {
     let days: i64 = kani::any();
     kani::assume((MIN_DAYS..=MAX_DAYS).contains(&days));
-    let date =
-        Date::from_days_since_unix_epoch(days).expect("a day in 0001–9999 is a date in 0001–9999");
-    assert_eq!(date.days_since_unix_epoch(), days);
+    let date = Date::try_from_days_since_unix_epoch(days);
+    assert!(date.is_some());
+    assert_eq!(date.unwrap().days_since_unix_epoch(), days);
 }
 
 /// A time of day the constructor accepts keeps every field: hour 0–23,
@@ -80,7 +91,7 @@ fn time_of_day_keeps_valid_fields() {
     let minute: u8 = kani::any();
     let second: u8 = kani::any();
     let nanosecond: u32 = kani::any();
-    if let Ok(time) = TimeOfDay::new(hour, minute, second, nanosecond) {
+    if let Some(time) = TimeOfDay::try_new(hour, minute, second, nanosecond) {
         assert!(hour <= 23);
         assert!(minute <= 59);
         assert!(second <= 59);
@@ -103,8 +114,9 @@ fn instant_reads_back_through_utc() {
     // A year's worth of seconds around 1970: the property does not depend
     // on the year, and the full range takes longer than it is worth here.
     kani::assume((-31_536_000..=31_536_000).contains(&seconds));
-    let instant = Instant::from_unix(seconds, nanosecond)
-        .expect("a second within a year of 1970 is inside 0001–9999");
+    let instant = Instant::try_from_unix(seconds, nanosecond);
+    assert!(instant.is_some());
+    let instant = instant.unwrap();
     let utc = instant.to_utc();
     assert_eq!(Instant::from_utc(utc), instant);
     assert_eq!(
@@ -117,16 +129,15 @@ fn instant_reads_back_through_utc() {
     assert_eq!(utc.time().nanosecond(), nanosecond);
 }
 
-/// Nanoseconds since 1970-01-01 within years 0001–9999, split into whole
-/// seconds (rounded toward negative infinity, so that a time before 1970
-/// keeps its nanosecond) and the nanoseconds past them, read back as the
-/// same number.
+/// Nanoseconds since 1970-01-01, split into whole seconds (rounded toward
+/// negative infinity, so that a time before 1970 keeps its nanosecond) and
+/// the nanoseconds past them, read back as the same number. The range is
+/// [`MIN_NANOS`]–[`MAX_NANOS`], not all of years 0001–9999: see there.
 #[kani::proof]
 fn instant_nanoseconds_roundtrip() {
     let nanos: i128 = kani::any();
-    // One day either side of 1970: the split at 10^9 does not depend on the
-    // magnitude, and symbolic 128-bit division over the full range is slow.
-    kani::assume((-86_400_000_000_000..=86_400_000_000_000 + 999_999_999).contains(&nanos));
-    let instant = Instant::from_unix_nanos(nanos).expect("a day either side of 1970 is in range");
-    assert_eq!(instant.unix_nanos(), nanos);
+    kani::assume((MIN_NANOS..=MAX_NANOS).contains(&nanos));
+    let instant = Instant::try_from_unix_nanos(nanos);
+    assert!(instant.is_some());
+    assert_eq!(instant.unwrap().unix_nanos(), nanos);
 }

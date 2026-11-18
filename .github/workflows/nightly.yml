@@ -109,14 +109,14 @@ jobs:
                   install=true ;;
               esac
               case "$f" in
-                crates/rutis-cli/build.rs|crates/rutis-cli/src/*|crates/rutis-cli/Cargo.toml|crates/rutis-dylib/*|crates/rutis-dylib-meta/*|crates/rutis-dylib-launcher/*|crates/rutis-sdk/*|crates/rutis-xtask/*|tools/*dylib*|tools/build-dylib-bundle.sh|tools/test-sdk-bundle.sh|tools/lib/*|tests/dylib-fixtures/*)
+                crates/rutis-cli/build.rs|crates/rutis-cli/src/*|crates/rutis-cli/Cargo.toml|crates/rutis-abi/*|crates/rutis-dylib/*|crates/rutis-dylib-meta/*|crates/rutis-dylib-launcher/*|crates/rutis-sdk/*|crates/rutis-xtask/*|tools/*dylib*|tools/build-dylib-bundle.sh|tools/test-sdk-bundle.sh|tools/lib/*|tests/dylib-fixtures/*)
                   dylib=true ;;
               esac
               case "$f" in
                 specs/*) specs=true ;;
               esac
               case "$f" in
-                crates/rutis-sdk/*|crates/rutis-cli/build.rs|tools/test-dylib-repro.sh|tools/build-dylib-bundle.sh|tools/lib/*)
+                crates/rutis-abi/*|crates/rutis-sdk/*|crates/rutis-cli/build.rs|tools/test-dylib-repro.sh|tools/build-dylib-bundle.sh|tools/lib/*)
                   sdk_repro=true ;;
               esac
             done <<< "$changed"

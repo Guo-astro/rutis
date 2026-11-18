@@ -2,10 +2,12 @@
 
 [中文](design-service-announcement-policy-2026-11-08.md)
 
-Status: deferred, not implemented. Date: 2026-11-08.
-Issue: [#1040](https://github.com/arcships/rutis/issues/1040). This proposal is not part of 0.22. No implementation issues are being filed until a concrete requirement identifies the correct ownership layer.
+Status: superseded, implemented as a host option. Date: 2026-11-08 (superseded 2026-11-18).
+Issue: [#1040](https://github.com/arcships/rutis/issues/1040).
 
-Decision note: existing Cordis-compatible dynamic announcements remain unchanged. This proposal's host-side refusal policy is shelved because trust-boundary defense does not belong in this layer without a concrete requirement.
+Decision note: superseded on 2026-11-18. #1040 is implemented as a host option, `SpawnPlugin::undeclared` / `Session::undeclared` / `Mount::undeclared` with `UndeclaredPolicy::{Publish, Refuse, Allow}`; the default, `Publish`, is Cordis's behaviour. A refused name is not published, and its row fails naming the name and the row; there is no `HostStatus.announcements` view, and peer kernel imports are not covered (their plugins' declarations are not known here). [Build a host open to plugins](guide/open-host.en.md#3-keep-plugins-in-check) and the [guarantees](guarantees.en.md) row `loader/announced-services` are the contract. The rest of this document is the earlier deferred proposal, kept as it was.
+
+The earlier note follows: existing Cordis-compatible dynamic announcements remain unchanged; this proposal's host-side refusal policy was shelved without a concrete requirement.
 
 ## 1. Where things stand / what to solve
 

@@ -5,6 +5,13 @@ import Foundation
 // which calls the listeners here back (`events.call`).
 
 /// A listener of a row of this process.
+///
+/// `@unchecked Sendable`, and the state outside `init` is fixed but for
+/// `withdrawn`: it is only written and read while the owning `Runtime`'s
+/// `lock` is held (`withdraw`, `live`, `reserve`), and `runtime` is only
+/// ever assigned in `init` (the weak reference itself is read under that
+/// same lock in `live`). `body` is the plugin's handler; the contract has
+/// plugin code callable concurrently (design §5, "plugin requirements").
 final class LocalListener: @unchecked Sendable {
     /// Weak: an invocation queued before the runtime ended may run after
     /// it is gone, and then starts nothing.
@@ -385,22 +392,23 @@ extension Runtime {
     }
 }
 
-final class ErrorBox: @unchecked Sendable {
-    private let lock = Lock()
-    private var error: Error?
-    func set(_ value: Error) { lock.withLock { if error == nil { error = value } } }
-    func get() -> Error? { lock.withLock { error } }
+final class ErrorBox: Sendable {
+    private let error = Locked<Error?>(nil)
+    func set(_ value: Error) {
+        error.withLock { error in if error == nil { error = value } }
+    }
+
+    func get() -> Error? { error.read { $0 } }
 }
 
-final class SentBox<Sent>: @unchecked Sendable {
-    private let lock = Lock()
-    private var result: Result<Sent, Error> = .failure(RutisError.binding("not sent"))
-    func set(_ value: Result<Sent, Error>) { lock.withLock { result = value } }
-    func get() -> Result<Sent, Error> { lock.withLock { result } }
+final class SentBox<Sent>: Sendable {
+    private let result = Locked<Result<Sent, Error>>(.failure(RutisError.binding("not sent")))
+    func set(_ value: Result<Sent, Error>) { result.withLock { $0 = value } }
+    func get() -> Result<Sent, Error> { result.read { $0 } }
 }
 
 /// An event carrying an optional error.
-final class ErrorEvent: @unchecked Sendable {
+final class ErrorEvent: Sendable {
     private let event = Event()
     private let box = ErrorBox()
     func finish(_ error: Error?) {

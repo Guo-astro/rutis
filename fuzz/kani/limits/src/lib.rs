@@ -64,3 +64,18 @@ fn utf8_one_byte() {
     let bytes: [u8; 1] = kani::any();
     assert!(std::str::from_utf8(&bytes).is_ok() || std::str::from_utf8(&bytes).is_err());
 }
+
+/// Slice `==` whose length is a run-time value does not finish: it is a
+/// `memcmp` over a symbolic length, and Kani unwinds it for thousands of
+/// iterations (6,352 in 150 s on 2026-11-18; the first attempt at the boot
+/// blob's fields, a `for` over slices of different lengths, did 5,992). The
+/// proofs of the boot blob in `../src/boot.rs` compare byte by byte, with
+/// array lengths.
+#[kani::proof]
+fn slice_equality_symbolic_length() {
+    let a: [u8; 64] = kani::any();
+    let b: [u8; 64] = kani::any();
+    let len: usize = kani::any();
+    kani::assume(len <= 64);
+    assert!(a[..len] == b[..len] || a[..len] != b[..len]);
+}

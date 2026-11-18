@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Swift 6 strict concurrency in the SDK (#630): what is left, target by
-# target. Package.swift turns the checking on for `Rutis`, `RutisTest`,
-# `RutisFixturePlugins` and `RutisSelfTest`
-# (`.enableUpcomingFeature("StrictConcurrency")`); the Swift 5 language mode
-# makes every diagnostic a warning, so this is a report and not a gate. A
-# target moves to Swift 6 when its count reaches zero; the executables that
-# carry the plugins follow.
+# Swift 6 strict concurrency in the SDK (#630, #1273): what is left, target
+# by target. Package.swift is `swift-tools-version:6.0` with
+# `swiftLanguageModes: [.v6]`, so `Rutis`, `RutisTest`, `RutisFixturePlugins`
+# and `RutisSelfTest` compile in the Swift 6 language mode: every
+# strict-concurrency diagnostic is an error and fails the build, and this
+# script lists what the log has (and counts the `@unchecked Sendable`
+# declarations that say in place why they are safe).
 #
 # Usage: tools/swift-strict-concurrency.sh
 #            build the four targets in a build path of its own (every file
@@ -76,10 +76,12 @@ fi
 
 # Only the target's own diagnostics: SwiftPM points at files by an absolute
 # or a relative path, and the lines of a diagnostic's source excerpt and
-# notes start with a space.
+# notes start with a space. In the Swift 6 language mode a diagnostic is an
+# error, and GitHub Actions makes swiftc write color and hyperlink escapes
+# around "error:"; both are stripped before the match.
 diagnostics_of() {
-  grep -E ':[0-9]+:[0-9]+: warning: ' "$log" \
-    | grep -v '^[[:space:]]' \
+  perl -pe 's/\e\[[0-9;]*m//g; s/\e\]8;;[^\e]*\e\\//g' "$log" \
+    | grep -E ':[0-9]+:[0-9]+: (warning|error): ' \
     | grep -F "$1/" \
     | grep -Ei 'sendable|actor|isolat|concurren|data race' \
     | LC_ALL=C sort -u || true
@@ -89,10 +91,11 @@ count_lines() {
   if [ -s "$1" ]; then wc -l < "$1" | tr -d ' '; else echo 0; fi
 }
 
-# `@unchecked Sendable` is how the code says "trust me" today: each one is
-# still to be removed or replaced by a real isolation.
+# `@unchecked Sendable` is where the compiler cannot see the isolation: each
+# one says in place why it is safe. The count is of declarations; the notes
+# around them name the word too.
 annotations() {
-  find "$1" -name '*.swift' -exec grep -o '@unchecked Sendable' {} + 2>/dev/null \
+  find "$1" -name '*.swift' -exec grep -oE '[:,] @unchecked Sendable' {} + 2>/dev/null \
     | wc -l | tr -d ' '
 }
 annotations_sdk="$(annotations swift/rutis)"
@@ -119,7 +122,7 @@ for entry in "${targets[@]}"; do
     counts="$counts, $target $count"
   fi
   if [ "$count" -gt 0 ]; then
-    by_file="$(sed -E "s#^.*${dir}/([^:]+):[0-9]+:[0-9]+: warning:.*#\1#" "$list" \
+    by_file="$(sed -E "s#^.*${dir}/([^:]+):[0-9]+:[0-9]+: (warning|error):.*#\1#" "$list" \
       | LC_ALL=C sort | uniq -c | sort -rn)"
     if [ -n "$detail" ]; then detail="$detail"$'\n\n'; fi
     detail="$detail\`$target\` ($count):"$'\n\n'"$by_file"
@@ -138,12 +141,13 @@ table() {
 
 mkdir -p "$(dirname "$report")"
 {
-  echo "# Swift strict concurrency (#630)"
+  echo "# Swift strict concurrency (#630, #1273)"
   echo
-  echo '`Package.swift` turns it on for the targets `Rutis`, `RutisTest`,'
-  echo '`RutisFixturePlugins` and `RutisSelfTest`'
-  echo '(`.enableUpcomingFeature("StrictConcurrency")`) in the Swift 5'
-  echo 'language mode: every diagnostic is a warning and the build passes.'
+  echo '`Package.swift` is `swift-tools-version:6.0` with '
+  echo '`swiftLanguageModes: [.v6]`: the targets `Rutis`, `RutisTest`,'
+  echo '`RutisFixturePlugins` and `RutisSelfTest` compile in the Swift 6'
+  echo 'language mode, where every strict-concurrency diagnostic is an error'
+  echo 'and fails the build.'
   echo
   table
   echo

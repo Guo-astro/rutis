@@ -245,7 +245,9 @@ pub fn row_projection_with(
 /// without declaring it, with the methods its current object has. Each is
 /// published from the context the projection is attached to: a name that
 /// context isolates is published in that isolate only. A service another provider has already is refused as
-/// the later one, naming both ([`Projection::take_refused`]).
+/// the later one, naming both ([`Projection::take_refused`]), and so is one
+/// the host's [`UndeclaredPolicy`](crate::runtime::UndeclaredPolicy) refuses
+/// ([`Mount::undeclared`](crate::runtime::Mount::undeclared)).
 pub fn row_projection_of(
     provider: &str,
     provides: &Map<String, Value>,

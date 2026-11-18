@@ -2,10 +2,12 @@
 
 [English](design-service-announcement-policy-2026-11-08.en.md)
 
-Status：延期，尚未实现。日期：2026-11-08。
-Issue：[ #1040 ](https://github.com/arcships/rutis/issues/1040)。本提案不属于 0.22。在有明确需求确认责任层次前，不创建实施 issue。
+Status：已被取代，作为宿主选项实现。日期：2026-11-08（2026-11-18 被取代）。
+Issue：[ #1040 ](https://github.com/arcships/rutis/issues/1040)。
 
-决定说明：现有 Cordis 兼容动态公告保持不变。本提案的宿主侧拒绝策略暂缓，因为没有明确需求时，信任边界防御不应由这一层负责。
+决定说明：2026-11-18 被取代。#1040 作为宿主选项实现：`SpawnPlugin::undeclared` / `Session::undeclared` / `Mount::undeclared` 接受 `UndeclaredPolicy::{Publish, Refuse, Allow}`；默认 `Publish`，与 Cordis 一致。被拒绝的名字不发布，它所在的行失败并写明名字和行；没有 `HostStatus.announcements` 视图，对端内核的导入也不覆盖（这里不知道对端插件的声明）。[做一个开放插件的宿主](guide/open-host.md#3-管住插件) 和 [保证清单](guarantees.md) 的 `loader/announced-services` 一行是契约。本文其余部分保留原延期提案的原样。
+
+原说明：现有 Cordis 兼容动态公告保持不变；本提案的宿主侧拒绝策略在没有明确需求时暂缓。
 
 ## 1. 现状与要解决的问题
 

@@ -324,15 +324,20 @@ final class ParticipantRow: @unchecked Sendable {
             }
         }
         guard let cancel else { return try await run() }
-        // The emitter gives up once that listener started.
-        let task = Task { try await run() }
+        // The emitter gives up once that listener started; `run` is
+        // captured by this one task only (`Transferred`).
+        let handed = Transferred(run)
+        // The result is `Any?`, which is not `Sendable`: the task carries
+        // the value in a `Transferred` box, and only the emitter's task
+        // reads it back.
+        let task = Task { Transferred(try await handed.value()) }
         let watcher = Task {
             try await self.waitFor(cancel)
             task.cancel()
         }
         defer { watcher.cancel() }
         return try await withTaskCancellationHandler {
-            try await task.value
+            try await task.value.value
         } onCancel: {
             task.cancel()
         }

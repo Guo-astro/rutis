@@ -36,6 +36,11 @@ func heartbeat() -> (ping: Double, timeout: Double) {
 
 /// A connected NWConnection as a blocking byte stream: the session reads
 /// on its own thread.
+///
+/// `@unchecked Sendable`: `connection` is a `Sendable` `NWConnection` fixed
+/// at init; `buffer`, `ended` and `finished` are read and written only under
+/// `lock` (the `receive` callback takes it, the reader loops on it), and
+/// `fill` waits on a semaphore outside it.
 final class ByteStream: @unchecked Sendable {
     let connection: NWConnection
     private let lock = Lock()
@@ -121,6 +126,11 @@ final class ByteStream: @unchecked Sendable {
 
 /// A WebSocket connection: accepted by a listener, or (`client`) dialed; a
 /// client masks what it sends.
+///
+/// `@unchecked Sendable`: `stream`, `client` and `heart` are fixed at init;
+/// `writeLock` serializes complete frames; `stateLock` guards `shut`,
+/// `lastSeen`, `beating` and `farClose` (the heartbeat's timer handler takes
+/// it too, and `heart?.cancel()` is itself thread-safe).
 final class WebSocket: Channel, @unchecked Sendable {
     private let stream: ByteStream
     private let client: Bool

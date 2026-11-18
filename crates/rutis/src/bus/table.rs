@@ -9,7 +9,7 @@ use crate::ctx::Ctx;
 use crate::events::{
     ErasedAsync, ErasedSync, ListenerInfo, ListenerKind, RemoteListener, TableEntry,
 };
-use crate::fiber::FiberInner;
+use crate::fiber::Owner;
 
 pub(crate) enum Body {
     Async(Arc<dyn ErasedAsync>),
@@ -44,7 +44,13 @@ pub(crate) struct Entry {
     pub body: Body,
     /// The registering context: what a Rust listener is called with.
     pub ctx: Ctx,
-    pub owner: Weak<FiberInner>,
+    /// The listener state of the registering fiber and the calls its unload
+    /// waits for (#1126): a call reads it directly, without upgrading a
+    /// `Weak` to the fiber, which was a read-modify-write on the fiber's
+    /// strong count for every call. The registering fiber itself is the one
+    /// `ctx` belongs to ([`Ctx::weak_fiber`]), for what asks who owns the
+    /// entry; no call takes that path.
+    pub owner: Arc<Owner>,
     pub generation: u64,
     pub withdrawn: AtomicBool,
     /// A `once` entry's first call started ([`super::EventBus::start`]).
@@ -81,17 +87,12 @@ impl Entry {
     /// is gone (#1025), because a subtree shutdown marks every member's
     /// lineage before it publishes any `closing` flag, so reading the owner's
     /// own markers is equivalent and does not touch the parent chain on every
-    /// call.
+    /// call. The owner is one field of the entry (#1126): no upgrade, and a
+    /// fiber that is gone (`FiberInner::drop`) clears its own `alive` bit.
+    ///
+    /// One `withdrawn` load, then one state-word load.
     pub fn live(&self) -> bool {
-        self.owner
-            .upgrade()
-            .is_some_and(|owner| self.admitted_by(&owner))
-    }
-
-    /// [`live`](Self::live) with the owner already upgraded: one `withdrawn`
-    /// load, then one state-word load.
-    pub fn admitted_by(&self, owner: &FiberInner) -> bool {
-        !self.withdrawn.load(Ordering::SeqCst) && owner.state.admits(self.generation)
+        !self.withdrawn.load(Ordering::SeqCst) && self.owner.state.admits(self.generation)
     }
 
     /// Begin one call, counted on the owner (its unload waits for it, §7.1):
@@ -101,8 +102,8 @@ impl Entry {
     /// ([`DispatchFlight`]). Through [`super::EventBus::start`], which claims
     /// a `once` entry.
     pub fn start(&self) -> Option<CallFlight> {
-        let flight = CallFlight::begin(self.owner.upgrade()?);
-        if !self.admitted_by(flight.owner()) {
+        let flight = CallFlight::begin(self.owner.clone());
+        if !self.live() {
             return None;
         }
         Some(flight)
@@ -110,17 +111,13 @@ impl Entry {
 }
 
 /// One running call, counted on its owner fiber.
-pub(crate) struct CallFlight(Arc<FiberInner>);
+pub(crate) struct CallFlight(Arc<Owner>);
 
 impl CallFlight {
     /// Count a call on `owner`; check its liveness after this.
-    pub fn begin(owner: Arc<FiberInner>) -> Self {
+    pub fn begin(owner: Arc<Owner>) -> Self {
         owner.begin_event();
         Self(owner)
-    }
-
-    pub fn owner(&self) -> &Arc<FiberInner> {
-        &self.0
     }
 }
 
@@ -139,14 +136,18 @@ impl Drop for CallFlight {
 /// all, so the wait is per dispatch and owner rather than per callback. It
 /// ends no earlier than the last call it covers, because the guard lives to
 /// the end of the dispatch.
-pub(crate) struct DispatchFlight {
+pub(crate) struct DispatchFlight<'a> {
     /// This dispatch's id ([`super::EventBus::dispatch_id`]): an owner it
     /// already counted is not counted again.
     dispatch: u64,
-    owners: Vec<Arc<FiberInner>>,
+    /// The owners counted, borrowed from the entries the dispatch calls: the
+    /// entries outlive the flight, so the list is pointers, not `Arc`s, and a
+    /// dispatch that calls one listener of an owner adds nothing to the
+    /// owner's strong count (#1126).
+    owners: Vec<&'a Owner>,
 }
 
-impl DispatchFlight {
+impl<'a> DispatchFlight<'a> {
     /// A dispatch over `entries` listeners: at most that many owners, since
     /// each is counted once.
     pub fn new(dispatch: u64, entries: usize) -> Self {
@@ -159,10 +160,8 @@ impl DispatchFlight {
     /// `true` when `entry` may be called: the owner is counted for this
     /// dispatch, and its state word admits the entry's generation. `false`:
     /// the entry is skipped, and nothing stays counted for it.
-    pub fn admit(&mut self, entry: &Entry) -> bool {
-        let Some(owner) = entry.owner.upgrade() else {
-            return false;
-        };
+    pub fn admit(&mut self, entry: &'a Entry) -> bool {
+        let owner = &*entry.owner;
         // Count before the state is read: an unload's wait that did not see
         // this count must see the word the read below returns
         // ([`OwnerState`]'s note). A skip refunds it, so what stays counted is
@@ -172,7 +171,7 @@ impl DispatchFlight {
             owner.begin_event();
             owner.counted_by.store(self.dispatch, Ordering::Relaxed);
         }
-        if entry.admitted_by(&owner) {
+        if entry.live() {
             if counted {
                 self.owners.push(owner);
             }
@@ -190,7 +189,7 @@ impl DispatchFlight {
     }
 }
 
-impl Drop for DispatchFlight {
+impl Drop for DispatchFlight<'_> {
     fn drop(&mut self) {
         for owner in self.owners.drain(..) {
             owner.finish_event();

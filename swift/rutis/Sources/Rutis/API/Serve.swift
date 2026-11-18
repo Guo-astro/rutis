@@ -255,7 +255,11 @@ extension Rutis.Advanced {
     }
 }
 
-final class ResultEvent: @unchecked Sendable {
+/// A one-shot result a thread can block on.
+///
+/// `Sendable` without an escape hatch: a `DispatchSemaphore` (which is
+/// thread-safe) and an `ErrorBox`.
+final class ResultEvent: Sendable {
     private let semaphore = DispatchSemaphore(value: 0)
     private let box = ErrorBox()
 
@@ -272,20 +276,25 @@ final class ResultEvent: @unchecked Sendable {
 
 /// The plugins a runtime serves when they are added while it runs, by the
 /// name its rows give them (`Rutis.serveShelf`).
+///
+/// `@unchecked Sendable`: `plugins` is only read and written under `lock`;
+/// `runtime` is assigned once, before the session that serves the shelf
+/// starts reading rows from it (`Rutis.serveShelf`), and only read after;
+/// the weak reference is therefore never written while another task reads
+/// it.
 package final class Shelf: @unchecked Sendable {
-    private let lock = Lock()
-    private var plugins: [String: Rutis.Definition] = [:]
+    private let plugins = Locked<[String: Rutis.Definition]>([:])
     /// The runtime serving it, once it serves.
     weak var runtime: Runtime?
 
     package init() {}
 
     /// Serves `definition` as `entry` from now on.
-    package func put(_ entry: String, _ definition: Rutis.Definition) { lock.withLock { plugins[entry] = definition } }
+    package func put(_ entry: String, _ definition: Rutis.Definition) { plugins.withLock { $0[entry] = definition } }
 
-    package func remove(_ entry: String) { lock.withLock { plugins[entry] = nil } }
+    package func remove(_ entry: String) { plugins.withLock { $0[entry] = nil } }
 
-    package func get(_ entry: String) -> Rutis.Definition? { lock.withLock { plugins[entry] } }
+    package func get(_ entry: String) -> Rutis.Definition? { plugins.read { $0[entry] } }
 
     /// Whether the row `id` has loaded: its plugin applied.
     package func loaded(_ id: String) -> Bool {

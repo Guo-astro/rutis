@@ -1,6 +1,7 @@
 use crate::pipe::Stdio;
 use crate::runtime::rpc::{Connection, Dispatch, Reply, Value as RpcValue};
 use crate::runtime::Error;
+use crate::runtime::UndeclaredPolicy;
 use crate::runtime::{CallerRow, Carried, HostDispatch};
 use rutis::host::CtxHost;
 use serde_json::{json, Value};
@@ -27,6 +28,14 @@ pub trait ServiceEvents: Send + Sync + 'static {
     fn announced(&self, name: &str, methods: &Value) -> bool {
         let _ = (name, methods);
         false
+    }
+
+    /// The host's [`UndeclaredPolicy`] refused `name`, which the row
+    /// announced without declaring it: why the row fails. Nothing was
+    /// published, and the object goes back to the runtime. The default
+    /// does nothing (a host without a policy).
+    fn refused(&self, name: &str, why: String) {
+        let _ = (name, why);
     }
 }
 
@@ -135,6 +144,9 @@ struct Imports {
     /// The process these calls come from, set once it is up: a plugin
     /// definition passed in a call is that process's (see [`calling`]).
     process: std::sync::OnceLock<std::sync::Weak<Process>>,
+    /// What the host does with the services rows provide without declaring
+    /// them ([`UndeclaredPolicy`]).
+    undeclared: UndeclaredPolicy,
 }
 
 std::thread_local! {
@@ -209,6 +221,11 @@ pub struct Mount<'a> {
     /// One that has not greeted in time fails the mount: its process is
     /// ended, and the error says it started but did not greet (#985).
     pub greeting: Option<std::time::Duration>,
+    /// What the host does with the services rows provide without declaring
+    /// them ([`UndeclaredPolicy`]): [`UndeclaredPolicy::Publish`], as Cordis
+    /// does, unless set. A refused name is not published and its row fails
+    /// (#1040).
+    pub undeclared: UndeclaredPolicy,
 }
 
 /// The Cordis runtime of the npm package `package` (`node/rutis-runtime`,
@@ -417,7 +434,9 @@ impl Imports {
     }
 
     /// Row `row` announces the slot `id`, which it did not declare, with
-    /// `methods`: whether its observer follows it from now on.
+    /// `methods`: whether its observer follows it from now on. A name the
+    /// host's [`UndeclaredPolicy`] refuses is not followed: the observer is
+    /// told why, so its row fails, and the object goes back.
     fn announce(&self, row: &str, id: &str, methods: &Value) -> bool {
         let observer = {
             let rows = self.rows.lock().unwrap();
@@ -427,13 +446,16 @@ impl Imports {
                 None => return false,
             }
         };
+        let name = name_of(id);
+        if !self.permits_undeclared(row, name, &observer) {
+            return false;
+        }
         if let Some((_, current)) = self.exported.lock().unwrap().get(id) {
             // Another row's: the runtime exports a slot once.
             if !Arc::ptr_eq(current, &observer) {
                 return false;
             }
         }
-        let name = name_of(id);
         if !observer.announced(name, methods) {
             return false;
         }
@@ -447,6 +469,26 @@ impl Imports {
             exports.ids.push(id.to_owned());
         }
         true
+    }
+
+    /// Whether the host's [`UndeclaredPolicy`] permits `name`, which row
+    /// `row` announced without declaring it. When it does not, the observer
+    /// is told why (its row fails) and nothing is followed.
+    fn permits_undeclared(&self, row: &str, name: &str, observer: &Arc<dyn ServiceEvents>) -> bool {
+        let id = self
+            .names
+            .lock()
+            .unwrap()
+            .get(row)
+            .cloned()
+            .unwrap_or_else(|| row.to_owned());
+        match self.undeclared.refusal(&id, name) {
+            None => true,
+            Some(why) => {
+                observer.refused(name, why);
+                false
+            }
+        }
     }
 
     /// The slot `id` now holds `handle`.
@@ -640,6 +682,7 @@ struct Started {
     provided: serde_json::Map<String, Value>,
     ctx: Option<rutis::Ctx>,
     runtime: Option<String>,
+    undeclared: UndeclaredPolicy,
 }
 
 impl Started {
@@ -655,6 +698,7 @@ impl Started {
             anchor: _,
             launcher: _,
             greeting: _,
+            undeclared,
         } = mount;
         let provided = hosts
             .iter()
@@ -682,6 +726,7 @@ impl Started {
             provided,
             ctx,
             runtime,
+            undeclared,
         };
         (started, plugins)
     }
@@ -900,6 +945,7 @@ impl Process {
             provided,
             ctx,
             runtime,
+            undeclared,
         } = started;
         let plugins: Vec<Value> = plugins
             .iter()
@@ -916,6 +962,7 @@ impl Process {
             ended: Mutex::default(),
             failed: Mutex::default(),
             process: std::sync::OnceLock::new(),
+            undeclared,
         });
         let rest = MountRest {
             plugins,
@@ -1494,6 +1541,13 @@ impl Process {
             .is_some_and(|features| features.iter().any(|f| f == feature))
     }
 
+    /// What the host does with the services rows provide without declaring
+    /// them ([`UndeclaredPolicy`]): the mount's, or from the session this
+    /// process runs on.
+    pub fn undeclared(&self) -> &UndeclaredPolicy {
+        &self.imports.undeclared
+    }
+
     /// Lease the host service `name` for a row: the first lease registers
     /// it with the Node side (methods from `methods`, else from
     /// [`HostDispatch::methods`]); the last one released withdraws it. A
@@ -1789,6 +1843,7 @@ impl Process {
             failed: Mutex::default(),
             names: Mutex::default(),
             process: std::sync::OnceLock::new(),
+            undeclared: UndeclaredPolicy::default(),
         };
         let process = Arc::new(Self {
             peer: Connection::inert(executor.clone()),
@@ -1960,6 +2015,7 @@ mod tests {
             ended: Mutex::default(),
             failed: Mutex::default(),
             process: std::sync::OnceLock::new(),
+            undeclared: UndeclaredPolicy::default(),
         }
     }
 

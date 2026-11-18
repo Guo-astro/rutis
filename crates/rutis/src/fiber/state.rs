@@ -1,5 +1,5 @@
-//! A fiber's listener state in one word, and the calls an unload waits for
-//! (#1125).
+//! A fiber's listener state in one word, the calls an unload waits for
+//! (#1125), and the object a listener call reaches them through (#1126).
 
 use std::sync::atomic::Ordering;
 
@@ -219,6 +219,54 @@ impl EventFlights {
     }
 }
 
+/// Everything a listener call asks of the fiber that registered it, in one
+/// object of its own (#1126).
+///
+/// An entry holds an `Arc<Owner>`, not a `Weak` to the fiber: a call reaches
+/// the state word and the count it is added to without a `Weak::upgrade` (a
+/// read-modify-write on the fiber's strong count for every call), and without
+/// touching the fiber itself, whose other fields a call never needs. The three
+/// fields a call uses are the first three of the struct, so they land in one
+/// cache line.
+///
+/// The fiber holds the other `Arc<Owner>`; nothing holds the fiber from here,
+/// so the two do not form a cycle.
+///
+/// `repr(align(64))`: the three fields a call reads are the first three of the
+/// struct, and aligning the object makes them the first cache line of it
+/// rather than whichever line a 16-byte-aligned `Arc` header left them in.
+/// The object is 64 bytes either way; the alignment costs one 64-byte block
+/// per fiber.
+#[repr(align(64))]
+pub(crate) struct Owner {
+    /// Alive, closing, lineage closed, and the generation whose listeners are
+    /// live, in one word ([`OwnerState`]).
+    pub state: OwnerState,
+    /// The dispatch that last counted a flight on this owner (#1125).
+    pub counted_by: AtomicU64,
+    /// The calls started on this owner and not finished yet, which its unload
+    /// waits for ([`EventFlights`]).
+    pub flights: EventFlights,
+}
+
+impl Owner {
+    pub fn new(alive: bool, lineage_closed: bool, live: u64) -> Self {
+        Self {
+            state: OwnerState::new(alive, lineage_closed, live),
+            counted_by: AtomicU64::new(0),
+            flights: EventFlights::new(),
+        }
+    }
+
+    pub fn begin_event(&self) {
+        self.flights.begin();
+    }
+
+    pub fn finish_event(&self) {
+        self.flights.finish();
+    }
+}
+
 /// One waiter registered on [`EventFlights::waiting`].
 struct Waiting<'a>(&'a AtomicUsize);
 
@@ -262,5 +310,19 @@ mod tests {
     fn a_closed_fiber_starts_closed() {
         let state = OwnerState::new(false, true, NOT_LIVE);
         assert!(!state.admits(0));
+    }
+
+    #[test]
+    fn owner_counts_and_state_are_one_object() {
+        let owner = Owner::new(true, false, 4);
+        assert!(owner.state.admits(4));
+        owner.begin_event();
+        owner.counted_by.store(7, Ordering::Relaxed);
+        assert_eq!(owner.flights.count(), 1);
+        assert_eq!(owner.counted_by.load(Ordering::Relaxed), 7);
+        owner.finish_event();
+        assert_eq!(owner.flights.count(), 0);
+        owner.state.publish_closing();
+        assert!(!owner.state.admits(4));
     }
 }

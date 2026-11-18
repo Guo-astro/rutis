@@ -117,21 +117,30 @@ func caCertificates(_ path: String) throws -> [SecCertificate] {
 }
 
 /// A dialed WebSocket: URLSession's task as the session's channel.
+///
+/// `@unchecked Sendable`: `task`, `session`, `host`, `anchors` and
+/// `closeCode` are fixed at init; `lock` guards `pending` and `untrusted`,
+/// which the task's delegate callbacks (on URLSession's queue) and the
+/// reading thread both touch. The heartbeat is a `Sendable` timer, and the
+/// counters are one `Locked` state.
 final class DialedSocket: NSObject, Channel, URLSessionWebSocketDelegate, @unchecked Sendable {
     /// What dialed sockets hold that their `close()` lets go: URLSessions
     /// not yet invalidated (each holds its socket as its delegate) and
     /// heartbeat timers running. A stopped app leaves none (#542).
-    final class Live: @unchecked Sendable {
-        private let lock = Lock()
-        private var sessionCount = 0
-        private var heartbeatCount = 0
+    final class Live: Sendable {
+        private struct Counts {
+            var sessions = 0
+            var heartbeats = 0
+        }
 
-        var sessions: Int { lock.withLock { sessionCount } }
-        var heartbeats: Int { lock.withLock { heartbeatCount } }
-        fileprivate func sessionCreated() { lock.withLock { sessionCount += 1 } }
-        fileprivate func sessionInvalidated() { lock.withLock { sessionCount -= 1 } }
-        fileprivate func heartbeatStarted() { lock.withLock { heartbeatCount += 1 } }
-        fileprivate func heartbeatStopped() { lock.withLock { heartbeatCount -= 1 } }
+        private let counts = Locked(Counts())
+
+        var sessions: Int { counts.read { $0.sessions } }
+        var heartbeats: Int { counts.read { $0.heartbeats } }
+        fileprivate func sessionCreated() { counts.withLock { $0.sessions += 1 } }
+        fileprivate func sessionInvalidated() { counts.withLock { $0.sessions -= 1 } }
+        fileprivate func heartbeatStarted() { counts.withLock { $0.heartbeats += 1 } }
+        fileprivate func heartbeatStopped() { counts.withLock { $0.heartbeats -= 1 } }
     }
 
     static let live = Live()
@@ -320,14 +329,14 @@ final class DialedSocket: NSObject, Channel, URLSessionWebSocketDelegate, @unche
 
     func receive() throws -> [UInt8]? {
         let done = DispatchSemaphore(value: 0)
-        var result: Result<URLSessionWebSocketTask.Message, Error>!
+        let result = SentBox<URLSessionWebSocketTask.Message>()
         task.receive { received in
-            result = received
+            result.set(received)
             done.signal()
         }
         done.wait()
         lock.withLock { lastSeen = Date() }
-        switch result! {
+        switch try result.get() {
         case let .success(.string(text)):
             return Array(text.utf8)
         case .success(.data):
@@ -369,19 +378,25 @@ final class DialedSocket: NSObject, Channel, URLSessionWebSocketDelegate, @unche
 }
 
 /// Becomes true once, when the runtime is told to stop; tasks wait for it.
-final class StopSignal: @unchecked Sendable {
-    private let lock = Lock()
-    private var stopped = false
-    private var waiters: [UUID: CheckedContinuation<Void, Never>] = [:]
+///
+/// `Sendable` without an escape hatch: the flag and the waiters are one
+/// `Locked` state.
+final class StopSignal: Sendable {
+    private struct State {
+        var stopped = false
+        var waiters: [UUID: CheckedContinuation<Void, Never>] = [:]
+    }
 
-    var isStopped: Bool { lock.withLock { stopped } }
+    private let state = Locked(State())
+
+    var isStopped: Bool { state.read { $0.stopped } }
 
     func stop() {
-        let waiting: [CheckedContinuation<Void, Never>] = lock.withLock {
-            if stopped { return [] }
-            stopped = true
-            defer { waiters = [:] }
-            return Array(waiters.values)
+        let waiting: [CheckedContinuation<Void, Never>] = state.withLock { state in
+            guard !state.stopped else { return [] }
+            state.stopped = true
+            defer { state.waiters = [:] }
+            return Array(state.waiters.values)
         }
         for waiter in waiting { waiter.resume() }
     }
@@ -391,15 +406,15 @@ final class StopSignal: @unchecked Sendable {
         let id = UUID()
         await withTaskCancellationHandler {
             await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-                let now = lock.withLock { () -> Bool in
-                    if stopped || Task.isCancelled { return true }
-                    waiters[id] = continuation
+                let now = state.withLock { state -> Bool in
+                    if state.stopped || Task.isCancelled { return true }
+                    state.waiters[id] = continuation
                     return false
                 }
                 if now { continuation.resume() }
             }
         } onCancel: {
-            lock.withLock { waiters.removeValue(forKey: id) }?.resume()
+            state.withLock { $0.waiters.removeValue(forKey: id) }?.resume()
         }
     }
 
@@ -410,17 +425,15 @@ final class StopSignal: @unchecked Sendable {
     func race<T: Sendable>(_ operation: @escaping @Sendable () async throws -> T,
                            discard: @escaping @Sendable (T) -> Void = { _ in }) async throws -> T?
     {
-        let decided = Lock()
-        var done = false
+        let decided = Locked(false)
         func first() -> Bool {
-            decided.withLock {
+            decided.withLock { done in
                 defer { done = true }
                 return !done
             }
         }
         return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<T?, Error>) in
-            let tasks = Lock()
-            var other: Task<Void, Never>?
+            let other = Locked<Task<Void, Never>?>(nil)
             let work = Task {
                 let result: Result<T, Error>
                 do { result = .success(try await operation()) } catch { result = .failure(error) }
@@ -428,7 +441,7 @@ final class StopSignal: @unchecked Sendable {
                     if case let .success(value) = result { discard(value) }
                     return
                 }
-                tasks.withLock { other }?.cancel()
+                other.withLock { $0 }?.cancel()
                 continuation.resume(with: result.map { Optional($0) })
             }
             let stopped = Task {
@@ -437,8 +450,8 @@ final class StopSignal: @unchecked Sendable {
                 work.cancel()
                 continuation.resume(returning: nil)
             }
-            tasks.withLock { other = stopped }
-            if decided.withLock({ done }) { stopped.cancel() }
+            other.withLock { $0 = stopped }
+            if decided.read({ $0 }) { stopped.cancel() }
         }
     }
 }

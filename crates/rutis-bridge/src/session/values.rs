@@ -216,16 +216,25 @@ pub struct Date {
 impl Date {
     /// The date `year-month-day`, if it exists and the year is 1–9999.
     pub fn new(year: u16, month: u8, day: u8) -> Result<Self, Error> {
+        Self::try_new(year, month, day).ok_or_else(|| {
+            Error::value(format!(
+                "invalid date {year:04}-{month:02}-{day:02}: no such day in years 0001–9999"
+            ))
+        })
+    }
+    /// The date `year-month-day`, if it exists and the year is 1–9999: the
+    /// check [`Date::new`] builds its error message from, without the message.
+    /// Keep the two in step; Kani proves this one, not the message (#1271),
+    /// because a message with arguments is out of its reach.
+    pub fn try_new(year: u16, month: u8, day: u8) -> Option<Self> {
         if !(1..=9999).contains(&year)
             || !(1..=12).contains(&month)
             || day == 0
             || day > days_in_month(year, month)
         {
-            return Err(Error::value(format!(
-                "invalid date {year:04}-{month:02}-{day:02}: no such day in years 0001–9999"
-            )));
+            return None;
         }
-        Ok(Self { year, month, day })
+        Some(Self { year, month, day })
     }
     pub fn year(&self) -> u16 {
         self.year
@@ -244,17 +253,19 @@ impl Date {
     }
     /// The date `days` after 1970-01-01, if its year is 1–9999.
     pub fn from_days_since_unix_epoch(days: i64) -> Result<Self, Error> {
+        Self::try_from_days_since_unix_epoch(days)
+            .ok_or_else(|| Error::value(format!("{days} days from 1970 leave years 0001–9999")))
+    }
+    /// The date `days` after 1970-01-01, if its year is 1–9999: the check
+    /// [`Date::from_days_since_unix_epoch`] builds its error message from.
+    pub fn try_from_days_since_unix_epoch(days: i64) -> Option<Self> {
         // 0001-01-01 and 9999-12-31: checked first, so the arithmetic
         // below never overflows.
         if !(-719_162..=2_932_896).contains(&days) {
-            return Err(Error::value(format!(
-                "{days} days from 1970 leave years 0001–9999"
-            )));
+            return None;
         }
         let (year, month, day) = civil_from_days(days);
-        u16::try_from(year)
-            .map_err(|_| Error::value(format!("{days} days from 1970 leave years 0001–9999")))
-            .and_then(|year| Self::new(year, month, day))
+        Self::try_new(u16::try_from(year).ok()?, month, day)
     }
 }
 
@@ -289,12 +300,19 @@ impl TimeOfDay {
     /// `hour:minute:second` and `nanosecond` (below 10^9); 24-hour, no
     /// leap second.
     pub fn new(hour: u8, minute: u8, second: u8, nanosecond: u32) -> Result<Self, Error> {
-        if hour > 23 || minute > 59 || second > 59 || nanosecond >= 1_000_000_000 {
-            return Err(Error::value(format!(
+        Self::try_new(hour, minute, second, nanosecond).ok_or_else(|| {
+            Error::value(format!(
                 "invalid time {hour:02}:{minute:02}:{second:02} (+{nanosecond} ns)"
-            )));
+            ))
+        })
+    }
+    /// The time of day, if its fields are in range: the check
+    /// [`TimeOfDay::new`] builds its error message from.
+    pub fn try_new(hour: u8, minute: u8, second: u8, nanosecond: u32) -> Option<Self> {
+        if hour > 23 || minute > 59 || second > 59 || nanosecond >= 1_000_000_000 {
+            return None;
         }
-        Ok(Self {
+        Some(Self {
             hour,
             minute,
             second,
@@ -415,23 +433,35 @@ impl Instant {
     /// `seconds` since 1970-01-01T00:00:00Z (negative before) plus
     /// `nanosecond` (below 10^9), if within years 0001–9999.
     pub fn from_unix(seconds: i64, nanosecond: u32) -> Result<Self, Error> {
+        Self::try_from_unix(seconds, nanosecond).ok_or_else(|| {
+            Error::value(format!(
+                "instant {seconds} s + {nanosecond} ns since 1970 is outside years 0001–9999"
+            ))
+        })
+    }
+    /// The instant, if within years 0001–9999: the check
+    /// [`Instant::from_unix`] builds its error message from.
+    pub fn try_from_unix(seconds: i64, nanosecond: u32) -> Option<Self> {
         if !(Self::MIN_SECONDS..=Self::MAX_SECONDS).contains(&seconds)
             || nanosecond >= 1_000_000_000
         {
-            return Err(Error::value(format!(
-                "instant {seconds} s + {nanosecond} ns since 1970 is outside years 0001–9999"
-            )));
+            return None;
         }
-        Ok(Self {
+        Some(Self {
             seconds,
             nanosecond,
         })
     }
     /// Nanoseconds since 1970-01-01T00:00:00Z.
     pub fn from_unix_nanos(nanos: i128) -> Result<Self, Error> {
-        let seconds = i64::try_from(nanos.div_euclid(1_000_000_000))
-            .map_err(|_| Error::value(format!("instant {nanos} ns is outside years 0001–9999")))?;
-        Self::from_unix(seconds, nanos.rem_euclid(1_000_000_000) as u32)
+        Self::try_from_unix_nanos(nanos)
+            .ok_or_else(|| Error::value(format!("instant {nanos} ns is outside years 0001–9999")))
+    }
+    /// Nanoseconds since 1970-01-01T00:00:00Z, if within years 0001–9999:
+    /// the check [`Instant::from_unix_nanos`] builds its error message from.
+    pub fn try_from_unix_nanos(nanos: i128) -> Option<Self> {
+        let seconds = i64::try_from(nanos.div_euclid(1_000_000_000)).ok()?;
+        Self::try_from_unix(seconds, nanos.rem_euclid(1_000_000_000) as u32)
     }
     /// Whole seconds since 1970-01-01T00:00:00Z, rounded toward negative
     /// infinity.
@@ -449,8 +479,12 @@ impl Instant {
     pub fn to_utc(&self) -> DateTime {
         let days = self.seconds.div_euclid(SECONDS_PER_DAY);
         let second = self.seconds.rem_euclid(SECONDS_PER_DAY);
-        let date = Date::from_days_since_unix_epoch(days).expect("an instant is within range");
-        let time = TimeOfDay::new(
+        // An `Instant` is within years 0001–9999 by construction, so the
+        // checks hold: build it from the predicates, not from the
+        // constructors, whose error messages format the symbolic fields
+        // (Kani could not prove this through them, #1271).
+        let date = Date::try_from_days_since_unix_epoch(days).expect("an instant is within range");
+        let time = TimeOfDay::try_new(
             (second / 3600) as u8,
             (second % 3600 / 60) as u8,
             (second % 60) as u8,
@@ -1015,6 +1049,112 @@ mod tests {
         assert_eq!(instant.to_system_time(), Some(before));
         let utc = instant.to_utc();
         assert_eq!(Instant::from_utc(utc), instant);
+    }
+
+    /// A constructor accepts exactly what its predicate accepts, and rejects
+    /// with the message it always had: the predicate is what Kani proves
+    /// (#1271), the constructor adds the message.
+    #[test]
+    fn constructors_accept_what_the_predicates_accept() {
+        for year in [0, 1, 4, 1900, 2000, 2026, 9999, 10_000] {
+            for month in [0, 1, 2, 4, 12, 13, u8::MAX] {
+                for day in [0, 1, 28, 29, 30, 31, 32] {
+                    assert_eq!(
+                        Date::new(year, month, day).ok(),
+                        Date::try_new(year, month, day)
+                    );
+                    if let Err(error) = Date::new(year, month, day) {
+                        assert_eq!(
+                            error.to_string(),
+                            format!("invalid date {year:04}-{month:02}-{day:02}: no such day in years 0001–9999")
+                        );
+                    }
+                }
+            }
+        }
+        for days in [
+            -719_163,
+            -719_162,
+            -1,
+            0,
+            1,
+            2_932_896,
+            2_932_897,
+            i64::MAX,
+            i64::MIN,
+        ] {
+            assert_eq!(
+                Date::from_days_since_unix_epoch(days).ok(),
+                Date::try_from_days_since_unix_epoch(days)
+            );
+            if let Err(error) = Date::from_days_since_unix_epoch(days) {
+                assert_eq!(
+                    error.to_string(),
+                    format!("{days} days from 1970 leave years 0001–9999")
+                );
+            }
+        }
+        for (hour, minute, second, nanosecond) in [
+            (0, 0, 0, 0),
+            (23, 59, 59, 999_999_999),
+            (24, 0, 0, 0),
+            (0, 60, 0, 0),
+            (0, 0, 60, 0),
+            (0, 0, 0, 1_000_000_000),
+            (u8::MAX, u8::MAX, u8::MAX, u32::MAX),
+        ] {
+            assert_eq!(
+                TimeOfDay::new(hour, minute, second, nanosecond).ok(),
+                TimeOfDay::try_new(hour, minute, second, nanosecond)
+            );
+            if let Err(error) = TimeOfDay::new(hour, minute, second, nanosecond) {
+                assert_eq!(
+                    error.to_string(),
+                    format!("invalid time {hour:02}:{minute:02}:{second:02} (+{nanosecond} ns)")
+                );
+            }
+        }
+        for (seconds, nanosecond) in [
+            (Instant::MIN_SECONDS - 1, 0),
+            (Instant::MIN_SECONDS, 0),
+            (0, 0),
+            (Instant::MAX_SECONDS, 999_999_999),
+            (Instant::MAX_SECONDS + 1, 0),
+            (0, 1_000_000_000),
+        ] {
+            assert_eq!(
+                Instant::from_unix(seconds, nanosecond).ok(),
+                Instant::try_from_unix(seconds, nanosecond)
+            );
+            if let Err(error) = Instant::from_unix(seconds, nanosecond) {
+                assert_eq!(
+                    error.to_string(),
+                    format!("instant {seconds} s + {nanosecond} ns since 1970 is outside years 0001–9999")
+                );
+            }
+        }
+        for nanos in [
+            i128::MIN,
+            i128::from(Instant::MIN_SECONDS) * 1_000_000_000 - 1,
+            -1_000_000_000,
+            -1,
+            0,
+            999_999_999,
+            i128::from(Instant::MAX_SECONDS) * 1_000_000_000 + 999_999_999,
+            i128::from(Instant::MAX_SECONDS + 1) * 1_000_000_000,
+            i128::MAX,
+        ] {
+            assert_eq!(
+                Instant::from_unix_nanos(nanos).ok(),
+                Instant::try_from_unix_nanos(nanos)
+            );
+            if let Err(error) = Instant::from_unix_nanos(nanos) {
+                assert_eq!(
+                    error.to_string(),
+                    format!("instant {nanos} ns is outside years 0001–9999")
+                );
+            }
+        }
     }
 
     #[test]
