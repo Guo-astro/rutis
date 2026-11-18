@@ -1126,7 +1126,8 @@ impl Process {
     /// row itself stays loaded for its own cleanups' emissions, which the
     /// other rows hear until it answers `rows.unload` (events protocol §7.1
     /// step 5). [`Process::unload_row`] calls [`Process::row_gone`] once it
-    /// did.
+    /// did; the emissions the host took in meanwhile are delivered all the
+    /// same (#1327).
     fn row_unloading(&self, key: &str) {
         if let Some(events) = self.imports.bus.get() {
             events.row_unloading(key);
@@ -1358,7 +1359,10 @@ impl Process {
     /// Dispose row `key`. Its listeners leave the bus when `rows.unload` is
     /// sent; the row itself stays loaded until the runtime answers, so the
     /// emissions its unload stack's cleanups make reach the other rows
-    /// (events protocol §7.1 step 5).
+    /// (events protocol §7.1 step 5). Those the host took in are delivered
+    /// even after the row is off the session; a session that ends takes the
+    /// ones not yet dispatched with it, and this then reports its end rather
+    /// than success (#1327).
     pub async fn unload_row(&self, key: &str) -> Result<(), Error> {
         self.row_unloading(key);
         let unloaded = self.call_async("", "rows.unload", json!([key])).await;

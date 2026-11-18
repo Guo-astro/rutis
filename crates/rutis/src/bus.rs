@@ -18,7 +18,7 @@ use run::{
     run_serial, AsyncNext, ErasedSyncTerminal, ErasedTerminal, FilterSpec, Inv, NoTerminal,
     OwnedInv, RawTerm, Started, SyncNext,
 };
-use table::{Body, Entry, Selected, Table};
+use table::{Body, DispatchFlight, Entry, Selected, Table};
 
 use crate::ctx::Ctx;
 use crate::error::{Error, ErrorKind};
@@ -572,15 +572,31 @@ impl EventBus {
             .push(Arc::new(hook));
     }
 
-    /// Begin a call of `entry` (§5.1 step 3): `None` skips it. A `once`
-    /// entry is claimed here, by the first call that starts, not when a
-    /// dispatch selects it: one a filter dropped, or a `serial` / `bail`
-    /// ended before, stays for the next dispatch.
-    pub(crate) fn start(&self, entry: &Arc<Entry>) -> Option<table::CallFlight> {
+    /// Begin a call of `entry` in a dispatch (§5.1 step 3): `false` skips it,
+    /// and nothing is counted for it. The dispatch counts its owners once
+    /// ([`DispatchFlight`], #1125). A `once` entry is claimed here, by the
+    /// first call that starts, not when a dispatch selects it: one a filter
+    /// dropped, or a `serial` / `bail` ended before, stays for the next
+    /// dispatch.
+    pub(crate) fn start(&self, entry: &Arc<Entry>, flight: &mut DispatchFlight) -> bool {
+        flight.admit(entry) && self.claimed(entry)
+    }
+
+    /// Begin a call of `entry` that runs on its own, counted on its own (an
+    /// `emit` listener's task, `parallel`, a remote entry's invocation).
+    pub(crate) fn start_alone(&self, entry: &Arc<Entry>) -> Option<table::CallFlight> {
         let flight = entry.start()?;
+        self.claimed(entry).then_some(flight)
+    }
+
+    /// The rest of [`start`](Self::start): a `once` entry leaves the table
+    /// with its first call, and the count a subscription reports moves on.
+    /// `false` when another call claimed the `once` entry first: it is
+    /// skipped, as a withdrawn entry is.
+    fn claimed(&self, entry: &Arc<Entry>) -> bool {
         if entry.once {
             if entry.claimed.swap(true, Ordering::SeqCst) {
-                return None;
+                return false;
             }
             entry.withdrawn.store(true, Ordering::SeqCst);
             self.change(|table| {
@@ -592,7 +608,7 @@ impl EventBus {
             });
         }
         entry.calls.fetch_add(1, Ordering::Relaxed);
-        Some(flight)
+        true
     }
 
     fn dispatch_id(&self) -> u64 {
@@ -701,27 +717,40 @@ impl EventBus {
             // a copy made when the emit was queued would hold the listeners of
             // that moment, and N queued emits would hold them N times over.
             let (before, after) = entries.chains();
+            // One count per owner for the synchronous calls here (#1125): it
+            // ends with the dispatch, no earlier than the calls it covers.
+            let listeners = before.len() + entries.base().len() + after.len();
+            let mut flight = DispatchFlight::new(owned.dispatch, listeners);
             for entry in before.iter().chain(entries.base()).chain(after.iter()) {
-                let Some(flight) = owned.bus.start(entry) else {
-                    continue;
-                };
                 // A synchronous listener runs here instead of through a future
                 // the emit polls to completion at once: building and polling
                 // that future was a fifth of what one call cost (#980).
                 if let Body::Sync(listener) = &entry.body {
+                    if !owned.bus.start(entry, &mut flight) {
+                        continue;
+                    }
                     let inv = owned.inv();
                     if let Err(error) = run::call_sync_listener(entry, &**listener, &inv) {
                         run::report_listener(&owned.emitter, &owned.name, entry, error);
                     }
-                    drop(flight);
                     continue;
                 }
-                let call =
-                    run::emit_call(owned.clone(), entry.clone(), flight, Some(ticket.clone()));
+                // A listener whose call may outlive this dispatch counts its
+                // own call, in the task it runs in.
+                let Some(call_flight) = owned.bus.start_alone(entry) else {
+                    continue;
+                };
+                let call = run::emit_call(
+                    owned.clone(),
+                    entry.clone(),
+                    call_flight,
+                    Some(ticket.clone()),
+                );
                 if let Started::Pending(rest) = first_poll(call).await {
                     crate::sync::spawn(&spawn_handle, rest);
                 }
             }
+            drop(flight);
             drop(ticket);
             let _ = started.send(());
         });
@@ -996,7 +1025,7 @@ impl EventBus {
         let bus = self.clone();
         Box::pin(async move {
             let entry = bus.live_entry(id, &call.name)?;
-            let Some(flight) = bus.start(&entry) else {
+            let Some(flight) = bus.start_alone(&entry) else {
                 return Err(Error::from(ErrorKind::ListenerWithdrawn {
                     id,
                     name: call.name,
@@ -1056,7 +1085,7 @@ impl EventBus {
         call: EntryCall,
     ) -> Result<Option<Value>, Error> {
         let entry = self.live_entry(id, &call.name)?;
-        let Some(flight) = self.start(&entry) else {
+        let Some(flight) = self.start_alone(&entry) else {
             return Err(ErrorKind::ListenerWithdrawn {
                 id,
                 name: call.name,

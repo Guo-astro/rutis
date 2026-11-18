@@ -1392,6 +1392,82 @@ async fn eviction_order() {
     assert_eq!(middle.state().state, FiberState::Pending);
 }
 
+/// Both consumers of one provider stop and clean up before the provider does:
+/// the eviction's join loop drains every consumer bound to the withdrawn
+/// service, not just the first (#634's `core/D14a`, "≥2 个消费者并发排干").
+/// guarantee: core/D14
+#[tokio::test]
+async fn eviction_drains_every_consumer_before_the_provider() {
+    let ctx = Ctx::root().unwrap();
+    let ord = order();
+    let o1 = ord.clone();
+    let provider = ctx.plugin(simple("P", move |ctx: &Ctx| {
+        let o = o1.clone();
+        Box::pin(async move {
+            ctx.effect(move || marker_cleanup("P", o))?;
+            ctx.provide(Dep1)?;
+            Ok(Effect::Done)
+        })
+    }));
+    (&provider).await.expect("P active");
+    let consumers: Vec<_> = ["C1", "C2"]
+        .into_iter()
+        .map(|name| {
+            let o = ord.clone();
+            ctx.plugin(simple_dep(
+                name,
+                vec![TypeKey::of::<Dep1>()],
+                move |ctx: &Ctx| {
+                    let o = o.clone();
+                    Box::pin(async move {
+                        ctx.effect(move || {
+                            let o = o.clone();
+                            // The second consumer's cleanup takes several turns:
+                            // a provider that stops waiting for it before its
+                            // cleanups run leaves it queued behind them.
+                            let slow = name == "C2";
+                            async move {
+                                if slow {
+                                    for _ in 0..8 {
+                                        tokio::task::yield_now().await;
+                                    }
+                                }
+                                marker_cleanup(name, o).await
+                            }
+                        })?;
+                        Ok(Effect::Done)
+                    })
+                },
+            ))
+        })
+        .collect();
+    for consumer in &consumers {
+        consumer.await.expect("a consumer is active");
+    }
+
+    provider.dispose().await.unwrap();
+
+    let order = ord.lock().unwrap().clone();
+    assert_eq!(
+        order.len(),
+        3,
+        "every consumer's cleanup and the provider's ran: {order:?}"
+    );
+    assert_eq!(
+        order.last().copied(),
+        Some("P"),
+        "the provider cleaned up before its consumers: {order:?}"
+    );
+    for (index, consumer) in consumers.iter().enumerate() {
+        assert_eq!(
+            consumer.state().state,
+            FiberState::Pending,
+            "consumer {} of the withdrawn service is not waiting",
+            index + 1
+        );
+    }
+}
+
 #[tokio::test]
 async fn self_access_during_cleanup() {
     let ctx = Ctx::root().unwrap();

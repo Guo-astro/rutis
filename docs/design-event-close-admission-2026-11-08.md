@@ -19,9 +19,9 @@ shutdown 已在标记子树并开始关闭时持有 `Shared.admission`（`crates
 | --- | --- | --- |
 | D1 | 在 `FiberInner` 增加永久的 `lineage_closed: AtomicBool`。永久关闭的 fiber 以及关闭提交时子树中的每个成员都为 true；root 已关闭后新建的 fiber 初始化为 true；generation reload 永不清除。 | 不使用 per-entry marker 或共享继承 marker：entry 是动态的；共享 marker 会在只关闭一个子树时误关 sibling。 |
 | D2 | 在 `Shared.admission` 下两阶段发布：收集固定子树；按 postorder（叶到根）为所有成员写入 `lineage_closed=true`；全部写完后再发布现有 per-fiber `closing=true`（root 另发布 `Shared.closing=true`）；最后排入 cleanup。shutdown 线性化点是 marker pass 完成，而不是第一个 ancestor flag。实现必须让 child-link 脱离也遵守该锁，或证明脱离中的 fiber 已不能再接纳工作。 | 放弃简单的 ancestor→child 传播，因为会产生 ancestor closed/child live 窗口；也放弃仅 child-first 的公开关闭变更，因为会改变既有关闭边界。 |
-| D3 | `Entry::live()` 读取 `withdrawn`、owner、`alive`、`owner.closing`、`owner.lineage_closed` 和 `live_generation`，不再遍历 context parent 链。`Entry::start()` 保留 `CallFlight::begin(owner)` 后再做最终 `live()` 检查。 | 放弃移除最终检查或 event flight：已接纳调用必须 drain；marker 提交后不得再接纳调用，但已接纳调用可以在提交后开始并按既有规则完成。 |
+| D3 | `Entry::live()` 读取 `withdrawn` 和 owner 的状态字（`OwnerState`：`alive`、`closing`、`lineage_closed` 和 `live_generation` 共用一个原子，一次读），不再遍历 context parent 链。一次 dispatch 先在 owner 上计数（每个 owner 一次，`DispatchFlight`），再做最终的状态检查（#1125）。 | 放弃移除最终检查或 event flight：已接纳调用必须 drain；marker 提交后不得再接纳调用，但已接纳调用可以在提交后开始并按既有规则完成。按调用计数换成按 dispatch/owner 计数，卸载的等待只会变长，不会变短。 |
 | D4 | `Ctx::registration_open()` 及其祖先遍历继续用于 registration/service API。本优化只改变 listener liveness，不改变 public registration error 或 instance-event admission。 | 放弃用 listener marker 取代所有 lifecycle 检查，因为 registration 有独立 API 合约。 |
-| D5 | 第一版使用 `SeqCst`。事件 snapshot 热路径不加锁，也不持有会阻塞的 admission lock。两阶段 marker store 提供稳定的提交边界；`Entry::start` 观察到 marker 后拒绝新的接纳。 | 放弃每次 dispatch 都拿 `Shared.admission`，因为会增加锁开销并可能无法达到 CPU 目标；新的内存序证明另行处理。 |
+| D5 | 计数和状态字都用 `SeqCst`。准入/排空的证明要的是“等待没看到的那个计数，必然读到发布后的状态”，这要求计数和状态字在同一个 `SeqCst` 总序里（推导写在 `crates/rutis/src/fiber/state.rs`）。事件 snapshot 热路径不加锁，也不持有会阻塞的 admission lock。 | 放弃每次 dispatch 都拿 `Shared.admission`，因为会增加锁开销并可能无法达到 CPU 目标。放弃只靠 `Acquire`/`Release`：两个不同的原子之间没有总序，ARM 上“计数加在等待读过 0 之后、状态读又读到旧值”是允许的；x86-64 和 aarch64 上 `SeqCst` 读与 `Acquire` 读是同一条指令，代价不在热路径上。 |
 
 ## 3. 精确规则
 
@@ -86,6 +86,14 @@ shutdown 已在标记子树并开始关闭时持有 `Shared.admission`（`crates
 - **模型：** `specs/event-close/run.sh` 的 7 个配置全部按 `expected.txt` 结束：`close-healthy` 2,263,040 个不同状态、21 秒，`close-tree` 688,580 个、12 秒，`close-drain` 31,488 个、1 秒；4 个变异分别违反 `ClosingImpliesMarked`、`CommittedStaysOut`（两次）和 `CleanupOnce`。
 - **benchmark（本机 release，Linux x86-64）：** 100 个 instance 创建 150.60 ms、关闭 119.06 ms；1000 个 instance 创建 17.55 s、关闭 11.15 s。`CREATE_RATIO`、`CLOSE_RATIO`、`IDLE_SHARE` 阈值全部通过；issue 的 ≤30 秒创建目标在本机达到。CI 的 `stress.yml` `cpu` job 仍需记录同一组数字。
 - **仍缺：** Loading-owner、`once`、remote-entry 的专项用例；CI stress job；release notes。完成这些之前，规则保持“提案，尚未验证”。
+
+### 2026-11-18 进展（#1125）
+
+- **计数改成按 dispatch/owner。** `FiberInner::event_flights`（互斥锁）和 `event_flights_tx`（watch）换成 `EventFlights`：一个原子计数加一个 `Notify`，只在计数归零且有等待者时唤醒。一次 dispatch 用 `DispatchFlight` 对遇到的 owner 各计一次（`counted_by` 记住本 dispatch 已计过谁），只对真正 `start` 的监听器计数，跳过的当场退回；异步 `emit` 监听器的任务、`parallel` 和远程入口仍按调用计数（`EventBus::start_alone`）。卸载的等待粒度因此从单回调变成 dispatch/owner，等待只会变长。
+- **状态字。** `OwnerState` 把 `alive`、`closing`、`lineage_closed` 和 `live_generation` 放进一个 `AtomicU64`；一次调用一次 `SeqCst` 读（原来是四次 marker 读加一次 `withdrawn`）。`FiberInner` 保留四个字段给其它读者，所有写点都同时写状态字，测试 `the_word_matches_the_markers` 在静默点比对两者。
+- **顺序。** `Entry::start` 变成一次 `Weak::upgrade`、先计数再读状态字；准入/排空的论证写在 `crates/rutis/src/fiber/state.rs` 的模块注释里。shuttle 模型 6 现在能抓到“先检查再计数”的顺序错误（计数改成 shuttle 可见的原子后才有这个切换点）。
+- **数字（本机 release，Linux x86-64，32 核，同一 target 上 base 与分支交替三次取中位数）：** `close_cpu` 1000 instance 创建 16.47 s → 5.69 s，关闭 10.85 s → 1.44 s；`cargo bench -p rutis --bench events` 的 `bail_sync` 64 监听器每次 116.8 ns → 29.8 ns。`CREATE_RATIO`、`CLOSE_RATIO`、`IDLE_SHARE` 仍通过。
+- **诊断口径不变：** `EventSubscription::calls` 仍是“已开始的调用数”，仍是一次 `Relaxed` 加（实测约 1.4 ns/次）；`listener_table_model` 用它做精确比对，所以没有改成按 dispatch 汇总的近似值。
 
 ## 7. 设计哲学检查
 

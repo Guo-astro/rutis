@@ -17,7 +17,7 @@ use rutis_loader::resolve::Build;
 use rutis_loader::{
     Builtins, Chain, Layer, Loader, LoaderError, LoaderOptions, LoaderPlugin, ServiceCatalog,
 };
-use rutis_test_support::until;
+use rutis_test_support::{until, Guard, HANG_GUARD};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::json;
@@ -121,6 +121,18 @@ impl DynPlugin for Probe {
                         .map_err(|e| {
                             rutis::Error::from(ErrorKind::PluginFailed(e.to_string().into()))
                         })?;
+                    // The nested instance hands its creator the views of what
+                    // it spawned: the same rows, in the same order, as its
+                    // report (only rows with no fiber are missing).
+                    let rows: Vec<String> = page
+                        .rows
+                        .iter()
+                        .map(|(id, view)| format!("{id}={:?}", view.state().state))
+                        .collect();
+                    self.log
+                        .lock()
+                        .unwrap()
+                        .push(format!("page rows {}", rows.join(" ")));
                     format!("created page with {} rows", page.report.len())
                 }
             };
@@ -197,6 +209,15 @@ fn resolver(log: &Log) -> Chain {
     builtins.register::<Cfg, _, _>("doc-scope", move |build| {
         Ok(ProbeFactory {
             mode: Mode::ProvideDoc(Key::of().instance(build.instance("doc")?)),
+            injects: vec![],
+            title: title(build),
+            log: l.clone(),
+        })
+    });
+    let l = log.clone();
+    builtins.register::<Cfg, _, _>("scoped-echo", move |build| {
+        Ok(ProbeFactory {
+            mode: Mode::Echo,
             injects: vec![],
             title: title(build),
             log: l.clone(),
@@ -490,6 +511,52 @@ async fn each_instance_runs_its_own_copies() {
     ));
 }
 
+/// The rows an instance spawned come back with it, each with its fiber, so a
+/// host waits for them and rolls them back without `instance_rows` or
+/// `entries`; the views stay readable once the instance is gone.
+///
+/// guarantee: loader/instances
+#[tokio::test]
+async fn an_instance_hands_back_the_views_of_its_rows() {
+    let s = setup(DOC).await;
+    let a = s.create("A").await;
+    // The same rows, in the same order, as the report.
+    let reported: Vec<&str> = a.report.iter().map(|(id, _)| id.as_str()).collect();
+    let handed: Vec<&str> = a.rows.iter().map(|(id, _)| id.as_str()).collect();
+    assert_eq!(reported, ["doc-scope", "reader"]);
+    assert_eq!(handed, reported);
+    // They are the copies running in this instance: not the group fiber, not
+    // another instance's copies.
+    let fibers: Vec<PluginId> = a.rows.iter().map(|(_, view)| view.id).collect();
+    assert!(fibers.iter().all(|id| *id != a.plugin));
+    let b = s.create("B").await;
+    assert!(s
+        .rows(&b)
+        .iter()
+        .all(|(_, plugin)| !fibers.contains(plugin)));
+    let listed: Vec<PluginId> = s
+        .loader
+        .instance_rows(a.view.instance())
+        .into_iter()
+        .map(|(_, view)| view.id)
+        .collect();
+    assert_eq!(fibers, listed);
+    // Waiting for the rows to run takes the views alone.
+    for (id, view) in &a.rows {
+        view.running(Guard(HANG_GUARD).limit())
+            .await
+            .unwrap_or_else(|error| panic!("{id}: {error}"));
+        assert_eq!(view.state().state, FiberState::Active, "{id}");
+    }
+    // Rolling back takes the instance's group fiber alone; the views the
+    // caller holds stay readable, and say the rows stopped.
+    s.loader.remove_instance(a.plugin).await.unwrap();
+    assert_eq!(a.rows.len(), 2);
+    for (id, view) in &a.rows {
+        assert_eq!(view.state().state, FiberState::Disposed, "{id}");
+    }
+}
+
 const NESTED: &str = r#"[{ "insert": [
     { "id": "doc", "group": true, "instanced": true, "config": [
         { "id": "doc-scope", "name": "doc-scope" },
@@ -616,6 +683,39 @@ async fn instance_rows_stop_at_the_instance_asked_for() {
     assert!(ids(a.view.instance()).is_empty());
     assert_eq!(ids(b_page), ["page-scope", "page-reader"]);
     assert_eq!(ids(b.view.instance()).len(), 5);
+}
+
+/// An instance created by a plugin while it loads hands its rows to that
+/// plugin: the creator gets the same rows, Active, as its own report lists.
+/// The instance the host created does not list them — they are the nested
+/// instance's, and its creator's to wait for.
+///
+/// guarantee: loader/instances
+#[tokio::test]
+async fn a_nested_instance_hands_its_rows_to_its_creator() {
+    let s = setup(NESTED).await;
+    let a = s.create("A").await;
+    let log = s.take_log();
+    assert!(
+        log.contains(&"page rows page-scope=Active page-reader=Active".to_owned()),
+        "{log:?}"
+    );
+    // The page and its rows belong to the nested instance: the outer one
+    // hands back its own rows, and neither list has the nested instance's.
+    assert_eq!(
+        a.report
+            .iter()
+            .map(|(id, _)| id.as_str())
+            .collect::<Vec<_>>(),
+        ["doc-scope", "creator"]
+    );
+    assert_eq!(
+        a.rows.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(),
+        ["doc-scope", "creator"]
+    );
+    assert!(a.rows.iter().all(|(_, view)| view.id != a.plugin));
+    // Only a query of the whole instance reaches the page's rows.
+    assert_eq!(s.rows(&a).len(), 5);
 }
 
 const WITH_IDLE: &str = r#"[{ "insert": [
@@ -1052,6 +1152,92 @@ async fn rows_under_a_waiting_group_are_waiting() {
         "{:?}",
         a.report
     );
+    // Only the group has a fiber: it waits, the row under it is not spawned
+    // yet, so it is in the report alone.
+    assert_eq!(
+        a.rows.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(),
+        ["g"]
+    );
+    let g = &a.rows[0].1;
+    assert_eq!(g.state().state, FiberState::Pending);
+    // A host waiting on it is told what it waits for, with the view alone.
+    let error = g.running(Guard(HANG_GUARD).limit()).await.unwrap_err();
+    assert!(error.to_string().contains("waiting"), "{error}");
+    // The view is the row's own: once the service is there, the same view
+    // runs, and the rows it then spawns are not in the creation's snapshot.
+    s.loader
+        .create(
+            NewEntry {
+                id: Some("provider".into()),
+                name: "shared-provider".into(),
+                config: json!({}),
+                ..NewEntry::default()
+            },
+            Some("doc"),
+            None,
+        )
+        .await
+        .unwrap();
+    until(
+        || g.state().state == FiberState::Active,
+        "the group loaded once the service was there",
+    )
+    .await;
+    assert_eq!(a.rows.len(), 1);
+}
+
+const WITH_FAILURES: &str = r#"[{ "insert": [
+    { "id": "doc", "group": true, "instanced": true, "config": [
+        { "id": "ok", "name": "scoped-echo", "config": { "label": "ok" } },
+        { "id": "bad", "name": "scoped-echo", "config": { "invalid": true } },
+        { "id": "fails", "name": "scoped-echo", "config": { "label": "f", "fail_in": "A" } }
+    ] }
+] }]"#;
+
+/// A row that failed keeps the view it was spawned with; a row refused
+/// before it ran is only in the report. A host sees the failure and rolls
+/// the instance back with `plugin` and the views alone.
+///
+/// guarantee: loader/instances
+#[tokio::test]
+async fn a_failed_row_hands_back_its_view_and_the_host_rolls_back() {
+    let s = setup(WITH_FAILURES).await;
+    let a = s.create("A").await;
+    assert!(
+        matches!(
+            a.report.as_slice(),
+            [(ok, InstanceResult::Active), (bad, InstanceResult::Failed(_)), (fails, InstanceResult::Failed(_))]
+                if ok == "ok" && bad == "bad" && fails == "fails"
+        ),
+        "{:?}",
+        a.report
+    );
+    // `bad` was refused at validation, before any fiber: only `ok` and
+    // `fails` have one.
+    assert_eq!(
+        a.rows.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(),
+        ["ok", "fails"]
+    );
+    assert_eq!(a.rows[0].1.state().state, FiberState::Active);
+    assert_eq!(a.rows[1].1.state().state, FiberState::Failed);
+    // The failed row's view says why, without another query.
+    let error = a.rows[1]
+        .1
+        .running(Guard(HANG_GUARD).limit())
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("failed in A"), "{error}");
+    // The host rolls back with the group fiber it was given.
+    s.take_log();
+    s.loader.remove_instance(a.plugin).await.unwrap();
+    assert_eq!(s.take_log(), ["cleanup ok A"]);
+    for (id, view) in &a.rows {
+        assert_eq!(view.state().state, FiberState::Disposed, "{id}");
+    }
+    // And can create another instance of the group afterwards.
+    let b = s.create("B").await;
+    assert_eq!(b.rows.len(), 2, "{:?}", b.report);
+    assert_eq!(b.rows[0].1.state().state, FiberState::Active);
 }
 
 /// Keeps the context it is applied in.
