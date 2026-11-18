@@ -3882,5 +3882,60 @@ fn a_future_started_as_its_last_waiter_leaves_is_cancelled() {
     );
 }
 
+/// #1088: what a row's unload waits for (`Connection::settled`) ends when the
+/// session does, not later: the event operations still queued will never run,
+/// and a row's unload must not hang on them.
+#[test]
+fn a_session_that_ends_wakes_those_waiting_for_its_operations() {
+    struct Nothing;
+    impl Dispatch for Nothing {
+        fn invoke(&self, _: &Connection, _: &str, _: &str, _: Value) -> Reply {
+            Ok(Value::Undefined)
+        }
+    }
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .expect("a current-thread runtime");
+    let _guard = runtime.enter();
+    let (peer, _far) = connected(Arc::new(Nothing));
+    peer.receive(hello(ENDPOINT_PROTOCOL)).unwrap();
+    // `events.on` is admitted and waits for its turn on this runtime, which
+    // nothing drives yet.
+    peer.receive(Frame::Invoke {
+        id: "node:1".into(),
+        path: vec![],
+        target: String::new(),
+        method: "events.on".into(),
+        args: data(json!([
+            {"id": "1", "name": "t/a", "plugin": "node", "kind": "sync"}
+        ])),
+        sync: false,
+    })
+    .unwrap();
+    assert!(
+        peer.0.ordered.lock().unwrap().busy,
+        "the operation waits its turn"
+    );
+    let mut waiting = Box::pin(peer.settled());
+    assert!(
+        !eval_once(waiting.as_mut()),
+        "the wait ended while the operation still waits its turn"
+    );
+    peer.close(Error::Transport("gone".into()));
+    assert!(
+        eval_once(waiting.as_mut()),
+        "the session's end wakes those waiting for its operations"
+    );
+}
+
+/// Poll `future` once with a no-op waker: `false` when it is still pending.
+fn eval_once<F: std::future::Future + ?Sized>(future: std::pin::Pin<&mut F>) -> bool {
+    std::future::Future::poll(
+        future,
+        &mut std::task::Context::from_waker(std::task::Waker::noop()),
+    )
+    .is_ready()
+}
+
 mod objects;
 mod workers;

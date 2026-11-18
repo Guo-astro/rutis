@@ -249,7 +249,7 @@ Cordis 的 `events.dispatch(type, args)`（五个方法底下的原语，返回�
 2. 运行时立即不再接受这一行的调用：之后到达的 `events.call` 以已撤下的错误失败（§5.3）。
 3. 提供的服务从这里起对这一行的**其他**读者不可见：别的行拿到的是 `service <name> is not available`，不看到旧答案。删表与“这一行自己也不再把它算作自己提供的”都在第 5 步里那一条撤回跑到的时候（[卸载顺序](design-unload-order-2026-11-01.md) D1、D2）。宿主收到这些服务撤回的时刻不变：仍是这一步，在 `rows.unload` 的回复之前。
 4. 这一行正在运行的监听器调用收到取消信号（Go：context；Python：任务取消；JavaScript：这一行的 `ctx.signal` 被中止；Rust：fiber 的停止，与它的其他任务相同），并被等待，最多 `RUTIS_SHUTDOWN_TIMEOUT`（默认 10 秒；Rust 插件用宿主自己的关闭截止时间）。超过时运行时写 `rutis: listeners of row <row> still running after <s>s; unloading anyway`，放弃它们，继续。
-5. 按逆序执行这一行的卸载栈：清理与第 3 步说的那些撤回混在一起，一条一条运行，撤回在自己的位置上发生（`provide` 之后登记的清理读得到自己提供的服务，之前登记的不行，与 Rust 的 `drain_effects` 相同）。清理里发出的（`emit` 与其余四种方式）照常分发，别的行的监听器听得到——这一行自己的条目已在第 1 步撤下，所以它自己听不到，也不会重入。跑完回复 `rows.unload`，宿主随后把这一行从会话上撤下（§3）：它的上下文再发出的以 `BindingError` 拒绝（`row <key> is not loaded in this runtime`），它还在排队的 emit 被丢弃（§5.5）。
+5. 按逆序执行这一行的卸载栈：清理与第 3 步说的那些撤回混在一起，一条一条运行，撤回在自己的位置上发生（`provide` 之后登记的清理读得到自己提供的服务，之前登记的不行，与 Rust 的 `drain_effects` 相同）。清理里发出的（`emit` 与其余四种方式）照常分发，别的行的监听器听得到——这一行自己的条目已在第 1 步撤下，所以它自己听不到，也不会重入。跑完回复 `rows.unload`。宿主等到运行时在回复之前发出的那些操作都轮到自己之后，才把这一行从会话上撤下（§4.1、§5.5）：清理里发出的照常分发，即使回复到达宿主时那次分发还在排队等轮到自己。此后它的上下文再发出的以 `BindingError` 拒绝（`row <key> is not loaded in this runtime`），它还在排队的 emit 被丢弃（§5.5）。
 
 卸载栈里这一行登记的监听器不保留（2026-11-02 修订）：宿主照常回复 `events.on`，但不进表、不报告；各运行时的插件 API 也照旧拒绝它，说法与拒绝清理相同（Go、Swift 写 `rutis: row <行> is not active: …`，Node 的 Cordis fiber 报 `INACTIVE_EFFECT`），所以它听不到任何事件。运行时报告 `rows.ended` 时不经过第 5 步：它报告时这一行已经结束，宿主立即按撤下处理。
 

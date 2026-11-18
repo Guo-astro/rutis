@@ -1362,6 +1362,12 @@ impl Process {
     pub async fn unload_row(&self, key: &str) -> Result<(), Error> {
         self.row_unloading(key);
         let unloaded = self.call_async("", "rows.unload", json!([key])).await;
+        // The answer comes after the row's unload stack ran, but the frames
+        // that stack sent are event operations the session runs in their
+        // turn: it waits for them here, so an emission of the stack is
+        // dispatched while the row is still loaded (events protocol §4.3,
+        // §7.1 step 5, #1088).
+        self.peer.settled().await;
         // After the call: the withdrawals of the row's services arrive
         // before its reply.
         self.forget_exports(key);
