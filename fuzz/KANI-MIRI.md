@@ -175,6 +175,7 @@ message.
 | `--harness time_of_day_keeps_valid_fields` | `VERIFICATION:- SUCCESSFUL`, 0 s |
 | `--harness instant_reads_back_through_utc` | `VERIFICATION:- SUCCESSFUL`, 45 s |
 | `--harness instant_nanoseconds_roundtrip` | `VERIFICATION:- SUCCESSFUL`, 4 min 55 s |
+| `cargo kani` (the eleven harnesses, one command) | `Complete - 11 successfully verified harnesses, 0 failures, 11 total`, 8 min 27 s |
 | `cargo test -p rutis-abi` | 5 passed: the layout written out by hand, the magic and padding, one field, the SHA-256 text rule, the C ABI write |
 
 What is not proved, and why:
