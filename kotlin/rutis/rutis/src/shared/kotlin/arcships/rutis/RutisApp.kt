@@ -1,5 +1,7 @@
 package arcships.rutis
 
+import arcships.rutis.internal.AppLink
+import arcships.rutis.internal.AppLinks
 import arcships.rutis.internal.RuntimeSession
 import arcships.rutis.internal.peer.ENDPOINT_PROTOCOL
 import arcships.rutis.internal.peer.Endpoint
@@ -73,22 +75,38 @@ sealed interface RutisState {
  * latest first, and are installed again on the next.
  * [state] says where it stands; the SDK decides nothing by it.
  */
-class RutisApp(
+class RutisApp internal constructor(
     val plugins: List<Plugin>,
     /** The configurations of plugins, by plugin name: values of their configuration types; a plugin without one gets its schema's defaults. */
-    configs: Map<String, Any?> = emptyMap(),
-    val connect: String? = null,
-    val listen: String? = null,
+    configs: Map<String, Any?>,
+    val connect: String?,
+    val listen: String?,
     val id: String,
     private val token: String,
-    val peer: String? = null,
-    private val trust: String? = null,
-    private val certificate: String? = null,
+    val peer: String?,
+    private val trust: String?,
+    private val certificate: String?,
     /** How long cleanups may take when plugins unload. */
-    val shutdownTimeout: Duration = 10.seconds,
+    val shutdownTimeout: Duration,
     /** Where the state lines go, without the `rutis: ` prefix. */
-    private val log: (String) -> Unit = { System.err.println("rutis: $it") },
+    private val log: (String) -> Unit,
+    /** What a start connects with: the real WebSocket links, or a test's (#1274). */
+    private val links: AppLinks,
 ) {
+    constructor(
+        plugins: List<Plugin>,
+        configs: Map<String, Any?> = emptyMap(),
+        connect: String? = null,
+        listen: String? = null,
+        id: String,
+        token: String,
+        peer: String? = null,
+        trust: String? = null,
+        certificate: String? = null,
+        shutdownTimeout: Duration = 10.seconds,
+        log: (String) -> Unit = { System.err.println("rutis: $it") },
+    ) : this(plugins, configs, connect, listen, id, token, peer, trust, certificate, shutdownTimeout, log, AppLinks.REAL)
+
     private val endpoint: Endpoint
 
     /** The plugins with their configurations, encoded. */
@@ -115,6 +133,14 @@ class RutisApp(
     }
 
     private var current: Run? = null
+
+    /**
+     * The thread of the current run, for the controlled-scheduling tests
+     * (#1274): a run sets its last state before its thread ends, so joining
+     * it says the run is over without waiting on the clock.
+     */
+    internal val runThread: Thread?
+        get() = synchronized(lock) { current?.thread }
 
     init {
         RuntimeSession.checkPlugins(plugins)
@@ -230,42 +256,66 @@ class RutisApp(
 
     private fun dial(run: Run, address: String): Ended {
         val retry = Retry()
-        val extra = trust?.let(Tls::certificates).orEmpty()
-        val tls = if (address.startsWith("wss:")) Tls.trust(extra) else null
-        val dialer = WebSocketDialer(address, PROTOCOL, token, tls, retry, Heartbeat())
-        try {
-            val dialing = connecting(
-                run,
-                make = {
-                    Dialing(
-                        address, endpoint, plugins, retry, dialer::dial,
-                        say = log, status = status(run), shutdownMillis = shutdownTimeout.inWholeMilliseconds, own = own,
-                    )
-                },
-                stop = Dialing::stop,
-            ) ?: return Ended.Stopped(true)
-            return dialing.run()
-        } finally {
-            dialer.close()
-        }
+        val link = connecting(
+            run,
+            make = {
+                links.open(status(run)) {
+                    val extra = trust?.let(Tls::certificates).orEmpty()
+                    val tls = if (address.startsWith("wss:")) Tls.trust(extra) else null
+                    val dialer = WebSocketDialer(address, PROTOCOL, token, tls, retry, Heartbeat())
+                    try {
+                        val dialing = Dialing(
+                            address, endpoint, plugins, retry, dialer::dial,
+                            say = log, status = status(run), shutdownMillis = shutdownTimeout.inWholeMilliseconds, own = own,
+                        )
+                        object : AppLink {
+                            override val bound: String? = null
+
+                            override fun run(): Ended = try {
+                                dialing.run()
+                            } finally {
+                                dialer.close()
+                            }
+
+                            override fun stop() = dialing.stop()
+                        }
+                    } catch (e: Throwable) {
+                        dialer.close()
+                        throw e
+                    }
+                }
+            },
+            stop = AppLink::stop,
+        ) ?: return Ended.Stopped(true)
+        return link.run()
     }
 
     private fun listen(run: Run, address: String): Ended {
         val at = ListenAddress.parse(address)
-        val tls = if (at.secure) Tls.server(certificate!!, certificate) else null
-        var bound = address
-        val listening = connecting(
+        val link = connecting(
             run,
             // Bound under the lock: a stop that came first is seen before a listener exists.
             make = {
-                val server = WebSocketServer(at, PROTOCOL, token, tls, Heartbeat())
-                bound = server.address
-                Listening(server, endpoint, plugins, status = status(run), shutdownMillis = shutdownTimeout.inWholeMilliseconds, own = own)
+                links.open(status(run)) {
+                    val tls = if (at.secure) Tls.server(certificate!!, certificate) else null
+                    val server = WebSocketServer(at, PROTOCOL, token, tls, Heartbeat())
+                    val listening = Listening(
+                        server, endpoint, plugins, status = status(run),
+                        shutdownMillis = shutdownTimeout.inWholeMilliseconds, own = own,
+                    )
+                    object : AppLink {
+                        override val bound: String = server.address
+
+                        override fun run(): Ended = listening.run()
+
+                        override fun stop() = listening.stop()
+                    }
+                }
             },
-            stop = Listening::stop,
+            stop = AppLink::stop,
         ) ?: return Ended.Stopped(true)
-        log("listening on $bound")
-        return listening.run()
+        link.bound?.let { log("listening on $it") }
+        return link.run()
     }
 
     private companion object {

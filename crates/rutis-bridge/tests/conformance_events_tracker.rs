@@ -1582,28 +1582,24 @@ async fn rows_ended_is_a_table_change_in_frame_order() {
 /// answers, and the session's other emits (another row's) go on in their
 /// turn.
 ///
-/// Each emit names a different event, so which listener is called says
-/// which dispatch ran: `rows.ended` is a table change in the session's
-/// frame order (§4.1), so its reply says the two emits before it were
-/// queued.
+/// The three emits name one event, and row `a` and row `b` both listen to
+/// it: a call of "1" after `rows.ended` says row `a`'s entry outlived the
+/// row (§7.1 step 1), which is what the emit that row `b` queued used to
+/// be offered when the row's emits were let go before its entries were out
+/// (#1133). `rows.ended` is a table change in the session's frame order
+/// (§4.1), so its reply says the two emits before it were queued.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_rows_end_lets_go_of_its_queued_and_running_emits() {
     within("emit queue and rows.ended", async {
         let rig = rig().await;
         rig.load("a", None, &[]).await;
         rig.load("b", None, &[]).await;
-        // Row `a`'s running emit would call "4" (of row `b`) and "1".
-        rig.register("1", "t/first", Some("a"), "one", "any")
+        // Both rows listen to the one name; row `a`'s running emit reaches
+        // its own listener and row `b`'s, so its filter is called for two.
+        rig.register("1", "t/ended", Some("a"), "one", "any")
             .await
             .unwrap();
-        rig.register("4", "t/first", Some("b"), "four", "any")
-            .await
-            .unwrap();
-        // Row `a`'s queued emit would call "3"; row `b`'s, "2".
-        rig.register("3", "t/queued", Some("b"), "three", "any")
-            .await
-            .unwrap();
-        rig.register("2", "t/later", Some("b"), "two", "any")
+        rig.register("2", "t/ended", Some("b"), "two", "any")
             .await
             .unwrap();
         let (release, answer) = tokio::sync::oneshot::channel::<Reply>();
@@ -1627,7 +1623,7 @@ async fn a_rows_end_lets_go_of_its_queued_and_running_emits() {
             })
         };
         let first = rig
-            .dispatch_started(Some("a"), "t/first", "emit", vec![], Some(filter))
+            .dispatch_started(Some("a"), "t/ended", "emit", vec![], Some(filter))
             .unwrap();
         until(
             || filtering.load(Ordering::SeqCst),
@@ -1636,10 +1632,10 @@ async fn a_rows_end_lets_go_of_its_queued_and_running_emits() {
         .await;
         // Queued behind it: another of row `a`, then one of row `b`.
         let second = rig
-            .dispatch_started(Some("a"), "t/queued", "emit", vec![], None)
+            .dispatch_started(Some("a"), "t/ended", "emit", vec![], None)
             .unwrap();
         let third = rig
-            .dispatch_started(Some("b"), "t/later", "emit", vec![], None)
+            .dispatch_started(Some("b"), "t/ended", "emit", vec![], None)
             .unwrap();
         // Row `a` ends: its running emit is cancelled, its queued one
         // dropped. The filter's future goes with the first.
@@ -1657,21 +1653,27 @@ async fn a_rows_end_lets_go_of_its_queued_and_running_emits() {
             settle(second.await.unwrap()).await.unwrap(),
             Value::Undefined
         );
-        // The other row's emit runs; nothing of the row that ended was
-        // called, and the dropped emit of that row never started.
+        // The other row's emit runs: its calls are on the wire before its
+        // reply, and row `a`'s listener is not among them.
+        assert_eq!(
+            settle(third.await.unwrap()).await.unwrap(),
+            Value::Undefined
+        );
+        assert_eq!(
+            calls_for(&rig.frames, "t/ended"),
+            ["2"],
+            "the row that ended was still offered to the other row's emit"
+        );
         until(
             || listeners(&rig.fake) == ["2"],
             "the third emit's only call",
         )
         .await;
         assert_eq!(
-            settle(third.await.unwrap()).await.unwrap(),
-            Value::Undefined
-        );
-        assert_eq!(
             listeners(&rig.fake),
             ["2"],
-            "neither the cancelled nor the dropped emit called anyone"
+            "neither the cancelled nor the dropped emit called anyone, and the \
+             row that ended still heard the other row's"
         );
     })
     .await;
