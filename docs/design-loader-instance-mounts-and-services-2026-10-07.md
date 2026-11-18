@@ -78,7 +78,7 @@ loader.remove_instance(b1.plugin).await?;
   - loader 只沿自己记录的关系查找，不依赖内核的祖先查询。
 - 目标必须是 `instanced` 分组，且未禁用、有效；否则报错。
 - `.with(value)` 附带一个业务值（任意 `Send + Sync` 类型），交给实例内插件的工厂（§4）。
-- 返回前等待：实例的子行稳定。返回 `Instance { plugin, view, report }`，`report` 按树序列出实例里每一行（不含嵌套的 `instanced` 分组）的 `(行 id, InstanceResult)`：
+- 返回前等待：实例的子行稳定。返回 `Instance { plugin, view, report, rows }`，`report` 按树序列出实例里每一行（不含嵌套的 `instanced` 分组）的 `(行 id, InstanceResult)`：
 
 | 结果 | 含义 |
 | --- | --- |
@@ -89,6 +89,19 @@ loader.remove_instance(b1.plugin).await?;
 
 - 子行失败不影响实例创建，实例是否可用由调用方根据 `report` 判断。实例的分组 fiber 本身失败时返回错误，并移除该实例。
 - 可以在插件自己的 `apply` 中调用并等待。
+- 创建结果里还有 `rows`：这次创建装起来的行的 `(行 id, FiberView)`，顺序与 `report` 相同，id 是 `report` 里的一部分——禁用、校验没过、或所在分组还没装载的行没有 fiber，只在 `report` 里。宿主用它等这些行就绪、失败时回滚，不必再查 `instance_rows` 或 `entries()`：
+
+```rust
+let instance = loader.create_instance(&ctx, "session").with(assembly).await?;
+for (id, view) in &instance.rows {
+    // 等它 Active；没跑起来时这条错误说哪一步、什么错
+    view.running(Duration::from_secs(30)).await?;
+}
+// 任何一行不该用时，回滚只要它自己的分组 fiber
+loader.remove_instance(instance.plugin).await?;
+```
+
+- `rows` 只是句柄：行归 loader 管，不要拿它改状态；视图在实例删除后仍可读（`view.state()` 是 `Disposed`），留着 `Instance` 就会留着这些 fiber 的状态，用完丢掉。嵌套实例的行归创建它的插件拿到的那份 `rows`，外层实例的 `rows` 不含它们。
 
 ### 3.2 关闭实例
 
