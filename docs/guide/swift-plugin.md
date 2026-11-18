@@ -71,7 +71,7 @@ public let plugin = Rutis.define(Plugin(
 ))
 ```
 
-- `Rutis.define(Plugin(...))` 定义插件；`name` 是它在二进制里的名字。宿主装上插件、启动它时调用 `apply`。
+- `Rutis.define(Plugin(...))` 定义插件；`name` 是它在二进制里的名字。宿主装上插件、启动它时调用 `apply`。Swift 6 语言模式下顶层代码（`main.swift`）是 `@MainActor`：在那里定义的插件，`apply` 也是 `@MainActor`，运行时会改到主线程上调用；写成 `apply: { @Sendable ctx, config in … }`（`RutisAppFixture` 就是这样），或者像模板那样把插件放进单独的文件，它才跑在运行时自己的任务上。
 - `@RutisService` 让类的每个公开方法成为服务的方法（`hello`），`ctx.provide("greeter", …)` 提供这个服务：任何语言的插件都能按名字 `greeter` 调用它，插件卸载时服务随之撤销。
 - `provides` 写出插件提供哪些服务，宿主不运行插件就知道。
 

@@ -736,10 +736,16 @@ jobs:
   # of minutes, so one job ran for hours and was cut at its 60-minute
   # limit (2026-11-12 on; the models #622 added made it grow). Every model
   # lands in exactly one shard; a new model needs no change here.
+  #
+  # The 150-minute limit is what the shards need: the first run with 90
+  # (2026-11-18, run 44316343421) cut `rutis` shard 2/4 at 95 minutes while
+  # shard 3/4 had finished in 51; a run's time depends on the schedules a
+  # random seed walks, so a shard's time varies by more than the model count
+  # suggests.
   shuttle:
     name: shuttle (${{ matrix.crate }}, ${{ matrix.shard }}/4)
     runs-on: ${{ fromJSON(vars.LINUX_RUNNER || '"ubuntu-24.04"') }}
-    timeout-minutes: 90
+    timeout-minutes: 150
     strategy:
       fail-fast: false
       matrix:
