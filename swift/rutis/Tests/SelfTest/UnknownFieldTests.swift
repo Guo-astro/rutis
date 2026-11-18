@@ -196,7 +196,7 @@ struct UnknownFieldTests {
         let didAbort = await aborted.wait(seconds: 5)
         XCTAssertTrue(didAbort, "the call was not cancelled")
         let cancelled = try await next(far)
-        XCTAssertEqual(cancelled["op"]?.stringValue, "return")
+        XCTAssertEqual(cancelled["op"]?.stringValue, "ack")
         XCTAssertEqual(cancelled["id"]?.stringValue, "main:3")
 
         // And the session is still serving calls.
