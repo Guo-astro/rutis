@@ -277,9 +277,83 @@ impl Fixture {
             .filter(|e| e.id == id && e.instance.is_some())
             .collect()
     }
+
+    /// Disable (or enable) the instance group's child row `id`, and
+    /// reconcile: a row keeps its place, the copies inside the instances
+    /// follow it.
+    async fn set_child_disabled(&self, id: &str, disabled: bool) {
+        let mut rows = self.rows.clone();
+        let children = rows[0]["insert"][0]["config"].as_array_mut().unwrap();
+        let child = children
+            .iter_mut()
+            .find(|child| child["id"] == json!(id))
+            .unwrap_or_else(|| panic!("no child row {id}"));
+        child["disabled"] = json!(disabled);
+        let patches: Vec<Patch> = serde_json::from_value(rows).unwrap();
+        let report = self
+            .loader
+            .reconcile(vec![Layer::new("rows", patches)], None)
+            .await
+            .unwrap();
+        assert!(report.failures.is_empty(), "{report:?}");
+    }
 }
 
 // ── The suite ───────────────────────────────────────────────────
+
+/// A row inside an instance waits for that instance's own host dispatcher
+/// (`host_key_in` in place of `host_key`) and stops when it goes: the JS
+/// row's `js_timeline` is disabled, every instance's reader stops waiting
+/// for it, and enabling the row starts them again. Nothing crosses between
+/// the instances.
+/// guarantee: loader/rows-gate-on-services
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rows_instance_host_service_going_stops_it() {
+    if !rutis_test_support::runtimes::all_enabled(&["node", "python"]) {
+        return;
+    }
+    let fixture = fixture().await;
+    fixture.create("A").await;
+    fixture.create("B").await;
+    // The lines recorded before this point belong to the first start.
+    fixture.probe.take();
+
+    fixture.set_child_disabled("js", true).await;
+    COLD.until(
+        || fixture.copies("reader").iter().all(|entry| !active(entry)),
+        &format!("the readers to stop: {}", fixture.loader.status()),
+    )
+    .await;
+    let readers = fixture.copies("reader");
+    assert_eq!(readers.len(), 2, "one reader per instance");
+    for entry in &readers {
+        let waits: Vec<String> = fixture
+            .loader
+            .waits(entry)
+            .into_iter()
+            .map(|wait| wait.service)
+            .collect();
+        assert!(
+            waits.iter().any(|name| name == "js_timeline"),
+            "{}: {waits:?}",
+            entry.id
+        );
+    }
+
+    fixture.set_child_disabled("js", false).await;
+    COLD.until(
+        || fixture.copies("reader").iter().all(active),
+        &format!("the readers to start again: {}", fixture.loader.status()),
+    )
+    .await;
+    for title in ["A", "B"] {
+        fixture
+            .probe
+            .wait_for(&format!("rust in {title} reads py {title} / js {title}"))
+            .await;
+    }
+    fixture.root.shutdown().await.unwrap();
+}
 
 /// Two instances, the same names: each instance's TS and Python rows see
 /// that instance's Rust `tools`, and its Rust reader reads that instance's
