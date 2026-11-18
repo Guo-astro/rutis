@@ -335,7 +335,7 @@ let some = ctx.filter { $0.row == "chat" }                        // Rutis.Emitt
 | 会话结构 | 一个读线程（阻塞读通道，帧经 `AsyncStream` 进 async 世界；阻塞读不落在协作线程池上）；一条写线程按序写帧——发帧的只把帧入队，阻塞写落在写线程上，不落在协作线程池上；会话结束时等它把已收的帧写完（至多 5 秒）再返回（#630）；每个进来的 `call` / `invoke` / `get` / `await` / 控制操作一个新 Task；`events.on` / `events.off` / `events.elsewhere` 在读循环里按帧序就地处理；行状态各自加锁 |
 | 可重入 | 任何时候执行任何进来的调用；声明 `reentrant-sync`。不声明 `sync-stack`：调用并发跑在不同 Task 上，无单栈顺序（与 Go 同类，见契约 §2） |
 | 同步等待 | 调用对端 `sync` 方法或 `bail` 时帧带 `sync: true`，当前 Task 挂起在 continuation 上等回复——**不阻塞任何线程**；声明 `sync-wait`，参与宿主的等待环检测。等待期间其他 Task 照常执行进来的调用 |
-| 插件要求 | 服务对象可被并发调用（推荐 `actor` 或 `Sendable` 类型）；调用其他服务时不持锁（写进指南） |
+| 插件要求 | 服务对象可被并发调用（推荐 `actor` 或 `Sendable` 类型）；调用其他服务时不持锁（写进指南）；Swift 6 模式把顶层代码变成 `@MainActor`，在那里形成的 `apply` 也是 MainActor 隔离的——标 `@Sendable`，或把插件定义放在顶层代码之外，否则运行时对它的调用会等主线程（#1273） |
 | 调用链 | `@TaskLocal var path: [String]`：进来的调用在其 Task 里设 `path + [id]`；发出的调用从当前 TaskLocal 取链；`apply` / 清理带 `rows.load` / `rows.unload` 的链；插件自己用 `Task.detached` 时链丢失（写进指南：用 `ctx.spawn` 或普通 `Task {}`） |
 | `sync` 方法 | 实现可以是 `async`，也可以在里面调用其他服务（挂起不占线程）；与 Go 的行为相同 |
 | 进来的取消 | `cancel` 帧或 `signal` 中止 → 该调用的 `Task.cancel()`；`Task.checkCancellation()` 抛 `CancellationError` |

@@ -1154,6 +1154,11 @@ jobs:
     needs: changes
     if: needs.changes.outputs.swift == 'true'
     runs-on: ${{ fromJSON(vars.MACOS_RUNNER || '["self-hosted","macOS","ARM64"]') }}
+    # About 18–25 minutes; a step that stops producing output must not hold the
+    # job (and the nightly's concurrency group) to GitHub's 6-hour default
+    # (2026-11-18: `cargo test (the contract suites with Swift)` ran 80+
+    # minutes with no output, #1080).
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - name: self-hosted runner, start (tools/ci-self-hosted.sh)

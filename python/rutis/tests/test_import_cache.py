@@ -52,5 +52,35 @@ class FirstImport(background.TestCase):
         self.assertIn("apply", module.__dict__)
 
 
+class SameSecondEdit(background.TestCase):
+    """A `.pyc` is current when its source's modification time, in whole
+    seconds, and its size are the ones it recorded. An edit that keeps both
+    — the same text length, saved in the second the last compile ran in —
+    must still run (#1080)."""
+
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.dir = os.path.realpath(directory.name)
+        sys.path.insert(0, self.dir)
+        self.addCleanup(sys.path.remove, self.dir)
+        self.addCleanup(sys.modules.pop, "edited", None)
+
+    def write(self, text, at):
+        path = os.path.join(self.dir, "edited.py")
+        with open(path, "w") as file:
+            file.write(text)
+        os.utime(path, (at, at))
+
+    def test_an_edit_of_the_same_size_in_the_same_second_runs(self):
+        self.write("VALUE = 'v1'\n", 1_000_000_000.1)
+        runtime = Runtime()
+        self.assertEqual(runtime.module("edited").VALUE, "v1")
+        # The same size, and a modification time in the second the first
+        # import's `.pyc` records: the bytecode Python cached is not current.
+        self.write("VALUE = 'v2'\n", 1_000_000_000.7)
+        self.assertEqual(runtime.module("edited").VALUE, "v2")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -83,8 +83,16 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+      - name: self-hosted runner, start (tools/ci-self-hosted.sh)
+        if: runner.environment == 'self-hosted'
+        env:
+          RUTIS_CI_JOBS: ${{ vars.LINUX_CI_JOBS }}
+          RUTIS_TEST_TIME_SCALE: ${{ vars.LINUX_TEST_TIME_SCALE || '3' }}
+        run: bash tools/ci-self-hosted.sh start
       - uses: dtolnay/rust-toolchain@1.98.1
+      # Self-hosted runners keep their target directory instead.
       - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
       - name: Build the rutis tests (debug and release)
         # bash -eo pipefail: a failing build fails the step through jq.
         shell: bash
@@ -147,6 +155,11 @@ jobs:
           done
           cat "$summary" >> "$GITHUB_STEP_SUMMARY"
           exit $status
+      - name: self-hosted runner, end
+        if: always() && runner.environment == 'self-hosted'
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: bash tools/ci-self-hosted.sh end
 
   # The rutis-bridge and rutis-loader tests that start processes, open local
   # channels or start runtime processes, many times over, with the runtimes
@@ -166,13 +179,21 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
+      - name: self-hosted runner, start (tools/ci-self-hosted.sh)
+        if: runner.environment == 'self-hosted'
+        env:
+          RUTIS_CI_JOBS: ${{ vars.LINUX_CI_JOBS }}
+          RUTIS_TEST_TIME_SCALE: ${{ vars.LINUX_TEST_TIME_SCALE || '3' }}
+        run: bash tools/ci-self-hosted.sh start
       - uses: dtolnay/rust-toolchain@1.98.1
+      # Self-hosted runners keep their target directory instead.
       - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
       # The runtime versions of the `rust` job of ci.yml: the oldest supported.
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-          cache: npm
+          cache: ${{ runner.environment == 'github-hosted' && 'npm' || '' }}
           cache-dependency-path: node/rutis-runtime/package-lock.json
       - run: npm --prefix node/rutis-runtime ci
       - uses: oven-sh/setup-bun@v2
@@ -185,6 +206,9 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: oldstable
+          # A self-hosted runner keeps its Go module and build caches; a
+          # restored one cannot replace the module cache's read-only files.
+          cache: ${{ runner.environment == 'github-hosted' }}
           cache-dependency-path: go/rutis/go.mod
       - name: Build the multi-process tests
         # bash -eo pipefail: a failing build fails the step through jq.
@@ -301,6 +325,11 @@ jobs:
           name: multiprocess-logs
           path: ${{ runner.temp }}/multiprocess-logs
           retention-days: 14
+      - name: self-hosted runner, end
+        if: always() && runner.environment == 'self-hosted'
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: bash tools/ci-self-hosted.sh end
 
   # The unified events conformance suite (#464,
   # crates/rutis-loader/tests/events_conformance.rs) in every placement of
@@ -325,12 +354,20 @@ jobs:
         cases: ${{ fromJSON(inputs.events_case != '' && format('["{0}"]', inputs.events_case) || '["serial/", "order/", "waterfall,bail/", "parallel/,scope/,filter/", "emit/,unload/,values/,kinds/,rutis/,disconnect/,node/,cancel/,cordis/,reserved/,registration/,rust/,modes/"]') }}
     steps:
       - uses: actions/checkout@v4
+      - name: self-hosted runner, start (tools/ci-self-hosted.sh)
+        if: runner.environment == 'self-hosted'
+        env:
+          RUTIS_CI_JOBS: ${{ vars.LINUX_CI_JOBS }}
+          RUTIS_TEST_TIME_SCALE: ${{ vars.LINUX_TEST_TIME_SCALE || '3' }}
+        run: bash tools/ci-self-hosted.sh start
       - uses: dtolnay/rust-toolchain@1.98.1
+      # Self-hosted runners keep their target directory instead.
       - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-          cache: npm
+          cache: ${{ runner.environment == 'github-hosted' && 'npm' || '' }}
           cache-dependency-path: node/rutis-runtime/package-lock.json
       - run: npm --prefix node/rutis-runtime ci
       - uses: oven-sh/setup-bun@v2
@@ -343,6 +380,9 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: oldstable
+          # A self-hosted runner keeps its Go module and build caches; a
+          # restored one cannot replace the module cache's read-only files.
+          cache: ${{ runner.environment == 'github-hosted' }}
           cache-dependency-path: go/rutis/go.mod
       - run: cargo test -p rutis-loader --all-features --test events_conformance --no-run
       - name: Every placement
@@ -377,6 +417,11 @@ jobs:
           name: events-all-${{ matrix.x }}-${{ strategy.job-index }}
           path: ${{ runner.temp }}/events.txt
           retention-days: 14
+      - name: self-hosted runner, end
+        if: always() && runner.environment == 'self-hosted'
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: bash tools/ci-self-hosted.sh end
 
   # The CPU baseline of instances (#980): what creating N instances of eight
   # rows costs, each row with a `FiberStatusChanged` listener (8N listeners on
@@ -392,8 +437,16 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+      - name: self-hosted runner, start (tools/ci-self-hosted.sh)
+        if: runner.environment == 'self-hosted'
+        env:
+          RUTIS_CI_JOBS: ${{ vars.LINUX_CI_JOBS }}
+          RUTIS_TEST_TIME_SCALE: ${{ vars.LINUX_TEST_TIME_SCALE || '3' }}
+        run: bash tools/ci-self-hosted.sh start
       - uses: dtolnay/rust-toolchain@1.98.1
+      # Self-hosted runners keep their target directory instead.
       - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
       - name: Instances fit the CPU baseline
         # bash -eo pipefail: a failing test fails the step through tee.
         shell: bash
@@ -415,13 +468,26 @@ jobs:
             sed -n '/^instances/,$p' "$RUNNER_TEMP/close-cpu.txt" || true
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+      - name: self-hosted runner, end
+        if: always() && runner.environment == 'self-hosted'
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: bash tools/ci-self-hosted.sh end
 
   soak:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+      - name: self-hosted runner, start (tools/ci-self-hosted.sh)
+        if: runner.environment == 'self-hosted'
+        env:
+          RUTIS_CI_JOBS: ${{ vars.LINUX_CI_JOBS }}
+          RUTIS_TEST_TIME_SCALE: ${{ vars.LINUX_TEST_TIME_SCALE || '3' }}
+        run: bash tools/ci-self-hosted.sh start
       - uses: dtolnay/rust-toolchain@1.98.1
+      # Self-hosted runners keep their target directory instead.
       - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
       - run: cargo test -p rutis-bridge --features websocket --test websocket_soak --test local_soak --no-run
       - name: Soak the network stack
         # bash -eo pipefail: a failing soak fails the step through tee.
@@ -433,6 +499,11 @@ jobs:
           cargo test -q -p rutis-bridge --features websocket --test websocket_soak -- --ignored --nocapture 2>&1 | tee websocket.txt
           cargo test -q -p rutis-bridge --test local_soak -- --ignored --nocapture 2>&1 | tee local.txt
           grep -h '^soak:' websocket.txt local.txt >> "$GITHUB_STEP_SUMMARY"
+      - name: self-hosted runner, end
+        if: always() && runner.environment == 'self-hosted'
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: bash tools/ci-self-hosted.sh end
 
   # The resource baseline of instances (#979): what one instance of eight
   # rows holds while it runs, the peak of closing N of them at once (#977),
@@ -446,8 +517,16 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+      - name: self-hosted runner, start (tools/ci-self-hosted.sh)
+        if: runner.environment == 'self-hosted'
+        env:
+          RUTIS_CI_JOBS: ${{ vars.LINUX_CI_JOBS }}
+          RUTIS_TEST_TIME_SCALE: ${{ vars.LINUX_TEST_TIME_SCALE || '3' }}
+        run: bash tools/ci-self-hosted.sh start
       - uses: dtolnay/rust-toolchain@1.98.1
+      # Self-hosted runners keep their target directory instead.
       - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
       - name: Instances fit the resource baseline
         # bash -eo pipefail: a failing test fails the step through tee.
         shell: bash
@@ -464,6 +543,11 @@ jobs:
             sed -n '/^plain rows/,$p' "$RUNNER_TEMP/close-memory.txt" || true
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+      - name: self-hosted runner, end
+        if: always() && runner.environment == 'self-hosted'
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: bash tools/ci-self-hosted.sh end
 
   # S8 (#192, tests/e2e/tests/soak.rs): one rutis-host run for
   # `host_soak_secs` with random operations from a seed (configuration
@@ -642,13 +726,31 @@ jobs:
 
   # The shuttle models of the kernel (crates/rutis/src/fiber/shuttle_tests.rs:
   # TransitionTask wakeup, post_join against the driver's exit, concurrent
-  # dispose) and of the bridge's subprocess exit state
-  # (crates/rutis-bridge/src/pipe/spawn/shuttle_tests.rs, #623),
-  # `shuttle_iterations` iterations of each scheduler per model. A failure
-  # prints the failing schedule and seed; the log is uploaded.
+  # dispose) and of the bridge (nine shuttle_tests.rs modules: subprocess
+  # exit state, session, event host, channels, ...), `shuttle_iterations`
+  # iterations of each scheduler per model. A failure prints the failing
+  # schedule and seed; the log is uploaded.
+  #
+  # Sharded by a hash of the model's name, four shards per crate: a model
+  # is one thread's work, and at a million iterations the slowest take tens
+  # of minutes, so one job ran for hours and was cut at its 60-minute
+  # limit (2026-11-12 on; the models #622 added made it grow). Every model
+  # lands in exactly one shard; a new model needs no change here.
+  #
+  # The 150-minute limit is what the shards need: the first run with 90
+  # (2026-11-18, run 44316343421) cut `rutis` shard 2/4 at 95 minutes while
+  # shard 3/4 had finished in 51; a run's time depends on the schedules a
+  # random seed walks, so a shard's time varies by more than the model count
+  # suggests.
   shuttle:
+    name: shuttle (${{ matrix.crate }}, ${{ matrix.shard }}/4)
     runs-on: ${{ fromJSON(vars.LINUX_RUNNER || '"ubuntu-24.04"') }}
-    timeout-minutes: 60
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        crate: [rutis, rutis-bridge]
+        shard: [0, 1, 2, 3]
     steps:
       - uses: actions/checkout@v4
       - name: self-hosted runner, start (tools/ci-self-hosted.sh)
@@ -666,28 +768,61 @@ jobs:
         env:
           RUSTFLAGS: --cfg rutis_shuttle
           RUTIS_SHUTTLE_ITERATIONS: ${{ inputs.shuttle_iterations || '1000000' }}
+          CRATE: ${{ matrix.crate }}
+          SHARD: ${{ matrix.shard }}
+          SHARDS: 4
         run: |
           case "$RUTIS_SHUTTLE_ITERATIONS" in ""|*[!0-9]*) echo "::error::shuttle_iterations must be a number"; exit 1;; esac
           mkdir -p "$RUNNER_TEMP/shuttle"
-          cargo test -p rutis --lib --target-dir "${CARGO_TARGET_DIR:-target}/shuttle" shuttle 2>&1 | tee "$RUNNER_TEMP/shuttle/shuttle.txt"
-          cargo test -p rutis-bridge --features websocket --lib --target-dir "${CARGO_TARGET_DIR:-target}/shuttle" shuttle 2>&1 | tee "$RUNNER_TEMP/shuttle/shuttle-bridge.txt"
-          echo "shuttle: $RUTIS_SHUTTLE_ITERATIONS iterations of each scheduler per model (rutis and rutis-bridge), passed" >> "$GITHUB_STEP_SUMMARY"
+          features=; [ "$CRATE" = rutis-bridge ] && features="--features websocket"
+          # shellcheck disable=SC2086 # the features split into flags
+          cargo test -p "$CRATE" $features --lib --target-dir "${CARGO_TARGET_DIR:-target}/shuttle" \
+            --no-run --message-format=json \
+            | jq -r 'select(.profile.test == true and .executable != null) | .executable' \
+            > "$RUNNER_TEMP/shuttle/bin.txt"
+          [ -s "$RUNNER_TEMP/shuttle/bin.txt" ] || { echo "::error::no $CRATE shuttle test binary"; exit 1; }
+          while IFS= read -r bin; do
+            # The models this binary runs under the filter `shuttle` (their
+            # module path says it): the same set the unsharded job ran.
+            mapfile -t all < <("$bin" --list | sed -n 's/^\(.*shuttle.*\): test$/\1/p')
+            [ "${#all[@]}" -gt 0 ] || { echo "::error::$bin has no shuttle models"; exit 1; }
+            models=()
+            for name in "${all[@]}"; do
+              sum=$(printf %s "$name" | cksum | cut -d' ' -f1)
+              [ $((sum % SHARDS)) -eq "$SHARD" ] && models+=("$name")
+            done
+            [ "${#models[@]}" -gt 0 ] || { echo "::error::$CRATE shard $SHARD of $SHARDS has no models"; exit 1; }
+            echo "$CRATE: ${#models[@]} of ${#all[@]} models, shard $SHARD of $SHARDS"
+            "$bin" -q "${models[@]}" 2>&1 | tee "$RUNNER_TEMP/shuttle/$CRATE-$SHARD.txt"
+            echo "| $CRATE | ${#models[@]} of ${#all[@]} | $RUTIS_SHUTTLE_ITERATIONS |" >> "$RUNNER_TEMP/shuttle/ran.md"
+          done < "$RUNNER_TEMP/shuttle/bin.txt"
+          {
+            echo "### shuttle models, $CRATE shard $SHARD of $SHARDS"
+            echo
+            echo "| crate | models | iterations of each scheduler |"
+            echo "| --- | --- | --- |"
+            cat "$RUNNER_TEMP/shuttle/ran.md"
+            echo
+            echo "passed"
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Say how to replay
         if: failure()
+        env:
+          CRATE: ${{ matrix.crate }}
+          SHARD: ${{ matrix.shard }}
         run: |
+          features=; [ "$CRATE" = rutis-bridge ] && features=" --features websocket"
           {
             echo "### shuttle models failed"
             echo
-            echo "The failing schedule is in the log (\`failing schedule: \"…\"\`) and in the \`shuttle-log\` artifact. Replay it:"
+            echo "The failing schedule is in the log (\`failing schedule: \"…\"\`) and in the \`shuttle-log-$CRATE-$SHARD\` artifact. Replay it:"
             echo
-            echo "\`RUTIS_SHUTTLE_REPLAY=<schedule> RUSTFLAGS=\"--cfg rutis_shuttle\" cargo test -p rutis --lib --target-dir target/shuttle <failing test>\`"
-            echo
-            echo "and the same with \`-p rutis-bridge\` for the subprocess exit models."
+            echo "\`RUTIS_SHUTTLE_REPLAY=<schedule> RUSTFLAGS=\"--cfg rutis_shuttle\" cargo test -p $CRATE$features --lib --target-dir target/shuttle <failing test>\`"
           } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
-          name: shuttle-log
+          name: shuttle-log-${{ matrix.crate }}-${{ matrix.shard }}
           path: ${{ runner.temp }}/shuttle
           retention-days: 14
       - name: self-hosted runner, end

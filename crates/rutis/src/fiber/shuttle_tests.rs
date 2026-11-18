@@ -77,6 +77,27 @@
 //!   not a shuttle subject — real time is not an interleaving — and is pinned
 //!   end to end by
 //!   `crates/rutis/tests/unload_deadline.rs::an_unload_gives_up_on_running_listeners_at_the_deadline`.
+//! - **The kernel's own emit chain with several same-name emits queued
+//!   (`core/D31b`, #1332).** A model that calls the real `Ctx::emit` under a
+//!   [`SpawnScope`] and drains the scope at the end sees the start order of two
+//!   emits reverse in some schedules (four emits delivered `[0, 1, 3, 2]`), and
+//!   can deadlock instead. Both are the stand-in's, not the kernel's: the scope
+//!   runs its tasks as coroutines on the model's OS thread, and
+//!   `crate::sync::spawn` is a switch point inside `emit_erased`'s
+//!   `SPAWNING_EMIT` window. A task that finishes there (a previous emit's)
+//!   drops its `TailCleanup` while the window is open; the kernel takes that
+//!   thread-local for the future it just spawned having been dropped in `spawn`,
+//!   sets `DROPPED_INLINE`, and skips `state.tails.insert`, so its own task runs
+//!   but the next emit finds no tail and starts without waiting. A task that
+//!   finishes while `snapshot_with` holds the bus's std lock blocks on the same
+//!   lock in `EmitTicket::drop`, on the same thread (a deadlock). The host
+//!   runtime does neither: `Handle::spawn` never runs a task inside the caller,
+//!   and a task on another thread waits for the lock instead of deadlocking.
+//!   The reproduction, its schedules and the real-executor runs are in
+//!   `docs/formal-trace/means-0.23.md` §5; the queue's order is model 10's
+//!   subject (the kernel's `Table`, `Selected` and `Entry`, with the chain
+//!   mirrored), and `core/D31b` keeps its means (tests plus the host-queue
+//!   model).
 //!
 //! Run (CONTRIBUTING.md):
 //!
