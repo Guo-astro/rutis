@@ -506,10 +506,16 @@ fn exact(link: &Link, kept: &BTreeSet<u8>, what: &str) -> Result<(), TestCaseErr
 
 #[tokio::test(flavor = "multi_thread")]
 async fn grants_releases_and_refusals_leave_the_tables_exact() {
-    let link = Link::fixture();
-    link.near.ready().await.unwrap();
     tokio::task::spawn_blocking(move || {
+        // A link of its own for every case: proptest runs a case, then the
+        // failing one smaller and smaller, and a link the failing case left
+        // mid-way would make the shrink fail at its first check (`the
+        // start`) with the references of the case before (#1080).
         check("grants and refusals", ops(), |ops| {
+            let link = Link::fixture();
+            tokio::runtime::Handle::current()
+                .block_on(link.near.ready())
+                .expect("the link's handshake");
             let callbacks: Vec<Value> = (0..SLOTS).map(|_| doubling()).collect();
             let call = |method: &str, args: Vec<Value>, what: &str| {
                 link.near
