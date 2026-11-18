@@ -224,6 +224,7 @@ jobs:
               - tools/swift-strict-concurrency.sh
               - tools/public-api-swift.sh
               - tools/public-api-check.sh
+              - crates/rutis-bridge/tests/host_gone.rs
               - crates/rutis-bridge/tests/swift_remote.rs
               - crates/rutis-bridge/tests/swift_runtime.rs
               - crates/rutis-loader/src/runtime/swift.rs
@@ -232,6 +233,7 @@ jobs:
               - crates/rutis-loader/tests/objects_cross.rs
               - crates/rutis-loader/tests/plugin_values.rs
               - crates/rutis-host/src/languages/swift.rs
+              - crates/rutis-host/tests/lease_e2e.rs
               - crates/rutis-host/tests/swift.rs
               - crates/rutis-host/tests/swift_app.rs
               - tests/e2e/tests/dev_loop.rs
@@ -1236,6 +1238,15 @@ jobs:
         env:
           RUTIS_TEST_RUNTIMES: swift
         run: cargo test -p rutis-bridge --all-features --test swift_runtime
+      # What a session's end leaves: a runtime whose host went away (the
+      # local channel, RUTIS_SHUTDOWN_TIMEOUT) and a listening runtime whose
+      # lease a newer controller takes over (#624, the Swift columns).
+      - name: cargo test (the lease and host-gone suites with Swift)
+        env:
+          RUTIS_TEST_RUNTIMES: swift
+        run: |
+          cargo test -p rutis-host --test lease_e2e swift
+          cargo test -p rutis-bridge --all-features --test host_gone swift
       # Swift rows beside Node and Python ones: their runtimes too.
       - uses: actions/setup-node@v4
         with:

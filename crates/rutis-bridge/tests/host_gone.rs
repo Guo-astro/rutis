@@ -20,6 +20,8 @@ use serde_json::json;
 
 mod common;
 mod kotlin;
+#[cfg(target_os = "macos")]
+mod swift;
 
 use common::runtime::launcher;
 use rutis_test_support::runtimes;
@@ -141,6 +143,9 @@ enum Runtime {
     Python,
     Go,
     Kotlin,
+    /// macOS only, as Swift plugin binaries are.
+    #[cfg(target_os = "macos")]
+    Swift,
     #[cfg(unix)]
     Bun,
 }
@@ -184,6 +189,18 @@ async fn start(runtime: Runtime, dir: &Path, deadline: &str) -> (Arc<Process>, P
             (
                 package,
                 kotlin::launcher().cwd(dir),
+                dir.to_owned(),
+                PathBuf::from("host_gone"),
+            )
+        }
+        #[cfg(target_os = "macos")]
+        Runtime::Swift => {
+            // The lease fixture binary's plugin `host_gone` (Rutis.serve),
+            // built here with the `swift` on PATH.
+            let binary = swift::binary("RutisLeaseFixture");
+            (
+                repo(),
+                launcher(runtimes::binary(&binary, dir)),
                 dir.to_owned(),
                 PathBuf::from("host_gone"),
             )
@@ -380,6 +397,10 @@ def apply(ctx, config):
             Runtime::Kotlin => {
                 unreachable!("the Kotlin column has no busy case")
             }
+            #[cfg(target_os = "macos")]
+            Runtime::Swift => {
+                unreachable!("the Swift column has no busy case")
+            }
             _ => {
                 let entry = dir.join("busy.mjs");
                 std::fs::write(&entry, NODE_BUSY).unwrap();
@@ -537,4 +558,22 @@ async fn kotlin_gives_up_a_cleanup_at_its_deadline_when_its_host_goes_away() {
         return;
     }
     gives_up_a_cleanup_at_its_deadline(Runtime::Kotlin).await;
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test(flavor = "multi_thread")]
+async fn swift_exits_after_its_cleanups_when_its_host_goes_away() {
+    if !rutis_test_support::runtimes::enabled("swift") {
+        return;
+    }
+    exits_after_its_cleanups(Runtime::Swift).await;
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test(flavor = "multi_thread")]
+async fn swift_gives_up_a_cleanup_at_its_deadline_when_its_host_goes_away() {
+    if !rutis_test_support::runtimes::enabled("swift") {
+        return;
+    }
+    gives_up_a_cleanup_at_its_deadline(Runtime::Swift).await;
 }
