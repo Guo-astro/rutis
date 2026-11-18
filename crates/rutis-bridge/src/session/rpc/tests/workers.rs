@@ -60,10 +60,11 @@ struct Observed {
     other_thread: bool,
 }
 
-/// The shape of `policy-b-workers1`: the host's own synchronous call is out
-/// (task `hold`, `HostRoot`), and inside its wait the far end synchronously
-/// calls a Rust service that is not on that call's chain. Then the far end
-/// answers the host's own call, freeing its worker.
+/// The shape of `policy-b-workers1`: a task of the runtime makes the host's
+/// own synchronous call (calling `hold` on the far end, `HostRoot`), and
+/// inside that wait the far end synchronously calls a Rust service that is
+/// not on the call's chain. Then the far end answers the host's own call,
+/// freeing its worker.
 fn policy_b_workers(workers: usize) -> Observed {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(workers)
