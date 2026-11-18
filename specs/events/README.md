@@ -53,7 +53,7 @@
 - 场景是：`R1` 的行 A 在同步等待中经宿主发 `E1`，`E1` 在 `L1` 的调用被扣住；`R1` 就地读回复后，等待链发 `E2`，行 B 发 `E3`。宿主按会话一条队列，一次只取一项；队列项记住自己的行，所以卸载行 A 只丢掉 A 的项。
 - 三个 emit 的过滤器都只建经宿主的路径；快速路径上的过滤、每个 emit 多个过滤器、`serial` 等其他方式不建。
 - `R2a` / `R2b` 用“`L2` 上正在跑的调用集合”区分：`R2a` 允许交叠，`R2b` 要等同一监听器的调用结束。两个配置状态数不同，说明区别确实建了；调用结束是任意一步，不是真实调度。
-- 行卸载丢弃它排队的 emit、放开正在等过滤器的 emit、丢掉已经扣住的调用；A 卸载后 `L1` 不再开始任何调用。`unloadQueue` 变异保留它们（#536）。
+- 行卸载丢弃它排队的 emit、放开正在等过滤器的 emit、丢掉已经扣住的调用；A 卸载后 `L1` 不再开始任何调用。`unloadQueue` 变异保留它们（#536）。模型里卸载丢掉这一行的全部项，所以 `UnloadedRowEmitsNothing` 说的是“卸载前就排队的那些”；正在卸载的行交出的清理 emit，宿主收下后即使这一行被撤下也仍会投递（事件协议 §7.1 第 5 步、#1327），这一点不建。
 - 死锁检查：健康配置 `CHECK_DEADLOCK TRUE`，`Done` 只在没有排队、没有过滤器/调用在跑、没有被扣住的调用时停住。`never` 过滤器不在这些配置里——它按协议就是永远挂着，不是要检查的死锁。
 - 不建 panic、任务调度、真实 Promise、Node/Bun/Python 的帧泵差别，也不建 `emit` 的失败报告。
 - `python-deferred`（`Defer = "nextRound"`）：Python 把收到的 invoke 帧（含 `events.call`）交给 `loop.call_soon`（`python/rutis/rutis/peer.py:1886`），只有同步等待中的帧就地处理（`_run`，同文件 1892–1896）；`call_soon` 先进先出。模型里 `R2` 的调用先进 `deferred`，只从队头开始，所以调用比读到帧晚，同一监听器上的先后不变。配置 `emit-python-deferred` 通过：延迟只推后 `StartCall`，模型本来就允许它任意晚，性质不因此改变。它没有建的是“宿主把这次调用算作已开始”和“监听器函数体开始”两步的分离（现在 `StartCall` 同时是这两件事），也没有 EVP-4.1-2“帧就地处理、处理完再读下一帧”这条性质，所以它不能验证那条规则。Python 也没有快速路径（`python/rutis/rutis/runner.py` 的 `send` 总是发 `events.dispatch`，`python/rutis/rutis/` 里没有处理 `events.elsewhere` 的代码）。

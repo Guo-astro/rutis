@@ -822,6 +822,258 @@ async fn an_answer_does_not_overtake_the_dispatch_before_it() {
 async fn finish(call: impl std::future::Future<Output = Reply>) -> Result<Value, Error> {
     settle(call.await?).await
 }
+
+/// Whether the fake runtime's listener `id` was called.
+fn heard(rig: &Rig, id: &str) -> bool {
+    rig.fake
+        .calls
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|call| call["listener"] == Value::Data(json!(id)))
+}
+
+/// A filter the test holds: it is asked once, then answers whatever the
+/// returned sender gives, `[true]` for the one candidate by default.
+fn held_filter() -> (Value, Arc<AtomicBool>, tokio::sync::oneshot::Sender<Reply>) {
+    let (release, answer) = tokio::sync::oneshot::channel::<Reply>();
+    let awaiting: Arc<Mutex<Option<tokio::sync::oneshot::Receiver<Reply>>>> = Arc::default();
+    *awaiting.lock().unwrap() = Some(answer);
+    let asked = Arc::new(AtomicBool::new(false));
+    let filter = {
+        let (asked, awaiting) = (asked.clone(), awaiting.clone());
+        Value::callback(move |_| {
+            asked.store(true, Ordering::SeqCst);
+            let answer = awaiting.lock().unwrap().take();
+            match answer {
+                Some(answer) => Ok(Value::future(async move {
+                    // A filter the session drops (the row ended, the session
+                    // did) answers as usual, for the test's own checks.
+                    answer
+                        .await
+                        .unwrap_or_else(|_| Ok(Value::Data(json!([true]))))
+                })),
+                None => Ok(Value::Data(json!([true]))),
+            }
+        })
+    };
+    (filter, asked, release)
+}
+
+/// `events.dispatch` of `name` from `row`, sent without waiting for its reply.
+fn dispatch_started(
+    rig: &Rig,
+    row: &str,
+    name: &str,
+    arg: Json,
+) -> impl std::future::Future<Output = Reply> + Send + 'static {
+    let mut fields = BTreeMap::new();
+    fields.insert("row".into(), Value::Data(json!(row)));
+    fields.insert("name".into(), Value::Data(json!(name)));
+    fields.insert("mode".into(), Value::Data(json!("emit")));
+    fields.insert("args".into(), Value::List(vec![Value::Data(arg)]));
+    rig.far
+        .invoke_started(
+            "",
+            "events.dispatch",
+            Value::List(vec![Value::Record(fields)]),
+        )
+        .unwrap()
+}
+
+/// guarantee: events/hub-lifecycle
+///
+/// A cleanup's emission the host took in while its row unloaded is delivered
+/// after that row is off the session, even when the session's emit queue is
+/// held by another row's filter: the answer that ends a row takes its
+/// listeners and its ordinary emits, never what its cleanups handed over
+/// before it (events protocol §5.5, §7.1 step 5, #1327).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_cleanup_emission_outlives_its_row_and_the_queue_before_it() {
+    within("cleanup behind a queue", async {
+        let rig = Arc::new(rig().await);
+        rig.load("a", &[]).await;
+        rig.load("b", &[]).await;
+        rig.load("other", &[]).await;
+        rig.on(
+            "other-hears",
+            "t/cleanup",
+            Some("other"),
+            "async",
+            answers(json!(null)),
+        )
+        .await;
+        // One listener of the held name, so row `a`'s filter is asked at all.
+        rig.on(
+            "other-holds",
+            "t/hold",
+            Some("other"),
+            "async",
+            answers(json!(null)),
+        )
+        .await;
+
+        // Row `a`'s emit waits for a filter the test holds: it holds the
+        // session's emit queue (§5.5).
+        let (filter, asked, release_filter) = held_filter();
+        let holding = tokio::spawn({
+            let rig = rig.clone();
+            async move {
+                rig.dispatch(Some("a"), "t/hold", "emit", vec![], Some(filter))
+                    .await
+            }
+        });
+        eventually(|| asked.load(Ordering::SeqCst), "the held emit's filter").await;
+
+        // Row `b` unloads: the runtime keeps `rows.unload` unanswered while
+        // its stack runs, and the stack emits (§7.1 step 5).
+        let (release_unload, held) = tokio::sync::oneshot::channel::<()>();
+        rig.fake.held.lock().unwrap().insert("b".into(), held);
+        let unloading = tokio::spawn({
+            let process = rig.process.clone();
+            async move { process.unload_row("b").await }
+        });
+        eventually(
+            || rig.fake.held.lock().unwrap().is_empty(),
+            "rows.unload to reach the runtime",
+        )
+        .await;
+        let cleanup = dispatch_started(&rig, "b", "t/cleanup", json!("stack"));
+        // The answer follows the emission on the wire: row `b` leaves the
+        // session, its emission still waits its turn.
+        release_unload.send(()).unwrap();
+        unloading.await.unwrap().unwrap();
+        // What a context kept past the answer emits is refused (§7.1).
+        let refused = rig
+            .dispatch(Some("b"), "t/cleanup", "emit", vec![], None)
+            .await
+            .unwrap_err();
+        assert!(
+            refused
+                .to_string()
+                .contains("the calling row is not loaded in this runtime"),
+            "{refused}"
+        );
+        assert!(
+            !heard(&rig, "other-hears"),
+            "the emission was dispatched while row `a`'s filter held the queue"
+        );
+
+        // The queue goes on: row `a`'s filter answers, and what row `b`'s
+        // cleanup handed over reaches the other row's listener.
+        release_filter.send(Ok(Value::Data(json!([true])))).unwrap();
+        holding.await.unwrap().unwrap();
+        assert_eq!(finish(cleanup).await.unwrap(), Value::Undefined);
+        eventually(|| heard(&rig, "other-hears"), "the cleanup's emission").await;
+        let call = rig
+            .fake
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|call| call["listener"] == Value::Data(json!("other-hears")))
+            .cloned()
+            .expect("the other row's listener was called");
+        assert_eq!(
+            call["args"],
+            Value::List(vec![Value::Data(json!("stack"))]),
+            "the emission reached the other row as row `b` sent it"
+        );
+    })
+    .await;
+}
+
+/// guarantee: events/hub-lifecycle
+///
+/// What a session took in is dropped only when the session ends: an unload
+/// still waiting for its answer when that happens reports the session's end
+/// instead of success, and the emission it handed over reaches no listener
+/// (#1327, events protocol §7.1 step 5, §7.2).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_ending_with_a_cleanup_still_queued_reports_it() {
+    within("session ends with a cleanup queued", async {
+        let rig = Arc::new(rig().await);
+        rig.load("a", &[]).await;
+        rig.load("b", &[]).await;
+        rig.load("other", &[]).await;
+        rig.on(
+            "other-hears",
+            "t/cleanup",
+            Some("other"),
+            "async",
+            answers(json!(null)),
+        )
+        .await;
+        rig.on(
+            "other-holds",
+            "t/hold",
+            Some("other"),
+            "async",
+            answers(json!(null)),
+        )
+        .await;
+
+        // Row `a`'s filter holds the session's emit queue; the test never
+        // answers it.
+        let (filter, asked, _release_filter) = held_filter();
+        let holding = tokio::spawn({
+            let rig = rig.clone();
+            async move {
+                rig.dispatch(Some("a"), "t/hold", "emit", vec![], Some(filter))
+                    .await
+            }
+        });
+        eventually(|| asked.load(Ordering::SeqCst), "the held emit's filter").await;
+
+        let (release_unload, held) = tokio::sync::oneshot::channel::<()>();
+        rig.fake.held.lock().unwrap().insert("b".into(), held);
+        let unloading = tokio::spawn({
+            let process = rig.process.clone();
+            async move { process.unload_row("b").await }
+        });
+        eventually(
+            || rig.fake.held.lock().unwrap().is_empty(),
+            "rows.unload to reach the runtime",
+        )
+        .await;
+        let cleanup = dispatch_started(&rig, "b", "t/cleanup", json!("lost"));
+        // Events operations run in frame order: once this one is answered,
+        // the emission above waits in the session's queue.
+        rig.send("events.off", Value::Data(json!([])))
+            .await
+            .unwrap();
+        assert!(
+            !heard(&rig, "other-hears"),
+            "the emission was dispatched while the queue was held"
+        );
+        let _ = release_unload;
+
+        // The session ends before the runtime answers `rows.unload`: what it
+        // took in is never delivered, and the unload says so.
+        rig.far.close(Error::Transport("gone".into()));
+        let error = unloading.await.unwrap().unwrap_err();
+        assert!(
+            matches!(error, Error::Transport(_)),
+            "the unload reported {error:?} instead of the session's end"
+        );
+        assert!(
+            rig.process.connection().close_reason().is_some(),
+            "the session did not end"
+        );
+        let answered = finish(cleanup).await;
+        assert!(
+            answered.is_err(),
+            "the emission's reply said it was taken: {answered:?}"
+        );
+        holding.abort();
+        assert!(
+            !heard(&rig, "other-hears"),
+            "the emission was delivered although the session ended"
+        );
+    })
+    .await;
+}
+
 /// guarantee: events/hub-lifecycle
 ///
 /// `rows.ended` takes its place in frame order with the session's

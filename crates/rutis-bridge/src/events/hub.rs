@@ -168,7 +168,9 @@ struct Registered {
 /// An unloading row keeps this place, so its own cleanups still emit (§7.1
 /// step 5: the other rows hear them), but it keeps no listeners: the ones
 /// it had left the table when the unload started, and the ones it registers
-/// meanwhile are not kept.
+/// meanwhile are not kept. Being unloading is also what tells its cleanups'
+/// emissions apart from the emits it queued before them: those are delivered
+/// even after the row ends, these are let go with it (#1327).
 struct RowPlace {
     scope: Vec<Scope>,
     id: String,
@@ -178,14 +180,35 @@ struct RowPlace {
 #[derive(Default)]
 struct Emits {
     busy: bool,
-    /// The row of the dispatch running (its key) and its cancel, while one
-    /// runs.
-    running: Option<(Option<String>, Arc<Cancel>)>,
-    /// The row that emitted each queued dispatch (its key), and the run.
-    queue: VecDeque<(Option<String>, EmitRun)>,
+    /// The dispatch running, and its cancel, while one runs.
+    running: Option<(Emitted, Arc<Cancel>)>,
+    /// The dispatches queued behind it, in arrival order, and the run.
+    queue: VecDeque<(Emitted, EmitRun)>,
     /// The rows whose entries are leaving the table: nothing queued starts
     /// until none is (§7.1 step 1).
     leaving: Arc<Leaving>,
+}
+
+/// A dispatch waiting its turn in a session's emit queue, or running: who
+/// emitted it, and whether that row was unloading when the session took it.
+#[derive(Clone)]
+struct Emitted {
+    /// The row that emitted it: its key, or `None` for the mount's own.
+    row: Option<String>,
+    /// Handed over while its row was unloading: an emission of that row's
+    /// unload stack (§7.1 step 5), which the session delivers even after the
+    /// row ends, unlike the emits it queued before it started unloading
+    /// (#1327).
+    cleanup: bool,
+}
+
+impl Emitted {
+    /// Whether this is an ordinary emit of row `key`: one queued before the
+    /// row started unloading, which the row's unload and its end let go
+    /// (§5.5).
+    fn ordinary_of(&self, key: &str) -> bool {
+        !self.cleanup && self.row.as_deref() == Some(key)
+    }
 }
 
 /// The rows whose entries are leaving the table (§7.1 step 1). The kernel
@@ -396,7 +419,9 @@ impl SessionEvents {
     }
 
     /// Row `key` is gone: it left the session, so it emits nothing more and
-    /// its entries leave the table (events protocol §7.1).
+    /// its entries leave the table (events protocol §7.1). What it handed
+    /// over while it was unloading is the session's to deliver, even now
+    /// (§7.1 step 5, #1327).
     pub(crate) fn row_ended(&self, key: &str) {
         self.rows.lock().unwrap().remove(key);
         // The entries leave the table before the emits are let go: letting
@@ -412,11 +437,13 @@ impl SessionEvents {
     }
 
     /// Row `key` is unloading (`rows.unload` was sent): its entries leave
-    /// the table now, and the emits it left queued are dropped (§7.1 step 1,
+    /// the table now, and the emits it queued before are dropped (§7.1 step 1,
     /// §5.5). The row itself stays loaded, so its unload stack's cleanups
     /// still emit, and the other rows hear them until the runtime answers
     /// `rows.unload` (§7.1 step 5); then the host calls
-    /// [`SessionEvents::row_ended`].
+    /// [`SessionEvents::row_ended`], which keeps those emissions: they are
+    /// delivered in their turn even after the row is off the session
+    /// (#1327).
     pub(crate) fn row_unloading(&self, key: &str) {
         match self.rows.lock().unwrap().get_mut(key) {
             Some(place) => place.unloading = true,
@@ -431,18 +458,21 @@ impl SessionEvents {
         self.let_go_of_its_emits(key);
     }
 
-    /// The emits row `key` left queued are dropped, and the one running
-    /// (waiting for its filter) is let go (§5.5): the session's later emits
-    /// go on. Dropped after the lock: a future may write a frame on drop.
+    /// The ordinary emits row `key` left queued are dropped, and the one
+    /// running (waiting for its filter) is let go (§5.5): the session's later
+    /// emits go on. What the row handed over while it was unloading stays:
+    /// those are its unload stack's emissions, and the session delivers them
+    /// even after the row ends (§7.1 step 5, #1327). Dropped after the lock:
+    /// a future may write a frame on drop.
     fn let_go_of_its_emits(&self, key: &str) {
         let (queued, running) = {
             let mut emits = self.emits.lock().unwrap();
             let (queued, kept): (VecDeque<_>, VecDeque<_>) = std::mem::take(&mut emits.queue)
                 .into_iter()
-                .partition(|(row, _)| row.as_deref() == Some(key));
+                .partition(|(emitted, _)| emitted.ordinary_of(key));
             emits.queue = kept;
             let running = match &emits.running {
-                Some((row, _)) if row.as_deref() == Some(key) => emits.running.take(),
+                Some((emitted, _)) if emitted.ordinary_of(key) => emits.running.take(),
                 _ => None,
             };
             (queued, running)
@@ -766,31 +796,48 @@ impl SessionEvents {
     /// started (events protocol §5.5): here, when none waits and it starts
     /// at once (`true`); otherwise in turn, on a task.
     ///
+    /// What a row hands over while it is unloading is marked then, while the
+    /// row's place is held: such an emit is a cleanup's emission, which the
+    /// session delivers even after the row ends (§7.1 step 5, #1327).
+    ///
     /// A run that is let go (its row ended, or the session) or panics ends
     /// like one that finished: the next one starts. A queued emit waits for
     /// the rows whose entries are leaving the table too (§7.1 step 1).
     fn run_emit(self: &Arc<Self>, row: Option<String>, mut run: EmitRun) -> bool {
-        {
-            let mut emits = self.emits.lock().unwrap();
-            if emits.busy {
-                emits.queue.push_back((row, run));
-                return false;
-            }
-            if emits.leaving.count.load(Ordering::SeqCst) != 0 {
-                // A row's entries are leaving the table: this emit starts
-                // once they are out (§7.1 step 1), so the session's task
-                // holds the queue until then.
-                emits.busy = true;
-                emits.queue.push_back((row, run));
-                drop(emits);
-                let session = self.clone();
-                self.executor
-                    .spawn(async move { session.drive(None).await });
-                return false;
-            }
-            emits.busy = true;
-            emits.running = Some((row, run.cancel.clone()));
+        // The row's place is held while the emit takes its place in the
+        // queue: the row unloading meanwhile (on another thread) is what
+        // makes this one of its cleanups'.
+        let rows = self.rows.lock().unwrap();
+        let emitted = Emitted {
+            cleanup: row
+                .as_deref()
+                .is_some_and(|key| rows.get(key).is_some_and(|place| place.unloading)),
+            row,
+        };
+        let mut emits = self.emits.lock().unwrap();
+        if emits.busy {
+            emits.queue.push_back((emitted, run));
+            drop(emits);
+            drop(rows);
+            return false;
         }
+        if emits.leaving.count.load(Ordering::SeqCst) != 0 {
+            // A row's entries are leaving the table: this emit starts once
+            // they are out (§7.1 step 1), so the session's task holds the
+            // queue until then.
+            emits.busy = true;
+            emits.queue.push_back((emitted, run));
+            drop(emits);
+            drop(rows);
+            let session = self.clone();
+            self.executor
+                .spawn(async move { session.drive(None).await });
+            return false;
+        }
+        emits.busy = true;
+        emits.running = Some((emitted, run.cancel.clone()));
+        drop(emits);
+        drop(rows);
         let mut context = Context::from_waker(std::task::Waker::noop());
         let first = match Pin::new(&mut run).poll(&mut context) {
             Poll::Pending => Some(run),
@@ -849,8 +896,8 @@ impl SessionEvents {
             return Next::Leaving;
         }
         match emits.queue.pop_front() {
-            Some((row, next)) => {
-                emits.running = Some((row, next.cancel.clone()));
+            Some((emitted, next)) => {
+                emits.running = Some((emitted, next.cancel.clone()));
                 Next::Run(next)
             }
             None => {
@@ -1529,6 +1576,63 @@ mod tests {
         assert!(
             session.entries.lock().unwrap().len() == 1,
             "the row's entry stayed in the host"
+        );
+        assert!(emits_are_idle(&session), "the session's emits stayed busy");
+        drop((far, near, entered));
+    }
+
+    /// guarantee: events/hub-lifecycle
+    /// #1327: the answer that ends a row takes its listeners and the emits it
+    /// queued before it began unloading; the emissions its cleanups handed
+    /// over while it unloaded stay in the queue and start in their turn
+    /// (events protocol §5.5, §7.1 step 5).
+    #[test]
+    fn a_rows_end_keeps_the_cleanup_emissions_it_took_in() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("a current-thread runtime");
+        let mut entered = runtime.enter();
+        let root = Ctx::root_with(runtime.handle().clone());
+        let (near, far) = crate::memory::pair();
+        let near = Connection::open(near, Arc::new(Quiet), rust()).unwrap();
+        let session =
+            SessionEvents::join(Some(&root), near.clone(), "rt".into(), Vec::new()).unwrap();
+        session.row_loading("a", Vec::new(), "a".into());
+        session.row_loading("b", Vec::new(), "b".into());
+        let started: Arc<Mutex<Vec<&'static str>>> = Arc::default();
+        let marks = |label: &'static str, started: &Arc<Mutex<Vec<&'static str>>>| {
+            let started = started.clone();
+            Box::pin(async move { started.lock().unwrap().push(label) }) as BoxFuture<'static, ()>
+        };
+
+        // Row `a`'s emit waits for its filter: the session's emits are busy.
+        let (go, wait) = tokio::sync::oneshot::channel::<()>();
+        let waiting = Box::pin(async move {
+            let _ = wait.await;
+        }) as BoxFuture<'static, ()>;
+        assert!(!session.run_emit(Some("a".into()), EmitRun::new(waiting, Arc::default())));
+        // Row `b` queues one before its unload starts, one while it unloads.
+        assert!(!session.run_emit(
+            Some("b".into()),
+            EmitRun::new(marks("before", &started), Arc::default())
+        ));
+        session.row_unloading("b");
+        assert!(!session.run_emit(
+            Some("b".into()),
+            EmitRun::new(marks("cleanup", &started), Arc::default())
+        ));
+        // The answer: row `b` ends. Its ordinary emit was let go with the
+        // unload; the cleanup's emission is the session's to deliver.
+        session.row_ended("b");
+
+        go.send(()).unwrap();
+        drop(entered);
+        pump(&runtime);
+        entered = runtime.enter();
+        assert_eq!(
+            *started.lock().unwrap(),
+            vec!["cleanup"],
+            "the cleanup's emission did not start, or an ordinary emit did"
         );
         assert!(emits_are_idle(&session), "the session's emits stayed busy");
         drop((far, near, entered));
