@@ -1443,6 +1443,7 @@ mod tests {
         });
     }
 
+    /// guarantee: events/hub-lifecycle
     /// #1133: a row's end takes its entries out of the table as one step
     /// with letting go of its emits. Letting go starts the session's next
     /// emit on its task (§5.5), and the kernel withdraws an entry on a task
@@ -1552,6 +1553,7 @@ mod tests {
         a_rows_end_leaves_nothing_of_it_to_select(SessionEvents::row_unloading);
     }
 
+    /// guarantee: events/hub-lifecycle
     /// #1133: the order alone is not enough. The kernel withdraws an entry
     /// on a task of its own, so a row's entries are still selectable after
     /// `row_ended` started their disposers; an emit of another row that
