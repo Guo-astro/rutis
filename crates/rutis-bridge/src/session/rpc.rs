@@ -1843,8 +1843,8 @@ impl Connection {
             }
         };
         if let Some(received) = received {
-            // A session that ended with operations still queued drops the
-            // senders: nothing is left to wait for.
+            // A session that ends drops the senders (`close` drops them too):
+            // nothing is left to wait for.
             let _ = received.await;
         }
     }
@@ -1861,6 +1861,10 @@ impl Connection {
                 let _ = self.0.end.set(ending(reason));
             }
         }
+        // Nothing the far end sent is run now: those waiting for its event
+        // operations ([`Connection::settled`]) go on, instead of holding a
+        // row's unload past the session.
+        drop(std::mem::take(&mut self.0.ordered.lock().unwrap().watchers));
         // Interrupt a blocked write before taking the queue. Serialize table
         // teardown with encoding/sending so no export can be added after
         // teardown and no partial encoding rollback races the cleared table.
