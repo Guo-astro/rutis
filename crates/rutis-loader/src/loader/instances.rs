@@ -39,6 +39,13 @@ pub struct Instance {
     /// Each row inside the instance (nested instanced groups excluded), in
     /// tree order. Whether the instance is usable is the caller's call.
     pub report: Vec<(String, InstanceResult)>,
+    /// The fibers of the rows this creation spawned, in `report` order: a
+    /// row disabled, refused before it ran, or under a group that has not
+    /// loaded has none and is only in `report`. Handles for the caller to
+    /// wait on ([`FiberView::running`]) and to roll the instance back with;
+    /// the rows stay the loader's, and a view stays readable once the
+    /// instance is gone ([`FiberView::state`]).
+    pub rows: Vec<(String, FiberView)>,
 }
 
 impl std::fmt::Debug for Instance {
@@ -46,6 +53,10 @@ impl std::fmt::Debug for Instance {
         f.debug_struct("Instance")
             .field("plugin", &self.plugin)
             .field("report", &self.report)
+            .field(
+                "rows",
+                &self.rows.iter().map(|(id, _)| id).collect::<Vec<_>>(),
+            )
             .finish_non_exhaustive()
     }
 }
@@ -208,11 +219,12 @@ impl Loader {
             let _ = self.remove_instance(view.id).await;
             return Err(error);
         }
-        let report = report(&inner.state.lock().unwrap(), number);
+        let rows = report(&inner.state.lock().unwrap(), number);
         Ok(Instance {
             plugin: view.id,
             view,
-            report,
+            report: rows.report,
+            rows: rows.views,
         })
     }
 
@@ -378,16 +390,25 @@ fn fiber_result(id: &str, view: &FiberView) -> InstanceResult {
     }
 }
 
-/// Each row inside instance `number`, in tree order.
-fn report(state: &State, number: u64) -> Vec<(String, InstanceResult)> {
+/// Each row inside instance `number`, in tree order: its result, and the
+/// fiber of the rows that have one, in the same order. A row disabled,
+/// refused before it ran, or under a group that has not loaded yet has a
+/// result and no fiber.
+#[derive(Default)]
+struct Rows {
+    report: Vec<(String, InstanceResult)>,
+    views: Vec<(String, FiberView)>,
+}
+
+fn report(state: &State, number: u64) -> Rows {
+    let mut rows = Rows::default();
     let Some(instance) = state.instances.get(&number) else {
-        return Vec::new();
+        return rows;
     };
     let own = state.running.get(&Slot {
         row: instance.group.clone(),
         scope: Some(number),
     });
-    let mut out: Vec<(String, InstanceResult)> = Vec::new();
     for row in &state.desired.rows {
         let Some(group) = state.desired.instanced_group(row) else {
             continue;
@@ -399,6 +420,9 @@ fn report(state: &State, number: u64) -> Vec<(String, InstanceResult)> {
             row: row.id.clone(),
             scope: Some(number),
         };
+        // The fiber of this copy, if the loader spawned it: the same lookup
+        // the result is read from.
+        let running = state.running.get(&slot);
         let result = if let Some(invalid) = &row.invalid {
             InstanceResult::Failed(invalid.clone())
         } else if let Err(error) = &row.disabled {
@@ -407,7 +431,7 @@ fn report(state: &State, number: u64) -> Vec<(String, InstanceResult)> {
             InstanceResult::Skipped
         } else if let Some(rejected) = state.rejected.get(&slot) {
             InstanceResult::Failed(rejected.clone())
-        } else if let Some(running) = state.running.get(&slot) {
+        } else if let Some(running) = running {
             fiber_result(&row.id, &running.view)
         } else if let Some(Err(error)) = row.name.as_ref().and_then(|n| state.resolved.get(n)) {
             InstanceResult::Failed(error.clone())
@@ -417,7 +441,8 @@ fn report(state: &State, number: u64) -> Vec<(String, InstanceResult)> {
             let parent = if row.parent.as_deref() == Some(instance.group.as_str()) {
                 own.map(|running| fiber_result(&instance.group, &running.view))
             } else {
-                out.iter()
+                rows.report
+                    .iter()
                     .find(|(id, _)| Some(id) == row.parent.as_ref())
                     .map(|(_, result)| result.clone())
             };
@@ -426,7 +451,10 @@ fn report(state: &State, number: u64) -> Vec<(String, InstanceResult)> {
                 Some(result) => result,
             }
         };
-        out.push((row.id.clone(), result));
+        if let Some(running) = running {
+            rows.views.push((row.id.clone(), running.view.clone()));
+        }
+        rows.report.push((row.id.clone(), result));
     }
-    out
+    rows
 }
