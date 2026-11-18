@@ -1,6 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createConnection, createServer } from 'node:net'
+import { createServer as createHttpServer } from 'node:http'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -47,8 +48,21 @@ test('failing to connect carries a category, not just text', async () => {
   const missing = join(tmpdir(), `rutis-missing-${process.pid}.sock`)
   await assert.rejects(open(missing, { message() {}, closed() {} }),
     error => error instanceof ConnectError && error.category === 'retryable')
-  await assert.rejects(open('wss://example.com/rutis', { message() {}, closed() {} }),
-    error => error instanceof ConnectError && error.category === 'incompatible')
+  // An upgrade refused with 404 is incompatible, not retryable. The server
+  // is this test's own: example.com answered this way until its network
+  // stopped doing so (2026-11-18, #1080).
+  const refusing = createHttpServer((_, response) => {
+    response.writeHead(404)
+    response.end('no channel here\n')
+  })
+  await new Promise(resolve => refusing.listen(0, '127.0.0.1', resolve))
+  try {
+    const { port } = refusing.address()
+    await assert.rejects(open(`ws://127.0.0.1:${port}/rutis`, { message() {}, closed() {} }),
+      error => error instanceof ConnectError && error.category === 'incompatible')
+  } finally {
+    refusing.close()
+  }
 })
 
 test('an inherited socket (fd:3) is a channel, both ways', async () => {
