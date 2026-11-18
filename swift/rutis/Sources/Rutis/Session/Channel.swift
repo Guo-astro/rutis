@@ -28,6 +28,12 @@ private func errnoText(_ what: String) -> ChannelError {
 }
 
 /// A stream socket carrying one message per line.
+///
+/// `@unchecked Sendable`: `fd` is fixed after `init`; `writeLock` serializes
+/// `send` and the release of the descriptor; `stateLock` guards `buffer`,
+/// `start`, `scanned`, `shut`, `released` and `reading`. No section holds
+/// `stateLock` across a blocking read or write; a blocked `receive` waits in
+/// `poll`, which is what lets `close()` end it.
 package final class LineChannel: Channel, @unchecked Sendable {
     private let fd: Int32
     private let writeLock = Lock()

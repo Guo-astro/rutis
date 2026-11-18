@@ -36,6 +36,13 @@ import Security
 /// every connection is new: the plugins clean up when it is lost, latest
 /// first, and are installed again on the next. `state` says where it is, for the app to show: nothing here acts
 /// on it, nor on the app going to the background (the app's business).
+///
+/// `@unchecked Sendable`: `lock` guards every mutable field below it
+/// (`current`, `watchers`, `run`, `latest`, `tail`, `stops`, `boundListen`);
+/// every access is inside `lock` and no section awaits. The stored
+/// configuration (`plugins`, `configs`, `mode`, `id`, `peer`, `token`,
+/// `project`, `settings`, `heartbeatTiming`) is `let` after `init`; the
+/// observation registrar is `Sendable`.
 public final class RutisApp: Observable, @unchecked Sendable {
     /// Where the connection is.
     public enum State: Equatable, Sendable, CustomStringConvertible {
@@ -74,6 +81,10 @@ public final class RutisApp: Observable, @unchecked Sendable {
     }
 
     /// A started connection.
+    ///
+    /// `@unchecked Sendable`: `task`, `wake` and `ending` are only read and
+    /// written under `RutisApp.lock` (`begin`, `end`, `ended`), after the
+    /// run was published there; `stop` is a `Sendable` `StopSignal`.
     final class Run: @unchecked Sendable {
         let stop = StopSignal()
         var task: Task<Ending, Never>?
@@ -289,7 +300,7 @@ public final class RutisApp: Observable, @unchecked Sendable {
             body = { [self] in await dial(spec, anchors: spec.hasPrefix("wss:") ? trust : [], installing, stop: started.stop) }
         case let .listen(spec, identity):
             let (events, continuation) = AsyncStream<ListenEvent>.makeStream()
-            let bind = { [token] () throws -> WebSocketListener in
+            let bind: @Sendable () throws -> WebSocketListener = { [token] in
                 let address = self.lock.withLock { self.boundListen } ?? spec
                 let listener = try WebSocketListener(address, protocol: "rutis.\(endpointProtocol)", token: token, identity: identity,
                                                      timing: self.heartbeatTiming)

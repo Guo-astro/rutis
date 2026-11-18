@@ -80,8 +80,8 @@ extension Rutis.Advanced {
     /// The rest of a waterfall: a waterfall listener gets it as its last
     /// parameter, and calls it at most once. Its result is the rest of the
     /// chain's, nil when it gives none.
-    public struct Next<R>: NextConstructible, @unchecked Sendable {
-        let run: () async throws -> Value
+    public struct Next<R>: NextConstructible, Sendable {
+        let run: @Sendable () async throws -> Value
 
         public func callAsFunction() async throws -> R? {
             let value = try await run()
@@ -202,50 +202,58 @@ func asRutisError(_ error: Error) -> RutisError {
 }
 
 /// A flag set once.
-final class Flag: @unchecked Sendable {
-    private let lock = Lock()
-    private var value = false
+///
+/// `Sendable` without an escape hatch: `set` is the only state, in a
+/// `Locked` box.
+final class Flag: Sendable {
+    private let value = Locked(false)
 
-    var isSet: Bool { lock.withLock { value } }
-    func set() { lock.withLock { value = true } }
+    var isSet: Bool { value.read { $0 } }
+    func set() { value.withLock { $0 = true } }
 
     /// Sets it; whether it already was.
     func testAndSet() -> Bool {
-        lock.withLock {
-            defer { value = true }
-            return value
+        value.withLock { flag in
+            defer { flag = true }
+            return flag
         }
     }
 }
 
 /// Runs functions one after another, in the order given (§5.5: the `emit`
 /// invocations of one listener).
-package final class SerialQueue: @unchecked Sendable {
-    private let lock = Lock()
-    private var pending: [() async -> Void] = []
-    private var running = false
+///
+/// `Sendable` without an escape hatch: the queue and the running flag are
+/// one `Locked` state, and the work is `@Sendable`, as it runs in a task of
+/// its own.
+package final class SerialQueue: Sendable {
+    private struct State {
+        var pending: [@Sendable () async -> Void] = []
+        var running = false
+    }
+
+    private let state = Locked(State())
 
     package init() {}
 
-    package func push(_ work: @escaping () async -> Void) {
-        lock.lock()
-        pending.append(work)
-        if running {
-            lock.unlock()
-            return
+    package func push(_ work: @escaping @Sendable () async -> Void) {
+        let start = state.withLock { state in
+            state.pending.append(work)
+            guard !state.running else { return false }
+            state.running = true
+            return true
         }
-        running = true
-        lock.unlock()
+        guard start else { return }
         Task.detached { [self] in
             while true {
-                lock.lock()
-                if pending.isEmpty {
-                    running = false
-                    lock.unlock()
-                    return
+                let work = state.withLock { state -> (@Sendable () async -> Void)? in
+                    guard !state.pending.isEmpty else {
+                        state.running = false
+                        return nil
+                    }
+                    return state.pending.removeFirst()
                 }
-                let work = pending.removeFirst()
-                lock.unlock()
+                guard let work else { return }
                 await work()
             }
         }

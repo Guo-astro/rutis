@@ -576,7 +576,7 @@ CI：`ci.yml`（PR 按改动选择任务，每晚全部运行；Linux 全量与�
 | Python | [`python/rutis/tests/scheduling.py`](../python/rutis/tests/scheduling.py) 的 `SteppedLoop`、`ScriptedChannel`：就绪回调只在测试推进时跑，时钟只随测试前进 | **部分**：用于调度与关闭相关的用例；控制的是抽出来的事件循环，不是整个运行时 |
 | Node / Bun | 可注入的帧泵（`node/rutis-runtime/test/frame-pump.test.mjs` 等） | **部分**：可以按测试的顺序推帧；没有用 `fc.scheduler` 生成调度 |
 | Kotlin | Fray、Lincheck | **有**（#630）：Fray 0.9.2 的 `frayTest` 任务跑 5 个测试类的 9 个用例（Counter、Queue、RuntimeState、MemoryChannel、Peer），`jvmTest` 按 `FrayTest` tag 排除它们；Lincheck 没有用。缺：`frayTest` 不在任何 workflow 里跑 |
-| Swift | 没有可控调度；数据竞争靠 Swift 6 严格并发检查、顺序竞态靠 TSan 加压测 | **部分**（#630）：`Package.swift` 仍是 `swift-tools-version:5.9`，`Rutis` 目标开 `.enableUpcomingFeature("StrictConcurrency")`，Swift 5 语言模式下这些诊断只是警告（`tools/swift-strict-concurrency.sh` 打印剩下的）；CI 的 `runtimes-swift` 任务对 Peer、Writer、EventsConformance、App 四个套件跑 `swift run --sanitize=thread`（`TSAN_OPTIONS=halt_on_error=1`） |
+| Swift | 没有可控调度；数据竞争靠 Swift 6 严格并发检查、顺序竞态靠 TSan 加压测 | **是**（#630、#1273）：`Package.swift` 是 `swift-tools-version:6.0`，`swiftLanguageModes: [.v6]`，四个 SDK 目标在 Swift 6 语言模式下编译，严格并发诊断是错误、会让 `swift build` 失败；编译器证不了的共享状态用 `@unchecked Sendable`，每一处就地写明不变量（`tools/swift-strict-concurrency.sh` 按 target 列出剩下的数量和诊断）；CI 的 `runtimes-swift` 任务对 Peer、Writer、EventsConformance、App、Concurrency 五个套件跑 `swift run --sanitize=thread`（`TSAN_OPTIONS=halt_on_error=1`） |
 | Go | 没有可控调度；`testing/synctest` 未用，要构造特定的交错只能在测试构建里加显式闸门 | **无**（#630） |
 
 ### 7.4 纯逻辑与解析：PT / KANI / FZ
@@ -874,7 +874,7 @@ E2E 发现并修复：#225、#226（#261、#217）。Node 最低版本降到 22�
 | 有界模型检查（Kani） | 部分采用 | 6 个 harness 在 `fuzz/kani/`，覆盖日期与时间的构造和往返；Kani 0.68.0 在这台机器上 90 分钟不收敛，没有结论，不写成通过（`fuzz/KANI-MIRI.md`）。`unsafe` 与 dylib 的部分仍在 #631 |
 | Miri | 部分采用 | 用在会话帧与值路径：`fuzz/miri/` 按固定输入跑 30 个（13 帧、1 个超深嵌套、9 个分帧种子、7 个错误图），无 UB；`session/protocol.rs` 的属性测试在小例数下也在 Miri 里跑（记录里的一次 122 s）。不覆盖 tokio、网络与文件，因此不用于 dylib |
 | ASan | 不采用 | `unsafe` 集中在 dylib 加载和进程启动（FFI 与系统调用），没有能跑 ASan 的 Rust 侧代码；dylib 的内存问题由 Miri 的范围与端到端覆盖 |
-| TSan | 采用（只用于 Swift） | Swift 的数据竞争加压测（#630）：CI 的 `runtimes-swift` 任务对 Peer、Writer、EventsConformance、App 四个套件跑 `swift run --sanitize=thread`（`TSAN_OPTIONS=halt_on_error=1`）；`Package.swift` 仍是 swift 5 语言模式，严格并发只是警告（§7.3）。Rust 侧没有用 |
+| TSan | 采用（只用于 Swift） | Swift 的数据竞争加压测（#630）：CI 的 `runtimes-swift` 任务对 Peer、Writer、EventsConformance、App、Concurrency 五个套件跑 `swift run --sanitize=thread`（`TSAN_OPTIONS=halt_on_error=1`）；`Package.swift` 是 Swift 6 语言模式，严格并发是错误（§7.3）。Rust 侧没有用 |
 | loom 穷举 | 不采用 | shuttle 已覆盖内核的 27 个模型，loom 需要更大的代码改造；shuttle 发现问题但无法稳定复现时再考虑 |
 | SDK 各自运行通道契约、跨语言帧标准样本 | 不采用 | 与 Rust 驱动的一致性套件重叠；非法帧的部分已并入 P3 与 `malformed` 矩阵 |
 | `cargo public-api` | 不采用 | 与 `cargo semver-checks` 重复 |

@@ -70,9 +70,10 @@ final class HostProcess: @unchecked Sendable {
             throw RutisError(name: "Error", message: "RutisTest: cannot start \(executable): \(String(cString: strerror(status)))")
         }
         self.pid = pid
+        let child = pid
         Thread.detachNewThread {
             var code: Int32 = 0
-            while waitpid(pid, &code, 0) == -1, errno == EINTR {}
+            while waitpid(child, &code, 0) == -1, errno == EINTR {}
             ended((code >> 8) & 0xFF)
         }
     }

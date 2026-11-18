@@ -158,7 +158,7 @@ root.plugin(SwiftRuntimes::new(swift, project).idle(Duration::from_secs(60)).res
 
 ## 4. The Swift SDK (shared core)
 
-In `swift/rutis` (SwiftPM target `Rutis`), Swift 5 language mode, toolchain 5.9 or later, deployment targets macOS 14 / iOS 17. Layers:
+In `swift/rutis` (SwiftPM target `Rutis`), Swift 6 language mode (`swift-tools-version:6.0`, `swiftLanguageModes: [.v6]`), toolchain 6.2 or later, deployment targets macOS 14 / iOS 17. Layers:
 
 | Layer | Contents | Platforms |
 | --- | --- | --- |
@@ -484,7 +484,7 @@ As Go §12: `dev` watches `.swift`, `Package.swift`, `Package.resolved` → `swi
 | How dependents write it | plugin authors and apps alike: `.package(url: "https://github.com/arcships/rutis", from: "0.15.0")` + `.product(name: "Rutis", package: "rutis")`; apps add the package directly in Xcode (Xcode asks to trust the macros on the first build; CI uses `-skipMacroValidation`; in the guide) |
 | Dependencies | `Rutis`: Foundation and the system's Network.framework (listening) only; `RutisMacros` depends on swift-syntax at compile time (a version range following the two supported toolchains); no uniffi / swift-bridge (appendix B) |
 | Compatibility | within one protocol version, binaries / apps built with any SDK version run on any host version, provided the plugin API is not newer than the host supports and both sides declare `events-v2` (rutis 0.13 on) |
-| Language mode | Swift 5 mode to start, with a Sendable-friendly API; the toolchain policy matches Go: "the two current stable releases" (today 6.3 and 6.4) |
+| Language mode | Swift 6 mode (`swift-tools-version:6.0`, `swiftLanguageModes: [.v6]`, strict concurrency an error, not a warning, #1273), with a Sendable-friendly API; the toolchain policy matches Go: "the two current stable releases" (today 6.3 and 6.4) |
 | Docs | `docs/guide/swift-plugin.md` (shape ①), `docs/guide/swift-app.md` (shape ②, covering the local-network permission and other integration notes), in Chinese and English; `docs/guide/plugin-api.md` gains a Swift column (declarations, ctx, events per language, the ten values, errors, testing tool differences) |
 
 ## 13. Platforms
