@@ -3883,3 +3883,4 @@ fn a_future_started_as_its_last_waiter_leaves_is_cancelled() {
 }
 
 mod objects;
+mod workers;
