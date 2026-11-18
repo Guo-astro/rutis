@@ -255,7 +255,7 @@ async fn a_handshake_alone_registers_nothing() {
     disposed(&at_b).await;
 
     // A replacement: the old session unloads, then the new one mounts.
-    let (old_a, _old_b) = pair(&a, &b).await;
+    let (old_a, old_b) = pair(&a, &b).await;
     let (ours, theirs) = rutis_bridge::memory::pair();
     let _new_b = b.plugin(Session::new(theirs));
     let greeted = within("the handshake", Session::handshake(&a, ours))
@@ -264,6 +264,13 @@ async fn a_handshake_alone_registers_nothing() {
     within("the old session unloading", old_a.dispose())
         .await
         .unwrap();
+    // This end's dispose closed the channel; the far end unloads when it
+    // reads the end (the far end leaving unloads the session). Mount the
+    // replacement once it has: the new session's remote plugins provide the
+    // keys the old session's hold until then, and are refused while it
+    // still does (listen's replacement order,
+    // docs/design-remote-session-2026-10-28.md §4.2).
+    disposed(&old_b).await;
     let new_a = a.plugin(greeted);
     within("the new session", async { (&new_a).await.unwrap() }).await;
     assert_eq!(get(&b, "clock").await, "noon");
@@ -1238,13 +1245,23 @@ impl PluginCatalog for SlowCatalog {
 /// answers everything else `undefined`.
 struct Scripted {
     offered: tokio::sync::watch::Sender<Vec<String>>,
+    /// The version of the last announcement taken: an older one, overtaken
+    /// by a newer, never overrides it (`Operations::invoke`, the version
+    /// rule); the announcements of one mount are spawned out of order.
+    version: Mutex<u64>,
 }
 
 impl Scripted {
     /// The far end, and the families this end offered it.
     fn new() -> (Arc<Self>, tokio::sync::watch::Receiver<Vec<String>>) {
         let (offered, seen) = tokio::sync::watch::channel(Vec::new());
-        (Arc::new(Self { offered }), seen)
+        (
+            Arc::new(Self {
+                offered,
+                version: Mutex::new(0),
+            }),
+            seen,
+        )
     }
 }
 
@@ -1257,13 +1274,18 @@ impl Dispatch for Scripted {
         args: Value,
     ) -> Reply {
         if target.is_empty() && method == "link.offers" {
-            let families = args
-                .json()
-                .ok()
-                .and_then(|announced| announced.get(0)?.get("families").cloned())
-                .and_then(|families| serde_json::from_value(families).ok())
-                .unwrap_or_default();
-            self.offered.send_replace(families);
+            let announced = args.json().ok().and_then(|announced| {
+                let version = announced.get(0)?.get("version")?.as_u64()?;
+                let families = announced.get(0)?.get("families").cloned()?;
+                Some((version, serde_json::from_value(families).ok()?))
+            });
+            if let Some((version, families)) = announced {
+                let mut last = self.version.lock().unwrap();
+                if version > *last {
+                    *last = version;
+                    self.offered.send_replace(families);
+                }
+            }
         }
         Ok(Value::Undefined)
     }
