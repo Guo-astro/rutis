@@ -336,7 +336,7 @@ final class DialedSocket: NSObject, Channel, URLSessionWebSocketDelegate, @unche
         }
         done.wait()
         lock.withLock { lastSeen = Date() }
-        switch try result.get().get() {
+        switch try result.get() {
         case let .success(.string(text)):
             return Array(text.utf8)
         case .success(.data):
