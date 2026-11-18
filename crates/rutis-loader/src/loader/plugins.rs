@@ -248,7 +248,7 @@ impl DynPlugin for LoaderPlugin {
                     // Instances live in the loader's tree: they go with it.
                     // Their rows still stop, and say so: the listener is on
                     // the root and leaves with the loader's `Inner`.
-                    inner.state.lock().unwrap().instances.clear();
+                    inner.state.lock().unwrap().clear_instances();
                 }
                 Ok(())
             })))

@@ -19,7 +19,13 @@ mod service;
 pub mod status;
 mod waits;
 
-use std::collections::{BTreeMap, HashMap};
+/// The scope and instance indexes `instance_rows` reads (#1076): their
+/// entries are exactly the running rows and the loaded instances, and a
+/// per-instance query answers what the scan it replaced answered.
+#[cfg(test)]
+mod index_tests;
+
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
 
 use rutis::host::{FiberView, InstanceId, PluginId, Snapshot, TypeKey};
@@ -343,9 +349,8 @@ impl Loader {
             .rev()
             .map(|(instance, group)| {
                 let values = state
-                    .instances
-                    .values()
-                    .find(|record| record.kernel == instance)
+                    .instance_of_kernel(instance)
+                    .and_then(|number| state.instances.get(&number))
                     .map(|record| record.values.clone())
                     .unwrap_or_default();
                 crate::resolver::BuildLink {
@@ -401,11 +406,33 @@ struct State {
     /// Running group contexts; `None` is the loader's own (the root).
     groups: HashMap<Option<Slot>, Group>,
     running: HashMap<Slot, Running>,
+    /// The rows running in each scope (`None`: outside instances), by row
+    /// id: one instance's rows are `instance_rows`' to read without the
+    /// rows of the instances around it (#1076). Written by
+    /// [`State::insert_running`] and [`State::remove_running`] only, which
+    /// is what keeps `running` and this index in step. A row id left here
+    /// whose slot is gone is skipped (the query reads `running` anyway), so
+    /// a missed removal costs a lookup, never a wrong answer; a missed
+    /// *insert* would lose a row, which is why `running` is written through
+    /// those two methods only.
+    running_rows: HashMap<Option<u64>, BTreeSet<String>>,
     /// Copies whose config the plugin refused: at spawn (the copy does not
     /// run) or on update (the plugin keeps running its previous config).
     rejected: HashMap<Slot, LoaderError>,
     /// Instances of instanced groups, by number (see [`Slot::scope`]).
     instances: HashMap<u64, InstanceRecord>,
+    /// The same instances by their group fiber's `ctx.instance()`, for
+    /// [`State::instance_of_kernel`] and [`Loader::instance_rows`]. Written
+    /// by [`State::insert_instance`], [`State::remove_instance`],
+    /// [`State::rebuild_instance`] and [`State::clear_instances`] only; a
+    /// stale entry is checked against the record's `kernel` before it is
+    /// believed.
+    instances_by_kernel: HashMap<InstanceId, u64>,
+    /// Instance number → the instances created inside it (`None`: created at
+    /// the root). A record's parent never changes, so this is written on
+    /// insert and removal only; it is what makes one instance's subtree
+    /// readable without scanning the instances beside it (#1076).
+    instance_children: HashMap<Option<u64>, BTreeSet<u64>>,
     /// Copies inside instances that disposed themselves, with the fiber
     /// they had; not respawned until restarted or their row changes.
     stopped: HashMap<Slot, PluginId>,
@@ -560,6 +587,104 @@ impl State {
         self.layers.get(index).map(|l| l.name.as_str())
     }
 
+    /// Record a running copy at `slot`, and its row under the slot's scope.
+    fn insert_running(&mut self, slot: Slot, running: Running) {
+        self.running_rows
+            .entry(slot.scope)
+            .or_default()
+            .insert(slot.row.clone());
+        self.running.insert(slot, running);
+    }
+
+    /// Drop the record at `slot`, and its row from the slot's scope.
+    fn remove_running(&mut self, slot: &Slot) -> Option<Running> {
+        let removed = self.running.remove(slot);
+        if removed.is_some() {
+            if let Some(rows) = self.running_rows.get_mut(&slot.scope) {
+                rows.remove(&slot.row);
+                if rows.is_empty() {
+                    self.running_rows.remove(&slot.scope);
+                }
+            }
+        }
+        removed
+    }
+
+    /// Record an instance under `number`, indexed by its group fiber and
+    /// under the instance it was created in.
+    fn insert_instance(&mut self, number: u64, instance: InstanceRecord) {
+        let parent = instance.parent.as_ref().and_then(|parent| parent.scope);
+        self.instances_by_kernel.insert(instance.kernel, number);
+        self.instance_children
+            .entry(parent)
+            .or_default()
+            .insert(number);
+        self.instances.insert(number, instance);
+    }
+
+    /// Drop the instance `number` and its entries in the indexes.
+    fn remove_instance(&mut self, number: u64) -> Option<InstanceRecord> {
+        let removed = self.instances.remove(&number)?;
+        self.forget_instance_indexes(number, &removed);
+        Some(removed)
+    }
+
+    /// The instance `number` was spawned again: its group fiber changed.
+    fn rebuild_instance(&mut self, number: u64, plugin: PluginId, kernel: InstanceId) {
+        let Some(instance) = self.instances.get_mut(&number) else {
+            return;
+        };
+        if self.instances_by_kernel.get(&instance.kernel) == Some(&number) {
+            self.instances_by_kernel.remove(&instance.kernel);
+        }
+        instance.plugin = plugin;
+        instance.kernel = kernel;
+        self.instances_by_kernel.insert(kernel, number);
+    }
+
+    /// Drop every instance record and its index entries.
+    fn clear_instances(&mut self) {
+        self.instances.clear();
+        self.instances_by_kernel.clear();
+        self.instance_children.clear();
+    }
+
+    /// The number of the instance whose group fiber is `kernel`.
+    fn instance_of_kernel(&self, kernel: InstanceId) -> Option<u64> {
+        let number = *self.instances_by_kernel.get(&kernel)?;
+        let instance = self.instances.get(&number)?;
+        (instance.kernel == kernel).then_some(number)
+    }
+
+    /// `removed` is out of `instances`: take its index entries too.
+    fn forget_instance_indexes(&mut self, number: u64, removed: &InstanceRecord) {
+        if self.instances_by_kernel.get(&removed.kernel) == Some(&number) {
+            self.instances_by_kernel.remove(&removed.kernel);
+        }
+        let parent = removed.parent.as_ref().and_then(|parent| parent.scope);
+        if let Some(children) = self.instance_children.get_mut(&parent) {
+            children.remove(&number);
+            if children.is_empty() {
+                self.instance_children.remove(&parent);
+            }
+        }
+    }
+
+    /// The numbers of `number` and the instances created inside it, in
+    /// creation order.
+    fn instance_tree(&self, number: u64) -> Vec<u64> {
+        let mut tree = Vec::new();
+        let mut pending = vec![number];
+        while let Some(number) = pending.pop() {
+            tree.push(number);
+            if let Some(children) = self.instance_children.get(&Some(number)) {
+                pending.extend(children.iter().copied());
+            }
+        }
+        tree.sort_unstable();
+        tree
+    }
+
     /// Drops the peak capacity of the tables rows and instances live in once
     /// they are mostly empty: a loader that created and closed thousands of
     /// instances would otherwise keep their peak tables for the life of the
@@ -570,7 +695,10 @@ impl State {
     fn shrink_sparse(&mut self) {
         shrink_if_sparse(&mut self.groups);
         shrink_if_sparse(&mut self.running);
+        shrink_if_sparse(&mut self.running_rows);
         shrink_if_sparse(&mut self.instances);
+        shrink_if_sparse(&mut self.instances_by_kernel);
+        shrink_if_sparse(&mut self.instance_children);
         shrink_if_sparse(&mut self.stopped);
         shrink_if_sparse(&mut self.rejected);
     }
