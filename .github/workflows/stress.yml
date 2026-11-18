@@ -726,13 +726,25 @@ jobs:
 
   # The shuttle models of the kernel (crates/rutis/src/fiber/shuttle_tests.rs:
   # TransitionTask wakeup, post_join against the driver's exit, concurrent
-  # dispose) and of the bridge's subprocess exit state
-  # (crates/rutis-bridge/src/pipe/spawn/shuttle_tests.rs, #623),
-  # `shuttle_iterations` iterations of each scheduler per model. A failure
-  # prints the failing schedule and seed; the log is uploaded.
+  # dispose) and of the bridge (nine shuttle_tests.rs modules: subprocess
+  # exit state, session, event host, channels, ...), `shuttle_iterations`
+  # iterations of each scheduler per model. A failure prints the failing
+  # schedule and seed; the log is uploaded.
+  #
+  # Sharded by a hash of the model's name, four shards per crate: a model
+  # is one thread's work, and at a million iterations the slowest take tens
+  # of minutes, so one job ran for hours and was cut at its 60-minute
+  # limit (2026-11-12 on; the models #622 added made it grow). Every model
+  # lands in exactly one shard; a new model needs no change here.
   shuttle:
+    name: shuttle (${{ matrix.crate }}, ${{ matrix.shard }}/4)
     runs-on: ${{ fromJSON(vars.LINUX_RUNNER || '"ubuntu-24.04"') }}
-    timeout-minutes: 60
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        crate: [rutis, rutis-bridge]
+        shard: [0, 1, 2, 3]
     steps:
       - uses: actions/checkout@v4
       - name: self-hosted runner, start (tools/ci-self-hosted.sh)
@@ -750,28 +762,61 @@ jobs:
         env:
           RUSTFLAGS: --cfg rutis_shuttle
           RUTIS_SHUTTLE_ITERATIONS: ${{ inputs.shuttle_iterations || '1000000' }}
+          CRATE: ${{ matrix.crate }}
+          SHARD: ${{ matrix.shard }}
+          SHARDS: 4
         run: |
           case "$RUTIS_SHUTTLE_ITERATIONS" in ""|*[!0-9]*) echo "::error::shuttle_iterations must be a number"; exit 1;; esac
           mkdir -p "$RUNNER_TEMP/shuttle"
-          cargo test -p rutis --lib --target-dir "${CARGO_TARGET_DIR:-target}/shuttle" shuttle 2>&1 | tee "$RUNNER_TEMP/shuttle/shuttle.txt"
-          cargo test -p rutis-bridge --features websocket --lib --target-dir "${CARGO_TARGET_DIR:-target}/shuttle" shuttle 2>&1 | tee "$RUNNER_TEMP/shuttle/shuttle-bridge.txt"
-          echo "shuttle: $RUTIS_SHUTTLE_ITERATIONS iterations of each scheduler per model (rutis and rutis-bridge), passed" >> "$GITHUB_STEP_SUMMARY"
+          features=; [ "$CRATE" = rutis-bridge ] && features="--features websocket"
+          # shellcheck disable=SC2086 # the features split into flags
+          cargo test -p "$CRATE" $features --lib --target-dir "${CARGO_TARGET_DIR:-target}/shuttle" \
+            --no-run --message-format=json \
+            | jq -r 'select(.profile.test == true and .executable != null) | .executable' \
+            > "$RUNNER_TEMP/shuttle/bin.txt"
+          [ -s "$RUNNER_TEMP/shuttle/bin.txt" ] || { echo "::error::no $CRATE shuttle test binary"; exit 1; }
+          while IFS= read -r bin; do
+            # The models this binary runs under the filter `shuttle` (their
+            # module path says it): the same set the unsharded job ran.
+            mapfile -t all < <("$bin" --list | sed -n 's/^\(.*shuttle.*\): test$/\1/p')
+            [ "${#all[@]}" -gt 0 ] || { echo "::error::$bin has no shuttle models"; exit 1; }
+            models=()
+            for name in "${all[@]}"; do
+              sum=$(printf %s "$name" | cksum | cut -d' ' -f1)
+              [ $((sum % SHARDS)) -eq "$SHARD" ] && models+=("$name")
+            done
+            [ "${#models[@]}" -gt 0 ] || { echo "::error::$CRATE shard $SHARD of $SHARDS has no models"; exit 1; }
+            echo "$CRATE: ${#models[@]} of ${#all[@]} models, shard $SHARD of $SHARDS"
+            "$bin" -q "${models[@]}" 2>&1 | tee "$RUNNER_TEMP/shuttle/$CRATE-$SHARD.txt"
+            echo "| $CRATE | ${#models[@]} of ${#all[@]} | $RUTIS_SHUTTLE_ITERATIONS |" >> "$RUNNER_TEMP/shuttle/ran.md"
+          done < "$RUNNER_TEMP/shuttle/bin.txt"
+          {
+            echo "### shuttle models, $CRATE shard $SHARD of $SHARDS"
+            echo
+            echo "| crate | models | iterations of each scheduler |"
+            echo "| --- | --- | --- |"
+            cat "$RUNNER_TEMP/shuttle/ran.md"
+            echo
+            echo "passed"
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Say how to replay
         if: failure()
+        env:
+          CRATE: ${{ matrix.crate }}
+          SHARD: ${{ matrix.shard }}
         run: |
+          features=; [ "$CRATE" = rutis-bridge ] && features=" --features websocket"
           {
             echo "### shuttle models failed"
             echo
-            echo "The failing schedule is in the log (\`failing schedule: \"…\"\`) and in the \`shuttle-log\` artifact. Replay it:"
+            echo "The failing schedule is in the log (\`failing schedule: \"…\"\`) and in the \`shuttle-log-$CRATE-$SHARD\` artifact. Replay it:"
             echo
-            echo "\`RUTIS_SHUTTLE_REPLAY=<schedule> RUSTFLAGS=\"--cfg rutis_shuttle\" cargo test -p rutis --lib --target-dir target/shuttle <failing test>\`"
-            echo
-            echo "and the same with \`-p rutis-bridge\` for the subprocess exit models."
+            echo "\`RUTIS_SHUTTLE_REPLAY=<schedule> RUSTFLAGS=\"--cfg rutis_shuttle\" cargo test -p $CRATE$features --lib --target-dir target/shuttle <failing test>\`"
           } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
-          name: shuttle-log
+          name: shuttle-log-${{ matrix.crate }}-${{ matrix.shard }}
           path: ${{ runner.temp }}/shuttle
           retention-days: 14
       - name: self-hosted runner, end
