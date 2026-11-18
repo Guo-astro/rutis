@@ -65,7 +65,17 @@
 //! executor may run another task inside `spawn` (the scheduler switches before
 //! it adds the task), where `Handle::spawn` does not. A `std::thread_local!`
 //! window that spans a spawn — the bus's `SPAWNING_EMIT` — therefore spans a
-//! switch in a model; a model that drives the emit chain must account for it.
+//! switch in a model, and a task that finishes there drops its guards inside
+//! the window: `TailCleanup` sets `DROPPED_INLINE`, and the emit that is
+//! spawning takes the flag for its own task (it read it as the runtime
+//! shutting down) and skips recording its tail, so a later emit starts without
+//! waiting (#1332). The bus's `state` is also a std lock whose critical section
+//! reads entry state through this module's atomics — a switch point — so a task
+//! that finishes there blocks in its guard's `Drop` on the lock the model thread
+//! holds, which is a deadlock. Both are the stand-in's; the host runtime never
+//! runs a task inside `Handle::spawn`, and a task on another thread waits for
+//! the lock. The emit chain's queued shape therefore has no model; the list in
+//! `fiber/shuttle_tests.rs` says what is modelled instead.
 //!
 //! # The deadline stand-in
 //!
