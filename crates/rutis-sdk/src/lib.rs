@@ -34,6 +34,12 @@ pub fn loaded_sdk_id() -> &'static str {
     SDK_ID
 }
 
+/// The boot blob's const ABI: its layout and the SHA-256 text check,
+/// defined in `rutis-abi`. That crate has no dependency and nothing to
+/// build, so `cargo kani` builds it and proves the code that ships (#1271);
+/// this crate re-exports it, so plugin and host builds see no change.
+pub use rutis_abi::{boot_meta, is_sha256, BOOT_MAGIC, BOOT_SIZE};
+
 /// A C ABI diagnostic query. The independent launcher performs the actual
 /// pre-execution file verification before any SDK code can run.
 ///
@@ -42,11 +48,9 @@ pub fn loaded_sdk_id() -> &'static str {
 /// `buf` is null or points to at least `cap` writable bytes.
 #[no_mangle]
 pub unsafe extern "C" fn rutis_sdk_boot_id(buf: *mut u8, cap: usize) -> usize {
-    let bytes = SDK_ID.as_bytes();
-    if cap >= bytes.len() && !buf.is_null() {
-        std::ptr::copy_nonoverlapping(bytes.as_ptr(), buf, bytes.len());
-    }
-    bytes.len()
+    // SAFETY: the contract for `buf` and `cap` is the same; the body is
+    // `rutis-abi`'s so that Kani proves it.
+    unsafe { rutis_abi::write_boot_id(SDK_ID, buf, cap) }
 }
 
 #[derive(Clone, Debug)]
@@ -55,54 +59,6 @@ pub struct PluginMeta {
     pub sdk_artifact_sha256: &'static str,
     pub id: &'static str,
     pub version: &'static str,
-}
-
-pub const BOOT_MAGIC: &[u8] = b"RUTIS_PLUGIN_BOOT_V1\0";
-pub const BOOT_SIZE: usize = 512;
-
-pub const fn is_sha256(value: &str) -> bool {
-    let bytes = value.as_bytes();
-    if bytes.len() != 64 {
-        return false;
-    }
-    let mut i = 0;
-    while i < bytes.len() {
-        if !((bytes[i] >= b'0' && bytes[i] <= b'9') || (bytes[i] >= b'a' && bytes[i] <= b'f')) {
-            return false;
-        }
-        i += 1;
-    }
-    true
-}
-
-const fn append(out: &mut [u8; BOOT_SIZE], mut pos: usize, bytes: &[u8]) -> usize {
-    assert!(bytes.len() <= u16::MAX as usize);
-    assert!(pos + 2 + bytes.len() <= BOOT_SIZE);
-    let len = bytes.len() as u16;
-    out[pos] = (len & 255) as u8;
-    out[pos + 1] = (len >> 8) as u8;
-    pos += 2;
-    let mut i = 0;
-    while i < bytes.len() {
-        out[pos + i] = bytes[i];
-        i += 1;
-    }
-    pos + bytes.len()
-}
-
-pub const fn boot_meta(sdk_id: &str, artifact: &str, id: &str, version: &str) -> [u8; BOOT_SIZE] {
-    let mut out = [0; BOOT_SIZE];
-    let mut i = 0;
-    while i < BOOT_MAGIC.len() {
-        out[i] = BOOT_MAGIC[i];
-        i += 1;
-    }
-    let mut pos = BOOT_MAGIC.len();
-    pos = append(&mut out, pos, sdk_id.as_bytes());
-    pos = append(&mut out, pos, artifact.as_bytes());
-    pos = append(&mut out, pos, id.as_bytes());
-    let _ = append(&mut out, pos, version.as_bytes());
-    out
 }
 
 /// The factory `export_plugin!(build: …)` exports: `build` makes the plugin

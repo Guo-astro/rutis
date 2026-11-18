@@ -167,6 +167,7 @@ jobs:
               - crates/rutis-cli/build.rs
               - crates/rutis-cli/src/**
               - crates/rutis-cli/Cargo.toml
+              - crates/rutis-abi/**
               - crates/rutis-dylib/**
               - crates/rutis-dylib-meta/**
               - crates/rutis-dylib-launcher/**
@@ -241,6 +242,7 @@ jobs:
             # changes reach the SDK too, but are checked in full runs
             # (Q12.6.3).
             repro:
+              - crates/rutis-abi/**
               - crates/rutis-sdk/**
               - crates/rutis-cli/build.rs
               - tools/test-dylib-repro.sh
@@ -1703,6 +1705,8 @@ jobs:
         if: runner.environment == 'github-hosted'
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: boot blob layout and SHA-256 text
+        run: cargo test -p rutis-abi
       - name: dylib host child environment
         run: cargo test -p rutis-cli --features dylib-plugins --bin rutis-cli
       - name: plugin swap and pre-dlopen rejection

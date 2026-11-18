@@ -59,7 +59,8 @@ v1、v2 是同一个 crate 名,分别在两个 target 目录中构建。原型�
 
 单独成 crate 的原因:xtask 要检查任意目标的产物,而依赖 `rutis-dylib` 就会链接 SDK dylib 和动态 libstd,xtask 不应如此。
 SDK 不能反过来依赖这个 crate(会改变 SDK 的依赖树和身份),所以 `BOOT_MAGIC`、`BOOT_SIZE` 在两边各写一份,
-`rutis-dylib` 中加测试断言两边一致。
+`rutis-dylib` 中加测试断言两边一致。SDK 的那一份从 0.23 起放在 `rutis-abi`(#1271):没有依赖、没有构建脚本,
+`cargo kani` 能编它,`rutis-sdk` re-export 给插件和宿主;`rutis-dylib-meta` 的那一份不变。
 
 **节名按目标格式选择**,在 `export_plugin!` 中用 `cfg_attr`:
 

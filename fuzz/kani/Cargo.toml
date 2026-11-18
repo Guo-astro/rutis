@@ -1,5 +1,6 @@
-# The Kani harness (#631): bounded proofs of the session protocol's pure
-# date and time-of-day logic (`crates/rutis-bridge/src/session/values.rs`).
+# The Kani harnesses (#631, #1271): bounded proofs of the session protocol's
+# pure date and time-of-day logic (`crates/rutis-bridge/src/session/values.rs`)
+# and of the plugin boot blob's const ABI (`crates/rutis-abi`).
 # Its own workspace, like `fuzz/`: plain `cargo test` never builds it.
 [package]
 name = "rutis-kani"
@@ -8,6 +9,7 @@ publish = false
 edition = "2021"
 
 [dependencies]
+rutis-abi = { path = "../../crates/rutis-abi" }
 rutis-bridge = { path = "../../crates/rutis-bridge", default-features = false }
 
 [workspace]

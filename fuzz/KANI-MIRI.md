@@ -57,32 +57,29 @@ cargo kani setup --use-local-bundle /tmp/kani-dl.tar.gz \
 
 The proofs cover the date and time-of-day constructors, the
 days-from-epoch round trip and two instant round trips in
-`crates/rutis-bridge/src/session/values.rs`.
+`crates/rutis-bridge/src/session/values.rs`, and the plugin boot blob's const
+ABI in `crates/rutis-abi` (#1271). The constructors call the predicates the
+proofs target (`Date::try_new`, `TimeOfDay::try_new`,
+`Date::try_from_days_since_unix_epoch`, `Instant::try_from_unix`,
+`Instant::try_from_unix_nanos`), which check the fields and return `None`
+where the constructors build an error message; Kani 0.68.0 does not finish
+`format!` over a symbolic number (`fuzz/kani/limits`), so the message is off
+the proved path.
 
-**None of them has been verified.** Every path of those constructors formats
-into an error string (`format!("invalid time {hour:02}:…")`), and Kani
-0.68.0 does not finish on that shape here; `fuzz/kani/limits` holds that shape
-and the second one, minimized to no rutis code, next to the controls that do
-finish. So the six harnesses run without a verdict; do not report these proofs
-as passing until `cargo kani` reports `VERIFICATION:- SUCCESSFUL` for each.
+A proof is reported as passing only for the harness `cargo kani` printed
+`VERIFICATION:- SUCCESSFUL` for. The run of 2026-11-18 is the first with
+verdicts; what still has none is listed with it.
 
-The second shape is `str::from_utf8` over symbolic bytes: it does not finish
-either, and `rutis-dylib-meta::parse_boot` runs it on the boot blob's four
-fields.
+`str::from_utf8` over symbolic bytes does not finish either, so
+`rutis-dylib-meta::parse_boot` still has no proof; reaching it also needs a
+`#[cfg(kani)]` hook in `crates/rutis-dylib-meta/src/lib.rs`, since the
+function is private.
 
-`rutis-sdk` is not Kani-buildable at all. `cargo kani` puts its own
-`--sysroot`, `-L` and `--extern force:kani` into `CARGO_ENCODED_RUSTFLAGS` for
-the whole graph, and `crates/rutis-sdk/build.rs` panics on a flag it cannot
-classify, so a harness crate that depends on the SDK fails in that build
-script before Kani sees any code. `boot_meta`, `append`, `is_sha256` and
-`rutis_sdk_boot_id` — the four #631 lists besides `parse_boot` — are therefore
-unprovable until that const code lives in a crate with nothing to build
-(`rutis-dylib-meta`, or a new ABI crate the SDK re-exports): a production
-change, not a harness one. `rutis-dylib-meta::parse_boot` itself is private;
-reaching it from a harness needs a `#[cfg(kani)]` hook inside
-`crates/rutis-dylib-meta/src/lib.rs`, another production file.
-
-The numbers behind all of this are in the last section.
+`rutis-sdk` is still not Kani-buildable: `cargo kani` puts its own `--sysroot`,
+`-L` and `--extern force:kani` into `CARGO_ENCODED_RUSTFLAGS` for the whole
+graph, and `crates/rutis-sdk/build.rs` panics on a flag it cannot classify.
+The const ABI now lives in `crates/rutis-abi`, which has no build script and
+no dependency; the proofs depend on that crate, and the SDK re-exports it.
 
 ## Results (2026-11-11)
 
@@ -142,6 +139,78 @@ so it reads no live process state.
 
 The fuzz runs used a copy of each corpus directory, so the fuzzer's new
 inputs did not change `fuzz/corpus/`.
+
+## Results (2026-11-18, the boot blob and the first verdicts)
+
+Kani Rust Verifier 0.68.0 (cargo plugin), CBMC 6.11.0, its own toolchain
+nightly-2026-08-21. The two production changes #1271 asks for, and the proofs
+they unblock.
+
+`crates/rutis-abi` now holds the boot blob's const ABI: `BOOT_MAGIC`,
+`BOOT_SIZE`, `append`, `boot_meta`, `is_sha256`, and the body of the C ABI's
+`rutis_sdk_boot_id`. It has no dependency and no build script, so `cargo kani`
+builds it; `rutis-sdk` re-exports the four names plugin and host code used to
+reach there, and its `rutis_sdk_boot_id` calls the proved body.
+`crates/rutis-bridge`'s constructors now call predicates — `Date::try_new`,
+`Date::try_from_days_since_unix_epoch`, `TimeOfDay::try_new`,
+`Instant::try_from_unix`, `Instant::try_from_unix_nanos` — which check the
+fields and return `None`; `new`/`from_unix` build the same messages from them,
+`to_utc` uses them instead of the constructors' error paths, and
+`constructors_accept_what_the_predicates_accept` (in `values.rs`) checks that
+the constructor accepts exactly what its predicate accepts, with the same
+message.
+
+`cd fuzz/kani`, one harness per run:
+
+| Command | Result |
+| --- | --- |
+| `cargo kani --harness boot_meta_lays_out_four_fields` | `VERIFICATION:- SUCCESSFUL`, 19 s (the crate's first build included) |
+| `--harness append_encodes_one_field` | `VERIFICATION:- SUCCESSFUL`, 1 s |
+| `--harness is_sha256_only_lowercase_hex` | `VERIFICATION:- SUCCESSFUL`, 1 s |
+| `--harness boot_id_writes_all_or_nothing` | `VERIFICATION:- SUCCESSFUL`, 0 s |
+| `--harness boot_id_accepts_a_null_buffer` | `VERIFICATION:- SUCCESSFUL`, 1 s |
+| `--harness date_new_keeps_valid_fields` | `VERIFICATION:- SUCCESSFUL`, 0 s |
+| `--harness date_new_rejects_month_and_day_zero` | `VERIFICATION:- SUCCESSFUL`, 0 s |
+| `--harness days_from_epoch_roundtrip` | `VERIFICATION:- SUCCESSFUL`, 19 s |
+| `--harness time_of_day_keeps_valid_fields` | `VERIFICATION:- SUCCESSFUL`, 0 s |
+| `--harness instant_reads_back_through_utc` | `VERIFICATION:- SUCCESSFUL`, 45 s |
+| `--harness instant_nanoseconds_roundtrip` | `VERIFICATION:- SUCCESSFUL`, 4 min 55 s |
+| `cargo kani` (the eleven harnesses, one command) | `Complete - 11 successfully verified harnesses, 0 failures, 11 total`, 8 min 27 s |
+| `cargo test -p rutis-abi` | 5 passed: the layout written out by hand, the magic and padding, one field, the SHA-256 text rule, the C ABI write |
+
+What is not proved, and why:
+
+- **`boot_meta` and `is_sha256` themselves.** Both take `&str`, and Kani has
+  no symbolic string: building one (`kani::bounded_any::<String, 64>`, or
+  collecting `char`s from symbolic ASCII bytes) did not finish in 400 s. The
+  proofs call the byte-level functions the two delegate to
+  (`boot_meta_bytes`, `is_sha256_bytes`), with concrete lengths and symbolic
+  content; the wrappers add `.as_bytes()` and nothing else, and
+  `crates/rutis-abi`'s test compares `boot_meta` with the layout written out
+  by hand. A property over *all* lengths of the four fields is not proved
+  either: the field lengths are the four the plugin uses (64, 64, 16, 10) and
+  `append` separately at 32.
+- **`rutis_sdk_boot_id`, the `#[no_mangle]` symbol.** `rutis-sdk` still does
+  not build under `cargo kani` (`build.rs`), so the symbol itself is not
+  compiled for the verifier. Its body is `rutis_abi::write_boot_id`, which is
+  proved for a symbolic capacity up to the id's length, at the id's length,
+  and with a null buffer; the SDK's function is one call to it.
+- **`rutis-dylib-meta::parse_boot`.** `str::from_utf8` over symbolic bytes
+  still has no verdict, and the function is private, so a proof needs a
+  `#[cfg(kani)]` hook in that crate.
+- **The full nanosecond range.** `instant_nanoseconds_roundtrip` is bounded to
+  ±10 000 s of 1970 (4 min 55 s). A day either side
+  (`±86_400_000_000_000` ns) had no verdict after 15 minutes, and again after
+  10 more with `--unwind 200`; symbolic 128-bit division is what costs. The
+  bound is in the harness, not the code.
+- **`format!` with a symbolic number**, the shape of 2026-11-17, is still
+  unproved; it is no longer on the proved path.
+
+One more shape joined `fuzz/kani/limits`: `slice_equality_symbolic_length`
+(`a[..len] == b[..len]` with a run-time `len`) has no verdict — 6,352
+`memcmp` unwinding iterations in 150 s. The first version of the boot harness
+compared a `for` over slices of different lengths the same way and did 5,992.
+Byte loops over arrays, whose length is a constant, are what the proofs use.
 
 ## Results (2026-11-17, what Kani 0.68.0 does not finish)
 

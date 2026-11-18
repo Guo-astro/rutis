@@ -524,7 +524,7 @@ CI：`ci.yml`（PR 按改动选择任务，每晚全部运行；Linux 全量与�
 | **SH** | K2、RS1 | 有：内核 27 个、`rutis-bridge` 30 个、`rutis-host` 3 个、`rutis-loader` 3 个模型（§7.3），`stress.yml` 每晚把前两个 crate 的每个跑到 100 万次迭代；Python 的可步进事件循环；Node 的帧泵；Kotlin 的 Fray 用例；Swift 的 TSan | dylib 的模型（#622）；Go 的显式闸门（#630）；`rutis-host`、`rutis-loader` 的模型与 Kotlin 的 `frayTest` 不在 workflow 里跑 |
 | **TLA** | EV1–EV5、RL1、CL1、AH1、AH2、P10、C6、E4、E5 | 7 个目录、17 个模块、220 个配置（§7.2）；CI 的 `specs` 任务 | 逐条见 §7.2 的缺口一列 |
 | **TV** | EV2、EV3、EV5、AH2 | 会话通道的 trace validation（`trace_validation.rs`，#624）；等待图（`waits/trace.rs`、`waits/trace/check.rs`，#613） | 事件宿主的动作日志（#624）；接入点随 0.19 删除（#695）撤回，不适用 |
-| **KANI** | 值的范围与纯函数的边界 | 6 个 harness 在 `fuzz/kani/` | Kani 0.68.0 在这台机器上 90 分钟不收敛，没有结论（`fuzz/KANI-MIRI.md`）；`unsafe` 的证明（#631） |
+| **KANI** | 值的范围与纯函数的边界 | 11 个 harness 在 `fuzz/kani/`：日期与时间的谓词与往返、boot blob 的 const ABI；2026-11-18 全部 `VERIFICATION:- SUCCESSFUL`（`fuzz/KANI-MIRI.md`） | 构造器本身连同 `format!` 的错误路径、`parse_boot`（`str::from_utf8`）、`boot_meta`/`is_sha256` 的 `&str` 包装；`unsafe` 的其余部分（#631） |
 | **SK：宿主级浸泡** | L1、L3、D3、A5、H4 | 有：bridge 层两个；宿主进程级 S8（#192），带种子，每晚三个平台 | 每周更长时间的运行 |
 | **G：输出快照** | A6、A7、B6、B9、E13、F7、H3 | `rutis-host` 的常见错误、`check`、link 状态（#217、#336） | 状态输出整体；SDK 的错误；H3 等设计 |
 | **J3：持久化格式样本** | J3 | 有（#284） | 每次发布加样本（`docs/release.md`） |
@@ -587,7 +587,7 @@ CI：`ci.yml`（PR 按改动选择任务，每晚全部运行；Linux 全量与�
 | 会话 | 值往返（七种语言）、引用的授予与回滚、帧与值的编解码 | PT | **有**：`value_roundtrip.rs`、`grant_rollback.rs`、`session/protocol.rs`（后者也能在 Miri 下跑） |
 | 会话 | `cycle_among` 的环检测，与按 TLA 定义建全部边的朴素实现做差分 | PT | **有**（#613）：[`crates/rutis-bridge/src/session/rpc/waits.rs`](../crates/rutis-bridge/src/session/rpc/waits.rs) 的 `cycle_among_agrees_with_the_models_graph`（最多 20 跳的随机图、随机 profile 与入口，默认 256 例，`PROPTEST_CASES`）与 `the_model_check_agrees_on_the_small_graphs` |
 | 加载器、宿主、dsh | 编辑流水线、待保存队列与多写者 CAS、配置求值、profile 层合成 | PT | **无**（#631 并入的 #629） |
-| 值的纯函数 | 日期、时间的构造与往返 | KANI | **无结论**：6 个 harness 在 `fuzz/kani/`；Kani 0.68.0 在这台机器上 90 分钟不收敛，`fuzz/KANI-MIRI.md` 有记录，不写成通过 |
+| 值的纯函数 | 日期、时间的构造与往返 | KANI | **有**（2026-11-18）：11 个 harness 在 `fuzz/kani/`，日期与时间的谓词、往返和 boot blob 的 const ABI 全部 `VERIFICATION:- SUCCESSFUL`；构造器本身经 `format!` 的错误路径、`parse_boot` 仍无结论，见 `fuzz/KANI-MIRI.md` |
 | 传输 | 会话帧、本地行分帧、错误图、WebSocket 升级请求 | FZ | **有**：`session_frame`、`session_frames`、`local_lines`、`websocket_upgrade`、`error_graph` 五个目标在 `fuzz/fuzz_targets/`，`stress.yml` 每晚各跑 `fuzz_secs`；其中三个另在 Miri 下按固定输入跑（`fuzz/miri/`）。Go 的 RFC 6455 帧解析有 `FuzzFrameParsing`（Go 原生 fuzz，种子随 `go test` 跑） |
 | dylib | 目标文件解析（ELF / Mach-O / PE）、清单格式 | FZ | **有**：`dylib_meta`、`binary_manifest`（#631） |
 
@@ -871,7 +871,7 @@ E2E 发现并修复：#225、#226（#261、#217）。Node 最低版本降到 22�
 | 覆盖率门槛 | 不采用 | 覆盖率只说明代码被执行过，不说明结果被检查；设门槛会诱导出只为提高数字的测试。§2.3 的覆盖率只作量级参考 |
 | 变异测试设门槛 | 不采用 | 运行耗时数小时；门槛需要有人持续处理存活的变异体。TLA 的"每个性质一个变异"是模型内部的做法，不是这条 |
 | 内核 proptest 状态机 | 采用 | 监听器表已有 model-based 属性测试（`crates/rutis/tests/listener_table_model.rs`）；fiber 生命周期的顺序操作批次在 `interleave.rs`（带种子），参考模型已在 #1190 合入。Bug A 用顺序操作批次就能触发，这一条不再以"与契约测试重叠"为由排除 |
-| 有界模型检查（Kani） | 部分采用 | 6 个 harness 在 `fuzz/kani/`，覆盖日期与时间的构造和往返；Kani 0.68.0 在这台机器上 90 分钟不收敛，没有结论，不写成通过（`fuzz/KANI-MIRI.md`）。`unsafe` 与 dylib 的部分仍在 #631 |
+| 有界模型检查（Kani） | 部分采用 | 11 个 harness 在 `fuzz/kani/`，覆盖日期与时间的谓词和往返、boot blob 的 const ABI（#1271）；2026-11-18 全部 `VERIFICATION:- SUCCESSFUL`（`fuzz/KANI-MIRI.md`）。构造器本身连同错误消息、`parse_boot`、`boot_meta`/`is_sha256` 的 `&str` 包装仍无结论；`unsafe` 与 dylib 的其余部分仍在 #631 |
 | Miri | 部分采用 | 用在会话帧与值路径：`fuzz/miri/` 按固定输入跑 30 个（13 帧、1 个超深嵌套、9 个分帧种子、7 个错误图），无 UB；`session/protocol.rs` 的属性测试在小例数下也在 Miri 里跑（记录里的一次 122 s）。不覆盖 tokio、网络与文件，因此不用于 dylib |
 | ASan | 不采用 | `unsafe` 集中在 dylib 加载和进程启动（FFI 与系统调用），没有能跑 ASan 的 Rust 侧代码；dylib 的内存问题由 Miri 的范围与端到端覆盖 |
 | TSan | 采用（只用于 Swift） | Swift 的数据竞争加压测（#630）：CI 的 `runtimes-swift` 任务对 Peer、Writer、EventsConformance、App、Concurrency 五个套件跑 `swift run --sanitize=thread`（`TSAN_OPTIONS=halt_on_error=1`）；`Package.swift` 是 Swift 6 语言模式，严格并发是错误（§7.3）。Rust 侧没有用 |
