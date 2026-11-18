@@ -78,7 +78,7 @@ loader.remove_instance(b1.plugin).await?;
   - The loader only walks relationships it recorded and does not rely on a kernel ancestry query.
 - The target must be an `instanced` group that is enabled and valid; otherwise the call fails.
 - `.with(value)` attaches a business value (any `Send + Sync` type) for the factories of plugins in the instance (§4).
-- It waits until the instance's child rows settle, then returns `Instance { plugin, view, report }`; `report` lists `(row id, InstanceResult)` for each row inside the instance in tree order (nested `instanced` groups excluded):
+- It waits until the instance's child rows settle, then returns `Instance { plugin, view, report, rows }`; `report` lists `(row id, InstanceResult)` for each row inside the instance in tree order (nested `instanced` groups excluded):
 
 | Result | Meaning |
 | --- | --- |
@@ -89,6 +89,19 @@ loader.remove_instance(b1.plugin).await?;
 
 - Child failures do not fail creation; the caller decides from `report` whether the instance is usable. If the instance's group fiber itself fails, the call returns an error and the instance is removed.
 - It can be called and awaited from a plugin's own `apply`.
+- The result also carries `rows`: the `(row id, FiberView)` of the rows this creation spawned, in the same order as `report`, its ids a part of the report's — a row that is disabled, was refused before it ran, or is under a group that has not loaded has no fiber and is only in `report`. A host uses them to wait for the rows and to roll the instance back, without calling `instance_rows` or `entries()`:
+
+```rust
+let instance = loader.create_instance(&ctx, "session").with(assembly).await?;
+for (id, view) in &instance.rows {
+    // Wait for it to run; a row that does not says which step failed, and how
+    view.running(Duration::from_secs(30)).await?;
+}
+// Should any row be unusable, rolling back takes the instance's own group fiber
+loader.remove_instance(instance.plugin).await?;
+```
+
+- `rows` are handles only: the rows stay the loader's, and a view is not a way to change their state; it stays readable after the instance is gone (`view.state()` is `Disposed`), and an `Instance` kept that long keeps those fibers' state, so drop it when it is no longer needed. A nested instance's rows are in the `rows` the plugin that created it got; the outer instance's `rows` does not have them.
 
 ### 3.2 Closing Instances
 

@@ -481,7 +481,7 @@ fn shuttle_effect_registration_and_dispose_clean_up_exactly_once() {
             "a record was left in the fiber's effect index"
         );
         assert_eq!(
-            *fiber.event_flights.lock().unwrap(),
+            fiber.flights.count(),
             0,
             "the registration's event flight was never released"
         );
@@ -574,12 +574,11 @@ fn named_entry(ctx: &Ctx, fiber: &Arc<FiberInner>, id: u64, position: i64, name:
 ///
 /// Mutations this model catches: dropping the final `Entry::live` check in
 /// `Entry::start` (a dispatcher that begins a flight after the wait returned
-/// runs a body, so `running` is non-zero when `wait_events` returns), and
-/// making `wait_events` return without waiting for the count (a body is still
-/// running when it returns, or a flight outlives the wait). The reordering
-/// that has no switch point — checking `live()` before counting the flight —
-/// is invisible here: `begin_event` uses std primitives, so shuttle cannot
-/// stop between the two.
+/// runs a body, so `running` is non-zero when `wait_events` returns), checking
+/// `live()` **before** counting the flight (#1125: the count is a
+/// `crate::sync` atomic, so shuttle can stop between the two), and making
+/// `wait_events` return without waiting for the count (a body is still running
+/// when it returns, or a flight outlives the wait).
 #[test]
 fn shuttle_unload_waits_for_in_flight_listener_calls() {
     explore(|| {
@@ -641,7 +640,7 @@ fn shuttle_unload_waits_for_in_flight_listener_calls() {
         }
         unloader.join().unwrap();
         assert_eq!(
-            *fiber.event_flights.lock().unwrap(),
+            fiber.flights.count(),
             0,
             "an event flight was never finished"
         );
@@ -3663,7 +3662,7 @@ fn close_race(with_restart: bool) {
         "a generation's effect record was left in the index"
     );
     assert_eq!(
-        *fiber.event_flights.lock().unwrap(),
+        fiber.flights.count(),
         0,
         "a listener call was never finished"
     );
@@ -4169,7 +4168,7 @@ fn shuttle_restart_publishes_the_live_generation() {
             "the last generation is not the published one"
         );
         assert_eq!(
-            *fiber.event_flights.lock().unwrap(),
+            fiber.flights.count(),
             0,
             "a listener call was never finished"
         );
@@ -4440,7 +4439,7 @@ fn shuttle_subtree_close_marks_every_member_of_a_real_tree() {
                 "the {name} of the closed subtree was not closed"
             );
             assert_eq!(
-                *member.event_flights.lock().unwrap(),
+                member.flights.count(),
                 0,
                 "the {name} left a call flight behind"
             );
@@ -6081,7 +6080,7 @@ fn deadline_waits(calls_first: bool) {
     claimed.wait();
     for fiber in [&one, &two] {
         assert_eq!(
-            *fiber.fiber.event_flights.lock().unwrap(),
+            fiber.fiber.flights.count(),
             2,
             "the model's two calls were not both counted on the fiber"
         );
@@ -6174,7 +6173,7 @@ fn deadline_waits(calls_first: bool) {
 
     for fiber in [&one, &two] {
         assert_eq!(
-            *fiber.fiber.event_flights.lock().unwrap(),
+            fiber.fiber.flights.count(),
             0,
             "an event flight was never finished"
         );

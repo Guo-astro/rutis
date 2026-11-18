@@ -302,6 +302,81 @@ async fn accepted_listener_drains_after_subtree_shutdown() {
     root.shutdown().await.unwrap();
 }
 
+/// An unload waits for the callback its dispatch started, and the listeners
+/// that dispatch reaches after the close are skipped (#1125: one count per
+/// dispatch and owner, released when the dispatch is done).
+/// guarantee: events/lifecycle
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_unload_waits_for_a_callback_its_dispatch_started() {
+    let root = Ctx::root().unwrap();
+    let order: Arc<Mutex<Vec<&'static str>>> = Arc::default();
+    let (entered, blocked) = std::sync::mpsc::channel::<()>();
+    let release = Arc::new(std::sync::Mutex::new(false));
+    let wake = Arc::new(std::sync::Condvar::new());
+
+    let view = child(&root, "in-dispatch", {
+        let order = order.clone();
+        let release = release.clone();
+        let wake = wake.clone();
+        let entered = entered.clone();
+        move |ctx| {
+            ctx.on_sync::<Ping>({
+                let order = order.clone();
+                let release = release.clone();
+                let wake = wake.clone();
+                let entered = entered.clone();
+                move |_, _| {
+                    order.lock().unwrap().push("first");
+                    entered.send(()).unwrap();
+                    // A plain thread outside the runtime waits for the release,
+                    // so the dispatch really is in flight.
+                    let mut released = release.lock().unwrap();
+                    while !*released {
+                        released = wake.wait(released).unwrap();
+                    }
+                    Ok(None)
+                }
+            })?;
+            ctx.on_sync::<Ping>({
+                let order = order.clone();
+                move |_, _| {
+                    order.lock().unwrap().push("second");
+                    Ok(None)
+                }
+            })?;
+            Ok(())
+        }
+    })
+    .await;
+
+    let dispatch = {
+        let root = root.clone();
+        std::thread::spawn(move || root.bail(Ping(0)).map(|_| ()))
+    };
+    blocked
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("the first listener started");
+
+    let mut shutdown = view.shutdown();
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(50), &mut shutdown)
+            .await
+            .is_err(),
+        "the unload did not wait for the dispatch's callback"
+    );
+
+    *release.lock().unwrap() = true;
+    wake.notify_all();
+    dispatch.join().unwrap().unwrap();
+    shutdown.await.unwrap();
+    assert_eq!(
+        *order.lock().unwrap(),
+        ["first"],
+        "a listener the dispatch reached after the close ran"
+    );
+    root.shutdown().await.unwrap();
+}
+
 /// A fiber created after the root closed starts disposed; its listener would
 /// never be admitted.
 /// guarantee: events/lifecycle

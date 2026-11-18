@@ -584,6 +584,70 @@ fn an_incoming_call_is_claimed_once() {
     });
 }
 
+/// #1088: those waiting for the session's event operations to take their
+/// turn (`Connection::settled`) go on only after every operation the far end
+/// sent before them has run — so an answer that ends a row is never ahead of
+/// the emissions the row's unload stack sent before it (events protocol §4.1,
+/// §4.3, §7.1 step 5).
+#[test]
+fn a_wait_for_the_operations_comes_after_them() {
+    explore(|| {
+        let runtime = Arc::new(runtime());
+        let recorder = Arc::new(Recorder::default());
+        let (_client, server) =
+            Connection::inert_pair_with(recorder.clone(), runtime.handle().clone());
+        // `receive` returns once the operation is admitted, so the wait below
+        // is later than these three, whatever the tasks do meanwhile.
+        let prefix = server.remote_prefix().to_owned();
+        let invoke = move |sequence: u64| Frame::Invoke {
+            id: format!("{prefix}{sequence}"),
+            path: Vec::new(),
+            target: String::new(),
+            method: "events.on".into(),
+            args: WireValue::Data(json!(sequence)),
+            sync: false,
+        };
+        for sequence in 1..=3u64 {
+            server
+                .receive(invoke(sequence))
+                .expect("the reader takes the event operation");
+        }
+        let step = Arc::new(Barrier::new(2));
+        // What had run when the wait ended.
+        let (resolved, received) = mpsc::channel();
+        let waiting = {
+            let (runtime, server, recorder) = (runtime.clone(), server.clone(), recorder.clone());
+            let step = step.clone();
+            thread::spawn(move || {
+                step.wait();
+                let seen = runtime.block_on(async {
+                    server.settled().await;
+                    recorder.recorded()
+                });
+                resolved.send(seen).expect("the test is listening");
+            })
+        };
+        // One more operation arrives while the wait is set up: whether it is
+        // in before the wait ends or after is the schedule's, and neither is
+        // wrong; the three before it are in either way.
+        let sending = {
+            let (server, step) = (server.clone(), step.clone());
+            thread::spawn(move || {
+                step.wait();
+                server.receive(invoke(4)).expect("one more operation");
+            })
+        };
+        waiting.join().unwrap();
+        sending.join().unwrap();
+        let seen = received.try_recv().expect("the wait ended");
+        let sequences: Vec<Option<u64>> = seen.iter().map(|(_, sequence)| *sequence).collect();
+        assert!(
+            sequences.starts_with(&[Some(1), Some(2), Some(3)]),
+            "the wait ended before the operations before it ran: {sequences:?}"
+        );
+    });
+}
+
 /// #628: the session's event operations each run exactly once, in arrival
 /// order, and the ordered task leaves the queue empty and `busy` clear.
 #[test]

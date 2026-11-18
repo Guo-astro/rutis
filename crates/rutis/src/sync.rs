@@ -5,9 +5,10 @@
 //! explore use shuttle's primitives, so every access to them is a point where
 //! shuttle may switch threads: a fiber driver's `alive` flag (`post_join`
 //! against the driver's exit), an effect record's state (claiming its
-//! cleanups), the admission, transition, effects and flight locks, and a
-//! spawned task's result. Everything else keeps std's. A plain build is
-//! unchanged: these are std's types and [`spawn`] is the host runtime's.
+//! cleanups), the admission, transition and effects locks, a fiber's flight
+//! count and listener state, and a spawned task's result. Everything else
+//! keeps std's. A plain build is unchanged: these are std's types and
+//! [`spawn`] is the host runtime's.
 //!
 //! # The locks
 //!
@@ -23,9 +24,9 @@
 //!   is stopped at a switch point (the deadlock model 7's note describes): a
 //!   shuttle mutex parks it on the scheduler instead, which then runs the
 //!   holder to the end of the section.
-//! - a fiber's `transition`, `effects` and `event_flights` (`fiber.rs`): the
-//!   registration/close path nests them (admission → transition → effects),
-//!   and an unload's `wait_events` waits on the flight count.
+//! - a fiber's `transition` and `effects` (`fiber.rs`): the registration/close
+//!   path nests them (admission → transition → effects), and both sides touch
+//!   the flight count.
 //! - the event bus's `transcoder` (`bus.rs`), the kernel's only `RwLock`; an
 //!   emit reads it from a task a model drives, so it takes the same seam.
 //!
@@ -105,10 +106,16 @@ pub(crate) use spawned::SpawnScope;
 pub(crate) use timed::Clock;
 
 #[cfg(not(rutis_shuttle))]
-pub(crate) use std::sync::{atomic::AtomicBool, Mutex, RwLock};
+pub(crate) use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize};
+
+#[cfg(not(rutis_shuttle))]
+pub(crate) use std::sync::{Mutex, RwLock};
 
 #[cfg(rutis_shuttle)]
-pub(crate) use shuttle::sync::{atomic::AtomicBool, Mutex, RwLock};
+pub(crate) use shuttle::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize};
+
+#[cfg(rutis_shuttle)]
+pub(crate) use shuttle::sync::{Mutex, RwLock};
 
 /// A point where shuttle may switch threads, in a window a model must be
 /// able to stop in that no shuttle primitive opens (shuttle switches just

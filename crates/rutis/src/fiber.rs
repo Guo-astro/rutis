@@ -17,6 +17,10 @@ use crate::events::{CatchUnwind, Event};
 use crate::key::{InstanceId, ScopeId, TypeKey};
 use crate::{BoxFuture, DynPlugin, PluginFactory};
 
+mod state;
+
+pub(crate) use state::{EventFlights, OwnerState, NOT_LIVE};
+
 /// The states of a fiber.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum FiberState {
@@ -377,11 +381,6 @@ pub(crate) struct FiberInner {
     /// cleared by a generation reload. `Entry::live` reads it instead of
     /// walking the context parent chain.
     pub lineage_closed: crate::sync::AtomicBool,
-    /// `crate::sync`: a shuttle mutex in the shuttle models, which count
-    /// flights (`begin_event`/`finish_event`) and wait on them (#622 item 1).
-    pub event_flights: crate::sync::Mutex<usize>,
-    pub event_flights_tx: watch::Sender<usize>,
-    _event_flights_rx: watch::Receiver<usize>,
     pub shutdown_task: Mutex<Option<Arc<TransitionTask>>>,
     pub shutdown_inner: Mutex<Option<Arc<TransitionTask>>>,
     /// The task running this fiber's `drive` loop (`crate::sync`'s spawn
@@ -432,6 +431,19 @@ pub(crate) struct FiberInner {
     /// every call checked every listener, and the snapshot is another
     /// allocation to read for each.
     pub live_generation: std::sync::atomic::AtomicU64,
+    /// The four listener markers above and `live_generation` in one word,
+    /// which a listener call reads once instead of five times (#1125). Every
+    /// write to `alive`, `closing`, `lineage_closed` and `live_generation`
+    /// writes this word too, in this file and nowhere else; the event bus
+    /// reads only this word. [`OwnerState`] holds the admission order.
+    pub state: OwnerState,
+    /// The dispatch that last counted a flight on this fiber (#1125): a
+    /// dispatch counts an owner once, and a stale value only counts it again
+    /// (a longer wait, never a shorter one).
+    pub counted_by: std::sync::atomic::AtomicU64,
+    /// The calls started on this fiber and not finished yet; its unload waits
+    /// for them ([`EventFlights`]).
+    pub flights: EventFlights,
     /// The `(key, scope)` pairs this fiber provides.
     pub provided: Mutex<Vec<(TypeKey, Option<crate::key::ScopeId>)>>,
     /// The dependencies the last load resolved, including a load that failed:
@@ -461,10 +473,6 @@ pub(crate) struct FiberInner {
     #[cfg(all(test, rutis_shuttle))]
     pub status_tap: std::sync::Mutex<Option<StatusTap>>,
 }
-
-/// [`FiberInner::live_generation`] while no listener of the generation is
-/// live: the fiber is not loading or active.
-pub(crate) const NOT_LIVE: u64 = u64::MAX;
 
 /// The type-erased interface of a generic `PluginFactory<C>`, used inside
 /// the kernel.
@@ -592,15 +600,11 @@ impl FiberInner {
     }
 
     pub(crate) fn begin_event(&self) {
-        let mut count = self.event_flights.lock().unwrap();
-        *count += 1;
-        let _ = self.event_flights_tx.send(*count);
+        self.flights.begin();
     }
 
     pub(crate) fn finish_event(&self) {
-        let mut count = self.event_flights.lock().unwrap();
-        *count -= 1;
-        let _ = self.event_flights_tx.send(*count);
+        self.flights.finish();
     }
 
     /// Wait for the event calls counted on this fiber (listener calls,
@@ -609,20 +613,9 @@ impl FiberInner {
     /// `listeners of … still running after <s>s; unloading anyway` error
     /// goes to the error sink and the unload goes on without them.
     pub(crate) async fn wait_events(&self) {
-        let mut rx = self.event_flights_tx.subscribe();
-        if *rx.borrow_and_update() == 0 {
+        if self.flights.count() == 0 {
             return;
         }
-        let settled = async move {
-            loop {
-                if *rx.borrow_and_update() == 0 {
-                    return;
-                }
-                if rx.changed().await.is_err() {
-                    return;
-                }
-            }
-        };
         let limit = shutdown_deadline();
         // A timer keeps the time, not the runtime's own: the kernel runs on
         // whatever runtime it is given, timers enabled or not. `crate::sync`:
@@ -632,11 +625,11 @@ impl FiberInner {
         let Some(deadline) = crate::sync::deadline(limit) else {
             // No timer could be started: wait for the calls without a
             // deadline, as there is nothing to report them past.
-            settled.await;
+            self.flights.wait_zero().await;
             return;
         };
         tokio::select! {
-            () = settled => {}
+            () = self.flights.wait_zero() => {}
             Ok(()) = deadline.passed() => {
                 let listeners = match self.ctx.row() {
                     Some(row) => format!("row {row}"),
@@ -783,6 +776,67 @@ impl FiberInner {
             _ => NOT_LIVE,
         };
         self.live_generation.store(live, Ordering::SeqCst);
+        self.state.publish_live(live);
+    }
+
+    /// The driver's `alive` flag went false: the state word a call reads says
+    /// so too.
+    fn stop_driver(&self) {
+        self.alive.store(false, Ordering::SeqCst);
+        self.state.stop();
+    }
+
+    /// The `closing` flag went true: the state word a call reads says so too.
+    fn close_marker(&self) {
+        self.closing.store(true, Ordering::SeqCst);
+        self.state.publish_closing();
+    }
+
+    /// The permanent lineage marker went true (#1025): the state word a call
+    /// reads says so too.
+    fn lineage_marker(&self) {
+        self.lineage_closed.store(true, Ordering::SeqCst);
+        self.state.mark_lineage_closed();
+    }
+
+    /// The state word and the four markers agree: the word is the copy every
+    /// call reads (#1125). Asked where the fiber is quiescent (the tests): a
+    /// close running on another thread can leave a marker one step ahead of
+    /// the word, which is harmless, so this is not an assertion in the write
+    /// path.
+    #[cfg(all(test, debug_assertions))]
+    pub(crate) fn markers_agree(&self) -> Result<(), String> {
+        let word = &self.state;
+        let flags = [
+            ("alive", word.alive(), self.alive.load(Ordering::SeqCst)),
+            (
+                "closing",
+                word.closing(),
+                self.closing.load(Ordering::SeqCst),
+            ),
+            (
+                "lineage_closed",
+                word.lineage_closed(),
+                self.lineage_closed.load(Ordering::SeqCst),
+            ),
+        ];
+        for (what, copy, marker) in flags {
+            if copy != marker {
+                return Err(format!(
+                    "the state word says {what} is {copy}, the marker says {marker}"
+                ));
+            }
+        }
+        let (copy, marker) = (
+            word.live_generation(),
+            self.live_generation.load(Ordering::SeqCst),
+        );
+        if copy != marker {
+            return Err(format!(
+                "the state word says the live generation is {copy}, the marker says {marker}"
+            ));
+        }
+        Ok(())
     }
 
     /// Under the transition lock: change the state, queue the status event in
@@ -1424,7 +1478,7 @@ pub(crate) async fn drive(this: Arc<FiberInner>, mut rx: mpsc::UnboundedReceiver
             return;
         }
         if let Some(task) = shutdown_task {
-            this.alive.store(false, Ordering::SeqCst);
+            this.stop_driver();
             // A registered terminal task must end with this result. Its
             // Dispose intent carries no task. Since #234 a root dispose cannot
             // register behind a queued Shutdown (both take the admission
@@ -1463,7 +1517,7 @@ pub(crate) async fn drive(this: Arc<FiberInner>, mut rx: mpsc::UnboundedReceiver
         if terminal_dispose {
             // 退出:先置 false(此后 post_join 的迟到投递自完成),
             // 单遍排空已入队的残留并完成其任务(评审 #2/#3)
-            this.alive.store(false, Ordering::SeqCst);
+            this.stop_driver();
             let terminal_error = this.transition.lock().unwrap().error.clone();
             while let Ok(intent) = rx.try_recv() {
                 // Settle 只观察 Failed；其他 join 应拿到 dispose 的
@@ -1522,7 +1576,7 @@ async fn recover_driver_panic(
         let mut tr = this.transition.lock().unwrap();
         tr.error = Some(error.clone());
         FiberInner::set_state(this, &mut tr, FiberState::Failed);
-        this.alive.store(false, Ordering::SeqCst);
+        this.stop_driver();
         tr.terminal_task.clone()
     };
     if let Some(task) = current_task {
@@ -1685,7 +1739,6 @@ fn spawn_fiber_inner(
         state: initial,
         error: closed_error.clone(),
     });
-    let (event_flights_tx, event_flights_rx) = watch::channel(0);
     let (tx, rx) = mpsc::unbounded_channel();
     let token = CancellationToken::new();
     let closing = Arc::new(AtomicBool::new(closed));
@@ -1722,9 +1775,6 @@ fn spawn_fiber_inner(
             children: Mutex::new(Vec::new()),
             closing,
             lineage_closed: crate::sync::AtomicBool::new(closed),
-            event_flights: crate::sync::Mutex::new(0),
-            event_flights_tx,
-            _event_flights_rx: event_flights_rx,
             token: Mutex::new(token),
             transition: crate::sync::Mutex::new(Trans {
                 generation: 0,
@@ -1747,6 +1797,9 @@ fn spawn_fiber_inner(
             intents_tx: tx.clone(),
             alive: crate::sync::AtomicBool::new(!closed),
             live_generation: std::sync::atomic::AtomicU64::new(initial_live),
+            state: OwnerState::new(!closed, closed, initial_live),
+            counted_by: std::sync::atomic::AtomicU64::new(0),
+            flights: EventFlights::new(),
             provided: Mutex::new(Vec::new()),
             last_deps: Mutex::new(None),
             accesses: Mutex::new(Vec::new()),
@@ -2281,11 +2334,11 @@ impl CloseTree for FiberInner {
     }
 
     fn mark_lineage(&self) {
-        self.lineage_closed.store(true, Ordering::SeqCst);
+        self.lineage_marker();
     }
 
     fn publish_closing(&self) {
-        self.closing.store(true, Ordering::SeqCst);
+        self.close_marker();
         self.pre_cancel();
     }
 }
@@ -2473,6 +2526,9 @@ mod transient_tests;
 // (`crate::sync`; CONTRIBUTING.md says how to run them).
 #[cfg(all(test, rutis_shuttle))]
 mod shuttle_tests;
+
+#[cfg(test)]
+mod marker_tests;
 
 #[cfg(test)]
 mod completion_tests {
