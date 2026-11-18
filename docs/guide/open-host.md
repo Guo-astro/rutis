@@ -482,6 +482,33 @@ runtimes:
 
 Windows 上进程连上宿主之后才有进程号，这一行只写 `wordcount: starting`。
 
+### 未声明的服务
+
+行可以提供它没有在 `rutis.provides` 里声明的服务：已发布的 Cordis 包会这样（`ctx.provide`），任何插件都可能这样。默认 rutis 把每个这样的名字按和声明的一样发布到宿主全局；先提供者先得，这不是权限。加载不是自己写的插件的宿主可以拒绝它们，或者只放行它预期的名字：
+
+```rust,no_run
+# use rutis_host::connect::SpawnPlugin;
+# use rutis_host::languages;
+# let app = std::path::PathBuf::from("/srv/app");
+use rutis_bridge::runtime::UndeclaredPolicy;
+
+let runtime_package = app.join("node_modules/@arcships/rutis-runtime");
+// 拒绝插件没有声明的每一个名字。
+let strict = SpawnPlugin::new("thirdparty", languages::node::launcher(&runtime_package), app.join("package.json"))
+    .undeclared(UndeclaredPolicy::Refuse);
+// 或者只让它发布 `tools` 和 `notes`。
+let market = SpawnPlugin::new("market", languages::node::launcher(&runtime_package), app.join("package.json"))
+    .undeclared(UndeclaredPolicy::allow(["tools", "notes"]));
+```
+
+默认是 `UndeclaredPolicy::Publish`，与 Cordis 一致。声明的服务不受影响。被拒绝的名字哪里都不发布；对象退回运行时，这一行像提供了别人已提供的名字一样失败：
+
+```text
+wordcount: failed: llm is provided by row wordcount without declaring it; the host does not let a runtime publish names it does not declare
+```
+
+用 `allow` 时：`wordcount: failed: llm is provided by row wordcount without declaring it; the host lets a runtime publish only tools, notes`。运行时和它的其他行继续运行。自己挂载会话的宿主用 `Session::undeclared` 设置同样的策略；由 bridge 直接启动的进程用 `rutis_bridge::runtime::Mount::undeclared`。这个策略作用于运行时会话的行：对端 rutis 内核提供的服务不按它检查，因为这里不知道对端插件的声明。
+
 ### 不是限制的东西
 
 - rutis 不给调用限时：调用方自己限时（Rust 的 `tokio::time::timeout`、Python 的 `asyncio.wait_for` 等）。插件卡在同步代码里、取消停不下时，用 `SpawnPlugin::processes()` 的 `kill()` 结束它的进程，再对 `root.plugin(runtime)` 返回的 fiber 调用 `restart()`：新的进程，它的行重新装载。

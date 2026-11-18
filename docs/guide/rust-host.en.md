@@ -574,6 +574,7 @@ For keeping third-party plugins in check; how to use them is in [Build a host op
 | `.handle()` | The runtime's state, `RuntimeHandle`: `state()`, `ready()`, `pid()`; give it to `SessionResolver::runtime` |
 | `.processes()` | The processes it started, a `rutis_bridge::pipe::Processes`: `kill()` ends them; `pid()`, `running()`, `status()` (how the last one ended), `ended().await` (all have ended) |
 | `.greeting(limit)` | How long the process may take to greet once started, 30 s by default; `Duration::MAX` for no limit (a debugger stopped at the first line) |
+| `.undeclared(policy)` | What its rows may provide without declaring it: `rutis_bridge::runtime::UndeclaredPolicy::Publish` (the default, as Cordis), `Refuse`, or `Allow(vec![...])`; a refused name is not published, and its row fails naming it |
 
 A process per plugin: a `SpawnPlugin` per plugin under its own name, its rows named `<runtime name>:<npm name or file>`, resolved by `SessionResolver` (Node and Python alike). A row failing in `apply` does not stop its runtime's process: the runtime is another plugin and does not stop with its rows, not even a runtime only that row uses. To stop it, call `dispose()` on the fiber `root.plugin(runtime)` returned.
 

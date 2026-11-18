@@ -573,6 +573,7 @@ let node = SpawnPlugin::new("node", languages::node::launcher(&runtime_package),
 | `.handle()` | 运行时的状态 `RuntimeHandle`：`state()`、`ready()`、`pid()`；交给 `SessionResolver::runtime` |
 | `.processes()` | 它启动的进程，类型是 `rutis_bridge::pipe::Processes`：`kill()` 结束它们，`pid()`、`running()`、`status()`（最后一个进程怎样结束的）、`ended().await`（全部结束） |
 | `.greeting(时限)` | 进程启动后问候的时限，默认 30 秒；`Duration::MAX` 不限（调试器停在第一行时） |
+| `.undeclared(策略)` | 它的行可以不经声明提供什么：`rutis_bridge::runtime::UndeclaredPolicy::Publish`（默认，与 Cordis 一致）、`Refuse`、`Allow(vec![...])`；被拒绝的名字不发布，它的行失败并写明名字 |
 
 每个插件一个进程：每个插件一个用它自己名字的 `SpawnPlugin`，行写 `<运行时名>:<npm 名或文件>`，由 `SessionResolver` 解析（Node、Python 都这样）。行在 `apply` 里失败时，它的运行时进程不停：运行时是另一个插件，不随它的行停下，只给这一行用的运行时也一样。要停掉，对 `root.plugin(runtime)` 返回的 fiber 调用 `dispose()`。
 

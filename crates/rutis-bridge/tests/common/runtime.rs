@@ -12,7 +12,9 @@ use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind, FiberState};
 use rutis::internal::CtxInternal;
 use rutis::{Ctx, Error};
 use rutis_bridge::pipe::Processes;
-use rutis_bridge::runtime::{ended_status, Launcher, RuntimeHandle, RuntimeState, RuntimeStates};
+use rutis_bridge::runtime::{
+    ended_status, Launcher, RuntimeHandle, RuntimeState, RuntimeStates, UndeclaredPolicy,
+};
 use rutis_bridge::{session_key, LocalId, PeerId, Session};
 
 /// This checkout.
@@ -233,10 +235,22 @@ pub async fn attached(
     row: &str,
     channel: rutis_bridge::Channel,
 ) -> Result<std::sync::Arc<rutis_bridge::runtime::Process>, String> {
+    attached_with(ctx, row, channel, UndeclaredPolicy::default()).await
+}
+
+/// [`attached`] with the host's policy for the services a row provides
+/// without declaring them ([`UndeclaredPolicy`]).
+pub async fn attached_with(
+    ctx: &Ctx,
+    row: &str,
+    channel: rutis_bridge::Channel,
+    undeclared: UndeclaredPolicy,
+) -> Result<std::sync::Arc<rutis_bridge::runtime::Process>, String> {
     let (sender, receiver) = tokio::sync::oneshot::channel();
     ctx.plugin(Attached {
         row: row.to_owned(),
         channel: std::sync::Mutex::new(Some(channel)),
+        undeclared,
         sender: std::sync::Mutex::new(Some(sender)),
     });
     receiver
@@ -249,6 +263,7 @@ type Mounted = Result<std::sync::Arc<rutis_bridge::runtime::Process>, String>;
 struct Attached {
     row: String,
     channel: std::sync::Mutex<Option<rutis_bridge::Channel>>,
+    undeclared: UndeclaredPolicy,
     sender: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<Mounted>>>,
 }
 
@@ -256,7 +271,7 @@ impl Attached {
     async fn mount(&self, ctx: &Ctx) -> Mounted {
         ctx.mark_row(&self.row).map_err(|error| error.to_string())?;
         let channel = self.channel.lock().unwrap().take().expect("one run");
-        let session = ctx.plugin(Session::new(channel));
+        let session = ctx.plugin(Session::new(channel).undeclared(self.undeclared.clone()));
         let mut watch = session.watch();
         let snapshot = watch
             .wait_for(|s| {

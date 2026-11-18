@@ -514,6 +514,13 @@ impl ServiceEvents for Projection {
         }
     }
 
+    fn refused(&self, _name: &str, why: String) {
+        // The row fails as one that provides a name another provider has:
+        // the loader reads it after the load (`take_refused`), or the hook
+        // fails the running row (`on_refused`).
+        self.refuse(why);
+    }
+
     fn changed(&self, name: &str, handle: Option<String>, _version: u64) {
         let skipped = {
             let mut state = self.state.lock().unwrap();

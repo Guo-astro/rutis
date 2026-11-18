@@ -294,6 +294,9 @@ pub struct TestRuntime {
     processes: rutis_bridge::pipe::Processes,
     /// How long its process may take to greet (rutis-host's default).
     greeting: std::time::Duration,
+    /// What the host does with the services its rows provide without
+    /// declaring them.
+    undeclared: rutis_bridge::runtime::UndeclaredPolicy,
 }
 
 #[cfg(feature = "runtimes")]
@@ -309,7 +312,15 @@ impl TestRuntime {
             anchor: anchor.to_owned(),
             processes,
             greeting: std::time::Duration::from_secs(30),
+            undeclared: rutis_bridge::runtime::UndeclaredPolicy::default(),
         }
+    }
+
+    /// What the host does with the services its rows provide without
+    /// declaring them (`SpawnPlugin::undeclared`).
+    pub fn undeclared(mut self, undeclared: rutis_bridge::runtime::UndeclaredPolicy) -> Self {
+        self.undeclared = undeclared;
+        self
     }
 
     /// How long its process may take to greet: 30 s, as rutis-host's;
@@ -445,7 +456,8 @@ impl rutis::host::DynPlugin for TestRuntime {
                     return Ok(Effect::Done);
                 }
             };
-            let session = ctx.plugin(rutis_bridge::Session::new(channel));
+            let session =
+                ctx.plugin(rutis_bridge::Session::new(channel).undeclared(self.undeclared.clone()));
             let mut watch = session.watch();
             loop {
                 let snapshot = watch.borrow_and_update().clone();

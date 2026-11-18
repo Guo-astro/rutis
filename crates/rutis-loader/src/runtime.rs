@@ -49,7 +49,10 @@
 //!   published Cordis plugin's, say); a Cordis row injecting a service
 //!   another row of its runtime provides is served natively, and waits in
 //!   rutis only until that service is there. A name another provider has
-//!   already fails the later row, naming both.
+//!   already fails the later row, naming both. The host may refuse them or
+//!   allow only some (`rutis_bridge::runtime::UndeclaredPolicy`, set on the
+//!   runtime's session or mount): a refused name is not published, and its
+//!   row fails.
 //!
 //! A shared name inside instances ([`ServiceCatalog::register_shared_instance`])
 //! is each instance's own: a copy gates, leases and publishes it at
