@@ -3237,8 +3237,8 @@ export const SEMANTIC_REGISTRY_2 = {
       anchors: ['loader/rows-gate-on-services'],
       evidence: '`rutis-loader/tests/scope.rs::inject_gates_a_row`、`rutis-loader/tests/runtime_rows.rs::rows_resolved_offline_wait_for_what_they_inject`、`rutis-loader/tests/row_inject_gate.rs::a_runtime_rows_inject_gates_it_and_is_leased_to_it`、`rutis-loader/tests/loader.rs::provider_update_reloads_consumers`',
       status: '已验证',
-      why: '登记表记「已验证」（`inject_gates_a_row`、`rows_resolved_offline_wait_for_what_they_inject` 断言服务到达前 Pending、只装载一次；`a_runtime_rows_inject_gates_it_and_is_leased_to_it` 覆盖租约；`provider_update_reloads_consumers` 覆盖提供方更新）；#634 快照记「未覆盖」。loader 层没有 shuttle 模型，这一行按用例登记（变异见 `upgrade.mutation`）。升为「已验证」。',
-      whyEn: 'The register row is verified: `inject_gates_a_row` and `rows_resolved_offline_wait_for_what_they_inject` assert a row stays Pending until the services it injects arrive and then loads once, `a_runtime_rows_inject_gates_it_and_is_leased_to_it` covers the lease, and `provider_update_reloads_consumers` a provider update; the issue marked this split uncovered. The loader has no shuttle model, so this row is recorded on its tests (mutations in `upgrade.mutation`). Raised to verified.',
+      why: '登记表记「已验证」（`inject_gates_a_row`、`rows_resolved_offline_wait_for_what_they_inject` 断言服务到达前 Pending、只装载一次；`a_runtime_rows_inject_gates_it_and_is_leased_to_it` 覆盖租约；`provider_update_reloads_consumers` 覆盖提供方更新）；#634 快照记「未覆盖」。loader 层没有 shuttle 模型，这一行按用例登记（变异见 `upgrade.mutation`）。升为「已验证」。手段按 #1270 记为测试：门控是内核的状态机（`core/D14`、`core/D22` 有模型），这一行多出来的是把名字放进闸门、租进运行时进程，跨进程，#622 完成条件第三项适用（理由见 `formal-trace/means-0.23.md` §3）。',
+      whyEn: 'The register row is verified: `inject_gates_a_row` and `rows_resolved_offline_wait_for_what_they_inject` assert a row stays Pending until the services it injects arrive and then loads once, `a_runtime_rows_inject_gates_it_and_is_leased_to_it` covers the lease, and `provider_update_reloads_consumers` a provider update; the issue marked this split uncovered. The loader has no shuttle model, so this row is recorded on its tests (mutations in `upgrade.mutation`). Raised to verified. The means is tests (#1270): the gate is the kernel\'s state machine (`core/D14` and `core/D22` are modelled) and what this row adds — the name in the gate, leased into the runtime\'s process — is across processes, which is #622\'s third completion item (why: `formal-trace/means-0.23.md` §3).',
       upgrade: {
         status: '已验证',
         evidence: [
@@ -3255,8 +3255,8 @@ export const SEMANTIC_REGISTRY_2 = {
       anchors: ['loader/rows-gate-on-services'],
       evidence: '`rutis-loader/tests/multilang.rs::a_provider_that_goes_stops_only_its_users`、`rutis-loader/tests/row_inject_gate.rs::a_runtime_rows_inject_gates_it_and_is_leased_to_it`、`rutis-loader/tests/runtime_rows.rs::a_plugin_that_disposes_itself_ends_its_row`、`rutis-loader/tests/loader.rs::provider_update_reloads_consumers`',
       status: '已验证',
-      why: '登记表记「已验证」：`a_provider_that_goes_stops_only_its_users` 用日志位置断言 users 的 bye 在 provider 的 bye 之前、其他行仍 Active，`a_runtime_rows_inject_gates_it_and_is_leased_to_it` 断言服务走→停、回来→起，`a_plugin_that_disposes_itself_ends_its_row` 断言 inject 回来后在同一行里再次启动，`provider_update_reloads_consumers` 覆盖更新（变异见 `upgrade.mutation`）。升为「已验证」。',
-      whyEn: 'The register row is verified: `a_provider_that_goes_stops_only_its_users` asserts by log position that its users say bye before the provider does and other rows stay Active, `a_runtime_rows_inject_gates_it_and_is_leased_to_it` asserts stop on withdrawal and start on return, `a_plugin_that_disposes_itself_ends_its_row` asserts the row starts again in the same row, and `provider_update_reloads_consumers` covers an update (mutations in `upgrade.mutation`). Raised to verified.',
+      why: '登记表记「已验证」：`a_provider_that_goes_stops_only_its_users` 用日志位置断言 users 的 bye 在 provider 的 bye 之前、其他行仍 Active，`a_runtime_rows_inject_gates_it_and_is_leased_to_it` 断言服务走→停、回来→起，`a_plugin_that_disposes_itself_ends_its_row` 断言 inject 回来后在同一行里再次启动，`provider_update_reloads_consumers` 覆盖更新（变异见 `upgrade.mutation`）。升为「已验证」。手段按 #1270 记为测试：撤下停住门控下的消费者是内核模型 9 的事，这一行断言的是「只停这个运行时里用它的行」；TLA 那一半指向 #625 的 `WithdrawBeforeUnload` 设计模型（理由见 `formal-trace/means-0.23.md` §3）。',
+      whyEn: 'The register row is verified: `a_provider_that_goes_stops_only_its_users` asserts by log position that its users say bye before the provider does and other rows stay Active, `a_runtime_rows_inject_gates_it_and_is_leased_to_it` asserts stop on withdrawal and start on return, `a_plugin_that_disposes_itself_ends_its_row` asserts the row starts again in the same row, and `provider_update_reloads_consumers` covers an update (mutations in `upgrade.mutation`). Raised to verified. The means is tests (#1270): stopping the consumer behind the kernel gate is model 9\'s job, and this row asserts “only the rows of that runtime that use it stop”; the TLA half points at #625\'s `WithdrawBeforeUnload` design model (why: `formal-trace/means-0.23.md` §3).',
       upgrade: {
         status: '已验证',
         evidence: [
@@ -3337,8 +3337,8 @@ export const SEMANTIC_REGISTRY_2 = {
       anchors: ['loader/row-unload-leaves-nothing'],
       evidence: '`rutis-loader/tests/runtime_rows.rs::rows_unload_before_the_runtime`',
       status: '已验证',
-      why: '登记表记「已验证」（`rows_unload_before_the_runtime` 断言运行时 dispose 时行的 cleanup 先到 Cordis，之后两行才 Pending）；#634 快照记「未覆盖」，只有这一个用例（变异见 `upgrade.mutation`）。升为「已验证」。',
-      whyEn: 'The register row is verified by `rows_unload_before_the_runtime`, which asserts a row\'s cleanup reaches Cordis before the runtime is disposed and the rows go Pending after it; the issue marked this split uncovered, and that test is the check (mutation in `upgrade.mutation`). Raised to verified.',
+      why: '登记表记「已验证」（`rows_unload_before_the_runtime` 断言运行时 dispose 时行的 cleanup 先到 Cordis，之后两行才 Pending）；#634 快照记「未覆盖」，只有这一个用例（变异见 `upgrade.mutation`）。升为「已验证」。手段按 #1270 记为测试：顺序靠真实运行时进程把 cleanup 送进 Cordis 的先后断言，替身进程测的是替身（理由见 `formal-trace/means-0.23.md` §3）。',
+      whyEn: 'The register row is verified by `rows_unload_before_the_runtime`, which asserts a row\'s cleanup reaches Cordis before the runtime is disposed and the rows go Pending after it; the issue marked this split uncovered, and that test is the check (mutation in `upgrade.mutation`). Raised to verified. The means is tests (#1270): the order is asserted by when the real runtime\'s process delivers its cleanup to Cordis, and a stand-in process would test the stand-in (why: `formal-trace/means-0.23.md` §3).',
       upgrade: {
         status: '已验证',
         evidence: [
@@ -3766,15 +3766,16 @@ export const SEMANTIC_REGISTRY_2 = {
     'host/dev-reload b': {
       source: 'guarantees.md §15',
       anchors: ['host/dev-reload'],
-      evidence: '`rutis-host/tests/dev.rs::dev_follows_a_node_project`、`rutis-host/tests/dev.rs::dev_follows_a_python_project`、`rutis-host/tests/dev.rs::the_dev_loop`、`rutis-host/tests/reload.rs::rows_added_removed_and_changed_apply`',
+      evidence: '`rutis-host/tests/dev.rs::dev_follows_a_node_project`、`rutis-host/tests/dev.rs::dev_follows_a_python_project`、`rutis-host/tests/dev.rs::dev_follows_a_bun_project`、`rutis-host/tests/dev.rs::the_dev_loop`、`rutis-host/tests/reload.rs::rows_added_removed_and_changed_apply`',
       status: '已验证',
-      why: '登记表记「已验证」（`dev` 跟随改动只重载相关行、失败的重载保留旧版本）；#634 快照记「未覆盖」。`the_dev_loop` 的 fixture 在 cleanup 时记一行，第一次编辑重载后断言旧实例的 `cleanup weather v1` 恰好一次，退出后再断言仍是 1 次；`rows_added_removed_and_changed_apply` 用同样的 `<row>.cleanup` 断言配置重载恰好一次（变异见 `upgrade.mutation`）。升为「已验证」。',
-      whyEn: 'The register row is verified: `dev` reloads only the rows whose files changed and a failed reload keeps the old version; the issue marked this split uncovered. The `the_dev_loop` fixture records each cleanup, and the test asserts the replaced instance\'s `cleanup weather v1` appears exactly once after the first edit\'s reload and once more at exit; `rows_added_removed_and_changed_apply` asserts the same exactly-once cleanup for a configuration reload (mutation in `upgrade.mutation`). Raised to verified.',
+      why: '登记表记「已验证」（`dev` 跟随改动只重载相关行、失败的重载保留旧版本）；#634 快照记「未覆盖」。`the_dev_loop` 的 fixture 在 cleanup 时记一行，第一次编辑重载后断言旧实例的 `cleanup weather v1` 恰好一次，退出后再断言仍是 1 次；`rows_added_removed_and_changed_apply` 用同样的 `<row>.cleanup` 断言配置重载恰好一次（变异见 `upgrade.mutation`）。升为「已验证」。手段按 #1270 记为测试：一次 dev 重载是真实的构建加进程换代，#627 的宿主模型覆盖重载监督，覆盖不到「换代码后旧实例清理一次」（理由见 `formal-trace/means-0.23.md` §3）。',
+      whyEn: 'The register row is verified: `dev` reloads only the rows whose files changed and a failed reload keeps the old version; the issue marked this split uncovered. The `the_dev_loop` fixture records each cleanup, and the test asserts the replaced instance\'s `cleanup weather v1` appears exactly once after the first edit\'s reload and once more at exit; `rows_added_removed_and_changed_apply` asserts the same exactly-once cleanup for a configuration reload (mutation in `upgrade.mutation`). Raised to verified. The means is tests (#1270): one dev reload is a real build plus a process swap, and #627\'s host models cover reload supervision, not “the old instance is cleaned once after the code changed” (why: `formal-trace/means-0.23.md` §3).',
       upgrade: {
         status: '已验证',
         evidence: [
           '`rutis-host/tests/dev.rs::dev_follows_a_node_project`',
           '`rutis-host/tests/dev.rs::dev_follows_a_python_project`',
+          '`rutis-host/tests/dev.rs::dev_follows_a_bun_project`',
           '`rutis-host/tests/dev.rs::the_dev_loop`',
           '`rutis-host/tests/reload.rs::rows_added_removed_and_changed_apply`',
         ],
@@ -10898,8 +10899,8 @@ export const SEMANTIC_RUNTIME = {
       whyNoAnchorEn: 'The session specification does not cover it and the register row `core/D22` covers a neighbouring promise: the current source is the cross-process mount design §5',
       evidence: '`examples/dsh-baseline/tests/host.rs::persona_uses_the_system_prompt_the_rutis_host_provides`',
       status: '已验证',
-      why: '挂载设计 §5：生成物的 `injects` 含宿主服务，rutis 侧未就绪时按原生规则等待。`persona_uses_the_system_prompt_the_rutis_host_provides` 断言宿主服务提供前挂载 Pending、提供后 Active（变异见 `upgrade.mutation`）。nightly（`examples/dsh-baseline/build.rs` 的 `cfg(dsh_baseline)`），只覆盖一个宿主服务。升为「已验证」。',
-      whyEn: 'Mount design §5: the generated `injects` name the host services, and the mount waits natively while the rutis side has them not ready. `persona_uses_the_system_prompt_the_rutis_host_provides` asserts the mount is Pending before the host service is provided and Active after (mutation in `upgrade.mutation`). It is nightly (`cfg(dsh_baseline)` in `examples/dsh-baseline/build.rs`) and covers one host service. Raised to verified.',
+      why: '挂载设计 §5：生成物的 `injects` 含宿主服务，rutis 侧未就绪时按原生规则等待。`persona_uses_the_system_prompt_the_rutis_host_provides` 断言宿主服务提供前挂载 Pending、提供后 Active（变异见 `upgrade.mutation`）。nightly（`examples/dsh-baseline/build.rs` 的 `cfg(dsh_baseline)`），只覆盖一个宿主服务。升为「已验证」。手段按 #1270 记为测试：生成物 `injects` 的门控发生在真实挂载与真实子进程上，内核门控已有模型（理由见 `formal-trace/means-0.23.md` §3）。',
+      whyEn: 'Mount design §5: the generated `injects` name the host services, and the mount waits natively while the rutis side has them not ready. `persona_uses_the_system_prompt_the_rutis_host_provides` asserts the mount is Pending before the host service is provided and Active after (mutation in `upgrade.mutation`). It is nightly (`cfg(dsh_baseline)` in `examples/dsh-baseline/build.rs`) and covers one host service. Raised to verified. The means is tests (#1270): the generated `injects` gate a real mount and a real subprocess, and the kernel gate is modelled already (why: `formal-trace/means-0.23.md` §3).',
       upgrade: {
         status: '已验证',
         evidence: [
@@ -10945,8 +10946,8 @@ export const SEMANTIC_RUNTIME = {
       whyNoAnchorEn: 'The session specification does not cover it and the register row `core/D14` covers a neighbouring promise: the current source is the cross-process mount design §5',
       evidence: '`rutis-bridge/tests/mount_host_service.rs::withdrawing_a_host_service_closes_the_mounts_process`、`examples/dsh-baseline/tests/host.rs::persona_uses_the_system_prompt_the_rutis_host_provides`',
       status: '已验证',
-      why: '挂载设计 §5：宿主服务撤销时挂载按原生规则停止、Node 进程随之关闭，重新提供后重启，不做单个宿主服务的就地替换。`withdrawing_a_host_service_closes_the_mounts_process` 断言提供前 Pending、提供后 Active 且进程在跑，撤销后 Pending 且该进程结束，重新提供后是另一个进程、旧进程仍结束；dsh 用例断言撤销后 Pending、disposer 执行并重新提供后 Active（变异见 `upgrade.mutation`）。升为「已验证」。',
-      whyEn: 'Mount design §5: withdrawing a host service stops the mount natively, closes its Node process with it and starts it again when the service returns — the service is not replaced in place under a running process. `withdrawing_a_host_service_closes_the_mounts_process` asserts Pending before the service and Active with a running process after, Pending with that process ended on withdrawal, and a different, running process after the service is provided again; the dsh test asserts Pending, the disposer running and Active again (mutations in `upgrade.mutation`). Raised to verified.',
+      why: '挂载设计 §5：宿主服务撤销时挂载按原生规则停止、Node 进程随之关闭，重新提供后重启，不做单个宿主服务的就地替换。`withdrawing_a_host_service_closes_the_mounts_process` 断言提供前 Pending、提供后 Active 且进程在跑，撤销后 Pending 且该进程结束，重新提供后是另一个进程、旧进程仍结束；dsh 用例断言撤销后 Pending、disposer 执行并重新提供后 Active（变异见 `upgrade.mutation`）。升为「已验证」。手段按 #1270 记为测试：规则的一半是进程身份与结束状态，`SH` 替换不到的操作系统对象（理由见 `formal-trace/means-0.23.md` §3）。',
+      whyEn: 'Mount design §5: withdrawing a host service stops the mount natively, closes its Node process with it and starts it again when the service returns — the service is not replaced in place under a running process. `withdrawing_a_host_service_closes_the_mounts_process` asserts Pending before the service and Active with a running process after, Pending with that process ended on withdrawal, and a different, running process after the service is provided again; the dsh test asserts Pending, the disposer running and Active again (mutations in `upgrade.mutation`). Raised to verified. The means is tests (#1270): half the rule is process identity and end state — operating-system objects `SH` cannot replace (why: `formal-trace/means-0.23.md` §3).',
       upgrade: {
         status: '已验证',
         evidence: [
@@ -11313,18 +11314,20 @@ export const SEMANTIC_RUNTIME = {
       anchors: [],
       whyNoAnchor: '会话规格不覆盖，保证登记表 `core/D14` 覆盖的是相邻的承诺：现行来源是跨进程挂载设计 §11',
       whyNoAnchorEn: 'The session specification does not cover it and the register row `core/D14` covers a neighbouring promise: the current source is the cross-process mount design §11',
-      evidence: '`rutis-loader/tests/runtime_rows.rs::rows_wait_for_their_hosts_not_the_runtime`、`rutis-loader/tests/instance_runtimes.rs::a_language_rows_inject_inside_an_instance_is_the_instances`、`rutis/src/fiber/shuttle_tests.rs::shuttle_dependency_withdrawal_stops_the_loading_consumer`',
+      evidence: '`rutis-loader/tests/runtime_rows.rs::rows_wait_for_their_hosts_not_the_runtime`、`rutis-loader/tests/instance_runtimes.rs::a_language_rows_inject_inside_an_instance_is_the_instances`、`rutis-loader/tests/row_inject_gate.rs::a_runtime_rows_inject_gates_it_and_is_leased_to_it`、`rutis-loader/tests/instance_runtimes.rs::a_rows_instance_host_service_going_stops_it`、`rutis/src/fiber/shuttle_tests.rs::shuttle_dependency_withdrawal_stops_the_loading_consumer`',
       status: '已验证',
-      why: '挂载设计 §11：加载器在 `host_key(name)`（实例里 `host_key_in`）下提供 dispatcher，行按内核规则等它、跟随替换、随它撤下而停止。`rows_wait_for_their_hosts_not_the_runtime` 断言行先 Pending、提供后运行，宿主撤销只停用它的一行、运行时和另一行保持 Active；`a_language_rows_inject_inside_an_instance_is_the_instances` 断言实例里的服务被提供和读取；模型 9 覆盖内核的等待与停止（变异见 `upgrade.mutation`）。替换与实例里的等待／停止没有单独用例。升为「已验证」。',
-      whyEn: 'Mount design §11: the loader provides the dispatcher under `host_key(name)` (`host_key_in` in an instance), and a row waits for it, follows a replacement and stops with it by the kernel\'s rules. `rows_wait_for_their_hosts_not_the_runtime` asserts the row is Pending first and runs once provided, and that withdrawing the host stops only its row while the runtime and the other row stay Active; `a_language_rows_inject_inside_an_instance_is_the_instances` asserts an instance\'s services are provided and read; model 9 covers the kernel\'s wait and stop (mutations in `upgrade.mutation`). A replacement and an instance\'s wait/stop have no separate test. Raised to verified.',
+      why: '挂载设计 §11：加载器在 `host_key(name)`（实例里 `host_key_in`）下提供 dispatcher，行按内核规则等它、跟随替换、随它撤下而停止。`rows_wait_for_their_hosts_not_the_runtime` 断言行先 Pending、提供后运行，宿主撤销只停用它的一行、运行时和另一行保持 Active；`a_language_rows_inject_inside_an_instance_is_the_instances` 断言实例里的服务被提供和读取；`a_runtime_rows_inject_gates_it_and_is_leased_to_it` 在撤销后再提供一个不同的 dispatcher，断言行重新启动并读到新值；`a_rows_instance_host_service_going_stops_it` 断言实例里的 dispatcher 撤下时两个实例的行都停下、回来后再启动；模型 9 覆盖内核的等待与停止（变异见 `upgrade.mutation`）。升为「已验证」。手段按 #1270 记为测试：等待与停止是内核规则（有模型），loader 要说的是它把 dispatcher 放在正确的键与作用域上，要真实运行时（理由见 `formal-trace/means-0.23.md` §3）。',
+      whyEn: 'Mount design §11: the loader provides the dispatcher under `host_key(name)` (`host_key_in` in an instance), and a row waits for it, follows a replacement and stops with it by the kernel\'s rules. `rows_wait_for_their_hosts_not_the_runtime` asserts the row is Pending first and runs once provided, and that withdrawing the host stops only its row while the runtime and the other row stay Active; `a_language_rows_inject_inside_an_instance_is_the_instances` asserts an instance\'s services are provided and read; `a_runtime_rows_inject_gates_it_and_is_leased_to_it` provides a different dispatcher after the withdrawal and asserts the rows start again and read the new value; `a_rows_instance_host_service_going_stops_it` asserts an instance\'s dispatcher going stops both instances\' rows and that they start again when it returns; model 9 covers the kernel\'s wait and stop (mutations in `upgrade.mutation`). Raised to verified. The means is tests (#1270): waiting and stopping are the kernel\'s rules (modelled), and the loader\'s part — the dispatcher on the right key and scope — needs the real runtime (why: `formal-trace/means-0.23.md` §3).',
       upgrade: {
         status: '已验证',
         evidence: [
           '`rutis-loader/tests/runtime_rows.rs::rows_wait_for_their_hosts_not_the_runtime`',
           '`rutis-loader/tests/instance_runtimes.rs::a_language_rows_inject_inside_an_instance_is_the_instances`',
+          '`rutis-loader/tests/row_inject_gate.rs::a_runtime_rows_inject_gates_it_and_is_leased_to_it`',
+          '`rutis-loader/tests/instance_runtimes.rs::a_rows_instance_host_service_going_stops_it`',
           '`rutis/src/fiber/shuttle_tests.rs::shuttle_dependency_withdrawal_stops_the_loading_consumer`',
         ],
-        mutation: '把 dispatcher 提供到别的键（行永远不启动）；或撤销时不撤下它（行保持 Active）。',
+        mutation: '把 dispatcher 提供到别的键（行永远不启动）；或撤销时不撤下它（行保持 Active）；或替换后仍用旧绑定（`of` 读到 `42` 而不是 `43`）；或实例里的 dispatcher 撤下而行不停（`!active` 不成立）。',
       },
     },
     'MNT-11-5': {

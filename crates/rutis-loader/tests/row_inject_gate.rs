@@ -16,7 +16,7 @@ use common::runtimes::{
 };
 use rutis::host::{CtxHost, FiberState};
 use rutis::Ctx;
-use rutis_bridge::session::{call_service, host_key};
+use rutis_bridge::session::{call_service, host_key, HostDispatch, Reply, Value as RpcValue};
 use rutis_loader::report::EntryStatus;
 use rutis_loader::runtime::SessionResolver;
 use rutis_loader::{Chain, Loader, LoaderOptions, LoaderPlugin, ServiceCatalog};
@@ -61,6 +61,22 @@ provides = {"py_llm": Llm}
 def apply(ctx, config):
     ctx.provide("py_llm", Llm())
 "#;
+
+/// A host service answering `ask` with a number: what takes `llm`'s place
+/// when it is provided again, so a row that restarted can be told from one
+/// still holding the withdrawn service.
+struct Number(&'static str);
+
+impl HostDispatch for Number {
+    fn invoke(&self, method: &str, _args: RpcValue) -> Reply {
+        assert_eq!(method, "ask");
+        Ok(json!(self.0).into())
+    }
+
+    fn methods(&self) -> Option<Value> {
+        Some(json!({ "ask": "sync" }))
+    }
+}
 
 struct Fixture {
     root: Ctx,
@@ -196,7 +212,9 @@ impl Fixture {
 
 /// A Node row and a Python row whose plugins declare nothing, their rows
 /// `inject: ["llm"]`: both wait for `llm`, start once the host provides it
-/// and use it, stop when it goes and start again when it is back.
+/// and use it, stop when it goes and start again when it is back — the
+/// rows follow a replacement and read the new one, not the service that
+/// was withdrawn.
 /// guarantee: loader/rows-gate-on-services
 #[tokio::test(flavor = "multi_thread")]
 async fn a_runtime_rows_inject_gates_it_and_is_leased_to_it() {
@@ -223,16 +241,19 @@ async fn a_runtime_rows_inject_gates_it_and_is_leased_to_it() {
     assert_eq!(fixture.of("n").await, "42");
     fixture.probe.wait_for("p: 42").await;
 
-    // It goes: the rows stop and wait again; back, they start again.
+    // It goes: the rows stop and wait again. It comes back replaced, with a
+    // different answer: they start again and read the replacement, not the
+    // binding that was withdrawn.
     llm.dispose().await.unwrap();
     fixture.waits_for("n", "llm").await;
     fixture.waits_for("p", "llm").await;
-    let _llm = fixture
+    let _replacement = fixture
         .root
-        .provide_at(host_key("llm"), Arc::new(Llm))
+        .provide_at(host_key("llm"), Arc::new(Number("43")))
         .unwrap();
     fixture.active(&["n", "p"]).await;
-    assert_eq!(fixture.of("n").await, "42");
+    assert_eq!(fixture.of("n").await, "43");
+    fixture.probe.wait_for("p: 43").await;
     assert_eq!(fixture.starts("n"), 2);
     fixture.root.shutdown().await.unwrap();
 }

@@ -31,6 +31,8 @@
 
 2026-11-17（#622 收口）：第二批 32 条按 `upgrade` 升到「已验证」：审计 §3 的 18 条、同轮补了断言的 5 条（`core/D5a`、`host/dev-reload b`、`EVP-12.1-6`、`MNT-5-7`、`INS-6-1`）、#1267 的 6 条与 #1268 的 3 条，每条在 `tools/formal-trace-semantic.mjs` 的 `upgrade` 里写证据与变异（`crates/rutis/src/fiber/shuttle_tests.rs` 的模型 25、`crates/rutis-host/tests/dev.rs` 的 `the_dev_loop`、`crates/rutis-bridge/tests/mount_host_service.rs` 等）；`node tools/formal-trace.mjs --write` 重新生成页。统计：已验证 147 → 179、部分验证 367 → 364、未验证 509 → 479；已撤回仍 103（`MSV-4-2c` 那一行在上一轮）。
 
+2026-11-18（#1270 手段复核）：A 口径的「已验证」不等于 B 口径的「已覆盖」。新增[手段复核](means-0.23.md)（中英）：按 #622 原文的「手段」列逐条决定这 21 条（按编号拆开是 22 条）用什么手段。第一批 7 条 loader／host 集成层规则（`loader/rows-gate-on-services a`、`b`、`loader/row-unload-leaves-nothing a`、`host/dev-reload b`、`MNT-5-3`、`MNT-5-7`、`MNT-11-4`）按 #622 完成条件第三项把手段改为**测试**并写明理由（内核式 shuttle 只能测到替身，判据在真实子进程与进程身份上）；`MNT-11-4` 的「跟随替换」与「实例里的等待／停止」补了两处断言（`row_inject_gate.rs::a_runtime_rows_inject_gates_it_and_is_leased_to_it`、`instance_runtimes.rs::a_rows_instance_host_service_going_stops_it`）。其余 15 条内核／事件规则留在第二个 PR。这一轮不改任何行的状态。
+
 2026-11-16（#1212）：`EVP-9-1`、`EVP-9-12`、`NOD-3-1` 的备注按 0.19 删除的机制改写。节点的 `export` / `import` 名单在 0.19 删除（`design-remote-session-2026-10-28.md` §八、§十二；`migration-0.19.md`），节点之间是一条总线、每个名字都在，没有名单可写名字或 `*` 前缀；备注里「#631 export / import 收窄 PT」没有对象，三条都记「已撤回」。`NOD-3-1` 同时加进复核数据（`tools/formal-trace-recheck.mjs` 的 `SUPERSEDED`）与语义重抽条目（`tools/formal-trace-semantic.mjs`，状态从「未验证」改为「已撤回」）。状态只这一处变动：未验证 537 → 536，已撤回 101 → 102。
 
 2026-11-09：WS1 落地 #1025 的核心（marker 发布、`Entry::live`、确定性竞态测试、shuttle 模型），计划 §3 的 G3、G4 两条阻断解除；`ECA-*` 行按实际证据改为 7 条「部分验证」，其余 3 条仍是「未验证」。
@@ -198,10 +200,11 @@ node tools/formal-trace.mjs --check    # 只检查，不打印统计
 4. **接上模型与一致性用例**：等 WS4（`#613`）、WS5（`#624`）、WS7（`#631`）产出后，把 TLA+ 性质、trace 验证器、一致性用例名写进证据列，状态才能从「部分验证」上调。
 5. **CI**：已接：`ci.yml` 的 `links` 任务跑 `--check` 与 `check-guarantees`；#776 要求的「追踪表引用」检查就是它，「模型漂移」检查仍在 WS4/WS8。
 6. **英文**：`TRC` 行与 `registry-1`、`registry-2`、`session`、`events`、`runtime`、`remote` 行已有英文逐行重抽（`recheck-0.22.en.md` §4、§5、§6、§7、§8、§9、§10）；这六份协议清单的英文页只有来源、锚点、证据与状态，规则文字仍是中文 issue 快照。复核逐条表、§6 的无锚点清单和 `ECA` 行仍只有中文。英文追踪表其余部分是缺口。
+7. **手段列（#622 完成条件第三项）**：A 口径的「已验证」不等于 B 口径的「已覆盖」，21 条只有具名用例的规则逐条决定在[手段复核](means-0.23.md)：第一批 7 条 loader／host 改记测试，其余 15 条内核／事件规则的做法在第二个 PR 定。完成前不要把这一栏写成「已覆盖」。
 
 ## 相关文件
 
-- [0.22 复核表](recheck-0.22.md) · [英文复核页（TRC、registry-1、registry-2、session、events、runtime 与 remote）](recheck-0.22.en.md)
+- [手段复核（#1270）](means-0.23.md) · [0.22 复核表](recheck-0.22.md) · [英文复核页（TRC、registry-1、registry-2、session、events、runtime 与 remote）](recheck-0.22.en.md)
 - [会话追踪契约](../formal-trace.md) · [事件关闭接纳设计](../design-event-close-admission-2026-11-08.md)
 - [保证登记表](../guarantees.md) · [质量规范](../quality-standard.md) · [质量执行现状](../quality-status.md)
 - [形式化验证设计](../design-formal-verification-2026-11-08.md) · [0.22 计划](../plan/formal-verification-0.22.md)
