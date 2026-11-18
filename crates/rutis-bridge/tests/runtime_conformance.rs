@@ -13,6 +13,7 @@ use std::sync::Arc;
 use rutis_bridge::channel::{Channel, PeerId};
 use rutis_bridge::session::testing::{malformed, session, Fixture};
 use rutis_bridge::session::{Connection, Endpoint};
+use rutis_test_support::{Guard, HANG_GUARD};
 
 fn id(s: &str) -> PeerId {
     PeerId::new(s).unwrap()
@@ -42,7 +43,16 @@ fn main_endpoint(far: &str) -> Endpoint {
 
 async fn run(far: Connection) {
     far.ready().await.unwrap();
-    tokio::task::spawn_blocking(move || session(&far))
+    // The whole session contract against one far end: a far end that stops
+    // answering must fail the test, not hold it (2026-11-18: two Swift
+    // contract tests on a GitHub macOS runner ran for two hours after the
+    // fixture stopped answering, #1080). Two nominal guards: several calls
+    // run a runtime's first work.
+    Guard(HANG_GUARD * 2)
+        .within(
+            "the session contract",
+            tokio::task::spawn_blocking(move || session(&far)),
+        )
         .await
         .unwrap();
 }
@@ -105,10 +115,14 @@ async fn connect(mut command: tokio::process::Command, via: Via) -> (Channel, Ch
             let socket = directory.path().join("conformance.sock");
             let listener = tokio::net::UnixListener::bind(&socket).unwrap();
             let mut child = command.arg(&socket).spawn().unwrap();
-            let stream = tokio::select! {
-                accepted = listener.accept() => accepted.unwrap().0,
-                status = child.wait() => panic!("the far end ended before connecting: {status:?}"),
-            };
+            let stream = Guard(HANG_GUARD)
+                .within("the far end connecting", async {
+                    tokio::select! {
+                        accepted = listener.accept() => accepted.unwrap().0,
+                        status = child.wait() => panic!("the far end ended before connecting: {status:?}"),
+                    }
+                })
+                .await;
             let stream = stream.into_std().unwrap();
             stream.set_nonblocking(false).unwrap();
             let reader = stream.try_clone().unwrap();
@@ -134,10 +148,14 @@ async fn connect(mut command: tokio::process::Command, via: Via) -> (Channel, Ch
                 .env("RUTIS_CHANNEL_TOKEN", TOKEN)
                 .spawn()
                 .unwrap();
-            let mut stream = tokio::select! {
-                accepted = listener.accept() => accepted.unwrap().0,
-                status = child.wait() => panic!("the far end ended before connecting: {status:?}"),
-            };
+            let mut stream = Guard(HANG_GUARD)
+                .within("the far end connecting", async {
+                    tokio::select! {
+                        accepted = listener.accept() => accepted.unwrap().0,
+                        status = child.wait() => panic!("the far end ended before connecting: {status:?}"),
+                    }
+                })
+                .await;
             let mut presented = vec![0; TOKEN.len() + 1];
             stream.read_exact(&mut presented).await.unwrap();
             assert_eq!(
@@ -177,17 +195,21 @@ async fn listening(mut command: tokio::process::Command) -> (Channel, Child) {
         .spawn()
         .unwrap();
     let mut lines = tokio::io::BufReader::new(child.stderr.take().unwrap()).lines();
-    let address = loop {
-        let line = tokio::select! {
-            line = lines.next_line() => line.unwrap(),
-            status = child.wait() => panic!("the far end ended before listening: {status:?}"),
-        };
-        let line = line.expect("the far end's address");
-        match line.strip_prefix("rutis: listening on ") {
-            Some(address) => break address.to_owned(),
-            None => eprintln!("{line}"),
-        }
-    };
+    let address = Guard(HANG_GUARD)
+        .within("the far end listening", async {
+            loop {
+                let line = tokio::select! {
+                    line = lines.next_line() => line.unwrap(),
+                    status = child.wait() => panic!("the far end ended before listening: {status:?}"),
+                };
+                let line = line.expect("the far end's address");
+                match line.strip_prefix("rutis: listening on ") {
+                    Some(address) => break address.to_owned(),
+                    None => eprintln!("{line}"),
+                }
+            }
+        })
+        .await;
     // Pass the rest of its stderr on, for a failure's record.
     tokio::spawn(async move {
         while let Ok(Some(line)) = lines.next_line().await {
