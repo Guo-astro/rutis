@@ -205,7 +205,7 @@ func asRutisError(_ error: Error) -> RutisError {
 ///
 /// `Sendable` without an escape hatch: `set` is the only state, in a
 /// `Locked` box.
-final class Flag: Sendable {
+package final class Flag: Sendable {
     private let value = Locked(false)
 
     var isSet: Bool { value.read { $0 } }

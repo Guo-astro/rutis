@@ -211,7 +211,7 @@ package protocol SessionObject: AnyObject, Sendable {
 ///
 /// `Sendable` without an escape hatch: its one mutable state is the
 /// `Locked` box, whose lock every access takes.
-final class Waiters: Sendable {
+package final class Waiters: Sendable {
     private struct State {
         var done = false
         var next = 0

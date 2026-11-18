@@ -119,7 +119,7 @@ struct ConcurrencyTests {
             }
             var answered = 0
             for try await (index, value) in group {
-                XCTAssertEqual(value.plainJSON, .number(String(index)))
+                XCTAssertEqual(value.plainJSON, JSON.number(String(index)))
                 answered += 1
             }
             XCTAssertEqual(answered, count)
