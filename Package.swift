@@ -95,6 +95,13 @@ let package = Package(
             dependencies: ["Rutis", "RutisFixturePlugins"],
             path: "swift/rutis/Sources/RutisDial"
         ),
+        // The session-end fixtures `swift_lease` and `host_gone`
+        // (lease_e2e.rs, host_gone.rs).
+        .executableTarget(
+            name: "RutisLeaseFixture",
+            dependencies: ["Rutis", "RutisFixturePlugins"],
+            path: "swift/rutis/Sources/RutisLeaseFixture"
+        ),
         // An app hosting a plugin with RutisApp, on macOS (rutis-host's
         // tests/swift.rs).
         .executableTarget(
