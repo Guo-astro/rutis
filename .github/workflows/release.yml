@@ -466,26 +466,45 @@ jobs:
           # hand from the same assets). A release that is already there is
           # kept: `releases/tags` finds it, an asset that is up is skipped.
           api_call() { curl -sS --http1.1 --retry 5 --retry-delay 2 --retry-all-errors "${auth[@]}" "$@"; }
-          id=$(api_call "$api/releases/tags/$GITHUB_REF_NAME" | jq -r '.id // empty')
+          release=$(api_call "$api/releases/tags/$GITHUB_REF_NAME")
+          id=$(jq -r '.id // empty' <<<"$release" 2>/dev/null || true)
+          upload=$(jq -r '.upload_url // empty' <<<"$release" 2>/dev/null | sed 's/{?name,label}$//' || true)
           if [ -z "$id" ]; then
-            id=$(jq -n --arg tag "$GITHUB_REF_NAME" --arg name "rutis $GITHUB_REF_NAME" \
+            release=$(jq -n --arg tag "$GITHUB_REF_NAME" --arg name "rutis $GITHUB_REF_NAME" \
                   --rawfile body "$RUNNER_TEMP/notes.md" \
                   '{tag_name: $tag, name: $name, body: $body}' |
-              api_call -X POST --data-binary @- "$api/releases" | jq -r '.id // empty')
+              api_call -X POST --data-binary @- "$api/releases")
+            id=$(jq -r '.id // empty' <<<"$release" 2>/dev/null || true)
+            upload=$(jq -r '.upload_url // empty' <<<"$release" 2>/dev/null | sed 's/{?name,label}$//' || true)
           fi
           if [ -z "$id" ]; then
             echo "could not create the release $GITHUB_REF_NAME" >&2
             exit 1
           fi
+          # A freshly created release's asset endpoint can answer 404 for a
+          # moment; the response's upload_url avoids the release path, and
+          # the upload is retried for the same reason (#1304).
+          [ -n "$upload" ] || upload="$api/releases/$id/assets"
+          upload_asset() {
+            local file=$1 name=$2 attempt
+            for attempt in 1 2 3 4 5; do
+              if api_call --fail-with-body -X POST \
+                -H "Content-Type: application/octet-stream" \
+                --data-binary @"$file" "$upload?name=$name" > /dev/null; then
+                return 0
+              fi
+              echo "uploading $name failed (attempt $attempt); retrying" >&2
+              sleep $((attempt * 3))
+            done
+            return 1
+          }
           for file in dist/rutis-host-*; do
             name=$(basename "$file")
             if [ -n "$(api_call "$api/releases/$id/assets?name=$name" | jq -r 'if type == "array" then (.[0].id // "") else (.id // "") end')" ]; then
               echo "$name is uploaded already"
               continue
             fi
-            api_call --fail-with-body -X POST \
-              -H "Content-Type: application/octet-stream" \
-              --data-binary @"$file" "$api/releases/$id/assets?name=$name" > /dev/null
+            upload_asset "$file" "$name"
           done
         env:
           GH_TOKEN: ${{ github.token }}
