@@ -1839,6 +1839,7 @@ impl Process {
             failed: Mutex::default(),
             names: Mutex::default(),
             process: std::sync::OnceLock::new(),
+            undeclared: UndeclaredPolicy::default(),
         };
         let process = Arc::new(Self {
             peer: Connection::inert(executor.clone()),
