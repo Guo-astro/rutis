@@ -67,7 +67,7 @@ public final class RutisApp: Observable, @unchecked Sendable {
 
     enum Mode {
         case dial(String, trust: [SecCertificate])
-        case listen(String, identity: () throws -> sec_identity_t)
+        case listen(String, identity: @Sendable () throws -> sec_identity_t)
     }
 
     /// How a run of the connection ended.
@@ -165,7 +165,7 @@ public final class RutisApp: Observable, @unchecked Sendable {
                             certificate: SecIdentity? = nil, peer: String? = nil, shutdownTimeout: Double = 10,
                             log: @escaping @Sendable (String) -> Void = RutisApp.standardError)
     {
-        let identity = { () throws -> sec_identity_t in
+        let identity: @Sendable () throws -> sec_identity_t = {
             guard let certificate, let identity = sec_identity_create(certificate) else {
                 throw ChannelError("\(listen): wss needs a certificate (RutisApp's certificate:)")
             }
