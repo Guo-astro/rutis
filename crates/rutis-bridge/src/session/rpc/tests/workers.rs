@@ -147,6 +147,7 @@ fn policy_b_workers(workers: usize) -> Observed {
 /// runtime's synchronous service call waits for a free one. The model's
 /// counterexample 12, on the implementation: policy B has no edge for it, so
 /// nothing refuses the call and nothing can finish it.
+/// guarantee: bridge/sync-wait-not-covered
 #[test]
 fn one_worker_is_held_by_the_hosts_own_call_and_the_service_call_waits() {
     let observed = policy_b_workers(1);
@@ -167,6 +168,7 @@ fn one_worker_is_held_by_the_hosts_own_call_and_the_service_call_waits() {
 /// The same shape with a second worker: the free one takes the call, so the
 /// queue is the runtime's worker pool and nothing else. The deadlock takes as
 /// many host waits as the pool has threads (`Workers` in the model).
+/// guarantee: bridge/sync-wait-not-covered
 #[test]
 fn a_second_worker_takes_the_service_call_while_the_hosts_own_call_holds_one() {
     let observed = policy_b_workers(2);
