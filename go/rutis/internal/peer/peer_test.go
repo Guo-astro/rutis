@@ -150,20 +150,72 @@ func TestCancellingAnAsyncCallCancelsTheMethod(t *testing.T) {
 		t.Fatalf("%v", err)
 	}
 	testwait.Within(t, "the method to be cancelled", cancelled)
-	// The method still replies, late: the host receives the reply and drops
-	// it. A call after that reply is handled after it (the session handles
-	// what it receives in order): the session went on.
-	replied := func() bool {
+	// The cancel is resolved by an acknowledgement: the method's result is
+	// dropped and no reply follows. A call after that ack is handled after
+	// it (the session handles what it receives in order): the session went on.
+	acked := func() bool {
 		for _, f := range received.frames() {
-			if f.Op == "return" || f.Op == "throw" {
+			if f.Op == "ack" {
 				return true
 			}
 		}
 		return false
 	}
-	testwait.Eventually(t, "the late reply", replied, nil)
+	testwait.Eventually(t, "the acknowledgement", acked, nil)
 	if _, err := host.Call(context.Background(), "x", "after", nil, true); err != nil {
 		t.Fatal(err)
+	}
+	if host.Err() != nil {
+		t.Fatal(host.Err())
+	}
+}
+
+// guarantee: bridge/cancel-reaches-callee
+// A cancel a callee resolves is acknowledged: the caller's cancelled table
+// drains, and the running method's result is dropped instead of sent (#1099).
+func TestACancelIsResolvedByAnAckAndTheTableDrains(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	host, _, received := recordedPair(t, nil, func(ctx context.Context, target, method string, args []any) (any, error) {
+		if method != "wait" {
+			return "ok", nil
+		}
+		close(started)
+		<-release
+		return "late", nil
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := host.Call(ctx, "x", "wait", nil, false)
+		done <- err
+	}()
+	testwait.Within(t, "the method starts", started)
+	cancel()
+	testwait.Within(t, "the call gives up", done)
+	testwait.Eventually(t, "the acknowledgement", func() bool {
+		for _, f := range received.frames() {
+			if f.Op == "ack" {
+				return true
+			}
+		}
+		return false
+	}, nil)
+	host.mu.Lock()
+	entries := len(host.cancelled)
+	host.mu.Unlock()
+	if entries != 0 {
+		t.Fatalf("the cancelled table holds %d entries after the ack", entries)
+	}
+	close(release)
+	host.Drain(context.Background())
+	if _, err := host.Call(context.Background(), "x", "after", nil, false); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range received.frames() {
+		if (f.Op == "return" || f.Op == "throw") && strings.Contains(string(f.Value), "late") {
+			t.Fatalf("a reply followed the ack: %s %s", f.Op, f.Value)
+		}
 	}
 	if host.Err() != nil {
 		t.Fatal(host.Err())
@@ -372,7 +424,7 @@ func TestSynchronousCallsSayTheyWait(t *testing.T) {
 	calls := make(chan seen, 2)
 	go func() {
 		_, _ = far.Recv() // its hello
-		_ = far.Send([]byte(`{"op":"hello","version":4,"endpoint":"main","capabilities":[]}`))
+		_ = far.Send([]byte(`{"op":"hello","version":5,"endpoint":"main","capabilities":[]}`))
 		for {
 			message, err := far.Recv()
 			if err != nil {
@@ -879,7 +931,7 @@ func TestAnUnknownFieldInHelloFailsTheHandshake(t *testing.T) {
 	go func() {
 		far := NewLines(b)
 		_, _ = far.Recv() // its hello
-		_ = far.Send([]byte(`{"op":"hello","version":4,"endpoint":"main","extra":1}`))
+		_ = far.Send([]byte(`{"op":"hello","version":5,"endpoint":"main","extra":1}`))
 	}()
 	_ = runtime.Start()
 	testwait.Within(t, "the session to end", runtime.Closed())
@@ -909,7 +961,7 @@ func endedBy(t *testing.T, frame string) error {
 		if _, err := far.Recv(); err != nil { // its hello
 			return
 		}
-		if far.Send([]byte(`{"op":"hello","version":4,"endpoint":"main"}`)) != nil {
+		if far.Send([]byte(`{"op":"hello","version":5,"endpoint":"main"}`)) != nil {
 			return
 		}
 		_ = far.Send([]byte(frame))

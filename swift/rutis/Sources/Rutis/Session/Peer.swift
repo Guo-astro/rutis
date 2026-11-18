@@ -1,6 +1,6 @@
 import Foundation
 
-// One session of the rutis protocol, in the endpoint format (version 4),
+// One session of the rutis protocol, in the endpoint format (version 5),
 // on a local channel or a network one.
 //
 // One thread reads the channel and parses frames; every incoming call runs
@@ -10,7 +10,7 @@ import Foundation
 // an incoming call's Task carries its chain, and outgoing calls take theirs
 // from the Task they are made in.
 
-package let endpointProtocol = 4
+package let endpointProtocol = 5
 package let maxSafe: Int64 = 9_007_199_254_740_991
 
 /// What every runtime of this SDK declares. Not `sync-stack`: every
@@ -422,6 +422,11 @@ package final class Peer: @unchecked Sendable {
     private var heldPlugins: [ObjectIdentifier: FarPlugin] = [:]
     private var running: [String: Running] = [:]
     private var signals: [String: Signal] = [:]
+    /// Calls this side gave up, until the callee resolves one: a late reply
+    /// or an ack takes the entry out (#1099). And the running calls a cancel
+    /// resolved: their result is dropped instead of written.
+    private var cancelled: Set<String> = []
+    private var suppressed: Set<String> = []
     private var active = 0
     private var draining: [Event] = []
 
@@ -565,6 +570,8 @@ package final class Peer: @unchecked Sendable {
         exports = [:]
         identities = [:]
         imports = [:]
+        cancelled = []
+        suppressed = []
         let held = heldPlugins
         heldPlugins = [:]
         let draining = self.draining
@@ -971,6 +978,9 @@ package final class Peer: @unchecked Sendable {
         lock.lock()
         let waiting = self.pending[pending.id] != nil
         self.pending[pending.id] = nil
+        if waiting, cancellable {
+            _ = cancelled.insert(pending.id)
+        }
         lock.unlock()
         pending.resolve(.failure(CancellationError()))
         if waiting, cancellable {
@@ -1177,10 +1187,11 @@ package final class Peer: @unchecked Sendable {
                 outcome = .failure(decodeError(error, decodeData: { ValueCodec.native($0) }))
             }
             guard let waiter = pending.removeValue(forKey: id) else {
+                // A late reply to a call of ours given up takes its cancelled
+                // entry with it (#1099); a notification's has none.
+                _ = cancelled.remove(id)
                 lock.unlock()
                 releaseAll(fresh)
-                // A late reply to a call of ours given up (cancelled, or a
-                // notification) is dropped; any other is a fault.
                 if issued(id) { return }
                 throw Malformed("response for unknown call")
             }
@@ -1194,12 +1205,33 @@ package final class Peer: @unchecked Sendable {
                 throw Malformed("invalid cancel")
             }
             let call = running[id]
-            call?.cancelled = true
-            let task = call?.task
             let signal = signals[id]
+            let known = call != nil || signal != nil
+            call?.cancelled = true
+            if known {
+                // The call keeps running where it started; its result is
+                // dropped and the cancel acknowledged. The caller gets
+                // exactly one resolution: this ack or the reply written
+                // before the cancel was read (protocol 5, #1099).
+                suppressed.insert(id)
+            }
+            let task = call?.task
             lock.unlock()
             signal?.abort()
             task?.cancel()
+            if known {
+                try? send(.object([("op", .string("ack")), ("id", .string(id))]))
+            }
+            return
+        case "ack":
+            guard let id = frame["id"]?.stringValue else {
+                lock.unlock()
+                throw Malformed("invalid ack")
+            }
+            // The callee resolved the cancel; one whose entry is gone
+            // crossed the reply that cleared it.
+            _ = cancelled.remove(id)
+            lock.unlock()
             return
         case "release":
             defer { lock.unlock() }
@@ -1431,7 +1463,14 @@ package final class Peer: @unchecked Sendable {
         lock.lock()
         running[id] = nil
         signals[id] = nil
+        let wasSuppressed = suppressed.remove(id) != nil
         if closeError != nil {
+            lock.unlock()
+            return
+        }
+        if wasSuppressed {
+            // The cancel was acknowledged already: the result is dropped and
+            // no reply follows (#1099).
             lock.unlock()
             return
         }
@@ -1529,6 +1568,7 @@ private let frameFields: [String: [String]] = [
     "throw": ["op", "id", "error"],
     "release": ["op", "reference", "count"],
     "cancel": ["op", "id"],
+    "ack": ["op", "id"],
 ]
 
 /// The field paths `frame` carries beyond the ones its `op` defines (§9).

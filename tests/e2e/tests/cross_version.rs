@@ -1,16 +1,16 @@
 //! Cross-version meetings (#209, quality standard Q9.3.2.4, Q6.2.4): the
 //! published releases ([`rutis_e2e::previous`]) meet the current code.
 //! Which scenarios run depends on the release met: one older than the
-//! session protocol of 0.19 (endpoint protocol 4,
-//! `docs/design-remote-session-2026-10-28.md` §十一 5;
-//! [`previous::PROTOCOL_4`]) is refused at the handshake, before anything
-//! loads, with a message that says which end to upgrade (the current
-//! runtimes under an old host stop before it), and is not retried; one from 0.19 on meets the current code: services and events
-//! work across it. Each scenario is one or the other and says so for a
-//! release it does not run for. None hangs (every wait has the hang
-//! guard). Risks J2, E13, P8 of `docs/quality-status.md`.
+//! current session protocol (5, 0.23, [`previous::PROTOCOL_5`]) is refused
+//! at the handshake, before anything loads, with a message that says which
+//! end to upgrade (the current runtimes under an old host stop before it),
+//! and is not retried; one from 0.23 on meets the current code: services and
+//! events work across it. Until 0.23 is published every release is refused,
+//! including protocol-4 releases 0.19–0.22. Each scenario is one or the
+//! other and says so for a release it does not run for. None hangs (every
+//! wait has the hang guard). Risks J2, E13, P8 of `docs/quality-status.md`.
 //!
-//! Refused, a release older than 0.19:
+//! Refused, a release older than 0.23:
 //!
 //! | Old side | Current side | What is checked |
 //! | --- | --- | --- |
@@ -18,12 +18,13 @@
 //! | `@arcships/rutis-bun` | rutis-host | the same |
 //! | PyPI `rutis` (local runtime) | rutis-host | the same |
 //! | Go SDK (a binary built against the tagged module) | rutis-host | refused the same way, its runtime down and not started again; its row fails with the refusal |
-//! | PyPI `rutis` (`listen:`, remote runtime) | rutis-host dialing it | it refuses the upgrade (`rutis.4`), saying to upgrade it; the link stops and is not dialed again |
+//! | PyPI `rutis` (`listen:`, remote runtime) | rutis-host dialing it | it refuses the upgrade (the dialer offers `rutis.5`), saying to upgrade it; the link stops and is not dialed again |
 //! | rutis-host | the current runtimes (Node, Bun, Python) | each stops before the handshake, saying it needs `--id` (which the old host does not pass); the old host stops |
 //! | rutis-host (a node) | rutis-host (a node), both dialing and listening | the listener refuses the dialer's upgrade, saying which end to upgrade; the link stops, not retried |
 //!
-//! Met, a release from 0.19 on (none is published yet: they run from the
-//! 0.19.1 release gate on, and on main once 0.19.0 is published):
+//! Met, a release from 0.23 on (none is published yet: they run from the
+//! 0.23.1 release gate on, and on main once 0.23.0 is published). A
+//! protocol-4 release (0.19–0.22) is refused by the new version, not met:
 //!
 //! | Old side | Current side | What is checked |
 //! | --- | --- | --- |
@@ -424,14 +425,14 @@ enum Meeting {
 /// (outside CI).
 fn each(name: &str, meeting: Meeting, scenario: impl Fn(&Release, Scenario)) {
     for release in previous::releases() {
-        let works = release.speaks_protocol_4();
+        let works = release.speaks_protocol_5();
         if works != (meeting == Meeting::Works) {
             eprintln!(
                 "cross-version {name}: release {} {}, not this scenario's",
                 release.version,
                 match works {
-                    true => "speaks protocol 4 and meets the current code",
-                    false => "is older than protocol 4 and is refused",
+                    true => "speaks protocol 5 and meets the current code",
+                    false => "is older than protocol 5 and is refused",
                 }
             );
             continue;
@@ -496,27 +497,45 @@ fn go_build(s: &Scenario, release: Option<&Release>, source: &str, src: &str, ou
     }
 }
 
-// ── Releases older than 0.19: refused (protocol 4, docs/design-remote-session-2026-10-28.md §十一 5) ──
+// ── Releases older than 0.23: refused (protocol 5) ──
 //
-// They speak an older session protocol, so each meeting with one is refused
-// at the handshake, before anything loads, saying which end to upgrade;
-// nothing is retried.
+// They speak an older session protocol — 2 before 0.19, 4 from 0.19 to 0.22
+// — so each meeting with one is refused at the handshake, before anything
+// loads, saying which end to upgrade; nothing is retried.
 
-/// What the current host says of a runtime of an older release it starts:
-/// that runtime greets in its local format, protocol 2 (it ignores `--id`),
-/// and is the end to upgrade (`version_mismatch` of rutis-bridge).
-const OLDER_RUNTIME: &str =
-    "incompatible session: the far end speaks protocol 2, this side 4: upgrade the far end";
+/// The protocol an older release speaks: 2 before 0.19, 4 from 0.19 to 0.22.
+fn older_protocol(release: &Release) -> u32 {
+    if release.speaks_protocol_4() {
+        4
+    } else {
+        2
+    }
+}
+
+/// What the current host says of a runtime of an older release it starts
+/// (`version_mismatch` of rutis-bridge).
+fn older_runtime(release: &Release) -> String {
+    format!(
+        "incompatible session: the far end speaks protocol {}, this side 5: upgrade the far end",
+        older_protocol(release)
+    )
+}
 
 /// What an older listener answers the current side dialing it, offering
-/// protocol 4 (the WebSocket subprotocol `rutis.4`): it is the end to
+/// protocol 5 (the WebSocket subprotocol `rutis.5`): it is the end to
 /// upgrade.
-const OLDER_LISTENER: &str = "the dialer offered rutis.4: upgrade this endpoint";
+fn older_listener() -> &'static str {
+    "the dialer offered rutis.5: upgrade this endpoint"
+}
 
-/// What the current side listening answers an older dialer: it offered
-/// an older protocol, and is the end to upgrade.
-const OLDER_DIALER: &str =
-    "this endpoint speaks rutis.4, the dialer offered rutis.3: upgrade the dialer";
+/// What the current side listening answers an older dialer: it offered an
+/// older protocol, and is the end to upgrade.
+fn older_dialer(release: &Release) -> String {
+    format!(
+        "this endpoint speaks rutis.5, the dialer offered rutis.{}: upgrade the dialer",
+        older_protocol(release)
+    )
+}
 
 /// A runtime the host starts with did not start: the host says why and
 /// ends with a failure status; nothing ran.
@@ -547,7 +566,7 @@ fn a_previous_node_runtime_is_refused_at_the_handshake() {
             }),
         );
         let mut host = s.host(["run", "rutis.json"]);
-        let line = host.expect(OLDER_RUNTIME);
+        let line = host.expect(&older_runtime(&release));
         assert!(
             line.contains("the node runtime did not start"),
             "the refusal names the runtime: {line}"
@@ -576,7 +595,7 @@ fn a_previous_bun_runtime_is_refused_at_the_handshake() {
             }),
         );
         let mut host = s.host(["run", "rutis.json"]);
-        let line = host.expect(OLDER_RUNTIME);
+        let line = host.expect(&older_runtime(&release));
         assert!(
             line.contains("the bun runtime did not start"),
             "the refusal names the runtime: {line}"
@@ -601,7 +620,7 @@ fn a_previous_python_runtime_is_refused_at_the_handshake() {
         );
         let old = release.python_path().display().to_string();
         let mut host = s.host_with(["run", "rutis.json"], &[("RUTIS_PYTHON_PATH", &old)]);
-        let line = host.expect(OLDER_RUNTIME);
+        let line = host.expect(&older_runtime(&release));
         assert!(
             line.contains("the py runtime did not start"),
             "the refusal names the runtime: {line}"
@@ -632,20 +651,20 @@ fn a_previous_go_sdk_binary_is_refused_at_the_handshake() {
             }),
         );
         let mut host = s.host(["run", "rutis.json"]);
-        let line = host.expect(OLDER_RUNTIME);
+        let line = host.expect(&older_runtime(&release));
         assert!(
             line.starts_with("runtime go-gogreeter: down ("),
             "the refusal names the binary's runtime: {line}"
         );
         let row = host.expect("gogreeter: unresolved: ");
         assert!(
-            row.contains(OLDER_RUNTIME),
+            row.contains(&older_runtime(&release)),
             "the row fails with the refusal: {row}"
         );
         // Not started again within a restart's first steps.
         std::thread::sleep(std::time::Duration::from_secs(3));
         assert_eq!(
-            host.count(&format!("down ({OLDER_RUNTIME}")),
+            host.count(&format!("down ({})", older_runtime(&release))),
             1,
             "started again"
         );
@@ -700,7 +719,7 @@ fn a_previous_remote_runtime_is_refused_at_the_handshake() {
         let stopped = host.wait_for("the link stopped as incompatible", |line| {
             line.starts_with("gpu: disconnected (incompatible: ")
         });
-        assert!(stopped.contains(OLDER_LISTENER), "{stopped}");
+        assert!(stopped.contains(older_listener()), "{stopped}");
         // Not dialed again: no second refusal within a backoff's first steps.
         std::thread::sleep(std::time::Duration::from_secs(3));
         assert_eq!(host.count("gpu: disconnected (incompatible: "), 1);
@@ -866,16 +885,17 @@ fn a_previous_node_is_refused_at_the_handshake() {
                 // The dialer stops, with the listener's words: the old
                 // listener says to upgrade it; the current one, the old
                 // dialer.
+                let old_dialer = older_dialer(&release);
                 let (dialer, said, refusal) = match old_listens {
                     true => (
                         &mut current,
                         "old: disconnected (incompatible: ",
-                        OLDER_LISTENER,
+                        older_listener(),
                     ),
                     false => (
                         &mut old,
                         "current: link stopped: incompatible (",
-                        OLDER_DIALER,
+                        old_dialer.as_str(),
                     ),
                 };
                 let stopped = dialer.wait_for("the dialer stopped as incompatible", |line| {
@@ -893,7 +913,7 @@ fn a_previous_node_is_refused_at_the_handshake() {
     }
 }
 
-// ── Releases from 0.19 on: they meet the current code ──
+// ── Releases from 0.23 on: they meet the current code ──
 
 /// The calls of `sender` (`probe` calls it), whose target is on a side of
 /// `release`: a string, a `Date` and a bigint make the round trip (the

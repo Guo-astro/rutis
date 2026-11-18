@@ -304,7 +304,7 @@ class WebSocketTest(background.TestCase):
 import os, resource, sys
 from rutis import websocket
 resource.setrlimit(resource.RLIMIT_NOFILE, (64, 64))
-listener = websocket.listen("ws://127.0.0.1:0/rutis", "rutis.4", "secret", announce=lambda a: print(a, flush=True))
+listener = websocket.listen("ws://127.0.0.1:0/rutis", "rutis.5", "secret", announce=lambda a: print(a, flush=True))
 held = []
 try:
     while True:

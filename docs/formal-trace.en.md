@@ -9,7 +9,7 @@ A trace is an ordered sequence of protocol frames plus channel-end observations.
 
 ## 1. Scope and evidence
 
-The session is a reliable, ordered, duplex stream of opaque messages (`crates/rutis-bridge/src/channel/mod.rs:4-9`). A `Channel` preserves message boundaries; the session protocol gives each message one JSON `op` and uses endpoint-prefixed call ids. Protocol version 4 is `ENDPOINT_PROTOCOL` (`crates/rutis-bridge/src/session/mod.rs:9-14`), and the same value is used by the WebSocket subprotocol (`rutis.4`).
+The session is a reliable, ordered, duplex stream of opaque messages (`crates/rutis-bridge/src/channel/mod.rs:4-9`). A `Channel` preserves message boundaries; the session protocol gives each message one JSON `op` and uses endpoint-prefixed call ids. Protocol version 5 is `ENDPOINT_PROTOCOL` (`crates/rutis-bridge/src/session/mod.rs:9-15`), and the same value is used by the WebSocket subprotocol (`rutis.5`).
 
 The protocol frame vocabulary is the Rust `Frame` enum (`crates/rutis-bridge/src/session/protocol.rs:154-222`): `hello`, `invoke`, `call`, `get`, `await`, `return`, `throw`, `release`, and `cancel`. Wire values are tagged (`undefined`, `data`, `list`, `record`, `signal`, `reference`, and negotiated value tags); an unknown field is handled at its frame's scope (§3.7).
 
@@ -22,7 +22,7 @@ A trace case below has four parts:
 
 ### Rule status
 
-The status vocabulary is deliberately strict. **Current** means that the rule is the one implemented and tested by the anchors in this document. **Superseded** means an older rule or trace shape must not be used as evidence for protocol 4. **Not guaranteed** means that the implementation intentionally makes no promise; a trace may occur on one transport, but users and validators must not rely on it.
+The status vocabulary is deliberately strict. **Current** means that the rule is the one implemented and tested by the anchors in this document. **Superseded** means an older rule or trace shape must not be used as evidence for protocol 5. **Not guaranteed** means that the implementation intentionally makes no promise; a trace may occur on one transport, but users and validators must not rely on it.
 
 | Category | Current rule | Superseded evidence | Not guaranteed |
 | --- | --- | --- | --- |
@@ -75,7 +75,7 @@ Each category includes a success, failure and boundary case. The examples are cu
 
 **Boundary — reconnect is a new session.** The old session and its rows are disposed before a new pair becomes active; a handshake-only session shares no plugins or services, and replacement mounts only after the old session unloads (`crates/rutis-bridge/tests/session_plugin.rs:182-270`). The normal channel result is `Ok(())`/`Ok(None)` for the transport thread, while the local session state is separately `Disposed`; those observations must not be merged into one handshake result.
 
-Lifecycle trace status: the session/row sequencing above is current implementation evidence. It does not assert a single cross-runtime row-failure policy; the current row rules (load, update, unload, services and leases, ending and failing on one's own) are in the [row protocol](protocol-rows.en.md). Announcement errors are handled differently by the SDKs, as recorded in the service-announcement design. Object references are not negotiated by capability: protocol 4 has no `objects` capability ([session protocol specification](protocol-session.md) `SESS-16`, `SESS-53`), and every protocol-4 implementation accepts object references (`SESS-52`); the #639 finding that a Rust relay does not check `objects` has no reachable check point in protocol 4, and far ends of 0.18 or earlier are already refused at the handshake (`SESS-79`).
+Lifecycle trace status: the session/row sequencing above is current implementation evidence. It does not assert a single cross-runtime row-failure policy; the current row rules (load, update, unload, services and leases, ending and failing on one's own) are in the [row protocol](protocol-rows.en.md). Announcement errors are handled differently by the SDKs, as recorded in the service-announcement design. Object references are not negotiated by capability: protocol 5 has no `objects` capability ([session protocol specification](protocol-session.md) `SESS-16`, `SESS-53`), and every protocol-5 implementation accepts object references (`SESS-52`); the #639 finding that a Rust relay does not check `objects` has no reachable check point in protocol 5, and far ends of 0.18 or earlier are already refused at the handshake (`SESS-79`).
 
 ### 3.1 Frames
 
@@ -94,7 +94,7 @@ Accepted trace:
 
 ### 3.2 Handshake
 
-**Success — mutual protocol-4 greeting.** Each side sends `hello` with `version`, endpoint, implementation (when available), and capabilities (`crates/rutis-bridge/src/session/protocol.rs:157-167`). The Go raw peer sends `{"op":"hello","version":4,"endpoint":"main"}` and waits for the runtime's hello (`go/rutis/internal/peer/objects_test.go:35-51`). The ordinary pair starts both peers and waits for both `Ready()` results (`go/rutis/internal/peer/peer_test.go:70-89`). No plugin is mounted merely by greeting: `Session::handshake` returns a `Greeted` value and registers nothing (`crates/rutis-bridge/src/session/plugin/mod.rs:102-114,178-180`).
+**Success — mutual protocol-4 greeting.** Each side sends `hello` with `version`, endpoint, implementation (when available), and capabilities (`crates/rutis-bridge/src/session/protocol.rs:157-167`). The Go raw peer sends `{"op":"hello","version":5,"endpoint":"main"}` and waits for the runtime's hello (`go/rutis/internal/peer/objects_test.go:35-51`). The ordinary pair starts both peers and waits for both `Ready()` results (`go/rutis/internal/peer/peer_test.go:70-89`). No plugin is mounted merely by greeting: `Session::handshake` returns a `Greeted` value and registers nothing (`crates/rutis-bridge/src/session/plugin/mod.rs:102-114,178-180`).
 
 **Failure — version mismatch.** A far end speaking version 3 produces the exact local session failure `the far end speaks protocol 3, this side 4: upgrade the far end`. The fixture separately observes the local side's hello and the far-end thread's normal channel result `Ok(())`; that `Ok(())` is the transport thread's close result, not a successful handshake (`crates/rutis-bridge/tests/session_plugin.rs:101-126`). A handshake that does not finish within 10 seconds fails with `the far end did not greet in time` and the channel ends (`crates/rutis-bridge/tests/session_plugin.rs:128-152`; timeout is defined at `crates/rutis-bridge/src/session/plugin/mod.rs:46-47`). A host without `LocalId` fails with `the host provides no id for its sessions` and sends no greeting (`crates/rutis-bridge/tests/session_plugin.rs:154-167`).
 
@@ -146,7 +146,7 @@ Accepted trace:
 
 **Failure — incompatible or rejected connections do not spin.** A far end with the wrong protocol is classified `incompatible` and retry stops until configuration changes; identity mismatch/authentication is `authRejected` and is retried slowly while reporting. The classification table and its exact cases are at `go/rutis/internal/runtime/dial_test.go:84-101`; it explicitly includes a misleading text case to prove decisions are not made by matching words.
 
-**Boundary — replacement ordering.** The host listener admits a token with WebSocket subprotocol `rutis.4` (`crates/rutis-host/src/connect/listen.rs:53-80`). For an id already connected, a newer connection replaces the older only after its handshake: the old session unloads, closes as `Replaced` (WebSocket 4002), and only then is the new session installed; a handshake failure touches nothing (`crates/rutis-host/src/connect/listen.rs:4-10`). A disconnected or gone peer therefore cannot apply late frames to the replacement session.
+**Boundary — replacement ordering.** The host listener admits a token with WebSocket subprotocol `rutis.5` (`crates/rutis-host/src/connect/listen.rs:53-80`). For an id already connected, a newer connection replaces the older only after its handshake: the old session unloads, closes as `Replaced` (WebSocket 4002), and only then is the new session installed; a handshake failure touches nothing (`crates/rutis-host/src/connect/listen.rs:4-10`). A disconnected or gone peer therefore cannot apply late frames to the replacement session.
 
 ## 4. Trace invariants and counterexamples
 

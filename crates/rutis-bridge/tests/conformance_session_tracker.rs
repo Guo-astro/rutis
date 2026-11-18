@@ -4321,9 +4321,10 @@ async fn a_saved_callback_is_called_after_the_call_returns() {
 }
 
 /// A synchronous call cannot be cancelled midway (MNT-2-12): a `cancel`
-/// that arrives while its method runs does not abort it, and the call
-/// answers as if it were never cancelled. (The rule says this is not
-/// guaranteed: the test fixes what the implementations do.)
+/// that arrives while its method runs does not abort it. Since protocol 5 it
+/// is acknowledged and its result dropped (#1099). (The rule says the
+/// interruption is not guaranteed: the test fixes what the implementations
+/// do.)
 /// rule: MNT-2-12
 #[tokio::test(flavor = "multi_thread")]
 async fn a_cancel_does_not_abort_a_synchronous_call() {
@@ -4352,11 +4353,15 @@ async fn a_cancel_does_not_abort_a_synchronous_call() {
     .unwrap();
     send(&mut far, json!({ "op": "cancel", "id": "node:1" }));
     release.send(()).unwrap();
-    assert_eq!(
-        read(&mut far),
-        json!({ "op": "return", "id": "node:1",
-                "value": { "type": "data", "value": "finished" } }),
-        "the cancelled synchronous call still answers"
+    // Either resolution is legal: the acknowledgement, or the reply written
+    // before the cancel was read (#1099).
+    let frame = read(&mut far);
+    assert!(
+        frame == json!({ "op": "ack", "id": "node:1" })
+            || frame
+                == json!({ "op": "return", "id": "node:1",
+                           "value": { "type": "data", "value": "finished" } }),
+        "the cancel is resolved: {frame}"
     );
     assert!(peer.close_reason().is_none(), "the session goes on");
 }
@@ -4406,7 +4411,7 @@ async fn a_remote_runtime_runs_rows_with_the_same_control_operations() {
         .greeting()
         .expect("the runtime greeted");
     assert_eq!(greeting.endpoint.as_str(), "rt");
-    assert_eq!(ENDPOINT_PROTOCOL, 4, "the runtime's session protocol");
+    assert_eq!(ENDPOINT_PROTOCOL, 5, "the runtime's session protocol");
     assert!(greeting.capabilities.iter().any(|one| one == "runtime"));
 
     process
@@ -7723,7 +7728,7 @@ mod carrier {
     use super::*;
 
     /// The session protocol the WebSocket binding carries.
-    const PROTOCOL: &str = "rutis.4";
+    const PROTOCOL: &str = "rutis.5";
 
     /// An admission that lets token `good` through and turns the rest away.
     fn admitting() -> Admit {

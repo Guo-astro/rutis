@@ -405,7 +405,7 @@ mod tests {
                 bearer: token,
                 certificate: None,
             })?;
-            assert_eq!(admitted.protocol, "rutis.4");
+            assert_eq!(admitted.protocol, "rutis.5");
             let (near, mut far) = rutis_bridge::memory::pair();
             far.sender.send(hello.as_bytes()).unwrap();
             (admitted.deliver)(near);

@@ -109,7 +109,7 @@ async fn a_failed_handshake_fails_the_session() {
     let session = main.plugin(Session::new(ours));
     let error = failure(&session).await;
     assert!(
-        error.contains("the far end speaks protocol 3, this side 4: upgrade the far end"),
+        error.contains("the far end speaks protocol 3, this side 5: upgrade the far end"),
         "{error}"
     );
     let (frames, ended) = joined(far).await;

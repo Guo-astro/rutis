@@ -232,7 +232,7 @@ pub struct MalformedSequence {
 /// A `throw` whose `error` is missing `name`/`message` ends the session too;
 /// one whose `error` is not an object has the same effect and is the case
 /// here.
-pub const MALFORMED_SEQUENCES: [MalformedSequence; 12] = [
+pub const MALFORMED_SEQUENCES: [MalformedSequence; 13] = [
     MalformedSequence {
         case: "request before the greeting",
         greeting: false,
@@ -316,6 +316,14 @@ pub const MALFORMED_SEQUENCES: [MalformedSequence; 12] = [
         greeting: true,
         frames: &[MalformedFrame {
             frame: br#"{"op":"cancel","id":7}"#,
+            replies: false,
+        }],
+    },
+    MalformedSequence {
+        case: "ack of a wrong field type",
+        greeting: true,
+        frames: &[MalformedFrame {
+            frame: br#"{"op":"ack","id":7}"#,
             replies: false,
         }],
     },
@@ -674,6 +682,14 @@ pub fn session(far: &Connection) {
         );
         std::thread::sleep(Duration::from_millis(10));
     }
+    // The callee resolves the cancel: its `ack` was read before this call's
+    // reply, so the caller's cancelled table is empty again (protocol 5,
+    // #1099).
+    assert_eq!(
+        far.cancelled(),
+        0,
+        "the callee's acknowledgement drains the cancelled table"
+    );
 
     // While the far end waits on a synchronous callback, the callback may
     // call the far end again: the call belongs to the chain it waits for.
