@@ -885,7 +885,9 @@ class Runtime:
         A module imported again is reloaded in place: when that raises (an
         error while importing it, or a module of its package), or `check`
         raises of it (it declares no plugin), it is put back as it was, its
-        package's modules with it, not left half updated.
+        package's modules with it, not left half updated. A changed source
+        is compiled again, not read from a `.pyc` Python would take for
+        current (#1080).
 
         With `fresh` false (a row loading under `rutis-host dev`), the module
         as this process last imported it, unchanged: a row that loads again
@@ -916,12 +918,24 @@ class Runtime:
             return module
         elif name in self.stamps and _changed(self.stamps[name]):
             saved = dict(module.__dict__)
+            # The sources that changed are compiled again: Python takes a
+            # `.pyc` for current by its source's modification time in whole
+            # seconds and its size, so an edit that keeps both (the same text
+            # length, saved in the second the last compile ran in) would run
+            # the code before it (#1080). Taken before the package's modules
+            # leave `sys.modules`, below.
+            stale = [
+                sys.modules.get(other)
+                for other, stamp in self.stamps[name].items()
+                if _stamp(sys.modules.get(other)) != stamp
+            ]
             # Imported again as the plugin module imports them: not its
             # parents (reloading needs them), nor other rows' plugins.
             kept = {name} | _parents(name) | set(self.stamps)
             others = {other: loaded for other, loaded in _package(name).items() if other not in kept}
             for other in others:
                 del sys.modules[other]
+            _forget_bytecode(stale)
             try:
                 importlib.invalidate_caches()
                 try:
@@ -1555,6 +1569,21 @@ def _stamp(module) -> tuple | None:
     except (OSError, TypeError):
         return None
     return (stat.st_mtime_ns, stat.st_size)
+
+
+def _forget_bytecode(modules) -> None:
+    """Remove the bytecode Python cached for `modules`, so their sources are
+    compiled again (`Runtime.module`'s reload path, #1080)."""
+    for module in modules:
+        if module is None:
+            continue
+        cached = getattr(module, "__cached__", None)
+        if not cached:
+            continue
+        try:
+            os.unlink(cached)
+        except OSError:
+            pass
 
 
 async def _settle(value: Any) -> Any:
