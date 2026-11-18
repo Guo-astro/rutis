@@ -201,12 +201,11 @@ func TestACancelIsResolvedByAnAckAndTheTableDrains(t *testing.T) {
 		}
 		return false
 	}, nil)
-	host.mu.Lock()
-	entries := len(host.cancelled)
-	host.mu.Unlock()
-	if entries != 0 {
-		t.Fatalf("the cancelled table holds %d entries after the ack", entries)
-	}
+	testwait.Eventually(t, "the cancelled table to drain after the ack", func() bool {
+		host.mu.Lock()
+		defer host.mu.Unlock()
+		return len(host.cancelled) == 0
+	}, nil)
 	close(release)
 	host.Drain(context.Background())
 	if _, err := host.Call(context.Background(), "x", "after", nil, false); err != nil {

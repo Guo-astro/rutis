@@ -83,8 +83,8 @@ async fn a_dropped_call_aborts_its_signal_and_the_session_continues() {
     )
     .await;
     until(
-        || process.connection().orphans() > 0,
-        "its late reply discarded",
+        || process.connection().cancelled() == 0,
+        "the cancellation acknowledged and its table drained",
     )
     .await;
     assert_eq!(

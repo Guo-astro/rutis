@@ -566,7 +566,7 @@ fn a_previous_node_runtime_is_refused_at_the_handshake() {
             }),
         );
         let mut host = s.host(["run", "rutis.json"]);
-        let line = host.expect(&older_runtime(&release));
+        let line = host.expect(&older_runtime(release));
         assert!(
             line.contains("the node runtime did not start"),
             "the refusal names the runtime: {line}"
@@ -595,7 +595,7 @@ fn a_previous_bun_runtime_is_refused_at_the_handshake() {
             }),
         );
         let mut host = s.host(["run", "rutis.json"]);
-        let line = host.expect(&older_runtime(&release));
+        let line = host.expect(&older_runtime(release));
         assert!(
             line.contains("the bun runtime did not start"),
             "the refusal names the runtime: {line}"
@@ -620,7 +620,7 @@ fn a_previous_python_runtime_is_refused_at_the_handshake() {
         );
         let old = release.python_path().display().to_string();
         let mut host = s.host_with(["run", "rutis.json"], &[("RUTIS_PYTHON_PATH", &old)]);
-        let line = host.expect(&older_runtime(&release));
+        let line = host.expect(&older_runtime(release));
         assert!(
             line.contains("the py runtime did not start"),
             "the refusal names the runtime: {line}"
@@ -651,20 +651,20 @@ fn a_previous_go_sdk_binary_is_refused_at_the_handshake() {
             }),
         );
         let mut host = s.host(["run", "rutis.json"]);
-        let line = host.expect(&older_runtime(&release));
+        let line = host.expect(&older_runtime(release));
         assert!(
             line.starts_with("runtime go-gogreeter: down ("),
             "the refusal names the binary's runtime: {line}"
         );
         let row = host.expect("gogreeter: unresolved: ");
         assert!(
-            row.contains(&older_runtime(&release)),
+            row.contains(&older_runtime(release)),
             "the row fails with the refusal: {row}"
         );
         // Not started again within a restart's first steps.
         std::thread::sleep(std::time::Duration::from_secs(3));
         assert_eq!(
-            host.count(&format!("down ({})", older_runtime(&release))),
+            host.count(&format!("down ({})", older_runtime(release))),
             1,
             "started again"
         );
@@ -885,7 +885,7 @@ fn a_previous_node_is_refused_at_the_handshake() {
                 // The dialer stops, with the listener's words: the old
                 // listener says to upgrade it; the current one, the old
                 // dialer.
-                let old_dialer = older_dialer(&release);
+                let old_dialer = older_dialer(release);
                 let (dialer, said, refusal) = match old_listens {
                     true => (
                         &mut current,
