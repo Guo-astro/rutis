@@ -181,7 +181,7 @@ impl Loader {
                         LoaderError::InvalidEntry(format!("{group:?} cannot start"))
                     })
                 })?;
-            state.instances.insert(
+            state.insert_instance(
                 number,
                 InstanceRecord {
                     group: group.clone(),
@@ -229,12 +229,12 @@ impl Loader {
                 .find(|(_, instance)| instance.plugin == plugin)
                 .map(|(n, _)| *n)
                 .ok_or_else(|| LoaderError::UnknownEntry(format!("instance {plugin:?}")))?;
-            let removed = state.instances.remove(&number).unwrap();
+            let removed = state.remove_instance(number).unwrap();
             let slot = Slot {
                 row: removed.group.clone(),
                 scope: Some(number),
             };
-            let view = state.running.remove(&slot).map(|running| {
+            let view = state.remove_running(&slot).map(|running| {
                 let key = Some(slot);
                 if state.groups.get(&key).map(|g| g.token) == Some(running.token) {
                     state.groups.remove(&key);

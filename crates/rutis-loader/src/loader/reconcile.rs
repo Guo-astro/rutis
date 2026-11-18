@@ -211,7 +211,7 @@ impl Inner {
                 .map(|(slot, _)| slot.clone())
                 .collect();
             for slot in children {
-                let child = state.running.remove(&slot).unwrap();
+                let child = state.remove_running(&slot).unwrap();
                 let key = Some(slot);
                 if state.groups.get(&key).map(|g| g.token) == Some(child.token) {
                     state.groups.remove(&key);
@@ -282,9 +282,7 @@ impl Inner {
                 continue;
             };
             if let Some(view) = self.spawn_row(state, index, &parent, parent_token, &ctx, slot) {
-                let instance = state.instances.get_mut(&number).unwrap();
-                instance.plugin = view.id;
-                instance.kernel = view.instance();
+                state.rebuild_instance(number, view.id, view.instance());
             }
         }
     }
@@ -362,7 +360,7 @@ impl Inner {
             });
             self.monitor(slot.clone(), view.clone());
             crate::framework::follow(&self.followers, &row_ctx, &view, &slot.row, "group");
-            state.running.insert(
+            state.insert_running(
                 slot,
                 Running {
                     parent: parent.clone(),
@@ -447,7 +445,7 @@ impl Inner {
         );
         self.monitor(slot.clone(), view.clone());
         crate::framework::follow(&self.followers, &row_ctx, &view, &slot.row, &name);
-        state.running.insert(
+        state.insert_running(
             slot,
             Running {
                 parent: parent.clone(),
@@ -501,12 +499,12 @@ impl Inner {
             }
             gone.sort_unstable();
             for number in gone {
-                let instance = state.instances.remove(&number).unwrap();
+                let instance = state.remove_instance(number).unwrap();
                 let slot = Slot {
                     row: instance.group.clone(),
                     scope: Some(number),
                 };
-                if let Some(running) = state.running.remove(&slot) {
+                if let Some(running) = state.remove_running(&slot) {
                     let key = Some(slot);
                     if state.groups.get(&key).map(|g| g.token) == Some(running.token) {
                         state.groups.remove(&key);
@@ -798,7 +796,7 @@ impl Inner {
                 .collect();
             let mut disposals: Vec<rutis::host::BoxFuture<'static, ()>> = Vec::new();
             for slot in dropped {
-                let running = state.running.remove(&slot).unwrap();
+                let running = state.remove_running(&slot).unwrap();
                 let key = Some(slot);
                 if state.groups.get(&key).map(|g| g.token) == Some(running.token) {
                     state.groups.remove(&key);
@@ -1244,7 +1242,7 @@ async fn watch_for_dispose(
         }
         let cascading = Inner::cascading(state, &slot);
         let instance = Inner::is_instance(state, &slot);
-        let running = state.running.remove(&slot).unwrap();
+        let running = state.remove_running(&slot).unwrap();
         let key = Some(slot.clone());
         if state.groups.get(&key).map(|g| g.token) == Some(running.token) {
             state.groups.remove(&key);
@@ -1256,7 +1254,7 @@ async fn watch_for_dispose(
         }
         if instance {
             let number = slot.scope.unwrap();
-            let removed = state.instances.remove(&number).unwrap();
+            let removed = state.remove_instance(number).unwrap();
             state.stopped.retain(|s, _| s.scope != Some(number));
             state.rejected.retain(|s, _| s.scope != Some(number));
             let (disposals, mut events) = Inner::prune_instances(state);
