@@ -178,6 +178,72 @@ fn a_close_racing_the_far_ends_teardown_keeps_its_reason() {
 }
 
 #[test]
+fn a_far_end_woken_before_the_outgoing_close_keeps_the_reason() {
+    // #1295: the close sets the incoming direction first and wakes this
+    // end's own reader; the reader going away drops its sender and wakes
+    // the far end. Windows scheduled the far end in that gap, and it read
+    // `Ok(None)` (a clean end) instead of `Replaced` (4002). Both
+    // directions must take the reason before either is woken.
+    let (a, b): (Arc<Direction>, Arc<Direction>) = (Arc::default(), Arc::default());
+    let pair: Arc<Pair> = Arc::default();
+    let Channel {
+        sender,
+        receiver,
+        closer,
+    } = end(&a, &b, &pair);
+    let far = end(&b, &a, &pair);
+    let (read, read_rx) = mpsc::channel();
+    let (seen, seen_rx) = mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        let mut receiver = receiver;
+        let _ = receiver.recv();
+        drop(sender);
+        let _ = read.send(());
+    });
+    let far_end = std::thread::spawn(move || {
+        let mut far = far;
+        let result = far.receiver.recv();
+        let _ = seen.send(result.clone());
+        result
+    });
+    eventually_blocking(
+        || (a.waiting() == 1 && b.waiting() == 1).then_some(()),
+        "both ends blocked",
+    );
+    let early = Arc::new(std::sync::Mutex::new(None));
+    let early_in_hook = early.clone();
+    let read_rx = std::sync::Mutex::new(Some(read_rx));
+    let seen_rx = std::sync::Mutex::new(Some(seen_rx));
+    pair.between.lock().unwrap().replace(Box::new(move || {
+        // The gap the old order left: the close has woken this end's
+        // reader, but has not reached the outgoing direction yet.
+        let (read_rx, seen_rx) = (
+            read_rx.lock().unwrap().take(),
+            seen_rx.lock().unwrap().take(),
+        );
+        if let (Some(read_rx), Some(seen_rx)) = (read_rx, seen_rx) {
+            if read_rx.recv_timeout(Duration::from_millis(200)).is_ok() {
+                *early_in_hook.lock().unwrap() =
+                    seen_rx.recv_timeout(Duration::from_millis(200)).ok();
+            }
+        }
+    }));
+    closer.close(Close::Replaced);
+    assert_eq!(
+        far_end.join().unwrap(),
+        Err(ChannelError::Closed {
+            reason: "replaced by a new connection".into()
+        })
+    );
+    assert_eq!(
+        *early.lock().unwrap(),
+        None,
+        "the far end read before the close finished"
+    );
+    reader.join().unwrap();
+}
+
+#[test]
 fn the_far_end_learns_why_a_channel_closed() {
     let (a, mut b) = pair();
     a.closer.close(Close::Done);
