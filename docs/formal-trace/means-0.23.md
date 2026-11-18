@@ -39,27 +39,25 @@ issue 正文把这批写成 21 条，其中 `loader/rows-gate-on-services a/b` �
 | `MNT-5-7` | `rutis-bridge/tests/mount_host_service.rs::withdrawing_a_host_service_closes_the_mounts_process`、`examples/dsh-baseline/tests/host.rs::persona_uses_the_system_prompt_the_rutis_host_provides` | `SH` | **测试** | 规则的一半是「Node 进程随之关闭、不做就地替换」，判据是进程身份与结束状态，`SH` 替换不到的操作系统对象 |
 | `MNT-11-4` | `runtime_rows.rs::rows_wait_for_their_hosts_not_the_runtime`、`instance_runtimes.rs::a_language_rows_inject_inside_an_instance_is_the_instances`、`row_inject_gate.rs::a_runtime_rows_inject_gates_it_and_is_leased_to_it`（本 PR 补了替换那一半）、`instance_runtimes.rs::a_rows_instance_host_service_going_stops_it`（本 PR 新加）、内核模型 9 | `SH` | **测试** | 同一份 dispatcher 的键在全局是 `host_key`、实例里是 `host_key_in`；等待与停止是内核规则，loader 这边要断言的是它把 dispatcher 放在正确的键、作用域上 |
 
-### 2.2 十五条内核／事件层：第二个 PR
+### 2.2 十五条内核／事件层：模型、PT 与写明的测试
 
-| 规则 | 现在有什么 | 手段列 | 计划 |
+| 规则 | 现在有什么 | 手段列 | 决定 |
 | --- | --- | --- | --- |
-| `core/D7a` | `rutis/tests/lifecycle_order.rs::unload_publishes_unloading_and_cancels_before_cleanup_and_disposed_after`、`::unload_waits_for_apply_to_exit_before_cleanup`、内核模型 26 | `PT + SH` | 补事件序列的模型（卸载四步的先后）；PT 由 `interleave.rs` 的参考模型覆盖 |
-| `core/D7b` | 内核模型 12、9、23；`rutis/tests/evicted_apply.rs` 四个用例；`rutis/tests/load_window.rs` 三个用例 | `SH` | 模型 12、23 已覆盖 dispose／restart 的取消；把 update 加进模型动作 |
-| `core/D14a` | `rutis/tests/contract.rs::eviction_order`、`rutis/tests/instance_subtrees.rs::closing_subtree_disposes_consumer_before_provider`、内核模型 9 | `SH` | 模型加「≥2 个消费者并发排干」的动作与顺序断言 |
-| `core/D14b` | `rutis/tests/contract.rs::self_access_during_cleanup` | `PT` | 确定性行为，模型收益小：写「测试」并说明 |
-| `core/D21a` | `rutis/tests/contract.rs::single_service_evict`、`::isolate_no_cross_evict`、内核模型 19、`rutis/tests/parity.rs::distinguishes_provider_incarnations_without_a_global_counter` | `SH + PT` | 驱逐的四元组由模型 19 与注册槽 PT 覆盖；「同键不同代并存」在当前设计里不可达，写清楚 |
-| `core/D30c` | `rutis/tests/contract.rs::cleanup_panics_contained` | `PT` | 确定性行为（`catch_unwind` → `PluginFailed`），写「测试」并说明 |
-| `core/D31b` | `rutis/tests/event_order.rs::emit_after_listener_panic_is_still_delivered`、宿主队列模型 | `SH` | 给内核 emit 链补 panic 的模型 |
-| `events/remote e` | 内核模型 10、`rutis/tests/events.rs::raw_dispatch_and_entry_calls` | `SH + PT` | `invoke_entry` 那一半是确定性查找，写「测试」；`emit` 完成时机已有模型 10 |
-| `events/framework c` | 内核模型 24、K 期望 `rutis/service`、`rutis/service-of-rust`、`rutis/service-scoped` | `K + SH` | K 是这一行的主证据；「每个宿主服务」写清是代表性覆盖 |
-| `instance/subtrees.5` | `rutis/tests/instance_subtrees.rs` 两个资源用例、`rutis/src/fiber/transient_tests.rs` 两个、`rutis/tests/transient_release.rs::churn_on_long_lived_root_releases_instances`、内核模型 16、17 | `SH + PT + 测试` | 手段列本来就写了「测试」；资源那几项就是测试，模型只补父子并发关闭 |
-| `EVP-7.1-5` | 内核模型 6、K `unload/waits-and-cancels`、`node/rutis/test/events.test.mjs::unload aborts ctx.signal and waits for running listeners`、`rutis/tests/events.rs::unload_cancels_and_waits_for_running_listeners` | `K + SH` | K 一行就横跨七种实现；内核模型的在途计数已有 |
-| `EVP-12.1-6` | `rutis-bridge/tests/event_hub.rs::dropping_a_dispatch_cancels_the_remote_listener_it_started`、`::dispatches_cross_between_host_and_runtime`、`rutis/tests/events.rs::remote_entries_take_part_like_any_listener` | `SH + TV` | `event_hub` 有两个方向的确定性用例；TV 归 #624 的 trace 验证器 |
-| `EVP-12.1-10` | 内核模型 10、`rutis/tests/events.rs::remote_entries_in_synchronous_modes`、`rutis/tests/waterfall_sync.rs::sync_waterfall_chains_listeners_into_the_terminal`、`rutis/src/bus/prop_tests.rs::the_five_dispatch_modes_match_a_reference_interpreter` | `SH + TV` | 模型 10 与分发方式的 PT 已覆盖；`dispatch_sync` 的选择由 `call_sync` 间接断言 |
-| `INS-6-1` | `rutis/tests/instance_subtrees.rs::closing_a_subtree_withdraws_the_instance_keys_it_provided`、`::instance_keys_enforce_subtree_and_explain_pending_dependency`、`::a_recreated_child_gets_a_new_instance_id` | `SH` | 确定性行为，模型收益小：写「测试」并说明；子树关闭的并发由模型 16、17 覆盖 |
-| `MSV-4-2g` | `rutis-bridge/src/marked/shuttle_tests.rs::shuttle_a_marked_service_is_served_after_its_native_and_withdrawn_before_it`、`rutis-loader/tests/marked_services.rs::rows_of_every_language_call_a_marked_rust_service` | `SH + TLA` | 模型 1 覆盖撤销顺序；消费者停止那一半跨三种语言，写「测试」 |
-
-第二个 PR 落地时，本表改成与 §2.1 同形的「决定」列。
+| `core/D7a` | 模型 28（本轮新增，`rutis/src/fiber/shuttle_tests.rs::shuttle_an_unload_cancels_and_cleans_up_before_it_disposes`：内核自己的 `unload`，Unloading 先于清理、清理看到取消、LIFO、Disposed 最后）、模型 26、`rutis/tests/lifecycle_order.rs` 两个用例、`rutis/tests/interleave.rs` | `PT + SH` | **模型 + 测试**：`PT` 是 `interleave.rs` 的顺序参考模型；`SH` 是模型 28 与 26；「等 apply 退出」由 `lifecycle_order::unload_waits_for_apply_to_exit_before_cleanup` 断言（公共 `FiberView`，shuttle 驱动不了） |
+| `core/D7b` | 模型 12、23、9；`rutis/tests/evicted_apply.rs` 四个用例；`rutis/tests/load_window.rs` 三个用例 | `SH` | **模型 + 测试**：dispose／restart／驱逐由模型 12、23、9 承担；`update` 与 `restart` 共用临界区，update 自己的 dry-run 与两次终态检查没有模型，那半边记测试（`load_window::an_update_right_after_mounting_is_taken_up_on_current_thread`、`evicted_apply::updating_a_cancelled_loading_consumer_runs_one_apply_without_failing`） |
+| `core/D14a` | 模型 9；`rutis/tests/contract.rs::eviction_order`；本轮新增 `rutis/tests/contract.rs::eviction_drains_every_consumer_before_the_provider`（两个消费者都回 Pending、两次清理都先于提供方；变异实测）；`instance_subtrees::closing_subtree_disposes_consumer_before_provider` | `SH` | **模型 + 测试**：模型 9 覆盖一个消费者的停住；「≥2 个消费者并发排干」由新用例断言 |
+| `core/D14b` | `rutis/tests/contract.rs::self_access_during_cleanup` | `PT` | **测试**：确定性行为（清理里读自身服务），模型能加的只有替身；变异是让 `Ctx::get` 在 Unloading 时拒绝 |
+| `core/D21a` | 模型 19；`rutis/tests/contract.rs::single_service_evict`、`::isolate_no_cross_evict`；`rutis/tests/parity.rs::distinguishes_provider_incarnations_without_a_global_counter`；注册槽 PT | `SH + PT` | **模型 + PT**：模型 19 覆盖窗口里的 restart；「同键不同代并存」在当前设计里不可达（一个作用域一个键一个绑定），不硬造模型，边界写在登记表 |
+| `core/D30c` | `rutis/tests/contract.rs::cleanup_panics_contained` | `PT` | **测试**：`catch_unwind` → `PluginFailed` 是确定性行为，模型 13 的清理只返回 `Err` |
+| `core/D31b` | `rutis/tests/event_order.rs::emit_after_listener_panic_is_still_delivered`；`rutis-bridge/src/events/hub/shuttle_tests.rs::a_cancelled_or_panicking_emit_does_not_stop_the_queue` | `SH` | **测试 + 宿主队列模型**：内核 emit 链的模型这一轮没写成——在 spawn 替身下驱动真实 emit 链时，同名两次 emit 的监听器开始顺序在个别调度下反了（去掉 panic 监听器也能复现），是替身组合还是真的乱序没有定论，见 §5；因此不作为 SH 证据 |
+| `events/remote e` | 模型 10；`rutis/tests/events.rs::raw_dispatch_and_entry_calls` | `SH + PT` | **模型 + 测试**：`emit` 完成时机是模型 10；`invoke_entry` 是按 id 查找的确定性行为，用例断言 |
+| `events/framework c` | 模型 24；K 的 `rutis/service`、`rutis/service-of-rust`、`rutis/service-scoped` | `K + SH` | **K + 模型**：K 横跨七种实现，是主证据；模型 24 断言同一绑定的 `Provided` 先于 `Removed`；「每个宿主服务」是代表性覆盖 |
+| `instance/subtrees.5` | 模型 16、17；`rutis/tests/instance_subtrees.rs` 两个资源用例；`rutis/src/fiber/transient_tests.rs` 两个；`rutis/tests/transient_release.rs::churn_on_long_lived_root_releases_instances` | `SH + PT + 测试` | **模型 + 测试**：手段列本来就写了测试，任务、fiber、容量、根侧记账都是资源检查；模型 16、17 覆盖并发关闭；`PT` 没有单独属性测试 |
+| `EVP-7.1-5` | 模型 6；K `unload/waits-and-cancels`；`node/rutis/test/events.test.mjs::unload aborts ctx.signal and waits for running listeners`；`rutis/tests/events.rs::unload_cancels_and_waits_for_running_listeners` | `K + SH` | **K + 模型**：K 一行横跨七种实现；模型 6 是在途计数的内核部分 |
+| `EVP-12.1-6` | `rutis-bridge/tests/event_hub.rs::dropping_a_dispatch_cancels_the_remote_listener_it_started`、`::dispatches_cross_between_host_and_runtime`；`rutis/tests/events.rs::remote_entries_take_part_like_any_listener` | `SH + TV` | **测试 + TV（未建）**：两个方向的确定性用例是现行证据；`TV` 归 #624 的 trace 验证器（事件宿主的动作日志仍未建），这一条没有单独的 SH 模型 |
+| `EVP-12.1-10` | 模型 10；`rutis/tests/events.rs::remote_entries_in_synchronous_modes`；`rutis/tests/waterfall_sync.rs::sync_waterfall_chains_listeners_into_the_terminal`；`rutis/src/bus/prop_tests.rs::the_five_dispatch_modes_match_a_reference_interpreter` | `SH + TV` | **模型 + PT + 测试；TV 归 #624**：`dispatch_sync` 与 waterfall-sync 由用例断言，五种分发方式有参考解释器差分 |
+| `INS-6-1` | `rutis/tests/instance_subtrees.rs::closing_a_subtree_withdraws_the_instance_keys_it_provided`、`::instance_keys_enforce_subtree_and_explain_pending_dependency`、`::a_recreated_child_gets_a_new_instance_id` | `SH` | **测试**：实例键带 id、子树关闭撤销它是确定性行为；并发子树关闭由模型 16、17 覆盖（那属于 `instance/subtrees.5`，不是这一行） |
+| `MSV-4-2g` | `rutis-bridge/src/marked/shuttle_tests.rs::shuttle_a_marked_service_is_served_after_its_native_and_withdrawn_before_it`；`rutis-loader/tests/marked_services.rs::rows_of_every_language_call_a_marked_rust_service` | `SH + TLA` | **模型 + 测试**：模型 1 覆盖撤销顺序；消费者停止那一半跨三种语言，用例断言；`TLA` 那一半没有落地模型 |
 
 ## 3. 七条 loader／host：为什么是测试
 
@@ -108,6 +106,13 @@ RUTIS_TEST_RUNTIMES=node,python cargo test -p rutis-bridge --test mount_host_ser
 RUTIS_TEST_RUNTIMES=node,python cargo test -p rutis-host --test dev -- --test-threads=1
 RUTIS_TEST_RUNTIMES=node,python cargo test -p rutis-host --test reload -- --test-threads=1
 
+# 十五条内核／事件规则（第二个 PR）
+RUSTFLAGS="--cfg rutis_shuttle" cargo test -p rutis --lib shuttle_ \
+  # 含模型 28 `shuttle_an_unload_cancels_and_cleans_up_before_it_disposes`
+cargo test -p rutis --test contract eviction_drains_every_consumer_before_the_provider
+cargo test -p rutis --test lifecycle_order --test evicted_apply --test load_window --test event_order
+cargo test -p rutis --test instance_subtrees --test waterfall_sync --test parity
+
 # `MNT-5-3` 的 dsh 用例在 nightly 跑；要 node/baseline 的钉住版本，
 # 且 examples/dsh-baseline 的 Cargo.toml 先去掉 mount 的 `version` 钉（nightly.yml 的做法）：
 npm --prefix node/baseline ci
@@ -120,6 +125,9 @@ RUTIS_TEST_RUNTIMES=node cargo test -p dsh-baseline
 
 ## 5. 还没有做的
 
-- §2.2 的十五条只在第二个 PR 落地；在那之前它们的手段列仍是 `SH`／`PT`，本文件不把它写成「已覆盖」。
+- **内核 emit 链的 panic 模型没写成**（`core/D31b`）。第一次尝试在 `SpawnScope` 下驱动真实的 `Ctx::emit`（`emit_erased` 的 tail 等待与 start loop 都是内核的），结果同名两次 emit 的监听器开始顺序在个别调度下反了（例如 4 次 emit 收到 `[0, 2, 1, 3]`），而且**去掉 panic 监听器也能复现**（300 次随机 + 300 次 PCT 里出现一次）。成因没有定论：要么 `emit_erased` 在「持 bus 的 std 锁调用 `crate::sync::spawn`、而 scope 可能就地运行另一个任务」下会乱序，要么是替身与 bus 锁的组合不成立（换成 shuttle 的锁以后死锁消失，但那次实验里 panic 一度被报成任务失败）。在定论之前不把这条链的模型当证据，单独复现后再补；复现方式是上面的 `shuttle_` 测试加一个小模型（同名 emit 两次、两个监听器）。
+- `EVP-12.1-6` 与 `EVP-12.1-10` 的 `TV` 那一半仍是 #624 的遗留：事件宿主的动作日志没有建，现有 trace 验证器只覆盖会话通道与等待图。
+- `events/remote e` 的 `PT` 那一半与 `instance/subtrees.5` 的 `PT` 那一半没有独立属性测试，本文件不把它们写成「已覆盖」。
+- `core/D7b` 的 `update` 自己（dry-run、两次终态检查）没有模型，记在测试上。
 - `MNT-5-3` 只有 nightly 上的一个宿主服务，跨实现（Node、Bun、Python、Go、Swift、Kotlin）的同一用例没有建，理由写在追踪表里。
 - `loader/rows-gate-on-services b` 的 TLA 那一半指向 #625 的 `WithdrawBeforeUnload`（设计模型），不是本仓库 `specs/` 里的模型；要写成「TLA 已覆盖」得先有落地模型。

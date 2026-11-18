@@ -7164,3 +7164,144 @@ fn shuttle_row_registrations_go_with_the_row() {
         );
     });
 }
+
+// ---------------------------------------------------------------------------
+// Model 28: the order of an unload (`core/D7a`)
+
+/// Model 28, the steps of an unload (`core/D7a`; #634's "每代有自己的取消令牌；
+/// 卸载时发布 Unloading、取消当前代、等 apply 退出，三步都先于清理；清理 LIFO；
+/// 全部清理结束后才发布 Disposed").
+///
+/// A real fiber with three real effect records goes through
+/// `FiberInner::unload` — the kernel's own, so the `Unloading` commit under the
+/// admission and transition locks, `cancel_current`, `wait_events` and
+/// `drain_effects`'s reverse pass are the code that ships; `SpawnScope` drives
+/// the cleanup runners `EffectRecord::drain` spawns. One log records the status
+/// the fiber publishes (`watch_status`, the tap model 25 uses) and the moment
+/// each cleanup runs, so the order of the two kinds is what the model asserts:
+/// `Unloading` is published before any cleanup, every cleanup sees the
+/// generation's cancellation — which is what "取消当前代先于清理" means to a
+/// plugin — the cleanups run in reverse registration order, and `Disposed` is
+/// published only after the last of them.
+///
+/// Mutations this model catches: cancelling after the cleanup pass
+/// (`cancel_current` moved behind `drain_effects`: the cleanups find the token
+/// uncancelled, "a cleanup ran before the generation was cancelled"), draining
+/// in registration order (`rev()` dropped: "the cleanups ran in registration
+/// order or twice"), and publishing the terminal state before the cleanups (the
+/// `Disposed` publish lands in front of them, "Disposed was published before the
+/// last cleanup").
+///
+/// Not modelled: the "等 apply 退出" half — the driver handles one intent at a
+/// time, so an unload starts only after the generation's `apply` returned.
+/// `crates/rutis/tests/lifecycle_order.rs::unload_waits_for_apply_to_exit_before_cleanup`
+/// pins it over a public `FiberView`, which a shuttle model cannot drive (the
+/// driver would park in the mailbox); `core/D7a`'s other means, the sequential
+/// reference model, is `crates/rutis/tests/interleave.rs`.
+#[test]
+fn shuttle_an_unload_cancels_and_cleans_up_before_it_disposes() {
+    explore(|| {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("a current-thread runtime");
+        let ctx = Ctx::root_with(runtime.handle().clone());
+        let fiber = spawn_fiber(
+            ctx.shared(),
+            Some(&ctx),
+            Some(Arc::new(Named("unload-order")) as Arc<dyn crate::DynPlugin>),
+            false,
+        );
+        // One log for both kinds of step, so their order is one comparison.
+        enum Step {
+            Status(FiberState),
+            Cleanup { index: usize, cancelled: bool },
+        }
+        let log: Arc<SyncMutex<Vec<Step>>> = Arc::default();
+        {
+            let log = log.clone();
+            fiber.watch_status(move |event: &FiberStatusChanged| {
+                log.lock().unwrap().push(Step::Status(event.to));
+                switch_point();
+            });
+        }
+
+        let scope = SpawnScope::new();
+        let _entered = scope.enter();
+        block_on(FiberInner::load(&fiber, HashSet::new()));
+        assert_eq!(fiber.state(), FiberState::Active, "the fiber did not load");
+        // Three effects, registered in order 0, 1, 2: the reverse pass must run
+        // 2, 1, 0. Each reads the generation's token when it runs.
+        for index in 0..3usize {
+            let log = log.clone();
+            let generation_ctx = fiber.ctx.clone();
+            fiber
+                .ctx
+                .effect_raw(move || {
+                    let log = log.clone();
+                    Effect::Disposer(Box::new(move || {
+                        // Read when the cleanup runs: the rule is that the
+                        // generation's token is cancelled before this point.
+                        let cancelled = generation_ctx.cancellation_token().is_cancelled();
+                        log.lock().unwrap().push(Step::Cleanup { index, cancelled });
+                        switch_point();
+                        Ok(())
+                    }))
+                })
+                .expect("the effect was refused");
+        }
+
+        block_on(FiberInner::unload(&fiber, NextState::Disposed));
+        scope.run();
+
+        let log = log.lock().unwrap();
+        let unload_at = log
+            .iter()
+            .position(|step| matches!(step, Step::Status(FiberState::Unloading)))
+            .expect("Unloading was never published");
+        let disposed_at = log
+            .iter()
+            .position(|step| matches!(step, Step::Status(FiberState::Disposed)))
+            .expect("Disposed was never published");
+        let cleanups: Vec<(usize, bool)> = log
+            .iter()
+            .filter_map(|step| match step {
+                Step::Cleanup { index, cancelled } => Some((*index, *cancelled)),
+                Step::Status(_) => None,
+            })
+            .collect();
+        assert_eq!(
+            cleanups.iter().map(|(index, _)| *index).collect::<Vec<_>>(),
+            vec![2, 1, 0],
+            "the cleanups ran in registration order or twice: {cleanups:?}"
+        );
+        assert!(
+            cleanups.iter().all(|(_, cancelled)| *cancelled),
+            "a cleanup ran before the generation was cancelled: {cleanups:?}"
+        );
+        assert!(
+            unload_at
+                < log
+                    .iter()
+                    .position(|step| matches!(step, Step::Cleanup { .. }))
+                    .expect("no cleanup ran"),
+            "Unloading was not published before the first cleanup"
+        );
+        assert!(
+            disposed_at
+                > log
+                    .iter()
+                    .rposition(|step| matches!(step, Step::Cleanup { .. }))
+                    .expect("no cleanup ran"),
+            "Disposed was published before the last cleanup"
+        );
+        assert_eq!(
+            fiber.state(),
+            FiberState::Disposed,
+            "the unload did not end Disposed"
+        );
+        assert!(
+            fiber.effects.lock().unwrap().is_empty(),
+            "the unload left an effect record behind"
+        );
+    });
+}
