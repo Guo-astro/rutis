@@ -754,6 +754,70 @@ async fn a_row_emits_from_its_unload_stack() {
     .await;
 }
 
+/// guarantee: events/hub-lifecycle
+///
+/// The stack's emission is sent before the runtime answers `rows.unload`, so
+/// it is dispatched before the row ends, whatever the host's task scheduling
+/// does: the answer does not overtake the event operations that arrived
+/// before it (events protocol §4.1, §4.3, §7.1 step 5, #1088).
+#[tokio::test(flavor = "multi_thread")]
+async fn an_answer_does_not_overtake_the_dispatch_before_it() {
+    within("dispatch before answer", async {
+        let rig = Arc::new(rig().await);
+        let heard = Arc::new(Mutex::new(Vec::new()));
+        rig.root
+            .listen::<Args>()
+            .name("t/closed")
+            .on(answer(Some("host"), heard.clone()))
+            .unwrap();
+        // Each round races once; one round alone may pass by luck.
+        for round in 0..100 {
+            let row = format!("r{round}");
+            rig.load(&row, &[]).await;
+            // The runtime keeps `rows.unload` unanswered while its stack runs.
+            let (release, held) = tokio::sync::oneshot::channel::<()>();
+            rig.fake.held.lock().unwrap().insert(row.clone(), held);
+            let unloading = tokio::spawn({
+                let process = rig.process.clone();
+                let row = row.clone();
+                async move { process.unload_row(&row).await }
+            });
+            eventually(
+                || rig.fake.held.lock().unwrap().is_empty(),
+                "rows.unload to reach the runtime",
+            )
+            .await;
+            // The stack emits, then the answer follows it on the wire.
+            let mut fields = BTreeMap::new();
+            fields.insert("row".into(), Value::Data(json!(row)));
+            fields.insert("name".into(), Value::Data(json!("t/closed")));
+            fields.insert("mode".into(), Value::Data(json!("emit")));
+            fields.insert("args".into(), Value::List(vec![Value::Data(json!(round))]));
+            let emitted = rig
+                .far
+                .invoke_started(
+                    "",
+                    "events.dispatch",
+                    Value::List(vec![Value::Record(fields)]),
+                )
+                .unwrap();
+            release.send(()).unwrap();
+            let result = finish(emitted).await;
+            unloading.await.unwrap().unwrap();
+            assert!(
+                result.is_ok(),
+                "round {round}: the stack's emission was refused: {result:?}"
+            );
+        }
+        eventually(
+            || heard.lock().unwrap().len() == 100,
+            "every emission of the unload stacks",
+        )
+        .await;
+    })
+    .await;
+}
+
 /// A started call's reply, settled.
 async fn finish(call: impl std::future::Future<Output = Reply>) -> Result<Value, Error> {
     settle(call.await?).await

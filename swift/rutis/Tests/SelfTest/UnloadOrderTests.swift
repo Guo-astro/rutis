@@ -129,7 +129,17 @@ struct UnloadOrderTests {
     /// hears it, while the row's own listeners left when the unload started.
     /// Once rutis answered `rows.unload`, a context kept past the row emits
     /// nothing (§3).
+    ///
+    /// Repeated: the host's answer to `rows.unload` races the emission the
+    /// stack sent before it (#1088), and one round alone races once.
     func aRowsCleanupStillEmits() async throws {
+        for round in 1 ... 20 {
+            try await aCleanupEmits(round)
+        }
+    }
+
+    /// One round of [`aRowsCleanupStillEmits`].
+    private func aCleanupEmits(_ round: Int) async throws {
         let heard = Lines()
         let late = Cell<Rutis.Ctx>()
         // Two rows of one plugin: one listens, the other emits on its way out
@@ -152,7 +162,8 @@ struct UnloadOrderTests {
         for _ in 0..<100 where !heard.all.contains("listening:before") {
             try await Task.sleep(nanoseconds: 50_000_000)
         }
-        XCTAssertTrue(heard.all.contains("listening:before"), "an emission before the unload reaches the other row")
+        XCTAssertTrue(heard.all.contains("listening:before"),
+                      "round \(round): an emission before the unload reaches the other row")
         heard.removeAll { $0.hasSuffix(":before") }
         try await closing.unload()
         for _ in 0..<100 where !heard.all.contains("listening:bye") {
@@ -165,10 +176,11 @@ struct UnloadOrderTests {
                 print("host lines during aRowsCleanupStillEmits: \(host.lines)")
             }
         }
-        XCTAssertEqual(heard.all, ["listening:bye"])
+        XCTAssertEqual(heard.all, ["listening:bye"],
+                       "round \(round): the other row heard the stack's emission")
         let error = Self.failure { try late.value?.emit("t/bye", "late") }
-        XCTAssertTrue(error.hasPrefix("BindingError: row closing"), error)
-        XCTAssertTrue(error.hasSuffix(" is not loaded in this runtime"), error)
+        XCTAssertTrue(error.hasPrefix("BindingError: row closing"), "round \(round): \(error)")
+        XCTAssertTrue(error.hasSuffix(" is not loaded in this runtime"), "round \(round): \(error)")
         await listening.close()
     }
 

@@ -1417,6 +1417,10 @@ struct SessionState {
 struct Ordered {
     busy: bool,
     queue: std::collections::VecDeque<(String, bool)>,
+    /// Those waiting for the queue to be empty: the operations received so
+    /// far took their turn ([`Connection::settled`]). The queue changes and
+    /// these are taken under one lock, so none is left waiting.
+    watchers: Vec<tokio::sync::oneshot::Sender<()>>,
 }
 impl Drop for SessionState {
     fn drop(&mut self) {
@@ -1809,6 +1813,39 @@ impl Connection {
             if ended.changed().await.is_err() {
                 break;
             }
+        }
+    }
+    /// The `events.*` operations the far end sent have taken their turn:
+    /// every one received so far ran, or started, in arrival order (events
+    /// protocol §4.1, §5.5).
+    ///
+    /// Frames arrive in order, but an event operation waits in
+    /// [`Ordered`] for its turn on a task, while a reply reaches the call
+    /// waiting for it at once. A reply that ends what those operations
+    /// speak of — a row, its entries — waits here first, so what the far
+    /// end sent before it still finds its place: an emission a row's unload
+    /// stack makes is dispatched before the row ends (§7.1 step 5). An
+    /// operation that only starts in its turn counts as taken: what it
+    /// then does is its own.
+    ///
+    /// Waits are short by construction: an operation in its turn is a table
+    /// change or an `emit`'s start, which starts the calls and returns
+    /// without running plugin code on this task.
+    pub async fn settled(&self) {
+        let received = {
+            let mut ordered = self.0.ordered.lock().unwrap();
+            if !ordered.busy && ordered.queue.is_empty() {
+                None
+            } else {
+                let (send, received) = tokio::sync::oneshot::channel();
+                ordered.watchers.push(send);
+                Some(received)
+            }
+        };
+        if let Some(received) = received {
+            // A session that ended with operations still queued drops the
+            // senders: nothing is left to wait for.
+            let _ = received.await;
         }
     }
     pub fn close(&self, error: Error) {
@@ -3114,6 +3151,13 @@ impl Connection {
                     Some(next) => next,
                     None => {
                         ordered.busy = false;
+                        // Nothing is left of what was received so far, so
+                        // those waiting for it go on (`settled`).
+                        let waiting = std::mem::take(&mut ordered.watchers);
+                        drop(ordered);
+                        for watcher in waiting {
+                            let _ = watcher.send(());
+                        }
                         return;
                     }
                 }

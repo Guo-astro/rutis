@@ -297,9 +297,17 @@ class RuntimeTest {
      * A row's unload stack still emits (events protocol §7.1): another row
      * hears it, while its own listeners are gone; once rutis answered
      * `rows.unload`, a context kept past the row emits nothing (§3).
+     *
+     * Repeated: the host's answer to `rows.unload` races the emission the
+     * stack sent before it (#1088), and one round alone races once.
      */
     @Test
     fun aRowsCleanupStillEmits() = runBlocking<Unit> {
+        for (round in 1..20) aCleanupEmits(round)
+    }
+
+    /** One round of [aRowsCleanupStillEmits]. */
+    private suspend fun aCleanupEmits(round: Int) {
         val heard = Collections.synchronizedList(ArrayList<String>())
         val announcing = CompletableDeferred<String>()
         var late: Ctx? = null
@@ -320,12 +328,12 @@ class RuntimeTest {
             listening.load(config = "closing").use { closing ->
                 // Its emission does not fail the unload, and reaches the other row.
                 closing.unload()
-                assertEquals("listening:bye", withTimeout(5_000) { announcing.await() })
+                assertEquals("listening:bye", withTimeout(5_000) { announcing.await() }, "round $round")
             }
-            assertEquals(listOf("listening:bye"), heard)
-            val error = assertFailsWith<RutisException> { late!!.emit("t/bye", "late") }
-            assertEquals("BindingError", error.name)
-            assertEquals("row ${late!!.row.name} is not loaded in this runtime", error.message)
+            assertEquals(listOf("listening:bye"), heard, "round $round")
+            val error = assertFailsWith<RutisException>("round $round") { late!!.emit("t/bye", "late") }
+            assertEquals("BindingError", error.name, "round $round")
+            assertEquals("row ${late!!.row.name} is not loaded in this runtime", error.message, "round $round")
         }
     }
 }
