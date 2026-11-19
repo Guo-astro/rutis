@@ -175,6 +175,7 @@ test('invokeAnswered tells the reply as its frame is read, before the next frame
   const { peer, sent, fault } = harness((_, method) => { seen.push(method); return null }, { inline: ['plugins.read'] })
   peer.invokeAnswered('', 'events.dispatch', [{ mode: 'emit' }], result => seen.push(['answered', result.ok, result.value]))
   assert.equal(sent.at(-1).method, 'events.dispatch')
+  assert.equal(sent.at(-1).awaited, false, 'nobody waits for it (SESS-83)')
   const id = sent.at(-1).id
   peer.receive({ op: 'return', id, value: { type: 'undefined' } })
   assert.deepEqual(seen, [['answered', true, undefined]], 'in the same call, no tick in between')

@@ -39,6 +39,7 @@ fn forward(
         seq,
         path: path.iter().map(|entry| (*entry).to_owned()).collect(),
         synchronous,
+        awaited: true,
         decision,
     })
 }
@@ -168,6 +169,35 @@ fn an_entry_is_not_a_hop() {
     );
     let broken = replay(&events).expect_err("a hop nobody waits for");
     assert!(broken.why.contains("hop nobody waits for"), "{broken}");
+}
+
+/// A call whose frame says its result is not awaited is an entry on a
+/// marked chain too (SESS-83): recorded as a hop nobody waits for is what
+/// the model allows; as an edge it is not.
+#[test]
+fn a_call_nobody_awaits_is_an_entry() {
+    let entries = |entry: bool| {
+        vec![
+            profile("f1"),
+            profile("f2"),
+            marked("f1", "node:1"),
+            Event::Forward(Forward {
+                dst: "f2".into(),
+                id: "rust:1".into(),
+                seq: 1,
+                path: vec!["f1/node:1".into()],
+                synchronous: false,
+                awaited: false,
+                decision: Decision::Hop {
+                    src: Some(("f1".into(), "node:1".into())),
+                    entry,
+                },
+            }),
+        ]
+    };
+    replay(&entries(true)).expect("a fired-and-forgotten call is an entry");
+    let broken = replay(&entries(false)).expect_err("an edge nobody waits for");
+    assert!(broken.why.contains("entry"), "{broken}");
 }
 
 /// The entry the model records while a forwarded call is in progress, with

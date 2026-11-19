@@ -121,6 +121,7 @@ async fn admitted_call_pins_its_target_before_a_following_counted_release() {
                 reference: *reference,
                 args: WireValue::Data(json!([])),
                 sync: false,
+                awaited: true,
             },
         );
         send(
@@ -214,6 +215,7 @@ async fn an_old_release_does_not_remove_a_concurrent_new_grant() {
                 reference,
                 args: WireValue::Data(json!([])),
                 sync: false,
+                awaited: true,
             },
         );
         assert!(matches!(read(&mut reader), Frame::Return { id, .. } if id == "node:1"));
@@ -360,6 +362,7 @@ async fn a_cancel_for_an_unknown_call_is_ignored() {
                 method: "echo".into(),
                 args: data(json!("still here")),
                 sync: false,
+                awaited: true,
             },
         );
         (echoed, remote)
@@ -545,6 +548,7 @@ async fn a_queued_cancelled_call_is_dropped_and_acknowledged() {
             method: "rows.ended".into(),
             args: data(json!([])),
             sync: false,
+            awaited: true,
         });
         has_started.recv_timeout(STEP).expect("rows.ended runs");
         remote.send(Frame::Invoke {
@@ -554,6 +558,7 @@ async fn a_queued_cancelled_call_is_dropped_and_acknowledged() {
             method: "events.dispatch".into(),
             args: data(json!([{ "name": "t/e", "mode": "parallel", "args": [] }])),
             sync: false,
+            awaited: true,
         });
         // Queued behind `rows.ended`, still in `calls.incoming`.
         remote.send(Frame::Cancel {
@@ -611,6 +616,7 @@ async fn a_running_cancelled_call_is_acknowledged_and_its_reply_dropped() {
             method: "slow".into(),
             args: data(json!([])),
             sync: false,
+            awaited: true,
         });
         has_started.recv_timeout(STEP).expect("the call runs");
         remote.send(Frame::Cancel {
@@ -679,6 +685,7 @@ async fn a_cancelled_emit_dispatch_stays_queued() {
         method: "rows.ended".into(),
         args: data(json!([])),
         sync: false,
+        awaited: true,
     })
     .unwrap();
     has_started.recv().unwrap();
@@ -689,6 +696,7 @@ async fn a_cancelled_emit_dispatch_stays_queued() {
         method: "events.dispatch".into(),
         args: data(json!([{ "name": "t/e", "mode": "emit", "args": [] }])),
         sync: false,
+        awaited: true,
     })
     .unwrap();
     peer.receive(Frame::Cancel {
@@ -711,6 +719,7 @@ fn invoke(id: &str, method: &str, sync: bool) -> Frame {
         method: method.into(),
         args: data(json!([])),
         sync,
+        awaited: true,
     }
 }
 
@@ -859,6 +868,7 @@ async fn a_cancelled_awaited_call_leaves_no_mark() {
             path: vec![],
             reference,
             sync: true,
+            awaited: true,
         });
         // Polled once awaited on the caller's behalf.
         was_polled
@@ -979,6 +989,7 @@ async fn a_session_limit_the_host_turns_on_ends_a_far_end_that_never_reads() {
             method: "echo".into(),
             args: WireValue::List(Vec::new()),
             sync: false,
+            awaited: true,
         }
     }
     let size = serde_json::to_vec(&frame(1)).unwrap().len();
@@ -1053,6 +1064,7 @@ async fn a_limit_of_zero_still_takes_one_frame_at_a_time() {
             method: "echo".into(),
             args: WireValue::List(Vec::new()),
             sync: false,
+            awaited: true,
         }
     }
     let size = serde_json::to_vec(&frame(1)).unwrap().len();
@@ -1859,6 +1871,77 @@ async fn a_call_for_another_session_s_call_carries_its_chain_rebased() {
     assert!(!path.contains(&id), "{path:?}");
 }
 
+/// A call made on behalf of another session says on its frame whether that
+/// session's caller waits for it (`awaited`, SESS-83): a host service
+/// forwarding a call it was given says what the frame it got said.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_forwarded_call_carries_the_callers_awaited_signal() {
+    /// Forwards every call to the other session, as a host service does
+    /// when it serves a call for a runtime.
+    struct Forwarding(std::sync::OnceLock<Connection>);
+    impl Dispatch for Forwarding {
+        fn invoke(&self, _: &Connection, _: &str, _: &str, _: Value) -> Reply {
+            let other = self.0.get().unwrap();
+            // Queued before this returns; nobody here waits for its reply.
+            std::mem::forget(other.invoke_started("t", "work", Value::Undefined)?);
+            Ok(Value::Undefined)
+        }
+    }
+    let forwarding = Arc::new(Forwarding(std::sync::OnceLock::new()));
+    let (_caller, far) = connected(forwarding.clone());
+    let (other, other_far) = connected(Arc::new(NoExports));
+    assert!(forwarding.0.set(other).is_ok());
+    let script = tokio::task::spawn_blocking(move || {
+        let mut far = Remote::start(far);
+        let mut other = Remote::start(other_far);
+        // The caller will not wait for the call it makes: the forward says
+        // so, and is no wait edge.
+        far.send(Frame::Invoke {
+            id: "node:1".into(),
+            path: vec![],
+            target: String::new(),
+            method: "go".into(),
+            args: data(json!([])),
+            sync: false,
+            awaited: false,
+        });
+        assert!(matches!(far.read(), Frame::Return { id, .. } if id == "node:1"));
+        match other.read() {
+            Frame::Invoke {
+                id, awaited, sync, ..
+            } => {
+                assert_eq!(id, "rust:1");
+                assert!(!sync);
+                assert!(!awaited, "the forward keeps the caller's signal");
+            }
+            _ => panic!("an invoke expected"),
+        }
+        // A caller that says nothing is taken to wait for the result: the
+        // forward writes the default, not `awaited: true`.
+        far.send(Frame::Invoke {
+            id: "node:2".into(),
+            path: vec![],
+            target: String::new(),
+            method: "go".into(),
+            args: data(json!([])),
+            sync: false,
+            awaited: true,
+        });
+        assert!(matches!(far.read(), Frame::Return { id, .. } if id == "node:2"));
+        match other.read() {
+            Frame::Invoke {
+                id, awaited, sync, ..
+            } => {
+                assert_eq!(id, "rust:2");
+                assert!(!sync);
+                assert!(awaited, "the conservative default");
+            }
+            _ => panic!("an invoke expected"),
+        }
+    });
+    script.await.unwrap();
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn sessions_have_distinct_tags_and_forward_rebases_the_current_chain() {
     let (a, _ra) = pair();
@@ -2002,6 +2085,7 @@ async fn references_forwarded_to_another_session_reach_their_owner() {
             method: None,
             args: data(json!([20])),
             sync: false,
+            awaited: true,
         };
         assert_eq!(b.call(1, call), json!(40));
         let wait = Frame::Await {
@@ -2009,6 +2093,7 @@ async fn references_forwarded_to_another_session_reach_their_owner() {
             path: path.clone(),
             reference: future,
             sync: false,
+            awaited: true,
         };
         assert_eq!(b.call(2, wait), json!(7));
         let method = Frame::Call {
@@ -2018,6 +2103,7 @@ async fn references_forwarded_to_another_session_reach_their_owner() {
             method: Some("greet".into()),
             args: data(json!([])),
             sync: false,
+            awaited: true,
         };
         assert_eq!(b.call(3, method), json!("greet"));
         let get = Frame::Get {
@@ -2026,6 +2112,7 @@ async fn references_forwarded_to_another_session_reach_their_owner() {
             reference: object,
             property: "name".into(),
             sync: false,
+            awaited: true,
         };
         assert_eq!(b.call(4, get), json!("name"));
         // Outside any Rust call chain: forwarded asynchronously.
@@ -2036,6 +2123,7 @@ async fn references_forwarded_to_another_session_reach_their_owner() {
             method: None,
             args: data(json!([1])),
             sync: false,
+            awaited: true,
         };
         assert_eq!(b.call(5, unrelated), json!(2));
         // A mismatched operation is refused without reaching the owner,
@@ -2045,6 +2133,7 @@ async fn references_forwarded_to_another_session_reach_their_owner() {
             path: vec![],
             reference: function,
             sync: false,
+            awaited: true,
         });
         assert!(matches!(b.read(), Frame::Throw { id, .. } if id == "node:6"));
         b.ret(id, WireValue::Undefined);
@@ -2133,6 +2222,7 @@ async fn a_reverse_call_through_a_relay_reaches_the_waiting_session() {
             method: "hold".into(),
             args: data(json!([])),
             sync: false,
+            awaited: true,
         });
         b_waiting.send(()).unwrap();
         let Frame::Invoke {
@@ -2157,6 +2247,7 @@ async fn a_reverse_call_through_a_relay_reaches_the_waiting_session() {
             method: None,
             args: data(json!([4])),
             sync: false,
+            awaited: true,
         };
         let value = b.call(2, callback);
         b.ret(id, data(value));
@@ -2175,6 +2266,7 @@ async fn a_reverse_call_through_a_relay_reaches_the_waiting_session() {
             method: "forward".into(),
             args: WireValue::List(vec![reference(1, Kind::Function, false)]),
             sync: false,
+            awaited: true,
         });
         let frame = a.read();
         let Frame::Call {
@@ -2783,6 +2875,7 @@ async fn a_frame_too_deep_fails_its_call_and_the_session_goes_on() {
                     method: "m".into(),
                     args: data(json!(["after"])),
                     sync: false,
+                    awaited: true,
                 },
             );
             assert_eq!(echoed, json!(["after"]));
@@ -2913,6 +3006,7 @@ async fn unknown_frame_fields_fail_only_their_call() {
                 method: "m".into(),
                 args: data(json!(["after"])),
                 sync: false,
+                awaited: true,
             },
         );
         assert_eq!(echoed, json!(["after"]));
@@ -4194,6 +4288,7 @@ fn a_session_that_ends_wakes_those_waiting_for_its_operations() {
             {"id": "1", "name": "t/a", "plugin": "node", "kind": "sync"}
         ])),
         sync: false,
+        awaited: true,
     })
     .unwrap();
     assert!(

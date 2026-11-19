@@ -82,10 +82,10 @@ export const ENDPOINT_ID = /^[a-z0-9-]+$/
 // handshake, and `release`/`cancel` ignore the extras (protocol §9).
 const FRAME_FIELDS = Object.freeze({
   hello: ['op', 'version', 'endpoint', 'implementation', 'capabilities'],
-  invoke: ['op', 'id', 'path', 'target', 'method', 'args', 'sync'],
-  call: ['op', 'id', 'path', 'reference', 'method', 'args', 'sync'],
-  get: ['op', 'id', 'path', 'reference', 'property', 'sync'],
-  await: ['op', 'id', 'path', 'reference', 'sync'],
+  invoke: ['op', 'id', 'path', 'target', 'method', 'args', 'sync', 'awaited'],
+  call: ['op', 'id', 'path', 'reference', 'method', 'args', 'sync', 'awaited'],
+  get: ['op', 'id', 'path', 'reference', 'property', 'sync', 'awaited'],
+  await: ['op', 'id', 'path', 'reference', 'sync', 'awaited'],
   return: ['op', 'id', 'value'],
   throw: ['op', 'id', 'error'],
   release: ['op', 'reference', 'count'],
@@ -663,7 +663,7 @@ export class Session {
     if (!record) throw new Error('not an imported reference')
     this.#finalizer.unregister(record); this.#release(record)
   }
-  #request(op, fields, args, finish, origin = [], sync = false, site = callSite(), described?) {
+  #request(op, fields, args, finish, origin = [], sync = false, site = callSite(), described?, awaited = true) {
     // `site`: where the plugin's code made the call, the stack an error it
     // gets back has and what it adds when thrown on (§4.4).
     const id = this.#allocate(), grants = []
@@ -673,6 +673,9 @@ export class Session {
       // This thread waits for the reply: the host checks for wait cycles
       // (#228).
       if (sync) frame.sync = true
+      // The caller will not wait for this result: no wait edge (SESS-83).
+      // Absent means it will, the conservative reading.
+      if (!awaited) frame.awaited = false
       const encoded = encode(frame)
       // Over the limit, only this call fails, before it is sent (#675).
       const size = sizeOver(encoded, this.#max)
@@ -740,8 +743,9 @@ export class Session {
   invokeAsync(target, method, args, described?) { return this.#requestAsync('invoke', { target, method }, args, undefined, described) }
   // Send a call nobody waits for; `answered({ ok, value })` is told its
   // reply as the reply's frame is taken, before the next frame (or the
-  // session's end), not on a later tick (events protocol §5.5).
-  invokeAnswered(target, method, args, answered, described?) { this.#request('invoke', { target, method }, args, answered, [], false, callSite(), described) }
+  // session's end), not on a later tick (events protocol §5.5). Its frame
+  // says the result is not awaited (SESS-83).
+  invokeAnswered(target, method, args, answered, described?) { this.#request('invoke', { target, method }, args, answered, [], false, callSite(), described, false) }
   // Call an imported function asynchronously (a waterfall's `next`, #464);
   // calling the function itself is asynchronous outside a synchronous call and
   // returns the value inside one (#932 §3.2).
@@ -840,6 +844,7 @@ export class Session {
         return
       }
       if (!['invoke', 'call', 'get', 'await'].includes(frame.op) || typeof frame.id !== 'string' || !frame.id.startsWith(this.#remote) || !Array.isArray(frame.path) || frame.path.some(id => typeof id !== 'string') || frame.path.includes(frame.id)) throw new Error('invalid invocation')
+      if (frame.awaited !== undefined && typeof frame.awaited !== 'boolean') throw new Error('invalid awaited')
       const digits = frame.id.slice(this.#remote.length), sequence = Number(digits)
       if (!/^[1-9][0-9]*$/.test(digits) || !Number.isSafeInteger(sequence) || sequence <= this.#received) throw new Error('invalid or repeated invocation identity')
       this.#received = sequence

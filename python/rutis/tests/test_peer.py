@@ -208,6 +208,7 @@ class PeerTests(background.IsolatedAsyncioTestCase):
         self.peer.request_answered("", "events.dispatch", [{"mode": "emit"}], lambda ok, value: told.append((ok, value)))
         sent = self.read()
         self.assertEqual((sent["op"], sent["method"]), ("invoke", "events.dispatch"))
+        self.assertIs(sent["awaited"], False, "nobody waits for it (SESS-83)")
         self.peer._receive({"op": "return", "id": sent["id"], "value": {"type": "undefined"}})
         self.assertEqual(len(told), 1)
         self.assertTrue(told[0][0])

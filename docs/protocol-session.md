@@ -35,17 +35,17 @@
 | 帧 | 字段 | 含义 |
 | --- | --- | --- |
 | `hello` | `version: u32`；`endpoint?: string`；`implementation?: {name, version}`；`capabilities?: string[]` | 开场的问候。`version` 必填，其余三个字段可缺省；接收方要求 `endpoint` 合法存在（§4）。 |
-| `invoke` | `id: string`；`path: string[]`；`target: string`；`method: string`；`args: WireValue`；`sync?: bool` | 调用服务方法。`target` 为空时是控制操作（`events.*`、`rows.*` 等）。 |
-| `call` | `id`；`path`；`reference: u64`；`method?: string`；`args: WireValue`；`sync?: bool` | 调用函数引用；带 `method` 时调用对象引用的方法。 |
-| `get` | `id`；`path`；`reference: u64`；`property: string`；`sync?: bool` | 读取对象引用的实时属性。 |
-| `await` | `id`；`path`；`reference: u64`；`sync?: bool` | 等待一个异步结果引用。 |
+| `invoke` | `id: string`；`path: string[]`；`target: string`；`method: string`；`args: WireValue`；`sync?: bool`；`awaited?: bool` | 调用服务方法。`target` 为空时是控制操作（`events.*`、`rows.*` 等）。 |
+| `call` | `id`；`path`；`reference: u64`；`method?: string`；`args: WireValue`；`sync?: bool`；`awaited?: bool` | 调用函数引用；带 `method` 时调用对象引用的方法。 |
+| `get` | `id`；`path`；`reference: u64`；`property: string`；`sync?: bool`；`awaited?: bool` | 读取对象引用的实时属性。 |
+| `await` | `id`；`path`；`reference: u64`；`sync?: bool`；`awaited?: bool` | 等待一个异步结果引用。 |
 | `return` | `id: string`；`value: WireValue` | 调用的结果。 |
 | `throw` | `id: string`；`error: Failure` | 调用的错误。`Failure` 是 `{name: string, message: string, graph?: JSON}`。 |
 | `release` | `reference: u64`；`count: u64` | 归还引用的授予次数（§6）。 |
 | `cancel` | `id: string` | 调用方放弃调用 `id`（§7）。 |
 | `ack` | `id: string` | 被调方已结算对调用 `id` 的取消：不会再为它发 `return`/`throw`（§7）。 |
 
-`SESS-7` **当前。** `sync` 缺省为 `false`，为 `false` 时不写到线上。`hello` 的 `endpoint`、`implementation`、`capabilities` 与 `throw` 的 `graph` 在缺省时不写。`crates/rutis-bridge/src/session/protocol.rs:157-221`
+`SESS-7` **当前。** `sync` 缺省为 `false`，为 `false` 时不写到线上。`awaited` 缺省为 `true`，为 `true` 时不写到线上：只有“发出后不等结果”的调用写 `awaited: false`（`SESS-83`）。`hello` 的 `endpoint`、`implementation`、`capabilities` 与 `throw` 的 `graph` 在缺省时不写。`crates/rutis-bridge/src/session/protocol.rs:157-221`
 
 `SESS-8` **当前。** `path` 的每个条目是一个调用号：`<endpoint>:<n>`，或转发后带会话标签的条目（§5.2）。`path` 是本帧所属的调用链，不是自由字段。`crates/rutis-bridge/src/session/rpc.rs:2739-2742`；[会话标签设计](design-session-tags-2026-10-12.md) §二
 
@@ -156,7 +156,9 @@
 
 `SESS-39` **当前。** 同步转发进入等待图。若这次转发会让等待成环（链上的同步调用只能由被它自己阻塞的执行器推进），转发不发出，调用以 `SyncWaitCycle` 失败，会话继续。`crates/rutis-bridge/src/session/rpc.rs:1867-1879`；`crates/rutis-bridge/src/session/rpc/waits.rs`；`docs/guarantees.md` 的 `bridge/sync-wait-cycle-refused`
 
-`SESS-40` **明确不保证。** 没有在帧上标 `sync` 的同步调用不在检测范围内，可能死锁；跨主机的环每台主机都看不见；可重入的代价、新旧版本混用不在承诺内。`docs/guarantees.md` 的 `bridge/sync-wait-cycle-refused`
+`SESS-83` **当前。** 异步调用在帧上说明它的结果会不会被等待：`awaited: false` 表示调用方在发起它的调用结束之前不会等这个结果（发出即不管），`awaited` 缺省或 `true` 表示会等。只有一种调用进入等待图：`sync: true`，或链上最后一跳已标记（`SESS-38`）且帧没有说 `awaited: false` 的异步调用；写明 `awaited: false` 的调用记为**入口**（`entry`）：没人等它，所以它不是一条边，但在它之下发出的调用仍以它的调用号为链的一部分。`sync: true` 已表示等待，`awaited` 此时被忽略（发送方不写）。接收方在转发这次调用时沿用原帧的信号：宿主为另一个会话转发调用时，被转发的调用只在原调用方确实等待时才算边。七种实现（Rust、Node、Bun、Python、Go、Swift、Kotlin）都认识这个字段；运行时在确定没人等结果时（`sendAnswered` / `request_answered` / `notify` 一类）写 `awaited: false`。字段缺省保持旧语义：旧调用方不说，宿主按“会等”保守记边，不误删真实等待边；这也意味着旧调用方仍可能被误判成环。`crates/rutis-bridge/src/session/protocol.rs`；`crates/rutis-bridge/src/session/rpc/waits.rs` 的 `forward`；测试 `crates/rutis-bridge/src/session/rpc/waits.rs::tests::an_asynchronous_forward_nobody_awaits_is_an_entry`、`::an_awaited_forward_closes_the_cycle`、`crates/rutis-bridge/src/session/rpc/tests.rs::a_forwarded_call_carries_the_callers_awaited_signal`；`bridge/sync-wait-cycle-refused`
+
+`SESS-40` **明确不保证。** 没有在帧上标 `sync` 的同步调用不在检测范围内，可能死锁；帧上说 `awaited: false` 却实际等待结果的调用同样漏掉等待边，可能死锁（信号被信任，宿主不验证）；跨主机的环每台主机都看不见；可重入的代价、新旧版本混用不在承诺内。`docs/guarantees.md` 的 `bridge/sync-wait-cycle-refused`
 
 ### 5.4 一次调用的结算
 
@@ -257,9 +259,9 @@
 | 对不存在调用的 `cancel` | 忽略 | `crates/rutis-bridge/src/session/rpc/tests.rs:329-361` |
 | 已取消调用的迟到回复 | 丢弃并计数，不结束会话 | `crates/rutis-bridge/src/session/rpc.rs:2490-2501` |
 
-`SESS-64` **当前。** 共享的畸形帧矩阵有 25 个用例：`MALFORMED` 的 13 个单帧（语法、字段、未知引用、未知回复）和 `MALFORMED_SEQUENCES` 的 12 个多帧/顺序用例（握手前的请求、重复 `hello`、没有 `id` 的调用、未知引用的 `get`、已释放的引用、`release` 计数为 0 或超额、`cancel`/`ack`/`throw` 字段类型错、未知调用的 `throw`、`path` 含本帧 id、重复调用号）。用例要求会话以传输错误结束；除用例中有效调用欠下的回复外，对端不再回复。七种实现都有入口：Rust 走内存通道，其余走 Unix socket、loopback 或 WebSocket；Swift 的用例只在 macOS 上编译，由 CI 的 `runtimes-swift` 作业运行。`crates/rutis-bridge/src/session/testing.rs:151-392`；`crates/rutis-bridge/tests/runtime_conformance.rs:452-633`；`docs/ci.md`「一致性矩阵」
+`SESS-64` **当前。** 共享的畸形帧矩阵有 27 个用例：`MALFORMED` 的 14 个单帧（语法、字段、`awaited` 类型错、未知引用、未知回复）和 `MALFORMED_SEQUENCES` 的 13 个多帧/顺序用例（握手前的请求、重复 `hello`、没有 `id` 的调用、未知引用的 `get`、已释放的引用、`release` 计数为 0 或超额、`cancel`/`ack`/`throw` 字段类型错、未知调用的 `throw`、`path` 含本帧 id、重复调用号）。用例要求会话以传输错误结束；除用例中有效调用欠下的回复外，对端不再回复。七种实现都有入口：Rust 走内存通道，其余走 Unix socket、loopback 或 WebSocket；Swift 的用例只在 macOS 上编译，由 CI 的 `runtimes-swift` 作业运行。`crates/rutis-bridge/src/session/testing.rs:151-392`；`crates/rutis-bridge/tests/runtime_conformance.rs:452-633`；`docs/ci.md`「一致性矩阵」
 
-`SESS-65` **已取代。** “重复 `hello`、问候前的请求、`get` 未知引用、已释放引用、`release` 计数为 0 或超额、`cancel`/`ack`/`throw` 字段类型错、未知调用的 `throw`、`path` 含本帧 id、调用号不递增这些规则由代码执行，但没有进入七种实现的共享矩阵。”现状不是这样：清单里的规则都已进入 25 个用例的矩阵（`SESS-64`、§14 G2），调用号一项覆盖的是重复号。仍只在代码层验证的还有：方法调用或属性读取指向非对象引用；调用号倒退、非数字、超过 2^53−1 或前缀不是对端 id；`throw.error` 缺 `name`/`message`（矩阵只含 `error` 不是对象）；超过 208 层的帧；超通道上限的消息。
+`SESS-65` **已取代。** “重复 `hello`、问候前的请求、`get` 未知引用、已释放引用、`release` 计数为 0 或超额、`cancel`/`ack`/`throw` 字段类型错、未知调用的 `throw`、`path` 含本帧 id、调用号不递增这些规则由代码执行，但没有进入七种实现的共享矩阵。”现状不是这样：清单里的规则都已进入 27 个用例的矩阵（`SESS-64`、§14 G2），调用号一项覆盖的是重复号。仍只在代码层验证的还有：方法调用或属性读取指向非对象引用；调用号倒退、非数字、超过 2^53−1 或前缀不是对端 id；`throw.error` 缺 `name`/`message`（矩阵只含 `error` 不是对象）；超过 208 层的帧；超通道上限的消息。
 
 ## 9. 未知字段
 
@@ -271,7 +273,7 @@
 - `release`、`cancel`：没有调用可失败，忽略多余字段，按已知字段处理。
 - 握手前的调用、`id` 不是对端前缀、未知 `op`、缺 `id`、悬空回复/引用：仍按 §8 结束会话；无法定位调用的帧不能降级为调用级错误。
 
-实现：`crates/rutis-bridge/src/session/rpc.rs` 的 `parse_frame` / `reject_unknown_fields`；测试 `unknown_frame_fields_fail_only_their_call`、`an_unknown_field_in_hello_fails_the_handshake`。
+实现：`crates/rutis-bridge/src/session/rpc.rs` 的 `parse_frame` / `reject_unknown_fields`；测试 `unknown_frame_fields_fail_only_their_call`、`an_unknown_field_in_hello_fails_the_handshake`。`awaited` 是调用帧的已知字段（`SESS-83`），不是未知字段；它的类型不是布尔值时按本节的“字段类型错”结束会话。
 
 `SESS-67` **当前（全部七种）。** Rust、Node、Bun、Python、Go、Swift、Kotlin 都已实现 `SESS-66` 的调用级拒绝；`bridge/unknown-fields` 的验证列列出各实现的用例。
 
@@ -366,8 +368,8 @@
 | `SESS-61` | 取消恰好结算一次：`ack` 且不再回复，或取消读到前已写出的回复；调用方接受任一种 | 当前 | §7；#1099；`specs/call-lifecycle` |
 | `SESS-62` | 取消等于关闭承载 | 已取代 | §7 |
 | `SESS-63` | 畸形输入故障闭合 | 当前 | `crates/rutis-bridge/src/session/rpc.rs:2514-2561,2598-2618`；`crates/rutis-bridge/src/session/testing.rs:151-392` |
-| `SESS-64` | 共享畸形帧矩阵 26 个用例（13 单帧 + 13 多帧/顺序），七种实现都有入口 | 当前 | `crates/rutis-bridge/src/session/testing.rs:154-370`；`crates/rutis-bridge/tests/runtime_conformance.rs:452-633` |
-| `SESS-65` | 旧状态“这些规则未进共享矩阵”；25 个用例的矩阵已覆盖该清单（`SESS-64`） | 已取代 | §8.1；§14 G2 |
+| `SESS-64` | 共享畸形帧矩阵 27 个用例（14 单帧 + 13 多帧/顺序），七种实现都有入口 | 当前 | `crates/rutis-bridge/src/session/testing.rs:154-370`；`crates/rutis-bridge/tests/runtime_conformance.rs:452-633` |
+| `SESS-65` | 旧状态“这些规则未进共享矩阵”；27 个用例的矩阵已覆盖该清单（`SESS-64`） | 已取代 | §8.1；§14 G2 |
 | `SESS-66` | Rust：未知字段只失败该调用（`hello` 失败握手，`release`/`cancel` 忽略） | 当前 | `crates/rutis-bridge/src/session/rpc.rs` 的 `parse_frame` / `reject_unknown_fields`；`rpc/tests.rs::unknown_frame_fields_fail_only_their_call`、`::an_unknown_field_in_hello_fails_the_handshake` |
 | `SESS-67` | 七种运行时都实现调用级拒绝（`bad-frame`）；`release`/`cancel` 忽略多余字段 | 当前 | `docs/guarantees.md` 的 `bridge/unknown-fields`；§9；§14 G1 |
 | `SESS-68` | 未知字段结束整个会话 / 六种无差别忽略 | 已取代 | §9；§14 G1 |
@@ -385,6 +387,7 @@
 | `SESS-80` | 新增能力不升版本；新增帧或改变字段含义必须升版本 | 当前 | `crates/rutis-bridge/src/session/protocol.rs:154-156,210-226`；§13；`SESS-66` |
 | `SESS-81` | 相邻版本之外的跨版本相遇 | 明确不保证 | `bridge/cross-version-meetings` 只承诺相邻发布版本 |
 | `SESS-82` | 收到的值都在 64 层以内 | 明确不保证 | §10；`bridge/large-and-deep-values` |
+| `SESS-83` | `awaited` 区分发出即不管与之后等待；缺省按会等 | 当前 | §5.3；`crates/rutis-bridge/src/session/protocol.rs`；`crates/rutis-bridge/src/session/rpc/waits.rs`；`bridge/sync-wait-cycle-refused` |
 
 ## 12. 开发者看到什么
 
@@ -434,7 +437,7 @@
 
 `SESS-80` **当前。** 新增能力不需要提升协议版本：发送方按 `value-<tag>` 判断，对端不声明就不发。由于旧实现会失败带未知字段的调用（`SESS-66`）、拒绝未知 `op`，新增**帧**或**改变已有字段含义**只能提升协议版本，并同时更新本文、`Frame`/`WireValue`、畸形帧矩阵和七种实现。新增能力不必提升版本，只按声明使用（§2.4）；没有“必需能力”可协商（`SESS-25`）。
 
-`SESS-81` **明确不保证。** 相邻版本之外的跨版本相遇；新旧实现混用；不带版本号的新字段。`docs/guarantees.md` 的 `bridge/cross-version-meetings` 只承诺相邻、其间没有不兼容变更的两个发布版本。
+`SESS-81` **明确不保证。** 相邻版本之外的跨版本相遇；新旧实现混用；不带版本号的新字段。0.23 的协议 5 在发布前加入了 `awaited`（`SESS-83`）：见过更早协议 5 预发布构建的对端会按 `SESS-66` 失败带该字段的调用，必须一起升级到含它的 0.23 构建。`docs/guarantees.md` 的 `bridge/cross-version-meetings` 只承诺相邻、其间没有不兼容变更的两个发布版本。
 
 ## 14. 规格缺口与待决定
 
@@ -448,7 +451,7 @@
 ### G2 共享畸形矩阵：已补齐（2026-11-11）
 
 - 决定（#635）：把只由代码执行的畸形规则放进 `session::testing::malformed` 的共享矩阵，让七种实现跑同一组用例。
-- 已完成：矩阵从 13 个用例增加到 26 个，`MALFORMED` 13 个单帧、`MALFORMED_SEQUENCES` 13 个多帧/顺序；原清单（握手前的请求、重复 `hello`、对未知引用的 `get`、已释放的引用、`release` 计数为 0 或超额、`cancel`/`ack`/`throw` 字段类型错、未知调用的 `throw`、`path` 含本帧 id、调用号不递增）中，除调用号只覆盖重复号外全部覆盖，另加没有 `id` 的调用（`SESS-21`、`SESS-22`、`SESS-33`、`SESS-47`、`SESS-48`；`SESS-64`）。协议 5 的矩阵加了字段类型不对的 `ack`。实现见 `crates/rutis-bridge/src/session/testing.rs` 的 `MALFORMED`、`MALFORMED_SEQUENCES`、`malformed`；Swift 的用例只在 macOS 上编译，由 CI 的 `runtimes-swift` 作业运行。
+- 已完成：矩阵从 13 个用例增加到 26 个，`MALFORMED` 13 个单帧、`MALFORMED_SEQUENCES` 13 个多帧/顺序（`SESS-83` 又加了一个 `awaited` 类型错的单帧，现为 27 个）；原清单（握手前的请求、重复 `hello`、对未知引用的 `get`、已释放的引用、`release` 计数为 0 或超额、`cancel`/`ack`/`throw` 字段类型错、未知调用的 `throw`、`path` 含本帧 id、调用号不递增）中，除调用号只覆盖重复号外全部覆盖，另加没有 `id` 的调用（`SESS-21`、`SESS-22`、`SESS-33`、`SESS-47`、`SESS-48`；`SESS-64`）。协议 5 的矩阵加了字段类型不对的 `ack`。实现见 `crates/rutis-bridge/src/session/testing.rs` 的 `MALFORMED`、`MALFORMED_SEQUENCES`、`malformed`；Swift 的用例只在 macOS 上编译，由 CI 的 `runtimes-swift` 作业运行。
 - 仍不在矩阵内：方法调用或属性读取指向非对象引用；调用号倒退、非数字、超过 2^53−1 或前缀不是对端 id；`throw.error` 缺 `name`/`message`；超过 208 层的帧；超通道上限的消息。这些由代码和其他测试验证（§8.1、§8.2）。
 
 ### G3 取消后的回复规则：已定（2026-11-16；2026-11-18 由 #1099 改为协议 5）
@@ -472,6 +475,14 @@
 ### G6 错误文字的差异
 
 同一类错误在 Rust、Node、Go 里的句子不同（`SESS-77`）。本文只在 §12 和 §8 逐字引用 Rust 的文字；验证器应比较类别、范围和错误码，不比较文字。调用号的数字格式也有同类差异（`SESS-33`）：Rust 与 Python 宽松，其余实现严格。若以后要统一文字或格式，那是另一项行为变更。
+
+### G7 异步调用的等待信号：已定（2026-11-19，#1098）
+
+- 决定：调用帧加可选布尔字段 `awaited`，缺省 `true`（“结果会被等待”），只有“发出即不管”写 `false`。它并入协议 5，不升版本：协议 5 尚未发布（0.23 未发布），所有实现一起升级；见过 0.23 预发布构建的对端按 `SESS-66` 会把 `awaited` 当未知字段失败该调用，必须升级到含本字段的构建。
+- 原因：协议 5 之前帧上只有 `sync`，宿主无法区分“发出即不管”和“之后 await”。一律把已标记链上的异步调用记成一跳会误拒不会卡死的调用（`specs/cross-runtime-sync` 的反例 8，`async-policy-b`）；只把 `sync` 当跳会漏掉对象中继的同步环（真实死锁）。`awaited: false` 让调用方明确说“不等”，把这条调用排除出边；缺省 `true` 保留旧保守语义，不会漏边。
+- 不采用：后续 `await` 帧作为信号（环在 `await` 之前就已形成，太晚）；能力协商（能力不能扩展字段，`SESS-69`）；把 `sync` 的含义改成“会被等待”（`sync` 还决定在哪个线程上等，改了会动 `SESS-38`）。
+- 语义边界：`awaited: false` 是信任声明，宿主不验证；说假话会漏掉真实等待边（`SESS-40` 的明确不保证里）。`sync: true` 时忽略 `awaited`。接收方转发时沿用原帧的信号。
+- 验证：`crates/rutis-bridge` 的 `an_asynchronous_forward_nobody_awaits_is_an_entry`、`an_awaited_forward_closes_the_cycle`、`a_forwarded_call_carries_the_callers_awaited_signal`、`a_call_says_when_its_result_is_not_waited_for`；七种实现的共享畸形矩阵加了 `awaited` 类型错；`specs/cross-runtime-sync` 的 `async-forgotten-policy-b`（修复后通过）与 `async-policy-b`（修复前反例 8）。
 
 ## 相关文件
 

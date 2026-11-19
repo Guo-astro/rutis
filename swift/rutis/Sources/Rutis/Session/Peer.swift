@@ -973,17 +973,20 @@ package final class Peer: @unchecked Sendable {
 
     /// Sends a call nobody waits for, and tells `answered` its answer as the
     /// reply's frame is taken, before the next frame (or at the session's
-    /// end): frames sent by successive calls go out in that order.
+    /// end): frames sent by successive calls go out in that order. Its frame
+    /// says the result is not awaited (SESS-83).
     package func sendAnswered(target: String, method: String, args: [Value],
                               answered: @escaping @Sendable (Result<Value, Error>) -> Void) throws
     {
-        _ = try request(op: "invoke", fields: [("target", .string(target)), ("method", .string(method))],
+        let fields: [(String, JSON)] = [("target", .string(target)), ("method", .string(method)), ("awaited", .bool(false))]
+        _ = try request(op: "invoke", fields: fields,
                         args: args, origin: [], chain: CallChain.path, answered: answered)
     }
 
     /// Sends a call whose answer nobody awaits.
     package func notify(target: String, method: String, args: [Value]) {
-        if let pending = try? request(op: "invoke", fields: [("target", .string(target)), ("method", .string(method))],
+        let fields: [(String, JSON)] = [("target", .string(target)), ("method", .string(method)), ("awaited", .bool(false))]
+        if let pending = try? request(op: "invoke", fields: fields,
                                       args: args, origin: [], chain: [])
         {
             // Its reply, when it comes, is a late one: dropped.
@@ -1376,6 +1379,10 @@ package final class Peer: @unchecked Sendable {
     private func invocation(_ frame: JSON, op: String) throws -> Job {
         let invalid = Malformed("invalid invocation")
         guard ["invoke", "call", "get", "await"].contains(op) else { throw invalid }
+        // `awaited`, when it is there, is a boolean (SESS-83, §8.1).
+        if let awaited = frame["awaited"], awaited.boolValue == nil {
+            throw Malformed("invalid awaited")
+        }
         guard let id = frame["id"]?.stringValue, let pathJSON = frame["path"]?.arrayValue else { throw invalid }
         var path: [String] = []
         for item in pathJSON {
@@ -1591,10 +1598,10 @@ extension Value {
 /// fails the handshake, and `release`/`cancel` ignore the extras.
 private let frameFields: [String: [String]] = [
     "hello": ["op", "version", "endpoint", "implementation", "capabilities"],
-    "invoke": ["op", "id", "path", "target", "method", "args", "sync"],
-    "call": ["op", "id", "path", "reference", "method", "args", "sync"],
-    "get": ["op", "id", "path", "reference", "property", "sync"],
-    "await": ["op", "id", "path", "reference", "sync"],
+    "invoke": ["op", "id", "path", "target", "method", "args", "sync", "awaited"],
+    "call": ["op", "id", "path", "reference", "method", "args", "sync", "awaited"],
+    "get": ["op", "id", "path", "reference", "property", "sync", "awaited"],
+    "await": ["op", "id", "path", "reference", "sync", "awaited"],
     "return": ["op", "id", "value"],
     "throw": ["op", "id", "error"],
     "release": ["op", "reference", "count"],

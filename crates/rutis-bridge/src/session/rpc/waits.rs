@@ -23,13 +23,16 @@
 //! runtime that does not declare it is taken as non-reentrant.
 //!
 //! An *entry* is any other call sent while some call is marked: nobody
-//! waits for it synchronously (an `emit`'s `events.call`, an asynchronous
-//! call). It is a boundary of chains: it waits for the synchronous calls
-//! made under it, but what it was made under does not wait for them (an
-//! `events.call` carries its emitter's chain). In a runtime with one stack
-//! a reentrant runtime runs it on top of the call that waits there, so
-//! stack order holds for it like for a hop. A session whose far end does not mark its
-//! synchronous waits makes no hops: it is outside the check.
+//! waits for it (an `emit`'s `events.call`, an asynchronous call whose frame
+//! says `awaited: false`). An asynchronous call that says nothing (or
+//! `awaited: true`) on a marked chain is a hop: its caller awaits the result
+//! before the marked call finishes (SESS-83). An entry is a boundary of
+//! chains: it waits for the synchronous calls made under it, but what it was
+//! made under does not wait for them (an `events.call` carries its emitter's
+//! chain). In a runtime with one stack a reentrant runtime runs it on top of
+//! the call that waits there, so stack order holds for it like for a hop. A
+//! session whose far end does not mark its synchronous waits makes no hops:
+//! it is outside the check.
 
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
@@ -51,12 +54,22 @@ mod trace {
     pub(super) fn answered(_: &str, _: &str) {}
     pub(super) fn returned(_: &str, _: &str) {}
     pub(super) fn ended(_: &str) {}
-    pub(super) fn forward_hop(_: &str, _: &str, _: u64, _: &[String], _: bool, _: &super::Hop) {}
+    pub(super) fn forward_hop(
+        _: &str,
+        _: &str,
+        _: u64,
+        _: &[String],
+        _: bool,
+        _: bool,
+        _: &super::Hop,
+    ) {
+    }
     pub(super) fn forward_same_chain(
         _: &str,
         _: &str,
         _: u64,
         _: &[String],
+        _: bool,
         _: bool,
         _: (&str, &str),
     ) {
@@ -67,10 +80,20 @@ mod trace {
         _: u64,
         _: &[String],
         _: bool,
+        _: bool,
         _: &'static str,
     ) {
     }
-    pub(super) fn forward_refused(_: &str, _: &str, _: u64, _: &[String], _: bool, _: &[String]) {}
+    pub(super) fn forward_refused(
+        _: &str,
+        _: &str,
+        _: u64,
+        _: &[String],
+        _: bool,
+        _: bool,
+        _: &[String],
+    ) {
+    }
 }
 
 /// A call in this process: a session's tag and the call's id on it.
@@ -270,18 +293,20 @@ fn decode(path: &[String], dst: &str) -> Vec<Global> {
 }
 
 /// Record that call `did` (number `seq`) on session `dst` is being sent
-/// with chain `path`. When the caller waits synchronously (a `sync` call, or
-/// the chain's last call is marked), the call is a hop: if it would close a
-/// wait cycle, nothing is recorded and the cycle is returned, each call as
-/// `session/id`. When nobody waits for it synchronously (the chain's last
-/// call is not marked, and the call is asynchronous), it is an entry.
-/// Returns whether either was recorded.
+/// with chain `path`. When the caller waits for it (a `sync` call; or the
+/// chain's last call is marked and the call says its result is awaited), the
+/// call is a hop: if it would close a wait cycle, nothing is recorded and the
+/// cycle is returned, each call as `session/id`. When nobody waits for it (the
+/// chain's last call is not marked; or the call says `awaited: false`), it is
+/// an entry: the caller does not wait for it, though what is made under it is
+/// on its chain. Returns whether either was recorded.
 pub(super) fn forward(
     dst: &str,
     did: &str,
     seq: u64,
     path: &[String],
     synchronous: bool,
+    awaited: bool,
 ) -> Result<bool, Cycle> {
     if crate::session::rpc::unchained_now() {
         trace::forward_not_waited(
@@ -290,12 +315,21 @@ pub(super) fn forward(
             seq,
             path,
             synchronous,
+            awaited,
             "the thread sends unchained",
         );
         return Ok(false);
     }
     if marks().load(Ordering::SeqCst) == 0 && !synchronous {
-        trace::forward_not_waited(dst, did, seq, path, synchronous, "nothing is marked");
+        trace::forward_not_waited(
+            dst,
+            did,
+            seq,
+            path,
+            synchronous,
+            awaited,
+            "nothing is marked",
+        );
         return Ok(false);
     }
     let rows = ROWS.with(|rows| rows.borrow().clone());
@@ -310,9 +344,14 @@ pub(super) fn forward(
         // A synchronous call back into the session it came from: on its
         // caller's chain, which runs it; not recorded.
         Some((src, sid)) if src == dst => {
-            trace::forward_same_chain(dst, did, seq, path, synchronous, (&src, &sid));
+            trace::forward_same_chain(dst, did, seq, path, synchronous, awaited, (&src, &sid));
             return Ok(false);
         }
+        // The chain's last call waits for this one: a synchronous call, or
+        // an asynchronous one whose caller says it awaits the result. A
+        // call whose caller says it will not wait is an entry: nobody waits
+        // for it, so it is no edge, but what is made under it is on its
+        // chain (SESS-83).
         Some((src, sid)) => Hop {
             src,
             sid,
@@ -320,7 +359,7 @@ pub(super) fn forward(
             did: did.to_owned(),
             seq,
             chain,
-            entry: false,
+            entry: !(synchronous || awaited),
             rows: rows.clone(),
         },
         // The caller waits synchronously but no marked call is on its chain:
@@ -352,12 +391,12 @@ pub(super) fn forward(
     };
     if !hop.entry {
         if let Some(calls) = cycle_among(waits.hops.values(), &hop, &waits.profiles) {
-            trace::forward_refused(dst, did, seq, path, synchronous, &calls);
+            trace::forward_refused(dst, did, seq, path, synchronous, awaited, &calls);
             let rows = rows_of(&calls, &waits.hops, &hop);
             return Err(Cycle { calls, rows });
         }
     }
-    trace::forward_hop(dst, did, seq, path, synchronous, &hop);
+    trace::forward_hop(dst, did, seq, path, synchronous, awaited, &hop);
     waits.hops.insert(hop.gid(), hop);
     waits.counted();
     Ok(true)
@@ -672,6 +711,7 @@ mod tests {
                 1,
                 &["notice_a/node:1".to_owned()],
                 false,
+                true,
             )
         })
         .unwrap();
@@ -693,7 +733,15 @@ mod tests {
     #[test]
     fn an_asynchronous_forward_on_a_marked_chain_is_a_hop() {
         marked("hop_a", "node:1");
-        let recorded = forward("hop_b", "rust:1", 1, &["hop_a/node:1".to_owned()], false).unwrap();
+        let recorded = forward(
+            "hop_b",
+            "rust:1",
+            1,
+            &["hop_a/node:1".to_owned()],
+            false,
+            true,
+        )
+        .unwrap();
         assert!(recorded);
         let entry = table()
             .lock()
@@ -708,13 +756,139 @@ mod tests {
         ended("hop_b");
     }
 
+    /// An asynchronous forward whose frame says its result is not awaited is
+    /// an entry, even on a marked chain: nobody waits for it, so it is no
+    /// edge (SESS-83). What is made under it is still on its chain.
+    /// guarantee: bridge/sync-wait-cycle-refused
+    #[test]
+    fn an_asynchronous_forward_nobody_awaits_is_an_entry() {
+        marked("unawaited_a", "node:1");
+        let recorded = forward(
+            "unawaited_b",
+            "rust:1",
+            1,
+            &["unawaited_a/node:1".to_owned()],
+            false,
+            false,
+        )
+        .unwrap();
+        assert!(
+            recorded,
+            "the entry is recorded: chains made under it stop here"
+        );
+        let hop = table()
+            .lock()
+            .unwrap()
+            .hops
+            .get(&("unawaited_b".to_owned(), "rust:1".to_owned()))
+            .cloned();
+        assert_eq!(hop.as_ref().map(|hop| hop.entry), Some(true));
+        assert_eq!(
+            hop.as_ref().map(|hop| hop.src.as_str()),
+            Some("unawaited_a"),
+            "the call is on the marked call's chain, though nobody waits for it"
+        );
+        returned("unawaited_b", "rust:1");
+        answered("unawaited_a", "node:1");
+        ended("unawaited_a");
+        ended("unawaited_b");
+    }
+
+    /// The same cycle as [`a_host_root_sync_call_closes_a_cycle_through_two_runtimes`],
+    /// but the host's call into B is one its caller will not await: it is an
+    /// entry, so the call back into A closes no cycle.
+    /// guarantee: bridge/sync-wait-cycle-refused
+    #[test]
+    fn a_fire_and_forget_forward_closes_no_cycle() {
+        let one_stack = Profile {
+            stacked: true,
+            reentrant: false,
+        };
+        profile("forgot_a", one_stack);
+        profile("forgot_b", one_stack);
+        // The host calls A synchronously; A calls the host, which calls B
+        // without waiting for the result.
+        forward("forgot_a", "rust:1", 1, &[], true, true).unwrap();
+        marked("forgot_a", "node:1");
+        let recorded = forward(
+            "forgot_b",
+            "rust:2",
+            2,
+            &["forgot_a/node:1".to_owned()],
+            false,
+            false,
+        )
+        .unwrap();
+        assert!(recorded, "an entry is recorded");
+        // B calls the host; the host calls A again. Nobody waits for the
+        // call into B, so the graph has no cycle.
+        marked("forgot_b", "node:2");
+        forward(
+            "forgot_a",
+            "rust:3",
+            3,
+            &["forgot_b/node:2".to_owned()],
+            true,
+            true,
+        )
+        .expect("no cycle through a call nobody waits for");
+        returned("forgot_a", "rust:3");
+        returned("forgot_a", "rust:1");
+        returned("forgot_b", "rust:2");
+        answered("forgot_a", "node:1");
+        answered("forgot_b", "node:2");
+        ended("forgot_a");
+        ended("forgot_b");
+    }
+
+    /// The same shape, with the host's call into B awaited: it is a hop and
+    /// the call back into A closes the cycle, refused.
+    /// guarantee: bridge/sync-wait-cycle-refused
+    #[test]
+    fn an_awaited_forward_closes_the_cycle() {
+        let one_stack = Profile {
+            stacked: true,
+            reentrant: false,
+        };
+        profile("awaits_a", one_stack);
+        profile("awaits_b", one_stack);
+        forward("awaits_a", "rust:1", 1, &[], true, true).unwrap();
+        marked("awaits_a", "node:1");
+        forward(
+            "awaits_b",
+            "rust:2",
+            2,
+            &["awaits_a/node:1".to_owned()],
+            false,
+            true,
+        )
+        .unwrap();
+        marked("awaits_b", "node:2");
+        let cycle = forward(
+            "awaits_a",
+            "rust:3",
+            3,
+            &["awaits_b/node:2".to_owned()],
+            true,
+            true,
+        )
+        .expect_err("the awaited call into B is an edge, and the cycle closes");
+        assert!(cycle.calls.iter().any(|call| call == "awaits_a/rust:3"));
+        returned("awaits_a", "rust:1");
+        returned("awaits_b", "rust:2");
+        answered("awaits_a", "node:1");
+        answered("awaits_b", "node:2");
+        ended("awaits_a");
+        ended("awaits_b");
+    }
+
     /// The host's own synchronous call begins a chain: recorded as a hop
     /// even with no chain and nothing marked yet, so a runtime that calls
     /// back and forwards again is checked against it (#537).
     /// guarantee: bridge/sync-wait-cycle-refused
     #[test]
     fn a_synchronous_call_without_a_chain_is_a_hop() {
-        let recorded = forward("root_b", "rust:1", 1, &[], true).unwrap();
+        let recorded = forward("root_b", "rust:1", 1, &[], true, true).unwrap();
         assert!(recorded);
         let entry = table()
             .lock()
@@ -741,15 +915,30 @@ mod tests {
         profile("cycle_a", one_stack);
         profile("cycle_b", one_stack);
         // The host calls A synchronously, with no chain of its own.
-        forward("cycle_a", "rust:1", 1, &[], true).unwrap();
+        forward("cycle_a", "rust:1", 1, &[], true, true).unwrap();
         // A calls the host (marked); the host calls B.
         marked("cycle_a", "node:1");
-        forward("cycle_b", "rust:2", 2, &["cycle_a/node:1".to_owned()], true).unwrap();
+        forward(
+            "cycle_b",
+            "rust:2",
+            2,
+            &["cycle_a/node:1".to_owned()],
+            true,
+            true,
+        )
+        .unwrap();
         // B calls the host (marked); the host calls A again: A is non-
         // reentrant and waits for B, B waits for A. The call is refused.
         marked("cycle_b", "node:2");
-        let cycle = forward("cycle_a", "rust:3", 3, &["cycle_b/node:2".to_owned()], true)
-            .expect_err("the host's call into A closes the cycle");
+        let cycle = forward(
+            "cycle_a",
+            "rust:3",
+            3,
+            &["cycle_b/node:2".to_owned()],
+            true,
+            true,
+        )
+        .expect_err("the host's call into A closes the cycle");
         assert!(
             cycle.calls.iter().any(|call| call == "cycle_a/rust:3"),
             "{cycle:?}"
@@ -769,7 +958,7 @@ mod tests {
     #[test]
     fn an_asynchronous_call_without_a_chain_is_an_entry() {
         marked("call_a", "node:1");
-        let recorded = forward("call_b", "rust:1", 2, &[], false).unwrap();
+        let recorded = forward("call_b", "rust:1", 2, &[], false, true).unwrap();
         assert!(recorded);
         let entry = table()
             .lock()
@@ -1491,13 +1680,29 @@ mod tests {
         );
         // n1's call into n2, in the table before the capture begins.
         marked("cap_n1", "node:1");
-        assert!(forward("cap_n2", "rust:1", 1, &["cap_n1/node:1".to_owned()], true).unwrap());
+        assert!(forward(
+            "cap_n2",
+            "rust:1",
+            1,
+            &["cap_n1/node:1".to_owned()],
+            true,
+            true
+        )
+        .unwrap());
         let capture = trace::capture();
         // n2's far end calls back; the call into n1 closes the cycle through
         // the hop and the mark the table held when recording began.
         marked("cap_n2", "node:1");
         assert!(
-            forward("cap_n1", "rust:2", 2, &["cap_n2/node:1".to_owned()], true).is_err(),
+            forward(
+                "cap_n1",
+                "rust:2",
+                2,
+                &["cap_n2/node:1".to_owned()],
+                true,
+                true,
+            )
+            .is_err(),
             "the call would wait on itself"
         );
         let trace = capture.trace();

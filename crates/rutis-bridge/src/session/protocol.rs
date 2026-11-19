@@ -144,6 +144,17 @@ impl From<Failure> for Error {
     }
 }
 
+/// The default of a call frame's `awaited`: a caller that says nothing is
+/// taken to wait for the result (the conservative reading, SESS-83).
+fn waited() -> bool {
+    true
+}
+
+/// Whether `awaited` is the default, and so not written (SESS-7).
+fn is_waited(awaited: &bool) -> bool {
+    *awaited
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub(crate) enum Frame {
@@ -167,6 +178,11 @@ pub(crate) enum Frame {
         /// The caller waits for the reply synchronously (`sync: true`).
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         sync: bool,
+        /// The caller will wait for this call's result before the call
+        /// that made it finishes (default; `false` says it will not, so the
+        /// call is no wait edge; SESS-83). Only `false` is written.
+        #[serde(default = "waited", skip_serializing_if = "is_waited")]
+        awaited: bool,
     },
     /// Call a function reference, or a method of an object reference.
     Call {
@@ -178,6 +194,9 @@ pub(crate) enum Frame {
         args: WireValue,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         sync: bool,
+        /// See `Invoke`: absent means the result is waited for.
+        #[serde(default = "waited", skip_serializing_if = "is_waited")]
+        awaited: bool,
     },
     /// Read a property of an object reference (a live read).
     Get {
@@ -187,6 +206,9 @@ pub(crate) enum Frame {
         property: String,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         sync: bool,
+        /// See `Invoke`: absent means the result is waited for.
+        #[serde(default = "waited", skip_serializing_if = "is_waited")]
+        awaited: bool,
     },
     Await {
         id: String,
@@ -194,6 +216,9 @@ pub(crate) enum Frame {
         reference: u64,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         sync: bool,
+        /// See `Invoke`: absent means the result is waited for.
+        #[serde(default = "waited", skip_serializing_if = "is_waited")]
+        awaited: bool,
     },
     Return {
         id: String,
@@ -487,16 +512,26 @@ mod tests {
                         capabilities,
                     })
                 }),
-            (text(), path(), text(), text(), wire_value(3), any::<bool>()).prop_map(
-                |(id, path, target, method, args, sync)| GeneratedFrame(Frame::Invoke {
-                    id,
-                    path,
-                    target,
-                    method,
-                    args: args.0,
-                    sync,
-                })
-            ),
+            (
+                text(),
+                path(),
+                text(),
+                text(),
+                wire_value(3),
+                any::<bool>(),
+                any::<bool>()
+            )
+                .prop_map(|(id, path, target, method, args, sync, awaited)| {
+                    GeneratedFrame(Frame::Invoke {
+                        id,
+                        path,
+                        target,
+                        method,
+                        args: args.0,
+                        sync,
+                        awaited,
+                    })
+                }),
             (
                 text(),
                 path(),
@@ -504,32 +539,44 @@ mod tests {
                 prop::option::of(text()),
                 wire_value(3),
                 any::<bool>(),
+                any::<bool>(),
             )
-                .prop_map(|(id, path, reference, method, args, sync)| GeneratedFrame(
-                    Frame::Call {
+                .prop_map(|(id, path, reference, method, args, sync, awaited)| {
+                    GeneratedFrame(Frame::Call {
                         id,
                         path,
                         reference,
                         method,
                         args: args.0,
                         sync,
-                    }
-                )),
-            (text(), path(), any::<u64>(), text(), any::<bool>()).prop_map(
-                |(id, path, reference, property, sync)| GeneratedFrame(Frame::Get {
+                        awaited,
+                    })
+                }),
+            (
+                text(),
+                path(),
+                any::<u64>(),
+                text(),
+                any::<bool>(),
+                any::<bool>()
+            )
+                .prop_map(|(id, path, reference, property, sync, awaited)| {
+                    GeneratedFrame(Frame::Get {
+                        id,
+                        path,
+                        reference,
+                        property,
+                        sync,
+                        awaited,
+                    })
+                }),
+            (text(), path(), any::<u64>(), any::<bool>(), any::<bool>()).prop_map(
+                |(id, path, reference, sync, awaited)| GeneratedFrame(Frame::Await {
                     id,
                     path,
                     reference,
-                    property,
                     sync,
-                })
-            ),
-            (text(), path(), any::<u64>(), any::<bool>()).prop_map(
-                |(id, path, reference, sync)| GeneratedFrame(Frame::Await {
-                    id,
-                    path,
-                    reference,
-                    sync,
+                    awaited,
                 })
             ),
             (text(), wire_value(3))
@@ -697,6 +744,42 @@ mod tests {
             }
             Ok(())
         });
+    }
+
+    /// A call's `awaited` says whether its caller waits for the result
+    /// (SESS-83): absent or `true` reads as waiting, and only `false` is
+    /// written.
+    /// guarantee: bridge/sync-wait-cycle-refused
+    #[test]
+    fn a_call_says_when_its_result_is_not_waited_for() {
+        let invoke = |awaited: bool| Frame::Invoke {
+            id: "node:1".into(),
+            path: vec![],
+            target: "t".into(),
+            method: "m".into(),
+            args: WireValue::Undefined,
+            sync: false,
+            awaited,
+        };
+        let written = serde_json::to_string(&invoke(false)).unwrap();
+        assert!(written.contains("\"awaited\":false"), "{written}");
+        let Frame::Invoke { awaited, .. } = parse_frame(written.as_bytes()).unwrap().frame else {
+            panic!("an invoke expected");
+        };
+        assert!(!awaited);
+        // `true` is the default, and not written.
+        let written = serde_json::to_string(&invoke(true)).unwrap();
+        assert!(!written.contains("awaited"), "{written}");
+        // An older frame without the field reads as one whose result is
+        // waited for: the conservative reading.
+        let without = br#"{"op":"invoke","id":"node:1","path":[],"target":"t","method":"m","args":{"type":"undefined"}}"#;
+        let Frame::Invoke { awaited, .. } = parse_frame(without).unwrap().frame else {
+            panic!("an invoke expected");
+        };
+        assert!(awaited);
+        // A field of another type is not a frame (§8.1).
+        let wrong = br#"{"op":"invoke","id":"node:1","path":[],"target":"t","method":"m","args":{"type":"undefined"},"awaited":"no"}"#;
+        assert!(parse_frame(wrong).is_err());
     }
 
     /// A frame the reader takes, unchanged; the frame after bad input is

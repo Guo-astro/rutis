@@ -162,10 +162,13 @@ impl Connection {
         }
         let peer = self.clone();
         let import = import.clone();
+        // A relayed call is a wait edge only when the call it relays is one:
+        // the caller's `awaited` says so (SESS-83).
+        let awaited = current_awaited();
         object.executor.handle.spawn(async move {
             tokio::select! {
                 // Dropping the forwarded request cancels it on the target.
-                result = with_path(forwarded, target.request_async(operation)) => {
+                result = with_path(forwarded, target.request_async_awaited(operation, awaited)) => {
                     peer.finish_await(id, result.map_err(|error| import.gone(error)))
                 }
                 _ = cancelled => {},

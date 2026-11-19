@@ -161,7 +161,7 @@ SDK 只做这几件事：
 
 **行协议的多语言落点。** 方法形状跟着服务走：`HostDispatch::methods()`，没有时由租用它的地方给出（M1 §4.1）。事件不分语言，见[事件协议](design-events-protocol-2026-10-18.md)。调用号的本地前缀是本端端点 id（宿主给运行时的名字，如 `node`、`py`），不再是写死的 `node:`。
 
-**同步等待的检测。** 只有标了同步的调用可能计入等待图：调用帧（`invoke`、`call`、`get`、`await`）带 `sync: true` 时，调用方在同步等待它（Cordis 插件的 `emit` 与 `waterfall` 也这样发）。握手能力 `reentrant-sync` 与 `sync-stack` 决定运行时的等待形状：不声明 `reentrant-sync` 的按不可重入处理；"延后"和"栈顺序"两类边只用于声明了 `sync-stack` 的对端。宿主按 `crates/rutis-bridge/src/session/rpc/waits.rs` 的 `forward` 给每次转发分类：
+**同步等待的检测。** 只有调用方确实会等的调用可能计入等待图：调用帧（`invoke`、`call`、`get`、`await`）带 `sync: true` 时，调用方在同步等待它（Cordis 插件的 `emit` 与 `waterfall` 也这样发）；异步调用的结果会被等待时，帧上不写 `awaited: false`（缺省按会等读，SESS-83），只有写明 `awaited: false` 的“发出即不管”才是入口。握手能力 `reentrant-sync` 与 `sync-stack` 决定运行时的等待形状：不声明 `reentrant-sync` 的按不可重入处理；"延后"和"栈顺序"两类边只用于声明了 `sync-stack` 的对端。宿主按 `crates/rutis-bridge/src/session/rpc/waits.rs` 的 `forward` 给每次转发分类：
 
 - 调用链的最后一项是已标记的调用（本端收到过带 `sync` 的调用），这次转发是**一跳**；调用方在同步等待、但链上没有已标记的调用（宿主自己发起的同步调用、同步分发）也是一跳，`src` 为空（#537，PR #597）。
 - 链的最后一项已标记、但这次转发是异步的（转交的函数引用、`events.call`），也记为一跳：调用方仍等它落定。

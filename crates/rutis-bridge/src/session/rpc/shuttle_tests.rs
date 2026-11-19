@@ -120,7 +120,10 @@ fn a_call_is_answered_or_cancelled_once() {
         let id = client
             .send(
                 Operation::Invoke("svc".into(), "go".into(), Value::Undefined),
-                Waiting::Async(sender),
+                Waiting::Async {
+                    sender,
+                    awaited: true,
+                },
             )
             .expect("the session is ready");
         let step = Arc::new(Barrier::new(2));
@@ -157,7 +160,10 @@ fn a_call_is_answered_or_cancelled_once() {
         let id = client
             .send(
                 Operation::Invoke("svc".into(), "go".into(), Value::Undefined),
-                Waiting::Async(sender),
+                Waiting::Async {
+                    sender,
+                    awaited: true,
+                },
             )
             .expect("the session is ready");
         let step = Arc::new(Barrier::new(4));
@@ -185,7 +191,10 @@ fn a_call_is_answered_or_cancelled_once() {
                 step.wait();
                 client.send(
                     Operation::Invoke("svc".into(), "other".into(), Value::Undefined),
-                    Waiting::Async(sender),
+                    Waiting::Async {
+                        sender,
+                        awaited: true,
+                    },
                 )
             })
         };
@@ -229,7 +238,10 @@ fn a_call_is_answered_or_cancelled_once() {
             client
                 .send(
                     Operation::Invoke("svc".into(), "go".into(), Value::Undefined),
-                    Waiting::Async(oneshot::channel().0),
+                    Waiting::Async {
+                        sender: oneshot::channel().0,
+                        awaited: true,
+                    },
                 )
                 .is_err(),
             "a closed session sent a call"
@@ -274,7 +286,10 @@ fn references_are_granted_released_and_cleared_once() {
             client
                 .send(
                     Operation::Invoke("svc".into(), "go".into(), Value::Undefined),
-                    Waiting::Async(sender),
+                    Waiting::Async {
+                        sender,
+                        awaited: true,
+                    },
                 )
                 .expect("the session is ready");
             waiters.push(receiver);
@@ -391,7 +406,10 @@ fn references_are_granted_released_and_cleared_once() {
         client
             .send(
                 Operation::Invoke("svc".into(), "go".into(), Value::Undefined),
-                Waiting::Async(sender),
+                Waiting::Async {
+                    sender,
+                    awaited: true,
+                },
             )
             .expect("the session is ready");
         for frame in frames(&client) {
@@ -504,6 +522,7 @@ fn an_incoming_call_is_claimed_once() {
             method: "go".into(),
             args: WireValue::Undefined,
             sync: false,
+            awaited: true,
         };
         let (sender, receiver) = mpsc::channel();
         let step = Arc::new(Barrier::new(3));
@@ -606,6 +625,7 @@ fn a_wait_for_the_operations_comes_after_them() {
             method: "events.on".into(),
             args: WireValue::Data(json!(sequence)),
             sync: false,
+            awaited: true,
         };
         for sequence in 1..=3u64 {
             server
@@ -671,6 +691,7 @@ fn event_operations_take_their_turn_once() {
                             method: "events.on".into(),
                             args: WireValue::Data(json!(sequence)),
                             sync: false,
+                            awaited: true,
                         })
                         .expect("the reader takes the event operation");
                 }

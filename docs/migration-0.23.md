@@ -68,3 +68,33 @@ node tools/check-guarantees.mjs
 ```
 
 会话测试覆盖排队取消、运行中取消、交叉回复、`ack` 清表、无表项的 `ack`、`ack` 之后的回复；TLA 配置 `call-gap-ack`、`call-mut-ack-then-reply`、`relay-healthy`、`relay-mut-ack-then-reply` 是模型部分。
+
+### 异步调用说明是否会等待结果：`awaited`（#1098）
+
+规格：[会话协议](protocol-session.md) `SESS-83`、`SESS-7`、`SESS-66`、§14 G7；模型：[`specs/cross-runtime-sync`](../specs/cross-runtime-sync/README.md)（`async-forgotten-policy-b`、`async-policy-b`）。
+
+#### 改了什么
+
+调用帧（`invoke`、`call`、`get`、`await`）多一个可选布尔字段 `awaited`：`false` 表示“发出即不管”，调用方不会在这个调用结束之前等它的结果；缺省或 `true` 表示会等。它只在异步调用上有意义，`sync: true` 时忽略。宿主只把 `sync` 或“会被等待”的异步调用计入等待边；`awaited: false` 的调用记为入口，不再因为它在已标记的链上而被当成一跳。缺省保持旧语义，所以旧调用方仍按保守读法记边（可能被误判成环）；写明 `false` 才能去掉这条边。
+
+#### 要改什么
+
+- 宿主与七种运行时一起升级；本仓库的实现都已经认识这个字段。旧的协议 5 预发布构建会把 `awaited` 当未知字段、失败该调用（SESS-66），必须换成含它的构建。
+- 运行时在确定没人等结果时（`sendAnswered` / `request_answered` / `notify` 一类）写 `awaited: false`；用户代码的普通异步调用在运行时无法判断时省略字段，宿主按“会等”处理。
+- 插件代码不用改，也没有新的 API：这是会话层的字段，不进入插件 API。
+
+#### 影响谁
+
+- 插件作者：无新增概念。一个不会等结果的异步调用不再可能被误报 `SyncWaitCycle`；会等结果的调用仍按原来的规则拒绝真实的环。
+- 运行时作者：实现自己的“发出即不管”路径时写 `awaited: false`，并接受对端写来的这个字段；类型不对的帧结束会话（共享畸形矩阵的 `awaited` 类型错用例）。
+- 部署者：协议 5 的所有端一起升级；0.23 的预发布构建与本字段不兼容。
+
+#### 验证
+
+```sh
+cargo test -p rutis-bridge --all-features
+TLA2TOOLS=/tmp/tla2tools.jar specs/cross-runtime-sync/run.sh async-policy-b async-forgotten-policy-b
+node tools/check-guarantees.mjs
+```
+
+Rust 回归：`an_asynchronous_forward_nobody_awaits_is_an_entry`（发完不管 → 入口）、`an_awaited_forward_closes_the_cycle`（之后 await → 拒绝真实的环）、`a_forwarded_call_carries_the_callers_awaited_signal`（转发沿用原信号）、`a_call_says_when_its_result_is_not_waited_for`（线上缺省与 `false`）。

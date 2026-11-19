@@ -46,6 +46,9 @@ CONSTANTS
     Hidden,     \* runtimes that make synchronous calls from another thread, unmarked
     Ends,       \* TRUE: a session may end during the run
     Async,      \* TRUE: an activation may make an asynchronous call
+    Awaited,    \* TRUE: an asynchronous call's caller awaits its result
+    Signalled,  \* TRUE: that caller says so on the frame (`awaited`, SESS-83);
+                \* FALSE: an old caller, whose call Rust reads conservatively
     Workers,    \* host threads that run Rust plugin code (a bounded pool)
     Services,   \* TRUE: a runtime may call a Rust service (the host as a participant)
     Cancellers, \* runtimes that cancel a synchronous call with `cancel`
@@ -77,6 +80,8 @@ ASSUME HostRoot \in BOOLEAN
 ASSUME HostHop \in BOOLEAN
 ASSUME Ends \in BOOLEAN
 ASSUME Async \in BOOLEAN
+ASSUME Awaited \in BOOLEAN
+ASSUME Signalled \in BOOLEAN
 ASSUME MaxRoots \in Nat /\ MaxDepth \in Nat /\ MaxCalls \in Nat \ {0}
 ASSUME MaxPosts \in Nat
 
@@ -382,9 +387,10 @@ CallService(r) ==
        /\ nodeCtr' = [nodeCtr EXCEPT ![r] = k]
     /\ UNCHANGED <<toRt, deferred, hops, dispatches, hosts, hostCtr, rustCtr, roots, posts, postCtr, dispCtr, alive, ghost>>
 
-\* An asynchronous call: the activation goes on running; if the caller is on
-\* a marked chain, Rust still records it as a hop (854bef5d), though nobody
-\* waits for it.
+\* An asynchronous call: the activation goes on running. When its caller is
+\* on a marked chain, Rust records it as a hop only if the caller awaits its
+\* result (`Awaited`, and an old caller without the signal read
+\* conservatively); a call nobody awaits is an entry (SESS-83).
 CallAsync(r, t) ==
     /\ Async
     /\ r \in alive /\ t \in alive /\ t /= r
@@ -825,20 +831,28 @@ RustForward(s) ==
            m == rustCtr[t] + 1
            sync == f.op \in {"call", "hcall"}
            \* waits.rs `forward`: a call whose chain's last call is marked is
-           \* a hop, synchronous or not; a synchronous call with no marked
-           \* chain is a hop of the host's (no caller, #597); the rest are
-           \* entries. A runtime that does not declare `sync-wait` marks
-           \* nothing, so its calls stay outside the check.
+           \* a hop when its caller waits for the result -- synchronously, or
+           \* asynchronously and the frame says so (`awaited`, SESS-83; an old
+           \* caller says nothing and is read conservatively). A call nobody
+           \* waits for is an entry: it bounds the chain made under it but is
+           \* no edge. A synchronous call with no marked chain is a hop of the
+           \* host's (no caller, #597). A runtime that does not declare
+           \* `sync-wait` marks nothing, so its calls stay outside the check.
+           \* The model's `acall` never blocks its runtime's stack, so `real`
+           \* stays `sync`: the truth graph represents stack waits only, and
+           \* the awaited case is left to the implementation's tests.
            marked == f.from /= 0 /\ f.mk
+           waits == sync \/ (~sync /\ (IF Signalled THEN Awaited ELSE TRUE))
            kind == IF remote THEN (IF sync THEN "hidden" ELSE "entry")
                    ELSE IF sync /\ (marked \/ (f.op = "call" /\ s \in Declared)) THEN "hop"
-                   ELSE IF ~sync /\ marked THEN "async"
+                   ELSE IF ~sync /\ marked /\ waits THEN "async"
                    ELSE IF sync THEN "hidden"
                    ELSE "entry"
            new == [src |-> s, sid |-> f.id, dst |-> t, did |-> m, seq |-> m,
                    chain |-> Decode(full, s),
                    truth |-> truth, path |-> RebasePath(full, s, t),
-                   entry |-> kind \in {"entry", "hidden"}, real |-> sync,
+                   entry |-> kind \in {"entry", "hidden"},
+                   real |-> sync,
                    maker |-> s, kind |-> kind, rec |-> FALSE, under |-> <<>>]
            \* rpc.rs `receive`: the Rust thread waiting for the last id of
            \* the path that it waits for gets the call.

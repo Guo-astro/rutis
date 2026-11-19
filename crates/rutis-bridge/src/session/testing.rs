@@ -151,7 +151,7 @@ impl Dispatch for Fixture {
 /// Messages no implementation may take as a frame, with what is wrong with
 /// each (Q6.2.3), in the endpoint format, sent by `main` once the session
 /// is ready.
-pub const MALFORMED: [(&str, &[u8]); 13] = [
+pub const MALFORMED: [(&str, &[u8]); 14] = [
     ("malformed JSON", br#"{"op":"invoke","id":"main:1""#),
     ("empty", b""),
     ("a leading BOM", b"\xef\xbb\xbf{\"op\":\"cancel\",\"id\":\"main:1\"}"),
@@ -164,6 +164,10 @@ pub const MALFORMED: [(&str, &[u8]); 13] = [
     (
         "wrong field type",
         br#"{"op":"invoke","id":"main:1","path":[],"target":7,"method":"echo","args":{"type":"undefined"}}"#,
+    ),
+    (
+        "wrong type of awaited",
+        br#"{"op":"invoke","id":"main:1","path":[],"target":"conformance","method":"echo","args":{"type":"undefined"},"awaited":"no"}"#,
     ),
     (
         "missing field",

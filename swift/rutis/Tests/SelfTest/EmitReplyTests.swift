@@ -56,6 +56,7 @@ struct EmitReplyTests {
         }
         let sent = try await next(far)
         XCTAssertEqual(sent["method"]?.stringValue, "events.dispatch")
+        XCTAssertEqual(sent["awaited"]?.boolValue, false, "nobody waits for it (SESS-83)")
         // The reply, then at once a frame the runtime handles after it.
         try send(far, #"{"op":"return","id":"# + id(sent) + #","value":{"type":"undefined"}}"#)
         try send(far, #"{"op":"invoke","id":"main:1","path":[],"target":"","method":"after","args":{"type":"list","value":[]}}"#)
