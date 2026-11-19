@@ -37,6 +37,7 @@ Choose by what you want to do.
 | Load plugins in a Rust application: the API reference | [Embed in a Rust application](rust-host.en.md) |
 | Connect machines | [Connect nodes](nodes.en.md) |
 | Connect an existing Cordis application to rutis, or mount Cordis plugins in Rust | [Cordis](cordis.en.md) |
+| Decide whether a Cordis plugin can be mounted unchanged: the five modes, `bail`, `intercept`, `ctx.set`, proxies, synchronous waits, unloading, processes | [Cordis compatibility boundaries](cordis-boundaries.en.md) |
 
 ## Packages
 

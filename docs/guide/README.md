@@ -37,6 +37,7 @@
 | 在 Rust 应用里加载插件：API 参考 | [在 Rust 应用里嵌入](rust-host.md) |
 | 把多台机器连起来 | [连接节点](nodes.md) |
 | 让已有的 Cordis 应用和 rutis 互通，或在 Rust 里挂载 Cordis 插件 | [Cordis](cordis.md) |
+| 判断一个 Cordis 插件能不能不改就挂载：五种事件方式、`bail`、`intercept`、`ctx.set`、代理、同步等待、卸载、跨进程 | [Cordis 兼容边界](cordis-boundaries.md) |
 
 ## 包
 

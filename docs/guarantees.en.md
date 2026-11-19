@@ -240,7 +240,7 @@ Sources: `core/features.errors` in [core-features](core-features.en.md) "Errors 
 
 ## 8. Boundary rules for Cordis plugins: `boundary/5.1`–`boundary/5.8`
 
-Source: [requirements-protocol-plugins](requirements-protocol-plugins.en.md) §5.
+Source: [requirements-protocol-plugins](requirements-protocol-plugins.en.md) §5. What each rule is, what it is not, and what to do: [Cordis compatibility boundaries](guide/cordis-boundaries.en.md).
 
 | Number | Content | Level | Status | Verification | Notes |
 | --- | --- | --- | --- | --- | --- |

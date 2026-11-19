@@ -240,7 +240,7 @@ PR 模板中有对应的检查项。CI 的 `links` 任务运行 `node tools/chec
 
 ## 8. Cordis 插件的边界规则：`boundary/5.1`–`boundary/5.8`
 
-出处：[requirements-protocol-plugins](requirements-protocol-plugins.md) §5。
+出处：[requirements-protocol-plugins](requirements-protocol-plugins.md) §5。每条的内容、"不是什么"和应对方式见 [Cordis 兼容边界](guide/cordis-boundaries.md)。
 
 | 编号 | 内容 | 级别 | 状态 | 验证 | 说明 |
 | --- | --- | --- | --- | --- | --- |
