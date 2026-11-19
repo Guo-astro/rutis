@@ -134,7 +134,10 @@ do {
     var options = PeerOptions(endpoint: Endpoint(local: "swift", expected: "main"))
     options.implementation = [("name", "conformance"), ("version", "0")]
     options.capabilities = runtimeCapabilities
-    options.dispatch = { target, method, args in try await service.dispatch(target, method, args) }
+    // Top-level code is `@MainActor` in Swift 6: without `@Sendable` this
+    // closure would be scheduled back to the blocked main thread and never
+    // answer a call (#1350).
+    options.dispatch = { @Sendable target, method, args in try await service.dispatch(target, method, args) }
     let session = try Peer(channel: channel, options: options)
     service.session = session
     try session.start()
