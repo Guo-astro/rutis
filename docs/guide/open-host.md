@@ -998,7 +998,7 @@ match handle.reload(id).await {
 # }
 ```
 
-- 新代码导入不了（语法错误）时，这一行继续运行原来的版本：`count: cannot reload: …; the previous version keeps running`。新代码能导入、`apply` 失败时，这一行以那个错误失败，改好之前不运行。
+- 新代码导入不了（语法错误）时，这一行继续运行原来的版本：`count: cannot reload: …; the previous version keeps running`。新代码能导入、`apply` 失败时，这一行以那个错误失败，改好之前不运行。（`apply` 失败这一句是对由运行时从文件启动的行说的：`Loader::reload` 恢复上一次的 resolution，Node、Python 会再读到文件现在的内容；Rust 这类解析器交回内存模块的行在 `apply` 失败后回到旧代码。）
 - 只重新导入这一行自己的入口模块：它导入的其他模块变了，重启它的运行时（对运行时的 fiber 调用 `restart()`）。
 - 用到这一行所提供服务的行随它重启。
 
