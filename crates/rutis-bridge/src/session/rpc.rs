@@ -1165,8 +1165,17 @@ struct Calls {
     waiting: HashMap<String, Waiting>,
     incoming: HashMap<String, Incoming>,
     awaiting: HashMap<String, Awaiting>,
-    /// Calls this side cancelled; their late replies are discarded.
+    /// Calls this side cancelled and whose resolution (a reply or an `ack`)
+    /// has not arrived yet. A reply or an `ack` takes the id out; the set is
+    /// empty once every cancel is resolved (#1099).
     cancelled: std::collections::HashSet<String>,
+    /// Calls of the far end this side admitted and is running (not queued,
+    /// not an `await`): a cancel for one of them drops the reply it would
+    /// write. Queued calls are in `incoming`, awaits in `awaiting`.
+    running: std::collections::HashSet<String>,
+    /// Running calls a cancel named: their result is dropped instead of
+    /// written, and the cancel is acknowledged.
+    suppressed: std::collections::HashSet<String>,
     /// Late replies discarded after a cancellation.
     orphans: u64,
     /// The far end's last call id, without its prefix.
@@ -1879,6 +1888,9 @@ impl Connection {
         let (waiting, incoming, awaiting) = {
             let mut calls = self.0.calls.lock().unwrap();
             waits::ended(&self.0.tag);
+            calls.cancelled.clear();
+            calls.running.clear();
+            calls.suppressed.clear();
             (
                 std::mem::take(&mut calls.waiting),
                 std::mem::take(&mut calls.incoming),
@@ -2255,16 +2267,20 @@ impl Connection {
         result?
     }
     /// Give up on an outstanding call: the callee's AbortSignal (if any) is
-    /// aborted and a late reply is discarded.
+    /// aborted, the call is recorded until the callee resolves the cancel
+    /// (a late reply is discarded, an `ack` clears the entry), and the
+    /// cancel goes out.
     fn cancel(&self, id: &str) {
         {
             let mut calls = self.0.calls.lock().unwrap();
             if calls.closed.is_some() {
                 return;
             }
-            // Still waiting: a late reply will be discarded. Already answered
-            // but not consumed (e.g. a returned Promise the caller has not yet
-            // awaited): the callee may still be running it, so cancel anyway.
+            // Still waiting: a reply or an `ack` will resolve it. Already
+            // answered but not consumed (e.g. a returned Promise the caller
+            // has not yet awaited): the callee may still be running it, so
+            // cancel anyway; the entry is only a claim for a call still in
+            // the waiting table.
             if calls.waiting.remove(id).is_some() {
                 calls.cancelled.insert(id.to_owned());
             }
@@ -2275,6 +2291,11 @@ impl Connection {
     /// Late replies discarded after cancellations.
     pub fn orphans(&self) -> u64 {
         self.0.calls.lock().unwrap().orphans
+    }
+    /// Cancelled calls whose resolution has not arrived yet: the table's
+    /// size (zero once every cancel is resolved, #1099).
+    pub fn cancelled(&self) -> usize {
+        self.0.calls.lock().unwrap().cancelled.len()
     }
     /// How many references this side exports (granted and not yet released
     /// by the far end) and imports (received and not yet released), for the
@@ -2842,7 +2863,7 @@ impl Connection {
                 "unknown field {} in hello",
                 quoted_fields(ignored)
             )))),
-            Frame::Release { .. } | Frame::Cancel { .. } => Ok(false),
+            Frame::Release { .. } | Frame::Cancel { .. } | Frame::Ack { .. } => Ok(false),
             Frame::Invoke { id, .. }
             | Frame::Call { id, .. }
             | Frame::Get { id, .. }
@@ -2920,29 +2941,57 @@ impl Connection {
                 }
                 return Ok(());
             }
+            Frame::Ack { id } => {
+                // The callee resolved the cancel and will answer no more. An
+                // `ack` for a call whose entry is gone is the ack crossing the
+                // reply it was meant to resolve: read and ignored (#1099).
+                let mut calls = self.0.calls.lock().unwrap();
+                calls.cancelled.remove(&id);
+                return Ok(());
+            }
             Frame::Cancel { id } => {
                 // Stop awaiting on the caller's behalf; queued work is dropped.
                 // An `emit` dispatch that was admitted keeps its turn (events
                 // protocol §5.7): its caller gave up, the listeners still hear
-                // it, and the caller discards the late reply. A synchronous
-                // call already running completes normally.
-                let (awaiting, incoming, kept) = {
+                // it, and its reply is dropped. A synchronous call already
+                // running completes, and its result is dropped: whichever the
+                // call, the callee acknowledges and answers no more (#1099).
+                let (awaiting, incoming, known, answered) = {
                     let mut calls = self.0.calls.lock().unwrap();
+                    let already = calls.suppressed.contains(&id);
                     let kept = calls.incoming.get(&id).is_some_and(Incoming::is_emit);
                     let incoming = if kept {
                         None
                     } else {
                         calls.incoming.remove(&id)
                     };
-                    (calls.awaiting.remove(&id), incoming, kept)
+                    let awaiting = calls.awaiting.remove(&id);
+                    let running = calls.running.contains(&id);
+                    if awaiting.is_some() {
+                        // The await's task is cancelled by dropping its
+                        // `Awaiting`: no reply will come to drop.
+                        calls.running.remove(&id);
+                    }
+                    if kept || (running && awaiting.is_none()) {
+                        calls.suppressed.insert(id.clone());
+                    }
+                    let known =
+                        !already && (kept || running || incoming.is_some() || awaiting.is_some());
+                    // A call dropped here is answered now; one still running
+                    // keeps its mark until it finishes (its reply is dropped,
+                    // and `respond_to` answers then), so a forward it makes
+                    // after the cancel is still a hop in this chain.
+                    let answered = incoming.is_some() || awaiting.is_some();
+                    (awaiting, incoming, known, answered)
                 };
-                // The caller no longer waits for it. A synchronous call
-                // already started keeps its mark: it still runs on that
-                // stack and may forward calls.
-                if kept || incoming.is_some() || awaiting.is_some() {
+                // The caller no longer waits for it.
+                if answered {
                     waits::answered(&self.0.tag, &id);
                 }
                 drop((awaiting, incoming));
+                if known {
+                    let _ = self.write(Frame::Ack { id });
+                }
                 return Ok(());
             }
             Frame::Release { reference, count } => {
@@ -3183,8 +3232,14 @@ impl Connection {
         }
     }
     fn execute(&self, incoming: Incoming, sync: bool) {
-        if self.0.calls.lock().unwrap().closed.is_some() {
-            return;
+        {
+            let mut calls = self.0.calls.lock().unwrap();
+            if calls.closed.is_some() {
+                return;
+            }
+            // A cancel that arrives from now on finds this call running: it
+            // drops the reply this execution would write (#1099).
+            calls.running.insert(incoming.id.clone());
         }
         let Incoming {
             id,
@@ -3328,6 +3383,17 @@ impl Connection {
     /// an error saying why instead (#675).
     fn respond_to(&self, id: String, result: Reply, call: Option<&str>) {
         waits::answered(&self.0.tag, &id);
+        // A call a cancel resolved while it ran is answered by the `ack`
+        // already written: its result is dropped here, which releases what
+        // the result held, and no reply follows (#1099).
+        {
+            let mut calls = self.0.calls.lock().unwrap();
+            let suppressed = calls.suppressed.remove(&id);
+            calls.running.remove(&id);
+            if suppressed {
+                return;
+            }
+        }
         let result = {
             let mut queued = self.0.outbound.queued.lock().unwrap();
             // The session ended before the answer was encoded: nothing can
@@ -3536,6 +3602,7 @@ fn frame_op(frame: &Frame) -> &'static str {
         Frame::Throw { .. } => "throw",
         Frame::Release { .. } => "release",
         Frame::Cancel { .. } => "cancel",
+        Frame::Ack { .. } => "ack",
     }
 }
 

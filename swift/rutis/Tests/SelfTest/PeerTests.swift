@@ -198,7 +198,7 @@ struct PeerTests {
         try far.send(Array(#"{"op":"hello","version":3,"endpoint":"main","implementation":{"name":"rutis","version":"0.18.0"},"capabilities":[]}"#.utf8))
         await runtime.closed()
         XCTAssertEqual("\(runtime.error.map { "\($0)" } ?? "")",
-                       "incompatible session: the far end speaks protocol 3, this side 4: upgrade the far end (rutis 0.18.0)")
+                       "incompatible session: the far end speaks protocol 3, this side 5: upgrade the far end (rutis 0.18.0)")
     }
 
     /// A read that fails ends the session and closes its channel: nothing

@@ -83,6 +83,6 @@ class LocalEndpointTest {
         runtime.closedFuture.get(5, TimeUnit.SECONDS)
         val error = runtime.error
         assertTrue(error is IncompatibleException, "ended with $error")
-        assertEquals("incompatible session: the far end speaks protocol 3, this side 4: upgrade the far end (rutis 0.18.0)", error.message)
+        assertEquals("incompatible session: the far end speaks protocol 3, this side 5: upgrade the far end (rutis 0.18.0)", error.message)
     }
 }

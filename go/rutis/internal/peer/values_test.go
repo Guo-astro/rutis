@@ -213,7 +213,7 @@ func rawHost(t *testing.T, capabilities string) (*Peer, Channel, func() map[stri
 		}
 	}()
 	go func() { _ = runtime.Start() }()
-	if err := far.Send([]byte(`{"op":"hello","version":4,"endpoint":"main","capabilities":` + capabilities + `}`)); err != nil {
+	if err := far.Send([]byte(`{"op":"hello","version":5,"endpoint":"main","capabilities":` + capabilities + `}`)); err != nil {
 		t.Fatal(err)
 	}
 	next := func() map[string]any {
@@ -349,7 +349,7 @@ func TestAnUndeclaredTagIsRefusedEvenInsideAMap(t *testing.T) {
 	if _, err := far.Recv(); err != nil {
 		t.Fatal(err)
 	}
-	_ = far.Send([]byte(`{"op":"hello","version":4,"endpoint":"a","capabilities":[]}`))
+	_ = far.Send([]byte(`{"op":"hello","version":5,"endpoint":"a","capabilities":[]}`))
 	testwait.Within(t, "the handshake", older.Ready())
 	_ = far.Send([]byte(`{"op":"invoke","id":"a:1","path":[],"target":"x","method":"echo","args":{"type":"list","value":[{"type":"map","value":[[{"type":"data","value":"k"},{"type":"reference","value":{"id":4,"kind":"function","home":false,"origin":[]}}]]}]}}`))
 	var frames []string

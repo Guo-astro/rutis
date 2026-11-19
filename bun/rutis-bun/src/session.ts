@@ -54,7 +54,7 @@ export const MANIFEST = JSON.parse(readFileSync(new URL('../package.json', impor
 // The protocol version this runtime speaks (package.json `rutisProtocol`
 // says it too): endpoint ids in the handshake and the call ids,
 // capabilities, either side calling the other.
-export const ENDPOINT_PROTOCOL = 4
+export const ENDPOINT_PROTOCOL = 5
 
 // Why a far end's protocol version is refused, saying which end to upgrade
 // (standard Q6.2.4): this side when the far end is newer, naming the
@@ -90,6 +90,7 @@ const FRAME_FIELDS = Object.freeze({
   throw: ['op', 'id', 'error'],
   release: ['op', 'reference', 'count'],
   cancel: ['op', 'id'],
+  ack: ['op', 'id'],
 })
 // The field paths a frame carries beyond the ones its op defines. `data`
 // values and error graphs are arbitrary JSON and are not inspected.
@@ -329,6 +330,10 @@ export class Session {
   // Call id prefixes: `<endpoint>:`, this side's and the far end's.
   #endpoint; #local; #remote
   #context = new AsyncLocalStorage(); #syncPath; #waiting = []; #unanswered: string[] = []; #queued = new Set()
+  // Incoming calls admitted and not answered yet, queued or running; and
+  // those a cancel resolved: their result is dropped and no reply follows
+  // (protocol 5, #1099).
+  #admitted = new Set<string>(); #suppressed = new Set<string>()
   #active = 0; #draining = []
   // AbortControllers for incoming calls that received a signal argument.
   // A signal lives until the call's result settles: a returned Promise keeps
@@ -384,6 +389,7 @@ export class Session {
     this.#closed = error; this.#rejectReady(error)
     for (const pending of this.#pending.values()) pending({ ok: false, value: error })
     this.#pending.clear(); this.#sites.clear(); this.#exports.clear(); this.#imports.clear(); this.#queued.clear()
+    this.#admitted.clear(); this.#suppressed.clear()
   }
   #fault(error) { this.close(error); this.#abort?.(error) }
   // A call id in an invocation chain: one of either side's, possibly
@@ -791,9 +797,40 @@ export class Session {
       }
       if (frame.op === 'cancel') {
         if (typeof frame.id !== 'string') throw new Error('invalid cancel')
-        // The caller gave up; the method decides how to honour its signal.
-        const call = this.#signals.has(frame.id) ? frame.id : this.#awaits.get(frame.id)
+        const id = frame.id
+        let known = false
+        // A call still queued never runs: drop it and acknowledge. A call
+        // already running keeps running, but its result is dropped and the
+        // cancel acknowledged; an await stops waiting the same way. The
+        // caller receives exactly one resolution: this ack or the reply
+        // written before the cancel was read (protocol 5, #1099).
+        const queued = [...this.#queued].find(job => job.frame.id === id)
+        if (queued) {
+          this.#queued.delete(queued)
+          this.#admitted.delete(id)
+          this.#signals.delete(id)
+          if (queued.business) this.#finish()
+          known = true
+        } else if (this.#admitted.has(id)) {
+          this.#suppressed.add(id)
+          known = true
+        }
+        const awaited = this.#awaits.get(id)
+        if (awaited !== undefined) {
+          this.#awaits.delete(id)
+          this.#suppressed.add(id)
+          known = true
+        }
+        const call = this.#signals.has(id) ? id : awaited
         this.#signals.get(call)?.abort(new DOMException('The operation was cancelled by the caller', 'AbortError'))
+        if (known) this.#write({ op: 'ack', id })
+        return
+      }
+      if (frame.op === 'ack') {
+        if (typeof frame.id !== 'string') throw new Error('invalid ack')
+        // This side never gives a call up (a JS Promise is not cancelled),
+        // so there is no cancelled table to clear; an ack is read and
+        // ignored, like one that crossed its reply.
         return
       }
       if (frame.op === 'release') {
@@ -831,6 +868,7 @@ export class Session {
       const business = entry?.business ?? frame.target !== ''
       if (business) this.#active++
       const job = { frame, args, entry, business }
+      this.#admitted.add(frame.id)
       this.#queued.add(job)
       if (frame.op === 'invoke' && frame.target === '' && this.#inline.has(frame.method)) {
         this.#queued.delete(job)
@@ -910,8 +948,16 @@ export class Session {
   // cannot be sent (a value the far end does not take, a message over the
   // limit) is answered with an error saying why instead (#675).
   #respond(id, result, business, call?) {
+    this.#admitted.delete(id)
+    const suppressed = this.#suppressed.delete(id)
     this.#awaits.delete(id)
     if (!(result.ok && result.value instanceof Promise && this.#promiseCalls.has(result.value))) this.#signals.delete(id)
+    if (suppressed) {
+      // The cancel was acknowledged already: the result is dropped (with
+      // what it held) and no reply follows (#1099).
+      if (business) this.#finish()
+      return
+    }
     const grants = []
     try {
       if (this.#closed) return

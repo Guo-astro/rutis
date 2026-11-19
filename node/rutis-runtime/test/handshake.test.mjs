@@ -67,7 +67,7 @@ test('a dialer greets first even when the far end greets at once', async () => {
     try {
       await new Promise(resolve => server.once('listening', resolve))
       const first = new Promise(resolve => server.once('connection', socket => {
-        socket.send(JSON.stringify({ op: 'hello', version: 4, endpoint: 'far', implementation: { name: 'test', version: '0' }, capabilities: [] }))
+        socket.send(JSON.stringify({ op: 'hello', version: 5, endpoint: 'far', implementation: { name: 'test', version: '0' }, capabilities: [] }))
         socket.once('message', data => resolve(JSON.parse(data.toString())))
       }))
       peer = await Process.connect(`ws://127.0.0.1:${server.address().port}/rutis`, () => undefined, undefined, { local: 'near' })

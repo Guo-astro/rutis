@@ -1,7 +1,8 @@
 --------------------------- MODULE CallRelay ----------------------------
 (***************************************************************************)
 (* A call through a relay: A holds a reference that M forwarded from C,    *)
-(* calls it through M, cancels, and gives the reference back.              *)
+(* calls it through M, cancels, and gives the reference back. Each hop     *)
+(* resolves its cancel with an acknowledgement (protocol 5, #1099).        *)
 (*                                                                         *)
 (* Three participants over two sessions, A--M and M--C. The object lives   *)
 (* at C; C granted it to M, so M holds an import; M granted a relay of it  *)
@@ -24,11 +25,10 @@
 (*    import it held, which writes `release {reference, count}` on M's     *)
 (*    session with C. The count is the import's, so it travels the chain   *)
 (*    without a new frame kind (M1-7.1-2).                                 *)
-(*  - The caller's cancelled table leaks at every hop, not only the first  *)
-(*    (#1099): A keeps one entry for its cancelled call, and M keeps one   *)
-(*    for the call it cancelled towards C. Neither is answered when the    *)
-(*    call was still queued, so `relay-gap-cancel-table` finds entries at  *)
-(*    both hops.                                                           *)
+(*  - Each hop resolves its cancel with an acknowledgement (#1099): M     *)
+(*    acknowledges A (or answers, if A's cancel crossed the answer), and C *)
+(*    acknowledges M. The acknowledgements drain both cancelled tables; a  *)
+(*    reply after one is the mutation `relay-mut-ack-then-reply`.          *)
 (*                                                                         *)
 (* Design: docs/protocol-session.md §5.4 (SESS-41, SESS-42), §6.1         *)
 (* (SESS-47, SESS-51), §6.2 (SESS-54), §7 (SESS-56..SESS-61);             *)
@@ -56,12 +56,14 @@ CONSTANTS
     Calls,      \* the calls A may start ("c1", "c2"), in no fixed order
     MaxCancels, \* how often A may cancel in the session (1)
     Mutation,   \* "none", or a deliberate bug (README, "Mutations")
-    Replies     \* after a cancel: "always" or "never" (SESS-61)
+    Replies,    \* after a cancel: "always" or "never" (SESS-61)
+    Acks        \* whether each hop acknowledges a cancel it resolves (#1099)
 
 ASSUME Calls /= {}
 ASSUME MaxCancels \in Nat
 ASSUME Mutation \in {"none", "cancelStopsAtRelay", "releaseLeaks"}
 ASSUME Replies \in {"always", "never"}
+ASSUME Acks \in BOOLEAN
 
 VARIABLES
     acall,      \* per call at A: "idle" | "waiting" | "settled" |
@@ -102,12 +104,13 @@ VARIABLES
     settles,    \* per call: how often it was settled at A
     wasOutstanding, \* ghost: per call, M read A's cancel while still
                 \*   forwarding it
-    reachedC    \* ghost: per call, C read a cancel for it
+    reachedC,   \* ghost: per call, C read a cancel for it
+    mStray      \* ghost: a reply arrived after M's acknowledgement
 
 vars == <<acall, anext, aid, aTable, aHeld, aReleased, cancels, toM, toA,
           toC, toM2, minc, mfwd, mfid, mtable, mnext, mRelay, mRelayBack,
           mImport, mImportBack, mOrphans, ccall, cseq, ccancelled, cGrants,
-          cReleased, aOrphans, settles, wasOutstanding, reachedC>>
+          cReleased, aOrphans, settles, wasOutstanding, reachedC, mStray>>
 
 Init ==
     /\ acall = [c \in Calls |-> "idle"]
@@ -140,6 +143,7 @@ Init ==
     /\ settles = [c \in Calls |-> 0]
     /\ wasOutstanding = [c \in Calls |-> FALSE]
     /\ reachedC = [c \in Calls |-> FALSE]
+    /\ mStray = FALSE
 
 (***************************************************************************)
 (* The four channels. A frame goes out as it is made; each direction keeps *)
@@ -169,7 +173,7 @@ AStart(c) ==
     /\ UNCHANGED <<aHeld, aReleased, cancels, toA, toC, toM2, minc, mfwd, mfid,
                    mtable, mnext, mRelay, mRelayBack, mImport, mImportBack,
                    mOrphans, ccall, cseq, ccancelled, cGrants, cReleased,
-                   aOrphans, settles, wasOutstanding, reachedC>>
+                   aOrphans, settles, wasOutstanding, reachedC, mStray>>
 
 \* The answer to a call A still waits for: settled once.
 ADeliverLive(c) ==
@@ -184,7 +188,7 @@ ADeliverLive(c) ==
     /\ UNCHANGED <<anext, aid, aHeld, aReleased, cancels, toM, toC, toM2, minc,
                    mfwd, mfid, mtable, mnext, mRelay, mRelayBack, mImport,
                    mImportBack, mOrphans, ccall, cseq, ccancelled, cGrants,
-                   cReleased, aOrphans, wasOutstanding, reachedC>>
+                   cReleased, aOrphans, wasOutstanding, reachedC, mStray>>
 
 \* The answer to a call A already cancelled: discarded, the session goes on.
 ADeliverLate(c) ==
@@ -199,7 +203,23 @@ ADeliverLate(c) ==
     /\ UNCHANGED <<acall, anext, aid, aHeld, aReleased, cancels, toM, toC, toM2,
                    minc, mfwd, mfid, mtable, mnext, mRelay, mRelayBack,
                    mImport, mImportBack, mOrphans, ccall, cseq, ccancelled,
-                   cGrants, cReleased, settles, wasOutstanding, reachedC>>
+                   cGrants, cReleased, settles, wasOutstanding, reachedC, mStray>>
+
+\* M acknowledged the cancel: A's entry goes. An ack whose entry is gone
+\* crossed the answer that cleared it and changes nothing (#1099).
+AReadAck(c) ==
+    /\ toA /= <<>>
+    /\ Head(toA) = <<"ack", c>>
+    /\ acall[c] = "cancelled"
+    /\ aTable[c] \in {"cancelled", "none"}
+    /\ toA' = Tail(toA)
+    /\ aTable' = IF aTable[c] = "cancelled"
+                 THEN [aTable EXCEPT ![c] = "none"] ELSE aTable
+    /\ UNCHANGED <<acall, anext, aid, aHeld, aReleased, cancels, toM, toC,
+                   toM2, minc, mfwd, mfid, mtable, mnext, mRelay, mRelayBack,
+                   mImport, mImportBack, mOrphans, ccall, cseq, ccancelled,
+                   cGrants, cReleased, aOrphans, settles, wasOutstanding,
+                   reachedC, mStray>>
 
 \* A gives the call up. The cancel goes out on A's session with M; it is M's
 \* job to pass it on while it still forwards the call.
@@ -214,7 +234,7 @@ ACancel(c) ==
     /\ UNCHANGED <<anext, aid, aHeld, aReleased, toA, toC, toM2, minc, mfwd,
                    mfid, mtable, mnext, mRelay, mRelayBack, mImport,
                    mImportBack, mOrphans, ccall, cseq, ccancelled, cGrants,
-                   cReleased, aOrphans, wasOutstanding, reachedC>>
+                   cReleased, aOrphans, wasOutstanding, reachedC, mStray>>
 
 \* A gives a grant of the relay back: the count is what A holds now.
 ARelease(n) ==
@@ -225,7 +245,7 @@ ARelease(n) ==
     /\ UNCHANGED <<acall, anext, aid, aTable, cancels, toA, toC, toM2, minc,
                    mfwd, mfid, mtable, mnext, mRelay, mRelayBack, mImport,
                    mImportBack, mOrphans, ccall, cseq, ccancelled, cGrants,
-                   cReleased, aOrphans, settles, wasOutstanding, reachedC>>
+                   cReleased, aOrphans, settles, wasOutstanding, reachedC, mStray>>
 
 (***************************************************************************)
 (* M, the relay: admitting the call, forwarding it, reading the owner's    *)
@@ -245,7 +265,7 @@ MReadInvoke(c) ==
                    toC, toM2, mfwd, mfid, mtable, mnext, mRelay, mRelayBack,
                    mImport, mImportBack, mOrphans, ccall, cseq, ccancelled,
                    cGrants, cReleased, aOrphans, settles, wasOutstanding,
-                   reachedC>>
+                   reachedC, mStray>>
 
 \* M runs it on the background executor and forwards it: a call of M's own
 \* on the session with C, with M's number, and an entry in M's table for the
@@ -261,7 +281,7 @@ MForward(c) ==
     /\ UNCHANGED <<acall, anext, aid, aTable, aHeld, aReleased, cancels, toM,
                    toA, toM2, mRelay, mRelayBack, mImport, mImportBack,
                    mOrphans, ccall, cseq, ccancelled, cGrants, cReleased,
-                   aOrphans, settles, wasOutstanding, reachedC>>
+                   aOrphans, settles, wasOutstanding, reachedC, mStray>>
 
 \* C's answer to the forwarded call: M settles its own call and answers A
 \* with A's number.
@@ -279,7 +299,7 @@ MDeliverLive(c) ==
     /\ UNCHANGED <<acall, anext, aid, aTable, aHeld, aReleased, cancels, toM,
                    toC, mfid, mnext, mRelay, mRelayBack, mImport,
                    mImportBack, mOrphans, ccall, cseq, ccancelled, cGrants,
-                   cReleased, aOrphans, settles, wasOutstanding, reachedC>>
+                   cReleased, aOrphans, settles, wasOutstanding, reachedC, mStray>>
 
 \* C's answer to a call M cancelled while forwarding it: discarded, counted.
 MDeliverLate(c) ==
@@ -295,7 +315,41 @@ MDeliverLate(c) ==
     /\ UNCHANGED <<acall, anext, aid, aTable, aHeld, aReleased, cancels, toM,
                    toA, toC, minc, mfwd, mfid, mnext, mRelay, mRelayBack,
                    mImport, mImportBack, ccall, cseq, ccancelled, cGrants,
-                   cReleased, aOrphans, settles, wasOutstanding, reachedC>>
+                   cReleased, aOrphans, settles, wasOutstanding, reachedC, mStray>>
+
+\* C acknowledged the cancel: M's entry for the forwarded call goes. An ack
+\* whose entry is gone crossed the answer that cleared it (#1099).
+MReadAck(c) ==
+    /\ toM2 /= <<>>
+    /\ Head(toM2) = <<"ack", c>>
+    /\ mfwd[c] = "cancelled"
+    /\ mtable[c] \in {"cancelled", "none"}
+    /\ toM2' = Tail(toM2)
+    /\ mtable' = IF mtable[c] = "cancelled"
+                  THEN [mtable EXCEPT ![c] = "none"] ELSE mtable
+    /\ UNCHANGED <<acall, anext, aid, aTable, aHeld, aReleased, cancels, toM,
+                   toA, toC, minc, mfwd, mfid, mnext, mRelay, mRelayBack,
+                   mImport, mImportBack, mOrphans, ccall, cseq, ccancelled,
+                   cGrants, cReleased, aOrphans, settles, wasOutstanding,
+                   reachedC, mStray>>
+
+\* A reply C wrote after acknowledging M's cancel: M has no entry for it and
+\* never answers A. A conforming callee never sends one
+\* (`relay-mut-ack-then-reply`); the ghost records it.
+MDeliverStray(c) ==
+    /\ toM2 /= <<>>
+    /\ Head(toM2)[1] = "return"
+    /\ Head(toM2)[2] = c
+    /\ Head(toM2)[3] = mfid[c]
+    /\ mfwd[c] = "cancelled"
+    /\ mtable[c] = "none"
+    /\ toM2' = Tail(toM2)
+    /\ mStray' = TRUE
+    /\ UNCHANGED <<acall, anext, aid, aTable, aHeld, aReleased, cancels, toM,
+                   toA, toC, minc, mfwd, mfid, mtable, mnext, mRelay,
+                   mRelayBack, mImport, mImportBack, mOrphans, ccall, cseq,
+                   ccancelled, cGrants, cReleased, aOrphans, settles,
+                   wasOutstanding, reachedC>>
 
 \* A's cancel arrives. A call still queued here never runs and is dropped; a
 \* call already answered is not touched (the cancel crossed its answer); a
@@ -306,22 +360,28 @@ MReadCancel(c) ==
     /\ toM /= <<>>
     /\ Head(toM) = <<"cancel", c>>
     /\ toM' = Tail(toM)
-    /\ IF minc[c] = "queued" THEN minc' = [minc EXCEPT ![c] = "dropped"]
-       ELSE IF minc[c] = "running" THEN minc' = [minc EXCEPT ![c] = "done"]
-       ELSE UNCHANGED minc
-    /\ wasOutstanding' = [wasOutstanding EXCEPT
-                             ![c] = (mfwd[c] = "waiting")]
-    /\ IF mfwd[c] = "waiting"
-       THEN /\ mfwd' = [mfwd EXCEPT ![c] = "cancelled"]
-            /\ mtable' = [mtable EXCEPT ![c] = "cancelled"]
-            /\ IF Mutation = "cancelStopsAtRelay"
-               THEN UNCHANGED toC
-               ELSE SendToC(<<"cancel", c>>)
-       ELSE /\ UNCHANGED <<mfwd, mtable, toC>>
-    /\ UNCHANGED <<acall, anext, aid, aTable, aHeld, aReleased, cancels, toA,
+    /\ LET acted == minc[c] \in {"queued", "running"} \/ mfwd[c] = "waiting"
+       IN /\ IF minc[c] = "queued" THEN minc' = [minc EXCEPT ![c] = "dropped"]
+             ELSE IF minc[c] = "running" THEN minc' = [minc EXCEPT ![c] = "done"]
+             ELSE UNCHANGED minc
+          /\ wasOutstanding' = [wasOutstanding EXCEPT
+                                   ![c] = (mfwd[c] = "waiting")]
+          /\ IF mfwd[c] = "waiting"
+             THEN /\ mfwd' = [mfwd EXCEPT ![c] = "cancelled"]
+                  /\ mtable' = [mtable EXCEPT ![c] = "cancelled"]
+                  /\ IF Mutation = "cancelStopsAtRelay"
+                     THEN UNCHANGED toC
+                     ELSE SendToC(<<"cancel", c>>)
+             ELSE /\ UNCHANGED <<mfwd, mtable, toC>>
+          \* M had the call: it acknowledges A and answers no more. A reply
+          \* written before this cancel was read is already on its way.
+          /\ IF Acks /\ acted
+             THEN SendToA(<<"ack", c>>)
+             ELSE UNCHANGED toA
+    /\ UNCHANGED <<acall, anext, aid, aTable, aHeld, aReleased, cancels,
                    toM2, mfid, mnext, mRelay, mRelayBack, mImport,
                    mImportBack, mOrphans, ccall, cseq, ccancelled, cGrants,
-                   cReleased, aOrphans, settles, reachedC>>
+                   cReleased, aOrphans, settles, reachedC, mStray>>
 
 \* A's release arrives: the relay's grants go down. When the last one is
 \* gone the export entry is dropped, the relay object with it, and the import
@@ -345,7 +405,7 @@ MReadRelease(n) ==
     /\ UNCHANGED <<acall, anext, aid, aTable, aHeld, aReleased, cancels, toA,
                    toM2, minc, mfwd, mfid, mtable, mnext, mOrphans, ccall,
                    cseq, ccancelled, cGrants, cReleased, aOrphans, settles,
-                   wasOutstanding, reachedC>>
+                   wasOutstanding, reachedC, mStray>>
 
 (***************************************************************************)
 (* C, the owner: taking the forwarded call, running it, answering, and     *)
@@ -364,7 +424,7 @@ CReadCall(c) ==
                    toA, toM2, minc, mfwd, mfid, mtable, mnext, mRelay,
                    mRelayBack, mImport, mImportBack, mOrphans, ccancelled,
                    cGrants, cReleased, aOrphans, settles, wasOutstanding,
-                   reachedC>>
+                   reachedC, mStray>>
 
 CRun(c) ==
     /\ ccall[c] = "queued"
@@ -373,7 +433,7 @@ CRun(c) ==
                    toA, toC, toM2, minc, mfwd, mfid, mtable, mnext, mRelay,
                    mRelayBack, mImport, mImportBack, mOrphans, cseq,
                    ccancelled, cGrants, cReleased, aOrphans, settles,
-                   wasOutstanding, reachedC>>
+                   wasOutstanding, reachedC, mStray>>
 
 \* The method answers; a running call answers also after a cancel when the
 \* rule says so (`Replies = "always"`). A queued one is dropped instead
@@ -388,7 +448,7 @@ CReply(c) ==
                    toA, toC, minc, mfwd, mfid, mtable, mnext, mRelay,
                    mRelayBack, mImport, mImportBack, mOrphans, cseq,
                    ccancelled, cGrants, cReleased, aOrphans, settles,
-                   wasOutstanding, reachedC>>
+                   wasOutstanding, reachedC, mStray>>
 
 CDrop(c) ==
     /\ Replies = "never"
@@ -399,7 +459,7 @@ CDrop(c) ==
                    toA, toC, toM2, minc, mfwd, mfid, mtable, mnext, mRelay,
                    mRelayBack, mImport, mImportBack, mOrphans, cseq,
                    ccancelled, cGrants, cReleased, aOrphans, settles,
-                   wasOutstanding, reachedC>>
+                   wasOutstanding, reachedC, mStray>>
 
 \* A cancel arrives. One still queued is dropped without an answer; one
 \* already running keeps running and answers, or is dropped by the rule;
@@ -414,10 +474,14 @@ CReadCancel(c) ==
     /\ ccancelled' = IF Replies = "never" /\ ccall[c] = "running"
                      THEN [ccancelled EXCEPT ![c] = TRUE] ELSE ccancelled
     /\ reachedC' = [reachedC EXCEPT ![c] = TRUE]
+    \* C had the call: it acknowledges M and answers no more.
+    /\ IF Acks /\ ccall[c] \in {"queued", "running"}
+       THEN SendFromC(<<"ack", c>>)
+       ELSE UNCHANGED toM2
     /\ UNCHANGED <<acall, anext, aid, aTable, aHeld, aReleased, cancels, toM,
-                   toA, toM2, minc, mfwd, mfid, mtable, mnext, mRelay,
+                   toA, minc, mfwd, mfid, mtable, mnext, mRelay,
                    mRelayBack, mImport, mImportBack, mOrphans, cseq, cGrants,
-                   cReleased, aOrphans, settles, wasOutstanding>>
+                   cReleased, aOrphans, settles, wasOutstanding, mStray>>
 
 \* A release arrives: the grants it names are given up.
 CReadRelease(n) ==
@@ -430,7 +494,7 @@ CReadRelease(n) ==
     /\ UNCHANGED <<acall, anext, aid, aTable, aHeld, aReleased, cancels, toM,
                    toA, toM2, minc, mfwd, mfid, mtable, mnext, mRelay,
                    mRelayBack, mImport, mImportBack, mOrphans, ccall, cseq,
-                   ccancelled, aOrphans, settles, wasOutstanding, reachedC>>
+                   ccancelled, aOrphans, settles, wasOutstanding, reachedC, mStray>>
 
 (***************************************************************************)
 (* The specification.                                                      *)
@@ -465,8 +529,9 @@ Done ==
 
 Next ==
     \/ \E c \in Calls : AStart(c) \/ ADeliverLive(c) \/ ADeliverLate(c)
-         \/ ACancel(c) \/ MReadInvoke(c) \/ MForward(c) \/ MDeliverLive(c)
-         \/ MDeliverLate(c) \/ MReadCancel(c) \/ CReadCall(c) \/ CRun(c)
+         \/ AReadAck(c) \/ ACancel(c) \/ MReadInvoke(c) \/ MForward(c)
+         \/ MDeliverLive(c) \/ MDeliverLate(c) \/ MReadAck(c)
+         \/ MDeliverStray(c) \/ MReadCancel(c) \/ CReadCall(c) \/ CRun(c)
          \/ CReply(c) \/ CDrop(c) \/ CReadCancel(c)
     \/ \E n \in 1..aHeld : ARelease(n)
     \/ \E n \in 1..mRelay : MReadRelease(n)
@@ -517,12 +582,17 @@ WaitingSettles ==
     \A c \in Calls : (acall[c] = "waiting") ~> (acall[c] \in {"settled",
                                                              "cancelled"})
 
-\* The relay's own cancelled table drains: no entry waits only for a reply a
-\* conforming callee never sends (#1099). The call M cancelled while C still
-\* had it queued is answered by nobody, so the entry stays — the same gap as
-\* on the caller's side (`CancelledEntriesDrain` in `CallLifecycle.tla`), one
-\* hop further along. `relay-gap-cancel-table` finds it.
+\* Each hop's cancelled table drains: the acknowledgement resolves the
+\* entries (#1099). Without acknowledgements (`relay-gap-cancel-table`) the
+\* call each hop cancelled while queued is answered by nobody, so entries
+\* stay — the same gap as on the caller's side (`CancelledEntriesDrain` in
+\* `CallLifecycle.tla`), one hop further along.
 RelayCancelledEntriesDrain ==
-    Quiescent => \A c \in Calls : mtable[c] # "cancelled"
+    Quiescent => /\ \A c \in Calls : aTable[c] # "cancelled"
+                 /\ \A c \in Calls : mtable[c] # "cancelled"
+
+\* No acknowledgement is followed by a reply: a conforming callee resolves
+\* each cancel once (`relay-mut-ack-then-reply` is the mutation).
+NoStrayReply == ~mStray
 
 =============================================================================

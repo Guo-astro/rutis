@@ -7,11 +7,12 @@
 //! [`host_key`]`(name)`.
 
 /// The session protocol version: endpoint ids in the handshake and in call
-/// ids, capabilities, either side calling the other. Every session speaks
-/// it, local runtime processes as network ones (WebSocket subprotocol
-/// `rutis.4`). The Node and Bun runtime packages declare it as
-/// `rutisProtocol` in their package.json; builds check they match.
-pub const ENDPOINT_PROTOCOL: u32 = 4;
+/// ids, capabilities, either side calling the other, and a cancel resolved
+/// by an acknowledgement or a reply. Every session speaks it, local runtime
+/// processes as network ones (WebSocket subprotocol `rutis.5`). The Node and
+/// Bun runtime packages declare it as `rutisProtocol` in their package.json;
+/// builds check they match.
+pub const ENDPOINT_PROTOCOL: u32 = 5;
 
 mod objects;
 pub(crate) mod plugin;

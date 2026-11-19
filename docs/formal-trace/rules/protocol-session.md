@@ -126,9 +126,9 @@
 | SES-10-5 | SES §十 | 同步 API 要么本地适配为异步，要么明确 unsupported，不偷偷阻塞 executor | 跨进程 | — | — | — | 已取代 | — | 同步调用阻塞调用方并泵帧；成环时 `SyncWaitCycle` |
 | SES-10-6 | SES §十 | 基础版业务回调只支持 borrow；回调不传原始 Ctx，执行保持创建它的 activation；`this` 由适配绑定 | 跨进程 | — | — | — | 已取代 | — | 引用计数；调用方的行见 bridge/caller-row |
 | SES-10-7 | SES §十 | deadline 覆盖排队、写入、执行与流读取，过线传剩余时长；派生调用传播剩余 deadline | 跨进程 | — | — | — | 已取代 | — | 协议没有截止时间（boundary/5.8；MNT"协议不另设默认超时"） |
-| SES-10-8 | SES §十 | 调用已发出后放弃等待则发 `cancel` | 跨进程 | TLA + K | bridge/cancel-reaches-callee | `session::testing::session`（丢弃异步调用使对端的 signal 中止，7 种实现） | 部分 | #626 | 只一跳、异步；"未发送时移出队列"一半不适用（发送在调用里同步完成）；#626 `CancelReaches` |
+| SES-10-8 | SES §十 | 调用已发出后放弃等待则发 `cancel` | 跨进程 | TLA + K | bridge/cancel-reaches-callee | `session::testing::session`（丢弃异步调用使对端的 signal 中止，7 种实现）；`rutis-bridge/src/session/rpc/tests.rs::a_queued_cancelled_call_is_dropped_and_acknowledged`（协议 5 的 `ack`） | 部分 | #626、#1099 | 只一跳、异步；"未发送时移出队列"一半不适用（发送在调用里同步完成）；协议 5 起被调方以 `ack` 结算（`SESS-61`） |
 | SES-10-9 | SES §十 | 本地等待只结算一次 | 进程内并发 | TLA + SH | bridge/in-flight-call-fails-once、bridge/replies-match-calls | — | 未覆盖 | #626、#628 | #626 `SettlesOnce`；#628"进来调用的认领恰好一次" |
-| SES-10-10 | SES §十 | 取消后仍跟踪执行，handler 结束后 `call/finished` 才确认完成 | 跨进程 | — | — | — | 已取代 | — | 没有 finished 帧；取消之后被调方是否回复没有成文规则（#626） |
+| SES-10-10 | SES §十 | 取消后仍跟踪执行，handler 结束后 `call/finished` 才确认完成 | 跨进程 | — | — | — | 已取代 | — | 没有 finished 帧；协议 5 起由 `ack` 或取消读到前已写出的回复结算（`SESS-61`，#1099） |
 | SES-10-11 | SES §十 | 迟到的完成与取消幂等，不恢复业务等待 | 跨进程 | — | — | — | 已取代 | — | 现行见 CHN-4-9、CHN-4-10 |
 | SES-10-12 | SES §十 | 转发的调用随来路调用的取消逐跳取消 | 跨进程 | TLA | bridge/multihop-cancel-and-release | — | 未覆盖 | #626 | 中继的异步转发在进来调用被取消时丢弃（`rpc/relay.rs:140-167`）；#626 `CancelReaches`（两跳） |
 | SES-10-13 | SES §十 | 不自动重试有副作用的调用；断线 / 超时的结果可为执行情况未知 | 跨进程 | TLA | bridge/in-flight-call-fails-once | — | 未覆盖 | #626 | `RemoteLease` 的 `OldCommandsStayOld` 只说旧会话的指令不作用于新租约，不是"不重发" |
@@ -315,8 +315,8 @@
 | CHN-4-6 | CHN §畸形帧 | 引用不存在或已释放（对它的 `call`、`get`、`await`、`release`）；`release` 计数为 0 或超过已授予的次数 | 跨进程 | K | — | `session::testing::malformed`（未知引用的 call、await、release） | 部分 | #639 ※ | `get`、已释放的引用、计数为 0 或超额都不在用例；代码 `rpc.rs:2268-2289` |
 | CHN-4-7 | CHN §畸形帧 | 回复不属于任何调用（未知调用 id 的 `return` / `throw`） | 跨进程 | K + TLA | — | `session::testing::malformed`（只有 return） | 部分 | #626 | #626 `NoUnknownCall` 只证正常两端之间不出现；throw 的用例缺 |
 | CHN-4-8 | CHN §畸形帧；SES §十二 | 握手顺序错：握手前的请求、重复的 `hello` | 跨进程 | K | — | — | 未覆盖 | #639 ※ | MALFORMED 都在 hello 之后发；代码 `rpc.rs:2222-2231` |
-| CHN-4-9 | CHN §畸形帧 例外 | 对本端已取消的调用的迟到回复被丢弃（计数），不结束会话 | 跨进程 | TLA + K | bridge/cancel-reaches-callee | — | 未覆盖 | #626 | `rpc.rs:2115-2128`；被调方不回复时 `cancelled` 只增不减（#626） |
-| CHN-4-10 | CHN §畸形帧 例外 | 对本端没有的调用的 `cancel` 被忽略 | 跨进程 | TLA + K | bridge/cancel-reaches-callee | — | 未覆盖 | #626 | `rpc.rs:2252-2267` |
+| CHN-4-9 | CHN §畸形帧 例外 | 对本端已取消的调用的迟到回复被丢弃（计数），不结束会话 | 跨进程 | TLA + K | bridge/cancel-reaches-callee | `rutis-bridge/src/session/rpc/tests.rs::a_late_reply_before_the_ack_is_dropped_and_the_session_goes_on`、`::a_reply_after_the_ack_ends_the_session` | 未覆盖 | #626、#1099 | 协议 5 起 `ack` 清表项，迟到回复仍被丢弃并计数；`ack` 之后的回复是未知调用（`SESS-41`） |
+| CHN-4-10 | CHN §畸形帧 例外 | 对本端没有的调用的 `cancel` 被忽略 | 跨进程 | TLA + K | bridge/cancel-reaches-callee | `rutis-bridge/src/session/rpc/tests.rs::a_cancel_for_an_unknown_call_is_ignored` | 未覆盖 | #626 | 不回复 `ack`（`SESS-58`） |
 | CHN-4-11 | CHN §畸形帧 末段 | Rust 解析时拒绝未知字段，Node 与 Python 忽略未知字段（尚未统一） | 纯逻辑 | K | — | — | 未覆盖 | #639 ※ | 规格自认实现不一致，按 Q5.1.1 应定下一种或写成明确不保证，见问题 4 |
 | CHN-5-1 | CHN §逻辑通道与物理连接 | 一个运行时实例的多个插件共用它的控制 Session，一个节点 link 的桥功能与代装插件共用 link 的 Session；装卸单个插件不创建或关闭 Session | 跨进程 | TLA + K | loader/remote-runtime-rows、loader/peer-rows | — | 未覆盖 | #625 |  |
 | CHN-5-2 | CHN §逻辑通道与物理连接 | Adapter 决定逻辑 Channel 独占还是共享物理连接；Session 与 link 不碰物理连接句柄 | 纯逻辑 | 测试 | — | — | 不适用 | — | 结构性 |

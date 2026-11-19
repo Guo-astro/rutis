@@ -621,6 +621,11 @@ async fn the_far_end_cancelling_its_await_drops_the_method() {
         "the cancelled method dropped",
     )
     .await;
+    assert_eq!(
+        read(&mut far),
+        json!({ "op": "ack", "id": "node:2" }),
+        "the cancelled await is acknowledged"
+    );
     // A call after it works.
     let answering = tokio::task::spawn_blocking(move || {
         let mut far = far;

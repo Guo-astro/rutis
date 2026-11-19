@@ -1212,7 +1212,7 @@ async fn a_binary_of_an_old_sdk_is_refused_and_its_rows_fail() {
     let count = fixture.dir.path().join("runs");
     old_sdk(&plugins.join("legacy"), &count);
     let refusal =
-        "incompatible session: the far end speaks protocol 2, this side 4: upgrade the far end";
+        "incompatible session: the far end speaks protocol 2, this side 5: upgrade the far end";
     fixture
         .loader
         .reconcile(

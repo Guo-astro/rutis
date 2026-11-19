@@ -432,7 +432,7 @@ mod tests {
                 reason: "gpu.example.com: upgrade refused with 403 Forbidden".into(),
             }),
             Err(ConnectError::Incompatible {
-                reason: "this endpoint speaks rutis.3, the dialer offered rutis.4".into(),
+                reason: "this endpoint speaks rutis.3, the dialer offered rutis.5".into(),
             }),
             refused(),
         ]);
@@ -442,7 +442,7 @@ mod tests {
             lines,
             [
                 "gpu: disconnected (auth-rejected: gpu.example.com: upgrade refused with 403 Forbidden); retrying in 30s",
-                "gpu: disconnected (incompatible: this endpoint speaks rutis.3, the dialer offered rutis.4); stopped",
+                "gpu: disconnected (incompatible: this endpoint speaks rutis.3, the dialer offered rutis.5); stopped",
             ]
         );
         // Stopped: no third attempt.

@@ -178,10 +178,10 @@ class CancelTests(background.TestCase):
             peer.close()
 
     # guarantee: bridge/cancel-reaches-callee
-    def test_a_cancel_read_before_the_deferred_call_runs_drops_it_without_an_answer(self):
+    def test_a_cancel_read_before_the_deferred_call_runs_drops_it_and_acknowledges_it(self):
         # The frame was read, but the loop has not run its job: a cancel read
-        # first must not be lost. Under SESS-57 a call not started is dropped
-        # and never answered, as Rust's callee does.
+        # first must not be lost. A call not started is dropped, never runs,
+        # and is acknowledged (SESS-57; protocol 5, #1099).
         with self.loop.entered():
             def dispatch(target, method, args):
                 self.events.append(("started", method))
@@ -194,7 +194,9 @@ class CancelTests(background.TestCase):
             self.assertEqual(self.events, [], "the method has not started when the cancel is read")
             self.loop.run_until_idle()
             self.assertEqual(self.events, [], "a call cancelled while queued never runs")
-            self.assertEqual(self.channel.pending(), [], "and is not answered (SESS-57)")
+            self.assertEqual(
+                self.channel.pending(), [{"op": "ack", "id": "main:1"}], "and is acknowledged (#1099)"
+            )
             # Dropping it settles the call here: nothing stays in flight.
             draining = self.loop.create_task(peer.drain())
             self.loop.run_until_idle()
@@ -208,14 +210,18 @@ class CancelTests(background.TestCase):
             self.assertEqual(self.events, [("started", "later")])
             self.assertEqual(
                 self.channel.pending(),
-                [{"op": "return", "id": "main:2", "value": data("later")}],
+                [
+                    {"op": "ack", "id": "main:1"},
+                    {"op": "return", "id": "main:2", "value": data("later")},
+                ],
             )
             peer.close()
 
     # guarantee: bridge/cancel-reaches-callee
-    def test_a_cancel_read_before_a_deferred_await_runs_drops_it_without_an_answer(self):
+    def test_a_cancel_read_before_a_deferred_await_runs_drops_it_and_acknowledges_it(self):
         # SESS-57's second bullet: an `await` not started is dropped without a
-        # reply too, and it settles the call the session counts as active.
+        # reply too, it is acknowledged, and it settles the call the session
+        # counts as active.
         with self.loop.entered():
             async def later():
                 return "value"
@@ -233,7 +239,9 @@ class CancelTests(background.TestCase):
             peer.receive({"op": "await", "id": "main:2", "path": [], "reference": reference["value"]["id"]})
             peer.receive({"op": "cancel", "id": "main:2"})
             self.loop.run_until_idle()
-            self.assertEqual(self.channel.pending(), [], "an await cancelled while queued is not answered")
+            self.assertEqual(
+                self.channel.pending(), [{"op": "ack", "id": "main:2"}], "an await cancelled while queued is acknowledged"
+            )
             draining = self.loop.create_task(peer.drain())
             self.loop.run_until_idle()
             self.assertTrue(draining.done(), "the dropped await is settled")

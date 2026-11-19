@@ -13,7 +13,7 @@ use rutis_bridge::websocket::{
 use rutis_bridge::{Close, ConnectError};
 use rutis_test_support::recv_within;
 
-const PROTOCOL: &str = "rutis.4";
+const PROTOCOL: &str = "rutis.5";
 
 /// A loopback listener letting through token `good` (its channels arrive
 /// on the receiver), turning token `later` away with 503 and any other

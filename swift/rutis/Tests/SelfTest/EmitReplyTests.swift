@@ -13,7 +13,7 @@ struct EmitReplyTests {
         let runtime = try Peer(channel: a, options: options)
         try runtime.start()
         _ = try await next(b) // its hello
-        try send(b, #"{"op":"hello","version":4,"endpoint":"main","capabilities":[]}"#)
+        try send(b, #"{"op":"hello","version":5,"endpoint":"main","capabilities":[]}"#)
         await runtime.ready()
         return (runtime, b)
     }

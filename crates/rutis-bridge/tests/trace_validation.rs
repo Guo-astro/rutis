@@ -10,7 +10,7 @@
 //!   message; a failed send ends sending; a failed receive ends the message
 //!   stream.
 //! - The frames themselves, decoded by the fixture that wraps a channel:
-//!   a greeting first and once, protocol 4, no frame before it; a call id
+//!   a greeting first and once, protocol 5, no frame before it; a call id
 //!   carrying the prefix of the session that issued it, and each session
 //!   numbering its own calls (a replacement numbers them from 1 again); a
 //!   reply only for a call the same session's far end opened, at most once;
@@ -613,7 +613,7 @@ struct Frame {
     carries: Vec<Carried>,
     /// The failure a `throw` carries (§3.5).
     failure: Option<Failure>,
-    /// Why the frame carries no value protocol 4 has, when it does not.
+    /// Why the frame carries no value protocol 5 has, when it does not.
     malformed: Option<String>,
 }
 
@@ -1051,9 +1051,9 @@ fn write_frame(channel: &mut Channel, frame: Json) {
 
 const CALL_OPS: [&str; 4] = ["invoke", "call", "get", "await"];
 const REPLY_OPS: [&str; 2] = ["return", "throw"];
-/// The `Frame` vocabulary of protocol 4 (`session/protocol.rs`).
-const FRAME_OPS: [&str; 9] = [
-    "hello", "invoke", "call", "get", "await", "return", "throw", "release", "cancel",
+/// The `Frame` vocabulary of protocol 5 (`session/protocol.rs`).
+const FRAME_OPS: [&str; 10] = [
+    "hello", "invoke", "call", "get", "await", "return", "throw", "release", "cancel", "ack",
 ];
 /// The call ops that name a reference of the far end (§3.3).
 const REFERENCE_CALL_OPS: [&str; 3] = ["call", "get", "await"];
@@ -1959,7 +1959,7 @@ impl Dispatch for Echo {
 /// Two real sessions over one memory pair, both ends traced into one log,
 /// every frame decoded by the fixture: the channel trace, the frames and the
 /// bytes they took agree, the payload never reaches the log, and the frames
-/// are ones protocol 4 allows.
+/// are ones protocol 5 allows.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_real_session_run_is_an_allowed_trace() {
     let log = Log::default();
@@ -2063,12 +2063,12 @@ async fn a_real_session_run_is_an_allowed_trace() {
 
 /// The greetings and the call frames the literal traces below use: a call
 /// `main` opens, and a reply the far end sends for it.
-const HELLO_MAIN: &str = r#"{"op":"hello","version":4,"endpoint":"main"}"#;
-const HELLO_NODE: &str = r#"{"op":"hello","version":4,"endpoint":"node"}"#;
+const HELLO_MAIN: &str = r#"{"op":"hello","version":5,"endpoint":"main"}"#;
+const HELLO_NODE: &str = r#"{"op":"hello","version":5,"endpoint":"node"}"#;
 const INVOKE: &str = r#"{"op":"invoke","id":"main:1","path":[],"target":"t","method":"m","args":{"type":"undefined"}}"#;
 const RETURN: &str = r#"{"op":"return","id":"main:1","value":{"type":"undefined"}}"#;
 
-/// Frames protocol 4 does not allow: an op outside the vocabulary, a message
+/// Frames protocol 5 does not allow: an op outside the vocabulary, a message
 /// that is not a frame, a frame before the greeting, a call or reply without
 /// an id, a call carrying another session's id prefix, a second greeting,
 /// another protocol version, a reply to a call no frame opened, a call
@@ -2620,7 +2620,7 @@ async fn a_malformed_error_graph_fails_only_its_call() {
     assert_eq!(failure.code(), None);
 }
 
-/// Frames that are no failure of protocol 4: a `throw` with no `error`, with
+/// Frames that are no failure of protocol 5: a `throw` with no `error`, with
 /// no name, and with a name that is not a string. A malformed frame closes
 /// the session (§3.7), unlike a malformed graph inside a well-formed one.
 #[test]
@@ -3269,7 +3269,7 @@ async fn a_rejected_identity_is_an_authentication_failure() {
 
 /// §3.8 and §3.2: a far end speaking protocol 3 is incompatible — a dialer
 /// stops retrying it until the configuration changes — and its greeting is
-/// no greeting of protocol 4, so the frame validator rejects the trace the
+/// no greeting of protocol 5, so the frame validator rejects the trace the
 /// channel carried. The channel trace itself is allowed: its end is a
 /// normal close.
 #[tokio::test(flavor = "multi_thread")]
@@ -3298,7 +3298,7 @@ async fn a_version_three_greeting_fails_as_incompatible() {
     let error = within("the handshake", caller.ready()).await.unwrap_err();
     assert_eq!(
         error.to_string(),
-        "incompatible session: the far end speaks protocol 3, this side 4: upgrade the far end"
+        "incompatible session: the far end speaks protocol 3, this side 5: upgrade the far end"
     );
     assert_eq!(retry(&error), Retry::Incompatible);
     within("the caller ending", caller.closed()).await;
@@ -3319,7 +3319,7 @@ async fn a_version_three_greeting_fails_as_incompatible() {
     assert!(
         violation
             .why
-            .contains("a greeting speaks protocol 4, not Some(3)"),
+            .contains("a greeting speaks protocol 5, not Some(3)"),
         "{violation}"
     );
 }

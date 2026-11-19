@@ -15,7 +15,7 @@ struct UnknownFieldTests {
         let runtime = try Peer(channel: a, options: options)
         try runtime.start()
         _ = try await next(b) // its hello
-        try send(b, #"{"op":"hello","version":4,"endpoint":"main","capabilities":[]}"#)
+        try send(b, #"{"op":"hello","version":5,"endpoint":"main","capabilities":[]}"#)
         await runtime.ready()
         return (runtime, b)
     }
@@ -196,7 +196,7 @@ struct UnknownFieldTests {
         let didAbort = await aborted.wait(seconds: 5)
         XCTAssertTrue(didAbort, "the call was not cancelled")
         let cancelled = try await next(far)
-        XCTAssertEqual(cancelled["op"]?.stringValue, "return")
+        XCTAssertEqual(cancelled["op"]?.stringValue, "ack")
         XCTAssertEqual(cancelled["id"]?.stringValue, "main:3")
 
         // And the session is still serving calls.
@@ -214,7 +214,7 @@ struct UnknownFieldTests {
         let runtime = try Peer(channel: a, options: PeerOptions(endpoint: Endpoint(local: "swift", expected: "main")))
         try runtime.start()
         defer { far.close() }
-        try send(far, #"{"op":"hello","version":4,"endpoint":"main","extra":1}"#)
+        try send(far, #"{"op":"hello","version":5,"endpoint":"main","extra":1}"#)
         await runtime.closed()
         XCTAssertEqual("\(runtime.error.map { "\($0)" } ?? "")",
                        #"incompatible session: unknown field "extra" in hello"#)

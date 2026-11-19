@@ -298,7 +298,7 @@ test('unsupported nested references fail explicitly and roll back partial grants
 test('a far end of another protocol version is refused, saying which end to upgrade', async () => {
   const far = { name: 'rutis', version: '0.1.0' }
   const ours = ENDPOINT_PROTOCOL
-  assert.equal(ours, 4)
+  assert.equal(ours, 5)
   const cases = [
     [99, undefined, `upgrade this side (npm @arcships/rutis-runtime)`],
     // rutis 0.18 and earlier speak 3.

@@ -141,16 +141,16 @@ async fn a_refused_connection_says_why_with_its_status() {
             "/other",
             &[
                 ("Authorization", &bearer),
-                ("Sec-WebSocket-Protocol", "rutis.4"),
+                ("Sec-WebSocket-Protocol", "rutis.5"),
             ],
             404,
         ),
-        ("/rutis", &[("Sec-WebSocket-Protocol", "rutis.4")], 401),
+        ("/rutis", &[("Sec-WebSocket-Protocol", "rutis.5")], 401),
         (
             "/rutis",
             &[
                 ("Authorization", "Bearer wrong"),
-                ("Sec-WebSocket-Protocol", "rutis.4"),
+                ("Sec-WebSocket-Protocol", "rutis.5"),
             ],
             403,
         ),
@@ -164,8 +164,8 @@ async fn a_refused_connection_says_why_with_its_status() {
         );
     }
     for (offered, said) in [
-        ("rutis.99", "this endpoint speaks rutis.4, the dialer offered rutis.99: upgrade this endpoint (the Swift package Rutis of github.com/arcships/rutis)"),
-        ("rutis.1", "this endpoint speaks rutis.4, the dialer offered rutis.1: upgrade the dialer"),
+        ("rutis.99", "this endpoint speaks rutis.5, the dialer offered rutis.99: upgrade this endpoint (the Swift package Rutis of github.com/arcships/rutis)"),
+        ("rutis.1", "this endpoint speaks rutis.5, the dialer offered rutis.1: upgrade the dialer"),
     ] {
         let response = request(&address, "/rutis", &[("Authorization", &bearer), ("Sec-WebSocket-Protocol", offered)]).await;
         assert_eq!(response, (400, said.to_owned()));
@@ -215,7 +215,7 @@ impl Client {
         let text = format!(
             "GET {path} HTTP/1.1\r\nHost: {host}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\
              Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\
-             Sec-WebSocket-Protocol: rutis.4\r\nAuthorization: Bearer {TOKEN}\r\n\r\n"
+             Sec-WebSocket-Protocol: rutis.5\r\nAuthorization: Bearer {TOKEN}\r\n\r\n"
         );
         stream.write_all(text.as_bytes()).await.unwrap();
         let mut head = Vec::new();
@@ -232,7 +232,7 @@ impl Client {
             head.contains("Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo="),
             "{head}"
         );
-        assert!(head.contains("Sec-WebSocket-Protocol: rutis.4"), "{head}");
+        assert!(head.contains("Sec-WebSocket-Protocol: rutis.5"), "{head}");
         Self { stream }
     }
 
@@ -450,7 +450,7 @@ async fn a_listener_serves_tls() {
         "the TLS connection",
         websocket::dial(
             &address,
-            "rutis.4",
+            "rutis.5",
             Some(&Credential::Bearer(TOKEN.into())),
             &Trust::only(ca.into_bytes()),
             &Limits::default(),

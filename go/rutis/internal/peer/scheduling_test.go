@@ -72,7 +72,7 @@ func openSession(t *testing.T, opts Options) (*Peer, *gateChannel) {
 	if hello["op"] != "hello" {
 		t.Fatalf("the first frame is not the greeting: %s", greeting)
 	}
-	channel.feed(t, `{"op":"hello","version":4,"endpoint":"main","capabilities":["reentrant-sync"]}`)
+	channel.feed(t, `{"op":"hello","version":5,"endpoint":"main","capabilities":["reentrant-sync"]}`)
 	testwait.Within(t, "the handshake", session.Ready())
 	return session, channel
 }

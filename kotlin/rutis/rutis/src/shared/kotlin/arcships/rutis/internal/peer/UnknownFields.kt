@@ -21,6 +21,7 @@ private val FRAME_FIELDS: Map<String, List<String>> = mapOf(
     "throw" to listOf("op", "id", "error"),
     "release" to listOf("op", "reference", "count"),
     "cancel" to listOf("op", "id"),
+    "ack" to listOf("op", "id"),
 )
 
 /**

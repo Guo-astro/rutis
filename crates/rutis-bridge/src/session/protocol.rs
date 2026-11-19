@@ -208,8 +208,15 @@ pub(crate) enum Frame {
         count: u64,
     },
     /// The caller gave up on call `id`: abort its signal / stop awaiting.
-    /// A reply may still arrive and is then discarded.
+    /// The callee resolves it with `ack` (and then no reply) or with the
+    /// reply it already wrote; a late reply is discarded (#1099).
     Cancel {
+        id: String,
+    },
+    /// The callee resolved a `cancel`: it will send no `return`/`throw` for
+    /// this call. A reply already in flight arrived first and cleared the
+    /// caller's entry; an `ack` without one is ignored.
+    Ack {
         id: String,
     },
 }
@@ -548,6 +555,7 @@ mod tests {
                 GeneratedFrame(Frame::Release { reference, count })
             }),
             text().prop_map(|id| GeneratedFrame(Frame::Cancel { id })),
+            text().prop_map(|id| GeneratedFrame(Frame::Ack { id })),
         ]
     }
 

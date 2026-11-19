@@ -47,7 +47,7 @@ test('a reference whose origin holds another session\'s tagged ids is taken', ()
 // guarantee: bridge/version-refusal
 test('a far end of another protocol version is refused, saying which end to upgrade', async () => {
   const { Session, ENDPOINT_PROTOCOL } = require('../src/session.ts')
-  expect(ENDPOINT_PROTOCOL).toBe(4)
+  expect(ENDPOINT_PROTOCOL).toBe(5)
   const cases = [
     [99, undefined, 'upgrade this side (npm @arcships/rutis-bun)'],
     // rutis 0.18 speaks protocol 3.
