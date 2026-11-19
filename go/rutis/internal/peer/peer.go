@@ -46,8 +46,9 @@ var (
 )
 
 // TestCapabilities is what a test session declares, at either end: what
-// a runtime's session declares.
-var TestCapabilities = append([]string{"reentrant-sync"}, ValueCapabilities...)
+// a runtime's session declares. `chunked`: it reassembles `chunk` frames
+// carrying a frame over the channel's limit (#1363).
+var TestCapabilities = append([]string{"reentrant-sync", "chunked"}, ValueCapabilities...)
 
 // UndefinedType is the wire's `undefined`: an omitted argument or field.
 type UndefinedType struct{}
@@ -119,6 +120,11 @@ type Options struct {
 	// the call, run on a goroutine of its own as Dispatch would be, or nil
 	// to have Dispatch serve the call.
 	Arrive func(ctx context.Context, method string, args []any) func() (any, error)
+	// MaxTransfer is the most a chunked transfer carries once reassembled
+	// (#1363): a frame over it fails its call here, and a transfer over it
+	// ends the session. Zero reads `RUTIS_MAX_TRANSFER`, or the default
+	// 256 MiB.
+	MaxTransfer int
 }
 
 // RefusedError ends a session whose far end lacks a capability Require
@@ -176,6 +182,14 @@ type Peer struct {
 	local  string
 	remote string
 
+	// The channel's per-message limit (MaxMessage unless a test lowers it),
+	// the session's reassembly cap, and this side's transfers (#1363).
+	maxMessage  int
+	maxTransfer int
+	transfers   uint64
+	// The transfer the reading goroutine is rebuilding, if any.
+	incoming *chunkTransfer
+
 	next      uint64
 	received  uint64
 	ref       int64
@@ -212,22 +226,37 @@ type Peer struct {
 // New makes a session on `channel`; Start begins it.
 func New(channel Channel, opts Options) (*Peer, error) {
 	p := &Peer{
-		channel:    channel,
-		opts:       opts,
-		pending:    map[string]chan result{},
-		answered:   map[string]func(result){},
-		exports:    map[int64]*export{},
-		identities: map[any]int64{},
-		imports:    map[int64]*imported{},
-		running:    map[string]context.CancelFunc{},
-		signals:    map[string]*Signal{},
-		cancelled:  map[string]struct{}{},
-		suppressed: map[string]struct{}{},
-		ready:      make(chan struct{}),
-		closed:     make(chan struct{}),
-		writeBack:  make(chan []byte, maxWriteBack),
+		channel:     channel,
+		opts:        opts,
+		maxMessage:  MaxMessage,
+		maxTransfer: opts.MaxTransfer,
+		pending:     map[string]chan result{},
+		answered:    map[string]func(result){},
+		exports:     map[int64]*export{},
+		identities:  map[any]int64{},
+		imports:     map[int64]*imported{},
+		running:     map[string]context.CancelFunc{},
+		signals:     map[string]*Signal{},
+		cancelled:   map[string]struct{}{},
+		suppressed:  map[string]struct{}{},
+		ready:       make(chan struct{}),
+		closed:      make(chan struct{}),
+		writeBack:   make(chan []byte, maxWriteBack),
 	}
 	p.base, p.cancelBase = context.WithCancel(context.Background())
+	if opts.MaxTransfer < 0 {
+		return nil, fmt.Errorf("%s %d: expected a positive number of bytes", maxTransferEnv, opts.MaxTransfer)
+	}
+	if p.maxTransfer == 0 {
+		maxTransfer, err := maxTransferFromEnvironment()
+		if err != nil {
+			return nil, err
+		}
+		p.maxTransfer = maxTransfer
+	}
+	if p.maxTransfer <= 0 {
+		return nil, fmt.Errorf("%s: expected a positive number of bytes", maxTransferEnv)
+	}
 	if opts.Endpoint == nil {
 		return nil, errors.New("a session needs an endpoint id")
 	}
@@ -370,12 +399,29 @@ func (p *Peer) write(data []byte) error {
 	return p.writeLocked(data)
 }
 
-// writeLocked sends `data`; p.writeMu is held.
+// writeLocked sends `data`, whole or as `chunk` frames when it is over the
+// channel's message limit and the far end declared `chunked` (#1363);
+// p.writeMu is held. All chunks of one transfer go out under that lock, so
+// no frame comes between them.
 func (p *Peer) writeLocked(data []byte) error {
-	if err := p.Err(); err != nil {
+	p.mu.Lock()
+	if p.closeErr != nil {
+		err := p.closeErr
+		p.mu.Unlock()
 		return err
 	}
-	return p.channel.Send(data)
+	chunking := p.chunkingLocked()
+	limit := p.maxMessage
+	var transfer string
+	if chunking && len(data) > limit {
+		p.transfers++
+		transfer = p.local + strconv.FormatUint(p.transfers, 10)
+	}
+	p.mu.Unlock()
+	if transfer == "" {
+		return p.channel.Send(data)
+	}
+	return p.writeChunkedLocked(data, transfer)
 }
 
 func (p *Peer) read() {
@@ -393,6 +439,15 @@ func (p *Peer) read() {
 		if err := json.Unmarshal(message, &f); err != nil {
 			p.fault(HostGone(errors.New("it sent a message that is not JSON")))
 			return
+		}
+		// A chunk is not a session frame: buffered here, dispatched only
+		// once its last chunk completes the frame (#1363).
+		if f.Op == "chunk" {
+			if err := p.receiveChunk(message); err != nil {
+				p.fault(err)
+				return
+			}
+			continue
 		}
 		if err := p.receive(&f, unknownFrameFields(message)); err != nil {
 			p.fault(err)
@@ -1360,14 +1415,16 @@ func (p *Peer) request(ctx context.Context, op string, fields map[string]any, ar
 		frame["args"] = encoded
 	}
 	data, err := marshal(frame)
-	if err == nil && len(data) > MaxMessage {
-		// Over the channel's limit, which would end the session on it:
-		// only this call fails, here (#675).
+	limit := p.sendLimitLocked()
+	if err == nil && len(data) > limit {
+		// Over the session's limit, which would end the session on the
+		// channel: only this call fails, here (#675). When the far end
+		// takes chunks, that limit is the session's max transfer (#1363).
 		call := describeRequest(op, fields)
 		if encoded, ok := frame["args"].(map[string]any); ok && largest(encoded) >= 0 {
-			err = ofArgument(&tooLarge{len(data)}, largest(encoded), call)
+			err = ofArgument(&tooLarge{len(data), limit}, largest(encoded), call)
 		} else {
-			err = ofArguments(&tooLarge{len(data)}, call)
+			err = ofArguments(&tooLarge{len(data), limit}, call)
 		}
 	}
 	if err != nil {
@@ -2098,8 +2155,8 @@ func (p *Peer) respondTo(id string, value any, failure error, chain []string, ca
 		encoded, err = p.encode(value, &grants, chain, 0)
 		if err == nil {
 			data, err = marshal(map[string]any{"op": "return", "id": id, "value": encoded})
-			if err == nil && len(data) > MaxMessage {
-				err = &tooLarge{len(data)}
+			if err == nil && len(data) > p.sendLimitLocked() {
+				err = &tooLarge{len(data), p.sendLimitLocked()}
 			}
 		}
 		if err != nil {
@@ -2109,12 +2166,12 @@ func (p *Peer) respondTo(id string, value any, failure error, chain []string, ca
 	}
 	if failure != nil {
 		data, err = marshal(map[string]any{"op": "throw", "id": id, "error": encodeError(failure)})
-		if err == nil && len(data) > MaxMessage {
+		if err == nil && len(data) > p.sendLimitLocked() {
 			what := "the error " + ErrorName(failure)
 			if call != "" {
 				what += " of " + call
 			}
-			data, err = marshal(map[string]any{"op": "throw", "id": id, "error": map[string]any{"name": "Error", "message": what + ": " + overLimit(len(data))}})
+			data, err = marshal(map[string]any{"op": "throw", "id": id, "error": map[string]any{"name": "Error", "message": what + ": " + overLimit(len(data), p.sendLimitLocked())}})
 		}
 		if err != nil {
 			data, _ = marshal(map[string]any{"op": "throw", "id": id, "error": map[string]any{"name": "Error", "message": failure.Error()}})

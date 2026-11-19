@@ -28,6 +28,7 @@ type conformance struct {
 	held    *peer.RemoteFunction
 	started bool
 	aborted bool
+	calls   int
 	session *peer.Peer
 }
 
@@ -147,6 +148,16 @@ func (c *conformance) dispatch(ctx context.Context, target, method string, args 
 	// object to a far end that does not take objects.
 	case "big":
 		return strings.Repeat("x", number(arg(args, 0))), nil
+	// How many calls ran, and how long the value was (#1363): a frame
+	// over the message limit crosses in chunks and the call runs once,
+	// whole.
+	case "tally":
+		value := text(arg(args, 0))
+		c.mu.Lock()
+		c.calls++
+		calls := c.calls
+		c.mu.Unlock()
+		return map[string]any{"calls": calls, "size": len(value)}, nil
 	case "applyBig":
 		fn, ok := arg(args, 0).(*peer.RemoteFunction)
 		if !ok {
@@ -192,7 +203,7 @@ func main() {
 		Dispatch:       service.dispatch,
 		Endpoint:       &peer.Endpoint{Local: "go", Expected: "main"},
 		Implementation: map[string]string{"name": "conformance", "version": "0"},
-		Capabilities:   append([]string{"reentrant-sync"}, peer.ValueCapabilities...),
+		Capabilities:   append([]string{"reentrant-sync", "chunked"}, peer.ValueCapabilities...),
 	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)

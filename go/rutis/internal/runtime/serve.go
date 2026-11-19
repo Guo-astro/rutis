@@ -231,7 +231,7 @@ func startRuntime(channel peer.Channel, endpoint *peer.Endpoint, rt *runtimeStat
 		Arrive:         rt.arrive,
 		Endpoint:       endpoint,
 		Implementation: map[string]string{"name": Implementation, "version": Version},
-		Capabilities:   append([]string{"reentrant-sync"}, peer.ValueCapabilities...),
+		Capabilities:   append([]string{"reentrant-sync", "chunked"}, peer.ValueCapabilities...),
 	})
 	if err != nil {
 		return nil, err

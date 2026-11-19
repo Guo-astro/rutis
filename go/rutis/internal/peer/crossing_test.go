@@ -17,6 +17,18 @@ import (
 
 const overLimitTail = "over the limit of 16777216 bytes (16 MiB)"
 
+// withoutChunked is `capabilities` without `chunked`: a far end that keeps
+// the channel's own limit (#1363).
+func withoutChunked(capabilities []string) []string {
+	out := make([]string, 0, len(capabilities))
+	for _, capability := range capabilities {
+		if capability != "chunked" {
+			out = append(out, capability)
+		}
+	}
+	return out
+}
+
 func open(t *testing.T, p *Peer) {
 	t.Helper()
 	select {
@@ -27,9 +39,9 @@ func open(t *testing.T, p *Peer) {
 }
 
 func TestAnArgumentOverTheLimitFailsOnlyItsCall(t *testing.T) {
-	host, runtime, received := recordedPair(t, func(ctx context.Context, target, method string, args []any) (any, error) {
+	host, runtime, received := recordedPairWith(t, func(ctx context.Context, target, method string, args []any) (any, error) {
 		return "taken", nil
-	}, nil)
+	}, nil, withoutChunked(TestCapabilities), withoutChunked(TestCapabilities))
 	ctx := context.Background()
 	callback := Func(func(ctx context.Context, args []any) (any, error) { return nil, nil })
 	_, err := runtime.Call(ctx, "host:svc\x00scope", "take", []any{callback, strings.Repeat("x", MaxMessage)}, true)
@@ -64,7 +76,7 @@ func TestAnArgumentOverTheLimitFailsOnlyItsCall(t *testing.T) {
 }
 
 func TestAResultOverTheLimitIsAnsweredWithAThrow(t *testing.T) {
-	host, runtime := pair(t, nil, func(ctx context.Context, target, method string, args []any) (any, error) {
+	host, runtime := pairWith(t, nil, func(ctx context.Context, target, method string, args []any) (any, error) {
 		switch method {
 		case "big":
 			return strings.Repeat("x", MaxMessage), nil
@@ -72,7 +84,7 @@ func TestAResultOverTheLimitIsAnsweredWithAThrow(t *testing.T) {
 			return nil, errors.New(strings.Repeat("y", MaxMessage))
 		}
 		return "small", nil
-	})
+	}, withoutChunked(TestCapabilities), withoutChunked(TestCapabilities))
 	ctx := context.Background()
 	_, err := host.Call(ctx, "conformance", "big", nil, true)
 	var remote *RemoteError

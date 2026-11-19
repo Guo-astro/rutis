@@ -34,6 +34,15 @@ import weakref
 from typing import Any, Callable
 
 from . import _values
+from ._chunks import (
+    CHUNK_SIZE,
+    DEFAULT_MAX_TRANSFER,
+    chunk_size,
+    decode_data,
+    encode_data,
+    max_transfer_from_environment,
+    over_limit as _chunk_over_limit,
+)
 from .plugin import Plugin
 from .channel import MAX_MESSAGE, SocketChannel
 
@@ -42,9 +51,10 @@ from .channel import MAX_MESSAGE, SocketChannel
 # acknowledgement or a reply.
 ENDPOINT_PROTOCOL = 5
 # What this implementation supports. `sync-stack`: calls run while it
-# waits are stacked on its one thread; `value-<tag>`: it takes every tagged
-# value (#308, `rutis._values`).
-CAPABILITIES = ["reentrant-sync", "sync-stack", *_values.CAPABILITIES]
+# waits are stacked on its one thread; `chunked`: it reassembles `chunk`
+# frames carrying a frame over the channel's limit (#1363); `value-<tag>`:
+# it takes every tagged value (#308, `rutis._values`).
+CAPABILITIES = ["reentrant-sync", "sync-stack", "chunked", *_values.CAPABILITIES]
 IMPLEMENTATION = {"name": "rutis", "version": "0.23.0"}
 
 
@@ -1033,6 +1043,12 @@ class Peer:
         self._active = 0
         self._draining: list[asyncio.Future] = []
         self._handshake = False
+        # The most a chunked transfer may carry once reassembled (#1363).
+        self._max_transfer = max_transfer_from_environment()
+        # This side's transfers, and the transfer a chunked frame is
+        # rebuilding: one at a time, in the reader's order.
+        self._transfers = 0
+        self._incoming_transfer: dict | None = None
         # Call id prefixes: `<endpoint>:`, each side's own.
         self._endpoint = endpoint
         if not _ENDPOINT_ID.match(endpoint["local"]):
@@ -1146,7 +1162,42 @@ class Peer:
             raise self.closed_error
         data = dumps(frame)
         with self._write_lock:
+            self._transmit(data)
+
+    def _chunking(self) -> bool:
+        """Whether the far end declared `chunked` and the channel leaves
+        room for a `chunk` frame. This side always declares it (#1363)."""
+        return self.supports("chunked") and chunk_size(self._max_message()) > 0
+
+    def _send_limit(self) -> int:
+        """The most this side may send in one frame: the session's
+        `max_transfer` when the far end takes chunks, otherwise the smaller
+        of the channel's limit and the session's."""
+        if self._chunking():
+            return self._max_transfer
+        return min(self._max_message(), self._max_transfer)
+
+    def _transmit(self, data: bytes) -> None:
+        """Send one encoded frame: whole, or as `chunk` frames when it is
+        over the channel's limit and the far end declared `chunked`
+        (#1363). All chunks of one transfer go out under one write lock, so
+        no frame comes between them. The caller holds `_write_lock`."""
+        limit = self._max_message()
+        if len(data) <= limit or not self._chunking():
             self._channel.send(data)
+            return
+        size = chunk_size(limit)
+        self._transfers += 1
+        transfer = f"{self._local}{self._transfers}"
+        for seq, at in enumerate(range(0, len(data), size)):
+            part = data[at:at + size]
+            self._channel.send(dumps({
+                "op": "chunk",
+                "transfer": transfer,
+                "seq": seq,
+                "last": at + size >= len(data),
+                "data": encode_data(part),
+            }))
 
     def close(self, error: BaseException | None = None) -> None:
         if self.closed_error is not None:
@@ -1163,6 +1214,9 @@ class Peer:
         self._queued.clear()
         self._admitted.clear()
         self._suppressed.clear()
+        # A transfer that never reached its last chunk is never dispatched
+        # (#1363): the buffer goes with the session.
+        self._incoming_transfer = None
         with self._cv:
             self._cv.notify_all()
         for waiter in self._draining:
@@ -1570,8 +1624,9 @@ class Peer:
                 frame["args"] = self._encode_args(args, grants, described, payload)
             data = dumps(frame)
             # A message over the limit would end the channel: only this call
-            # fails, before it is sent (#675).
-            limit = self._max_message()
+            # fails, before it is sent (#675). When the far end takes
+            # chunks, that limit is the session's `max_transfer` (#1363).
+            limit = self._send_limit()
             if len(data) > limit:
                 reason = _over_limit(len(data), limit)
                 index = _largest(frame.get("args"))
@@ -1587,7 +1642,7 @@ class Peer:
                 raise self.closed_error
             try:
                 with self._write_lock:
-                    self._channel.send(data)
+                    self._transmit(data)
             except OSError as error:
                 # The channel failed: the session is over, and later calls
                 # fail with that, not on a closed descriptor each.
@@ -1795,6 +1850,68 @@ class Peer:
         except Exception as error:  # noqa: BLE001 - a bad frame ends the session
             self._fault(error)
 
+    _CHUNK_FIELDS = frozenset(("op", "transfer", "seq", "last", "data"))
+
+    def _receive_chunk(self, frame: dict) -> None:
+        """Buffer one `chunk` of a frame over the channel's limit (#1363).
+        A transfer is taken in order, one at a time; nothing reaches the
+        session until its last chunk, and a broken transfer ends the
+        session (there is no call to fail)."""
+        if not self._handshake:
+            raise ValueError("request before protocol handshake")
+        if not self.supports("chunked"):
+            raise ValueError("chunk frame from a far end that did not declare chunked")
+        for key in frame:
+            if key not in self._CHUNK_FIELDS:
+                raise ValueError(f'invalid chunk frame: unknown field "{key}"')
+        transfer = frame.get("transfer")
+        if not isinstance(transfer, str) or not transfer:
+            raise ValueError("chunk frame without a transfer id")
+        seq = frame.get("seq")
+        if not isinstance(seq, int) or isinstance(seq, bool) or seq < 0 or seq > MAX_SAFE:
+            raise ValueError("invalid chunk frame: invalid seq")
+        last = frame.get("last")
+        if not isinstance(last, bool):
+            raise ValueError("invalid chunk frame: invalid last")
+        data = frame.get("data")
+        if not isinstance(data, str):
+            raise ValueError("invalid chunk frame: invalid data")
+        current = self._incoming_transfer
+        if current is not None and current["id"] != transfer:
+            raise ValueError(f"chunked transfer {current['id']}: transfer {transfer} started before it ended")
+        expected = current["next"] if current is not None else 0
+        if seq != expected:
+            raise ValueError(f"chunked transfer {transfer}: expected chunk {expected}, got {seq}")
+        try:
+            part = decode_data(data)
+        except ValueError as error:
+            raise ValueError(f"chunked transfer {transfer}: {error}") from None
+        if current is None:
+            current = self._incoming_transfer = {"id": transfer, "next": 0, "bytes": bytearray()}
+        current["bytes"].extend(part)
+        if len(current["bytes"]) > self._max_transfer:
+            self._incoming_transfer = None
+            raise ValueError(f"chunked transfer {transfer}: {_chunk_over_limit(self._max_transfer)}")
+        current["next"] += 1
+        if not last:
+            return
+        complete = bytes(current["bytes"])
+        self._incoming_transfer = None
+        try:
+            text = complete.decode("utf-8")
+        except UnicodeDecodeError:
+            raise ValueError("received a message that is not valid UTF-8") from None
+        try:
+            frame = json.loads(text)
+        except ValueError as error:
+            raise ValueError(f"received a message that is not JSON: {error}") from None
+        if not isinstance(frame, dict):
+            raise ValueError("received a message that is not a JSON frame")
+        # A chunk wraps one frame's bytes: it may not wrap another chunk.
+        if frame.get("op") == "chunk":
+            raise ValueError("chunk frame inside a chunked transfer")
+        self._receive(frame)
+
     def _receive(self, frame: dict) -> None:
         op = frame.get("op")
         # Unknown fields fail by the frame's scope, never the session (#635,
@@ -1810,6 +1927,11 @@ class Peer:
             self._handshake = True
             if not self.ready.done():
                 self.ready.set_result(None)
+            return
+        if op == "chunk":
+            # A chunk is not a frame: buffered here, dispatched only once
+            # the last chunk completes the frame (#1363).
+            self._receive_chunk(frame)
             return
         if not self._handshake:
             raise ValueError("request before protocol handshake")
@@ -2098,7 +2220,7 @@ class Peer:
                 data = dumps({"op": "throw", "id": call, "error": encode_error(error)})
             finally:
                 self._answering = None
-            limit = self._max_message()
+            limit = self._send_limit()
             if len(data) > limit:
                 # Over the limit, the channel would end: the far end gets
                 # why instead (#675).
@@ -2113,7 +2235,7 @@ class Peer:
                 )
                 data = dumps({"op": "throw", "id": call, "error": encode_error(reason)})
             with self._write_lock:
-                self._channel.send(data)
+                self._transmit(data)
         except Exception as error:  # noqa: BLE001
             self._fault(error)
         finally:

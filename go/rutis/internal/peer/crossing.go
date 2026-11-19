@@ -81,26 +81,31 @@ func ofArguments(err error, call string) error {
 		part: "arguments", limit: limitOf(err), reason: reasonOf(err)}
 }
 
-// tooLarge is a message over the limit.
-type tooLarge struct{ size int }
+// tooLarge is a message over the limit: its own size, and the limit it is
+// over (the channel's, or the session's max transfer when the far end takes
+// chunks, #1363).
+type tooLarge struct {
+	size  int
+	limit int
+}
 
-func (e *tooLarge) Error() string { return overLimit(e.size) }
+func (e *tooLarge) Error() string { return overLimit(e.size, e.limit) }
 
 // limitOf is the limit `err` is over, 0 when it is not a message over it.
 func limitOf(err error) int {
 	var large *tooLarge
 	if errors.As(err, &large) {
-		return MaxMessage
+		return large.limit
 	}
 	return 0
 }
 
-// overLimit says why a message of `size` bytes is not sent.
-func overLimit(size int) string {
+// overLimit says why a message of `size` bytes is not sent over `limit`.
+func overLimit(size, limit int) string {
 	const mib = 1 << 20
-	text := fmt.Sprintf("the message would be %d bytes, over the limit of %d bytes", size, MaxMessage)
-	if MaxMessage%mib == 0 {
-		text += fmt.Sprintf(" (%d MiB)", MaxMessage/mib)
+	text := fmt.Sprintf("the message would be %d bytes, over the limit of %d bytes", size, limit)
+	if limit%mib == 0 {
+		text += fmt.Sprintf(" (%d MiB)", limit/mib)
 	}
 	return text
 }

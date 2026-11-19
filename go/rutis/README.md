@@ -67,4 +67,6 @@ Errors across processes: an error a listener in another process returns (in `Par
 
 In tests, `loaded.Parallel(callerCtx, "weather/city", "Bergen")` (and the other modes) emit and `loaded.On` listens from a plugin of the test's, through the host; `loaded.Load(config)` loads another row of the plugin. Unloading waits for running listeners up to `RUTIS_SHUTDOWN_TIMEOUT`, as under any host.
 
+A value whose encoded frame is over the 16 MiB a channel takes crosses whole between 0.23 peers that declare `chunked` (this runtime does): the session carries it in `chunk` frames, and one frame may be up to 256 MiB by default. A deployment changes that cap with `RUTIS_MAX_TRANSFER` on the runtime process; a frame over it fails only its call, and a transfer over it ends the session.
+
 Start a project with `rutis-host new <name> --lang go`. Guide: [docs/guide/go-plugin.en.md](https://github.com/arcships/rutis/blob/main/docs/guide/go-plugin.en.md) (中文: [go-plugin.md](https://github.com/arcships/rutis/blob/main/docs/guide/go-plugin.md)). Go 1.24 or later; standard library only.

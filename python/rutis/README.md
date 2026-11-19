@@ -59,6 +59,8 @@ async with load(plugin, config={"city": "Oslo"}, services={"llm": FakeLlm()}) as
 
 The plugin runs on this process's Python runtime as a row of that host: the host's loader checks its config, every event goes through the host. The loaded plugin `t` has the same `emit` / `parallel` / `serial` / `waterfall` / `bail` / `filter`, `t.on` to listen, and `await t.reported()` for what the host reported of it; plugins loaded with one `rutis.testing.Bus` share one host.
 
+A value whose encoded frame is over the 16 MiB a channel takes crosses whole between 0.23 peers that declare `chunked` (this runtime does): the session carries it in `chunk` frames, and one frame may be up to 256 MiB by default. A deployment changes that cap with `RUTIS_MAX_TRANSFER` on the runtime process; a frame over it fails only its call, and a transfer over it ends the session.
+
 A host runs plugins with `python -m rutis <channel> --id <id> <project>` (it starts that itself); `python -m rutis listen:wss://… --id <id> --peer <controller> <project>` runs a runtime a host on another machine controls (install `rutis[network]`; not on CPython 3.13.6, whose TLS sockets deadlock, [python/cpython#137583](https://github.com/python/cpython/issues/137583): use 3.13.7 or later); `python -m rutis dial:wss://… --id <id> --peer <controller> <project>` connects to that host instead and reconnects by itself (token in `RUTIS_TOKEN`, a further CA in `RUTIS_CA`). Packaged plugins register under the entry point group `rutis.plugins`. Python 3.12 or later; no dependencies.
 
 Start a project with `uvx rutis-host new <name> --lang python`. Guide (Chinese): [docs/guide/python-plugin.md](https://github.com/arcships/rutis/blob/main/docs/guide/python-plugin.md).
