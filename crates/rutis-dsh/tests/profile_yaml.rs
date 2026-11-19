@@ -149,3 +149,28 @@ fn bare_sequence_marker_is_part_of_the_item_span() {
         );
     }
 }
+
+/// A sign inside a radix prefix is not a number, and must not panic:
+/// `i64::from_str_radix` reads it, and negating `i64::MIN` overflowed. The
+/// `dsh_profile_yaml` fuzz target found `- -0o-1000000000000000000000`
+/// (2026-11-19, #1080).
+#[test]
+fn a_sign_after_a_radix_prefix_is_a_string_not_a_panic() {
+    for source in [
+        "- -0o-1000000000000000000000",
+        "- 0o-1000000000000000000000",
+        "- -0o-1",
+        "- 0x-1",
+        "- 0b-1",
+        "- 0x8000000000000000",
+        "- -1{{ie: il",
+    ] {
+        let _ = yaml::parse(source);
+        let _ = Document::parse(source);
+    }
+    // What is not a radix number is a string.
+    assert_eq!(
+        yaml::parse("-0o-1").unwrap(),
+        Value::String("-0o-1".to_owned())
+    );
+}
