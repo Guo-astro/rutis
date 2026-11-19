@@ -1,0 +1,81 @@
+[
+  {
+    "id": "timer",
+    "disabled": true
+  },
+  {
+    "id": "llm-aimux",
+    "name": "@rutis/dsh-aimux",
+    "config": {
+      "providers": {
+        "deepseek": {
+          "apiKey": {
+            "__jsExpr": "process.env.DEEPSEEK_API_KEY"
+          },
+          "baseUrl": "https://api.deepseek.com"
+        }
+      },
+      "retries": 3,
+      "timeout": 1500,
+      "fallback": null,
+      "stream": "yes"
+    },
+    "inject": [
+      "session",
+      "tools"
+    ],
+    "isolate": {
+      "http": "shared"
+    }
+  },
+  {
+    "insert": [
+      {
+        "id": "local",
+        "name": "file://<dir>/plugins/local.js",
+        "config": {
+          "level": {
+            "__jsExpr": "Number(process.env.LEVEL ?? 2)"
+          },
+          "tags": [
+            "a",
+            "b c",
+            "d"
+          ]
+        }
+      },
+      {
+        "id": "shared-tool",
+        "name": "file://<dir>/../shared/tool.mjs",
+        "disabled": false
+      },
+      {
+        "id": "my-group",
+        "group": true,
+        "config": [
+          {
+            "id": "inner",
+            "name": "file://<dir>/plugins/inner.js"
+          },
+          {
+            "id": "npm-row",
+            "name": "some-npm-plugin"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "tools",
+    "insert": [
+      {
+        "id": "extra-tool",
+        "name": "file://<dir>/plugins/extra-tool.js",
+        "config": "multi\nline\n"
+      }
+    ]
+  },
+  {
+    "insert": []
+  }
+]

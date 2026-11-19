@@ -78,6 +78,20 @@ cargo run -p rutis-bridge --features websocket --example smoke -- \
 
 每晚的 stress 工作流还跑两个浸泡测试（link 反复断开重连、进程反复拉起结束），检查文件描述符、线程数不增长、进程都被回收。
 
+## 0.23.0
+
+0.23 是 1.0 前的 beta：会话协议从 4 升到 5（`ack` 帧，取消由被调方恰好结算一次；异步调用用 `awaited` 说明结果会不会被等待），0.22 及更早的端在握手时被拒，同一部署一起升级；插件 API 仍是 3、`rutis.json` 的 `format` 仍是 1，Rust 公开 API 不删除、不改名。事件与 loader 修了行结束、卸载期间的撤表与投递顺序，事件热路径与 `instance_rows` 做了性能改造，宿主可以用 `UndeclaredPolicy` 拒绝或限定运行时未声明的服务名。所有包均为 0.23.0；见[发布说明](releases/0.23.0.md)与[迁移到 0.23](migration-0.23.md)。
+
+0.x 的次版本号变化允许不兼容的改动：`cargo semver-checks` 与 0.22.0 的比较留给 PR 的 `release-dry-run`（本地不跑会改公开 API 快照的命令）；Rust 公开 API 没有删除或改名，内核的 `crates/rutis/public-api.txt` 快照不变；`rutis-bridge` 新增 `UndeclaredPolicy`、`rutis-loader` 的 `Instance` 新增 `rows` 字段。`rutis.json` 的 `format` 仍是 1，配置没有变化：持久化样本从 0.22.0 复制，两份期望不变；dsh 的用户层没变，`cordis.patch.yml` 原样复制。会话协议从 4 升到 5：发布门的跨版本测试（`RUTIS_E2E_ONLY_OLDER=1`）与 0.19–0.22 的发布版本相遇，只验证握手时拒绝并写明升级哪一端。`rutis-abi` 第一次进列车，crates.io 上还没有这个名字：`CARGO_TOKEN` 要能发布新的 crate。Kotlin SDK 随列车一起打版本；Maven Central 按 `release.yml` 的规则发（environment `maven` 的四个 secret，缺一个时 `maven` 任务跳过）。
+
+发布门能在本机跑的部分跑过（2026-11-19，Linux x86-64）：
+
+- `node scripts/train.mjs` 输出 0.23.0；列车的 11 个 crate `cargo package --locked --registry crates-io` 打包并各自验证通过（工作树有未提交改动时加 `--allow-dirty`）；四个 npm 包（`node/rutis`、`node/rutis-runtime`、`bun/rutis-bun`、`node/rutis-host`）的 `npm pack --dry-run` 都是 0.23.0。前两步就是 CI 的 `release-dry-run` 任务的一部分。
+- `cargo test -p rutis-host --test persisted` 与 `cargo test -p rutis-dsh --test persisted` 通过：0.23.0 的样本与 0.22.0 逐字节相同（这一版没有给 `rutis.json` 或用户层加字段、写法）。
+- `tools/check-guarantees.mjs`（219 行、1275 个标记）、`tools/formal-trace.mjs --check`、`tools/check-faults.mjs`、`tools/check-model-pr.mjs --self-test`、`tools/doc-examples.mjs --check`、`tools/check-md-links.mjs --base origin/main` 都是 0 problem。
+
+本机没跑：`cargo semver-checks` 与 0.22.0 的比较、整套 `release.yml` dry run、`tools/install/local-artifacts.sh` 与安装场景、两台机器的网络冒烟。
+
 ## 0.22.0
 
 0.22 把形式化覆盖并进本版：会话协议有了现行规格（`docs/protocol-session.md`，82 条 `SESS-*`），1368 条现行协议规则按 0.22 来源重抽进追踪表，TLA+ 模型与内核 shuttle 模型按 0.22 对账，事件监听者的关闭接纳改成子树关闭时发布永久 marker、`Entry::live` 不再每次遍历祖先链；另外修了关闭、撤下、心跳与未知字段的边界。所有包均为 0.22.0；见[发布说明](releases/0.22.0.md)与[迁移到 0.22](migration-0.22.md)。

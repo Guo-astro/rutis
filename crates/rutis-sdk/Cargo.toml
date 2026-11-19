@@ -2,7 +2,7 @@
 name = "rutis-sdk"
 description = "Shared Rust ABI and metadata for trusted rutis dylib plugins"
 edition.workspace = true
-version = "0.22.0"
+version = "0.23.0"
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
@@ -14,10 +14,10 @@ test = false
 doctest = false
 
 [dependencies]
-rutis = { path = "../rutis", version = "0.22.0" }
+rutis = { path = "../rutis", version = "0.23.0" }
 # The const part of the ABI: nothing to build and no dependency, so Kani can
 # prove it (#1271). Re-exported below; plugin and host builds see no change.
-rutis-abi = { path = "../rutis-abi", version = "0.22.0" }
+rutis-abi = { path = "../rutis-abi", version = "0.23.0" }
 tokio = { workspace = true, features = ["full"] }
 tokio-util = { workspace = true, features = ["full"] }
 serde_json = { version = "1", features = ["preserve_order"] }

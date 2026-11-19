@@ -2,7 +2,7 @@
 name = "rutis-abi"
 description = "The const ABI of the rutis plugin boot blob: its layout, the SDK's metadata, and the SHA-256 text check"
 edition.workspace = true
-version = "0.22.0"
+version = "0.23.0"
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
