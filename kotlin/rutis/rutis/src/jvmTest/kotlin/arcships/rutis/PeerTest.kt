@@ -9,6 +9,7 @@ import arcships.rutis.internal.peer.MAX_MESSAGE
 import arcships.rutis.internal.peer.MemoryChannel
 import arcships.rutis.internal.peer.Options
 import arcships.rutis.internal.peer.Peer
+import arcships.rutis.internal.peer.SESSION_CAPABILITIES
 import arcships.rutis.internal.peer.Signal
 import arcships.rutis.internal.peer.Undefined
 import arcships.rutis.internal.peer.ValueException
@@ -94,9 +95,9 @@ class PeerTest {
         else -> throw IllegalArgumentException("no method $method")
     }
 
-    private fun start(): Pair<Peer, Peer> {
+    private fun start(runtimeCapabilities: List<String> = SESSION_CAPABILITIES): Pair<Peer, Peer> {
         val (a, b) = MemoryChannel.pair()
-        runtime = Peer(a, Options(dispatch = ::serve, endpoint = Endpoint("kotlin", "main")))
+        runtime = Peer(a, Options(dispatch = ::serve, endpoint = Endpoint("kotlin", "main"), capabilities = runtimeCapabilities))
         host = Peer(b, Options(endpoint = Endpoint("main", "kotlin"), plugins = true, dispatch = { _, method, _ ->
             if (method == "inner") CallChain.current() else throw IllegalArgumentException("host has no $method")
         }))
@@ -286,7 +287,9 @@ class PeerTest {
      */
     @Test
     fun aMessageOverTheLimitFailsOnlyItsCall() {
-        start()
+        // The far end does not declare `chunked` (#1363): the behavior of a
+        // far end that cannot reassemble chunks is the same as before.
+        start(SESSION_CAPABILITIES.filter { it != "chunked" })
         val over = MAX_MESSAGE + 10
         val limit = "over the limit of 16777216 bytes (16 MiB)"
         // An argument this side would send.
