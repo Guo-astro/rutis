@@ -933,7 +933,7 @@ logging.basicConfig(level=logging.INFO)
 | 超出 ±(2^53−1) 的整数 | 自动按大整数传，见[十种值](#十种值) |
 | symbol、循环引用、`NaN` / `Infinity`、JS 的其他类型化数组（如 `Int16Array`）、带时区的 Python `time`、Go 的 channel | 不能跨进程（调用失败） |
 | 嵌套超过 64 层的值 | 不能跨进程（这次调用失败，见下） |
-| 编码后超过 16 MiB 的调用或返回值 | 对端没有声明 `chunked` 时不能跨进程（这次调用失败，见下）；双方都声明了 `chunked`（0.23 的 Rust 宿主与 Node、Bun、Kotlin 运行时）时照常跨过，默认最多 256 MiB（宿主可调） |
+| 编码后超过 16 MiB 的调用或返回值 | 对端没有声明 `chunked` 时不能跨进程（这次调用失败，见下）；双方都声明了 `chunked`（0.23 的七种实现：Rust、Node、Bun、Python、Go、Swift、Kotlin）时照常跨过，默认最多 256 MiB（宿主可调） |
 
 不能跨进程的值只让**这一次调用**失败：错误写明方法、第几个参数（或返回值）和原因，例如参数编码后过大时，这次调用得到 `store.put: argument 1 cannot be sent: the message would be 30889096 bytes, over the limit of 16777216 bytes (16 MiB)`。会话、运行时、同一会话上的其他调用和其他行都不受影响。错误的名字取决于是哪一方拒绝的、用什么语言写的（宿主是 `BindingError`，Node、Bun 是 `RangeError` 或 `TypeError`，Python 是 `ValueError`，Go、Swift、Kotlin 是 `Error`），不作保证；要判断是哪种失败，看错误码：值传不过去都是 `bad-value`，`data` 写明是参数、返回值还是事件的参数（`{part, argument?, reason, limit?}`；`reason` 是 `non-finite`、`cycle`、`too-deep`、`type`、`tag`、`limit` 之一），不要看名字或文字。收到的值解不开是 `bad-argument`（参数）或 `bad-result`（返回值），它们的话是解码器自己的那句（`json: cannot unmarshal object into Go value of type string`、``invalid type: integer `42`, expected a string``），前面只加 `<服务>.<方法>: argument N: ` 或 `<服务>.<方法>: the result: `。
 
@@ -945,7 +945,7 @@ logging.basicConfig(level=logging.INFO)
 
 五个运行时（Rust、Node、Bun、Python、Go）都按这个上限在发送时检查；测试工具里插件运行在这些运行时里，同样检查。上限约束的是发送：接收的 Rust 一侧为不遵守上限的对端（例如更早的版本）留了余量，线上不超过 208 层的帧照常读取，所以从这样的对端**收到**的值可能超过 64 层（最多约 100 层含引用的数组、约 206 层数据）；这部分余量不保证，插件不要依赖。帧更深、Rust 一侧不读时：能看出它属于哪个调用，就只让那个调用失败（对端的调用收到错误；对本侧调用的回复让本侧的调用失败），其中的引用直到会话结束才释放；看不出属于哪个调用时，结束会话并说明原因。见 [#279](https://github.com/arcships/rutis/issues/279)。
 
-消息大小：默认一次调用（连同它的参数）或一个返回值编码后最多 **16 MiB**（16777216 字节，本地通道和 WebSocket 的默认上限）。**要发送它的一方**在发出之前拒绝更大的消息，只让这次调用失败，错误写明方法、第几个参数（最大的那个）或返回值、大小和上限（`store.put: argument 1 cannot be sent: the message would be 30889096 bytes, over the limit of 16777216 bytes (16 MiB)`）：作为参数时调用方的这次调用失败，对端不执行它；作为返回值时调用方收到这个错误；会话继续，其他调用不受影响。Rust、Node、Bun、Python、Go、Swift、Kotlin 都在发送前检查。**例外：** 双方在问候里都声明了 `chunked` 时（0.23 的 Rust 宿主与 Node、Bun、Kotlin 运行时），超过 16 MiB 的帧由 `chunk` 帧分片承载，对端拿到完整的值，单帧上限默认为 **256 MiB**（268435456 字节，宿主可按内存预算调整）；超过配置上限仍按上面的方式只让这次调用失败，`limit` 是配置值。其他运行时（Python、Go、Swift）不声明 `chunked`，行为与以前相同，仍是 16 MiB 上限。更早版本的对端仍可能发来超过上限的消息：接收方像以前一样关闭这条连接，这个会话结束（本地运行时随之退出），其他会话不受影响。不需要为超过 16 MiB 的值自己分片、分页或重试；只有值超过配置的上限时，才需要只传它的位置（路径、地址）。
+消息大小：默认一次调用（连同它的参数）或一个返回值编码后最多 **16 MiB**（16777216 字节，本地通道和 WebSocket 的默认上限）。**要发送它的一方**在发出之前拒绝更大的消息，只让这次调用失败，错误写明方法、第几个参数（最大的那个）或返回值、大小和上限（`store.put: argument 1 cannot be sent: the message would be 30889096 bytes, over the limit of 16777216 bytes (16 MiB)`）：作为参数时调用方的这次调用失败，对端不执行它；作为返回值时调用方收到这个错误；会话继续，其他调用不受影响。Rust、Node、Bun、Python、Go、Swift、Kotlin 都在发送前检查。**例外：** 双方在问候里都声明了 `chunked` 时（0.23 的七种实现：Rust、Node、Bun、Python、Go、Swift、Kotlin），超过 16 MiB 的帧由 `chunk` 帧分片承载，对端拿到完整的值，单帧上限默认为 **256 MiB**（268435456 字节，宿主可按内存预算调整）；超过配置上限仍按上面的方式只让这次调用失败，`limit` 是配置值。更早版本的对端不声明 `chunked`，行为与以前相同，仍是 16 MiB 上限。更早版本的对端仍可能发来超过上限的消息：接收方像以前一样关闭这条连接，这个会话结束（本地运行时随之退出），其他会话不受影响。不需要为超过 16 MiB 的值自己分片、分页或重试；只有值超过配置的上限时，才需要只传它的位置（路径、地址）。
 
 数字有下面这些边界。它们是现在的行为，**不保证**以后不变（明确不保证），依赖它们的插件需要自己处理：
 

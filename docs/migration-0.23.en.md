@@ -99,35 +99,35 @@ node tools/check-guarantees.mjs
 
 Rust regressions: `an_asynchronous_forward_nobody_awaits_is_an_entry` (fired and forgotten -> entry), `an_awaited_forward_closes_the_cycle` (awaited later -> the real cycle is refused), `a_forwarded_call_carries_the_callers_awaited_signal` (a forward keeps the original signal), `a_call_says_when_its_result_is_not_waited_for` (the wire default and `false`).
 
-### Cross-language calls over 16 MiB: the `chunk` frame and the `chunked` capability (#1361)
+### Cross-language calls over 16 MiB: the `chunk` frame and the `chunked` capability (#1361, #1363)
 
 Specification: [session protocol](protocol-session.en.md) §2.5, `SESS-84`–`SESS-88`, §10; design: [parameters and results over one message's limit, carried across frames](design-chunked-frames-2026-11-19.en.md).
 
 #### What changed
 
-Session protocol 5 gains the `chunk` frame and the `chunked` capability: when both ends declare `chunked` in their greeting, a parameter, result or error that encodes to over the transport's per-message limit (16 MiB by default) is cut by the sender into slices of at most 8 MiB, and the receiver joins the whole frame before dispatching it. One call still runs once; a frame that does not finish before the transport ends is never dispatched. One frame may reach the session's `max_transfer`: 256 MiB by default, adjusted to the host's memory budget with `SessionOptions::max_transfer`, or set for a deployment with `RUTIS_MAX_TRANSFER`, which the host passes to the runtime processes it starts; never unlimited, never truncated silently. Over it only that call fails, with `limit` set to the configured value (268435456 by default).
+Session protocol 5 gains the `chunk` frame and the `chunked` capability: when both ends declare `chunked` in their greeting, a parameter, result or error that encodes to over the transport's per-message limit (16 MiB by default) is cut by the sender into slices of at most 8 MiB, and the receiver joins the whole frame before dispatching it. One call still runs once; a frame that does not finish before the transport ends is never dispatched. One frame may reach the session's `max_transfer`: 256 MiB by default, adjusted to the host's memory budget with each implementation's session option (Rust `SessionOptions::max_transfer`, Node and Bun `maxTransfer`, Go `Options.MaxTransfer`, Swift `PeerOptions.maxTransfer`, Kotlin `Peer.maxTransfer`; Python reads `RUTIS_MAX_TRANSFER`), or set for a deployment with `RUTIS_MAX_TRANSFER`, which the host passes to the runtime processes it starts; never unlimited, never truncated silently. Over it only that call fails, with `limit` set to the configured value (268435456 by default).
 
-In 0.23 the ones declaring `chunked` are the Rust host (`rutis-bridge`), the Node runtime, the Bun runtime and Kotlin (#1363). Python, Go and Swift do not declare it, so they behave as in 0.22: a value over 16 MiB still fails before it is sent, with `limit` 16777216.
+All seven implementations of 0.23 (Rust, Node, Bun, Python, Go, Swift and Kotlin) declare `chunked`. Earlier builds do not, and sessions with them behave as in 0.22: a value over 16 MiB still fails before it is sent, with `limit` 16777216.
 
 | Situation | 0.22 | 0.23 |
 | --- | --- | --- |
 | Rust ↔ Node, a 17 MiB parameter | `argument 1 cannot be sent: … over the limit of 16777216 bytes (16 MiB)` | The call succeeds; the far end gets the whole value |
 | Rust ↔ Node, a 17 MiB result | Fails the same way | Succeeds; the whole value comes back |
 | Rust ↔ Node, a 300 MiB value | Fails (16 MiB) | Fails (the session cap, 256 MiB by default), `limit` is the configured value |
-| Rust ↔ Bun/Kotlin, 17 MiB | Fails (16 MiB) | The call succeeds; the whole value crosses |
-| Rust ↔ Python/Go/Swift, 17 MiB | Fails (16 MiB) | Unchanged |
+| Rust ↔ Bun/Python/Go/Swift/Kotlin, 17 MiB | Fails (16 MiB) | The call succeeds; the whole value crosses |
+| An earlier far end that does not declare `chunked`, 17 MiB | Fails (16 MiB) | Unchanged |
 | The transport ends midway | — | The session ends with a transport error; the unfinished call is not run |
 
 #### What to change
 
-- Upgrade the host and every end to 0.23 together (protocol 5 already required that). The Rust host, the Node, Bun and Kotlin runtimes gain chunking automatically; there is no required new configuration. To change the largest frame, a host uses `SessionOptions::max_transfer` and a deployment `RUTIS_MAX_TRANSFER` (the host passes it to the runtime processes it starts); the default is 256 MiB.
-- Another runtime that wants values over 16 MiB must send and read `chunk` frames and declare `chunked` in its greeting; until then it must not declare it, or the far end will send `chunk` frames on the rule that declaring means implementing.
+- Upgrade the host and every end to 0.23 together (protocol 5 already required that). Rust, Node, Bun, Python, Go, Swift and Kotlin all gain chunking automatically; there is no required new configuration. To change the largest frame, use each implementation's session option (Rust `SessionOptions::max_transfer`, Node and Bun `maxTransfer`, Go `Options.MaxTransfer`, Swift `PeerOptions.maxTransfer`, Kotlin `Peer.maxTransfer`; Python only the environment variable) and, for a deployment, `RUTIS_MAX_TRANSFER` (the host passes it to the runtime processes it starts); the default is 256 MiB.
+- A runtime outside this repository that wants values over 16 MiB must send and read `chunk` frames and declare `chunked` in its greeting; until then it must not declare it, or the far end will send `chunk` frames on the rule that declaring means implementing.
 - Business code needs no change: do not slice, page or retry a large value by hand. A value over 256 MiB is still an explicit call-level error.
 
 #### Who is affected
 
-- Plugin authors: no new concept. Between the Rust host and the Node, Bun and Kotlin runtimes, parameters and results over 16 MiB are usable as before; to the other runtimes the 16 MiB cap stands.
-- Host authors and deployers: no new status line or exit code; the WebSocket subprotocol is still `rutis.5`. Upgrade every end of a deployment together. One frame is 256 MiB by default, adjustable per session or deployment (`SessionOptions::max_transfer` / `RUTIS_MAX_TRANSFER`), never unlimited. Host code that builds `SessionOptions` literally adds `..Default::default()` (the new `max_transfer` field).
+- Plugin authors: no new concept. Between the Rust host and the Node, Bun, Python, Go, Swift and Kotlin runtimes, parameters and results over 16 MiB are usable as before; outside this repository, a runtime that does not declare `chunked` still has the 16 MiB cap.
+- Host authors and deployers: no new status line or exit code; the WebSocket subprotocol is still `rutis.5`. Upgrade every end of a deployment together. One frame is 256 MiB by default, adjustable per session or deployment (each implementation's session option, `RUTIS_MAX_TRANSFER` for a deployment), never unlimited. Host code that builds `SessionOptions` literally adds `..Default::default()` (the new `max_transfer` field).
 - Runtime authors and contributors: implement the `chunk` frame (`transfer`, `seq`, `last`, base64 `data`), buffer by `transfer`, at most one unfinished transfer, dispatch only after `last`, reassemble up to the configured cap; declare `chunked` once it works.
 
 #### What developers see
@@ -139,7 +139,7 @@ In 0.23 the ones declaring `chunked` are the Rust host (`rutis-bridge`), the Nod
 | Situation | Output |
 | --- | --- |
 | The value is over the session's cap (256 MiB by default, a host may raise it) | `svc.take: argument 2 cannot be sent: the message would be 300000000 bytes, over the limit of 268435456 bytes (256 MiB)`; `data` is `{"argument":2,"limit":268435456,"part":"argument"}` |
-| The far end did not declare `chunked` (Python, Go, Swift) and the value is over 16 MiB | `svc.take: argument 2 cannot be sent: the message would be 17825803 bytes, over the limit of 16777216 bytes (16 MiB)`; `data` is `{"argument":2,"limit":16777216,"part":"argument"}` |
+| The far end did not declare `chunked` (an earlier build) and the value is over 16 MiB | `svc.take: argument 2 cannot be sent: the message would be 17825803 bytes, over the limit of 16777216 bytes (16 MiB)`; `data` is `{"argument":2,"limit":16777216,"part":"argument"}` |
 | The transport ends midway | The session ends with a transport error (`peer disconnected` on a pipe); in-flight calls fail with `peer-gone` |
 | The two caps differ and the receiver's is smaller | The receiver ends the session with `chunked transfer node:3: over the limit of <n> bytes` |
 
@@ -154,4 +154,4 @@ cd node/rutis-runtime && npm test
 node tools/check-guarantees.mjs
 ```
 
-Rust↔Node: `node_carries_frames_over_the_message_limit_whole` (17 MiB parameters and results cross whole; `tally` shows every call ran once). Rust receiving: `a_chunked_call_is_dispatched_once_after_its_last_chunk`, `an_incomplete_transfer_is_never_dispatched`, `a_chunk_out_of_order_ends_the_session`, `a_second_transfer_before_the_first_ends_ends_the_session`, `a_chunk_before_the_handshake_ends_the_session`, `a_chunk_from_a_far_end_without_the_capability_ends_the_session`, `a_chunk_with_invalid_base64_ends_the_session`, `a_frame_over_the_limit_is_chunked_to_a_far_end_that_declared_it`. Node: `node/rutis-runtime/test/chunked.test.mjs`.
+Rust↔Node: `node_carries_frames_over_the_message_limit_whole` (17 MiB parameters and results cross whole; `tally` shows every call ran once). Rust receiving: `a_chunked_call_is_dispatched_once_after_its_last_chunk`, `an_incomplete_transfer_is_never_dispatched`, `a_chunk_out_of_order_ends_the_session`, `a_second_transfer_before_the_first_ends_ends_the_session`, `a_chunk_before_the_handshake_ends_the_session`, `a_chunk_from_a_far_end_without_the_capability_ends_the_session`, `a_chunk_with_invalid_base64_ends_the_session`, `a_frame_over_the_limit_is_chunked_to_a_far_end_that_declared_it`. Each implementation's own tests: Node `node/rutis-runtime/test/chunked.test.mjs`, Bun `bun/rutis-bun/test/chunked.test.ts`, Python `python/rutis/tests/test_chunked.py` and `test_chunked_cross_language.py`, Go `go/rutis/internal/peer/chunked_test.go` and `chunked_cross_test.go`, Swift `swift/rutis/Tests/SelfTest/ChunkedTests.swift` and `ChunkedInteropTests.swift`, Kotlin `kotlin/rutis/rutis/src/jvmTest/kotlin/arcships/rutis/ChunkedTest.kt`.
