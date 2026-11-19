@@ -18,6 +18,7 @@ final class Conformance: @unchecked Sendable {
     let lock = Lock()
     var held: FarFunction?
     var kept: [Int64: FarFunction] = [:]
+    var calls = 0
     var started = false
     var aborted = false
     weak var session: Peer?
@@ -112,6 +113,16 @@ final class Conformance: @unchecked Sendable {
         // Past the message limit, this side's reply or call fails (#675).
         case "big":
             return .data(.string(String(repeating: "x", count: Int(try integer(0)))))
+        // How many calls ran, and how long the value was (#1361, #1363): a
+        // frame over the message limit crosses in chunks and the call runs
+        // once, whole.
+        case "tally":
+            guard case let .data(.string(text)) = arg(0) else { throw failure("tally needs a string") }
+            lock.lock()
+            calls += 1
+            let count = calls
+            lock.unlock()
+            return .data(.object([("calls", .int(count)), ("size", .int(text.utf8.count))]))
         case "applyBig":
             let text = String(repeating: "x", count: Int(try integer(1)))
             return try await function(0).call([.data(.string(text))], sync: true)

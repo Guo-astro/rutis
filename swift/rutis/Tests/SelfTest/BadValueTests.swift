@@ -31,7 +31,10 @@ struct BadValueTests {
     func testAMessageOverTheLimitFailsOnlyItsCall() async throws {
         let over = maxMessage + 10
         let limit = "over the limit of 16777216 bytes (16 MiB)"
-        let (host, runtime) = try await pairOfPeers { _, method, args in
+        // Both ends take chunks, so a message over 16 MiB would cross: this
+        // test keeps the #675 over-limit case by capping the session at the
+        // channel's own 16 MiB, where the sender refuses it before writing.
+        let (host, runtime) = try await pairOfPeers(maxTransfer: maxMessage) { _, method, args in
             switch method {
             case "big":
                 return .data(.string(String(repeating: "x", count: Int(args[0].plainJSON?.int64Value ?? 0))))

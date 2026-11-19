@@ -14,8 +14,42 @@ package let endpointProtocol = 5
 package let maxSafe: Int64 = 9_007_199_254_740_991
 
 /// What every runtime of this SDK declares. Not `sync-stack`: every
-/// incoming call runs in a Task of its own.
-package let runtimeCapabilities = ["reentrant-sync"] + valueCapabilities
+/// incoming call runs in a Task of its own. `chunked`: it takes `chunk`
+/// frames (#1363).
+package let runtimeCapabilities = ["reentrant-sync", "chunked"] + valueCapabilities
+
+/// The most one `chunk` frame carries before base64: 8 MiB, about 10.67 MiB
+/// on the wire, inside the 16 MiB a channel takes by default (#1363).
+package let chunkSize = 8 << 20
+
+/// The default most one chunked transfer carries once reassembled, and the
+/// default most one frame may be on a session: 256 MiB (#1363).
+package let defaultMaxTransfer = 256 << 20
+
+/// The variable that sets a deployment's `maxTransfer`.
+package let maxTransferVariable = "RUTIS_MAX_TRANSFER"
+
+/// The room a `chunk` frame needs beyond its base64 `data`: the tag, the
+/// transfer id, the sequence number, the flag and the JSON syntax.
+private let chunkFrameRoom = 256
+
+/// The largest slice whose `chunk` frame, base64 included, fits `limit`
+/// bytes; 0 when not even one byte does. A smaller transport limit shrinks
+/// the slice, so a chunk frame never exceeds the transport itself.
+func chunkSliceSize(_ limit: Int) -> Int {
+    guard limit > chunkFrameRoom else { return 0 }
+    return min((limit - chunkFrameRoom) / 4 * 3, chunkSize)
+}
+
+/// `RUTIS_MAX_TRANSFER`'s value, or the default; a value that is not a
+/// positive number fails the session's start, naming the variable.
+package func maxTransferFromEnvironment(_ value: String? = ProcessInfo.processInfo.environment[maxTransferVariable]) throws -> Int {
+    guard let value else { return defaultMaxTransfer }
+    guard let bytes = Int(value), bytes > 0 else {
+        throw ChannelError("\(maxTransferVariable) \"\(value)\": expected a positive number of bytes")
+    }
+    return bytes
+}
 
 /// How deep a value crossing a session may nest (#279): each array, object,
 /// map or set is a level, so 64 nested arrays cross and 65 do not; a call's
@@ -79,6 +113,9 @@ package struct PeerOptions {
     package var implementation: [(String, String)] = [("name", Rutis.Advanced.implementation), ("version", Rutis.Advanced.sdkVersion)]
     /// What this side declares in the endpoint format.
     package var capabilities: [String] = runtimeCapabilities
+    /// The most one chunked transfer carries once reassembled, in bytes;
+    /// nil reads `RUTIS_MAX_TRANSFER`, or 256 MiB (#1363).
+    package var maxTransfer: Int?
     /// This side is a test host driving a runtime (RutisTest): it takes the
     /// far end's plugin definitions, and declares `plugins` as rutis does.
     package var host = false
@@ -454,6 +491,25 @@ package final class Peer: @unchecked Sendable {
     private var suppressed: Set<String> = []
     private var active = 0
     private var draining: [Event] = []
+    /// The transfer a chunked frame is rebuilding, if one is in progress
+    /// (#1363): one at a time, because the sender queues a frame's chunks
+    /// together. The reading thread is the only one that fills it; `close`
+    /// drops it with the session.
+    private var transfer: Transfer?
+
+    private struct Transfer {
+        let id: String
+        var next: UInt64
+        var bytes: [UInt8]
+    }
+
+    /// What this side declares, fixed at init.
+    private let offered: [String]
+    /// The most one transfer may carry once reassembled.
+    private let maxTransfer: Int
+    /// This side's transfers: the id of each chunked frame (#1363). Guarded
+    /// by `writeLock`, which every write holds.
+    private var transfers: UInt64 = 0
 
     private let readyEvent = Event()
     private let closedEvent = Event()
@@ -463,6 +519,14 @@ package final class Peer: @unchecked Sendable {
         self.channel = channel
         self.options = options
         guard valid(id: options.endpoint.local) else { throw ChannelError("invalid endpoint id \(options.endpoint.local)") }
+        let endpoint = options.endpoint
+        // A test host takes plugin definitions, as rutis does.
+        offered = options.capabilities + endpoint.declare + (options.host ? ["plugins"] : [])
+        if let configured = options.maxTransfer {
+            maxTransfer = configured
+        } else {
+            maxTransfer = try maxTransferFromEnvironment()
+        }
         local = options.endpoint.local + ":"
         remote = ""
         writer = Writer(channel)
@@ -482,15 +546,13 @@ package final class Peer: @unchecked Sendable {
         thread.name = "rutis session"
         thread.start()
         let endpoint = options.endpoint
-        // A test host takes plugin definitions, as rutis does.
-        let capabilities = options.capabilities + endpoint.declare + (options.host ? ["plugins"] : [])
         try send(.object([
             ("op", .string("hello")),
             ("version", .int(endpointProtocol)),
             ("endpoint", .string(endpoint.local)),
             ("implementation", .object(options.implementation.map { ($0.0, .string($0.1)) })),
-            ("capabilities", .array(capabilities.map(JSON.string))),
-        ]))
+            ("capabilities", .array(offered.map(JSON.string))),
+        ]), chunks: false)
     }
 
     /// Returns once the far end greeted (or the session closed).
@@ -538,18 +600,62 @@ package final class Peer: @unchecked Sendable {
 
     // ── I/O ──────────────────────────────────────────────────────────
 
-    private func send(_ frame: JSON) throws {
+    private func send(_ frame: JSON, chunks: Bool = true) throws {
         let data = JSONWriter.write(frame)
         writeLock.lock()
         defer { writeLock.unlock() }
-        try write(data)
+        try write(data, chunks: chunks)
+    }
+
+    /// Whether both sides declared `chunked` and the channel leaves room for
+    /// a chunk frame; `lock` is held.
+    private var chunks: Bool {
+        maxMessage > chunkFrameRoom && offered.contains("chunked") && declared.contains("chunked")
+    }
+
+    /// The largest frame this side may send: the channel's limit, or the
+    /// reassembly cap when the far end takes chunks (#1363, SESS-88). `lock`
+    /// is held.
+    private var sendLimit: Int {
+        chunks ? maxTransfer : min(maxMessage, maxTransfer)
     }
 
     /// Queues a frame for the writing thread; writeLock is held. Nothing here
     /// waits for the write to be made: a far end that stopped reading holds
     /// up that thread alone (#630).
-    private func write(_ data: [UInt8]) throws {
+    ///
+    /// A frame over the channel's limit goes out as `chunk` frames when both
+    /// sides declared `chunked` (#1363): all of one frame's chunks are queued
+    /// under this one `writeLock`, so no other frame can come between them.
+    /// `hello` is never chunked (`chunks: false`).
+    private func write(_ data: [UInt8], chunks allowed: Bool = true) throws {
         if let error = self.error { throw error }
+        if allowed, data.count > maxMessage {
+            lock.lock()
+            let chunking = chunks
+            lock.unlock()
+            let size = chunkSliceSize(maxMessage)
+            if chunking, size > 0 {
+                transfers += 1
+                let transfer = local + String(transfers)
+                var at = 0
+                var seq: UInt64 = 0
+                while at < data.count {
+                    let end = min(at + size, data.count)
+                    let encoded = JSONWriter.write(.object([
+                        ("op", .string("chunk")),
+                        ("transfer", .string(transfer)),
+                        ("seq", .int(seq)),
+                        ("last", .bool(end == data.count)),
+                        ("data", .string(Data(data[at ..< end]).base64EncodedString())),
+                    ]))
+                    try writer.enqueue(encoded)
+                    at = end
+                    seq += 1
+                }
+                return
+            }
+        }
         try writer.enqueue(data)
     }
 
@@ -597,6 +703,9 @@ package final class Peer: @unchecked Sendable {
         imports = [:]
         cancelled = []
         suppressed = []
+        // A transfer whose last chunk never came is discarded with the
+        // session: it is never dispatched (#1363).
+        transfer = nil
         let held = heldPlugins
         heldPlugins = [:]
         let draining = self.draining
@@ -1061,17 +1170,18 @@ package final class Peer: @unchecked Sendable {
             }
         }
         let data = JSONWriter.write(.object(frame))
-        if data.count > maxMessage {
+        let limit = sendLimit
+        if data.count > limit {
             rollback(grants)
             lock.unlock()
             // Blamed on the largest argument.
             let sizes = encoded.map { JSONWriter.write($0).count }
             let call = describe(op: op, fields: fields)
             if let index = sizes.indices.max(by: { sizes[$0] < sizes[$1] }) {
-                throw ofArgument(overLimit(data.count), index, call, limit: maxMessage, why: "limit")
+                throw ofArgument(overLimit(data.count, limit), index, call, limit: limit, why: "limit")
             }
-            throw ValueError("\(call): the arguments cannot be sent: \(overLimit(data.count))",
-                             data: ["part": "arguments", "limit": maxMessage, "reason": "limit"])
+            throw ValueError("\(call): the arguments cannot be sent: \(overLimit(data.count, limit))",
+                             data: ["part": "arguments", "limit": limit, "reason": "limit"])
         }
         let waiter = Pending(id: id, answered: answered)
         pending[id] = waiter
@@ -1126,8 +1236,100 @@ package final class Peer: @unchecked Sendable {
 
     // ── Incoming frames ──────────────────────────────────────────────
 
+    /// One `chunk` of a frame over the channel's limit (#1363): buffer it,
+    /// and give back the frame once its transfer is complete. A broken
+    /// transfer ends the session: a chunk belongs to no call, so there is no
+    /// smaller failure to give it.
+    private func acceptChunk(_ frame: JSON) throws -> JSON? {
+        let allowed: Set<String> = ["op", "transfer", "seq", "last", "data"]
+        if let extra = fieldNames(frame).first(where: { !allowed.contains($0) }) {
+            throw Malformed("invalid chunk frame: unknown field \"\(extra)\"")
+        }
+        guard let id = frame["transfer"]?.stringValue, !id.isEmpty else {
+            throw Malformed("chunk frame without a transfer id")
+        }
+        guard let seq = frame["seq"]?.int64Value, seq >= 0 else {
+            throw Malformed("invalid chunk frame: invalid seq")
+        }
+        guard let last = frame["last"]?.boolValue else {
+            throw Malformed("invalid chunk frame: invalid last")
+        }
+        guard let text = frame["data"]?.stringValue else {
+            throw Malformed("invalid chunk frame: invalid data")
+        }
+        lock.lock()
+        if closeError != nil {
+            lock.unlock()
+            return nil
+        }
+        guard handshake else {
+            lock.unlock()
+            throw Malformed("request before protocol handshake")
+        }
+        guard declared.contains("chunked") else {
+            lock.unlock()
+            throw Malformed("chunk frame from a far end that did not declare chunked")
+        }
+        if let current = transfer, current.id != id {
+            lock.unlock()
+            throw Malformed("chunked transfer \(current.id): transfer \(id) started before it ended")
+        }
+        let expected = transfer?.next ?? 0
+        guard UInt64(seq) == expected else {
+            lock.unlock()
+            throw Malformed("chunked transfer \(id): expected chunk \(expected), got \(seq)")
+        }
+        let room = transfer?.bytes.count ?? 0
+        lock.unlock()
+        let part: Data
+        do {
+            part = try TagText.bytes(text)
+        } catch {
+            throw Malformed("chunked transfer \(id): \(error)")
+        }
+        if part.count > maxTransfer - room {
+            throw Malformed("chunked transfer \(id): \(overTransferLimit())")
+        }
+        lock.lock()
+        // The reading thread is the only one that fills a transfer; a
+        // session that ended meanwhile drops it, as it does every buffer.
+        if closeError != nil {
+            lock.unlock()
+            return nil
+        }
+        var bytes = transfer?.bytes ?? []
+        bytes.append(contentsOf: part)
+        transfer = Transfer(id: id, next: expected + 1, bytes: bytes)
+        if !last {
+            lock.unlock()
+            return nil
+        }
+        transfer = nil
+        lock.unlock()
+        // Reassembled frames are UTF-8 JSON bytes, decoded strictly like a
+        // message off the channel: a replacement character would make a
+        // malformed frame look valid.
+        guard UTF8Check.valid(bytes) else { throw Malformed("received a message that is not valid UTF-8") }
+        let complete = try JSONReader.parse(bytes)
+        // A chunk wraps one frame's bytes: it may not wrap another chunk.
+        if complete["op"]?.stringValue == "chunk" { throw Malformed("chunk frame inside a chunked transfer") }
+        return complete
+    }
+
+    /// `over the limit of <n> bytes (<n> MiB)` for the reassembly cap.
+    private func overTransferLimit() -> String {
+        let mib = maxTransfer % (1 << 20) == 0 ? " (\(maxTransfer >> 20) MiB)" : ""
+        return "over the limit of \(maxTransfer) bytes\(mib)"
+    }
+
     private func receive(_ frame: JSON) throws {
         guard case .object = frame, let op = frame["op"]?.stringValue else { throw Malformed("invalid frame") }
+        // A chunked frame is the frame its chunks join (#1363): buffered here,
+        // dispatched only once the last chunk completes it.
+        if op == "chunk" {
+            if let complete = try acceptChunk(frame) { try receive(complete) }
+            return
+        }
         // The fields this side does not know, by path: a greeting's fails the
         // handshake, a call frame's fails only its call (§9).
         let ignored = unknownFields(frame)
@@ -1512,6 +1714,7 @@ package final class Peer: @unchecked Sendable {
             lock.unlock()
             return
         }
+        let limit = sendLimit
         var data: [UInt8]
         var failure: Error?
         // Only the method's own failure is located: a result that cannot be
@@ -1523,9 +1726,9 @@ package final class Peer: @unchecked Sendable {
             do {
                 let encoded = try encode(value, &grants, chain, 0)
                 data = JSONWriter.write(.object([("op", .string("return")), ("id", .string(id)), ("value", encoded)]))
-                if data.count > maxMessage {
+                if data.count > limit {
                     rollback(grants)
-                    failure = ofResult(overLimit(data.count), call, limit: maxMessage, why: "limit")
+                    failure = ofResult(overLimit(data.count, limit), call, limit: limit, why: "limit")
                     data = []
                 }
             } catch let error as ValueError {
@@ -1546,9 +1749,9 @@ package final class Peer: @unchecked Sendable {
             let encoded = encodeError(failure, frame: failureFrame) { value in try ValueCodec.encodeAny(value) }
             data = JSONWriter.write(.object([("op", .string("throw")), ("id", .string(id)), ("error", encoded)]))
             // An error too large to send: a short one saying so.
-            if data.count > maxMessage {
+            if data.count > limit {
                 let what = "the error \(errorName(failure))" + (call.map { " of \($0)" } ?? "")
-                let short: JSON = .object([("name", .string("Error")), ("message", .string("\(what): \(overLimit(data.count))"))])
+                let short: JSON = .object([("name", .string("Error")), ("message", .string("\(what): \(overLimit(data.count, limit))"))])
                 data = JSONWriter.write(.object([("op", .string("throw")), ("id", .string(id)), ("error", short)]))
             }
         }
