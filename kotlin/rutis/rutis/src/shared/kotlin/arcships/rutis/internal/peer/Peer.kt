@@ -39,7 +39,7 @@ import kotlin.coroutines.jvm.internal.CoroutineStackFrame
 // reentrant. The call chain (`path`) of a call is in CallChain: set on the
 // call's thread, carried into coroutines, taken by outgoing calls.
 
-const val ENDPOINT_PROTOCOL: Int = 4
+const val ENDPOINT_PROTOCOL: Int = 5
 
 /** How deep a value crossing a session may nest (#279): each list, record, map or set is a level. */
 const val MAX_DEPTH: Int = 64
@@ -224,6 +224,11 @@ class Peer(private val channel: Channel, private val opts: Options) {
 
     private val running = HashMap<String, Running>()
     private val signals = HashMap<String, Signal>()
+    // Calls this side gave up, until the callee resolves one: a late reply
+    // or an ack takes the entry out (#1099). And the running calls a cancel
+    // resolved: their result is dropped instead of written.
+    private val cancelled = HashSet<String>()
+    private val suppressed = HashSet<String>()
 
     private var active = 0
     private val draining = ArrayList<CompletableFuture<Unit>>()
@@ -923,7 +928,11 @@ class Peer(private val channel: Channel, private val opts: Options) {
 
     /** Gives up waiting for call `id`; an asynchronous one hears so. */
     private fun abandon(id: String, cancellable: Boolean) {
-        val waiting = synchronized(lock) { pending.remove(id) != null }
+        val waiting = synchronized(lock) {
+            val had = pending.remove(id) != null
+            if (had && cancellable) cancelled.add(id)
+            had
+        }
         if (waiting && cancellable && closeError == null) {
             enqueue(compact(buildJsonObject {
                 put("op", "cancel")
@@ -1221,8 +1230,10 @@ class Peer(private val channel: Channel, private val opts: Options) {
                 }
                 releaseAll(fresh)
                 if (waiter == null) {
-                    // A late reply to a call of ours given up (cancelled, or a
-                    // notification) is dropped; any other is a fault.
+                    // A late reply to a call of ours given up takes its
+                    // cancelled entry with it (#1099); a notification's has
+                    // none. Any other is a fault.
+                    synchronized(lock) { cancelled.remove(id) }
                     if (issued(id)) return
                     throw ProtocolException("response for unknown call")
                 }
@@ -1230,12 +1241,37 @@ class Peer(private val channel: Channel, private val opts: Options) {
             }
             "cancel" -> {
                 val id = string(frame, "id", "invalid cancel")
-                val (call, signal) = synchronized(lock) { running[id] to signals[id] }
+                val (call, signal, known) = synchronized(lock) {
+                    val held = running[id]
+                    val signal = signals[id]
+                    val known = held != null || signal != null
+                    if (known) {
+                        // The call keeps running where it started; its result
+                        // is dropped and the cancel acknowledged. The caller
+                        // gets exactly one resolution: this ack or the reply
+                        // written before the cancel was read (protocol 5,
+                        // #1099).
+                        suppressed.add(id)
+                    }
+                    Triple(held, signal, known)
+                }
                 signal?.cancel()
                 if (call != null) {
                     call.job.cancel()
                     call.thread?.interrupt()
                 }
+                if (known) {
+                    enqueue(compact(buildJsonObject {
+                        put("op", "ack")
+                        put("id", id)
+                    }))
+                }
+            }
+            "ack" -> {
+                val id = string(frame, "id", "invalid ack")
+                // The callee resolved the cancel; one whose entry is gone
+                // crossed the reply that cleared it.
+                synchronized(lock) { cancelled.remove(id) }
             }
             "release" -> synchronized(lock) {
                 val reference = (frame["reference"] as? JsonPrimitive)?.takeIf { !it.isString }?.content?.toLongOrNull()
@@ -1457,7 +1493,13 @@ class Peer(private val channel: Channel, private val opts: Options) {
         synchronized(lock) {
             running.remove(id)
             signals.remove(id)
+            val wasSuppressed = suppressed.remove(id)
             if (closeError != null) return
+            if (wasSuppressed) {
+                // The cancel was acknowledged already: the result is dropped
+                // and no reply follows (#1099).
+                return
+            }
             var error = failure
             var encoded: ByteArray? = null
             if (error == null) {

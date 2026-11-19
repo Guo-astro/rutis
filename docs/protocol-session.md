@@ -1,8 +1,8 @@
-# 会话协议规格：协议 4
+# 会话协议规格：协议 5
 
 [English](protocol-session.en.md)
 
-状态：现行规格。日期：2026-11-16（首版 2026-11-09；本次改 §1 的范围指向、`SESS-61` 与 G3）。
+状态：现行规格。日期：2026-11-18（首版 2026-11-09；本次加入协议 5：`ack` 帧、`SESS-57`、`SESS-61`、§8 与 G3）。
 议题：[#635](https://github.com/arcships/rutis/issues/635)，属于 [#183](https://github.com/arcships/rutis/issues/183) 第四步；执行计划见 [0.22 形式化覆盖执行计划](plan/formal-verification-0.22.md) WS2。追踪与验证词汇见[会话追踪契约](formal-trace.md)。
 
 本文是会话层唯一的现行规格：两端在一条通道上交换什么、出错和取消时发生什么、哪些消息只让一次调用失败、哪些结束整个会话。行、服务公告、事件、身份认证、重连退避和运行时监督不在本文范围内；它们各自有现行规格：行与宿主服务的租约、行的结束与失败见[行协议规格](protocol-rows.md)，事件见[事件协议](design-events-protocol-2026-10-18.md)，远端租约与重连见[远端租约模型](../specs/remote-lease/README.md)与[远程会话设计](design-remote-session-2026-10-28.md)。本文也是 #634 追踪表 `session` 分区的抽取来源。
@@ -21,16 +21,16 @@
 
 - `SESS-1` **当前。** 一个会话跑在一条 [`Channel`](https://github.com/arcships/rutis/blob/main/crates/rutis-bridge/src/channel/mod.rs) 上：一条有序、可靠、双工的消息流，保留消息边界，移动不透明字节。通道不懂帧、调用或引用。`crates/rutis-bridge/src/channel/mod.rs:1-9,20-48`
 - `SESS-2` **当前。** 每条消息是一个 UTF-8 JSON 对象，带 `op` 标签；会话层负责编码、解码和错误映射。读取顺序就是到达顺序，一次一帧。`crates/rutis-bridge/src/session/rpc.rs:1557-1570,3207-3216`
-- `SESS-3` **当前。** 协议版本是 4（`ENDPOINT_PROTOCOL`）。Rust、Node、Bun、Python、Go、Swift、Kotlin 使用同一个常量；WebSocket 子协议是 `rutis.4`。`crates/rutis-bridge/src/session/mod.rs:9-14`；`node/rutis-runtime/src/session.mjs:58`；`bun/rutis-bun/src/session.ts:57`；`python/rutis/rutis/peer.py:42`；`go/rutis/internal/peer/peer.go:34`；`swift/rutis/Sources/Rutis/Session/Peer.swift:13`；`kotlin/rutis/rutis/src/shared/kotlin/arcships/rutis/internal/peer/Peer.kt:42`；`crates/rutis-host/src/connect/listen.rs:74,408`
+- `SESS-3` **当前。** 协议版本是 5（`ENDPOINT_PROTOCOL`）。Rust、Node、Bun、Python、Go、Swift、Kotlin 使用同一个常量；WebSocket 子协议是 `rutis.5`。`crates/rutis-bridge/src/session/mod.rs:9-14`；`node/rutis-runtime/src/session.mjs:58`；`bun/rutis-bun/src/session.ts:57`；`python/rutis/rutis/peer.py:42`；`go/rutis/internal/peer/peer.go:34`；`swift/rutis/Sources/Rutis/Session/Peer.swift:13`；`kotlin/rutis/rutis/src/shared/kotlin/arcships/rutis/internal/peer/Peer.kt:42`；`crates/rutis-host/src/connect/listen.rs:74,408`
 - `SESS-4` **当前。** 每个会话有两个端点 id（自报的 `endpoint`），每端的调用号以本端 id 为前缀。id 在一个部署内唯一，由部署保证；同一 id 的新连接顶替旧连接属于连接层规则，不在本文。`crates/rutis-bridge/src/channel/mod.rs:77-109`；`crates/rutis-bridge/src/session/rpc.rs:1493-1499,2443-2489`
 - `SESS-5` **当前。** 重连产生新会话。旧会话的调用、引用和迟到帧不进入新会话；旧状态不延续。`docs/formal-trace.md` §3.0；`crates/rutis-bridge/tests/session_plugin.rs:182-270`
-- **已取代：** 一个会话可以带“兼容格式”（compat）与“端点格式”两种线格式。协议 4 只有一种格式（§2.3）。
+- **已取代：** 一个会话可以带“兼容格式”（compat）与“端点格式”两种线格式。协议 5 只有一种格式（§2.3）。
 
 ## 2. 帧与线格式
 
 ### 2.1 帧
 
-`SESS-6` **当前。** 帧词汇是 `Frame` 的九个变体；`op` 用 snake_case，未知 `op` 结束会话。字段以下面为准，未列出的字段一律不存在（§9）。`crates/rutis-bridge/src/session/protocol.rs:154-222`
+`SESS-6` **当前。** 帧词汇是 `Frame` 的十个变体；`op` 用 snake_case，未知 `op` 结束会话。字段以下面为准，未列出的字段一律不存在（§9）。`crates/rutis-bridge/src/session/protocol.rs:149-230`
 
 | 帧 | 字段 | 含义 |
 | --- | --- | --- |
@@ -43,6 +43,7 @@
 | `throw` | `id: string`；`error: Failure` | 调用的错误。`Failure` 是 `{name: string, message: string, graph?: JSON}`。 |
 | `release` | `reference: u64`；`count: u64` | 归还引用的授予次数（§6）。 |
 | `cancel` | `id: string` | 调用方放弃调用 `id`（§7）。 |
+| `ack` | `id: string` | 被调方已结算对调用 `id` 的取消：不会再为它发 `return`/`throw`（§7）。 |
 
 `SESS-7` **当前。** `sync` 缺省为 `false`，为 `false` 时不写到线上。`hello` 的 `endpoint`、`implementation`、`capabilities` 与 `throw` 的 `graph` 在缺省时不写。`crates/rutis-bridge/src/session/protocol.rs:157-221`
 
@@ -68,11 +69,11 @@
 
 ### 2.3 格式
 
-`SESS-12` **当前。** 只有一种线格式：端点格式、协议 4。调用号总是 `<endpoint>:<n>`；不存在不带端点前缀的调用号，也没有第二种 `hello`。`crates/rutis-bridge/src/session/mod.rs:9-14`；[迁移到 0.19](migration-0.19.md)「一起升级」；`crates/rutis-bridge/src/session/rpc.rs:1493-1499,2456-2462`
+`SESS-12` **当前。** 只有一种线格式：端点格式、协议 5。调用号总是 `<endpoint>:<n>`；不存在不带端点前缀的调用号，也没有第二种 `hello`。`crates/rutis-bridge/src/session/mod.rs:9-14`；[迁移到 0.19](migration-0.19.md)「一起升级」；`crates/rutis-bridge/src/session/rpc.rs:1493-1499,2456-2462`
 
 `SESS-13` **已取代。** issue #635 与旧设计里的两种格式：兼容格式 2（无端点、`node:n` / `rust:n` 调用号）与端点格式 3。0.19 起协议 4 只留端点格式；0.18 及更早的对端在握手时被拒，由各端同时升级到 0.19 解决。`docs/migration-0.19.md`「一起升级」；`crates/rutis-bridge/src/session/rpc.rs:2456-2462`
 
-`SESS-14` **已取代。** “`sync` 只发给声明了 `sync-wait` 的对端”。协议 4 没有 `sync-wait` 能力；`sync` 是每个协议 4 实现都认识的帧字段，按 §2.1 序列化。
+`SESS-14` **已取代。** “`sync` 只发给声明了 `sync-wait` 的对端”。协议 4 没有 `sync-wait` 能力；`sync` 是每个协议 5 实现都认识的帧字段，按 §2.1 序列化。
 
 ### 2.4 能力
 
@@ -147,7 +148,7 @@
 
 `SESS-36` **当前。** 转发到另一个会话时，条目按会话标签重写（`rebase`）：不带标签的条目加上来源会话的标签；带目标会话标签的条目还原成目标会话里的原生调用号；其他会话的条目原样保留。标签是 `s` + 进程随机数（15 位十进制）+ 计数器。`crates/rutis-bridge/src/session/rpc.rs:849-902`；[会话标签设计](design-session-tags-2026-10-12.md) §四；`docs/guarantees.md` 的 `bridge/call-chains-across-processes`
 
-`SESS-37` **明确不保证。** 会话标签的唯一性是概率性的（两个进程随机数相等的概率约 10⁻¹⁵）；两个 0.9 及更早的进程之间仍有旧标签问题。这属于连接层与历史兼容，不是协议 4 的规则。
+`SESS-37` **明确不保证。** 会话标签的唯一性是概率性的（两个进程随机数相等的概率约 10⁻¹⁵）；两个 0.9 及更早的进程之间仍有旧标签问题。这属于连接层与历史兼容，不是协议 5 的规则。
 
 ### 5.3 同步与异步
 
@@ -187,9 +188,9 @@
 
 ### 6.2 对象
 
-`SESS-52` **当前。** 带方法的对象按引用传：`kind: "object"`，方法调用是带 `method` 的 `call`，属性读取是 `get`。协议 4 的所有实现都收对象引用，发送方不按能力检查。`crates/rutis-bridge/src/session/rpc.rs:2690-2736`；`docs/guarantees.md` 的 `bridge/object-refs`
+`SESS-52` **当前。** 带方法的对象按引用传：`kind: "object"`，方法调用是带 `method` 的 `call`，属性读取是 `get`。协议 5 的所有实现都收对象引用，发送方不按能力检查。`crates/rutis-bridge/src/session/rpc.rs:2690-2736`；`docs/guarantees.md` 的 `bridge/object-refs`
 
-`SESS-53` **已取代。** “对象引用只发给声明了 `objects` 的对端”；`objects` 能力本身（0.18 的兼容格式规则）。协议 4 没有这个能力，也没有对应的拒绝分支。因此 #639 记录的“Rust 中继不查 `objects`”在协议 4 的会话里没有可触发的检查点；0.18 及更早的对端在握手时已被拒绝（`SESS-79`）。
+`SESS-53` **已取代。** “对象引用只发给声明了 `objects` 的对端”；`objects` 能力本身（0.18 的兼容格式规则）。协议 5 没有这个能力，也没有对应的拒绝分支。因此 #639 记录的“Rust 中继不查 `objects`”在协议 5 的会话里没有可触发的检查点；0.18 及更早的对端在握手时已被拒绝（`SESS-79`）。
 
 `SESS-54` **当前。** 转发：从会话 A 导入的引用交给会话 B 时，B 得到同一个 `kind` 的中继；B 的调用、读取和等待按链重写后转给 A；释放中继会把释放传到 A。插件定义不中继给第三个会话；发到第三个会话时只让那次调用失败。`crates/rutis-bridge/src/session/rpc/relay.rs:19-78,93-175`；`docs/guarantees.md` 的 `bridge/object-refs`、`bridge/plugin-values`
 
@@ -197,24 +198,26 @@
 
 ## 7. 取消
 
-`SESS-56` **当前。** `cancel {id}` 表示调用方放弃调用 `id`。调用方丢弃尚未完成的异步调用的 future 时发这个帧；已经返回、但调用方还没消费的结果也可以取消。`crates/rutis-bridge/src/session/protocol.rs:217-221`；`crates/rutis-bridge/src/session/rpc.rs:1114-1129,2020-2049`
+`SESS-56` **当前。** `cancel {id}` 表示调用方放弃调用 `id`。调用方丢弃尚未完成的异步调用的 future 时发这个帧；已经返回、但调用方还没消费的结果也可以取消。从发出取消到被调方结算它（迟到回复或 `ack`）之间，调用方把这次调用留在取消表里。`crates/rutis-bridge/src/session/protocol.rs:210-230`；`crates/rutis-bridge/src/session/rpc.rs:2273-2300,2952-2996`
 
 `SESS-57` **当前。**（Rust 被调方）收到 `cancel` 时：
 
-- 还在排队、尚未开始的调用被丢掉，不回复；例外是已接纳的 `emit` 方式的 `events.dispatch`：它照常开始（[事件协议](design-events-protocol-2026-10-18.md) §5.7），调用方丢弃它的迟到回复（#1121）。
-- 正在等待的 `await` 被丢掉，不回复。
-- 已经开始运行的同步调用照常完成并回复；取消不打断已经在运行的方法。
+- 还在排队、尚未开始的调用被丢掉：方法不运行，参数引用归还，取消被确认；例外是已接纳的 `emit` 方式的 `events.dispatch`：它照常开始（[事件协议](design-events-protocol-2026-10-18.md) §5.7），取消被确认，回复被丢弃（#1121）。
+- 正在等待的 `await` 被丢掉并确认。
+- 已经开始运行的调用照常完成（取消不打断已经在运行的方法）；结果被丢弃，取消被确认。
+- 如果回复在读到 `cancel` 之前已经写出，那个回复就是结算：不发明 `ack`，调用方丢弃该回复。
 - 对已取消调用的迟到回复被丢弃并计数（`orphans()`），不当作协议错误，也不关闭会话。
+- 写出 `ack` 之后，被调方不再为这次调用发 `return`/`throw`。
 
-`crates/rutis-bridge/src/session/rpc.rs:2702-2721,2503-2516,2047-2060`；测试 `crates/rutis-bridge/src/session/rpc/tests.rs::a_cancelled_emit_dispatch_stays_queued`
+`crates/rutis-bridge/src/session/rpc.rs:2273-2300,2952-2996,3384-3425`；测试 `crates/rutis-bridge/src/session/rpc/tests.rs::a_queued_cancelled_call_is_dropped_and_acknowledged`、`::a_running_cancelled_call_is_acknowledged_and_its_reply_dropped`、`::a_cancelled_emit_dispatch_stays_queued`
 
-`SESS-58` **当前。** 对不存在的调用发 `cancel` 被忽略；这可能是取消越过了它要取消的回复。这是唯一被容忍的悬空调用号。`crates/rutis-bridge/src/session/rpc.rs:2702-2721`；测试 `crates/rutis-bridge/src/session/rpc/tests.rs::a_cancel_for_an_unknown_call_is_ignored`
+`SESS-58` **当前。** 对不存在的调用发 `cancel` 被忽略，也不确认；这可能是取消越过了它要取消的回复。这是唯一被容忍的悬空调用号。`crates/rutis-bridge/src/session/rpc.rs:2952-2996`；测试 `crates/rutis-bridge/src/session/rpc/tests.rs::a_cancel_for_an_unknown_call_is_ignored`
 
 `SESS-59` **当前。** 取消逐跳传播：中继转发中的等待被取消时，被丢弃的转发请求会向下一跳发出 `cancel`；跨 link 时同样。取消不撤销已经提交的引用授予。`crates/rutis-bridge/src/session/rpc/relay.rs:148-173`；`crates/rutis-bridge/src/session/rpc.rs:2020-2031`；`docs/guarantees.md` 的 `bridge/multihop-cancel-and-release`
 
 `SESS-60` **当前。** 取消本身不关闭会话；取消后其他调用照常进行。`crates/rutis-bridge/src/session/rpc.rs:2702-2721`；`go/rutis/internal/peer/peer_test.go:135-170`；`go/rutis/internal/peer/objects_test.go:66-103`
 
-`SESS-61` **明确不保证。** 取消之后被调方可能回复，也可能不回复，两种都合法；调用方必须接受两种——不能靠回复来清理状态，也不能把没有回复当成错误。现行行为：Rust 对排队中的调用和 `await` 不回复，对已接纳的 `emit` 分发照常执行、回复被调用方丢弃，已在运行的同步调用照常完成并回复；其他语言由方法和信号决定。`docs/guarantees.md` 的 `bridge/cancel-reaches-callee` 只承诺取消到达。调用方的取消表（`calls.cancelled`）何时清理、要不要新增取消确认帧，归 #1099；在那之前，任一侧的行为都不能写成跨实现的回复承诺（#626 的模型把两种回复都验证为不重复结算、不漏引用）。
+`SESS-61` **当前。** 一次取消由被调方恰好结算一次：要么回 `ack {id}` 且此后不再为这次调用发 `return`/`throw`，要么读到取消之前已经写出的回复就是它的结算、不再发 `ack`。被调方对它仍持有的取消都确认（排队中、运行中、正在等待的 `await`）；对已经答复、已经丢掉或从未有过的调用不确认。调用方必须接受任一种结算，丢弃越过取消的回复（计入 `orphans`），收到 `ack` 清掉取消表项，表项已被交叉回复清掉时忽略该 `ack`。`ack` 之后再收到回复是 `SESS-41` 的协议错误，结束会话；合规的被调方不会发。七种实现（Rust、Node、Bun、Python、Go、Swift、Kotlin）都确认并抑制回复；`docs/guarantees.md` 的 `bridge/cancel-reaches-callee` 给出承诺。`crates/rutis-bridge/src/session/rpc.rs:2273-2300,2952-2996,3384-3425`；`specs/call-lifecycle` 的 `call-gap-ack`、`call-mut-ack-then-reply`、`relay-healthy`、`relay-mut-ack-then-reply`
 
 `SESS-62` **已取代。** “取消等于关闭承载”；“取消后会话进入不可用状态”。取消只作用于一次调用。
 
@@ -234,7 +237,8 @@
 | `release` 指向没有的引用 | `release of unknown reference` | `crates/rutis-bridge/src/session/rpc.rs:2655-2676` |
 | `release.count` 为 0 或大于授予次数 | `invalid reference release count` | 同上 |
 | 方法调用或属性读取指向非对象引用 | `method call or property read on a non-object reference` | `crates/rutis-bridge/src/session/rpc/relay.rs:79-87` |
-| 对未知调用的 `return` / `throw`（不是取消后的迟到回复） | `response for unknown call` | `crates/rutis-bridge/src/session/rpc.rs:2490-2503` |
+| 对未知调用的 `return` / `throw`（不是取消后的迟到回复） | `response for unknown call` | `crates/rutis-bridge/src/session/rpc.rs:2918-2943` |
+| 字段类型不对的 `ack` | 结束会话，传输错误 | `MALFORMED_SEQUENCES`「ack of a wrong field type」 |
 | 重复 `hello` | `duplicate protocol handshake` | `crates/rutis-bridge/src/session/rpc.rs:2602-2614` |
 | 问候之前收到任何其他帧 | `request before protocol handshake` | `crates/rutis-bridge/src/session/rpc.rs:2616-2618` |
 | 调用号重复、倒退、非数字、超过 2^53−1，或前缀不是对端 id | `invalid or repeated invocation identity` / `invalid invocation identity/path` | `crates/rutis-bridge/src/session/rpc.rs:1085-1095,2739-2742` |
@@ -253,9 +257,9 @@
 | 对不存在调用的 `cancel` | 忽略 | `crates/rutis-bridge/src/session/rpc/tests.rs:329-361` |
 | 已取消调用的迟到回复 | 丢弃并计数，不结束会话 | `crates/rutis-bridge/src/session/rpc.rs:2490-2501` |
 
-`SESS-64` **当前。** 共享的畸形帧矩阵有 25 个用例：`MALFORMED` 的 13 个单帧（语法、字段、未知引用、未知回复）和 `MALFORMED_SEQUENCES` 的 12 个多帧/顺序用例（握手前的请求、重复 `hello`、没有 `id` 的调用、未知引用的 `get`、已释放的引用、`release` 计数为 0 或超额、`cancel`/`throw` 字段类型错、未知调用的 `throw`、`path` 含本帧 id、重复调用号）。用例要求会话以传输错误结束；除用例中有效调用欠下的回复外，对端不再回复。七种实现都有入口：Rust 走内存通道，其余走 Unix socket、loopback 或 WebSocket；Swift 的用例只在 macOS 上编译，由 CI 的 `runtimes-swift` 作业运行。`crates/rutis-bridge/src/session/testing.rs:151-392`；`crates/rutis-bridge/tests/runtime_conformance.rs:452-633`；`docs/ci.md`「一致性矩阵」
+`SESS-64` **当前。** 共享的畸形帧矩阵有 25 个用例：`MALFORMED` 的 13 个单帧（语法、字段、未知引用、未知回复）和 `MALFORMED_SEQUENCES` 的 12 个多帧/顺序用例（握手前的请求、重复 `hello`、没有 `id` 的调用、未知引用的 `get`、已释放的引用、`release` 计数为 0 或超额、`cancel`/`ack`/`throw` 字段类型错、未知调用的 `throw`、`path` 含本帧 id、重复调用号）。用例要求会话以传输错误结束；除用例中有效调用欠下的回复外，对端不再回复。七种实现都有入口：Rust 走内存通道，其余走 Unix socket、loopback 或 WebSocket；Swift 的用例只在 macOS 上编译，由 CI 的 `runtimes-swift` 作业运行。`crates/rutis-bridge/src/session/testing.rs:151-392`；`crates/rutis-bridge/tests/runtime_conformance.rs:452-633`；`docs/ci.md`「一致性矩阵」
 
-`SESS-65` **已取代。** “重复 `hello`、问候前的请求、`get` 未知引用、已释放引用、`release` 计数为 0 或超额、`cancel`/`throw` 字段类型错、未知调用的 `throw`、`path` 含本帧 id、调用号不递增这些规则由代码执行，但没有进入七种实现的共享矩阵。”现状不是这样：清单里的规则都已进入 25 个用例的矩阵（`SESS-64`、§14 G2），调用号一项覆盖的是重复号。仍只在代码层验证的还有：方法调用或属性读取指向非对象引用；调用号倒退、非数字、超过 2^53−1 或前缀不是对端 id；`throw.error` 缺 `name`/`message`（矩阵只含 `error` 不是对象）；超过 208 层的帧；超通道上限的消息。
+`SESS-65` **已取代。** “重复 `hello`、问候前的请求、`get` 未知引用、已释放引用、`release` 计数为 0 或超额、`cancel`/`ack`/`throw` 字段类型错、未知调用的 `throw`、`path` 含本帧 id、调用号不递增这些规则由代码执行，但没有进入七种实现的共享矩阵。”现状不是这样：清单里的规则都已进入 25 个用例的矩阵（`SESS-64`、§14 G2），调用号一项覆盖的是重复号。仍只在代码层验证的还有：方法调用或属性读取指向非对象引用；调用号倒退、非数字、超过 2^53−1 或前缀不是对端 id；`throw.error` 缺 `name`/`message`（矩阵只含 `error` 不是对象）；超过 208 层的帧；超通道上限的消息。
 
 ## 9. 未知字段
 
@@ -301,16 +305,16 @@
 | --- | --- | --- | --- |
 | `SESS-1` | 会话是一条有序、可靠、双工、保留边界的消息流 | 当前 | `crates/rutis-bridge/src/channel/mod.rs:1-9,20-48` |
 | `SESS-2` | 每条消息一个 UTF-8 JSON 帧，按到达顺序一次一帧处理 | 当前 | `crates/rutis-bridge/src/session/rpc.rs:1557-1570,3207-3216` |
-| `SESS-3` | 协议 4，七种实现同一常量，WebSocket 子协议 `rutis.4` | 当前 | `crates/rutis-bridge/src/session/mod.rs:9-14` 与各实现常量 |
+| `SESS-3` | 协议 5，七种实现同一常量，WebSocket 子协议 `rutis.5` | 当前 | `crates/rutis-bridge/src/session/mod.rs:9-15` 与各实现常量 |
 | `SESS-4` | 两个端点 id，调用号带本端前缀 | 当前 | `crates/rutis-bridge/src/channel/mod.rs:77-109`；`crates/rutis-bridge/src/session/rpc.rs:1493-1499` |
 | `SESS-5` | 重连是新会话，旧状态不延续 | 当前 | `docs/formal-trace.md` §3.0；`crates/rutis-bridge/tests/session_plugin.rs:182-270` |
-| `SESS-6` | 九种帧及其字段 | 当前 | `crates/rutis-bridge/src/session/protocol.rs:154-222` |
+| `SESS-6` | 十种帧及其字段 | 当前 | `crates/rutis-bridge/src/session/protocol.rs:149-230` |
 | `SESS-7` | `sync` 与可选字段的缺省省略 | 当前 | `crates/rutis-bridge/src/session/protocol.rs:157-221` |
 | `SESS-8` | `path` 是调用链，条目是调用号 | 当前 | `crates/rutis-bridge/src/session/rpc.rs:2739-2742` |
 | `SESS-9` | `WireValue` 的标签集合 | 当前 | `crates/rutis-bridge/src/session/protocol.rs:26-85` |
 | `SESS-10` | `undefined` 作为整体保留，值内为 `null` | 当前 | `crates/rutis-bridge/src/session/rpc.rs:2356-2359,2567-2573` |
 | `SESS-11` | 带标记值只发给声明了 `value-<tag>` 的对端 | 当前 | `crates/rutis-bridge/src/session/rpc.rs:2204-2214` |
-| `SESS-12` | 只有端点格式、协议 4 | 当前 | `docs/migration-0.19.md`「一起升级」；`crates/rutis-bridge/src/session/rpc.rs:2456-2462` |
+| `SESS-12` | 只有端点格式、协议 5 | 当前 | `docs/migration-0.23.md`「一起升级」；`crates/rutis-bridge/src/session/rpc.rs:2456-2462` |
 | `SESS-13` | 两种格式（compat 2、endpoint 3） | 已取代 | `docs/migration-0.19.md`「一起升级」 |
 | `SESS-14` | `sync` 只发给声明 `sync-wait` 的对端 | 已取代 | 协议 4 无此能力；`crates/rutis-bridge/src/session/protocol.rs:174-176` |
 | `SESS-15` | 能力声明及其被读取的范围 | 当前 | `crates/rutis-bridge/src/session/rpc.rs:1154-1178,1590-1611`；`crates/rutis-bridge/src/session/plugin/greet.rs:31-36` |
@@ -359,10 +363,10 @@
 | `SESS-58` | 未知 `cancel` 被忽略 | 当前 | `crates/rutis-bridge/src/session/rpc.rs:2639-2653` |
 | `SESS-59` | 取消逐跳传播，不撤销已授予引用 | 当前 | `crates/rutis-bridge/src/session/rpc/relay.rs:148-173`；`bridge/multihop-cancel-and-release` |
 | `SESS-60` | 取消不关闭会话 | 当前 | `crates/rutis-bridge/src/session/rpc.rs:2639-2653` |
-| `SESS-61` | 取消后被调方是否回复 | 明确不保证 | #626 |
+| `SESS-61` | 取消恰好结算一次：`ack` 且不再回复，或取消读到前已写出的回复；调用方接受任一种 | 当前 | §7；#1099；`specs/call-lifecycle` |
 | `SESS-62` | 取消等于关闭承载 | 已取代 | §7 |
 | `SESS-63` | 畸形输入故障闭合 | 当前 | `crates/rutis-bridge/src/session/rpc.rs:2514-2561,2598-2618`；`crates/rutis-bridge/src/session/testing.rs:151-392` |
-| `SESS-64` | 共享畸形帧矩阵 25 个用例（13 单帧 + 12 多帧/顺序），七种实现都有入口 | 当前 | `crates/rutis-bridge/src/session/testing.rs:154-360`；`crates/rutis-bridge/tests/runtime_conformance.rs:452-633` |
+| `SESS-64` | 共享畸形帧矩阵 26 个用例（13 单帧 + 13 多帧/顺序），七种实现都有入口 | 当前 | `crates/rutis-bridge/src/session/testing.rs:154-370`；`crates/rutis-bridge/tests/runtime_conformance.rs:452-633` |
 | `SESS-65` | 旧状态“这些规则未进共享矩阵”；25 个用例的矩阵已覆盖该清单（`SESS-64`） | 已取代 | §8.1；§14 G2 |
 | `SESS-66` | Rust：未知字段只失败该调用（`hello` 失败握手，`release`/`cancel` 忽略） | 当前 | `crates/rutis-bridge/src/session/rpc.rs` 的 `parse_frame` / `reject_unknown_fields`；`rpc/tests.rs::unknown_frame_fields_fail_only_their_call`、`::an_unknown_field_in_hello_fails_the_handshake` |
 | `SESS-67` | 七种运行时都实现调用级拒绝（`bad-frame`）；`release`/`cancel` 忽略多余字段 | 当前 | `docs/guarantees.md` 的 `bridge/unknown-fields`；§9；§14 G1 |
@@ -377,8 +381,8 @@
 | `SESS-76` | 默认出站积压无界 | 明确不保证 | `crates/rutis-bridge/src/session/rpc.rs:1186-1214`；`docs/formal-trace.md` §3.6 |
 | `SESS-77` | 同一规则的错误文字逐字一致 | 明确不保证 | §12；Node、Go 与 Rust 的文字不同 |
 | `SESS-78` | `hello` 的 `implementation` 可缺省，接收方不要求它 | 当前 | `crates/rutis-bridge/src/session/protocol.rs:157-167`；`crates/rutis-bridge/src/session/rpc.rs:2450-2489` |
-| `SESS-79` | 协议 4 只与协议 4 通信；0.18 及更早被拒 | 当前 | `docs/migration-0.19.md`「一起升级」；`bridge/cross-version-meetings` |
-| `SESS-80` | 新增能力不升版本；新增帧或改变字段含义必须升版本 | 当前 | `crates/rutis-bridge/src/session/protocol.rs:154-156`；§13；`SESS-66` |
+| `SESS-79` | 协议 5 只与协议 5 通信；0.22 及更早被拒 | 当前 | `docs/migration-0.23.md`「一起升级」；`bridge/cross-version-meetings` |
+| `SESS-80` | 新增能力不升版本；新增帧或改变字段含义必须升版本 | 当前 | `crates/rutis-bridge/src/session/protocol.rs:154-156,210-226`；§13；`SESS-66` |
 | `SESS-81` | 相邻版本之外的跨版本相遇 | 明确不保证 | `bridge/cross-version-meetings` 只承诺相邻发布版本 |
 | `SESS-82` | 收到的值都在 64 层以内 | 明确不保证 | §10；`bridge/large-and-deep-values` |
 
@@ -392,8 +396,8 @@
 
 | 情况 | 输出 |
 | --- | --- |
-| 对端版本更旧 | `incompatible session: the far end speaks protocol 3, this side 4: upgrade the far end` |
-| 对端版本更新 | `incompatible session: the far end speaks protocol 99, this side 4: upgrade this side (Rust crates rutis-host / rutis-bridge)` |
+| 对端版本更旧 | `incompatible session: the far end speaks protocol 4, this side 5: upgrade the far end` |
+| 对端版本更新 | `incompatible session: the far end speaks protocol 99, this side 5: upgrade this side (Rust crates rutis-host / rutis-bridge)` |
 | 对端没在 10 秒内问候 | `the far end did not greet in time` |
 | 宿主没有会话 id | `the host provides no id for its sessions` |
 | 值超过消息上限 | `svc.take: argument 2 cannot be sent: the message would be over the limit of 16777216 bytes (16 MiB)`；错误码 `bad-value`；`data` 是 `{"argument":2,"limit":16777216,"part":"argument"}` |
@@ -405,7 +409,7 @@
 
 ### 宿主作者与部署者
 
-**成功：** 现有 `rutis-host` 命令、状态行、退出码、关闭码和重试策略不变。WebSocket 子协议仍是 `rutis.4`；传输关闭码仍是 `1000`（正常）、`4002`（被顶替）、`4003`（被拒绝）、`1009`（消息超限，WebSocket）。
+**成功：** 现有 `rutis-host` 命令、状态行、退出码、关闭码和重试策略不变。WebSocket 子协议是 `rutis.5`；传输关闭码仍是 `1000`（正常）、`4002`（被顶替）、`4003`（被拒绝）、`1009`（消息超限，WebSocket）。
 
 **失败（逐字或类别）：**
 
@@ -414,7 +418,7 @@
 - 可重试的承载失败：`retryable`，按退避重连；新连接是新会话。
 - 协议错误：会话以传输错误结束，在途调用带 `peer-gone` 失败，旧会话的迟到帧不会作用到替换后的会话。
 
-**需要学习的概念：** 无新增。部署者需要知道的是：同一部署里端点 id 唯一；协议 4 的所有端要一起升级（§13）。
+**需要学习的概念：** 无新增。部署者需要知道的是：同一部署里端点 id 唯一；协议 5 的所有端要一起升级（§13）。
 
 ### 运行时作者与贡献者
 
@@ -426,7 +430,7 @@
 
 ## 13. 兼容性与迁移
 
-`SESS-79` **当前。** 协议 4 只与协议 4 通信。0.18 及更早的宿主、运行时、节点和 SDK 在握手时被拒；迁移是把所有端一起升级到 0.19 或更高。`docs/migration-0.19.md`「一起升级」；`docs/guarantees.md` 的 `bridge/cross-version-meetings`
+`SESS-79` **当前。** 协议 5 只与协议 5 通信。0.22 及更早的宿主、运行时、节点和 SDK 在握手时被拒；迁移是把所有端一起升级到 0.23 或更高。`docs/migration-0.23.md`「一起升级」；`docs/guarantees.md` 的 `bridge/cross-version-meetings`
 
 `SESS-80` **当前。** 新增能力不需要提升协议版本：发送方按 `value-<tag>` 判断，对端不声明就不发。由于旧实现会失败带未知字段的调用（`SESS-66`）、拒绝未知 `op`，新增**帧**或**改变已有字段含义**只能提升协议版本，并同时更新本文、`Frame`/`WireValue`、畸形帧矩阵和七种实现。新增能力不必提升版本，只按声明使用（§2.4）；没有“必需能力”可协商（`SESS-25`）。
 
@@ -444,19 +448,19 @@
 ### G2 共享畸形矩阵：已补齐（2026-11-11）
 
 - 决定（#635）：把只由代码执行的畸形规则放进 `session::testing::malformed` 的共享矩阵，让七种实现跑同一组用例。
-- 已完成：矩阵从 13 个用例增加到 25 个，`MALFORMED` 13 个单帧、`MALFORMED_SEQUENCES` 12 个多帧/顺序；原清单（握手前的请求、重复 `hello`、对未知引用的 `get`、已释放的引用、`release` 计数为 0 或超额、`cancel`/`throw` 字段类型错、未知调用的 `throw`、`path` 含本帧 id、调用号不递增）中，除调用号只覆盖重复号外全部覆盖，另加没有 `id` 的调用（`SESS-21`、`SESS-22`、`SESS-33`、`SESS-47`、`SESS-48`；`SESS-64`）。实现见 `crates/rutis-bridge/src/session/testing.rs` 的 `MALFORMED`、`MALFORMED_SEQUENCES`、`malformed`；Swift 的用例只在 macOS 上编译，由 CI 的 `runtimes-swift` 作业运行。
+- 已完成：矩阵从 13 个用例增加到 26 个，`MALFORMED` 13 个单帧、`MALFORMED_SEQUENCES` 13 个多帧/顺序；原清单（握手前的请求、重复 `hello`、对未知引用的 `get`、已释放的引用、`release` 计数为 0 或超额、`cancel`/`ack`/`throw` 字段类型错、未知调用的 `throw`、`path` 含本帧 id、调用号不递增）中，除调用号只覆盖重复号外全部覆盖，另加没有 `id` 的调用（`SESS-21`、`SESS-22`、`SESS-33`、`SESS-47`、`SESS-48`；`SESS-64`）。协议 5 的矩阵加了字段类型不对的 `ack`。实现见 `crates/rutis-bridge/src/session/testing.rs` 的 `MALFORMED`、`MALFORMED_SEQUENCES`、`malformed`；Swift 的用例只在 macOS 上编译，由 CI 的 `runtimes-swift` 作业运行。
 - 仍不在矩阵内：方法调用或属性读取指向非对象引用；调用号倒退、非数字、超过 2^53−1 或前缀不是对端 id；`throw.error` 缺 `name`/`message`；超过 208 层的帧；超通道上限的消息。这些由代码和其他测试验证（§8.1、§8.2）。
 
-### G3 取消后的回复规则：已定（2026-11-16）
+### G3 取消后的回复规则：已定（2026-11-16；2026-11-18 由 #1099 改为协议 5）
 
-- 决定：不把“回复”或“不回复”任一种定为跨实现要求。取消之后被调方可能回也可能不回，调用方必须接受两种（`SESS-61`）。#626 的模型（[call-lifecycle](../specs/call-lifecycle/README.md)）把两种都跑通：各自不重复结算、不漏引用。
-- 本文只写现行行为，不据此新增承诺。
-- 仍未定：调用方取消表（`calls.cancelled`）的清理与是否新增取消确认帧，归 #1099（[取消表清理与取消之后的回复规则](https://github.com/arcships/rutis/issues/1099)）。
+- 已取代（2026-11-18，#1099）：“不把回复或不回复任一种定为跨实现要求”是协议 4 的状态。协议 5 让被调方恰好结算一次：回 `ack` 且不再回复，或取消读到之前已经写出的回复。调用方在任一种上清掉取消表项；表项已不在时收到的 `ack` 被忽略；`ack` 之后的回复是未知调用并结束会话（`SESS-61`）。
+- 原因：调用方的表只能由回复清理，而排队中被取消的调用没有合规实现会回复，长会话反复取消排队调用就会一直涨（#1099；`specs/call-lifecycle` 的 `call-gap-cancel-table`）。有界表是退路；取消确认让表在静止时为空，且不必放宽 `SESS-41`。
+- 取消读到之前发生的两种回复形状仍然合法；#626 的模型跑它们（`call-cancel-reply`、`call-cancel-no-reply`），变异 `call-mut-ack-then-reply` 说明“确认”和“此后不答复”是同一条规则。
 
 ### G4 旧文档里已不存在的能力与格式
 
 - [协议插件设计](design-protocol-plugins-2026-09-25.md) §6.1 的“对象与能力 `objects`”一段仍按 0.18 的兼容握手写；当前实现没有 `objects` 能力（`SESS-16`、`SESS-53`）。
-- issue #635 与[网络栈设计](design-protocol-channel-decoupling-2026-10-03.md) 仍提到 `sync-wait`、`events-v2` 和两种格式；协议 4 都没有（`SESS-13`、`SESS-16`）。
+- issue #635 与[网络栈设计](design-protocol-channel-decoupling-2026-10-03.md) 仍提到 `sync-wait`、`events-v2` 和两种格式；协议 5 都没有（`SESS-13`、`SESS-16`）。
 
 这两处需要后续的文档修订；本文只把它们标为已取代，不改旧设计正文。
 
@@ -473,6 +477,7 @@
 
 - [会话追踪契约](formal-trace.md)
 - [迁移到 0.19](migration-0.19.md)
+- [迁移到 0.23](migration-0.23.md)
 - [协议插件设计](design-protocol-plugins-2026-09-25.md) §6.1（带标记值的线上格式）
 - [跨进程挂载设计](design-protocol-plugin-mount.md)
 - [会话标签设计](design-session-tags-2026-10-12.md)

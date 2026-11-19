@@ -83,7 +83,7 @@ test('authentication, subprotocol and address failures carry categories', async 
   expect(await failure(listener.url, { protocol: PROTOCOL, token: 'guess' })).toMatch(/^auth-rejected: .*upgrade refused with 403: not accepted here$/)
   expect(await failure(listener.url, { protocol: PROTOCOL })).toMatch(/^auth-rejected: .*upgrade refused with 401/)
   // The refusal says which end to upgrade (standard Q6.2.4).
-  expect(await failure(listener.url, { protocol: 'rutis.99', token: 'secret' })).toMatch(/^incompatible: .*400: this endpoint speaks rutis\.4, the dialer offered rutis\.99: upgrade this endpoint \(npm @arcships\/rutis-bun\)$/)
+  expect(await failure(listener.url, { protocol: 'rutis.99', token: 'secret' })).toMatch(/^incompatible: .*400: this endpoint speaks rutis\.5, the dialer offered rutis\.99: upgrade this endpoint \(npm @arcships\/rutis-bun\)$/)
   expect(await failure(listener.url, { protocol: 'rutis.1', token: 'secret' })).toMatch(/upgrade the dialer$/)
   expect(await failure(listener.url.replace('/rutis', '/elsewhere'), { protocol: PROTOCOL, token: 'secret' })).toMatch(/^incompatible: .*404/)
   expect(await failure('ws://example.com/rutis', { protocol: PROTOCOL })).toMatch(/^incompatible: .*non-loopback address needs wss/)

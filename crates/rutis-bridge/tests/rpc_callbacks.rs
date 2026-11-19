@@ -416,7 +416,7 @@ mod websocket {
     use rutis_bridge::websocket::{self, Limits, ListenerConfig, Trust};
     use tokio::io::AsyncBufReadExt;
 
-    const PROTOCOL: &str = "rutis.4";
+    const PROTOCOL: &str = "rutis.5";
 
     fn endpoint(expected: &str) -> rutis_bridge::session::Endpoint {
         rutis_bridge::session::Endpoint::rust(id("main")).expect(id(expected))

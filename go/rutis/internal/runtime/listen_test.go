@@ -19,7 +19,7 @@ import (
 	"github.com/arcships/rutis/go/rutis/internal/testwait"
 )
 
-const testProtocol = "rutis.4"
+const testProtocol = "rutis.5"
 
 func startListener(t *testing.T) *wsListener {
 	return startListenerSpeaking(t, testProtocol)

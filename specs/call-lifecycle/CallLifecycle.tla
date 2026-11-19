@@ -1,6 +1,6 @@
 --------------------------- MODULE CallLifecycle ----------------------------
 (***************************************************************************)
-(* Calls on one session between the two endpoints of protocol 4: A calls,  *)
+(* Calls on one session between the two endpoints of protocol 5: A calls,  *)
 (* B runs the method and replies, A may cancel before the reply arrives,   *)
 (* the reply grants a reference that A releases, and either side may close *)
 (* the session.                                                            *)
@@ -14,9 +14,12 @@
 (*    that blocks. The pre-#1005 shape deadlocks: both readers block on a  *)
 (*    full channel while the only frames that would free a channel are     *)
 (*    behind the other blocked reader.                                     *)
-(*  - Whether a callee answers a call it cancelled while running.          *)
-(*    `Replies = "always" | "never"`, both allowed (SESS-61): a call still *)
-(*    queued is dropped without a reply in both.                           *)
+(*  - How a callee resolves a cancel it read (protocol 5, SESS-61).       *)
+(*    `CancelTable = "ack"` is the rule: a call still queued is dropped, a *)
+(*    running one keeps running, and either way the callee acknowledges    *)
+(*    and answers no more; `Replies = "always"` is the mutation that       *)
+(*    replies after the acknowledgement. A reply written before the cancel *)
+(*    was read is still allowed and arrives first.                         *)
 (*  - What a locally abandoned synchronous call leaves behind. `Abandon =  *)
 (*    "keep"` keeps the caller's waiter until the reply (today's sync      *)
 (*    wait, which has no drop guard); `"drop"` forgets it without a        *)
@@ -41,27 +44,31 @@
 (*    so a peer that stopped reading ends the session rather than growing *)
 (*    the queue.                                                          *)
 (*  - The caller's cancelled table and what clears it (#1099, and the      *)
-(*    `BoundedTables` of #626). `CancelTable = "late"` is today's: only a  *)
-(*    late reply clears an entry, and no conforming callee answers a call  *)
-(*    cancelled while queued. `"ack"` adds a cancel acknowledgement frame *)
-(*    (the callee must then never answer) and `"bounded"` keeps at most    *)
-(*    `TableCap` entries and forgets the oldest, whose replies it then     *)
-(*    discards instead of failing them (`SESS-41` relaxed); `"forget"`     *)
-(*    drops the entry at once, which the late reply of a running call then *)
-(*    turns into an unknown call (`call-gap-unknown-late`).               *)
+(*    `BoundedTables` of #626). `CancelTable = "ack"` is protocol 5's rule: *)
+(*    the callee acknowledges the cancel it read and answers no more, so   *)
+(*    the entry goes on the ack, and an ack that crossed a reply (which    *)
+(*    cleared the table first) is ignored. `"late"` is the shape before    *)
+(*    protocol 5: only a late reply clears an entry, and no conforming     *)
+(*    callee answers a call cancelled while queued, so it grows            *)
+(*    (`call-gap-cancel-table`). `"bounded"` keeps at most `TableCap`      *)
+(*    entries and forgets the oldest, whose replies it then discards       *)
+(*    instead of failing them (`SESS-41` relaxed); `"forget"` drops the    *)
+(*    entry at once, which the late reply of a running call then turns     *)
+(*    into an unknown call (`call-gap-unknown-late`).                      *)
 (*                                                                         *)
 (* Design: docs/protocol-session.md §5 (call numbers, one settlement),     *)
-(* §6 (references), §7 (cancel, "the callee's reply after a cancel is not  *)
-(* guaranteed"), §10 (backlog and `outbound_limit`);                       *)
+(* §6 (references), §7 (cancel, a callee resolves it with `ack` or the      *)
+(* reply it wrote first), §10 (backlog and `outbound_limit`);              *)
 (* docs/formal-trace.md §3.4 (cancel) and §3.5 (errors);                   *)
 (* docs/design-formal-verification-2026-11-08.md §3.4; issue #626, #1099.  *)
 (* Implementation: crates/rutis-bridge/src/session/rpc.rs —                *)
 (* `Calls::admit` (a call number is taken once and only grows),            *)
 (* `reply_target` (a reply takes its waiter out; the reply of a cancelled  *)
 (* call is discarded and counted in `orphans`), `receive` for              *)
-(* `Frame::Cancel` (a queued call is dropped without a reply, a running    *)
-(* one still replies), `Frame::Release` (the export entry goes when its    *)
-(* grants reach zero, `release of unknown reference` beyond them) and      *)
+(* `Frame::Cancel` and `Frame::Ack` (a queued call is dropped, a running   *)
+(* one's result dropped, and the cancel acknowledged), `Frame::Release`    *)
+(* (the export entry goes when its grants reach zero, `release of          *)
+(* unknown reference` beyond them) and                                    *)
 (* `Frame::Return` (the reader writes back a `throw`/`release`; README     *)
 (* "Model"), `Import`'s `Drop` (the arguments and the relayed references   *)
 (* write `release` back), `Connection::cancel`, `Connection::close` (the   *)
@@ -560,9 +567,11 @@ AReadAck(c) ==
     /\ ablock = <<>>
     /\ toA /= <<>>
     /\ Head(toA) = <<"ack", c>>
-    /\ aTable[c] = "cancelled"
+    /\ acall[c] = "cancelled"
+    /\ aTable[c] \in {"cancelled", "none"}
     /\ toA' = Tail(toA)
-    /\ aTable' = [aTable EXCEPT ![c] = "none"]
+    /\ aTable' = IF aTable[c] = "cancelled"
+                 THEN [aTable EXCEPT ![c] = "none"] ELSE aTable
     /\ UNCHANGED <<aclosed, bclosed, closeCause, acall, anext, aid, aedge,
                    bcall, bseq, bmark, bcancelled, cancels, toB, aout, bout,
                    ablock, bblock, aheld, bgrants, granted, aReleased,
@@ -836,7 +845,10 @@ BReadCancel(c) ==
                ELSE bmark
     /\ bcancelled' = IF Replies = "never" /\ bcall[c] = "running"
                      THEN [bcancelled EXCEPT ![c] = TRUE] ELSE bcancelled
-    /\ IF CancelTable = "ack"
+    \* An acknowledgement resolves a call the callee still had: queued or
+    \* running. A call already answered is not acknowledged: the reply it
+    \* wrote cleared the caller's entry (the cancel crossed it).
+    /\ IF CancelTable = "ack" /\ bcall[c] \in {"queued", "running"}
        THEN ReaderToA(<<"ack", c>>)
        ELSE UNCHANGED <<toA, bout, bblock>>
     /\ UNCHANGED <<aclosed, bclosed, closeCause, acall, anext, aid, aTable,

@@ -63,7 +63,7 @@ class FrameDepthTest {
         val far = Far(there)
         peer.start()
         far.next() // this side's greeting
-        far.send("""{"op":"hello","version":4,"endpoint":"main"}""")
+        far.send("""{"op":"hello","version":5,"endpoint":"main"}""")
         peer.readyFuture.get(5, TimeUnit.SECONDS)
         return far
     }

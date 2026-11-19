@@ -38,8 +38,9 @@ from .plugin import Plugin
 from .channel import MAX_MESSAGE, SocketChannel
 
 # The session protocol: endpoint ids in the handshake and the call ids,
-# capabilities, either side calling the other.
-ENDPOINT_PROTOCOL = 4
+# capabilities, either side calling the other, and a cancel resolved by an
+# acknowledgement or a reply.
+ENDPOINT_PROTOCOL = 5
 # What this implementation supports. `sync-stack`: calls run while it
 # waits are stacked on its one thread; `value-<tag>`: it takes every tagged
 # value (#308, `rutis._values`).
@@ -996,7 +997,14 @@ class Peer:
         self._received = 0
         self._ref = 0
         self._pending: dict[str, Callable] = {}
+        # Calls this side gave up: until the callee resolves one (a late
+        # reply, or an ack that clears the entry), #1099.
         self._cancelled: set[str] = set()
+        # Incoming calls admitted and not answered yet (queued or running),
+        # and those a cancel resolved: their result is dropped and no reply
+        # follows (protocol 5, #1099).
+        self._admitted: set[str] = set()
+        self._suppressed: set[str] = set()
         self._exports: dict[int, _Export] = {}
         self._identities: dict[int, int] = {}
         self._imports: dict[int, _Import] = {}
@@ -1153,6 +1161,8 @@ class Peer:
         self._exports.clear()
         self._imports.clear()
         self._queued.clear()
+        self._admitted.clear()
+        self._suppressed.clear()
         with self._cv:
             self._cv.notify_all()
         for waiter in self._draining:
@@ -1811,6 +1821,14 @@ class Peer:
             call = frame.get("id")
             if not isinstance(call, str):
                 raise ValueError("invalid cancel")
+            known = self._drop_queued(call)
+            if call in self._admitted:
+                # Running, or an await in progress: the call keeps running,
+                # its result is dropped, and the cancel is acknowledged. The
+                # caller gets exactly one resolution: this ack or the reply
+                # written before the cancel was read (protocol 5, #1099).
+                self._suppressed.add(call)
+                known = True
             signal = self._signals.get(call)
             if signal is not None:
                 signal._cancel()
@@ -1819,10 +1837,16 @@ class Peer:
                 task.cancel()
             elif call in self._starting:
                 self._cancel_early.add(call)
-            else:
-                # Read before the loop ran it: dropped, never answered
-                # (session protocol §7, SESS-57; #630).
-                self._drop_queued(call)
+            if known:
+                self._send({"op": "ack", "id": call})
+            return
+        if op == "ack":
+            call = frame.get("id")
+            if not isinstance(call, str):
+                raise ValueError("invalid ack")
+            # The callee resolved the cancel. One whose entry is gone crossed
+            # the reply that cleared it: read and ignored.
+            self._cancelled.discard(call)
             return
         if op == "release":
             entry = self._export(frame.get("reference"))
@@ -1884,6 +1908,7 @@ class Peer:
             self._active += 1
         job = _Job(frame, args, entry, business)
         self._queued[job] = None
+        self._admitted.add(job.frame["id"])
         if self._waiting:
             self._run(job)
         else:
@@ -1892,7 +1917,7 @@ class Peer:
     def _related(self, job: _Job) -> bool:
         return any(call in job.frame["path"] for call in self._waiting)
 
-    def _drop_queued(self, call: str) -> None:
+    def _drop_queued(self, call: str) -> bool:
         """Drop the call `call` if the loop has not started it yet: it never
         runs and is never answered, as Rust's callee does (session protocol
         §7, SESS-57). A running one is left to its signal and its task. The
@@ -1901,10 +1926,12 @@ class Peer:
         for job in list(self._queued):
             if job.frame["id"] == call:
                 del self._queued[job]
+                self._admitted.discard(call)
                 self._signals.pop(call, None)
                 if job.business:
                     self._finish()
-                return
+                return True
+        return False
 
     def _run(self, job: _Job) -> None:
         if job not in self._queued:
@@ -2009,6 +2036,9 @@ class Peer:
         is known, for messages). A result that cannot be sent (a value the
         far end does not take, a message over the channel's limit) is
         answered with an error saying why instead (#675)."""
+        self._admitted.discard(call)
+        suppressed = call in self._suppressed
+        self._suppressed.discard(call)
         # A signal lives until the call's result settles: a returned future
         # keeps it, so cancelling an await of it still reaches it.
         ok_value = result[1] if result[0] else None
@@ -2018,6 +2048,10 @@ class Peer:
             self._signals.pop(call, None)
         grants: list = []
         try:
+            if suppressed:
+                # The cancel was acknowledged already: the result is dropped
+                # (with what it held) and no reply follows (#1099).
+                return
             if self.closed_error is not None:
                 return
             ok, value = result

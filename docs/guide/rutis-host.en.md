@@ -352,7 +352,7 @@ The connections of connection rows (`rutis-host/dial`, `rutis-host/listen`; see 
 gpu: connected
 gpu: disconnected (gpu.example.com:7443: Connection refused); retrying in 2.1s
 gpu: disconnected (auth-rejected: gpu.example.com:7443: upgrade refused with 403 Forbidden); retrying in 30s
-gpu: disconnected (incompatible: this endpoint speaks rutis.3, the dialer offered rutis.4: upgrade this endpoint (PyPI rutis)); stopped
+gpu: disconnected (incompatible: this endpoint speaks rutis.3, the dialer offered rutis.5: upgrade this endpoint (PyPI rutis)); stopped
 phone: connected phone-1
 phone: disconnected phone-1 (connection lost)
 phone: disconnected phone-1 (replaced by a new connection)

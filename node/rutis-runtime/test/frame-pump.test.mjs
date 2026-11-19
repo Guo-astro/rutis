@@ -115,11 +115,12 @@ test('a frame read inside a wait runs there; one read behind it waits its turn',
 })
 
 // Frames are read in order but the call they carry starts on a later tick, so
+// guarantee: bridge/cancel-reaches-callee
 // a cancel can arrive before its method runs — the case #630 suspects for
 // Python ("a cancel that arrives while its task is still deferred is lost").
-// Here it is not lost: the submitted signal is already aborted when the method
-// starts, and the call still answers.
-test('a cancel read before its deferred frame runs reaches the method', async () => {
+// A queued call a cancel resolves never starts, and the cancel is
+// acknowledged: the caller's cancelled table drains (protocol 5, #1099).
+test('a cancel read before its deferred frame runs drops it and is acknowledged', async () => {
   let signal
   const { peer, sent, fault } = wire((_, method, args) => {
     if (method === 'listen') { signal = args[0]; return signal.aborted ? 'already cancelled' : 'listening' }
@@ -130,8 +131,8 @@ test('a cancel read before its deferred frame runs reaches the method', async ()
   peer.receive({ op: 'cancel', id: 'rust:1' })
   assert.equal(signal, undefined, 'the method had not started when the cancel was read')
   await Promise.resolve()
-  assert.equal(signal.aborted, true)
-  assert.deepEqual(sent, [{ op: 'return', id: 'rust:1', value: data('already cancelled') }])
+  assert.equal(signal, undefined, 'the dropped call never starts')
+  assert.deepEqual(sent, [{ op: 'ack', id: 'rust:1' }])
   // A cancel for a call that is gone is read and ignored, not a fault
   // (formal-trace §3.4: the protocol's only tolerated dangling id).
   peer.receive({ op: 'cancel', id: 'rust:1' })

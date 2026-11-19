@@ -1,8 +1,8 @@
-# Session Protocol Specification: Protocol 4
+# Session Protocol Specification: Protocol 5
 
 [中文](protocol-session.md)
 
-Status: current specification. Date: 2026-11-16 (first version 2026-11-09; this revision changes §1's pointers, `SESS-61` and G3).
+Status: current specification. Date: 2026-11-18 (first version 2026-11-09; this revision adds protocol 5: the `ack` frame, `SESS-57`, `SESS-61`, §8 and G3).
 Issue: [#635](https://github.com/arcships/rutis/issues/635), part of step 4 of [#183](https://github.com/arcships/rutis/issues/183); the work plan is [the 0.22 formal coverage plan](plan/formal-verification-0.22.en.md) WS2. Trace and verification vocabulary: [session trace contract](formal-trace.en.md).
 
 This is the only current specification of the session layer: what two ends exchange on one channel, what happens on errors and cancellation, which messages fail only one call and which end the session. Rows, service announcement, events, authentication, reconnect backoff and runtime supervision are out of scope; each has its own current specification: the [row protocol](protocol-rows.en.md) for rows, host-service leases, and a row ending or failing; the [events protocol](design-events-protocol-2026-10-18.en.md) for events; the [remote lease model](../specs/remote-lease/README.en.md) and the [remote session design](design-remote-session-2026-10-28.en.md) for remote leases and reconnection. This file is also the source from which #634's trace table extracts its `session` partition.
@@ -21,7 +21,7 @@ The rules are the contract. Error **text** is a contract only where this file qu
 
 - `SESS-1` **Current.** A session runs on one [`Channel`](https://github.com/arcships/rutis/blob/main/crates/rutis-bridge/src/channel/mod.rs): one ordered, reliable, duplex stream of messages that keeps message boundaries and moves opaque bytes. The channel knows nothing of frames, calls or references. `crates/rutis-bridge/src/channel/mod.rs:1-9,20-48`
 - `SESS-2` **Current.** Every message is a UTF-8 JSON object tagged by `op`; the session layer encodes, decodes and maps errors. Reads happen in arrival order, one frame at a time. `crates/rutis-bridge/src/session/rpc.rs:1557-1570,3207-3216`
-- `SESS-3` **Current.** The protocol version is 4 (`ENDPOINT_PROTOCOL`). Rust, Node, Bun, Python, Go, Swift and Kotlin use the same constant; the WebSocket subprotocol is `rutis.4`. `crates/rutis-bridge/src/session/mod.rs:9-14`; `node/rutis-runtime/src/session.mjs:58`; `bun/rutis-bun/src/session.ts:57`; `python/rutis/rutis/peer.py:42`; `go/rutis/internal/peer/peer.go:34`; `swift/rutis/Sources/Rutis/Session/Peer.swift:13`; `kotlin/rutis/rutis/src/shared/kotlin/arcships/rutis/internal/peer/Peer.kt:42`; `crates/rutis-host/src/connect/listen.rs:74,408`
+- `SESS-3` **Current.** The protocol version is 5 (`ENDPOINT_PROTOCOL`). Rust, Node, Bun, Python, Go, Swift and Kotlin use the same constant; the WebSocket subprotocol is `rutis.5`. `crates/rutis-bridge/src/session/mod.rs:9-14`; `node/rutis-runtime/src/session.mjs:58`; `bun/rutis-bun/src/session.ts:57`; `python/rutis/rutis/peer.py:42`; `go/rutis/internal/peer/peer.go:34`; `swift/rutis/Sources/Rutis/Session/Peer.swift:13`; `kotlin/rutis/rutis/src/shared/kotlin/arcships/rutis/internal/peer/Peer.kt:42`; `crates/rutis-host/src/connect/listen.rs:74,408`
 - `SESS-4` **Current.** A session has two endpoint ids (each side's self-named `endpoint`), and each side's call ids carry its own id as a prefix. An id is unique in a deployment; the deployment guarantees it. A new connection with the same id replacing the old one is a connection-layer rule, not this file. `crates/rutis-bridge/src/channel/mod.rs:77-109`; `crates/rutis-bridge/src/session/rpc.rs:1493-1499,2443-2489`
 - `SESS-5` **Current.** Reconnecting makes a new session. The old session's calls, references and late frames do not enter the new session; no old state carries over. `docs/formal-trace.en.md` §3.0; `crates/rutis-bridge/tests/session_plugin.rs:182-270`
 - **Superseded:** a session may use either of two wire formats, a "compat" format and an "endpoint" format. Protocol 4 has one format (§2.3).
@@ -30,7 +30,7 @@ The rules are the contract. Error **text** is a contract only where this file qu
 
 ### 2.1 Frames
 
-`SESS-6` **Current.** The frame vocabulary is the nine `Frame` variants; `op` is snake_case, and an unknown `op` ends the session. The fields below are the fields; anything not listed does not exist (§9). `crates/rutis-bridge/src/session/protocol.rs:154-222`
+`SESS-6` **Current.** The frame vocabulary is the ten `Frame` variants; `op` is snake_case, and an unknown `op` ends the session. The fields below are the fields; anything not listed does not exist (§9). `crates/rutis-bridge/src/session/protocol.rs:149-230`
 
 | Frame | Fields | Meaning |
 | --- | --- | --- |
@@ -43,6 +43,7 @@ The rules are the contract. Error **text** is a contract only where this file qu
 | `throw` | `id: string`; `error: Failure` | The error of a call. `Failure` is `{name: string, message: string, graph?: JSON}`. |
 | `release` | `reference: u64`; `count: u64` | Return a number of reference grants (§6). |
 | `cancel` | `id: string` | The caller gives up call `id` (§7). |
+| `ack` | `id: string` | The callee resolved the cancel of call `id`: it will send no `return`/`throw` for it (§7). |
 
 `SESS-7` **Current.** `sync` defaults to `false` and is not written when `false`. `hello`'s `endpoint`, `implementation` and `capabilities`, and `throw`'s `graph`, are not written when absent. `crates/rutis-bridge/src/session/protocol.rs:157-221`
 
@@ -68,11 +69,11 @@ The rules are the contract. Error **text** is a contract only where this file qu
 
 ### 2.3 Formats
 
-`SESS-12` **Current.** There is one wire format: the endpoint format, protocol 4. A call id is always `<endpoint>:<n>`; there are no call ids without an endpoint prefix, and no second `hello`. `crates/rutis-bridge/src/session/mod.rs:9-14`; [migration to 0.19](migration-0.19.en.md) "Upgrading together"; `crates/rutis-bridge/src/session/rpc.rs:1493-1499,2456-2462`
+`SESS-12` **Current.** There is one wire format: the endpoint format, protocol 5. A call id is always `<endpoint>:<n>`; there are no call ids without an endpoint prefix, and no second `hello`. `crates/rutis-bridge/src/session/mod.rs:9-14`; [migration to 0.19](migration-0.19.en.md) "Upgrading together"; `crates/rutis-bridge/src/session/rpc.rs:1493-1499,2456-2462`
 
 `SESS-13` **Superseded.** The two formats of issue #635 and older designs: compat format 2 (no endpoint, `node:n` / `rust:n` call ids) and endpoint format 3. Since 0.19, protocol 4 has only the endpoint format; far ends of 0.18 and earlier are refused at the handshake and are fixed by upgrading every end to 0.19. `docs/migration-0.19.en.md` "Upgrading together"; `crates/rutis-bridge/src/session/rpc.rs:2456-2462`
 
-`SESS-14` **Superseded.** "`sync` is sent only to a far end that declared `sync-wait`." Protocol 4 has no `sync-wait` capability; `sync` is a frame field every protocol-4 implementation knows, serialized as in §2.1.
+`SESS-14` **Superseded.** "`sync` is sent only to a far end that declared `sync-wait`." Protocol 5 has no `sync-wait` capability; `sync` is a frame field every protocol-5 implementation knows, serialized as in §2.1.
 
 ### 2.4 Capabilities
 
@@ -147,7 +148,7 @@ Receivers are not equally strict: Node, Bun, Go, Swift and Kotlin require `^[1-9
 
 `SESS-36` **Current.** Forwarding to another session rewrites entries by session tag (`rebase`): an untagged entry gets the source session's tag; an entry tagged for the target session is restored to its native call id there; entries of other sessions pass through. A tag is `s` + a process random number (15 decimal digits) + a counter. `crates/rutis-bridge/src/session/rpc.rs:849-902`; [session tags design](design-session-tags-2026-10-12.en.md) §4; `bridge/call-chains-across-processes` in `docs/guarantees.en.md`
 
-`SESS-37` **Not guaranteed.** Tag uniqueness is probabilistic (two processes' random numbers are equal with probability about 10⁻¹⁵); two processes of 0.9 or earlier still have the old tag problem. That belongs to the connection layer and historical compatibility, not to protocol 4.
+`SESS-37` **Not guaranteed.** Tag uniqueness is probabilistic (two processes' random numbers are equal with probability about 10⁻¹⁵); two processes of 0.9 or earlier still have the old tag problem. That belongs to the connection layer and historical compatibility, not to protocol 5.
 
 ### 5.3 Synchronous and asynchronous
 
@@ -159,7 +160,7 @@ Receivers are not equally strict: Node, Bun, Go, Swift and Kotlin require `^[1-9
 
 ### 5.4 Settling a call
 
-`SESS-41` **Current.** Every call settles exactly once. A reply removes the waiter from the waiting table before settling; a second reply, or a reply to a call this side is not waiting for, is a protocol error and ends the session with `response for unknown call`. `crates/rutis-bridge/src/session/rpc.rs:2490-2503`
+`SESS-41` **Current.** Every call settles exactly once. A reply removes the waiter from the waiting table before settling; a second reply, or a reply to a call this side is not waiting for and did not cancel, is a protocol error and ends the session with `response for unknown call`. A reply to a call in the cancelled table is discarded and counted (§7); an `ack` resolves a cancelled call without settling it. `crates/rutis-bridge/src/session/rpc.rs:2490-2503`
 
 `SESS-42` **Current.** The session layer never retries automatically. A call is written once; a failure is returned to the caller as `Err`. Resending the same call id is not a retry but a repeated call (§5.1). Reconnecting makes a new session; the old session's calls are not replayed on it. `crates/rutis-bridge/src/session/rpc.rs:1982,1085-1095`; `bridge/in-flight-call-fails-once` in `docs/guarantees.en.md`; `docs/formal-trace.en.md` §3.0
 
@@ -189,7 +190,7 @@ Receivers are not equally strict: Node, Bun, Go, Swift and Kotlin require `^[1-9
 
 `SESS-52` **Current.** An object with methods crosses by reference: `kind: "object"`, a method call is a `call` with `method`, a property read is `get`. Every protocol-4 implementation takes object references, and senders do not check a capability. `crates/rutis-bridge/src/session/rpc.rs:2690-2736`; `bridge/object-refs` in `docs/guarantees.en.md`
 
-`SESS-53` **Superseded.** "Object references are sent only to a far end that declared `objects`", and the `objects` capability itself (a 0.18 compat-format rule). Protocol 4 has neither the capability nor a refusal branch for it. So the #639 finding that a Rust relay does not check `objects` has no reachable check point in a protocol-4 session; far ends of 0.18 and earlier are already refused at the handshake (`SESS-79`).
+`SESS-53` **Superseded.** "Object references are sent only to a far end that declared `objects`", and the `objects` capability itself (a 0.18 compat-format rule). Protocol 5 has neither the capability nor a refusal branch for it. So the #639 finding that a Rust relay does not check `objects` has no reachable check point in a protocol-5 session; far ends of 0.18 and earlier are already refused at the handshake (`SESS-79`).
 
 `SESS-54` **Current.** Forwarding: a reference imported on session A and given to session B reaches B as a relay of the same `kind`; B's calls, reads and awaits are forwarded to A with the chain rewritten; releasing the relay releases on A. A plugin definition is never relayed to a third session; sending it there fails only that call. `crates/rutis-bridge/src/session/rpc/relay.rs:19-78,93-175`; `bridge/object-refs` and `bridge/plugin-values` in `docs/guarantees.en.md`
 
@@ -197,24 +198,26 @@ Receivers are not equally strict: Node, Bun, Go, Swift and Kotlin require `^[1-9
 
 ## 7. Cancellation
 
-`SESS-56` **Current.** `cancel {id}` means the caller gives up call `id`. The caller sends it when it drops the future of an unfinished async call; a result already returned but not yet consumed by the caller may also be cancelled. `crates/rutis-bridge/src/session/protocol.rs:217-221`; `crates/rutis-bridge/src/session/rpc.rs:1114-1129,2020-2049`
+`SESS-56` **Current.** `cancel {id}` means the caller gives up call `id`. The caller sends it when it drops the future of an unfinished async call; a result already returned but not yet consumed by the caller may also be cancelled. From the moment it sends the cancel until the callee resolves it (a late reply or an `ack`), the caller keeps the call in its cancelled table. `crates/rutis-bridge/src/session/protocol.rs:210-230`; `crates/rutis-bridge/src/session/rpc.rs:2273-2300,2952-2996`
 
 `SESS-57` **Current.** (Rust callee) On `cancel`:
 
-- a call still queued and not started is dropped without a reply; the exception is an admitted `emit`-mode `events.dispatch`: it starts as usual ([events protocol](design-events-protocol-2026-10-18.en.md) §5.7) and the caller discards its late reply (#1121).
-- an `await` in progress is dropped without a reply.
-- a synchronous call already running completes and replies as usual; cancellation does not interrupt a method already running.
+- a call still queued and not started is dropped: the method never runs, its argument references go back, and the cancel is acknowledged; the exception is an admitted `emit`-mode `events.dispatch`: it starts as usual ([events protocol](design-events-protocol-2026-10-18.en.md) §5.7), is acknowledged, and its reply is dropped (#1121).
+- an `await` in progress is dropped and acknowledged.
+- a call already running completes (cancellation does not interrupt a method already running); its result is dropped and the cancel is acknowledged.
+- if the reply was written before the `cancel` was read, that reply is the resolution: the cancel is not acknowledged, and the caller discards the reply.
 - a late reply to a cancelled call is discarded and counted (`orphans()`), not treated as a protocol error and not closing the session.
+- after writing an `ack` the callee sends no `return`/`throw` for that call.
 
-`crates/rutis-bridge/src/session/rpc.rs:2702-2721,2503-2516,2047-2060`; test `crates/rutis-bridge/src/session/rpc/tests.rs::a_cancelled_emit_dispatch_stays_queued`
+`crates/rutis-bridge/src/session/rpc.rs:2273-2300,2952-2996,3384-3425`; tests `crates/rutis-bridge/src/session/rpc/tests.rs::a_queued_cancelled_call_is_dropped_and_acknowledged`, `::a_running_cancelled_call_is_acknowledged_and_its_reply_dropped`, `::a_cancelled_emit_dispatch_stays_queued`
 
-`SESS-58` **Current.** A `cancel` for a call that does not exist is ignored; it may have crossed the reply of the call it cancels. This is the only tolerated dangling call id. `crates/rutis-bridge/src/session/rpc.rs:2702-2721`; test `crates/rutis-bridge/src/session/rpc/tests.rs::a_cancel_for_an_unknown_call_is_ignored`
+`SESS-58` **Current.** A `cancel` for a call that does not exist is ignored and not acknowledged; it may have crossed the reply of the call it cancels. This is the only tolerated dangling call id. `crates/rutis-bridge/src/session/rpc.rs:2952-2996`; test `crates/rutis-bridge/src/session/rpc/tests.rs::a_cancel_for_an_unknown_call_is_ignored`
 
 `SESS-59` **Current.** Cancellation propagates hop by hop: when a wait forwarding through a relay is cancelled, the dropped forwarded request sends `cancel` to the next hop; across a link likewise. Cancellation does not undo reference grants already made. `crates/rutis-bridge/src/session/rpc/relay.rs:148-173`; `crates/rutis-bridge/src/session/rpc.rs:2020-2031`; `bridge/multihop-cancel-and-release` in `docs/guarantees.en.md`
 
 `SESS-60` **Current.** Cancellation itself does not close the session; other calls go on. `crates/rutis-bridge/src/session/rpc.rs:2702-2721`; `go/rutis/internal/peer/peer_test.go:135-170`; `go/rutis/internal/peer/objects_test.go:66-103`
 
-`SESS-61` **Not guaranteed.** After a cancellation the callee may reply or not; both are legal, and the caller must take either — it cannot rely on a reply to clean up its state, and a missing reply is not an error. Current behaviour: Rust does not reply to a queued call or a cancelled `await`, runs an admitted `emit` dispatch to the end and lets the caller discard that reply, and replies as usual to a synchronous call already running; the other languages decide by method and signal. `bridge/cancel-reaches-callee` in `docs/guarantees.en.md` only promises that the cancellation arrives. When the caller's cancelled table (`calls.cancelled`) is cleaned up, and whether a cancel acknowledgement frame is added, is #1099's to decide; until then no side's behaviour here is a cross-implementation reply promise (the #626 model verifies both reply rules as settled at most once with no reference leaked).
+`SESS-61` **Current.** A cancel is resolved exactly once by the callee: either it sends `ack {id}` and then no `return`/`throw` for that call, or the reply it wrote before reading the cancel is its resolution and no `ack` follows. A callee acknowledges every cancel it still knows (queued, running, or an await in progress); it does not acknowledge one for a call it already answered, dropped or never had. The caller must take either resolution, discards a reply that crossed the cancel (counting it in `orphans`), clears the cancelled entry on the `ack`, and ignores an `ack` whose entry a crossed reply already cleared. A reply after an `ack` is the protocol error of `SESS-41` and ends the session; a conforming callee never sends one. Every implementation acknowledges and suppresses the reply (Rust, Node, Bun, Python, Go, Swift and Kotlin); `bridge/cancel-reaches-callee` in `docs/guarantees.en.md` states the promise. `crates/rutis-bridge/src/session/rpc.rs:2273-2300,2952-2996,3384-3425`; `specs/call-lifecycle` configurations `call-gap-ack`, `call-mut-ack-then-reply`, `relay-healthy` and `relay-mut-ack-then-reply`
 
 `SESS-62` **Superseded.** "Cancellation is closing the transport" and "a cancelled session is unusable". Cancellation affects only one call.
 
@@ -234,7 +237,8 @@ Receivers are not equally strict: Node, Bun, Go, Swift and Kotlin require `^[1-9
 | `release` for a reference that does not exist | `release of unknown reference` | `crates/rutis-bridge/src/session/rpc.rs:2655-2676` |
 | `release.count` of 0 or above the grant count | `invalid reference release count` | same |
 | A method call or property read on a non-object reference | `method call or property read on a non-object reference` | `crates/rutis-bridge/src/session/rpc/relay.rs:79-87` |
-| A `return` / `throw` for an unknown call (not a late reply after cancellation) | `response for unknown call` | `crates/rutis-bridge/src/session/rpc.rs:2490-2503` |
+| A `return` / `throw` for an unknown call (not a late reply after cancellation) | `response for unknown call` | `crates/rutis-bridge/src/session/rpc.rs:2918-2943` |
+| An `ack` of the wrong field type | Session ends, transport error | `MALFORMED_SEQUENCES` "ack of a wrong field type" |
 | A second `hello` | `duplicate protocol handshake` | `crates/rutis-bridge/src/session/rpc.rs:2602-2614` |
 | Any other frame before the greeting | `request before protocol handshake` | `crates/rutis-bridge/src/session/rpc.rs:2616-2618` |
 | A call id that repeats, goes backwards, is not numeric, exceeds 2^53−1, or lacks the far end's prefix | `invalid or repeated invocation identity` / `invalid invocation identity/path` | `crates/rutis-bridge/src/session/rpc.rs:1085-1095,2739-2742` |
@@ -253,9 +257,9 @@ Receivers are not equally strict: Node, Bun, Go, Swift and Kotlin require `^[1-9
 | A `cancel` for a call that does not exist | Ignored | `crates/rutis-bridge/src/session/rpc/tests.rs:329-361` |
 | A late reply to a cancelled call | Discarded and counted; the session is not closed | `crates/rutis-bridge/src/session/rpc.rs:2490-2501` |
 
-`SESS-64` **Current.** The shared malformed-frame matrix has 25 cases: 13 single frames in `MALFORMED` (syntax, fields, unknown references, unknown replies) and 12 multi-frame/ordered cases in `MALFORMED_SEQUENCES` (a request before the greeting, a second `hello`, an invocation with no `id`, `get` on an unknown reference, a released reference, a `release` count of 0 or above the grant, wrong field types in `cancel`/`throw`, a `throw` for an unknown call, a `path` containing the frame's own id, a repeated call id). A case requires the session to end with a transport error; apart from the replies owed to the case's valid calls, the far end replies to nothing. All seven implementations have an entry point: Rust uses the memory channel, the others a Unix socket, loopback or WebSocket; Swift's cases compile only on macOS and run in CI's `runtimes-swift` job. `crates/rutis-bridge/src/session/testing.rs:151-392`; `crates/rutis-bridge/tests/runtime_conformance.rs:452-633`; `docs/ci.en.md` "Conformance matrix"
+`SESS-64` **Current.** The shared malformed-frame matrix has 26 cases: 13 single frames in `MALFORMED` (syntax, fields, unknown references, unknown replies) and 13 multi-frame/ordered cases in `MALFORMED_SEQUENCES` (a request before the greeting, a second `hello`, an invocation with no `id`, `get` on an unknown reference, a released reference, a `release` count of 0 or above the grant, wrong field types in `cancel`/`ack`/`throw`, a `throw` for an unknown call, a `path` containing the frame's own id, a repeated call id). A case requires the session to end with a transport error; apart from the replies owed to the case's valid calls, the far end replies to nothing. All seven implementations have an entry point: Rust uses the memory channel, the others a Unix socket, loopback or WebSocket; Swift's cases compile only on macOS and run in CI's `runtimes-swift` job. `crates/rutis-bridge/src/session/testing.rs:151-392`; `crates/rutis-bridge/tests/runtime_conformance.rs:452-633`; `docs/ci.en.md` "Conformance matrix"
 
-`SESS-65` **Superseded.** "A second `hello`, a request before the greeting, `get` on an unknown reference, a released reference, a `release` count of 0 or above the grants, wrong field types in `cancel`/`throw`, a `throw` for an unknown call, a `path` containing the frame's id and a call id that does not increase are enforced by code but are not in the shared matrix run by the seven implementations." That is no longer the state: every rule in that list is now in the 25-case matrix (`SESS-64`, §14 G2), with the call-id item covering a repeated id. Still verified by code alone: a method call or property read on a non-object reference; a call id that goes backwards, is not numeric, exceeds 2^53−1 or lacks the far end's prefix; `throw.error` missing `name`/`message` (the matrix has an `error` that is not an object only); a frame deeper than 208 levels; a message over the channel's limit.
+`SESS-65` **Superseded.** "A second `hello`, a request before the greeting, `get` on an unknown reference, a released reference, a `release` count of 0 or above the grants, wrong field types in `cancel`/`ack`/`throw`, a `throw` for an unknown call, a `path` containing the frame's id and a call id that does not increase are enforced by code but are not in the shared matrix run by the seven implementations." That is no longer the state: every rule in that list is now in the 26-case matrix (`SESS-64`, §14 G2), with the call-id item covering a repeated id. Still verified by code alone: a method call or property read on a non-object reference; a call id that goes backwards, is not numeric, exceeds 2^53−1 or lacks the far end's prefix; `throw.error` missing `name`/`message` (the matrix has an `error` that is not an object only); a frame deeper than 208 levels; a message over the channel's limit.
 
 ## 9. Unknown fields
 
@@ -301,16 +305,16 @@ The table is this file's rule list, for #634's trace table and #613's models. Ev
 | --- | --- | --- | --- |
 | `SESS-1` | A session is one ordered, reliable, duplex, boundary-preserving message stream | Current | `crates/rutis-bridge/src/channel/mod.rs:1-9,20-48` |
 | `SESS-2` | One UTF-8 JSON frame per message, one at a time in arrival order | Current | `crates/rutis-bridge/src/session/rpc.rs:1557-1570,3207-3216` |
-| `SESS-3` | Protocol 4, one constant in seven implementations, WebSocket subprotocol `rutis.4` | Current | `crates/rutis-bridge/src/session/mod.rs:9-14` and each implementation's constant |
+| `SESS-3` | Protocol 5, one constant in seven implementations, WebSocket subprotocol `rutis.5` | Current | `crates/rutis-bridge/src/session/mod.rs:9-15` and each implementation's constant |
 | `SESS-4` | Two endpoint ids; call ids carry this end's prefix | Current | `crates/rutis-bridge/src/channel/mod.rs:77-109`; `crates/rutis-bridge/src/session/rpc.rs:1493-1499` |
 | `SESS-5` | A reconnect is a new session; old state does not carry over | Current | `docs/formal-trace.en.md` §3.0; `crates/rutis-bridge/tests/session_plugin.rs:182-270` |
-| `SESS-6` | The nine frames and their fields | Current | `crates/rutis-bridge/src/session/protocol.rs:154-222` |
+| `SESS-6` | The ten frames and their fields | Current | `crates/rutis-bridge/src/session/protocol.rs:149-230` |
 | `SESS-7` | `sync` and optional fields omitted when absent | Current | `crates/rutis-bridge/src/session/protocol.rs:157-221` |
 | `SESS-8` | `path` is the call chain; its entries are call ids | Current | `crates/rutis-bridge/src/session/rpc.rs:2739-2742` |
 | `SESS-9` | The `WireValue` tag set | Current | `crates/rutis-bridge/src/session/protocol.rs:26-85` |
 | `SESS-10` | `undefined` kept as a whole, `null` inside a value | Current | `crates/rutis-bridge/src/session/rpc.rs:2356-2359,2567-2573` |
 | `SESS-11` | A tagged value goes only to an end declaring `value-<tag>` | Current | `crates/rutis-bridge/src/session/rpc.rs:2204-2214` |
-| `SESS-12` | One format only: endpoint, protocol 4 | Current | `docs/migration-0.19.en.md` "Upgrading together"; `crates/rutis-bridge/src/session/rpc.rs:2456-2462` |
+| `SESS-12` | One format only: endpoint, protocol 5 | Current | `docs/migration-0.23.en.md` "Upgrading together"; `crates/rutis-bridge/src/session/rpc.rs:2456-2462` |
 | `SESS-13` | Two formats (compat 2, endpoint 3) | Superseded | `docs/migration-0.19.en.md` "Upgrading together" |
 | `SESS-14` | `sync` sent only to ends declaring `sync-wait` | Superseded | Protocol 4 has no such capability; `crates/rutis-bridge/src/session/protocol.rs:174-176` |
 | `SESS-15` | Capability declarations and what reads them | Current | `crates/rutis-bridge/src/session/rpc.rs:1154-1178,1590-1611`; `crates/rutis-bridge/src/session/plugin/greet.rs:31-36` |
@@ -359,11 +363,11 @@ The table is this file's rule list, for #634's trace table and #613's models. Ev
 | `SESS-58` | An unknown `cancel` is ignored | Current | `crates/rutis-bridge/src/session/rpc.rs:2639-2653` |
 | `SESS-59` | Cancellation propagates hop by hop and does not undo grants | Current | `crates/rutis-bridge/src/session/rpc/relay.rs:148-173`; `bridge/multihop-cancel-and-release` |
 | `SESS-60` | Cancellation does not close the session | Current | `crates/rutis-bridge/src/session/rpc.rs:2639-2653` |
-| `SESS-61` | Whether a callee replies after cancellation | Not guaranteed | #626 |
+| `SESS-61` | A cancel is resolved once: `ack` and no reply, or the reply written before the cancel was read; the caller takes either | Current | §7; #1099; `specs/call-lifecycle` |
 | `SESS-62` | Cancellation is closing the transport | Superseded | §7 |
 | `SESS-63` | Malformed input fails closed | Current | `crates/rutis-bridge/src/session/rpc.rs:2514-2561,2598-2618`; `crates/rutis-bridge/src/session/testing.rs:151-392` |
-| `SESS-64` | The shared malformed matrix: 25 cases (13 single-frame + 12 multi-frame/ordered), all seven implementations have an entry point | Current | `crates/rutis-bridge/src/session/testing.rs:154-360`; `crates/rutis-bridge/tests/runtime_conformance.rs:452-633` |
-| `SESS-65` | The old "these rules are outside the shared matrix" state; the 25-case matrix covers that list (`SESS-64`) | Superseded | §8.1; §14 G2 |
+| `SESS-64` | The shared malformed matrix: 26 cases (13 single-frame + 13 multi-frame/ordered), all seven implementations have an entry point | Current | `crates/rutis-bridge/src/session/testing.rs:154-370`; `crates/rutis-bridge/tests/runtime_conformance.rs:452-633` |
+| `SESS-65` | The old "these rules are outside the shared matrix" state; the 26-case matrix covers that list (`SESS-64`) | Superseded | §8.1; §14 G2 |
 | `SESS-66` | Rust: an unknown field fails only that call (`hello` fails the handshake, `release`/`cancel` ignore it) | Current | `parse_frame` / `reject_unknown_fields` in `crates/rutis-bridge/src/session/rpc.rs`; `rpc/tests.rs::unknown_frame_fields_fail_only_their_call`, `::an_unknown_field_in_hello_fails_the_handshake` |
 | `SESS-67` | All seven runtimes implement the call-level refusal (`bad-frame`); `release`/`cancel` ignore extra fields | Current | `bridge/unknown-fields` in `docs/guarantees.en.md`; §9; §14 G1 |
 | `SESS-68` | Unknown fields end the session / six runtimes ignore them uniformly | Superseded | §9; §14 G1 |
@@ -377,8 +381,8 @@ The table is this file's rule list, for #634's trace table and #613's models. Ev
 | `SESS-76` | The default outbound backlog is unbounded | Not guaranteed | `crates/rutis-bridge/src/session/rpc.rs:1186-1214`; `docs/formal-trace.en.md` §3.6 |
 | `SESS-77` | The same rule's error text word for word across implementations | Not guaranteed | §12; Node and Go read differently from Rust |
 | `SESS-78` | `hello.implementation` may be absent; receivers do not require it | Current | `crates/rutis-bridge/src/session/protocol.rs:157-167`; `crates/rutis-bridge/src/session/rpc.rs:2450-2489` |
-| `SESS-79` | Protocol 4 speaks only to protocol 4; 0.18 and earlier are refused | Current | `docs/migration-0.19.en.md` "Upgrading together"; `bridge/cross-version-meetings` |
-| `SESS-80` | A new capability needs no version bump; a new frame or a changed field meaning does | Current | `crates/rutis-bridge/src/session/protocol.rs:154-156`; §13; `SESS-66` |
+| `SESS-79` | Protocol 5 speaks only to protocol 5; 0.22 and earlier are refused | Current | `docs/migration-0.23.en.md` "Upgrading together"; `bridge/cross-version-meetings` |
+| `SESS-80` | A new capability needs no version bump; a new frame or a changed field meaning does | Current | `crates/rutis-bridge/src/session/protocol.rs:154-156,210-226`; §13; `SESS-66` |
 | `SESS-81` | Cross-version meetings beyond adjacent releases | Not guaranteed | `bridge/cross-version-meetings` promises adjacent releases only |
 | `SESS-82` | Values received nest within 64 levels | Not guaranteed | §10; `bridge/large-and-deep-values` |
 
@@ -392,8 +396,8 @@ The table is this file's rule list, for #634's trace table and #613's models. Ev
 
 | Situation | Output |
 | --- | --- |
-| The far end is older | `incompatible session: the far end speaks protocol 3, this side 4: upgrade the far end` |
-| The far end is newer | `incompatible session: the far end speaks protocol 99, this side 4: upgrade this side (Rust crates rutis-host / rutis-bridge)` |
+| The far end is older | `incompatible session: the far end speaks protocol 4, this side 5: upgrade the far end` |
+| The far end is newer | `incompatible session: the far end speaks protocol 99, this side 5: upgrade this side (Rust crates rutis-host / rutis-bridge)` |
 | The far end did not greet within 10 seconds | `the far end did not greet in time` |
 | The host has no session id | `the host provides no id for its sessions` |
 | A value is over the message limit | `svc.take: argument 2 cannot be sent: the message would be over the limit of 16777216 bytes (16 MiB)`; code `bad-value`; `data` is `{"argument":2,"limit":16777216,"part":"argument"}` |
@@ -405,7 +409,7 @@ Every call-level failure ends at the call or the value. Handshake and transport 
 
 ### Host authors and deployers
 
-**When it works:** the existing `rutis-host` commands, status lines, exit codes, close codes and retry policy are unchanged. The WebSocket subprotocol is still `rutis.4`; transport close codes are still `1000` (normal), `4002` (replaced), `4003` (rejected) and `1009` (message over the limit, WebSocket).
+**When it works:** the existing `rutis-host` commands, status lines, exit codes, close codes and retry policy are unchanged. The WebSocket subprotocol is `rutis.5`; transport close codes are still `1000` (normal), `4002` (replaced), `4003` (rejected) and `1009` (message over the limit, WebSocket).
 
 **When it fails (word for word or by category):**
 
@@ -414,7 +418,7 @@ Every call-level failure ends at the call or the value. Handshake and transport 
 - A retryable transport failure: `retryable`, reconnecting with backoff; the new connection is a new session.
 - A protocol error: the session ends with a transport error, in-flight calls fail with `peer-gone`, and late frames of the old session never reach the replacement session.
 
-**Concepts to learn:** none added. Deployers need to know: endpoint ids are unique in a deployment, and every protocol-4 end must be upgraded together (§13).
+**Concepts to learn:** none added. Deployers need to know: endpoint ids are unique in a deployment, and every protocol-5 end must be upgraded together (§13).
 
 ### Runtime authors and contributors
 
@@ -426,7 +430,7 @@ Every call-level failure ends at the call or the value. Handshake and transport 
 
 ## 13. Compatibility and migration
 
-`SESS-79` **Current.** Protocol 4 speaks only to protocol 4. Hosts, runtimes, nodes and SDKs of 0.18 and earlier are refused at the handshake; migrating means upgrading every end to 0.19 or later. `docs/migration-0.19.en.md` "Upgrading together"; `bridge/cross-version-meetings` in `docs/guarantees.en.md`
+`SESS-79` **Current.** Protocol 5 speaks only to protocol 5. Hosts, runtimes, nodes and SDKs of 0.22 and earlier are refused at the handshake; migrating means upgrading every end to 0.23 or later. `docs/migration-0.23.en.md` "Upgrading together"; `bridge/cross-version-meetings` in `docs/guarantees.en.md`
 
 `SESS-80` **Current.** Adding a capability does not need a protocol version: a sender checks `value-<tag>` before sending a tagged value, and does not send it when the far end does not declare it. Because old implementations fail a call with an unknown field (`SESS-66`) and reject unknown `op`s, a new **frame** or a **change in an existing field's meaning** can only ship with a protocol version bump, updating this file, `Frame`/`WireValue`, the malformed matrix and the seven implementations together. A new capability needs no version bump and is used only as declared (§2.4); there is no required capability to negotiate (`SESS-25`).
 
@@ -444,19 +448,19 @@ Every call-level failure ends at the call or the value. Handshake and transport 
 ### G2 The shared malformed matrix: filled (2026-11-11)
 
 - Decision (#635): move malformed rules that only code enforced into the shared `session::testing::malformed` matrix, so the seven implementations run the same cases.
-- Done: the matrix grew from 13 cases to 25, 13 single frames in `MALFORMED` and 12 multi-frame/ordered cases in `MALFORMED_SEQUENCES`; the original list (a request before the handshake, a duplicate `hello`, `get` on an unknown reference, a released reference, a `release` count of 0 or above the grants, wrong field types in `cancel`/`throw`, a `throw` for an unknown call, a `path` containing the frame's id, a call id that does not increase) is covered, with the call-id item covering a repeated id only, plus an invocation with no `id` (`SESS-21`, `SESS-22`, `SESS-33`, `SESS-47`, `SESS-48`; `SESS-64`). Implementation: `MALFORMED`, `MALFORMED_SEQUENCES` and `malformed` in `crates/rutis-bridge/src/session/testing.rs`; Swift's cases compile only on macOS and run in CI's `runtimes-swift` job.
+- Done: the matrix grew from 13 cases to 26, 13 single frames in `MALFORMED` and 13 multi-frame/ordered cases in `MALFORMED_SEQUENCES`; the original list (a request before the handshake, a duplicate `hello`, `get` on an unknown reference, a released reference, a `release` count of 0 or above the grants, wrong field types in `cancel`/`ack`/`throw`, a `throw` for an unknown call, a `path` containing the frame's id, a call id that does not increase) is covered, with the call-id item covering a repeated id only, plus an invocation with no `id` (`SESS-21`, `SESS-22`, `SESS-33`, `SESS-47`, `SESS-48`; `SESS-64`). Implementation: `MALFORMED`, `MALFORMED_SEQUENCES` and `malformed` in `crates/rutis-bridge/src/session/testing.rs`; Swift's cases compile only on macOS and run in CI's `runtimes-swift` job.
 - Still outside the matrix: a method call or property read on a non-object reference; a call id that goes backwards, is not numeric, exceeds 2^53−1 or lacks the far end's prefix; `throw.error` missing `name`/`message`; a frame deeper than 208 levels; a message over the channel's limit. Code and other tests verify these (§8.1, §8.2).
 
 ### G3 The reply-after-cancel rule: decided (2026-11-16)
 
-- Decision: neither "always reply" nor "never reply" is made a cross-implementation requirement. After a cancellation the callee may reply or not, and the caller must take either (`SESS-61`). The #626 model ([call-lifecycle](../specs/call-lifecycle/README.en.md)) runs both: each settles at most once and leaks no reference.
-- This file writes down current behaviour only; it adds no promise on this.
-- Still open: cleaning up the caller's cancelled table (`calls.cancelled`) and whether a cancel acknowledgement frame is added are #1099's ([cancel-table cleanup and the reply rule after a cancel](https://github.com/arcships/rutis/issues/1099)).
+- Superseded (2026-11-18, #1099): "neither always reply nor never reply is a cross-implementation requirement" was the protocol-4 state. Protocol 5 makes the callee resolve the cancel once: `ack` and no reply, or the reply written before the cancel was read. The caller clears its cancelled table on either; an `ack` whose entry is gone is ignored; a reply after an `ack` is an unknown call and ends the session (`SESS-61`).
+- Why: the caller's table could only be cleared by a reply, and no conforming callee replies to a call cancelled while queued, so a long session that cancelled queued calls grew it without bound (#1099; `specs/call-lifecycle`, `call-gap-cancel-table`). The bounded table was the fallback; the acknowledgement empties the table at rest without relaxing `SESS-41`.
+- Both reply shapes stay legal when they happen before the cancel is read; the #626 model runs them (`call-cancel-reply`, `call-cancel-no-reply`) and the mutation `call-mut-ack-then-reply` shows why the acknowledgement and the silence are one rule.
 
 ### G4 Capabilities and formats that no longer exist in older documents
 
 - The "objects and the `objects` capability" paragraph of [protocol plugin design](design-protocol-plugins-2026-09-25.en.md) §6.1 still describes the 0.18 compat handshake; the current implementation has no `objects` capability (`SESS-16`, `SESS-53`).
-- Issue #635 and the [network stack design](design-protocol-channel-decoupling-2026-10-03.en.md) still mention `sync-wait`, `events-v2` and two formats; protocol 4 has none of them (`SESS-13`, `SESS-16`).
+- Issue #635 and the [network stack design](design-protocol-channel-decoupling-2026-10-03.en.md) still mention `sync-wait`, `events-v2` and two formats; protocol 5 has none of them (`SESS-13`, `SESS-16`).
 
 Both need a later documentation revision; this file only marks them superseded and does not edit the old design texts.
 
@@ -473,6 +477,7 @@ The same kind of error reads differently in Rust, Node and Go (`SESS-77`). This 
 
 - [Session trace contract](formal-trace.en.md)
 - [Migration to 0.19](migration-0.19.en.md)
+- [Migration to 0.23](migration-0.23.en.md)
 - [Protocol plugin design](design-protocol-plugins-2026-09-25.en.md) §6.1 (wire formats of tagged values)
 - [Cross-process mount design](design-protocol-plugin-mount.en.md)
 - [Session tags design](design-session-tags-2026-10-12.en.md)

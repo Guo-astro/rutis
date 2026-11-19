@@ -22,6 +22,14 @@ impl Dispatch for NoExports {
         Err(Error::value("no exports"))
     }
 }
+/// Answers every call with its arguments, for tests that only need the
+/// session to stay open.
+struct EchoCall;
+impl Dispatch for EchoCall {
+    fn invoke(&self, _: &Connection, _: &str, _: &str, args: Value) -> Reply {
+        Ok(args)
+    }
+}
 /// The far end of a session's memory channel, scripted by a test. Clones
 /// share it, so one thread can read while another writes.
 #[derive(Clone)]
@@ -361,6 +369,269 @@ async fn a_cancel_for_an_unknown_call_is_ignored() {
     assert!(peer.close_reason().is_none());
 }
 
+/// A cancel is resolved by the callee's `ack`: the caller's cancelled entry
+/// goes, and the session goes on (#1099).
+/// guarantee: bridge/cancel-reaches-callee
+#[tokio::test(flavor = "multi_thread")]
+async fn an_ack_resolves_a_cancel_and_drains_the_table() {
+    let (peer, far) = connected(Arc::new(EchoCall));
+    let far = tokio::task::spawn_blocking(move || Remote::start(far))
+        .await
+        .unwrap();
+    peer.ready().await.unwrap();
+    let caller = peer.clone();
+    let script = tokio::task::spawn_blocking(move || {
+        let mut remote = far;
+        let pending = caller
+            .invoke_started("t", "slow", Value::Undefined)
+            .expect("the call is sent");
+        let Frame::Invoke { id, .. } = remote.read() else {
+            panic!("the call expected")
+        };
+        drop(pending);
+        let Frame::Cancel { id: cancelled } = remote.read() else {
+            panic!("the cancel expected")
+        };
+        assert_eq!(cancelled, id);
+        assert_eq!(caller.cancelled(), 1, "the cancelled entry is kept");
+        remote.send(Frame::Ack {
+            id: cancelled.clone(),
+        });
+        let echoed = remote.call(2, invoke("node:2", "echo", false));
+        (echoed, remote)
+    });
+    let (echoed, _remote) = script.await.unwrap();
+    assert_eq!(echoed, json!([]));
+    assert_eq!(peer.cancelled(), 0, "the acknowledgement drains the entry");
+    assert_eq!(peer.orphans(), 0);
+    assert!(peer.close_reason().is_none());
+}
+
+/// A reply that crossed the cancel is a late reply: discarded and counted,
+/// and the `ack` that follows clears nothing (the entry is gone) without
+/// ending the session (#1099).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_late_reply_before_the_ack_is_dropped_and_the_session_goes_on() {
+    let (peer, far) = connected(Arc::new(EchoCall));
+    let far = tokio::task::spawn_blocking(move || Remote::start(far))
+        .await
+        .unwrap();
+    peer.ready().await.unwrap();
+    let caller = peer.clone();
+    let script = tokio::task::spawn_blocking(move || {
+        let mut remote = far;
+        let pending = caller
+            .invoke_started("t", "slow", Value::Undefined)
+            .expect("the call is sent");
+        let Frame::Invoke { id, .. } = remote.read() else {
+            panic!("the call expected")
+        };
+        drop(pending);
+        let Frame::Cancel { id: cancelled } = remote.read() else {
+            panic!("the cancel expected")
+        };
+        assert_eq!(cancelled, id);
+        // Written before the cancel was read: on its way already.
+        remote.ret(cancelled.clone(), data(json!("late")));
+        remote.send(Frame::Ack { id: cancelled });
+        let echoed = remote.call(2, invoke("node:2", "echo", false));
+        (echoed, remote)
+    });
+    let (echoed, _remote) = script.await.unwrap();
+    assert_eq!(echoed, json!([]));
+    assert_eq!(peer.orphans(), 1, "the crossed reply is dropped");
+    assert_eq!(peer.cancelled(), 0);
+    assert!(peer.close_reason().is_none());
+}
+
+/// A reply after the `ack` is the one reply a conforming callee never sends:
+/// it is an unknown call and ends the session (SESS-41, #1099).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_reply_after_the_ack_ends_the_session() {
+    let (peer, far) = connected(Arc::new(EchoCall));
+    let far = tokio::task::spawn_blocking(move || Remote::start(far))
+        .await
+        .unwrap();
+    peer.ready().await.unwrap();
+    let caller = peer.clone();
+    let script = tokio::task::spawn_blocking(move || {
+        let mut remote = far;
+        let pending = caller
+            .invoke_started("t", "slow", Value::Undefined)
+            .expect("the call is sent");
+        let Frame::Invoke { id, .. } = remote.read() else {
+            panic!("the call expected")
+        };
+        drop(pending);
+        let Frame::Cancel { id: cancelled } = remote.read() else {
+            panic!("the cancel expected")
+        };
+        assert_eq!(cancelled, id);
+        remote.send(Frame::Ack {
+            id: cancelled.clone(),
+        });
+        // Read the session's answer to a later call first: the ack was taken.
+        remote.call(2, invoke("node:2", "echo", false));
+        remote.send(Frame::Return {
+            id: cancelled,
+            value: data(json!("after the ack")),
+        });
+        remote
+    });
+    let _remote = script.await.unwrap();
+    tokio::time::timeout(STEP, peer.closed()).await.unwrap();
+    assert!(
+        matches!(peer.close_reason(), Some(Error::Transport(reason)) if reason.contains("response for unknown call")),
+        "{:?}",
+        peer.close_reason()
+    );
+}
+
+/// An `ack` for a call this side did not cancel changes nothing: the cancel
+/// may have crossed a reply that cleared the entry (#1099).
+#[tokio::test(flavor = "multi_thread")]
+async fn an_ack_without_a_cancelled_entry_is_ignored() {
+    let (peer, far) = connected(Arc::new(EchoCall));
+    let script = tokio::task::spawn_blocking(move || {
+        let mut remote = Remote::start(far);
+        remote.send(Frame::Ack {
+            id: "node:99".into(),
+        });
+        let echoed = remote.call(1, invoke("node:1", "echo", false));
+        (echoed, remote)
+    });
+    let _remote = script.await.unwrap();
+    assert!(peer.close_reason().is_none());
+}
+
+/// A queued call a cancel names is dropped without running and without a
+/// reply; the cancel is acknowledged, and the table does not grow with
+/// cancellations (#1099).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_queued_cancelled_call_is_dropped_and_acknowledged() {
+    struct Held {
+        started: Mutex<mpsc::Sender<()>>,
+        release: Mutex<mpsc::Receiver<()>>,
+        ran: Arc<AtomicUsize>,
+    }
+    impl Dispatch for Held {
+        fn invoke(&self, _: &Connection, _: &str, method: &str, args: Value) -> Reply {
+            if method == "echo" {
+                return Ok(args);
+            }
+            if method == "rows.ended" {
+                self.started.lock().unwrap().send(()).unwrap();
+                self.release.lock().unwrap().recv().unwrap();
+            } else if method == "events.dispatch" {
+                self.ran.fetch_add(1, Ordering::SeqCst);
+            }
+            Ok(Value::Undefined)
+        }
+    }
+    let (started, has_started) = mpsc::channel();
+    let (release, released) = mpsc::channel();
+    let held = Arc::new(Held {
+        started: Mutex::new(started),
+        release: Mutex::new(released),
+        ran: Arc::new(AtomicUsize::new(0)),
+    });
+    let (peer, far) = connected(held.clone() as Arc<dyn Dispatch>);
+    let script = tokio::task::spawn_blocking(move || {
+        let mut remote = Remote::start(far);
+        remote.send(Frame::Invoke {
+            id: "node:1".into(),
+            path: vec![],
+            target: String::new(),
+            method: "rows.ended".into(),
+            args: data(json!([])),
+            sync: false,
+        });
+        has_started.recv_timeout(STEP).expect("rows.ended runs");
+        remote.send(Frame::Invoke {
+            id: "node:2".into(),
+            path: vec![],
+            target: String::new(),
+            method: "events.dispatch".into(),
+            args: data(json!([{ "name": "t/e", "mode": "parallel", "args": [] }])),
+            sync: false,
+        });
+        // Queued behind `rows.ended`, still in `calls.incoming`.
+        remote.send(Frame::Cancel {
+            id: "node:2".into(),
+        });
+        assert!(
+            matches!(remote.read(), Frame::Ack { id } if id == "node:2"),
+            "the queued cancel is acknowledged"
+        );
+        release.send(()).unwrap();
+        assert!(
+            matches!(remote.read(), Frame::Return { id, .. } if id == "node:1"),
+            "the held operation answers"
+        );
+        let echoed = remote.call(3, invoke("node:3", "echo", false));
+        (echoed, remote)
+    });
+    let (echoed, _remote) = script.await.unwrap();
+    assert_eq!(echoed, json!([]));
+    assert_eq!(held.ran.load(Ordering::SeqCst), 0, "the call never ran");
+    assert_eq!(peer.cancelled(), 0);
+    assert!(peer.close_reason().is_none());
+}
+
+/// A running call a cancel names finishes; its result is dropped, the cancel
+/// is acknowledged, and no reply follows (#1099).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_running_cancelled_call_is_acknowledged_and_its_reply_dropped() {
+    struct Slow {
+        started: Mutex<mpsc::Sender<()>>,
+        release: Mutex<mpsc::Receiver<()>>,
+    }
+    impl Dispatch for Slow {
+        fn invoke(&self, _: &Connection, _: &str, method: &str, args: Value) -> Reply {
+            if method == "echo" {
+                return Ok(args);
+            }
+            self.started.lock().unwrap().send(()).unwrap();
+            self.release.lock().unwrap().recv().unwrap();
+            Ok(Value::List(vec![Value::Data(json!("the result"))]))
+        }
+    }
+    let (started, has_started) = mpsc::channel();
+    let (release, released) = mpsc::channel();
+    let (peer, far) = connected(Arc::new(Slow {
+        started: Mutex::new(started),
+        release: Mutex::new(released),
+    }));
+    let script = tokio::task::spawn_blocking(move || {
+        let mut remote = Remote::start(far);
+        remote.send(Frame::Invoke {
+            id: "node:1".into(),
+            path: vec![],
+            target: "t".into(),
+            method: "slow".into(),
+            args: data(json!([])),
+            sync: false,
+        });
+        has_started.recv_timeout(STEP).expect("the call runs");
+        remote.send(Frame::Cancel {
+            id: "node:1".into(),
+        });
+        assert!(
+            matches!(remote.read(), Frame::Ack { id } if id == "node:1"),
+            "the running cancel is acknowledged"
+        );
+        release.send(()).unwrap();
+        // Any reply to node:1 would be written before this call's.
+        let echoed = remote.call(2, invoke("node:2", "echo", false));
+        (echoed, remote)
+    });
+    let (echoed, _remote) = script.await.unwrap();
+    assert_eq!(echoed, json!([]));
+    tokio::time::timeout(STEP, peer.drain()).await.unwrap();
+    assert_eq!(peer.cancelled(), 0);
+    assert!(peer.close_reason().is_none());
+}
+
 /// An `emit` dispatch already admitted keeps its turn when its caller gives
 /// up: `cancel` drops queued calls, but not this one (events protocol §5.7).
 /// The ordered task is held inside an earlier operation, so the dispatch is
@@ -374,7 +645,10 @@ async fn a_cancelled_emit_dispatch_stays_queued() {
         dispatched: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
     }
     impl Dispatch for Held {
-        fn invoke(&self, _: &Connection, _: &str, method: &str, _: Value) -> Reply {
+        fn invoke(&self, _: &Connection, _: &str, method: &str, args: Value) -> Reply {
+            if method == "echo" {
+                return Ok(args);
+            }
             if method == "rows.ended" {
                 self.started.lock().unwrap().send(()).unwrap();
                 self.release.lock().unwrap().recv().unwrap();
@@ -446,9 +720,9 @@ const ONE_STACK: [&str; 1] = ["sync-stack"];
 /// How long a step of those tests may take before it counts as hung.
 const STEP: std::time::Duration = std::time::Duration::from_secs(20);
 
-/// A synchronous call cancelled while it runs keeps its mark until its
-/// reply: a forward it makes afterwards is still a hop, and one closing a
-/// cycle is refused. Session A's far end calls `hold`; it is cancelled
+/// A synchronous call cancelled while it runs keeps its mark until it
+/// finishes (its reply is dropped and the cancel acknowledged): a forward it
+/// makes afterwards is still a hop, and one closing a cycle is refused. Session A's far end calls `hold`; it is cancelled
 /// while running; B's far end calls `work`, which B forwards to A (A's far
 /// end is busy, so it waits); then `hold` forwards to B, which waits for A:
 /// the cycle.
@@ -505,6 +779,8 @@ async fn a_running_synchronous_call_cancelled_keeps_its_mark() {
         far_a.send(Frame::Cancel {
             id: "node:1".into(),
         });
+        // The callee resolves the cancel: it will answer no more.
+        assert!(matches!(far_a.read(), Frame::Ack { id } if id == "node:1"));
         // Read after the cancel: the cancel was handled.
         far_a.call(2, invoke("node:2", "echo", false));
         assert_eq!(
@@ -530,7 +806,14 @@ async fn a_running_synchronous_call_cancelled_keeps_its_mark() {
                     && !message.contains(':')),
             "the forward closing the cycle is refused, naming the call: {refused:?}"
         );
-        assert!(matches!(far_a.read(), Frame::Return { id, .. } if id == "node:1"));
+        let deadline = std::time::Instant::now() + STEP;
+        while waits::marks_of(&a_tag) != 0 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the cancelled call leaves the wait graph when it finishes"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
         far_a.ret(work, data(json!("worked")));
         match far_b.read() {
             Frame::Return { id, value } if id == "node:1" => {
@@ -585,6 +868,7 @@ async fn a_cancelled_awaited_call_leaves_no_mark() {
         far.send(Frame::Cancel {
             id: "node:2".into(),
         });
+        assert!(matches!(far.read(), Frame::Ack { id } if id == "node:2"));
         far.call(3, invoke("node:3", "echo", false));
         assert_eq!(waits::marks_of(&tag), 0, "the cancelled await is unmarked");
     });
@@ -2696,7 +2980,7 @@ async fn an_unknown_field_in_hello_fails_the_handshake() {
     far.sender
         .lock()
         .unwrap()
-        .send(br#"{"op":"hello","version":4,"endpoint":"node","extra":1}"#)
+        .send(br#"{"op":"hello","version":5,"endpoint":"node","extra":1}"#)
         .unwrap();
     tokio::time::timeout(std::time::Duration::from_secs(10), peer.closed())
         .await

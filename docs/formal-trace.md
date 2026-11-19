@@ -9,7 +9,7 @@
 
 ## 1. 范围与证据
 
-会话是承载不透明消息的可靠、有序、双工流（`crates/rutis-bridge/src/channel/mod.rs:4-9`）。`Channel` 保留消息边界；会话协议为每条消息使用一个 JSON `op`，调用号带端点前缀。协议版本 4 是 `ENDPOINT_PROTOCOL`（`crates/rutis-bridge/src/session/mod.rs:9-14`），WebSocket 子协议也使用同一个值（`rutis.4`）。
+会话是承载不透明消息的可靠、有序、双工流（`crates/rutis-bridge/src/channel/mod.rs:4-9`）。`Channel` 保留消息边界；会话协议为每条消息使用一个 JSON `op`，调用号带端点前缀。协议版本 5 是 `ENDPOINT_PROTOCOL`（`crates/rutis-bridge/src/session/mod.rs:9-15`），WebSocket 子协议也使用同一个值（`rutis.5`）。
 
 协议帧词汇是 Rust 的 `Frame` 枚举（`crates/rutis-bridge/src/session/protocol.rs:154-222`）：`hello`、`invoke`、`call`、`get`、`await`、`return`、`throw`、`release` 和 `cancel`。线上值带标签（`undefined`、`data`、`list`、`record`、`signal`、`reference` 以及协商出的值标签）；未知字段按帧的作用范围处理（§3.7）。
 
@@ -22,11 +22,11 @@
 
 ### 规则状态
 
-状态词汇有意保持严格。**当前**表示本文件锚点所实现并测试的规则。**已取代**表示旧规则或旧追踪形状不能作为协议 4 的证据。**不作保证（Not guaranteed）**表示实现有意不作承诺；某个承载上可能出现某追踪，但用户和验证器不得依赖它。
+状态词汇有意保持严格。**当前**表示本文件锚点所实现并测试的规则。**已取代**表示旧规则或旧追踪形状不能作为协议 5 的证据。**不作保证（Not guaranteed）**表示实现有意不作承诺；某个承载上可能出现某追踪，但用户和验证器不得依赖它。
 
 | 类别 | 当前规则 | 已取代的证据 | 不作保证 |
 | --- | --- | --- | --- |
-| 会话帧 | §3.1 的协议 4 `Frame` 词汇及有序处理 | 协议 4 以前的帧名，或依赖负载的通道日志 | 超出通道顺序的具体调度交错 |
+| 会话帧 | §3.1 的协议 5 `Frame` 词汇及有序处理 | 协议 5 以前的帧名，或依赖负载的通道日志 | 超出通道顺序的具体调度交错 |
 | 握手 | 双方 `hello`、版本 4、端点核对与能力声明 | 在 `Greeted` 挂载前就登记/挂载插件的握手 | `ready` 之前成功调用 |
 | 引用 | 带标签的引用、home 身份、计数式 `release` | 把每个引用都当作复制数据的旧假设；按 `objects` 能力决定对象发给谁（0.18） | 引用生命周期使运行时进程保持存活（Not guaranteed） |
 | 取消 | `cancel` 逐跳传播；迟到回复被丢弃 | 把取消当作关闭承载 | 调用截止时间（本文不作保证） |
@@ -75,7 +75,7 @@ memory peer mac: closed: done
 
 **边界 — reconnect 是新会话。** 旧会话及其 row 先 dispose，新 pair 才能变为 active；仅握手的会话不共享插件或服务，替换连接只有在旧会话卸载后才挂载（`crates/rutis-bridge/tests/session_plugin.rs:182-270`）。正常承载结果是传输线程的 `Ok(())`/`Ok(None)`，而本地会话状态另行是 `Disposed`；不得把这些观察合并为一个握手结果。
 
-生命周期追踪状态：上述会话/row 顺序是当前实现证据，但不主张跨 runtime 统一的 row-failure 策略；行协议的现行规则（装载、更新、卸载、服务与租约、自行结束与失败）见[行协议规格](protocol-rows.md)。公告错误由各 SDK 以不同方式处理，见服务公告设计。对象引用不按能力协商：协议 4 没有 `objects` 能力（[会话协议规格](protocol-session.md) `SESS-16`、`SESS-53`），所有协议 4 实现都收对象引用（`SESS-52`）；#639 的“Rust 中继不查 `objects`”在协议 4 没有可触发的检查点，0.18 及更早的对端在握手时已被拒绝（`SESS-79`）。
+生命周期追踪状态：上述会话/row 顺序是当前实现证据，但不主张跨 runtime 统一的 row-failure 策略；行协议的现行规则（装载、更新、卸载、服务与租约、自行结束与失败）见[行协议规格](protocol-rows.md)。公告错误由各 SDK 以不同方式处理，见服务公告设计。对象引用不按能力协商：协议 5 没有 `objects` 能力（[会话协议规格](protocol-session.md) `SESS-16`、`SESS-53`），所有协议 5 实现都收对象引用（`SESS-52`）；#639 的“Rust 中继不查 `objects`”在协议 5 没有可触发的检查点，0.18 及更早的对端在握手时已被拒绝（`SESS-79`）。
 
 ### 3.1 帧
 
@@ -94,7 +94,7 @@ memory peer mac: closed: done
 
 ### 3.2 握手
 
-**成功 — 双方协议 4 问候。** 每一端发送带 `version`、端点、实现（如果有）和能力的 `hello`（`crates/rutis-bridge/src/session/protocol.rs:157-167`）。Go 原始 peer 发送 `{"op":"hello","version":4,"endpoint":"main"}` 并等待运行时的 hello（`go/rutis/internal/peer/objects_test.go:35-51`）。普通配对启动双方并等待两个 `Ready()` 结果（`go/rutis/internal/peer/peer_test.go:70-89`）。仅仅问候不会挂载插件：`Session::handshake` 返回 `Greeted` 值且不登记任何内容（`crates/rutis-bridge/src/session/plugin/mod.rs:102-114,178-180`）。
+**成功 — 双方协议 5 问候。** 每一端发送带 `version`、端点、实现（如果有）和能力的 `hello`（`crates/rutis-bridge/src/session/protocol.rs:157-167`）。Go 原始 peer 发送 `{"op":"hello","version":5,"endpoint":"main"}` 并等待运行时的 hello（`go/rutis/internal/peer/objects_test.go:35-51`）。普通配对启动双方并等待两个 `Ready()` 结果（`go/rutis/internal/peer/peer_test.go:70-89`）。仅仅问候不会挂载插件：`Session::handshake` 返回 `Greeted` 值且不登记任何内容（`crates/rutis-bridge/src/session/plugin/mod.rs:102-114,178-180`）。
 
 **失败 — 版本不匹配。** 说协议 3 的远端会产生精确的本地会话失败 `the far end speaks protocol 3, this side 4: upgrade the far end`。fixture 会分别观察本端 hello，以及远端线程正常的承载结果 `Ok(())`；这里的 `Ok(())` 是传输线程的关闭结果，不是握手成功（`crates/rutis-bridge/tests/session_plugin.rs:101-126`）。握手 10 秒内未完成会失败并显示 `the far end did not greet in time`，通道结束（`crates/rutis-bridge/tests/session_plugin.rs:128-152`；超时在 `crates/rutis-bridge/src/session/plugin/mod.rs:46-47` 定义）。没有 `LocalId` 的宿主失败并显示 `the host provides no id for its sessions`，且不发送问候（`crates/rutis-bridge/tests/session_plugin.rs:154-167`）。
 
@@ -146,7 +146,7 @@ memory peer mac: closed: done
 
 **失败 — 不兼容或拒绝的连接不会空转。** 说错协议的远端被分类为 `incompatible`，重试停止直到配置改变；身份不匹配/认证失败是 `authRejected`，在报告状态的同时慢速重试。分类表及精确用例见 `go/rutis/internal/runtime/dial_test.go:84-101`；它明确包含误导性文字用例，证明决策不靠匹配文字。
 
-**边界 — 替换顺序。** 宿主监听器接受带 WebSocket 子协议 `rutis.4` 的令牌（`crates/rutis-host/src/connect/listen.rs:53-80`）。对已有连接的 id，新连接仅在握手后替换旧连接：旧会话卸载，以 `Replaced` 关闭（WebSocket 4002），然后才安装新会话；握手失败不影响任何内容（`crates/rutis-host/src/connect/listen.rs:4-10`）。因此，断开或已消失的对端不能把迟到帧作用到替换后的会话。
+**边界 — 替换顺序。** 宿主监听器接受带 WebSocket 子协议 `rutis.5` 的令牌（`crates/rutis-host/src/connect/listen.rs:53-80`）。对已有连接的 id，新连接仅在握手后替换旧连接：旧会话卸载，以 `Replaced` 关闭（WebSocket 4002），然后才安装新会话；握手失败不影响任何内容（`crates/rutis-host/src/connect/listen.rs:4-10`）。因此，断开或已消失的对端不能把迟到帧作用到替换后的会话。
 
 ## 4. 追踪不变量与反例
 

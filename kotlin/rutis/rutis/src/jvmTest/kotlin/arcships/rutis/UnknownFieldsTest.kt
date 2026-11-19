@@ -67,7 +67,7 @@ class UnknownFieldsTest {
         val far = Scripted(there)
         peer.start()
         far.next() // this side's greeting
-        far.send("""{"op":"hello","version":4,"endpoint":"main"}""")
+        far.send("""{"op":"hello","version":5,"endpoint":"main"}""")
         peer.readyFuture.get(5, TimeUnit.SECONDS)
         return far
     }
@@ -208,7 +208,7 @@ class UnknownFieldsTest {
         val far = Scripted(there)
         peer.start()
         far.next() // this side's greeting
-        far.send("""{"op":"hello","version":4,"endpoint":"main","extra":1}""")
+        far.send("""{"op":"hello","version":5,"endpoint":"main","extra":1}""")
         peer.closedFuture.get(5, TimeUnit.SECONDS)
         val error = peer.error
         assertTrue(error is IncompatibleException, "ended with $error")
@@ -251,7 +251,7 @@ class UnknownFieldsTest {
         assertEquals(listOf("args.value.x"), unknown("""{"op":"invoke","id":"main:1","path":[],"target":"t","method":"m","args":{"type":"reference","value":{"id":1,"home":false,"kind":"function","origin":[],"x":1}}}"""))
         assertEquals(listOf("value.value[0].y"), unknown("""{"op":"return","id":"main:1","value":{"type":"list","value":[{"type":"data","value":1,"y":2}]}}"""))
         assertEquals(listOf("error.trace"), unknown("""{"op":"throw","id":"main:1","error":{"name":"E","message":"m","trace":1}}"""))
-        assertEquals(listOf("implementation.extra"), unknown("""{"op":"hello","version":4,"endpoint":"main","implementation":{"name":"n","version":"v","extra":1}}"""))
+        assertEquals(listOf("implementation.extra"), unknown("""{"op":"hello","version":5,"endpoint":"main","implementation":{"name":"n","version":"v","extra":1}}"""))
 
         // A `data` value is arbitrary JSON and not inspected; an unknown `op`
         // has no table and is left to the usual refusal.

@@ -198,7 +198,7 @@ struct BadValueTests {
         }
         let hello = try await next(far)
         XCTAssertEqual(hello["op"]?.stringValue, "hello")
-        try send(far, #"{"op":"hello","version":4,"endpoint":"main","capabilities":[]}"#)
+        try send(far, #"{"op":"hello","version":5,"endpoint":"main","capabilities":[]}"#)
         await runtime.ready()
 
         // Sent back, the object goes home as itself; the runtime's hold on

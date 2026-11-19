@@ -53,6 +53,10 @@ pub struct Release {
 /// handshake, saying which end to upgrade.
 pub const PROTOCOL_4: &str = "0.19.0";
 
+/// The first release speaking endpoint protocol 5 (0.23): the current code
+/// meets a release from it on, and refuses an older one at the handshake.
+pub const PROTOCOL_5: &str = "0.23.0";
+
 /// The releases to meet ([module docs](self)); none when the registry is
 /// out of reach outside CI.
 pub fn releases() -> Vec<Release> {
@@ -200,6 +204,12 @@ impl Release {
     /// code meets it; an older release is refused at the handshake.
     pub fn speaks_protocol_4(&self) -> bool {
         parse(&self.version) >= parse(PROTOCOL_4)
+    }
+
+    /// Whether it speaks endpoint protocol 5 ([`PROTOCOL_5`]): the current
+    /// code meets it; an older release is refused at the handshake.
+    pub fn speaks_protocol_5(&self) -> bool {
+        parse(&self.version) >= parse(PROTOCOL_5)
     }
 
     /// Its `@arcships/rutis-runtime` package directory.
@@ -418,6 +428,21 @@ mod tests {
         }
         for version in ["0.19.0", "0.19.1", "0.20.0", "1.0.0"] {
             assert!(speaks(version), "{version} is met");
+        }
+        let speaks5 = |version: &str| {
+            Release {
+                version: version.to_owned(),
+            }
+            .speaks_protocol_5()
+        };
+        for version in ["0.19.0", "0.22.0"] {
+            assert!(
+                !speaks5(version),
+                "{version} speaks protocol 4 and is refused"
+            );
+        }
+        for version in ["0.23.0", "1.0.0"] {
+            assert!(speaks5(version), "{version} is met");
         }
     }
 }

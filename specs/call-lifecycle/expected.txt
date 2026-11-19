@@ -9,6 +9,7 @@ call-cancel-reply ok
 call-cancel-no-reply ok
 call-gap-cancel-table violated:CancelledEntriesDrain
 call-gap-ack ok
+call-mut-ack-then-reply violated:NoUnknownCall
 call-gap-unknown-late violated:NoUnknownCall
 call-gap-bounded ok
 call-sync-abandon ok
@@ -34,5 +35,6 @@ relay-healthy ok
 relay-no-reply ok
 relay-progress ok
 relay-gap-cancel-table violated:RelayCancelledEntriesDrain
+relay-mut-ack-then-reply violated:NoStrayReply
 relay-mut-cancel-stops violated:CancelReaches
 relay-mut-release-leaks violated:RelayReleasesImport

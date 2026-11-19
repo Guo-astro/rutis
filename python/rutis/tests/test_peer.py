@@ -66,6 +66,43 @@ class PeerTests(background.IsolatedAsyncioTestCase):
         future.cancel()
 
 
+    # guarantee: bridge/cancel-reaches-callee
+    async def test_a_queued_cancel_is_acknowledged_and_never_runs(self):
+        ran = []
+
+        def dispatch(target, method, args):
+            ran.append(method)
+            return 0
+
+        self.peer._dispatch = dispatch
+        self.peer._receive({
+            "op": "invoke", "id": "main:1", "path": [], "target": "test", "method": "slow",
+            "args": {"type": "list", "value": []},
+        })
+        # Admitted, not run: the loop has not reached it.
+        self.peer._receive({"op": "cancel", "id": "main:1"})
+        self.assertEqual(self.read(), {"op": "ack", "id": "main:1"})
+        await asyncio.sleep(0.01)
+        self.assertEqual(ran, [], "the dropped call never ran")
+        # The table holds no entry once the call is resolved (#1099).
+        self.assertNotIn("main:1", self.peer._admitted)
+
+    async def test_a_cancelled_await_is_acknowledged_and_its_reply_dropped(self):
+        future = asyncio.get_running_loop().create_future()
+        reference = self.peer._encode(future, [], False)["value"]["id"]
+        self.peer._receive({"op": "await", "id": "main:1", "path": [], "reference": reference})
+        self.peer._receive({"op": "cancel", "id": "main:1"})
+        self.assertEqual(self.read(), {"op": "ack", "id": "main:1"})
+        future.set_result(42)
+        await asyncio.sleep(0.01)
+        self.assertNotIn("main:1", self.peer._admitted)
+        self.theirs.settimeout(0.05)
+        try:
+            with self.assertRaises(TimeoutError):
+                self.theirs.recv(1)
+        finally:
+            self.theirs.settimeout(HANG_GUARD)
+
     # guarantee: bridge/function-refs
     async def test_a_received_function_is_awaited_outside_a_synchronous_call(self):
         # #932: a function the far end hands over is called as a service
@@ -303,23 +340,22 @@ class AsyncMethodTests(background.IsolatedAsyncioTestCase):
         self.assertEqual(read()["op"], "hello")
 
         def far_end():
-            # Two frames: the first step's synchronous call, answered after
-            # cancelling rust:1, and the reply to rust:1. Whatever their
-            # order, the call is answered, so a regression fails, not hangs.
-            reply = None
+            # Two frames from this side: the first step's synchronous call
+            # and the ack resolving the cancel of main:1; the dropped reply
+            # is not sent. A regression fails, not hangs.
+            ops = []
             for _ in range(2):
                 frame = read()
+                ops.append(frame["op"])
                 if frame["op"] == "invoke":
                     theirs.sendall((json.dumps({"op": "cancel", "id": "main:1"}) + "\n").encode())
                     theirs.sendall((json.dumps({"op": "return", "id": frame["id"], "value": {"type": "undefined"}}) + "\n").encode())
-                else:
-                    reply = frame
-            return reply
+            return ops
 
         replying = asyncio.create_task(asyncio.to_thread(far_end))
         peer._receive(self.invoke("main:1", []))
-        reply = await asyncio.wait_for(replying, 10)
-        self.assertEqual(reply["op"], "return", reply)
+        ops = await asyncio.wait_for(replying, 10)
+        self.assertIn("ack", ops, ops)
         for _ in range(10):
             if log:
                 break
@@ -774,10 +810,10 @@ class VersionMismatchTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_an_endpoint_session_refuses_a_far_end_of_version_3(self):
         # guarantee: bridge/version-refusal; risk P8: rutis 0.18 spoke 3.
-        self.assertEqual(ENDPOINT_PROTOCOL, 4)
+        self.assertEqual(ENDPOINT_PROTOCOL, 5)
         self.assertEqual(
             await self.refusal({"local": "py"}, 3, {"name": "rutis-bridge", "version": "0.18.0"}),
-            "incompatible session: the far end speaks protocol 3, this side 4: "
+            "incompatible session: the far end speaks protocol 3, this side 5: "
             "upgrade the far end (rutis-bridge 0.18.0)",
         )
 

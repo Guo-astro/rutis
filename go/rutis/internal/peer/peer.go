@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	EndpointProtocol = 4
+	EndpointProtocol = 5
 	MaxSafe          = 1<<53 - 1
 )
 
@@ -193,6 +193,11 @@ type Peer struct {
 	imports    map[int64]*imported
 	running    map[string]context.CancelFunc
 	signals    map[string]*Signal
+	// Calls this side gave up, until the callee resolves one: a late reply
+	// or an ack takes the entry out (#1099). And the running calls a cancel
+	// resolved: their result is dropped instead of written.
+	cancelled  map[string]struct{}
+	suppressed map[string]struct{}
 
 	active   int
 	draining []chan struct{}
@@ -216,6 +221,8 @@ func New(channel Channel, opts Options) (*Peer, error) {
 		imports:    map[int64]*imported{},
 		running:    map[string]context.CancelFunc{},
 		signals:    map[string]*Signal{},
+		cancelled:  map[string]struct{}{},
+		suppressed: map[string]struct{}{},
 		ready:      make(chan struct{}),
 		closed:     make(chan struct{}),
 		writeBack:  make(chan []byte, maxWriteBack),
@@ -412,6 +419,8 @@ func (p *Peer) Close(err error) {
 	p.exports = map[int64]*export{}
 	p.identities = map[any]int64{}
 	p.imports = map[int64]*imported{}
+	p.cancelled = map[string]struct{}{}
+	p.suppressed = map[string]struct{}{}
 	draining := p.draining
 	p.draining = nil
 	select {
@@ -1184,6 +1193,9 @@ func (p *Peer) Send(ctx context.Context, target, method string, args []any, sync
 			p.mu.Lock()
 			_, waiting := p.pending[id]
 			delete(p.pending, id)
+			if waiting && !sync {
+				p.cancelled[id] = struct{}{}
+			}
 			p.mu.Unlock()
 			if waiting && !sync {
 				_ = p.send(map[string]any{"op": "cancel", "id": id})
@@ -1292,6 +1304,9 @@ func (p *Peer) call(ctx context.Context, op string, fields map[string]any, args 
 		p.mu.Lock()
 		_, waiting := p.pending[id]
 		delete(p.pending, id)
+		if waiting && cancellable {
+			p.cancelled[id] = struct{}{}
+		}
 		p.mu.Unlock()
 		if waiting && cancellable {
 			_ = p.send(map[string]any{"op": "cancel", "id": id})
@@ -1452,6 +1467,7 @@ var frameFields = map[string][]string{
 	"throw":   {"op", "id", "error"},
 	"release": {"op", "reference", "count"},
 	"cancel":  {"op", "id"},
+	"ack":     {"op", "id"},
 }
 
 // unknownFrameFields is the field paths `message` carries beyond the ones its
@@ -1633,6 +1649,17 @@ func (p *Peer) receive(f *frame, ignored []string) (err error) {
 		return nil
 	}
 	switch f.Op {
+	case "ack":
+		var id string
+		if json.Unmarshal(f.ID, &id) != nil {
+			p.mu.Unlock()
+			return errors.New("invalid ack")
+		}
+		// The callee resolved the cancel; one whose entry is gone crossed
+		// the reply that cleared it.
+		delete(p.cancelled, id)
+		p.mu.Unlock()
+		return nil
 	case "return", "throw":
 		var id string
 		if err := json.Unmarshal(f.ID, &id); err != nil {
@@ -1673,12 +1700,23 @@ func (p *Peer) receive(f *frame, ignored []string) (err error) {
 		}
 		cancel := p.running[id]
 		signal := p.signals[id]
+		known := cancel != nil || signal != nil
+		if known {
+			// The call keeps running where it already started; its result is
+			// dropped and the cancel acknowledged. The caller gets exactly
+			// one resolution: this ack or the reply written before the cancel
+			// was read (protocol 5, #1099).
+			p.suppressed[id] = struct{}{}
+		}
 		p.mu.Unlock()
 		if signal != nil {
 			signal.cancel()
 		}
 		if cancel != nil {
 			cancel()
+		}
+		if known {
+			return p.send(map[string]any{"op": "ack", "id": id})
 		}
 		return nil
 	case "release":
@@ -1724,6 +1762,8 @@ func (p *Peer) receive(f *frame, ignored []string) (err error) {
 func (p *Peer) settleReply(id string, outcome result) error {
 	waiter, ok := p.pending[id]
 	if !ok {
+		// A reply for a call this side gave up: its entry goes with it.
+		delete(p.cancelled, id)
 		p.mu.Unlock()
 		if p.issued(id) {
 			return nil
@@ -2023,6 +2063,13 @@ func (p *Peer) respondTo(id string, value any, failure error, chain []string, ca
 	p.mu.Lock()
 	delete(p.running, id)
 	delete(p.signals, id)
+	if _, suppressed := p.suppressed[id]; suppressed {
+		// The cancel was acknowledged already: the result is dropped and no
+		// reply follows (#1099).
+		delete(p.suppressed, id)
+		p.mu.Unlock()
+		return
+	}
 	if p.closeErr != nil {
 		p.mu.Unlock()
 		return
