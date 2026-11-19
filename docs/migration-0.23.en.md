@@ -68,3 +68,33 @@ node tools/check-guarantees.mjs
 ```
 
 The session tests cover the queued cancel, the running cancel, the crossed reply, the `ack` that clears the table, an `ack` with no entry, and a reply after the `ack`; the TLA configurations `call-gap-ack`, `call-mut-ack-then-reply`, `relay-healthy` and `relay-mut-ack-then-reply` are the model's part.
+
+### An asynchronous call says whether its result is awaited: `awaited` (#1098)
+
+Specification: [session protocol](protocol-session.en.md) `SESS-83`, `SESS-7`, `SESS-66`, §14 G7; model: [`specs/cross-runtime-sync`](../specs/cross-runtime-sync/README.en.md) (`async-forgotten-policy-b`, `async-policy-b`).
+
+#### What changed
+
+A call frame (`invoke`, `call`, `get`, `await`) gains an optional boolean `awaited`: `false` means "fired and forgotten", the caller will not wait for this result before the call that made it finishes; absent or `true` means it will. It is meaningful only for asynchronous calls and is ignored when `sync: true`. The host counts a call in the wait graph only when it is `sync` or an asynchronous call whose result will be waited for; a call that says `awaited: false` is an entry, no longer a hop because it appears on a marked chain. The absent field keeps the old semantics, so an old caller still gets the conservative edge (and may be refused by a false cycle); saying `false` is what removes the edge.
+
+#### What to change
+
+- Upgrade the host and all seven runtimes together; the implementations in this repository already know the field. An earlier protocol-5 prerelease build treats `awaited` as an unknown field and fails the call (`SESS-66`); replace it with a build that has the field.
+- A runtime that knows nobody waits for a call (`sendAnswered` / `request_answered` / `notify` and the like) writes `awaited: false`; user code's ordinary asynchronous calls omit it when the runtime cannot tell, and the host reads them as waited for.
+- Plugin code needs no change and there is no new API: this is a session-layer field, not part of the plugin API.
+
+#### Who is affected
+
+- Plugin authors: no new concept. An asynchronous call nobody waits for can no longer be refused with a false `SyncWaitCycle`; a call that is awaited still has its real cycle refused as before.
+- Runtime authors: write `awaited: false` on your own fired-and-forgotten paths and accept the field from the far end; a frame with another type ends the session (the shared malformed matrix's wrong-`awaited` case).
+- Deployers: upgrade every protocol-5 end together; 0.23 prerelease builds are not compatible with the field.
+
+#### Verification
+
+```sh
+cargo test -p rutis-bridge --all-features
+TLA2TOOLS=/tmp/tla2tools.jar specs/cross-runtime-sync/run.sh async-policy-b async-forgotten-policy-b
+node tools/check-guarantees.mjs
+```
+
+Rust regressions: `an_asynchronous_forward_nobody_awaits_is_an_entry` (fired and forgotten -> entry), `an_awaited_forward_closes_the_cycle` (awaited later -> the real cycle is refused), `a_forwarded_call_carries_the_callers_awaited_signal` (a forward keeps the original signal), `a_call_says_when_its_result_is_not_waited_for` (the wire default and `false`).

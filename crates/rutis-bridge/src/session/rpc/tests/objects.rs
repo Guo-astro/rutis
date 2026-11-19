@@ -122,6 +122,7 @@ async fn gone(name: &str, how: Option<&str>, reason: &str, said: &str) {
             method: Some("get".into()),
             args: data(json!([])),
             sync: false,
+            awaited: true,
         });
         let thrown = loop {
             match far_b.read_json() {
@@ -213,6 +214,7 @@ async fn a_synchronous_cycle_through_objects_is_refused() {
             method: Some("ping".into()),
             args: data(json!([])),
             sync: true,
+            awaited: true,
         });
         let forwarded = loop {
             let frame = far_b.read_json();
@@ -231,6 +233,7 @@ async fn a_synchronous_cycle_through_objects_is_refused() {
             method: Some("pong".into()),
             args: data(json!([])),
             sync: true,
+            awaited: true,
         });
         let refused = loop {
             match far_b.read_json() {
@@ -315,6 +318,7 @@ async fn undefined_is_null_inside_values() {
                 ),
             ]),
             sync: false,
+            awaited: true,
         });
         match far.read() {
             Frame::Return { id, value } if id == "node:1" => value,
@@ -432,6 +436,7 @@ async fn a_missing_method_is_answered_by_the_owner() {
             method: Some("gett".into()),
             args: data(json!([])),
             sync: false,
+            awaited: true,
         });
         let Frame::Call { id, method, .. } = (loop {
             match far_a.read() {
@@ -491,6 +496,7 @@ async fn a_call_on_an_object_given_up_is_cancelled_at_its_owner() {
             method: Some("slow".into()),
             args: data(json!([])),
             sync: false,
+            awaited: true,
         });
         let forwarded = loop {
             match far_a.read() {
@@ -535,6 +541,7 @@ async fn an_object_stays_callable_through_its_relay_alone() {
             method: Some("count".into()),
             args: data(json!([2])),
             sync: false,
+            awaited: true,
         });
         let (id, args) = loop {
             match far_a.read() {
@@ -642,6 +649,7 @@ async fn a_host_service_calling_another_sessions_object_rebases_its_chain() {
             method: "poke".into(),
             args: data(json!([])),
             sync: false,
+            awaited: true,
         });
         // Its answer is a future; awaited, it runs.
         let Frame::Return { value, .. } = far_b.read() else {
@@ -652,6 +660,7 @@ async fn a_host_service_calling_another_sessions_object_rebases_its_chain() {
             path: vec![],
             reference: granted(&value).0,
             sync: false,
+            awaited: true,
         });
         let (id, path) = loop {
             if let Frame::Call { id, path, .. } = far_a.read() {
@@ -704,6 +713,7 @@ async fn a_future_sent_to_another_session_has_its_origin_rebased() {
             method: "make".into(),
             args: data(json!([])),
             sync: false,
+            awaited: true,
         });
         let Frame::Return { value, .. } = far_a.read() else {
             panic!("return expected")
@@ -782,6 +792,7 @@ async fn a_future_awaited_by_a_session_calls_on_its_behalf() {
             path: vec!["rust:2".into()],
             reference,
             sync: false,
+            awaited: true,
         });
         let path = loop {
             if let Frame::Call { id, path, .. } = far_a.read() {

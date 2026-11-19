@@ -71,6 +71,9 @@ func TestSendAnsweredTellsTheReplyBeforeTheNextFrame(t *testing.T) {
 		t.Fatal(err)
 	}
 	sent := testwait.Within(t, "the dispatch", frames)
+	if sent.Awaited == nil || string(sent.Awaited) != "false" {
+		t.Fatalf("the dispatch frame says nobody waits for it (SESS-83): %s", sent.Awaited)
+	}
 	// The reply, then at once a frame the runtime handles after it.
 	_ = far.Send([]byte(`{"op":"return","id":` + string(sent.ID) + `,"value":{"type":"undefined"}}`))
 	_ = far.Send([]byte(`{"op":"invoke","id":"main:1","path":[],"target":"","method":"after","args":{"type":"list","value":[]}}`))

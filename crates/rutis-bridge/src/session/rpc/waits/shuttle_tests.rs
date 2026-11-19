@@ -94,7 +94,7 @@ fn an_answer_and_a_return_are_not_lost_on_the_fast_path() {
             let (peer, step) = (peer.clone(), step.clone());
             thread::spawn(move || {
                 assert!(
-                    forward(&peer, hop, 1, &[], true).expect("a first hop closes no cycle"),
+                    forward(&peer, hop, 1, &[], true, true).expect("a first hop closes no cycle"),
                     "a synchronous call recorded no hop"
                 );
                 step.wait();

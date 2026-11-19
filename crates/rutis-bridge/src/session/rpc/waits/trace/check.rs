@@ -338,9 +338,16 @@ impl Table {
             .filter(|call| self.marked.contains(call));
         let expected = match &caller {
             Some((src, sid)) if *src == dst => Expected::SameChain,
-            Some((src, sid)) => Expected::Hop {
+            // A call on a marked chain: an edge when its caller waits for
+            // the result (sync, or `awaited` by default), an entry when the
+            // frame says the caller will not (SESS-83).
+            Some((src, sid)) if forward.synchronous || forward.awaited => Expected::Hop {
                 under: Some((src.clone(), sid.clone())),
                 entry: false,
+            },
+            Some((src, sid)) => Expected::Hop {
+                under: Some((src.clone(), sid.clone())),
+                entry: true,
             },
             None if forward.synchronous => Expected::Hop {
                 under: None,

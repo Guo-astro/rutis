@@ -180,6 +180,7 @@ test('invokeAnswered tells the reply as its frame is read, before the next frame
   })
   peer.receive({ op: 'hello', version: ENDPOINT_PROTOCOL, endpoint: 'main', capabilities: [] })
   peer.invokeAnswered('', 'events.dispatch', [{ mode: 'emit' }], (result: any) => seen.push(['answered', result.ok]))
+  expect(sent.at(-1).awaited).toBe(false)
   peer.receive({ op: 'return', id: sent.at(-1).id, value: { type: 'undefined' } })
   expect(seen).toEqual([['answered', true]])
   peer.receive({ op: 'invoke', id: 'main:1', path: [], target: '', method: 'plugins.read', args: { type: 'data', value: [{}] } })

@@ -1027,7 +1027,8 @@ class Peer(private val channel: Channel, private val opts: Options) {
      * frame (or at the session's end): the reply's value, or why it failed.
      */
     fun sendAnswered(target: String, method: String, args: List<Any?>, answered: (Any?, Throwable?) -> Unit) {
-        request("invoke", invokeFields(target, method), args, emptyList(), CallChain.current()) { outcome ->
+        val fields = invokeFields(target, method) + ("awaited" to JsonPrimitive(false))
+        request("invoke", fields, args, emptyList(), CallChain.current()) { outcome ->
             answered(outcome.value, outcome.error)
         }
     }
@@ -1035,7 +1036,8 @@ class Peer(private val channel: Channel, private val opts: Options) {
     /** Sends a call whose result nobody awaits, ahead of anything sent later. */
     fun notify(target: String, method: String, args: List<Any?>) {
         try {
-            val (id, _) = request("invoke", invokeFields(target, method), args, emptyList(), emptyList())
+            val fields = invokeFields(target, method) + ("awaited" to JsonPrimitive(false))
+            val (id, _) = request("invoke", fields, args, emptyList(), emptyList())
             // Its reply, when it comes, is a late one: dropped.
             synchronized(lock) { pending.remove(id) }
         } catch (_: Exception) {
@@ -1342,6 +1344,13 @@ class Peer(private val channel: Channel, private val opts: Options) {
     private fun invocation(op: String, frame: JsonObject, unknown: List<String>) {
         val invalid = { ProtocolException("invalid invocation") }
         if (op != "invoke" && op != "call" && op != "get" && op != "await") throw invalid()
+        // `awaited`, when it is there, is a boolean (SESS-83, §8.1).
+        frame["awaited"]?.let {
+            val awaited = it as? JsonPrimitive
+            if (awaited == null || awaited.isString || (awaited.content != "true" && awaited.content != "false")) {
+                throw ProtocolException("invalid awaited")
+            }
+        }
         val id = (frame["id"] as? JsonPrimitive)?.takeIf { it.isString }?.content ?: throw invalid()
         val pathElement = frame["path"] as? JsonArray ?: throw invalid()
         val path = pathElement.map { (it as? JsonPrimitive)?.takeIf { p -> p.isString }?.content ?: throw invalid() }

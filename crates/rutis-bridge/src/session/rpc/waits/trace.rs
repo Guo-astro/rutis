@@ -67,6 +67,10 @@ pub struct Forward {
     pub path: Vec<String>,
     /// The caller waits for it synchronously (the frame says `sync`).
     pub synchronous: bool,
+    /// The caller will wait for its result (the frame does not say
+    /// `awaited: false`): only such a call on a marked chain is a hop
+    /// (SESS-83).
+    pub awaited: bool,
     /// What was recorded.
     pub decision: Decision,
 }
@@ -229,6 +233,7 @@ pub(super) fn forward_hop(
     seq: u64,
     path: &[String],
     synchronous: bool,
+    awaited: bool,
     hop: &Hop,
 ) {
     if !recording() {
@@ -240,6 +245,7 @@ pub(super) fn forward_hop(
         seq,
         path: path.to_vec(),
         synchronous,
+        awaited,
         decision: Decision::Hop {
             src: (!hop.src.is_empty()).then(|| (hop.src.clone(), hop.sid.clone())),
             entry: hop.entry,
@@ -255,6 +261,7 @@ pub(super) fn forward_same_chain(
     seq: u64,
     path: &[String],
     synchronous: bool,
+    awaited: bool,
     caller: (&str, &str),
 ) {
     if !recording() {
@@ -266,6 +273,7 @@ pub(super) fn forward_same_chain(
         seq,
         path: path.to_vec(),
         synchronous,
+        awaited,
         decision: Decision::SameChain {
             caller: (caller.0.to_owned(), caller.1.to_owned()),
         },
@@ -279,6 +287,7 @@ pub(super) fn forward_not_waited(
     seq: u64,
     path: &[String],
     synchronous: bool,
+    awaited: bool,
     why: &'static str,
 ) {
     if !recording() {
@@ -290,6 +299,7 @@ pub(super) fn forward_not_waited(
         seq,
         path: path.to_vec(),
         synchronous,
+        awaited,
         decision: Decision::NotWaited { why },
     }));
 }
@@ -301,6 +311,7 @@ pub(super) fn forward_refused(
     seq: u64,
     path: &[String],
     synchronous: bool,
+    awaited: bool,
     calls: &[String],
 ) {
     if !recording() {
@@ -312,6 +323,7 @@ pub(super) fn forward_refused(
         seq,
         path: path.to_vec(),
         synchronous,
+        awaited,
         decision: Decision::Refused {
             calls: calls.to_vec(),
         },

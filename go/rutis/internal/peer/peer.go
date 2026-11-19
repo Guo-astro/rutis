@@ -1214,7 +1214,8 @@ func (p *Peer) SendAnswered(ctx context.Context, target, method string, args []a
 	if ctx == nil {
 		panic("rutis: a nil context: pass the context.Context your caller gave you")
 	}
-	_, _, err := p.request(context.WithoutCancel(ctx), "invoke", map[string]any{"target": target, "method": method}, args, true, nil, p.settled(answered))
+	fields := map[string]any{"target": target, "method": method, "awaited": false}
+	_, _, err := p.request(context.WithoutCancel(ctx), "invoke", fields, args, true, nil, p.settled(answered))
 	return err
 }
 
@@ -1247,7 +1248,7 @@ func (p *Peer) settled(answered func(error)) func(result) {
 // Notify sends a call whose result nobody awaits. It is sent before Notify
 // returns, so it goes out ahead of anything sent later.
 func (p *Peer) Notify(target, method string, args []any) {
-	id, _, err := p.request(context.Background(), "invoke", map[string]any{"target": target, "method": method}, args, true, nil, nil)
+	id, _, err := p.request(context.Background(), "invoke", map[string]any{"target": target, "method": method, "awaited": false}, args, true, nil, nil)
 	if err == nil {
 		// Its reply, when it comes, is a late one: dropped.
 		p.mu.Lock()
@@ -1452,6 +1453,7 @@ type frame struct {
 	Args           json.RawMessage `json:"args"`
 	Value          json.RawMessage `json:"value"`
 	Error          json.RawMessage `json:"error"`
+	Awaited        json.RawMessage `json:"awaited"`
 }
 
 // frameFields lists the fields each op defines (docs/protocol-session.md §9):
@@ -1459,10 +1461,10 @@ type frame struct {
 // ending the session.
 var frameFields = map[string][]string{
 	"hello":   {"op", "version", "endpoint", "implementation", "capabilities"},
-	"invoke":  {"op", "id", "path", "target", "method", "args", "sync"},
-	"call":    {"op", "id", "path", "reference", "method", "args", "sync"},
-	"get":     {"op", "id", "path", "reference", "property", "sync"},
-	"await":   {"op", "id", "path", "reference", "sync"},
+	"invoke":  {"op", "id", "path", "target", "method", "args", "sync", "awaited"},
+	"call":    {"op", "id", "path", "reference", "method", "args", "sync", "awaited"},
+	"get":     {"op", "id", "path", "reference", "property", "sync", "awaited"},
+	"await":   {"op", "id", "path", "reference", "sync", "awaited"},
 	"return":  {"op", "id", "value"},
 	"throw":   {"op", "id", "error"},
 	"release": {"op", "reference", "count"},
@@ -1907,6 +1909,13 @@ func (p *Peer) admitted(f *frame) (string, []string, error) {
 // requires of them (an `invoke` names a target and a method); p.mu is held. A
 // frame it cannot read ends the session.
 func (p *Peer) callFields(f *frame) (*string, string, error) {
+	// `awaited`, when it is there, is a boolean (SESS-83, §8.1).
+	if len(f.Awaited) > 0 {
+		var awaited bool
+		if string(f.Awaited) == "null" || json.Unmarshal(f.Awaited, &awaited) != nil {
+			return nil, "", errors.New("invalid awaited")
+		}
+	}
 	var method *string
 	if len(f.Method) > 0 && string(f.Method) != "null" {
 		var name string

@@ -13,10 +13,10 @@ import kotlinx.serialization.json.JsonPrimitive
 
 private val FRAME_FIELDS: Map<String, List<String>> = mapOf(
     "hello" to listOf("op", "version", "endpoint", "implementation", "capabilities"),
-    "invoke" to listOf("op", "id", "path", "target", "method", "args", "sync"),
-    "call" to listOf("op", "id", "path", "reference", "method", "args", "sync"),
-    "get" to listOf("op", "id", "path", "reference", "property", "sync"),
-    "await" to listOf("op", "id", "path", "reference", "sync"),
+    "invoke" to listOf("op", "id", "path", "target", "method", "args", "sync", "awaited"),
+    "call" to listOf("op", "id", "path", "reference", "method", "args", "sync", "awaited"),
+    "get" to listOf("op", "id", "path", "reference", "property", "sync", "awaited"),
+    "await" to listOf("op", "id", "path", "reference", "sync", "awaited"),
     "return" to listOf("op", "id", "value"),
     "throw" to listOf("op", "id", "error"),
     "release" to listOf("op", "reference", "count"),

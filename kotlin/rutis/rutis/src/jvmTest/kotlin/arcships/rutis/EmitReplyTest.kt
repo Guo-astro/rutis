@@ -8,6 +8,7 @@ import arcships.rutis.internal.peer.Peer
 import arcships.rutis.internal.peer.RemoteFuture
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import java.util.concurrent.CompletableFuture
@@ -62,6 +63,7 @@ class EmitReplyTest {
         }
         val sent = next()
         assertEquals("events.dispatch", sent["method"]!!.jsonPrimitive.content)
+        assertEquals("false", (sent["awaited"] as? JsonPrimitive)?.content, "nobody waits for it (SESS-83)")
         // The reply, then at once a frame the runtime handles after it.
         send("""{"op":"return","id":${id(sent)},"value":{"type":"undefined"}}""")
         send("""{"op":"invoke","id":"main:1","path":[],"target":"","method":"after","args":{"type":"list","value":[]}}""")

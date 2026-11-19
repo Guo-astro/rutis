@@ -35,17 +35,17 @@ The rules are the contract. Error **text** is a contract only where this file qu
 | Frame | Fields | Meaning |
 | --- | --- | --- |
 | `hello` | `version: u32`; `endpoint?: string`; `implementation?: {name, version}`; `capabilities?: string[]` | The opening greeting. `version` is required and the other three may be absent; receivers require a valid `endpoint` (§4). |
-| `invoke` | `id: string`; `path: string[]`; `target: string`; `method: string`; `args: WireValue`; `sync?: bool` | Call a service method. An empty `target` means a control operation (`events.*`, `rows.*`, …). |
-| `call` | `id`; `path`; `reference: u64`; `method?: string`; `args: WireValue`; `sync?: bool` | Call a function reference; with `method`, call a method of an object reference. |
-| `get` | `id`; `path`; `reference: u64`; `property: string`; `sync?: bool` | Read a live property of an object reference. |
-| `await` | `id`; `path`; `reference: u64`; `sync?: bool` | Await an async result reference. |
+| `invoke` | `id: string`; `path: string[]`; `target: string`; `method: string`; `args: WireValue`; `sync?: bool`; `awaited?: bool` | Call a service method. An empty `target` means a control operation (`events.*`, `rows.*`, …). |
+| `call` | `id`; `path`; `reference: u64`; `method?: string`; `args: WireValue`; `sync?: bool`; `awaited?: bool` | Call a function reference; with `method`, call a method of an object reference. |
+| `get` | `id`; `path`; `reference: u64`; `property: string`; `sync?: bool`; `awaited?: bool` | Read a live property of an object reference. |
+| `await` | `id`; `path`; `reference: u64`; `sync?: bool`; `awaited?: bool` | Await an async result reference. |
 | `return` | `id: string`; `value: WireValue` | The result of a call. |
 | `throw` | `id: string`; `error: Failure` | The error of a call. `Failure` is `{name: string, message: string, graph?: JSON}`. |
 | `release` | `reference: u64`; `count: u64` | Return a number of reference grants (§6). |
 | `cancel` | `id: string` | The caller gives up call `id` (§7). |
 | `ack` | `id: string` | The callee resolved the cancel of call `id`: it will send no `return`/`throw` for it (§7). |
 
-`SESS-7` **Current.** `sync` defaults to `false` and is not written when `false`. `hello`'s `endpoint`, `implementation` and `capabilities`, and `throw`'s `graph`, are not written when absent. `crates/rutis-bridge/src/session/protocol.rs:157-221`
+`SESS-7` **Current.** `sync` defaults to `false` and is not written when `false`. `awaited` defaults to `true` and is not written when `true`: only a call that does not wait for its result writes `awaited: false` (`SESS-83`). `hello`'s `endpoint`, `implementation` and `capabilities`, and `throw`'s `graph`, are not written when absent. `crates/rutis-bridge/src/session/protocol.rs:157-221`
 
 `SESS-8` **Current.** Each `path` entry is a call id: `<endpoint>:<n>`, or a tagged entry after forwarding (§5.2). A `path` is the frame's call chain, not a free field. `crates/rutis-bridge/src/session/rpc.rs:2739-2742`; [session tags design](design-session-tags-2026-10-12.en.md) §2
 
@@ -156,7 +156,9 @@ Receivers are not equally strict: Node, Bun, Go, Swift and Kotlin require `^[1-9
 
 `SESS-39` **Current.** A synchronous forward enters the wait graph. If the forward would close a cycle of synchronous waits (a call on the chain can only be advanced by the executor it is blocking), it is not sent and the call fails with `SyncWaitCycle`; the session goes on. `crates/rutis-bridge/src/session/rpc.rs:1867-1879`; `crates/rutis-bridge/src/session/rpc/waits.rs`; `bridge/sync-wait-cycle-refused` in `docs/guarantees.en.md`
 
-`SESS-40` **Not guaranteed.** Synchronous calls that do not mark `sync` on the frame are outside the check and may deadlock; a cycle across hosts is invisible to every host; the cost of reentrancy and mixing versions are not promised. `bridge/sync-wait-cycle-refused` in `docs/guarantees.en.md`
+`SESS-83` **Current.** An asynchronous call says on its frame whether its result will be waited for: `awaited: false` means the caller will not wait for it before the call that made it finishes (fired and forgotten); absent or `true` means it will. Only one kind of call enters the wait graph: `sync: true`, or an asynchronous call whose chain's last call is marked (`SESS-38`) and whose frame does not say `awaited: false`. A call that says `awaited: false` is recorded as an **entry**: nobody waits for it, so it is no edge, but calls made under it still carry its call id as part of their chain. `sync: true` already says the caller waits, so `awaited` is ignored there (senders do not write it). A receiver that forwards the call keeps the original frame's signal: when the host forwards a call for another session, the forwarded call is an edge only if the original caller really waits. All seven implementations (Rust, Node, Bun, Python, Go, Swift, Kotlin) know the field; a runtime that knows nobody waits for a call (`sendAnswered` / `request_answered` / `notify` and the like) writes `awaited: false`. The absent field keeps the old semantics: an old caller says nothing, the host records the conservative edge, and no real wait edge is lost; an old caller may still be refused by a false cycle. `crates/rutis-bridge/src/session/protocol.rs`; `forward` in `crates/rutis-bridge/src/session/rpc/waits.rs`; tests `crates/rutis-bridge/src/session/rpc/waits.rs::tests::an_asynchronous_forward_nobody_awaits_is_an_entry`, `::an_awaited_forward_closes_the_cycle`, `crates/rutis-bridge/src/session/rpc/tests.rs::a_forwarded_call_carries_the_callers_awaited_signal`; `bridge/sync-wait-cycle-refused`
+
+`SESS-40` **Not guaranteed.** Synchronous calls that do not mark `sync` on the frame are outside the check and may deadlock; a call that says `awaited: false` but waits for its result anyway loses its wait edge and may deadlock (the signal is trusted; the host does not verify it); a cycle across hosts is invisible to every host; the cost of reentrancy and mixing versions are not promised. `bridge/sync-wait-cycle-refused` in `docs/guarantees.en.md`
 
 ### 5.4 Settling a call
 
@@ -257,9 +259,9 @@ Receivers are not equally strict: Node, Bun, Go, Swift and Kotlin require `^[1-9
 | A `cancel` for a call that does not exist | Ignored | `crates/rutis-bridge/src/session/rpc/tests.rs:329-361` |
 | A late reply to a cancelled call | Discarded and counted; the session is not closed | `crates/rutis-bridge/src/session/rpc.rs:2490-2501` |
 
-`SESS-64` **Current.** The shared malformed-frame matrix has 26 cases: 13 single frames in `MALFORMED` (syntax, fields, unknown references, unknown replies) and 13 multi-frame/ordered cases in `MALFORMED_SEQUENCES` (a request before the greeting, a second `hello`, an invocation with no `id`, `get` on an unknown reference, a released reference, a `release` count of 0 or above the grant, wrong field types in `cancel`/`ack`/`throw`, a `throw` for an unknown call, a `path` containing the frame's own id, a repeated call id). A case requires the session to end with a transport error; apart from the replies owed to the case's valid calls, the far end replies to nothing. All seven implementations have an entry point: Rust uses the memory channel, the others a Unix socket, loopback or WebSocket; Swift's cases compile only on macOS and run in CI's `runtimes-swift` job. `crates/rutis-bridge/src/session/testing.rs:151-392`; `crates/rutis-bridge/tests/runtime_conformance.rs:452-633`; `docs/ci.en.md` "Conformance matrix"
+`SESS-64` **Current.** The shared malformed-frame matrix has 27 cases: 14 single frames in `MALFORMED` (syntax, fields, a wrong `awaited` type, unknown references, unknown replies) and 13 multi-frame/ordered cases in `MALFORMED_SEQUENCES` (a request before the greeting, a second `hello`, an invocation with no `id`, `get` on an unknown reference, a released reference, a `release` count of 0 or above the grant, wrong field types in `cancel`/`ack`/`throw`, a `throw` for an unknown call, a `path` containing the frame's own id, a repeated call id). A case requires the session to end with a transport error; apart from the replies owed to the case's valid calls, the far end replies to nothing. All seven implementations have an entry point: Rust uses the memory channel, the others a Unix socket, loopback or WebSocket; Swift's cases compile only on macOS and run in CI's `runtimes-swift` job. `crates/rutis-bridge/src/session/testing.rs:151-392`; `crates/rutis-bridge/tests/runtime_conformance.rs:452-633`; `docs/ci.en.md` "Conformance matrix"
 
-`SESS-65` **Superseded.** "A second `hello`, a request before the greeting, `get` on an unknown reference, a released reference, a `release` count of 0 or above the grants, wrong field types in `cancel`/`ack`/`throw`, a `throw` for an unknown call, a `path` containing the frame's id and a call id that does not increase are enforced by code but are not in the shared matrix run by the seven implementations." That is no longer the state: every rule in that list is now in the 26-case matrix (`SESS-64`, §14 G2), with the call-id item covering a repeated id. Still verified by code alone: a method call or property read on a non-object reference; a call id that goes backwards, is not numeric, exceeds 2^53−1 or lacks the far end's prefix; `throw.error` missing `name`/`message` (the matrix has an `error` that is not an object only); a frame deeper than 208 levels; a message over the channel's limit.
+`SESS-65` **Superseded.** "A second `hello`, a request before the greeting, `get` on an unknown reference, a released reference, a `release` count of 0 or above the grants, wrong field types in `cancel`/`ack`/`throw`, a `throw` for an unknown call, a `path` containing the frame's id and a call id that does not increase are enforced by code but are not in the shared matrix run by the seven implementations." That is no longer the state: every rule in that list is now in the 27-case matrix (`SESS-64`, §14 G2), with the call-id item covering a repeated id. Still verified by code alone: a method call or property read on a non-object reference; a call id that goes backwards, is not numeric, exceeds 2^53−1 or lacks the far end's prefix; `throw.error` missing `name`/`message` (the matrix has an `error` that is not an object only); a frame deeper than 208 levels; a message over the channel's limit.
 
 ## 9. Unknown fields
 
@@ -271,7 +273,7 @@ Receivers are not equally strict: Node, Bun, Go, Swift and Kotlin require `^[1-9
 - `release`, `cancel`: there is no call to fail; the extra fields are ignored and the known fields are processed.
 - A call before the handshake, an `id` without the far end's prefix, an unknown `op`, a missing `id`, a dangling reply or reference still end the session per §8; a frame whose call cannot be identified is not downgraded to a call-level error.
 
-Implementation: `parse_frame` / `reject_unknown_fields` in `crates/rutis-bridge/src/session/rpc.rs`; tests `unknown_frame_fields_fail_only_their_call` and `an_unknown_field_in_hello_fails_the_handshake`.
+Implementation: `parse_frame` / `reject_unknown_fields` in `crates/rutis-bridge/src/session/rpc.rs`; tests `unknown_frame_fields_fail_only_their_call` and `an_unknown_field_in_hello_fails_the_handshake`. `awaited` is a known field of a call frame (`SESS-83`), not an unknown field; a value of another type ends the session as a wrong field type per this section.
 
 `SESS-67` **Current (all seven).** Rust, Node, Bun, Python, Go, Swift and Kotlin all implement the call-level refusal of `SESS-66`; the verification column of `bridge/unknown-fields` lists each implementation's cases.
 
@@ -366,8 +368,8 @@ The table is this file's rule list, for #634's trace table and #613's models. Ev
 | `SESS-61` | A cancel is resolved once: `ack` and no reply, or the reply written before the cancel was read; the caller takes either | Current | §7; #1099; `specs/call-lifecycle` |
 | `SESS-62` | Cancellation is closing the transport | Superseded | §7 |
 | `SESS-63` | Malformed input fails closed | Current | `crates/rutis-bridge/src/session/rpc.rs:2514-2561,2598-2618`; `crates/rutis-bridge/src/session/testing.rs:151-392` |
-| `SESS-64` | The shared malformed matrix: 26 cases (13 single-frame + 13 multi-frame/ordered), all seven implementations have an entry point | Current | `crates/rutis-bridge/src/session/testing.rs:154-370`; `crates/rutis-bridge/tests/runtime_conformance.rs:452-633` |
-| `SESS-65` | The old "these rules are outside the shared matrix" state; the 26-case matrix covers that list (`SESS-64`) | Superseded | §8.1; §14 G2 |
+| `SESS-64` | The shared malformed matrix: 27 cases (14 single-frame + 13 multi-frame/ordered), all seven implementations have an entry point | Current | `crates/rutis-bridge/src/session/testing.rs:154-370`; `crates/rutis-bridge/tests/runtime_conformance.rs:452-633` |
+| `SESS-65` | The old "these rules are outside the shared matrix" state; the 27-case matrix covers that list (`SESS-64`) | Superseded | §8.1; §14 G2 |
 | `SESS-66` | Rust: an unknown field fails only that call (`hello` fails the handshake, `release`/`cancel` ignore it) | Current | `parse_frame` / `reject_unknown_fields` in `crates/rutis-bridge/src/session/rpc.rs`; `rpc/tests.rs::unknown_frame_fields_fail_only_their_call`, `::an_unknown_field_in_hello_fails_the_handshake` |
 | `SESS-67` | All seven runtimes implement the call-level refusal (`bad-frame`); `release`/`cancel` ignore extra fields | Current | `bridge/unknown-fields` in `docs/guarantees.en.md`; §9; §14 G1 |
 | `SESS-68` | Unknown fields end the session / six runtimes ignore them uniformly | Superseded | §9; §14 G1 |
@@ -385,6 +387,7 @@ The table is this file's rule list, for #634's trace table and #613's models. Ev
 | `SESS-80` | A new capability needs no version bump; a new frame or a changed field meaning does | Current | `crates/rutis-bridge/src/session/protocol.rs:154-156,210-226`; §13; `SESS-66` |
 | `SESS-81` | Cross-version meetings beyond adjacent releases | Not guaranteed | `bridge/cross-version-meetings` promises adjacent releases only |
 | `SESS-82` | Values received nest within 64 levels | Not guaranteed | §10; `bridge/large-and-deep-values` |
+| `SESS-83` | `awaited` tells fired-and-forgotten from awaited; absent reads as awaited | Current | §5.3; `crates/rutis-bridge/src/session/protocol.rs`; `crates/rutis-bridge/src/session/rpc/waits.rs`; `bridge/sync-wait-cycle-refused` |
 
 ## 12. What developers see
 
@@ -434,7 +437,7 @@ Every call-level failure ends at the call or the value. Handshake and transport 
 
 `SESS-80` **Current.** Adding a capability does not need a protocol version: a sender checks `value-<tag>` before sending a tagged value, and does not send it when the far end does not declare it. Because old implementations fail a call with an unknown field (`SESS-66`) and reject unknown `op`s, a new **frame** or a **change in an existing field's meaning** can only ship with a protocol version bump, updating this file, `Frame`/`WireValue`, the malformed matrix and the seven implementations together. A new capability needs no version bump and is used only as declared (§2.4); there is no required capability to negotiate (`SESS-25`).
 
-`SESS-81` **Not guaranteed.** Cross-version meetings beyond adjacent releases; mixing new and old implementations; a new field without a version. `bridge/cross-version-meetings` in `docs/guarantees.en.md` promises only two adjacent releases with no incompatible change between them.
+`SESS-81` **Not guaranteed.** Cross-version meetings beyond adjacent releases; mixing new and old implementations; a new field without a version. Protocol 5 gained `awaited` before release (`SESS-83`): a far end built from an earlier protocol-5 prerelease fails a call carrying the field per `SESS-66` and must be upgraded to the 0.23 build that has it. `bridge/cross-version-meetings` in `docs/guarantees.en.md` promises only two adjacent releases with no incompatible change between them.
 
 ## 14. Specification gaps and decisions
 
@@ -448,7 +451,7 @@ Every call-level failure ends at the call or the value. Handshake and transport 
 ### G2 The shared malformed matrix: filled (2026-11-11)
 
 - Decision (#635): move malformed rules that only code enforced into the shared `session::testing::malformed` matrix, so the seven implementations run the same cases.
-- Done: the matrix grew from 13 cases to 26, 13 single frames in `MALFORMED` and 13 multi-frame/ordered cases in `MALFORMED_SEQUENCES`; the original list (a request before the handshake, a duplicate `hello`, `get` on an unknown reference, a released reference, a `release` count of 0 or above the grants, wrong field types in `cancel`/`ack`/`throw`, a `throw` for an unknown call, a `path` containing the frame's id, a call id that does not increase) is covered, with the call-id item covering a repeated id only, plus an invocation with no `id` (`SESS-21`, `SESS-22`, `SESS-33`, `SESS-47`, `SESS-48`; `SESS-64`). Implementation: `MALFORMED`, `MALFORMED_SEQUENCES` and `malformed` in `crates/rutis-bridge/src/session/testing.rs`; Swift's cases compile only on macOS and run in CI's `runtimes-swift` job.
+- Done: the matrix grew from 13 cases to 26, 13 single frames in `MALFORMED` and 13 multi-frame/ordered cases in `MALFORMED_SEQUENCES` (`SESS-83` added a single frame with a wrong `awaited` type, 27 now); the original list (a request before the handshake, a duplicate `hello`, `get` on an unknown reference, a released reference, a `release` count of 0 or above the grants, wrong field types in `cancel`/`ack`/`throw`, a `throw` for an unknown call, a `path` containing the frame's id, a call id that does not increase) is covered, with the call-id item covering a repeated id only, plus an invocation with no `id` (`SESS-21`, `SESS-22`, `SESS-33`, `SESS-47`, `SESS-48`; `SESS-64`). Implementation: `MALFORMED`, `MALFORMED_SEQUENCES` and `malformed` in `crates/rutis-bridge/src/session/testing.rs`; Swift's cases compile only on macOS and run in CI's `runtimes-swift` job.
 - Still outside the matrix: a method call or property read on a non-object reference; a call id that goes backwards, is not numeric, exceeds 2^53−1 or lacks the far end's prefix; `throw.error` missing `name`/`message`; a frame deeper than 208 levels; a message over the channel's limit. Code and other tests verify these (§8.1, §8.2).
 
 ### G3 The reply-after-cancel rule: decided (2026-11-16)
@@ -472,6 +475,14 @@ Both need a later documentation revision; this file only marks them superseded a
 ### G6 Error text differences
 
 The same kind of error reads differently in Rust, Node and Go (`SESS-77`). This file quotes Rust's text word for word only in §12 and §8; verifiers compare category, scope and error code, not text. The call-id number format differs in the same way (`SESS-33`): Rust and Python are lenient, the others strict. Unifying the text or the format later would be a separate behaviour change.
+
+### G7 The wait signal of an asynchronous call: settled (2026-11-19, #1098)
+
+- Decision: a call frame gets an optional boolean `awaited`, defaulting to `true` ("the result will be waited for"); only "fired and forgotten" writes `false`. It joins protocol 5 without a version bump: protocol 5 is unreleased (0.23 is unreleased) and all implementations upgrade together. A far end built from an earlier 0.23 prerelease treats `awaited` as an unknown field and fails the call per `SESS-66`; it must be upgraded to a build with the field.
+- Why: before protocol 5's `awaited` the frame only had `sync`, so the host could not tell "fired and forgotten" from "awaited later". Recording every asynchronous call on a marked chain as a hop refuses calls that cannot deadlock (`specs/cross-runtime-sync` counterexample 8, `async-policy-b`); counting only `sync` loses the synchronous cycle through an object relay (a real deadlock). `awaited: false` lets the caller say "I do not wait", taking the call out of the edges; the `true` default keeps the old conservative reading, so no real edge is lost.
+- Not adopted: a later `await` frame as the signal (the cycle has already formed before it, too late); capability negotiation (capabilities cannot extend fields, `SESS-69`); changing what `sync` means to "will be waited for" (`sync` also decides which thread waits; that would change `SESS-38`).
+- Boundary: `awaited: false` is a trusted declaration; the host does not verify it. A false one loses a real wait edge (`SESS-40`'s explicit non-guarantee). `awaited` is ignored when `sync: true`. A receiver forwarding the call keeps the original signal.
+- Verification: `an_asynchronous_forward_nobody_awaits_is_an_entry`, `an_awaited_forward_closes_the_cycle`, `a_forwarded_call_carries_the_callers_awaited_signal`, `a_call_says_when_its_result_is_not_waited_for` in `crates/rutis-bridge`; the shared malformed matrix of all seven implementations has the `awaited`-wrong-type frame; `specs/cross-runtime-sync`'s `async-forgotten-policy-b` (passes after the fix) and `async-policy-b` (counterexample 8 before it).
 
 ## Related files
 

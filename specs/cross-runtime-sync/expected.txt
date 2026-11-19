@@ -34,6 +34,9 @@ before-host-call ok
 abandon-policy-b violated:NoFalseCycle
 hidden-policy-b violated:ChainRecognised
 async-policy-b violated:NoFalseCycle
+# SESS-83 (#1098): an asynchronous call says whether its result is awaited.
+async-forgotten-policy-b ok
+async-awaited-policy-b ok
 nested-service violated:NeverNested
 end-session ok
 # #614 continued (2026-11-10): the host as a participant (`Workers`

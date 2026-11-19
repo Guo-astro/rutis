@@ -98,6 +98,9 @@ impl HostDispatch for RowService {
         // A call from another runtime's session carries that session's
         // chain, which must be rebased for this one.
         let source = crate::runtime::rpc::caller().filter(|source| source.tag() != target.tag());
+        // Whether the call's caller waits for its result: the forward to the
+        // runtime providing it is a wait edge only then (SESS-83).
+        let awaited = crate::session::rpc::current_awaited();
         match self.methods.get(method).and_then(Value::as_str) {
             Some("async") => {
                 let ongoing = self.begin(method);
@@ -109,7 +112,9 @@ impl HostDispatch for RowService {
                     let _ongoing = ongoing;
                     let settled = async {
                         crate::runtime::rpc::settle(
-                            connection.invoke_async(&handle, &method, args).await?,
+                            connection
+                                .invoke_async_awaited(&handle, &method, args, awaited)
+                                .await?,
                         )
                         .await
                     };

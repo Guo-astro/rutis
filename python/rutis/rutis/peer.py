@@ -587,10 +587,10 @@ def _described(op: str, fields: dict) -> str:
 # inspected below; `data` and an error graph are arbitrary JSON, not inspected.
 _ALLOWED_FIELDS = {
     "hello": ("op", "version", "endpoint", "implementation", "capabilities"),
-    "invoke": ("op", "id", "path", "target", "method", "args", "sync"),
-    "call": ("op", "id", "path", "reference", "method", "args", "sync"),
-    "get": ("op", "id", "path", "reference", "property", "sync"),
-    "await": ("op", "id", "path", "reference", "sync"),
+    "invoke": ("op", "id", "path", "target", "method", "args", "sync", "awaited"),
+    "call": ("op", "id", "path", "reference", "method", "args", "sync", "awaited"),
+    "get": ("op", "id", "path", "reference", "property", "sync", "awaited"),
+    "await": ("op", "id", "path", "reference", "sync", "awaited"),
     "return": ("op", "id", "value"),
     "throw": ("op", "id", "error"),
     "release": ("op", "reference", "count"),
@@ -1550,6 +1550,7 @@ class Peer:
         sync: bool = False,
         described: str | None = None,
         payload: str | None = None,
+        awaited: bool = True,
     ) -> str:
         call = self._allocate()
         grants: list = []
@@ -1560,6 +1561,10 @@ class Peer:
             # cycles (#228).
             if sync:
                 frame["sync"] = True
+            # The caller will not wait for this result: no wait edge
+            # (SESS-83). Absent means it will, the conservative reading.
+            if not awaited:
+                frame["awaited"] = False
             described = described or _described(op, fields)
             if op != "await":
                 frame["args"] = self._encode_args(args, grants, described, payload)
@@ -1702,14 +1707,28 @@ class Peer:
 
         def send() -> None:
             try:
-                self._request("invoke", {"target": target, "method": method}, args, finish, payload=payload)
+                self._request(
+                    "invoke",
+                    {"target": target, "method": method},
+                    args,
+                    finish,
+                    payload=payload,
+                    awaited=False,
+                )
             except BaseException as error:  # noqa: BLE001 - told as the answer
                 answered(False, error)
 
         if threading.get_ident() != self._thread:
             self.loop.call_soon_threadsafe(send)
             return
-        self._request("invoke", {"target": target, "method": method}, args, finish, payload=payload)
+        self._request(
+            "invoke",
+            {"target": target, "method": method},
+            args,
+            finish,
+            payload=payload,
+            awaited=False,
+        )
 
     def request(self, target: str, method: str, args: list):
         """Send a call now, before this returns, so it goes out ahead of
@@ -1742,7 +1761,13 @@ class Peer:
             self.loop.call_soon_threadsafe(self.notify, target, method, args)
             return
         try:
-            self._request("invoke", {"target": target, "method": method}, args, lambda _result: None)
+            self._request(
+                "invoke",
+                {"target": target, "method": method},
+                args,
+                lambda _result: None,
+                awaited=False,
+            )
         except Exception:  # noqa: BLE001 - nobody awaits a notification
             pass
 
@@ -1877,6 +1902,8 @@ class Peer:
             raise ValueError("invalid method")
         if op == "get" and not isinstance(frame.get("property"), str):
             raise ValueError("invalid property")
+        if "awaited" in frame and not isinstance(frame["awaited"], bool):
+            raise ValueError("invalid awaited")
         if unknown:
             # The extra field fails this call alone; its id was taken above,
             # as a call's is, so a repeat does not run it later.

@@ -716,6 +716,31 @@ thread_local! {
     /// The invocation this thread runs: its session's tag and its sequence.
     static INVOKING: RefCell<Option<(String, u64)>> = const { RefCell::new(None) };
 }
+thread_local! {
+    /// Whether the call this thread runs waits for its result: what an
+    /// asynchronous call made on its behalf says on its frame (SESS-83).
+    /// No call context means yes, the conservative reading.
+    static AWAITED: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
+}
+
+/// Whether the call this thread runs waits for its result (SESS-83): true
+/// outside a call too, the conservative reading.
+pub(crate) fn current_awaited() -> bool {
+    AWAITED.with(std::cell::Cell::get)
+}
+
+/// [`current_awaited`] is `awaited` until this drops, even by a panic.
+struct AwaitedGuard(bool);
+impl AwaitedGuard {
+    fn enter(awaited: bool) -> Self {
+        Self(AWAITED.with(|current| current.replace(awaited)))
+    }
+}
+impl Drop for AwaitedGuard {
+    fn drop(&mut self) {
+        AWAITED.with(|current| current.set(self.0));
+    }
+}
 
 /// The invocation of a host service this thread is running, as its
 /// session's tag and its sequence in that session: invocations of one
@@ -1119,7 +1144,12 @@ enum Waiting {
         sender: mpsc::Sender<Message>,
         origins: Vec<String>,
     },
-    Async(oneshot::Sender<Reply>),
+    /// An asynchronous call, and whether its caller will wait for the
+    /// result before the call that made it finishes (SESS-83).
+    Async {
+        sender: oneshot::Sender<Reply>,
+        awaited: bool,
+    },
 }
 enum Message {
     Reply(Reply),
@@ -1148,6 +1178,9 @@ struct Incoming {
     id: String,
     path: Vec<String>,
     call: Accepted,
+    /// The caller says it will wait for this call's result (SESS-83):
+    /// absent on the frame means true.
+    awaited: bool,
     _flight: Option<Flight>,
 }
 impl Incoming {
@@ -1974,9 +2007,24 @@ impl Connection {
         })
     }
     pub async fn invoke_async(&self, target: &str, method: &str, args: Value) -> Reply {
+        self.invoke_async_awaited(target, method, args, true).await
+    }
+    /// [`Connection::invoke_async`] on behalf of a caller whose wait does or
+    /// does not continue through this call (`awaited`, SESS-83): a host
+    /// forwarding a call it was given says what that call's caller said.
+    pub(crate) async fn invoke_async_awaited(
+        &self,
+        target: &str,
+        method: &str,
+        args: Value,
+        awaited: bool,
+    ) -> Reply {
         forwarded_async(
             self,
-            self.request_async(Operation::Invoke(target.into(), method.into(), args)),
+            self.request_async_awaited(
+                Operation::Invoke(target.into(), method.into(), args),
+                awaited,
+            ),
         )
         .await
     }
@@ -1999,7 +2047,10 @@ impl Connection {
         let id = forwarded(self, || {
             self.send(
                 Operation::Invoke(target.into(), method.into(), args),
-                Waiting::Async(sender),
+                Waiting::Async {
+                    sender,
+                    awaited: current_awaited(),
+                },
             )
         })?;
         let guard = CancelOnDrop {
@@ -2028,7 +2079,10 @@ impl Connection {
         let id = forwarded(self, || {
             self.send(
                 Operation::Invoke(target.into(), method.into(), args),
-                Waiting::Async(sender),
+                Waiting::Async {
+                    sender,
+                    awaited: current_awaited(),
+                },
             )
         })?;
         let guard = CancelOnDrop {
@@ -2096,13 +2150,18 @@ impl Connection {
         };
         let (id, sequence) = id;
         let mut path = current_path();
-        let synchronous = matches!(waiting, Waiting::Sync { .. });
-        // A call forwarded for a caller that waits synchronously: refused,
-        // not sent, if it would close a cycle of synchronous waits (#228).
+        let (synchronous, awaited) = match &waiting {
+            Waiting::Sync { .. } => (true, true),
+            Waiting::Async { awaited, .. } => (false, *awaited),
+        };
+        // A call forwarded for a caller that waits for it: refused, not
+        // sent, if it would close a cycle of synchronous waits (#228,
+        // SESS-83). A call its caller will not wait for is an entry: it is
+        // no edge in the wait graph, though what is made under it is.
         // The host's own synchronous `invoke` has no chain to begin with; it
         // is a hop all the same (#537).
-        let hop =
-            waits::forward(&self.0.tag, &id, sequence, &path, synchronous).map_err(|cycle| {
+        let hop = waits::forward(&self.0.tag, &id, sequence, &path, synchronous, awaited).map_err(
+            |cycle| {
                 // The call the developer wrote, and the rows it went through
                 // when rows made every call of the cycle (#677).
                 let rows = cycle
@@ -2113,7 +2172,8 @@ impl Connection {
                     "{} would wait on itself{rows} (synchronous calls)",
                     call.describe()
                 ))
-            })?;
+            },
+        )?;
         // Leaves the wait graph if the call is not sent after all.
         let unsent = Unsent(hop.then(|| (self.0.tag.clone(), id.clone())));
         if let Operation::Await(_, origin) = &call {
@@ -2139,6 +2199,7 @@ impl Connection {
                     method: method.clone(),
                     args,
                     sync: synchronous,
+                    awaited,
                 };
                 (frame, grants)
             }
@@ -2151,6 +2212,7 @@ impl Connection {
                     method: method.clone(),
                     args,
                     sync: synchronous,
+                    awaited,
                 };
                 (frame, grants)
             }
@@ -2161,6 +2223,7 @@ impl Connection {
                     reference: *reference,
                     property: property.clone(),
                     sync: synchronous,
+                    awaited,
                 },
                 Vec::new(),
             ),
@@ -2170,6 +2233,7 @@ impl Connection {
                     path,
                     reference: *reference,
                     sync: synchronous,
+                    awaited,
                 },
                 Vec::new(),
             ),
@@ -2255,8 +2319,14 @@ impl Connection {
         }
     }
     async fn request_async(&self, call: Operation) -> Reply {
+        self.request_async_awaited(call, true).await
+    }
+    /// [`Connection::request_async`], with what the call says of its
+    /// result (`awaited`, SESS-83): a forward made on behalf of a caller
+    /// that will not wait for it says `false`.
+    async fn request_async_awaited(&self, call: Operation, awaited: bool) -> Reply {
         let (sender, receiver) = oneshot::channel();
-        let id = self.send(call, Waiting::Async(sender))?;
+        let id = self.send(call, Waiting::Async { sender, awaited })?;
         let mut guard = CancelOnDrop {
             peer: Arc::downgrade(&self.0),
             id,
@@ -2921,7 +2991,7 @@ impl Connection {
         if !matches!(*self.0.ready.borrow(), Some(Ok(()))) {
             return Err(transport("request before protocol handshake"));
         }
-        let (id, mut path, call, sync) = match frame {
+        let (id, mut path, call, sync, awaited) = match frame {
             Frame::Return { id, value } => {
                 // Decode first: a discarded late reply still releases the
                 // references it granted when its values drop. A value this
@@ -3023,11 +3093,18 @@ impl Connection {
                 method,
                 args,
                 sync,
+                awaited,
             } => {
                 let Some(args) = self.decode_args(&id, args)? else {
                     return Ok(());
                 };
-                (id, path, Accepted::Invoke(target, method, args), sync)
+                (
+                    id,
+                    path,
+                    Accepted::Invoke(target, method, args),
+                    sync,
+                    awaited,
+                )
             }
             // Rust exports objects only as relays of other sessions' objects.
             Frame::Call {
@@ -3037,12 +3114,19 @@ impl Connection {
                 method: Some(method),
                 args,
                 sync,
+                awaited,
             } => {
                 let object = self.export_object(reference)?;
                 let Some(args) = self.decode_args(&id, args)? else {
                     return Ok(());
                 };
-                (id, path, Accepted::Method(object, method, args), sync)
+                (
+                    id,
+                    path,
+                    Accepted::Method(object, method, args),
+                    sync,
+                    awaited,
+                )
             }
             Frame::Get {
                 id,
@@ -3050,11 +3134,13 @@ impl Connection {
                 reference,
                 property,
                 sync,
+                awaited,
             } => (
                 id,
                 path,
                 Accepted::Get(self.export_object(reference)?, property),
                 sync,
+                awaited,
             ),
             Frame::Call {
                 id,
@@ -3063,19 +3149,27 @@ impl Connection {
                 method: None,
                 args,
                 sync,
+                awaited,
             } => {
                 let object = self.export(reference)?;
                 let Some(args) = self.decode_args(&id, args)? else {
                     return Ok(());
                 };
-                (id, path, Accepted::Call(object, args), sync)
+                (id, path, Accepted::Call(object, args), sync, awaited)
             }
             Frame::Await {
                 id,
                 path,
                 reference,
                 sync,
-            } => (id, path, Accepted::Await(self.export(reference)?), sync),
+                awaited,
+            } => (
+                id,
+                path,
+                Accepted::Await(self.export(reference)?),
+                sync,
+                awaited,
+            ),
             Frame::Hello { .. } => unreachable!(),
         };
         if !id.starts_with(self.remote_prefix()) || path.contains(&id) {
@@ -3097,6 +3191,7 @@ impl Connection {
             id,
             path,
             call,
+            awaited,
             _flight: flight,
         };
         let handle = match &incoming.call {
@@ -3245,9 +3340,13 @@ impl Connection {
             id,
             path,
             call,
+            awaited,
             _flight,
         } = incoming;
         let _path = PathGuard::enter(path.clone());
+        // What this call's caller waits for: a forward made here says it on
+        // its frame (SESS-83), so a call nobody waits for is no wait edge.
+        let _awaited = AwaitedGuard::enter(awaited);
         let call = match call {
             Accepted::Call(object, args) if matches!(object.body, Body::Relay(_)) => {
                 return self.relay(id, path, object, Relayed::Call(None, args), sync, _flight);
@@ -3497,7 +3596,7 @@ fn finish(waiting: Waiting, result: Reply) {
         Waiting::Sync { sender, .. } => {
             let _ = sender.send(Message::Reply(result));
         }
-        Waiting::Async(sender) => {
+        Waiting::Async { sender, .. } => {
             let _ = sender.send(result);
         }
     }
@@ -3669,10 +3768,29 @@ fn unknown_fields(value: &Json) -> Vec<String> {
             "implementation",
             "capabilities",
         ],
-        "invoke" => &["op", "id", "path", "target", "method", "args", "sync"],
-        "call" => &["op", "id", "path", "reference", "method", "args", "sync"],
-        "get" => &["op", "id", "path", "reference", "property", "sync"],
-        "await" => &["op", "id", "path", "reference", "sync"],
+        "invoke" => &[
+            "op", "id", "path", "target", "method", "args", "sync", "awaited",
+        ],
+        "call" => &[
+            "op",
+            "id",
+            "path",
+            "reference",
+            "method",
+            "args",
+            "sync",
+            "awaited",
+        ],
+        "get" => &[
+            "op",
+            "id",
+            "path",
+            "reference",
+            "property",
+            "sync",
+            "awaited",
+        ],
+        "await" => &["op", "id", "path", "reference", "sync", "awaited"],
         "return" => &["op", "id", "value"],
         "throw" => &["op", "id", "error"],
         "release" => &["op", "reference", "count"],
