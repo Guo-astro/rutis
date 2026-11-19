@@ -1507,11 +1507,19 @@ impl<'a> Run<'a> {
                 restarts,
             );
         }
-        expect(
-            "links connected".into(),
-            count("gpu: connected"),
-            self.cuts + 1,
-        );
+        // A listener closed while the OS is still completing a connect can
+        // accept one session that then ends at once (macOS #1052, Windows
+        // #1150): the link reconnects after the cut, and the proxy sees one
+        // more connection than the cuts asked for. That session is not a
+        // leak and the link is still alone; tolerate exactly one on those
+        // platforms, and keep the exact count on Linux.
+        let expected_connected = self.cuts + 1;
+        let connected = count("gpu: connected");
+        let close_race = cfg!(any(windows, target_os = "macos"))
+            && connected == expected_connected + 1;
+        if !close_race {
+            expect("links connected".into(), connected, expected_connected);
+        }
         expect("runtimes given up".into(), count(": gave up after"), 0);
         let failed: Vec<String> = host
             .lines()
