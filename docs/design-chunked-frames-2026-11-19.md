@@ -2,8 +2,8 @@
 
 [English](design-chunked-frames-2026-11-19.en.md)
 
-状态：已实现（0.23 未发布，并入会话协议 5）。日期：2026-11-19。
-议题：[#1361](https://github.com/arcships/rutis/issues/1361)，属于 0.23 beta。
+状态：已实现（0.23 未发布，并入会话协议 5）；#1363 让 Bun 与 Kotlin 也实现。日期：2026-11-19。
+议题：[#1361](https://github.com/arcships/rutis/issues/1361)、[#1363](https://github.com/arcships/rutis/issues/1363)，属于 0.23 beta。
 
 ## 1. 现在是什么样
 
@@ -21,7 +21,7 @@ svc.take: argument 2 cannot be sent: the message would be 17825803 bytes, over t
 
 **D1 加一种 `chunk` 帧，在会话协议 5 里。** 协议 5 是 0.23 才发布的版本，还没有发布过；发布前给它加帧不需要升版本（协议规格 `SESS-80`、G7 的同类处理）。七种实现一起升级到 0.23，旧版本在握手时被拒（`SESS-79`）。**不采用**：升到协议 6——0.22 与 0.23 本来就不能混跑，升版本只会让迁移文档多一步。**不采用**：只提高承载的 16 MiB 上限——管道和 WebSocket 的上限是承载的规则，提高它对端的配额，既改不了其他实现的默认值，也没有解决“单条消息要整块驻留内存”的问题，而且对端不理解时仍然断链。
 
-**D2 用一个能力 `chunked` 协商，只有双方声明才分片。** 声明的是“这一端能重组 `chunk` 帧”。发送方只有在**对端**声明了 `chunked`（并且本端也声明）时才把超限的帧切片；否则保持今天的行为：超限的调用以 `bad-value` 失败，帧不写出。这样 Bun、Python、Go、Swift、Kotlin 不声明时行为完全不变，也不会收到它们不认识的帧。**不采用**：默认所有协议 5 实现都收 `chunk`——那会让不认识它的实现对超限帧直接按未知 `op` 结束会话。
+**D2 用一个能力 `chunked` 协商，只有双方声明才分片。** 声明的是“这一端能重组 `chunk` 帧”。发送方只有在**对端**声明了 `chunked`（并且本端也声明）时才把超限的帧切片；否则保持今天的行为：超限的调用以 `bad-value` 失败，帧不写出。这样 Python、Go、Swift 不声明时行为完全不变，也不会收到它们不认识的帧。**不采用**：默认所有协议 5 实现都收 `chunk`——那会让不认识它的实现对超限帧直接按未知 `op` 结束会话。
 
 **D3 分片是整帧 JSON 字节的切片，每片至多 8 MiB。** 发送方把已经编码好的整帧字节切成连续的片，每片 base64 后放进一个 `chunk` 帧。接收方按 `transfer` 缓冲，收到 `last: true` 后拼回原字节、按 UTF-8 解码、当作一条普通消息交给现有会话。帧的边界、顺序、解码路径都不变。8 MiB 的片 base64 后约 10.67 MiB，在 16 MiB 的承载上限内；承载上限更小时（WebSocket 的 `Limits.max_message` 可配置），片长按上限缩小，保证一个 `chunk` 帧自己装得下。**不采用**：在 `args` 里放分片列表——那要改 `WireValue` 和七种实现的值编解码，违反“不改业务 API”。
 
@@ -37,7 +37,7 @@ svc.take: argument 2 cannot be sent: the message would be 300000000 bytes, over 
 
 **D6 未完成的传输在会话结束时丢弃，绝不派发。** 接收方只在 `last` 到达、重组和解析都成功后才把帧交给会话。会话在传输中途结束（承载断开、对端退出、协议错误），缓冲随会话一起丢弃；被调方法从未运行。这是 #1361 的验收项之一，也是“恰好执行一次”的另一面：片不是调用，只有完整的帧是。**不采用**：把已收到的片当作部分参数先派发——业务方会看到半截值，且无法表达“还没收完”。
 
-**D7 先落在 Rust 宿主 ↔ Node 运行时，其余五种实现不声明。** `crates/rutis-bridge/src/session`（Rust）与 `node/rutis-runtime/src/session.mjs` 实现收发；Bun、Python、Go、Swift、Kotlin 不改代码，也不声明 `chunked`，因此 Rust 不会向它们分片，行为与今天相同。它们以后实现时同样只需加帧和能力，不改业务 API。**不采用**：一次改七种实现——那会把 #1361 变成七个 PR 的串联，而验收只需要一条真实的跨语言路径。
+**D7 先落在 Rust 宿主 ↔ Node 运行时，其余实现不声明；#1363 补齐 Bun 与 Kotlin。** `crates/rutis-bridge/src/session`（Rust）与 `node/rutis-runtime/src/session.mjs` 实现收发；#1363 让 Bun（`bun/rutis-bun/src/session.ts`）与 Kotlin（`kotlin/rutis/rutis/.../peer/Peer.kt`）同样实现并声明 `chunked`。Python、Go、Swift 不改代码，也不声明 `chunked`，因此 Rust 不会向它们分片，行为与今天相同。它们以后实现时同样只需加帧和能力，不改业务 API。**不采用**：一次改七种实现——那会把 #1361 变成七个 PR 的串联，而验收只需要一条真实的跨语言路径。
 
 **D8 插件 API、服务签名、公开 API 不变。** 没有新的必填配置项、没有新的插件可见概念、没有改变 `Endpoint`/`Connection` 的方法签名；新增的只有协议常量（`CHUNK_SIZE`、`DEFAULT_MAX_TRANSFER`）、会话选项（`SessionOptions::max_transfer` 与 `RUTIS_MAX_TRANSFER`）、能力字符串，以及线格式里的一个 `op`。业务方继续写一次调用。
 
@@ -55,11 +55,11 @@ svc.take: argument 2 cannot be sent: the message would be 300000000 bytes, over 
 | `last` | 布尔 | 这是最后一片。 |
 | `data` | `string` | 原帧 UTF-8 JSON 字节的一个片段，base64（RFC 4648 §4，带填充，规范形式，无空白）。 |
 
-`chunk` 不是 `Frame` 的变体：它在 `Frame` 解码之前由会话读取层处理（Rust 的读线程、Node 的 `Session.receive`），重组完成后产出的字节就是一条普通消息。未知字段、未知 `transfer`、类型不对的字段都是畸形帧：会话以传输错误结束（没有所属调用可以降级）。`hello` 永远不分片（它很小，而且分片依赖对端的能力声明，声明在 `hello` 里）。
+`chunk` 不是 `Frame` 的变体：它在 `Frame` 解码之前由会话读取层处理（Rust 的读线程、Node/Bun 的 `Session.receive`、Kotlin 的读线程），重组完成后产出的字节就是一条普通消息。未知字段、未知 `transfer`、类型不对的字段都是畸形帧：会话以传输错误结束（没有所属调用可以降级）。`hello` 永远不分片（它很小，而且分片依赖对端的能力声明，声明在 `hello` 里）。
 
 ### 3.2 发送
 
-- 触发条件：整帧字节数超过 `Sender::max_message()`，**并且**本端与对端都在 `hello.capabilities` 里声明了 `chunked`。Node 的会话上限取自构造参数 `maxMessage`（默认 16 MiB），与它所在通道的上限一致。
+- 触发条件：整帧字节数超过 `Sender::max_message()`，**并且**本端与对端都在 `hello.capabilities` 里声明了 `chunked`。Node 的会话上限取自构造参数 `maxMessage`（默认 16 MiB），与它所在通道的上限一致；Bun 同样取 `maxMessage`，Kotlin 取会话的 `channelLimit`（默认 16 MiB）。
 - 片长：`min(8 MiB, 按通道上限算出的最大值)`；后者保证 `base64(片长) + chunk 帧的固定开销 <= 通道上限`。片长算出来为 0（通道上限极小）时不切片，按“对端不支持”处理。
 - 一帧的所有 `chunk` 帧在出站顺序里连续，中间不插别的帧。
 - 切片前检查整帧不超过会话的 `max_transfer`（默认 256 MiB）；超过则不发送，按 `SESS-71` 的方式让这次调用失败，`limit` 为配置值。
@@ -108,7 +108,7 @@ svc.take: argument 2 cannot be sent: the message would be 300000000 bytes, over 
 
 ### 插件作者
 
-**成功：** 代码不变。参数或返回值编码后超过 16 MiB、且对端是声明了 `chunked` 的运行时（0.23 的 Node 运行时），调用照常成功，对端拿到完整值。没有新配置、没有新输出行、没有需要学习的帧概念。
+**成功：** 代码不变。参数或返回值编码后超过 16 MiB、且对端是声明了 `chunked` 的运行时（0.23 的 Node、Bun、Kotlin 运行时），调用照常成功，对端拿到完整值。没有新配置、没有新输出行、没有需要学习的帧概念。
 
 ```ts
 const bytes = await ctx.remote.node.readFile('export.bin') // 20 MiB
@@ -121,13 +121,13 @@ const bytes = await ctx.remote.node.readFile('export.bin') // 20 MiB
 | 情形 | 输出 |
 | --- | --- |
 | 值编码后超过会话上限（默认 256 MiB，宿主可调大） | `svc.take: argument 2 cannot be sent: the message would be 300000000 bytes, over the limit of 268435456 bytes (256 MiB)`；错误码 `bad-value`；`data` 是 `{"argument":2,"limit":268435456,"part":"argument"}` |
-| 对端运行时没有声明 `chunked`（Bun、Python、Go、Swift、Kotlin），值超过通道上限 | 与 0.22 相同：`svc.take: argument 2 cannot be sent: the message would be 17825803 bytes, over the limit of 16777216 bytes (16 MiB)`；`data` 的 `limit` 是 16777216 |
+| 对端运行时没有声明 `chunked`（Python、Go、Swift），值超过通道上限 | 与 0.22 相同：`svc.take: argument 2 cannot be sent: the message would be 17825803 bytes, over the limit of 16777216 bytes (16 MiB)`；`data` 的 `limit` 是 16777216 |
 
 **需要学习的概念：** 无新增。分片是运行时之间的事；插件看到的仍是值和调用。
 
 ### 宿主作者与部署者
 
-**成功：** 会话协议没有新增必填配置；WebSocket 子协议仍是 `rutis.5`。Rust 宿主与 0.23 的 Node 运行时之间，超过 16 MiB 的参数和返回值直接可用；同一次调用只执行一次。最大帧默认 256 MiB，宿主可按内存预算用 `SessionOptions::max_transfer` 或 `RUTIS_MAX_TRANSFER` 调大或调小，并传给启动的运行时进程。
+**成功：** 会话协议没有新增必填配置；WebSocket 子协议仍是 `rutis.5`。Rust 宿主与 0.23 的 Node、Bun、Kotlin 运行时之间，超过 16 MiB 的参数和返回值直接可用；同一次调用只执行一次。最大帧默认 256 MiB，宿主可按内存预算用 `SessionOptions::max_transfer` 或 `RUTIS_MAX_TRANSFER` 调大或调小，并传给启动的运行时进程。
 
 **失败：**
 
@@ -149,7 +149,7 @@ const bytes = await ctx.remote.node.readFile('export.bin') // 20 MiB
 ## 5. 兼容性与迁移
 
 - 协议 5 是新版本（0.23 才发布），加帧不升版本；0.22 及更早仍在握手时被拒（`SESS-79`）。
-- 能力是声明式的：0.23 的 Rust 宿主只向声明 `chunked` 的对端分片。0.23 的 Node 运行时声明 `chunked`；Bun、Python、Go、Swift、Kotlin 不声明，因此与它们的会话保持 16 MiB 行为，不会收到 `chunk` 帧。
+- 能力是声明式的：0.23 的 Rust 宿主只向声明 `chunked` 的对端分片。0.23 的 Node、Bun 与 Kotlin 运行时声明 `chunked`；Python、Go、Swift 不声明，因此与它们的会话保持 16 MiB 行为，不会收到 `chunk` 帧。
 - 见过 0.23 预发布构建、但那个构建没有 `chunked` 的对端：它不声明，本端不分片；它若声明了却不认识 `chunk`（不会发生，声明即实现），本端不会发它。
 - 业务代码、服务签名、插件 API、`rutis.json` 格式都不变。
 - 迁移指南：[迁移到 0.23](migration-0.23.md) 新增一节「跨语言调用超过 16 MiB」。
@@ -159,6 +159,7 @@ const bytes = await ctx.remote.node.readFile('export.bin') // 20 MiB
 - `crates/rutis-bridge/src/session`：`Chunk` 帧的解析与序列化、发送端切片、接收端重组、常量 `CHUNK_SIZE`/`DEFAULT_MAX_TRANSFER`、`SessionOptions::max_transfer`（及 `from_environment`、`MAX_TRANSFER_ENV`）、`Endpoint::rust` 声明 `chunked`。
 - `crates/rutis-host/src/connect/spawn.rs`：宿主把 `max_transfer` 放进 `RUTIS_MAX_TRANSFER` 传给启动的运行时进程。
 - `node/rutis-runtime/src/session.mjs`：`CAPABILITIES` 加 `chunked`、发送端切片、`receive` 的重组、`maxTransfer` 选项与 `RUTIS_MAX_TRANSFER`（默认 256 MiB）。
+- `bun/rutis-bun/src/session.ts` 与 Kotlin `kotlin/rutis/rutis/src/shared/kotlin/arcships/rutis/internal/peer/Peer.kt`（#1363）：同样声明 `chunked`，实现发送端切片、读线程重组、`maxTransfer` / `maxTransferFrom`（默认 256 MiB，读 `RUTIS_MAX_TRANSFER`）。
 - 协议规格 `docs/protocol-session.md`/`.en.md`：§2.1 帧表、§2.4 能力表、§10 上限、§11 规则（`SESS-84`–`SESS-88`）、§12 输出。
 - 保证登记表 `docs/guarantees.md`/`.en.md` 的 `bridge/large-and-deep-values`：补上分片后的承诺与验证列。
 - 迁移指南 `docs/migration-0.23.md`/`.en.md`：新增一节。
@@ -166,4 +167,5 @@ const bytes = await ctx.remote.node.readFile('export.bin') // 20 MiB
   - Rust ↔ Node（真实 Node 运行时、Unix socket、16 MiB 管道）：参数 > 16 MiB、返回值 > 16 MiB 都完整往返；`tally` 方法证明每次调用只执行一次。
   - Rust 接收：脚本化对端把一帧拆成 `chunk` 帧；完整时派发一次；中途关闭通道时不派发；`seq` 错、交错传输、超过上限、握手前 `chunk` 都结束会话。
   - Node 接收与发送：同样的重组、失败与单次派发断言；不声明 `chunked` 的对端仍走原来的超限错误。
+  - Bun 与 Kotlin（#1363）：同样的重组、失败与单次派发断言；各自与真实 Node 运行时的会话各一条，参数与返回值 > 16 MiB 完整往返，`tally` 证明每次调用只执行一次。
   - 配置：Rust 的 `max_transfer` 调小后超过它的帧只让这次调用失败、重组超过它结束会话并说出配置值；Node 的 `maxTransfer` 同理。

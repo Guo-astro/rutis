@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { readFileSync } from 'node:fs'
-import { encode } from './codec.ts'
+import { encode, decode } from './codec.ts'
 import { encodeError, decodeError, callSite, bindingError } from './errors.ts'
 import { VALUE_CAPABILITIES, ValueError, base64Decode, base64Encode, bytesOf, checkKeys, checkText, constructedTag, describe, instantFromText, instantText, keyOf, tagOf, undeclared } from './values.ts'
 
@@ -74,7 +74,7 @@ export function versionMismatch(far, local, implementation) {
 // own call chain (see `#run`). `sync-stack`: calls run while it waits are
 // stacked on its one thread. `value-<tag>`: it takes all ten tagged values
 // (#308, ./values.ts).
-export const CAPABILITIES = ['reentrant-sync', 'sync-stack', ...VALUE_CAPABILITIES]
+export const CAPABILITIES = ['reentrant-sync', 'sync-stack', 'chunked', ...VALUE_CAPABILITIES]
 export const ENDPOINT_ID = /^[a-z0-9-]+$/
 
 // The fields each frame op defines (#635). A field outside them is not a
@@ -179,6 +179,29 @@ const notFinite = (value: number) => why(new TypeError(`the number ${Number.isNa
 // end on it (#675).
 export const MAX_MESSAGE = 16 * 1024 * 1024
 const MIB = 1024 * 1024
+// The most one `chunk` frame carries before base64, and the default most a
+// chunked transfer carries once reassembled (#1361): 8 MiB a slice, 256 MiB a
+// frame. A smaller `maxMessage` shrinks the slice, so a chunk frame always
+// fits the channel that carries it. A host raises or lowers `maxTransfer` per
+// session, or in `RUTIS_MAX_TRANSFER` for a deployment; never unlimited.
+export const CHUNK_SIZE = 8 * 1024 * 1024
+export const DEFAULT_MAX_TRANSFER = 256 * 1024 * 1024
+const MAX_TRANSFER_ENV = 'RUTIS_MAX_TRANSFER'
+const FRAME_ROOM = 256
+const chunkSize = (limit: number) => Math.min(Math.max(Math.floor((limit - FRAME_ROOM) / 4) * 3, 0), CHUNK_SIZE)
+// The environment's cap, or the default; an invalid value ends the runtime's
+// startup naming the variable and what it expected.
+const maxTransferFromEnvironment = (): number => {
+  const value = process.env[MAX_TRANSFER_ENV]
+  if (value === undefined) return DEFAULT_MAX_TRANSFER
+  const bytes = Number(value)
+  if (!Number.isSafeInteger(bytes) || bytes <= 0) throw new Error(`${MAX_TRANSFER_ENV} ${JSON.stringify(value)}: expected a positive number of bytes`)
+  return bytes
+}
+// Reassembled frames are UTF-8 JSON bytes: decoded strictly, like a message
+// off the channel. A replacement character would make a malformed frame
+// look valid.
+const UTF8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true })
 export const overLimit = (size, limit) => `the message would be ${size} bytes, over the limit of ${limit} bytes${limit % MIB === 0 ? ` (${limit / MIB} MiB)` : ''}`
 // A frame's size in UTF-8, counted only when it may be over `limit`: a
 // UTF-16 code unit takes at most 3 bytes.
@@ -341,14 +364,17 @@ export class Session {
   #signals = new Map(); #decodingFor; #promiseCalls = new WeakMap(); #awaits = new Map()
   // The call a returned Promise is the result of (`service.method`): an
   // await of it whose result cannot be sent names it. And the message limit.
-  #resultOf = new WeakMap(); #max
+  #resultOf = new WeakMap(); #max; #maxTransfer
+  // The transfer a chunked frame is rebuilding, if one is in progress, and
+  // this side's transfers (#1361).
+  #transfer?: { id: string, next: number, parts: Buffer[], bytes: number }; #transfers = 0
   // `settled` runs after a call or property read on an exported reference
   // returns (or its Promise settles): the owner may have changed state that
   // invoke dispatch would otherwise observe, such as replaced services.
   // `endpoint` ({ local, expected?, verified?, declare? }): this side's
   // endpoint id, the far end's it expects, and what it declares beyond the
   // session's capabilities (the contract, say).
-  constructor({ send, pump, dispatch, abort, settled, endpoint, inline, owner, within, outgoing, maxMessage = MAX_MESSAGE }) {
+  constructor({ send, pump, dispatch, abort, settled, endpoint, inline, owner, within, outgoing, maxMessage = MAX_MESSAGE, maxTransfer = maxTransferFromEnvironment() }) {
     this.#send = send; this.#pump = pump; this.#dispatch = dispatch; this.#abort = abort; this.#settled = settled
     // `owner()`: whose code is running now (the runtime's row, #678), kept
     // with each function or object exported; `within(owner, run)` runs a
@@ -356,6 +382,7 @@ export class Session {
     this.#owner = typeof owner === 'function' ? owner : () => undefined
     this.#within = typeof within === 'function' ? within : (_owner, run) => run()
     this.#max = maxMessage
+    this.#maxTransfer = maxTransfer
     // `inline`: control methods (empty target) run as their frame arrives,
     // in frame order, before the next frame is read, also while a
     // synchronous call waits (`events.on`, `events.off`).
@@ -390,6 +417,9 @@ export class Session {
     for (const pending of this.#pending.values()) pending({ ok: false, value: error })
     this.#pending.clear(); this.#sites.clear(); this.#exports.clear(); this.#imports.clear(); this.#queued.clear()
     this.#admitted.clear(); this.#suppressed.clear()
+    // A transfer that never reached its last chunk is never dispatched
+    // (#1361): the buffer goes with the session.
+    this.#transfer = undefined
   }
   #fault(error) { this.close(error); this.#abort?.(error) }
   // A call id in an invocation chain: one of either side's, possibly
@@ -399,7 +429,31 @@ export class Session {
     return /^(s[0-9]+\/)?[a-z0-9-]+:[1-9][0-9]*$/.test(id)
   }
   #path() { return this.#syncPath ?? this.#context.getStore() ?? [] }
-  #write(frame) { if (this.#closed) throw this.#closed; this.#send(encode(frame)) }
+  #write(frame) { if (this.#closed) throw this.#closed; this.#transmit(encode(frame)) }
+  // The largest message this side may send: the channel's `maxMessage`, or
+  // the session's `maxTransfer` when the far end takes chunks (#1361). The
+  // session's cap binds either way: a smaller `maxTransfer` refuses a frame
+  // the channel alone would take.
+  #limit() { return this.#chunking() ? this.#maxTransfer : Math.min(this.#max, this.#maxTransfer) }
+  // Whether the far end declared `chunked`, and the channel's limit leaves
+  // room for a chunk frame. This side always declares it (#1361).
+  #chunking() { return this.supports('chunked') && chunkSize(this.#max) > 0 }
+  // Send one encoded frame: whole, or as `chunk` frames when it is over the
+  // channel's message limit and the far end declared `chunked` (#1361). All
+  // chunks of one transfer go out in one go, with no frame between them.
+  #transmit(text: string) {
+    if (!this.#chunking()) return this.#send(text)
+    // 0: certainly within the channel's limit, counted no further.
+    if (sizeOver(text, this.#max) === 0) return this.#send(text)
+    const bytes = Buffer.from(text, 'utf8')
+    const length = chunkSize(this.#max)
+    const transfer = `${this.#local}${++this.#transfers}`
+    for (let at = 0, seq = 0; at < bytes.length; seq++) {
+      const last = at + length >= bytes.length
+      this.#send(encode({ op: 'chunk', transfer, seq, last, data: bytes.subarray(at, at + length).toString('base64') }))
+      at += length
+    }
+  }
   #allocate() {
     if (this.#closed) throw this.#closed
     if (!this.#handshake) throw new Error('protocol handshake incomplete')
@@ -677,16 +731,19 @@ export class Session {
       // Absent means it will, the conservative reading.
       if (!awaited) frame.awaited = false
       const encoded = encode(frame)
-      // Over the limit, only this call fails, before it is sent (#675).
-      const size = sizeOver(encoded, this.#max)
-      if (size > this.#max) {
+      // Over the limit, only this call fails, before it is sent (#675). The
+      // limit is the channel's, or the reassembly cap when the far end
+      // declared `chunked` (#1361).
+      const limit = this.#limit()
+      const size = sizeOver(encoded, limit)
+      if (size > limit) {
         const items = frame.args?.type === 'list' ? frame.args.value : []
         const sizes = items.map(item => Buffer.byteLength(encode(item)))
         const largest = sizes.indexOf(Math.max(...sizes))
         const what = largest < 0 ? 'the arguments' : `argument ${largest + 1}`
-        throw badValue(new RangeError(`${cannotSend(call(), what)}: ${overLimit(size, this.#max)}`), largest < 0 ? { part: 'arguments', limit: this.#max, reason: 'limit' } : { part: 'argument', argument: largest + 1, limit: this.#max, reason: 'limit' })
+        throw badValue(new RangeError(`${cannotSend(call(), what)}: ${overLimit(size, limit)}`), largest < 0 ? { part: 'arguments', limit, reason: 'limit' } : { part: 'argument', argument: largest + 1, limit, reason: 'limit' })
       }
-      this.#pending.set(id, finish); this.#sites.set(id, site); this.#send(encoded)
+      this.#pending.set(id, finish); this.#sites.set(id, site); this.#transmit(encoded)
     } catch (error) { this.#pending.delete(id); this.#sites.delete(id); this.#rollback(grants); throw error }
     return id
   }
@@ -772,9 +829,49 @@ export class Session {
   }
   drain() { return this.#active ? new Promise(resolve => this.#draining.push(resolve)) : Promise.resolve() }
   #finish() { if (--this.#active === 0) for (const resolve of this.#draining.splice(0)) resolve() }
+  // One `chunk` of a frame over the channel's limit (#1361). A transfer is
+  // taken in order, one at a time; nothing reaches the session until its last
+  // chunk, and a broken transfer ends the session (there is no call to fail).
+  #receiveChunk(frame) {
+    if (!this.#handshake) throw new Error('request before protocol handshake')
+    if (!this.supports('chunked')) throw new Error('chunk frame from a far end that did not declare chunked')
+    if (typeof frame.transfer !== 'string' || frame.transfer === '') throw new Error('chunk frame without a transfer id')
+    if (!Number.isSafeInteger(frame.seq) || frame.seq < 0) throw new Error('invalid chunk frame: invalid seq')
+    if (typeof frame.last !== 'boolean') throw new Error('invalid chunk frame: invalid last')
+    if (typeof frame.data !== 'string') throw new Error('invalid chunk frame: invalid data')
+    for (const key of Object.keys(frame)) {
+      if (!['op', 'transfer', 'seq', 'last', 'data'].includes(key)) throw new Error(`invalid chunk frame: unknown field "${key}"`)
+    }
+    const id = frame.transfer
+    if (this.#transfer && this.#transfer.id !== id) throw new Error(`chunked transfer ${this.#transfer.id}: transfer ${id} started before it ended`)
+    const expected = this.#transfer?.next ?? 0
+    if (frame.seq !== expected) throw new Error(`chunked transfer ${id}: expected chunk ${expected}, got ${frame.seq}`)
+    let part
+    try { part = base64Decode(frame.data) } catch (error) { throw new Error(`chunked transfer ${id}: ${error.message}`) }
+    if (!this.#transfer) this.#transfer = { id, next: 0, parts: [], bytes: 0 }
+    this.#transfer.bytes += part.length
+    if (this.#transfer.bytes > this.#maxTransfer) {
+      const mib = this.#maxTransfer % MIB === 0 ? ` (${this.#maxTransfer / MIB} MiB)` : ''
+      throw new Error(`chunked transfer ${id}: over the limit of ${this.#maxTransfer} bytes${mib}`)
+    }
+    this.#transfer.parts.push(Buffer.from(part.buffer, part.byteOffset, part.byteLength))
+    this.#transfer.next += 1
+    if (!frame.last) return
+    const parts = this.#transfer.parts
+    this.#transfer = undefined
+    let text
+    try { text = UTF8.decode(Buffer.concat(parts)) } catch { throw new Error('received a message that is not valid UTF-8') }
+    const complete = decode(text)
+    // A chunk wraps one frame's bytes: it may not wrap another chunk.
+    if (complete?.op === 'chunk') throw new Error('chunk frame inside a chunked transfer')
+    this.receive(complete)
+  }
   receive(frame) {
     if (this.#closed) return
     try {
+      // A chunked frame is the frame its chunks join (#1361): buffered here,
+      // dispatched only once the last chunk completes it.
+      if (frame.op === 'chunk') { this.#receiveChunk(frame); return }
       if (frame.op === 'hello') {
         if (this.#handshake) throw new Error('duplicate protocol handshake')
         this.#greet(frame)
@@ -974,13 +1071,14 @@ export class Session {
         this.#rollback(grants); grants.length = 0
         frame = encode({ op: 'throw', id, error: encodeError(result.ok ? ofResult(error, call) : error) })
       }
-      const size = sizeOver(frame, this.#max)
-      if (size > this.#max) {
+      const limit = this.#limit()
+      const size = sizeOver(frame, limit)
+      if (size > limit) {
         this.#rollback(grants); grants.length = 0
         const what = result.ok ? 'the result' : result.value instanceof Error ? `the error ${result.value.name}` : 'the error'
-        frame = encode({ op: 'throw', id, error: encodeError(badValue(new RangeError(`${cannotSend(call, what)}: ${overLimit(size, this.#max)}`), { part: result.ok ? 'result' : 'error', limit: this.#max, reason: 'limit' })) })
+        frame = encode({ op: 'throw', id, error: encodeError(badValue(new RangeError(`${cannotSend(call, what)}: ${overLimit(size, limit)}`), { part: result.ok ? 'result' : 'error', limit, reason: 'limit' })) })
       }
-      this.#send(frame)
+      this.#transmit(frame)
     } catch (error) { this.#fault(error) }
     finally { if (business) this.#finish() }
   }

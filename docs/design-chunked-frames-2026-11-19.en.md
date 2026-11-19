@@ -2,8 +2,8 @@
 
 [中文](design-chunked-frames-2026-11-19.md)
 
-Status: implemented (0.23 is unreleased; this joins session protocol 5). Date: 2026-11-19.
-Issue: [#1361](https://github.com/arcships/rutis/issues/1361), part of the 0.23 beta.
+Status: implemented (0.23 is unreleased; this joins session protocol 5); #1363 adds Bun and Kotlin. Date: 2026-11-19.
+Issue: [#1361](https://github.com/arcships/rutis/issues/1361), [#1363](https://github.com/arcships/rutis/issues/1363), part of the 0.23 beta.
 
 ## 1. Where things stand
 
@@ -21,7 +21,7 @@ Scale: an encoded frame over 16 MiB hits the limit; a string value costs two quo
 
 **D1 Add a `chunk` frame, in session protocol 5.** Protocol 5 is the version 0.23 introduces and has never been released; adding a frame to it before its first release does not bump the version (protocol specification `SESS-80`, the same treatment as G7). All seven implementations upgrade to 0.23 together, and older versions are refused at the handshake (`SESS-79`). **Dropped:** protocol 6 — 0.22 and 0.23 cannot run together anyway, so a bump would only add a migration step. **Dropped:** raising the transport's 16 MiB — the pipe and WebSocket limits are the transport's rule; raising this side's quota changes no other implementation's default, does not solve one message having to sit in memory whole, and a far end that does not understand it still ends the channel.
 
-**D2 Negotiate with a capability, `chunked`; only when both sides declare it are frames chunked.** It declares "this side can reassemble `chunk` frames". The sender chunks an oversized frame only when the **far end** declared `chunked` (and this side did too); otherwise today's behaviour stays: the oversized call fails with `bad-value` and the frame is not written. Bun, Python, Go, Swift and Kotlin declare nothing, so their behaviour is exactly as today and they never receive a frame they do not know. **Dropped:** treat every protocol-5 implementation as taking `chunk` — an implementation that does not know it would end the session on an unknown `op`.
+**D2 Negotiate with a capability, `chunked`; only when both sides declare it are frames chunked.** It declares "this side can reassemble `chunk` frames". The sender chunks an oversized frame only when the **far end** declared `chunked` (and this side did too); otherwise today's behaviour stays: the oversized call fails with `bad-value` and the frame is not written. Python, Go and Swift declare nothing, so their behaviour is exactly as today and they never receive a frame they do not know. **Dropped:** treat every protocol-5 implementation as taking `chunk` — an implementation that does not know it would end the session on an unknown `op`.
 
 **D3 A chunk is a slice of the whole frame's JSON bytes, at most 8 MiB.** The sender cuts the already encoded frame bytes into consecutive slices and puts each, base64-encoded, into one `chunk` frame. The receiver buffers by `transfer`, and on `last: true` joins the bytes, decodes UTF-8 and hands the result to the existing session as one ordinary message. Frame boundaries, order and the decode path are unchanged. An 8 MiB slice is about 10.67 MiB in base64, inside the 16 MiB transport limit; when the transport limit is smaller (a WebSocket's `Limits.max_message` is configurable), the slice shrinks with it so one `chunk` frame fits. **Dropped:** a list of slices inside `args` — that changes `WireValue` and the value codecs of seven implementations and breaks "no business API change".
 
@@ -37,7 +37,7 @@ The receiver adds up as it buffers: over the same configured value ends the sess
 
 **D6 An incomplete transfer is dropped when the session ends and never dispatched.** The receiver hands a frame to the session only after `last`, reassembly and decoding all succeeded. If the session ends midway (the transport closes, the far end exits, a protocol error), the buffer goes with it and the callee never ran. That is one acceptance item of #1361 and the other side of "exactly once": a chunk is not a call; only the whole frame is. **Dropped:** dispatch the chunks received so far — the business would see half a value, with no way to say "not finished".
 
-**D7 Land in the Rust host ↔ Node runtime first; the other five implementations declare nothing.** `crates/rutis-bridge/src/session` (Rust) and `node/rutis-runtime/src/session.mjs` implement sending and receiving; Bun, Python, Go, Swift and Kotlin are untouched and do not declare `chunked`, so Rust never chunks to them and their behaviour is as today. When they implement it later, they add the frame and the capability the same way, with no business API change. **Dropped:** all seven at once — that turns #1361 into a chain of seven PRs, while acceptance needs one real cross-language path.
+**D7 Land in the Rust host ↔ Node runtime first; the other implementations declare nothing; #1363 adds Bun and Kotlin.** `crates/rutis-bridge/src/session` (Rust) and `node/rutis-runtime/src/session.mjs` implement sending and receiving; #1363 has Bun (`bun/rutis-bun/src/session.ts`) and Kotlin (`kotlin/rutis/rutis/.../peer/Peer.kt`) implement it too and declare `chunked`. Python, Go and Swift are untouched and do not declare `chunked`, so Rust never chunks to them and their behaviour is as today. When they implement it later, they add the frame and the capability the same way, with no business API change. **Dropped:** all seven at once — that turns #1361 into a chain of seven PRs, while acceptance needs one real cross-language path.
 
 **D8 The plugin API, service signatures and public API are unchanged.** No new required configuration, no new plugin-visible concept, no signature change in `Endpoint`/`Connection`; what is added is protocol constants (`CHUNK_SIZE`, `DEFAULT_MAX_TRANSFER`), a session option (`SessionOptions::max_transfer` and `RUTIS_MAX_TRANSFER`), a capability string and one `op` on the wire. The business keeps writing one call.
 
@@ -59,7 +59,7 @@ A wire object with `op` `"chunk"`:
 
 ### 3.2 Sending
 
-- Trigger: the encoded frame is over `Sender::max_message()`, **and** both this side and the far end declared `chunked` in `hello.capabilities`. Node's session limit comes from its `maxMessage` constructor option (16 MiB by default), matching the channel it runs on.
+- Trigger: the encoded frame is over `Sender::max_message()`, **and** both this side and the far end declared `chunked` in `hello.capabilities`. Node's session limit comes from its `maxMessage` constructor option (16 MiB by default), matching the channel it runs on; Bun takes `maxMessage` the same way, and Kotlin takes the session's `channelLimit` (16 MiB by default).
 - Slice size: `min(8 MiB, what the transport limit allows)`; the latter guarantees `base64(slice) + the fixed cost of a chunk frame <= the transport limit`. A computed size of 0 (a very small transport limit) means no chunking, handled as "the far end does not support it".
 - Every `chunk` frame of one frame is consecutive in the outbound order, with no other frame between.
 - Before slicing, the whole frame is checked against the session's `max_transfer` (256 MiB by default); over it the frame is not sent and the call fails as in `SESS-71`, with `limit` set to the configured value.
@@ -108,7 +108,7 @@ The same kind of error may read differently on Node's side (`SESS-77`); verifica
 
 ### Plugin authors
 
-**When it works:** the code is unchanged. When a parameter or result encodes to over 16 MiB and the far end is a runtime that declared `chunked` (the 0.23 Node runtime), the call succeeds and the far end gets the whole value. No new configuration, no new output line, no frame concept to learn.
+**When it works:** the code is unchanged. When a parameter or result encodes to over 16 MiB and the far end is a runtime that declared `chunked` (the 0.23 Node, Bun or Kotlin runtime), the call succeeds and the far end gets the whole value. No new configuration, no new output line, no frame concept to learn.
 
 ```ts
 const bytes = await ctx.remote.node.readFile('export.bin') // 20 MiB
@@ -121,13 +121,13 @@ A 20 MiB value crosses between the Rust host and the Node runtime with one call 
 | Situation | Output |
 | --- | --- |
 | The value encodes to over the session's cap (256 MiB by default, a host may raise it) | `svc.take: argument 2 cannot be sent: the message would be 300000000 bytes, over the limit of 268435456 bytes (256 MiB)`; code `bad-value`; `data` is `{"argument":2,"limit":268435456,"part":"argument"}` |
-| The far-end runtime did not declare `chunked` (Bun, Python, Go, Swift, Kotlin) and the value is over the transport limit | As in 0.22: `svc.take: argument 2 cannot be sent: the message would be 17825803 bytes, over the limit of 16777216 bytes (16 MiB)`; `data`'s `limit` is 16777216 |
+| The far-end runtime did not declare `chunked` (Python, Go, Swift) and the value is over the transport limit | As in 0.22: `svc.take: argument 2 cannot be sent: the message would be 17825803 bytes, over the limit of 16777216 bytes (16 MiB)`; `data`'s `limit` is 16777216 |
 
 **Concepts to learn:** none added. Chunking is between runtimes; a plugin still sees values and calls.
 
 ### Host authors and deployers
 
-**When it works:** the session protocol gains no required configuration; the WebSocket subprotocol is still `rutis.5`. Between the Rust host and the 0.23 Node runtime, parameters and results over 16 MiB are usable directly, and one call runs once. One frame is 256 MiB by default; a host raises or lowers it to its memory budget with `SessionOptions::max_transfer` or `RUTIS_MAX_TRANSFER`, and passes it to the runtime processes it starts.
+**When it works:** the session protocol gains no required configuration; the WebSocket subprotocol is still `rutis.5`. Between the Rust host and the 0.23 Node, Bun or Kotlin runtime, parameters and results over 16 MiB are usable directly, and one call runs once. One frame is 256 MiB by default; a host raises or lowers it to its memory budget with `SessionOptions::max_transfer` or `RUTIS_MAX_TRANSFER`, and passes it to the runtime processes it starts.
 
 **When it fails:**
 
@@ -149,7 +149,7 @@ A 20 MiB value crosses between the Rust host and the Node runtime with one call 
 ## 5. Compatibility and migration
 
 - Protocol 5 is new (0.23 introduces it), and adding a frame does not bump it; 0.22 and earlier are still refused at the handshake (`SESS-79`).
-- Capabilities are declarative: a 0.23 Rust host chunks only to a far end that declared `chunked`. The 0.23 Node runtime declares it; Bun, Python, Go, Swift and Kotlin do not, so sessions with them keep the 16 MiB behaviour and never receive a `chunk` frame.
+- Capabilities are declarative: a 0.23 Rust host chunks only to a far end that declared `chunked`. The 0.23 Node, Bun and Kotlin runtimes declare it; Python, Go and Swift do not, so sessions with them keep the 16 MiB behaviour and never receive a `chunk` frame.
 - A pre-release 0.23 build that predates `chunked`: it does not declare the capability, so this side does not chunk; if it did declare it, it would also understand `chunk` (declaring means implementing), so nothing is sent that it cannot read.
 - Business code, service signatures, the plugin API and the `rutis.json` format are unchanged.
 - Migration guide: [migrating to 0.23](migration-0.23.en.md) gains a section "Cross-language calls over 16 MiB".
@@ -159,6 +159,7 @@ A 20 MiB value crosses between the Rust host and the Node runtime with one call 
 - `crates/rutis-bridge/src/session`: parsing and serializing `Chunk`, the sender's slicing, the receiver's reassembly, the `CHUNK_SIZE`/`DEFAULT_MAX_TRANSFER` constants, `SessionOptions::max_transfer` (with `from_environment` and `MAX_TRANSFER_ENV`), and `Endpoint::rust` declaring `chunked`.
 - `crates/rutis-host/src/connect/spawn.rs`: the host passes `max_transfer` to the runtime process it starts in `RUTIS_MAX_TRANSFER`.
 - `node/rutis-runtime/src/session.mjs`: `chunked` in `CAPABILITIES`, the sender's slicing, reassembly in `receive`, and the `maxTransfer` option and `RUTIS_MAX_TRANSFER` (256 MiB by default).
+- `bun/rutis-bun/src/session.ts` and Kotlin `kotlin/rutis/rutis/src/shared/kotlin/arcships/rutis/internal/peer/Peer.kt` (#1363): `chunked` declared, the sender's slicing, reassembly on the read thread, `maxTransfer` / `maxTransferFrom` (256 MiB by default, from `RUTIS_MAX_TRANSFER`).
 - Protocol specification `docs/protocol-session.md`/`.en.md`: the §2.1 frame table, the §2.4 capability table, the §10 limits, §11 rules (`SESS-84`–`SESS-88`) and the §12 output.
 - Guarantee register `docs/guarantees.md`/`.en.md`, row `bridge/large-and-deep-values`: the promise after chunking and its verification.
 - Migration guide `docs/migration-0.23.md`/`.en.md`: a new section.
@@ -166,4 +167,5 @@ A 20 MiB value crosses between the Rust host and the Node runtime with one call 
   - Rust ↔ Node (the real Node runtime, a Unix socket, the 16 MiB pipe): a parameter over 16 MiB and a result over 16 MiB both cross whole; a `tally` method shows every call ran once.
   - Rust receiving: a scripted far end splits one frame into `chunk` frames; whole, it is dispatched once; when the channel closes midway it is never dispatched; a wrong `seq`, interleaved transfers, over the limit and `chunk` before the handshake all end the session.
   - Node receiving and sending: the same reassembly, failure and single-dispatch assertions; a far end that did not declare `chunked` still gets the old over-limit error.
+  - Bun and Kotlin (#1363): the same reassembly, failure and single-dispatch assertions; one session each with the real Node runtime, a parameter and a result over 16 MiB crossing whole, with `tally` showing each call ran once.
   - Configuration: with a smaller Rust `max_transfer`, a frame over it fails only its call and a transfer over it ends the session naming the configured value; the same for Node's `maxTransfer`.

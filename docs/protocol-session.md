@@ -88,7 +88,7 @@
 | `runtime` | Node、Bun、Python、Go、Swift、Kotlin 运行时进程 | 这一端是运行时进程，可被宿主挂载或拨号。`node/rutis-runtime/src/runner.mjs:39`；`bun/rutis-bun/src/main.ts:118`；`python/rutis/rutis/__main__.py:72`；`go/rutis/internal/runtime/serve.go:99`；`swift/rutis/Sources/Rutis/Remote/App.swift:356`；`kotlin/rutis/rutis/src/shared/kotlin/arcships/rutis/RutisApp.kt:122`；`crates/rutis-bridge/src/session/plugin/mod.rs:369` |
 | `plugins` | Rust；Node/Bun 作为宿主时 | 这一端收插件定义值。`crates/rutis-bridge/src/session/rpc.rs:918-922`；`docs/guarantees.md` 的 `bridge/plugin-values` |
 | `value-<tag>` | 所有实现，十种 | 这一端收该种带标记的值。`crates/rutis-bridge/src/session/rpc.rs:904-917` |
-| `chunked` | Rust（`rutis-bridge`）、Node 运行时 | 这一端重组 `chunk` 帧，超限的整帧可分片发来（§2.5，`SESS-85`）。`crates/rutis-bridge/src/session/rpc.rs` 的 `Endpoint::rust`；`node/rutis-runtime/src/session.mjs` 的 `CAPABILITIES` |
+| `chunked` | Rust（`rutis-bridge`）、Node 运行时、Bun 运行时、Kotlin（`rutis`） | 这一端重组 `chunk` 帧，超限的整帧可分片发来（§2.5，`SESS-85`）。`crates/rutis-bridge/src/session/rpc.rs` 的 `Endpoint::rust`；`node/rutis-runtime/src/session.mjs` 的 `CAPABILITIES`；`bun/rutis-bun/src/session.ts` 的 `CAPABILITIES`；`kotlin/rutis/rutis/src/shared/kotlin/arcships/rutis/internal/peer/Peer.kt` 的 `SESSION_CAPABILITIES` |
 
 `SESS-16` **已取代。** 能力 `sync-wait`、`events-v2` 和 `objects`。协议 4 的实现里没有这三个常量；对象引用对所有协议 4 实现都可传（§6.2）。`sync-wait` 与 `events-v2` 属于 0.18 及更早的协商；`objects` 是 0.18 的对象能力（[对象引用](design-object-refs-2026-10-27.md) §三）。协议 4 的实现不再声明或检查这三个能力。
 
@@ -96,13 +96,13 @@
 
 ### 2.5 跨帧的整帧
 
-`SESS-84` **当前。** 超过通道单条消息上限的帧可以由一串 `chunk` 帧承载。`chunk` 帧不是 `Frame` 的变体：它在 `Frame` 解码之前由会话读取层处理，字段是 `transfer: string`（`<发送端 endpoint>:<n>`，发送端在会话内从 1 递增、非空）、`seq: u64`（从 0 开始逐个加一）、`last: bool`、`data: string`（原帧 UTF-8 JSON 字节的一片，base64，RFC 4648 §4，带填充、规范形式、无空白）。所有片的 `data` 依次拼接就是那条消息。`hello` 永远不分片。`chunk` 的字段类型不对、多了字段、或 `seq` 不从 0 开始，都是畸形帧（§8）。`crates/rutis-bridge/src/session/chunks.rs` 的 `Chunk`；`node/rutis-runtime/src/session.mjs` 的 `#receiveChunk`
+`SESS-84` **当前。** 超过通道单条消息上限的帧可以由一串 `chunk` 帧承载。`chunk` 帧不是 `Frame` 的变体：它在 `Frame` 解码之前由会话读取层处理，字段是 `transfer: string`（`<发送端 endpoint>:<n>`，发送端在会话内从 1 递增、非空）、`seq: u64`（从 0 开始逐个加一）、`last: bool`、`data: string`（原帧 UTF-8 JSON 字节的一片，base64，RFC 4648 §4，带填充、规范形式、无空白）。所有片的 `data` 依次拼接就是那条消息。`hello` 永远不分片。`chunk` 的字段类型不对、多了字段、或 `seq` 不从 0 开始，都是畸形帧（§8）。`crates/rutis-bridge/src/session/chunks.rs` 的 `Chunk`；`node/rutis-runtime/src/session.mjs` 的 `#receiveChunk`；`bun/rutis-bun/src/session.ts` 的 `#receiveChunk`；`kotlin/rutis/rutis/src/shared/kotlin/arcships/rutis/internal/peer/Peer.kt` 的 `receiveChunk`
 
-`SESS-85` **当前。** 能力 `chunked` 声明“这一端能重组 `chunk` 帧”。只有本端与对端都在 `hello.capabilities` 里声明了它，发送方才把超限的帧切片；否则保持 §10 的超限错误，帧不写出。0.23 声明它的是 Rust（`rutis-bridge`）与 Node 运行时；Bun、Python、Go、Swift、Kotlin 不声明，因此它们的会话行为不变，也不会收到 `chunk` 帧。读取 `chunk` 的一端要求对端声明过：没有声明却发来 `chunk` 是传输错误。`crates/rutis-bridge/src/session/rpc.rs` 的 `Endpoint::rust`、`send_limit`、`accept_chunk`；`node/rutis-runtime/src/session.mjs` 的 `CAPABILITIES`、`#chunking`
+`SESS-85` **当前。** 能力 `chunked` 声明“这一端能重组 `chunk` 帧”。只有本端与对端都在 `hello.capabilities` 里声明了它，发送方才把超限的帧切片；否则保持 §10 的超限错误，帧不写出。0.23 声明它的是 Rust（`rutis-bridge`）、Node 运行时、Bun 运行时与 Kotlin；Python、Go、Swift 不声明，因此它们的会话行为不变，也不会收到 `chunk` 帧。读取 `chunk` 的一端要求对端声明过：没有声明却发来 `chunk` 是传输错误。`crates/rutis-bridge/src/session/rpc.rs` 的 `Endpoint::rust`、`send_limit`、`accept_chunk`；`node/rutis-runtime/src/session.mjs` 的 `CAPABILITIES`、`#chunking`；`bun/rutis-bun/src/session.ts` 的 `CAPABILITIES`、`#chunking`；`kotlin/rutis/rutis/src/shared/kotlin/arcships/rutis/internal/peer/Peer.kt` 的 `SESSION_CAPABILITIES`、`chunking`
 
-`SESS-86` **当前。** 发送方在整帧字节数超过 `Sender::max_message()`（Node 是 `maxMessage`，与所在通道一致）且双方声明了 `chunked` 时切片：每片至多 8 MiB（8388608 字节），并按通道上限缩小，使单个 `chunk` 帧装得下通道的一条消息；片长算出来为 0 时不切片。一帧的所有 `chunk` 帧在出站顺序里连续，中间没有别的帧；同一时刻只有一个传输。整帧超过会话的 `max_transfer`（默认 256 MiB，268435456 字节）时不发送，按 `SESS-71` 只让这次调用失败，`limit` 为配置值。`crates/rutis-bridge/src/session/chunks.rs` 的 `CHUNK_SIZE`、`slice_size`、`Chunk::frames`；`node/rutis-runtime/src/session.mjs` 的 `#transmit`
+`SESS-86` **当前。** 发送方在整帧字节数超过 `Sender::max_message()`（Node 是 `maxMessage`，与所在通道一致）且双方声明了 `chunked` 时切片：每片至多 8 MiB（8388608 字节），并按通道上限缩小，使单个 `chunk` 帧装得下通道的一条消息；片长算出来为 0 时不切片。一帧的所有 `chunk` 帧在出站顺序里连续，中间没有别的帧；同一时刻只有一个传输。整帧超过会话的 `max_transfer`（默认 256 MiB，268435456 字节）时不发送，按 `SESS-71` 只让这次调用失败，`limit` 为配置值。`crates/rutis-bridge/src/session/chunks.rs` 的 `CHUNK_SIZE`、`slice_size`、`Chunk::frames`；`node/rutis-runtime/src/session.mjs` 的 `#transmit`；`bun/rutis-bun/src/session.ts` 的 `#transmit`；`kotlin/rutis/rutis/src/shared/kotlin/arcships/rutis/internal/peer/Peer.kt` 的 `transmit`
 
-`SESS-87` **当前。** 接收方按 `transfer` 缓冲：`seq` 必须从 0 逐个加一，进行中已有另一个 `transfer`（同一时刻至多一个未完成传输）、累计超过会话的 `max_transfer`、`data` 不是规范 base64、`last` 不是布尔或字段类型不对，都以传输错误结束会话（`chunk` 不属于任何调用，没有更小的失败范围）；问候之前收到 `chunk` 是 `request before protocol handshake`。只有 `last` 到达、拼接和解析都成功之后，帧才交给会话；重组出的帧与整条到达的帧完全同权（深度、未知字段、调用号、引用、取消规则不变），且不能本身又是 `chunk` 帧。会话结束时未完成的传输随会话丢弃，从不派发、从不回复。`crates/rutis-bridge/src/session/chunks.rs` 的 `Reassembly::accept`；`crates/rutis-bridge/src/session/rpc.rs` 的读线程与 `accept_chunk`；`node/rutis-runtime/src/session.mjs` 的 `#receiveChunk`
+`SESS-87` **当前。** 接收方按 `transfer` 缓冲：`seq` 必须从 0 逐个加一，进行中已有另一个 `transfer`（同一时刻至多一个未完成传输）、累计超过会话的 `max_transfer`、`data` 不是规范 base64、`last` 不是布尔或字段类型不对，都以传输错误结束会话（`chunk` 不属于任何调用，没有更小的失败范围）；问候之前收到 `chunk` 是 `request before protocol handshake`。只有 `last` 到达、拼接和解析都成功之后，帧才交给会话；重组出的帧与整条到达的帧完全同权（深度、未知字段、调用号、引用、取消规则不变），且不能本身又是 `chunk` 帧。会话结束时未完成的传输随会话丢弃，从不派发、从不回复。`crates/rutis-bridge/src/session/chunks.rs` 的 `Reassembly::accept`；`crates/rutis-bridge/src/session/rpc.rs` 的读线程与 `accept_chunk`；`node/rutis-runtime/src/session.mjs` 的 `#receiveChunk`；`bun/rutis-bun/src/session.ts` 的 `#receiveChunk`；`kotlin/rutis/rutis/src/shared/kotlin/arcships/rutis/internal/peer/Peer.kt` 的 `receiveChunk`
 
 ## 3. 帧的顺序与处理
 
@@ -312,7 +312,7 @@
 
 `SESS-82` **明确不保证。** 收到的值都在 64 层以内。上限约束的是发送；从不遵守上限的对端收到的值可能超过 64 层（线上仍有 208 层的帧上限）。
 
-`SESS-88` **当前。** 一次传输重组后的上限是会话的 `max_transfer`：默认 256 MiB，宿主可用 `SessionOptions::max_transfer` 按会话设置，或用 `RUTIS_MAX_TRANSFER` 设置一个部署值（宿主把它传给启动的运行时进程）；不做无上限，也不静默截断。发送方超过它按 `SESS-71` 只让这次调用失败，`limit` 是配置值；接收方超过它以传输错误结束会话并说出配置值。同一时刻至多一个未完成的传输，第二个 `transfer` 是协议错误——这就是并发未完成传输的上界。**明确不保证**：两端配置的上限一致；发送方按本端上限分片，接收方按自己的上限重组，超过的一端以传输错误结束会话。分片不改变 `SESS-70`–`SESS-73` 的其余部分：通道仍按自己的上限拒收单条消息，`chunk` 帧本身必须装得下；内存通道没有承载上限，因此不会分片，但会话自己的 `max_transfer` 仍然约束整帧——没有无上限的会话。一个传输在出站积压里记作一条消息，字节数按原帧计（`SESS-75` 不变）。**明确不保证**：没有声明 `chunked` 的两端之间，超过通道上限的值仍然传不过去（行为与 0.22 相同）；重组要求对端把整帧收进内存，峰值约为帧大小的 1.4 倍；`last` 永远不来的传输不产生任何调用。`crates/rutis-bridge/src/session/chunks.rs` 的 `MAX_TRANSFER`；`crates/rutis-bridge/tests/value_roundtrip.rs::node_carries_frames_over_the_message_limit_whole`；`docs/guarantees.md` 的 `bridge/large-and-deep-values`
+`SESS-88` **当前。** 一次传输重组后的上限是会话的 `max_transfer`：默认 256 MiB，宿主可用 `SessionOptions::max_transfer` 按会话设置，或用 `RUTIS_MAX_TRANSFER` 设置一个部署值（宿主把它传给启动的运行时进程）；不做无上限，也不静默截断。发送方超过它按 `SESS-71` 只让这次调用失败，`limit` 是配置值；接收方超过它以传输错误结束会话并说出配置值。同一时刻至多一个未完成的传输，第二个 `transfer` 是协议错误——这就是并发未完成传输的上界。**明确不保证**：两端配置的上限一致；发送方按本端上限分片，接收方按自己的上限重组，超过的一端以传输错误结束会话。分片不改变 `SESS-70`–`SESS-73` 的其余部分：通道仍按自己的上限拒收单条消息，`chunk` 帧本身必须装得下；内存通道没有承载上限，因此不会分片，但会话自己的 `max_transfer` 仍然约束整帧——没有无上限的会话。一个传输在出站积压里记作一条消息，字节数按原帧计（`SESS-75` 不变）。**明确不保证**：没有声明 `chunked` 的两端之间，超过通道上限的值仍然传不过去（行为与 0.22 相同）；重组要求对端把整帧收进内存，峰值约为帧大小的 1.4 倍；`last` 永远不来的传输不产生任何调用。`crates/rutis-bridge/src/session/chunks.rs` 的 `MAX_TRANSFER`；`crates/rutis-bridge/tests/value_roundtrip.rs::node_carries_frames_over_the_message_limit_whole`；`bun/rutis-bun/src/session.ts` 的 `maxTransferFromEnvironment`、`bun/rutis-bun/test/chunked.test.ts`；`kotlin/rutis/rutis/src/shared/kotlin/arcships/rutis/internal/peer/Peer.kt` 的 `maxTransferFrom`、`kotlin/rutis/rutis/src/jvmTest/kotlin/arcships/rutis/ChunkedTest.kt`；`docs/guarantees.md` 的 `bridge/large-and-deep-values`
 
 ## 11. 规则状态
 
@@ -423,7 +423,7 @@
 | 对端版本更新 | `incompatible session: the far end speaks protocol 99, this side 5: upgrade this side (Rust crates rutis-host / rutis-bridge)` |
 | 对端没在 10 秒内问候 | `the far end did not greet in time` |
 | 宿主没有会话 id | `the host provides no id for its sessions` |
-| 值超过消息上限 | 对端没有声明 `chunked`（Bun、Python、Go、Swift、Kotlin）时：`svc.take: argument 2 cannot be sent: the message would be over the limit of 16777216 bytes (16 MiB)`；错误码 `bad-value`；`data` 是 `{"argument":2,"limit":16777216,"part":"argument"}`。对端声明了 `chunked`（0.23 Node 运行时）时，同一值照常跨过，直到 256 MiB |
+| 值超过消息上限 | 对端没有声明 `chunked`（Python、Go、Swift）时：`svc.take: argument 2 cannot be sent: the message would be over the limit of 16777216 bytes (16 MiB)`；错误码 `bad-value`；`data` 是 `{"argument":2,"limit":16777216,"part":"argument"}`。对端声明了 `chunked`（0.23 的 Node、Bun、Kotlin 运行时）时，同一值照常跨过，直到 256 MiB |
 | 值编码后超过会话上限（默认 256 MiB，宿主可调大） | `svc.take: argument 2 cannot be sent: the message would be 300000000 bytes, over the limit of 268435456 bytes (256 MiB)`；错误码 `bad-value`；`data` 是 `{"argument":2,"limit":268435456,"part":"argument"}` |
 | 对象所在的运行时退出 | `a call on an object from py failed: runtime py exited`；错误码 `peer-gone` |
 
@@ -508,11 +508,11 @@
 
 ### G8 跨帧的整帧：已定（2026-11-19，#1361）
 
-- 决定：加 `chunk` 帧与 `chunked` 能力（`SESS-84`–`SESS-88`），先实现 Rust（`rutis-bridge`）与 Node 运行时；协议 5 未发布，不升版本。重组上限是会话选项 `max_transfer`（默认 256 MiB），宿主可经 `RUTIS_MAX_TRANSFER` 把它传给运行时进程；不做无上限。设计与开发者可见的输出见[跨帧传输超过单条消息上限的参数和返回值](design-chunked-frames-2026-11-19.md)。
+- 决定：加 `chunk` 帧与 `chunked` 能力（`SESS-84`–`SESS-88`），先实现 Rust（`rutis-bridge`）与 Node 运行时（#1361），随后由 #1363 补齐 Bun 与 Kotlin；协议 5 未发布，不升版本。重组上限是会话选项 `max_transfer`（默认 256 MiB），宿主可经 `RUTIS_MAX_TRANSFER` 把它传给运行时进程；不做无上限。设计与开发者可见的输出见[跨帧传输超过单条消息上限的参数和返回值](design-chunked-frames-2026-11-19.md)。
 - 原因：跨语言调用超过单条消息上限时，业务方只能自己切片、分页、重试；分片放在会话层，业务 API、服务签名和公开 API 都不变，同一次调用只执行一次。
 - 不采用：升协议版本（0.22 与 0.23 本就不能混跑）；只提高承载上限（改不了其他实现的默认值）；把分片放进 `args`（要改 `WireValue` 与七种实现的值编解码）；并发传输（接收端排序与内存峰值都翻倍）；无重组上限（不守协议的对端可以让本进程分配任意内存）。
-- 其余五种实现（Bun、Python、Go、Swift、Kotlin）不声明 `chunked`，行为与 0.22 相同；实现后补声明即可，不改业务 API。
-- 验证：`crates/rutis-bridge` 的 `a_chunked_call_is_dispatched_once_after_its_last_chunk`、`an_incomplete_transfer_is_never_dispatched`、`a_chunk_out_of_order_ends_the_session`、`a_second_transfer_before_the_first_ends_ends_the_session`、`a_chunk_before_the_handshake_ends_the_session`、`a_chunk_from_a_far_end_without_the_capability_ends_the_session`、`a_chunk_with_invalid_base64_ends_the_session`、`a_frame_over_the_limit_is_chunked_to_a_far_end_that_declared_it`；真实 Rust↔Node：`crates/rutis-bridge/tests/value_roundtrip.rs::node_carries_frames_over_the_message_limit_whole`；Node 自己的 `node/rutis-runtime/test/chunked.test.mjs`。
+- Python、Go、Swift 不声明 `chunked`，行为与 0.22 相同；实现后补声明即可，不改业务 API。
+- 验证：`crates/rutis-bridge` 的 `a_chunked_call_is_dispatched_once_after_its_last_chunk`、`an_incomplete_transfer_is_never_dispatched`、`a_chunk_out_of_order_ends_the_session`、`a_second_transfer_before_the_first_ends_ends_the_session`、`a_chunk_before_the_handshake_ends_the_session`、`a_chunk_from_a_far_end_without_the_capability_ends_the_session`、`a_chunk_with_invalid_base64_ends_the_session`、`a_frame_over_the_limit_is_chunked_to_a_far_end_that_declared_it`；真实 Rust↔Node：`crates/rutis-bridge/tests/value_roundtrip.rs::node_carries_frames_over_the_message_limit_whole`；各实现自己的测试：Node `node/rutis-runtime/test/chunked.test.mjs`、Bun `bun/rutis-bun/test/chunked.test.ts`、Kotlin `kotlin/rutis/rutis/src/jvmTest/kotlin/arcships/rutis/ChunkedTest.kt`。
 
 ## 相关文件
 

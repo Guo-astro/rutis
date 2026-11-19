@@ -45,6 +45,40 @@ const val ENDPOINT_PROTOCOL: Int = 5
 const val MAX_DEPTH: Int = 64
 
 /**
+ * The most one `chunk` frame carries before base64: 8 MiB, about 10.67 MiB on
+ * the wire, inside the 16 MiB a process pipe or a WebSocket takes by default.
+ */
+internal const val CHUNK_SIZE: Int = 8 * 1024 * 1024
+
+/**
+ * The default most a chunked transfer carries once reassembled, and the
+ * default most one frame may be on a session: 256 MiB. A host raises or lowers
+ * it per session with `RUTIS_MAX_TRANSFER` (#1361).
+ */
+internal const val DEFAULT_MAX_TRANSFER: Long = 256L * 1024 * 1024
+
+private const val MAX_TRANSFER_ENV = "RUTIS_MAX_TRANSFER"
+
+/** The room a `chunk` frame needs beyond its base64 `data`. */
+private const val FRAME_ROOM = 256
+
+private val CHUNK_FIELDS = setOf("op", "transfer", "seq", "last", "data")
+
+/** The largest slice whose `chunk` frame, base64 included, fits `limit` bytes; 0 when not even one byte does. */
+private fun chunkSize(limit: Int): Int = minOf(maxOf((limit - FRAME_ROOM) / 4 * 3, 0), CHUNK_SIZE)
+
+/** The session's reassembly cap: `RUTIS_MAX_TRANSFER` when set, else [DEFAULT_MAX_TRANSFER]. */
+internal fun maxTransferFrom(value: String?): Long {
+    if (value == null) return DEFAULT_MAX_TRANSFER
+    val bytes = value.toLongOrNull()
+    if (bytes == null || bytes <= 0) {
+        val quoted = "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
+        throw IllegalArgumentException("$MAX_TRANSFER_ENV $quoted: expected a positive number of bytes")
+    }
+    return bytes
+}
+
+/**
  * How deep a frame this side reads may nest (#279, protocol §8): every JSON
  * array and object counts, as in [frameDeeperThan]. A frame within [MAX_DEPTH]
  * levels of values takes at most `3 * MAX_DEPTH + 6` on the wire; the rest is
@@ -62,7 +96,7 @@ private const val SHUTDOWN_FLUSH_NANOS: Long = 2_000_000_000
  * What this side declares: `reentrant-sync` (a thread per incoming call);
  * not `sync-stack`; every `value-<tag>`.
  */
-val SESSION_CAPABILITIES: List<String> = listOf("reentrant-sync") + VALUE_CAPABILITIES
+val SESSION_CAPABILITIES: List<String> = listOf("reentrant-sync", "chunked") + VALUE_CAPABILITIES
 
 private val endpointId = Regex("^[a-z0-9-]+$")
 private val endpointOrigin = Regex("^(s[0-9]+/)?[a-z0-9-]+:[1-9][0-9]*$")
@@ -205,6 +239,13 @@ private val frameJson = Json { encodeDefaults = true }
 private fun compact(frame: JsonElement): ByteArray =
     frameJson.encodeToString(JsonElement.serializer(), frame).toByteArray(Charsets.UTF_8)
 
+/** The transfer a receiver is in the middle of (#1361). */
+private class ChunkTransfer(val id: String) {
+    var next = 0L
+    val bytes = java.io.ByteArrayOutputStream()
+    var size = 0L
+}
+
 class Peer(private val channel: Channel, private val opts: Options) {
     private val lock = Object()
     private val local: String
@@ -238,10 +279,80 @@ class Peer(private val channel: Channel, private val opts: Options) {
     /** Frames queued and not yet written (or given up): [shutdown] lets them go out first. */
     private val unsent = java.util.concurrent.atomic.AtomicInteger()
 
+    /** The channel's message limit: a frame over it is carried in `chunk` frames (#1361). Tests lower it. */
+    internal var channelLimit: Int = MAX_MESSAGE
+
+    /** The reassembly cap and the most a chunked transfer may carry: `RUTIS_MAX_TRANSFER`, else 256 MiB. */
+    @Volatile
+    internal var maxTransfer: Long = maxTransferFrom(System.getenv(MAX_TRANSFER_ENV))
+
+    /** The transfer a chunked frame is rebuilding, if one is in progress. */
+    private var transfer: ChunkTransfer? = null
+
+    /** This side's transfers, numbered from 1 (#1361). */
+    private var transfers = 0L
+
+    /** Keeps one frame's chunks together in the outbound order. */
+    private val outLock = Any()
+
     private fun enqueue(data: ByteArray) {
-        unsent.incrementAndGet()
-        outbox.offer(data)
+        synchronized(outLock) {
+            unsent.incrementAndGet()
+            outbox.offer(data)
+        }
     }
+
+    private fun enqueueAll(frames: List<ByteArray>) {
+        synchronized(outLock) {
+            for (frame in frames) {
+                unsent.incrementAndGet()
+                outbox.offer(frame)
+            }
+        }
+    }
+
+    /**
+     * Send one encoded frame: whole, or as `chunk` frames when it is over the
+     * channel's message limit and the far end declared `chunked` (#1361). All
+     * chunks of one transfer go out together, with no frame between them.
+     */
+    private fun transmit(data: ByteArray) {
+        if (!chunking() || data.size <= channelLimit) {
+            enqueue(data)
+            return
+        }
+        val size = chunkSize(channelLimit)
+        if (size <= 0) {
+            enqueue(data)
+            return
+        }
+        val transfer = synchronized(lock) { local + (++transfers) }
+        val frames = ArrayList<ByteArray>((data.size + size - 1) / size)
+        var at = 0
+        var seq = 0L
+        while (at < data.size) {
+            val end = minOf(at + size, data.size)
+            frames.add(compact(buildJsonObject {
+                put("op", "chunk")
+                put("transfer", transfer)
+                put("seq", seq)
+                put("last", end >= data.size)
+                put("data", formatBytes(data.copyOfRange(at, end)))
+            }))
+            at = end
+            seq++
+        }
+        enqueueAll(frames)
+    }
+
+    /** Whether the far end takes chunks and the channel leaves room for a chunk frame. */
+    private fun chunking(): Boolean = synchronized(lock) {
+        chunkSize(channelLimit) > 0 && "chunked" in declaredHere() && supportsLocked("chunked")
+    }
+
+    /** The largest message this side may send: the channel's, or the reassembly cap when the far end takes chunks. */
+    private fun sendLimit(): Long = if (chunking()) maxTransfer else minOf(channelLimit.toLong(), maxTransfer)
+
     private val ready = CompletableFuture<Unit>()
     private val closed = CompletableFuture<Unit>()
 
@@ -347,7 +458,14 @@ class Peer(private val channel: Channel, private val opts: Options) {
                     tooDeep(text)
                     continue
                 }
-                receive(parseFrame(text))
+                val frame = parseFrame(text)
+                // A chunked frame is the frame its chunks join (#1361):
+                // buffered here, dispatched only once the last chunk completes it.
+                if ((frame["op"] as? JsonPrimitive)?.takeIf { it.isString }?.content == "chunk") {
+                    receiveChunk(frame)
+                } else {
+                    receive(frame)
+                }
             } catch (e: Exception) {
                 fault(
                     when (e) {
@@ -359,6 +477,67 @@ class Peer(private val channel: Channel, private val opts: Options) {
                 return
             }
         }
+    }
+
+    /**
+     * One `chunk` of a frame over the channel's limit (#1361). A transfer is
+     * taken in order, one at a time; nothing reaches the session until its last
+     * chunk, and a broken transfer ends the session (there is no call to fail).
+     */
+    private fun receiveChunk(frame: JsonObject) {
+        var joined: ByteArray? = null
+        synchronized(lock) {
+            if (closeError != null) return
+            if (!handshake) throw ProtocolException("request before protocol handshake")
+            if (!supportsLocked("chunked")) throw ProtocolException("chunk frame from a far end that did not declare chunked")
+            if ("chunked" !in declaredHere()) throw ProtocolException("chunk frame while this side did not declare chunked")
+            for (key in frame.keys) {
+                if (key !in CHUNK_FIELDS) throw ProtocolException("invalid chunk frame: unknown field \"$key\"")
+            }
+            val transferId = (frame["transfer"] as? JsonPrimitive)?.takeIf { it.isString }?.content
+            if (transferId.isNullOrEmpty()) throw ProtocolException("chunk frame without a transfer id")
+            val seq = (frame["seq"] as? JsonPrimitive)?.takeIf { !it.isString }?.content?.toLongOrNull()
+            if (seq == null || seq < 0 || seq > MAX_SAFE) throw ProtocolException("invalid chunk frame: invalid seq")
+            val last = (frame["last"] as? JsonPrimitive)?.takeIf { !it.isString }?.content
+            if (last != "true" && last != "false") throw ProtocolException("invalid chunk frame: invalid last")
+            val data = (frame["data"] as? JsonPrimitive)?.takeIf { it.isString }?.content
+                ?: throw ProtocolException("invalid chunk frame: invalid data")
+            val current = transfer
+            if (current != null && current.id != transferId) {
+                throw ProtocolException("chunked transfer ${current.id}: transfer $transferId started before it ended")
+            }
+            val expected = current?.next ?: 0
+            if (seq != expected) throw ProtocolException("chunked transfer $transferId: expected chunk $expected, got $seq")
+            val part = try {
+                parseBytes(data)
+            } catch (e: ValueException) {
+                throw ProtocolException("chunked transfer $transferId: ${e.message}")
+            }
+            val active = current ?: ChunkTransfer(transferId).also { transfer = it }
+            if (active.size + part.size > maxTransfer) {
+                val mib = if (maxTransfer % (1L shl 20) == 0L) " (${maxTransfer shr 20} MiB)" else ""
+                throw ProtocolException("chunked transfer $transferId: over the limit of $maxTransfer bytes$mib")
+            }
+            active.bytes.write(part)
+            active.size += part.size
+            active.next += 1
+            if (last == "false") return
+            transfer = null
+            joined = active.bytes.toByteArray()
+        }
+        val bytes = joined ?: return
+        if (!validUtf8(bytes)) throw ProtocolException("received a message that is not valid UTF-8")
+        val text = String(bytes, Charsets.UTF_8)
+        if (frameDeeperThan(text, MAX_FRAME_DEPTH)) {
+            tooDeep(text)
+            return
+        }
+        val complete = parseFrame(text)
+        // A chunk wraps one frame's bytes: it may not wrap another chunk.
+        if ((complete["op"] as? JsonPrimitive)?.takeIf { it.isString }?.content == "chunk") {
+            throw ProtocolException("chunk frame inside a chunked transfer")
+        }
+        receive(complete)
     }
 
     /**
@@ -424,6 +603,9 @@ class Peer(private val channel: Channel, private val opts: Options) {
             exports.clear()
             identities.clear()
             imports.clear()
+            // A transfer that never reached its last chunk is never dispatched
+            // (#1361): the buffer goes with the session.
+            transfer = null
             drains = ArrayList(draining)
             draining.clear()
             cancelled = ArrayList(running.values)
@@ -876,16 +1058,17 @@ class Peer(private val channel: Channel, private val opts: Options) {
                 rollback(grants)
                 throw e
             }
-            if (data.size > MAX_MESSAGE) {
+            val limit = sendLimit()
+            if (data.size > limit) {
                 rollback(grants)
-                throw tooLarge(data.size, frame["args"], describe(op, fields))
+                throw tooLarge(data.size, frame["args"], describe(op, fields), limit)
             }
             val waiter = CompletableFuture<Outcome>()
             // Attached before the frame goes out: it runs on the thread that
             // completes the waiter, the reader as it takes the reply.
             if (answered != null) waiter.thenAccept(answered)
             pending[id] = waiter
-            enqueue(data)
+            transmit(data)
             return id to waiter
         }
     }
@@ -920,10 +1103,10 @@ class Peer(private val channel: Channel, private val opts: Options) {
     }
 
     /** A call's message over the limit, blamed on its largest argument. */
-    private fun tooLarge(size: Int, args: JsonElement?, call: String): ValueException {
+    private fun tooLarge(size: Int, args: JsonElement?, call: String, limit: Long): ValueException {
         val items = (args as? JsonObject)?.get("value") as? JsonArray
         val index = items?.indices?.maxByOrNull { compact(items[it]).size }
-        return if (index != null) ofArgument(overLimit(size), index, call, MAX_MESSAGE, why = "limit") else ofArguments(overLimit(size), call, MAX_MESSAGE, why = "limit")
+        return if (index != null) ofArgument(overLimit(size.toLong(), limit), index, call, limit, why = "limit") else ofArguments(overLimit(size.toLong(), limit), call, limit, why = "limit")
     }
 
     /** Gives up waiting for call `id`; an asynchronous one hears so. */
@@ -1524,7 +1707,8 @@ class Peer(private val channel: Channel, private val opts: Options) {
                         put("id", id)
                         put("value", wire)
                     })
-                    if (bytes.size > MAX_MESSAGE) throw ofResult(overLimit(bytes.size), described, MAX_MESSAGE, why = "limit")
+                    val limit = sendLimit()
+                    if (bytes.size > limit) throw ofResult(overLimit(bytes.size.toLong(), limit), described, limit, why = "limit")
                     encoded = bytes
                 } catch (e: Throwable) {
                     rollback(grants)
@@ -1547,9 +1731,10 @@ class Peer(private val channel: Channel, private val opts: Options) {
                     put("error", encodeError(error!!))
                 })
                 // An error too large to send: a short one saying so.
-                if (thrown.size > MAX_MESSAGE) {
+                val limit = sendLimit()
+                if (thrown.size > limit) {
                     val what = "the error ${errorName(error!!)}" + (described?.let { " of $it" } ?: "")
-                    short("$what: ${overLimit(thrown.size)}")
+                    short("$what: ${overLimit(thrown.size.toLong(), limit)}")
                 } else {
                     thrown
                 }
@@ -1557,7 +1742,7 @@ class Peer(private val channel: Channel, private val opts: Options) {
                 short(error?.message ?: "")
             }
         }
-        enqueue(data)
+        transmit(data)
     }
 }
 

@@ -18,27 +18,33 @@ internal fun invocation(target: String, method: String): String {
 }
 
 /** Why a message of `size` bytes is not sent over a channel taking at most `limit`. */
-internal fun overLimit(size: Int, limit: Int = MAX_MESSAGE): String {
-    val mib = if (limit % (1 shl 20) == 0) " (${limit shr 20} MiB)" else ""
+internal fun overLimit(size: Long, limit: Long): String {
+    val mib = if (limit % (1L shl 20) == 0L) " (${limit shr 20} MiB)" else ""
     return "the message would be $size bytes, over the limit of $limit bytes$mib"
 }
+
+internal fun overLimit(size: Int, limit: Int = MAX_MESSAGE): String = overLimit(size.toLong(), limit.toLong())
+
+/** A limit in `data`: an `Int` when it fits, as it always was for the channel's 16 MiB. */
+private fun limitValue(limit: Number): Number =
+    if (limit is Long && limit >= Int.MIN_VALUE.toLong() && limit <= Int.MAX_VALUE.toLong()) limit.toInt() else limit
 
 /**
  * `reason` as one of argument `index` (from 0) of `call`: `<call>: argument
  * <i> cannot be sent: <why>`, code bad-value with `{argument, part, limit?}`
  * (#677).
  */
-internal fun ofArgument(reason: String?, index: Int, call: String, limit: Int? = null, why: String? = null): ValueException =
+internal fun ofArgument(reason: String?, index: Int, call: String, limit: Number? = null, why: String? = null): ValueException =
     ValueException("$call: argument ${index + 1} cannot be sent: $reason", "bad-value",
-        listOfNotNull("part" to "argument", "argument" to index + 1, limit?.let { "limit" to it },
+        listOfNotNull("part" to "argument", "argument" to index + 1, limit?.let { "limit" to limitValue(it) },
             why?.let { "reason" to it }).toMap())
 
 /** `reason` as one of the result of `call`, when known: `<call>: the result cannot be sent: <why>`. */
-internal fun ofResult(reason: String?, call: String?, limit: Int? = null, why: String? = null): ValueException =
+internal fun ofResult(reason: String?, call: String?, limit: Number? = null, why: String? = null): ValueException =
     ValueException(if (call != null) "$call: the result cannot be sent: $reason" else "the result cannot be sent: $reason", "bad-value",
-        listOfNotNull("part" to "result", limit?.let { "limit" to it }, why?.let { "reason" to it }).toMap())
+        listOfNotNull("part" to "result", limit?.let { "limit" to limitValue(it) }, why?.let { "reason" to it }).toMap())
 
 /** `reason` as one of the arguments of `call` together. */
-internal fun ofArguments(reason: String?, call: String, limit: Int? = null, why: String? = null): ValueException =
+internal fun ofArguments(reason: String?, call: String, limit: Number? = null, why: String? = null): ValueException =
     ValueException("$call: the arguments cannot be sent: $reason", "bad-value",
-        listOfNotNull("part" to "arguments", limit?.let { "limit" to it }, why?.let { "reason" to it }).toMap())
+        listOfNotNull("part" to "arguments", limit?.let { "limit" to limitValue(it) }, why?.let { "reason" to it }).toMap())
