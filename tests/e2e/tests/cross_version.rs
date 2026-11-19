@@ -664,7 +664,7 @@ fn a_previous_go_sdk_binary_is_refused_at_the_handshake() {
         // Not started again within a restart's first steps.
         std::thread::sleep(std::time::Duration::from_secs(3));
         assert_eq!(
-            host.count(&format!("down ({})", older_runtime(release))),
+            host.count(&format!("down ({}", older_runtime(release))),
             1,
             "started again"
         );
@@ -763,11 +763,22 @@ fn the_current_runtimes_refuse_a_previous_host() {
                     }),
                 );
                 let mut host = s.program("", release.host(), ["run", "rutis.json"], &[]);
-                host.expect(
-                    "a local channel needs --id <endpoint>: fd:3; \
-                     a host older than rutis 0.19 started this runtime: upgrade the host",
-                );
-                host.expect(&format!("rutis-host: the {runtime} runtime did not start"));
+                if release.speaks_protocol_4() {
+                    // The runtime speaks protocol 5; the host 4 says which
+                    // side to upgrade (`version_mismatch` of 0.19-0.22).
+                    host.expect(&format!(
+                        "rutis-host: the {runtime} runtime did not start: incompatible session: \
+                         the far end speaks protocol 5, this side 4"
+                    ));
+                } else {
+                    // Before 0.19 the host passes no `--id`; the runtime
+                    // refuses it before any greeting.
+                    host.expect(
+                        "a local channel needs --id <endpoint>: fd:3; \
+                         a host older than rutis 0.19 started this runtime: upgrade the host",
+                    );
+                    host.expect(&format!("rutis-host: the {runtime} runtime did not start"));
+                }
                 assert_eq!(host.count(&format!("{row}: running")), 0);
                 ended_failing(host);
                 s.finish();
@@ -858,8 +869,17 @@ fn a_previous_node_is_refused_at_the_handshake() {
             Meeting::Refused,
             |release, s| {
                 let token = s.secret();
-                let old =
-                    json!({ "id": "old", "rows": [link_before_0_19("current", old_listens)] });
+                // 0.19 onward has the `rutis-host/listen` and `rutis-host/dial`
+                // rows; earlier releases name the link `rutis-bridge/peer`,
+                // which is gone by then.
+                let old_row = |peer: &str, listens: bool| {
+                    if release.speaks_protocol_4() {
+                        connection(peer, listens)
+                    } else {
+                        link_before_0_19(peer, listens)
+                    }
+                };
+                let old = json!({ "id": "old", "rows": [old_row("current", old_listens)] });
                 let current = json!({ "id": "current", "rows": [connection("old", !old_listens)] });
                 let (mut old, mut current) = start_nodes(
                     &s,
@@ -884,15 +904,23 @@ fn a_previous_node_is_refused_at_the_handshake() {
                 );
                 // The dialer stops, with the listener's words: the old
                 // listener says to upgrade it; the current one, the old
-                // dialer.
+                // dialer. An old host from 0.19 on dials with
+                // `rutis-host/dial` (`… disconnected (incompatible: …);
+                // stopped`), one before it with `rutis-bridge/peer`
+                // (`link stopped: incompatible (…)`).
                 let old_dialer = older_dialer(release);
-                let (dialer, said, refusal) = match old_listens {
-                    true => (
+                let (dialer, said, refusal) = match (old_listens, release.speaks_protocol_4()) {
+                    (true, _) => (
                         &mut current,
                         "old: disconnected (incompatible: ",
                         older_listener(),
                     ),
-                    false => (
+                    (false, true) => (
+                        &mut old,
+                        "current: disconnected (incompatible: ",
+                        old_dialer.as_str(),
+                    ),
+                    (false, false) => (
                         &mut old,
                         "current: link stopped: incompatible (",
                         old_dialer.as_str(),
