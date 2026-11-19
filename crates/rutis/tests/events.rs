@@ -1079,6 +1079,99 @@ async fn a_disposed_listener_is_not_called_after_its_disposer_returns() {
     root.shutdown().await.unwrap();
 }
 
+/// Calling a listener's disposer takes its entry out of the table on the
+/// calling thread, before the cleanup runs: a dispatch right after the call,
+/// without awaiting the disposal, selects nothing (events protocol §4.4 item
+/// 4, §7.1 step 1). What was already selected runs to its end (§4.4 item 7).
+///
+/// guarantee: events/hub-lifecycle
+#[test]
+fn a_disposers_call_takes_its_entry_out_of_the_table() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .expect("a current-thread runtime");
+    let _entered = runtime.enter();
+    // Nothing drives this runtime: a cleanup this test does not await may
+    // not have run, so what is read here is the withdrawal itself.
+    let root = Ctx::root_with(runtime.handle().clone());
+    let heard = Arc::new(AtomicUsize::new(0));
+    let calls = heard.clone();
+    let disposer = root
+        .on_sync::<Ping>(move |_, _| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Ok(None)
+        })
+        .expect("the listener registers");
+    root.bail(Ping(0)).expect("the listener is called");
+    assert_eq!(heard.load(Ordering::SeqCst), 1);
+
+    let disposal = disposer.dispose();
+    assert!(
+        root.events().subscriptions().is_empty(),
+        "the entry stayed in the table after its disposer was called"
+    );
+    root.bail(Ping(1)).expect("the dispatch runs");
+    assert_eq!(
+        heard.load(Ordering::SeqCst),
+        1,
+        "a dispatch selected the listener whose disposal was not awaited"
+    );
+    runtime.block_on(disposal).expect("the cleanup runs");
+    let _ = runtime.block_on(root.shutdown());
+}
+
+/// A call that started before its listener's disposer was called runs to its
+/// end: the withdrawal takes the entry out of the table, it does not cancel
+/// a call already started (§5.1 step 3, §4.4 item 7).
+///
+/// guarantee: events/hub-lifecycle
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_call_started_before_its_disposers_call_finishes() {
+    let root = Ctx::root().unwrap();
+    let (started, begun) = tokio::sync::oneshot::channel::<()>();
+    let (release, held) = tokio::sync::oneshot::channel::<()>();
+    let started = Mutex::new(Some(started));
+    let held = Mutex::new(Some(held));
+    let finished = Arc::new(AtomicUsize::new(0));
+    let out = finished.clone();
+    let listener = root
+        .on::<Ping>(move |_, _| {
+            let started = started.lock().unwrap().take();
+            let held = held.lock().unwrap().take();
+            let out = out.clone();
+            async move {
+                if let Some(started) = started {
+                    let _ = started.send(());
+                }
+                if let Some(held) = held {
+                    let _ = held.await;
+                }
+                out.fetch_add(1, Ordering::SeqCst);
+                Ok(None)
+            }
+        })
+        .expect("the listener registers");
+    let dispatch = {
+        let root = root.clone();
+        tokio::spawn(async move { root.serial(Ping(0)).await })
+    };
+    begun.await.expect("the call starts");
+    // The entry leaves the table here; the call above is already running.
+    listener.dispose().await.expect("the cleanup runs");
+    assert!(root.events().subscriptions().is_empty());
+    release.send(()).expect("the call is released");
+    dispatch
+        .await
+        .expect("the dispatch task")
+        .expect("the serial dispatch");
+    assert_eq!(
+        finished.load(Ordering::SeqCst),
+        1,
+        "the disposal dropped a call that had already started"
+    );
+    root.shutdown().await.unwrap();
+}
+
 // ── remote entries ──────────────────────────────────────────────
 
 struct Remote {
