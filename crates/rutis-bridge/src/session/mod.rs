@@ -14,6 +14,7 @@
 /// builds check they match.
 pub const ENDPOINT_PROTOCOL: u32 = 5;
 
+pub(crate) mod chunks;
 mod objects;
 pub(crate) mod plugin;
 pub(crate) mod protocol;
@@ -23,6 +24,7 @@ mod services;
 pub mod testing;
 pub mod values;
 
+pub use chunks::{CHUNK_SIZE, DEFAULT_MAX_TRANSFER};
 pub use objects::{
     arg, decode_value, Bytes, Dynamic, JsError, ObjectRef, RemoteFunction, ValueMap, ValueSet,
 };

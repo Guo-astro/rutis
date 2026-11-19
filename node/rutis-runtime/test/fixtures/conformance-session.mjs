@@ -5,6 +5,7 @@ import { Process } from '../../src/client.mjs'
 
 const [channel] = process.argv.slice(2)
 let held, started = false, aborted = false
+let calls = 0
 const kept = new Map()
 let session
 const conformance = {
@@ -32,6 +33,9 @@ const conformance = {
   // callback's argument over the message limit, an object with methods.
   big: size => 'x'.repeat(size),
   applyBig: (fn, size) => fn('x'.repeat(size)),
+  // How many calls ran, and how long the value was (#1361): a frame over
+  // the message limit crosses in chunks and the call runs once, whole.
+  tally: value => { calls += 1; return { calls, size: value.length } },
   object: () => new (class Counter { n = 0; inc() { return ++this.n } })(),
 }
 session = await Process.connect(channel, (target, method, args) => {

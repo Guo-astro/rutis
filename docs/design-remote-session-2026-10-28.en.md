@@ -362,7 +362,7 @@ Following [Diagnostics](design-diagnostics-2026-10-26.en.md) §4.5: output never
 
 - rutis.json: `runtimes.*` (local runtimes); `rutis-host/dial` and `rutis-host/listen` rows (remote runtimes, devices, nodes); rows running at the far end are `<connection row>:<plugin>`.
 - Rust: `LocalId` (the host puts it in the root ctx), `Session::handshake(&ctx, channel)` then `ctx.plugin(greeted)`, `Session::new(channel)`, `SessionHandle::{id, run}`; `websocket::{dial, listen}`, `pipe::spawn`, `memory::pair`.
-- A session's bound in Rust (#1005, §3), none by default: `ctx.plugin(Session::new(channel).options(SessionOptions { outbound_limit: Some(8 * 1024 * 1024) }))`; with the handshake and the mount as two steps, `Session::handshake_with(&ctx, channel, options)`; a Rust host embedding rutis-host uses `SpawnPlugin::session(options)`. rutis.json, `open(far)` in other languages and rutis-host's dial and listen rows set none: as #694 rule 3 says, resource limits are off by default.
+- A session's bound in Rust (#1005, §3), none by default: `ctx.plugin(Session::new(channel).options(SessionOptions { outbound_limit: Some(8 * 1024 * 1024), ..Default::default() }))`; with the handshake and the mount as two steps, `Session::handshake_with(&ctx, channel, options)`; a Rust host embedding rutis-host uses `SpawnPlugin::session(options)`. rutis.json, `open(far)` in other languages and rutis-host's dial and listen rows set none: as #694 rule 3 says, resource limits are off by default.
 - Other languages: `open(far)` on the `sessions` service.
 
 **What `run` prints**: prefixed with the connection row's id, using only the words connected / disconnected, with the reason in parentheses.

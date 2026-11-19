@@ -47,7 +47,7 @@ use tokio::runtime::Builder;
 use tokio::sync::oneshot;
 
 use super::{
-    parse_frame, Body, Connection, Dispatch, Error, Frame, Message, Operation, Reference,
+    parse_frame, Body, Connection, Dispatch, Error, Frame, Message, Operation, Outgoing, Reference,
     ReferenceInner, Reply, Value, Waiter, Waiting, WireValue, MAX_DEPTH,
 };
 use crate::sync::Mutex as ModelMutex;
@@ -88,7 +88,18 @@ fn runtime() -> tokio::runtime::Runtime {
 fn frames(conn: &Connection) -> Vec<Frame> {
     let bytes: Vec<Vec<u8>> = {
         let mut queued = conn.0.outbound.queued.lock().unwrap();
-        let bytes = queued.frames.drain(..).collect();
+        // The models send no frame over the channel's limit, so nothing is
+        // chunked here (#1361).
+        let bytes = queued
+            .frames
+            .drain(..)
+            .map(|outgoing| match outgoing {
+                Outgoing::Frame(bytes) => bytes,
+                Outgoing::Chunked { .. } => {
+                    unreachable!("the shuttle models send no frame over the channel's limit")
+                }
+            })
+            .collect();
         queued.bytes = 0;
         bytes
     };

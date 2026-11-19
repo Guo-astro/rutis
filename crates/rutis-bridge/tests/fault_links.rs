@@ -641,22 +641,21 @@ async fn a_value_too_deep_fails_its_call_and_the_session_goes_on() {
     assert!(caller.close_reason().is_none());
 }
 
-/// guarantee: bridge/large-and-deep-values, bridge/bad-values; risk E1.
-///
-/// Over a real WebSocket connection whose limit is 64 KiB: a call whose
-/// argument and result come within 512 bytes of the limit succeeds; one
-/// whose argument is over it fails explicitly before it is sent, naming
-/// the argument, the size and the limit, and the callee never ran it; the
-/// connection stays open and the next call is answered (#675: it used to
-/// close with 1009).
+/// The WebSocket these tests give a 64 KiB message limit.
 #[cfg(feature = "websocket")]
-#[tokio::test(flavor = "multi_thread")]
-async fn over_websocket_a_value_near_the_limit_passes_and_one_over_it_fails() {
+const WEBSOCKET_LIMIT: usize = 64 * 1024;
+
+/// A caller and a callee over a real WebSocket whose limit is
+/// [`WEBSOCKET_LIMIT`], serving an echo of one string and recording the
+/// length of every call it ran. The callee declares `chunked` only when
+/// asked, so the same transport exercises both the per-message limit and
+/// frames carried in chunks (#1361).
+#[cfg(feature = "websocket")]
+async fn websocket_pair(chunked: bool) -> (Connection, Connection, Arc<Mutex<Vec<usize>>>) {
     use rutis_bridge::websocket::{self, Admitted, Credential, Limits, ListenerConfig, Trust};
 
-    const LIMIT: usize = 64 * 1024;
     let limits = Limits {
-        max_message: LIMIT,
+        max_message: WEBSOCKET_LIMIT,
         ..Limits::default()
     };
     let protocol = format!("rutis.{}", rutis_bridge::session::ENDPOINT_PROTOCOL);
@@ -708,21 +707,40 @@ async fn over_websocket_a_value_near_the_limit_passes_and_one_over_it_fails() {
         Endpoint::rust(id("caller")).expect(id("callee")),
     )
     .unwrap();
-    let served = Connection::open(
-        accepted,
-        callee,
-        Endpoint::rust(id("callee")).expect(id("caller")),
-    )
-    .unwrap();
+    let mut far_end = Endpoint::rust(id("callee")).expect(id("caller"));
+    if !chunked {
+        // An end that does not take chunks keeps the transport's per-message
+        // limit: a frame over it fails only its call (#675).
+        far_end
+            .capabilities
+            .retain(|capability| capability != "chunked");
+    }
+    let served = Connection::open(accepted, callee, far_end).unwrap();
     within("the caller's handshake", caller.ready())
         .await
         .unwrap();
     within("the callee's handshake", served.ready())
         .await
         .unwrap();
+    (caller, served, runs)
+}
+
+/// guarantee: bridge/large-and-deep-values, bridge/bad-values; risk E1.
+///
+/// Over a real WebSocket connection whose limit is 64 KiB: a call whose
+/// argument and result come within 512 bytes of the limit succeeds; one
+/// whose argument is over it fails explicitly before it is sent, naming
+/// the argument, the size and the limit, and the callee never ran it; the
+/// connection stays open and the next call is answered (#675: it used to
+/// close with 1009). The callee does not declare `chunked`, so the
+/// per-message limit applies.
+#[cfg(feature = "websocket")]
+#[tokio::test(flavor = "multi_thread")]
+async fn over_websocket_a_value_near_the_limit_passes_and_one_over_it_fails() {
+    let (caller, served, runs) = websocket_pair(false).await;
 
     // The frames around the text take well under 512 bytes.
-    let near = "n".repeat(LIMIT - 512);
+    let near = "n".repeat(WEBSOCKET_LIMIT - 512);
     let back = within(
         "a value near the limit both ways",
         caller.invoke_async("", "echo", Value::Data(json!([near]))),
@@ -731,7 +749,7 @@ async fn over_websocket_a_value_near_the_limit_passes_and_one_over_it_fails() {
     .unwrap();
     assert!(back.json().unwrap() == json!(near));
 
-    let over = "o".repeat(LIMIT + 1);
+    let over = "o".repeat(WEBSOCKET_LIMIT + 1);
     let failed = within(
         "a value over the limit",
         caller.invoke_async("", "echo", Value::Data(json!([over]))),
@@ -754,7 +772,39 @@ async fn over_websocket_a_value_near_the_limit_passes_and_one_over_it_fails() {
     assert!(caller.close_reason().is_none() && served.close_reason().is_none());
     assert_eq!(
         *runs.lock().unwrap(),
-        [LIMIT - 512, 5],
+        [WEBSOCKET_LIMIT - 512, 5],
         "the callee ran only the calls within the limit"
     );
+}
+
+/// guarantee: bridge/large-and-deep-values. #1361.
+///
+/// Over the same 64 KiB WebSocket, both ends declaring `chunked`: a value
+/// whose frame is over the limit crosses whole, the callee runs once with
+/// the whole value, and its result (also over the limit) comes back whole.
+#[cfg(feature = "websocket")]
+#[tokio::test(flavor = "multi_thread")]
+async fn over_websocket_a_value_over_the_limit_crosses_in_chunks() {
+    let (caller, served, runs) = websocket_pair(true).await;
+    let over = "o".repeat(WEBSOCKET_LIMIT + 1);
+    let back = within(
+        "a value over the limit, in chunks",
+        caller.invoke_async("", "echo", Value::Data(json!([over]))),
+    )
+    .await
+    .unwrap();
+    assert_eq!(back.json().unwrap(), json!(over));
+    assert_eq!(
+        *runs.lock().unwrap(),
+        [WEBSOCKET_LIMIT + 1],
+        "the callee ran once, with the whole value"
+    );
+    let back = within(
+        "a call after it",
+        caller.invoke_async("", "echo", Value::Data(json!(["after"]))),
+    )
+    .await
+    .unwrap();
+    assert_eq!(back.json().unwrap(), json!("after"));
+    assert!(caller.close_reason().is_none() && served.close_reason().is_none());
 }

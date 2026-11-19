@@ -2781,12 +2781,14 @@ async fn a_value_over_the_channels_limit_fails_only_its_call() {
         Endpoint::rust(id("main")).expect(id("node")),
     )
     .unwrap();
-    let callee = Connection::open(
-        theirs,
-        Arc::new(Echo),
-        Endpoint::rust(id("node")).expect(id("main")),
-    )
-    .unwrap();
+    // A far end that takes no chunks: the channel's limit is what refuses the
+    // frame, which is what this test traces (#1361 lifts it only between two
+    // ends that declared `chunked`).
+    let mut callee_endpoint = Endpoint::rust(id("node")).expect(id("main"));
+    callee_endpoint
+        .capabilities
+        .retain(|capability| capability != "chunked");
+    let callee = Connection::open(theirs, Arc::new(Echo), callee_endpoint).unwrap();
     within("the caller's greeting", caller.ready())
         .await
         .unwrap();

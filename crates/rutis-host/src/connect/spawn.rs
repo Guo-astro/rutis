@@ -25,7 +25,7 @@ use rutis_bridge::runtime::{
     ended_status, Launcher, RuntimeHandle, RuntimeState, RuntimeStates, Stdio, UndeclaredPolicy,
     GREETING,
 };
-use rutis_bridge::session::SessionOptions;
+use rutis_bridge::session::{SessionOptions, MAX_TRANSFER_ENV};
 use rutis_bridge::{session_key, PeerId, Session};
 
 /// One local runtime: what starts its process, and its state.
@@ -66,7 +66,10 @@ impl SpawnPlugin {
             anchor,
             processes,
             greeting: GREETING,
-            session: SessionOptions::default(),
+            // The deployment may raise a session's frame cap in the
+            // environment; the runtimes started from it get the same value
+            // (#1361).
+            session: SessionOptions::from_environment(),
             undeclared: UndeclaredPolicy::default(),
             watching: Arc::default(),
         }
@@ -85,7 +88,12 @@ impl SpawnPlugin {
     /// The limits its session runs with ([`SessionOptions`]): none by
     /// default, so a stopped runtime's events wait for it rather than
     /// ending its session (`docs/design-remote-session-2026-10-28.md` §三).
+    /// The session's largest frame (`max_transfer`) is passed to the runtime
+    /// process in `RUTIS_MAX_TRANSFER`, so both ends reassemble up to the
+    /// same size (#1361).
     pub fn session(mut self, options: SessionOptions) -> Self {
+        self.launcher = std::mem::take(&mut self.launcher)
+            .env(MAX_TRANSFER_ENV, options.max_transfer.to_string());
         self.session = options;
         self
     }
