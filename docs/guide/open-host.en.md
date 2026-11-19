@@ -998,7 +998,7 @@ match handle.reload(id).await {
 # }
 ```
 
-- When the new code cannot be imported (a syntax error), the row keeps running the previous version: `count: cannot reload: …; the previous version keeps running`. When it imports but its `apply` fails, the row fails with that error and does not run until the code is fixed.
+- When the new code cannot be imported (a syntax error), the row keeps running the previous version: `count: cannot reload: …; the previous version keeps running`. When it imports but its `apply` fails, the row fails with that error and does not run until the code is fixed. (The `apply` failure above is for a row a runtime starts from a file: `Loader::reload` restores the previous resolution, and Node or Python reads the file's current content again; a row whose resolver hands back a module in memory, as Rust's does, runs the old code again after an `apply` failure.)
 - Only the row's own entry module is imported again: when a module it imports changed, restart its runtime (`restart()` on the runtime's fiber).
 - Rows using a service the row provides restart with it.
 
