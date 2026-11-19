@@ -79,13 +79,16 @@ impl Session {
     pub fn new(channel: Channel) -> Self {
         Self {
             channel: Mutex::new(Some(channel)),
-            options: SessionOptions::default(),
+            // The deployment may set a session's largest frame in
+            // `RUTIS_MAX_TRANSFER` (#1361); a host that passes its own
+            // options replaces this.
+            options: SessionOptions::from_environment(),
             undeclared: UndeclaredPolicy::default(),
         }
     }
 
     /// The limits the host turns on for this session ([`SessionOptions`]):
-    /// none by default.
+    /// none by default, but the environment's `RUTIS_MAX_TRANSFER`, if set.
     pub fn options(mut self, options: SessionOptions) -> Self {
         self.options = options;
         self
