@@ -63,12 +63,20 @@ fn resolve_number(text: &str) -> Option<Value> {
         b'+' => (false, &text[1..]),
         _ => (false, text),
     };
-    let signed = |n: i64| if negative { -n } else { n };
+    // A sign belongs before the radix prefix (`-0o17`), not inside it:
+    // `i64::from_str_radix` reads a sign, and negating what it returns for
+    // `-0o-1000000000000000000000` (i64::MIN) overflows. The fuzz target
+    // `dsh_profile_yaml` found that (2026-11-19, #1080).
+    let signed = |n: i64| if negative { n.checked_neg() } else { Some(n) };
     for (prefix, radix) in [("0x", 16), ("0o", 8), ("0b", 2)] {
         if let Some(rest) = digits.strip_prefix(prefix) {
+            if rest.starts_with('+') || rest.starts_with('-') {
+                return None;
+            }
             return i64::from_str_radix(rest, radix)
                 .ok()
-                .map(|n| Value::Number(Number::from(signed(n))));
+                .and_then(signed)
+                .map(|n| Value::Number(Number::from(n)));
         }
     }
     if digits.is_empty()
