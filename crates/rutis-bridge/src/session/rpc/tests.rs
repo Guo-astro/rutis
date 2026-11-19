@@ -1892,10 +1892,19 @@ async fn a_forwarded_call_carries_the_callers_awaited_signal() {
     let forwarding = Arc::new(Forwarding(std::sync::OnceLock::new()));
     let (_caller, far) = connected(forwarding.clone());
     let (other, other_far) = connected(Arc::new(NoExports));
+    let other_ready = other.clone();
     assert!(forwarding.0.set(other).is_ok());
+    // Both greetings are read before the first call is forwarded: a forward
+    // sends on the other session, which refuses before its handshake
+    // (`protocol handshake incomplete`), so greeting and the first call
+    // would otherwise race (#1361's suite load exposed it).
+    let (greeted, both_greeted) = mpsc::channel();
+    let (go, may_call) = mpsc::channel();
     let script = tokio::task::spawn_blocking(move || {
         let mut far = Remote::start(far);
         let mut other = Remote::start(other_far);
+        greeted.send(()).unwrap();
+        may_call.recv().unwrap();
         // The caller will not wait for the call it makes: the forward says
         // so, and is no wait edge.
         far.send(Frame::Invoke {
@@ -1907,7 +1916,12 @@ async fn a_forwarded_call_carries_the_callers_awaited_signal() {
             sync: false,
             awaited: false,
         });
-        assert!(matches!(far.read(), Frame::Return { id, .. } if id == "node:1"));
+        let first = far.read();
+        assert!(
+            matches!(&first, Frame::Return { id, .. } if id == "node:1"),
+            "{}",
+            serde_json::to_string(&first).unwrap()
+        );
         match other.read() {
             Frame::Invoke {
                 id, awaited, sync, ..
@@ -1941,6 +1955,9 @@ async fn a_forwarded_call_carries_the_callers_awaited_signal() {
             _ => panic!("an invoke expected"),
         }
     });
+    both_greeted.recv().unwrap();
+    other_ready.ready().await.unwrap();
+    go.send(()).unwrap();
     script.await.unwrap();
 }
 
