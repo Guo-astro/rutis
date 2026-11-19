@@ -3932,8 +3932,9 @@ pub(crate) struct ParsedFrame {
 /// past serde_json's own limit of 128. The JSON is read once into a value so
 /// unknown fields can be found without denying the whole frame (#635); the
 /// frame is then decoded from that value.
-/// [`parse_json`] and [`frame_from`] together: a frame from its bytes.
-#[cfg(test)]
+/// [`parse_json`] and [`frame_from`] together: a frame from its bytes. Read by
+/// the tests and by the fuzz targets (`src/fuzzing.rs`), not by a session.
+#[cfg(any(test, fuzzing))]
 pub(crate) fn parse_frame(text: &[u8]) -> Result<ParsedFrame, Error> {
     let value = parse_json(text)?;
     frame_from(text, &value)
