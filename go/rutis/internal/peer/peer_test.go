@@ -26,6 +26,13 @@ func pair(t *testing.T, host, runtime func(ctx context.Context, target, method s
 	return h, r
 }
 
+// pairWith is pair with each side's capabilities given.
+func pairWith(t *testing.T, host, runtime func(ctx context.Context, target, method string, args []any) (any, error), hostCapabilities, runtimeCapabilities []string) (*Peer, *Peer) {
+	t.Helper()
+	h, r, _ := recordedPairWith(t, host, runtime, hostCapabilities, runtimeCapabilities)
+	return h, r
+}
+
 // recorder is a channel that keeps what it received, in order.
 type recorder struct {
 	Channel
@@ -57,13 +64,20 @@ func (r *recorder) frames() []frame {
 // frame recorded before another is handled before it.
 func recordedPair(t *testing.T, host, runtime func(ctx context.Context, target, method string, args []any) (any, error)) (*Peer, *Peer, *recorder) {
 	t.Helper()
+	return recordedPairWith(t, host, runtime, TestCapabilities, TestCapabilities)
+}
+
+// recordedPairWith is recordedPair with each side's capabilities given:
+// a far end without `chunked`, say, keeps the channel's own limit.
+func recordedPairWith(t *testing.T, host, runtime func(ctx context.Context, target, method string, args []any) (any, error), hostCapabilities, runtimeCapabilities []string) (*Peer, *Peer, *recorder) {
+	t.Helper()
 	a, b := net.Pipe()
 	hostChannel := &recorder{Channel: NewLines(a)}
-	h, err := New(hostChannel, Options{Endpoint: &Endpoint{Local: "main"}, Capabilities: TestCapabilities, Dispatch: host})
+	h, err := New(hostChannel, Options{Endpoint: &Endpoint{Local: "main"}, Capabilities: hostCapabilities, Dispatch: host})
 	if err != nil {
 		t.Fatal(err)
 	}
-	r, err := New(NewLines(b), Options{Endpoint: &Endpoint{Local: "go"}, Capabilities: TestCapabilities, Dispatch: runtime})
+	r, err := New(NewLines(b), Options{Endpoint: &Endpoint{Local: "go"}, Capabilities: runtimeCapabilities, Dispatch: runtime})
 	if err != nil {
 		t.Fatal(err)
 	}

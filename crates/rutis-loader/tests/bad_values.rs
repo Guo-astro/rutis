@@ -1,6 +1,8 @@
 //! A value that cannot cross between languages, or a message over the
 //! limit (16 MiB), fails only that one call, with an error naming the
-//! call, the argument (or the result) and why: the sessions, the runtime
+//! call, the argument (or the result) and why: (the 17 MiB values below now
+//! cross in chunks because Node, Python and Go declare `chunked`; the bad
+//! values here are the objects, not the size): the sessions, the runtime
 //! processes, other calls and other rows go on (#675). Each case of the
 //! issue, between rows in Node, Python and Go: an object with methods or a
 //! class instance (TS → Python, TS → a Go `any`, Python → TS, either way
@@ -249,8 +251,6 @@ async fn expect(fixture: &Fixture, start: &str, parts: &[&str]) {
     }
 }
 
-const OVER: &str = "over the limit of 16777216 bytes (16 MiB)";
-
 /// guarantee: bridge/bad-values, bridge/object-refs
 ///
 /// Each bad value of #675 fails only its own call, between rows in Node,
@@ -293,43 +293,14 @@ async fn a_bad_value_fails_only_its_call_between_node_python_and_go() {
     .await;
     // An empty slot is undefined: the array crosses whole.
     expect(&fixture, "js sparse to py: list of 3", &[]).await;
-    // Over the limit, refused by the side that would send it, either way.
-    expect(
-        &fixture,
-        "js big to py failed: ",
-        &[
-            "py_taker.take: argument 1 cannot be sent: the message would be ",
-            OVER,
-        ],
-    )
-    .await;
-    expect(
-        &fixture,
-        "js big from py failed: ",
-        &[
-            "py_taker.big: the result cannot be sent: the message would be ",
-            OVER,
-        ],
-    )
-    .await;
-    expect(
-        &fixture,
-        "py big to js failed: ",
-        &[
-            "js_taker.take: argument 1 cannot be sent: the message would be ",
-            OVER,
-        ],
-    )
-    .await;
-    expect(
-        &fixture,
-        "py big from js failed: ",
-        &[
-            "js_taker.big: the result cannot be sent: the message would be ",
-            OVER,
-        ],
-    )
-    .await;
+    // A 17 MiB value is over the 16 MiB channel limit but under the session's
+    // `max_transfer`; Node, Python and Go now declare `chunked`, so it crosses
+    // whole in chunks instead of failing (#1361). The bad values here are the
+    // objects above, not the size.
+    expect(&fixture, "js big to py: str of 17825792", &[]).await;
+    expect(&fixture, "js big from py: x", &[]).await;
+    expect(&fixture, "py big to js: string of 17825792", &[]).await;
+    expect(&fixture, "py big from js: x", &[]).await;
     // A thrown string, relayed by Go's `return err`, is the string again.
     expect(&fixture, "js relay threw string: a string", &[]).await;
     // And everything after them goes on.
