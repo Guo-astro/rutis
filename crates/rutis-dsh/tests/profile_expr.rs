@@ -201,3 +201,25 @@ fn unsupported_syntax_and_unknown_names_are_errors() {
         );
     }
 }
+
+/// An expression that nests past the parser's bound is an error, not a
+/// stack overflow: the `dsh_profile_expr` fuzz target found `1e0` followed
+/// by thousands of `!` (2026-11-19, #1080).
+#[test]
+fn a_deeply_nested_expression_is_an_error_not_a_stack_overflow() {
+    let exprs = vec![
+        // The fuzz target's input: after the six unary pluses, the `!`s are
+        // unary operators too, one recursion each.
+        format!("1e0{}{}", "+".repeat(6), "!".repeat(300)),
+        format!("{}1{}", "(".repeat(300), ")".repeat(300)),
+        format!("{}1{}", "[".repeat(300), "]".repeat(300)),
+        format!("1{}", " ? 1 : 2".repeat(300)),
+    ];
+    let ours = rust_eval(&exprs, &HashMap::new(), "/", "/home/u/.dsh", true);
+    for (expr, value) in exprs.iter().zip(&ours) {
+        let error = value["error"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{expr}: {value}"));
+        assert!(error.contains("nests too deeply"), "{expr}: {error}");
+    }
+}

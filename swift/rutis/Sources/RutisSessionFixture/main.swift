@@ -136,7 +136,7 @@ do {
     options.capabilities = runtimeCapabilities
     // Top-level code is `@MainActor` in Swift 6: without `@Sendable` this
     // closure would be scheduled back to the blocked main thread and never
-    // answer a call (#1350, #1334).
+    // answer a call (#1350).
     options.dispatch = { @Sendable target, method, args in try await service.dispatch(target, method, args) }
     let session = try Peer(channel: channel, options: options)
     service.session = session

@@ -243,14 +243,36 @@ enum Ast {
 struct Parser {
     toks: Vec<Tok>,
     pos: usize,
+    /// How deeply expressions nest now: past [`MAX_DEPTH`] it is an error,
+    /// not a stack overflow.
+    depth: usize,
 }
+
+/// How deeply an expression may nest: unary operators, parentheses, arrays
+/// and ternaries count. A profile's expressions nest a handful deep; the
+/// fuzz target found `1e0` followed by thousands of `!` overflowing the
+/// stack (#1080).
+const MAX_DEPTH: usize = 64;
 
 impl Parser {
     fn new(src: &str) -> Result<Self, String> {
         Ok(Self {
             toks: lex(src)?,
             pos: 0,
+            depth: 0,
         })
+    }
+
+    /// Run `f` one level deeper: an expression nesting past [`MAX_DEPTH`]
+    /// is an error the caller reports.
+    fn nested(&mut self, f: impl FnOnce(&mut Self) -> Result<Ast, String>) -> Result<Ast, String> {
+        if self.depth == MAX_DEPTH {
+            return Err("expression nests too deeply".to_owned());
+        }
+        self.depth += 1;
+        let result = f(self);
+        self.depth -= 1;
+        result
     }
 
     fn parse(&mut self) -> Result<Ast, String> {
@@ -282,6 +304,10 @@ impl Parser {
     }
 
     fn expr(&mut self) -> Result<Ast, String> {
+        self.nested(Self::expr_inner)
+    }
+
+    fn expr_inner(&mut self) -> Result<Ast, String> {
         let test = self.binary(0)?;
         if self.eat("?") {
             let yes = self.expr()?;
@@ -324,6 +350,10 @@ impl Parser {
     }
 
     fn unary(&mut self) -> Result<Ast, String> {
+        self.nested(Self::unary_inner)
+    }
+
+    fn unary_inner(&mut self) -> Result<Ast, String> {
         for op in ["!", "-", "+"] {
             if self.eat(op) {
                 return Ok(Ast::Unary(op, Box::new(self.unary()?)));
