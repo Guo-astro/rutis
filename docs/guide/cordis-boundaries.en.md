@@ -2,7 +2,7 @@
 
 [中文](cordis-boundaries.md)
 
-When a Cordis plugin runs in rutis without source changes, "compatible" means the framework contract in [Requirements](../requirements-protocol-plugins.en.md) §4: the synchronous / asynchronous shape of service methods, arguments and results, assembly and dependency gating, unload cleanups, object identity, and what the five event modes mean. Differences caused by the JavaScript stack and by process boundaries are not hidden; the eight below are where they are. Each says what it is now, what it is not, and what to do.
+When a Cordis plugin runs in rutis without source changes, "compatible" means the framework contract in [Requirements](../requirements-protocol-plugins.en.md) §4: the synchronous / asynchronous shape of service methods, arguments and results, assembly and dependency gating, unload cleanups, object identity, and what the five event modes mean. Differences caused by the JavaScript stack, by process boundaries, and by a few capabilities that are not implemented are not hidden; the eight below are where they are. Each says what it is now, what it is not, and what to do.
 
 How to mount a plugin and which Rust types are generated: [Cordis](cordis.en.md). The five modes and how values cross a boundary: [plugin API: events](plugin-api.en.md#events) and [passing values](plugin-api.en.md#passing-values). Guarantee numbers, status and tests for each item: [guarantee register](../guarantees.en.md) §8.
 

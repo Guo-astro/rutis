@@ -2,7 +2,7 @@
 
 [English](cordis-boundaries.en.md)
 
-一个 Cordis 插件不改源码跑在 rutis 里时，"兼容"指[需求](../requirements-protocol-plugins.md) §4 的框架契约：服务方法的同步 / 异步形状、参数与返回值、装配与依赖门控、卸载清理、对象身份、五种事件方式的含义。由 JavaScript 语言栈和进程边界带来的差异不装作没有，集中写在下面八条；每条按"现在是什么 / 不是什么 / 遇到怎么办"写。
+一个 Cordis 插件不改源码跑在 rutis 里时，"兼容"指[需求](../requirements-protocol-plugins.md) §4 的框架契约：服务方法的同步 / 异步形状、参数与返回值、装配与依赖门控、卸载清理、对象身份、五种事件方式的含义。由 JavaScript 语言栈、进程边界和少数未实现的能力带来的差异不装作没有，集中写在下面八条；每条按"现在是什么 / 不是什么 / 遇到怎么办"写。
 
 怎么挂载、生成哪些 Rust 类型见 [Cordis](cordis.md)；五种方式和值怎样跨边界见[插件 API：事件](plugin-api.md#事件)与[值怎样传递](plugin-api.md#值怎样传递)；每条的保证编号、状态和用例见[保证登记表](../guarantees.md) §8。
 
