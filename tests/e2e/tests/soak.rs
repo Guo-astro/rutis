@@ -1515,8 +1515,8 @@ impl<'a> Run<'a> {
         // platforms, and keep the exact count on Linux.
         let expected_connected = self.cuts + 1;
         let connected = count("gpu: connected");
-        let close_race = cfg!(any(windows, target_os = "macos"))
-            && connected == expected_connected + 1;
+        let close_race =
+            cfg!(any(windows, target_os = "macos")) && connected == expected_connected + 1;
         if !close_race {
             expect("links connected".into(), connected, expected_connected);
         }
