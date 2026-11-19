@@ -2,7 +2,7 @@
 
 [中文](protocol-session.md)
 
-Status: current specification. Date: 2026-11-18 (first version 2026-11-09; this revision adds protocol 5: the `ack` frame, `SESS-57`, `SESS-61`, §8 and G3).
+Status: current specification. Date: 2026-11-19 (first version 2026-11-09; 2026-11-18 added protocol 5: the `ack` frame, `SESS-57`, `SESS-61`, §8 and G3; this revision adds the `chunk` frame and the `chunked` capability: `SESS-84`–`SESS-88`, §2.5 and G8).
 Issue: [#635](https://github.com/arcships/rutis/issues/635), part of step 4 of [#183](https://github.com/arcships/rutis/issues/183); the work plan is [the 0.22 formal coverage plan](plan/formal-verification-0.22.en.md) WS2. Trace and verification vocabulary: [session trace contract](formal-trace.en.md).
 
 This is the only current specification of the session layer: what two ends exchange on one channel, what happens on errors and cancellation, which messages fail only one call and which end the session. Rows, service announcement, events, authentication, reconnect backoff and runtime supervision are out of scope; each has its own current specification: the [row protocol](protocol-rows.en.md) for rows, host-service leases, and a row ending or failing; the [events protocol](design-events-protocol-2026-10-18.en.md) for events; the [remote lease model](../specs/remote-lease/README.en.md) and the [remote session design](design-remote-session-2026-10-28.en.md) for remote leases and reconnection. This file is also the source from which #634's trace table extracts its `session` partition.
@@ -30,7 +30,7 @@ The rules are the contract. Error **text** is a contract only where this file qu
 
 ### 2.1 Frames
 
-`SESS-6` **Current.** The frame vocabulary is the ten `Frame` variants; `op` is snake_case, and an unknown `op` ends the session. The fields below are the fields; anything not listed does not exist (§9). `crates/rutis-bridge/src/session/protocol.rs:149-230`
+`SESS-6` **Current.** The frame vocabulary is the ten `Frame` variants; `op` is snake_case, and an unknown `op` ends the session. The fields below are the fields; anything not listed does not exist (§9). One more frame, `chunk`, is read by the session's read layer before `Frame` decoding and carries a frame over the transport's limit (§2.5). `crates/rutis-bridge/src/session/protocol.rs:149-230`; `crates/rutis-bridge/src/session/chunks.rs`
 
 | Frame | Fields | Meaning |
 | --- | --- | --- |
@@ -44,6 +44,7 @@ The rules are the contract. Error **text** is a contract only where this file qu
 | `release` | `reference: u64`; `count: u64` | Return a number of reference grants (§6). |
 | `cancel` | `id: string` | The caller gives up call `id` (§7). |
 | `ack` | `id: string` | The callee resolved the cancel of call `id`: it will send no `return`/`throw` for it (§7). |
+| `chunk` | `transfer: string`; `seq: u64`; `last: bool`; `data: string` | One slice of a frame (§2.5). Not a `Frame` variant; read before `Frame` decoding. |
 
 `SESS-7` **Current.** `sync` defaults to `false` and is not written when `false`. `awaited` defaults to `true` and is not written when `true`: only a call that does not wait for its result writes `awaited: false` (`SESS-83`). `hello`'s `endpoint`, `implementation` and `capabilities`, and `throw`'s `graph`, are not written when absent. `crates/rutis-bridge/src/session/protocol.rs:157-221`
 
@@ -77,7 +78,7 @@ The rules are the contract. Error **text** is a contract only where this file qu
 
 ### 2.4 Capabilities
 
-`SESS-15` **Current.** A capability is a string in `hello.capabilities`; it declares what an end can do, not a permission. The session layer reads three kinds: `value-<tag>` (whether a value kind may be sent), and `reentrant-sync` and `sync-stack` (the runtime's shape in the synchronous wait graph). The plugin and mount layers read `node`, `runtime` and `plugins`. A capability is a declaration only: there is no "required capabilities" list, and a missing capability is handled by the layer that uses it (`SESS-25`). `crates/rutis-bridge/src/session/rpc.rs:1154-1178,1590-1611,2204-2214`; `crates/rutis-bridge/src/session/plugin/greet.rs:31-36`; `crates/rutis-bridge/src/session/plugin/mod.rs:352,368`; `bridge/sync-wait-cycle-refused` in `docs/guarantees.en.md`
+`SESS-15` **Current.** A capability is a string in `hello.capabilities`; it declares what an end can do, not a permission. The session layer reads four kinds: `value-<tag>` (whether a value kind may be sent), `reentrant-sync` and `sync-stack` (the runtime's shape in the synchronous wait graph), and `chunked` (whether it reassembles `chunk` frames, §2.5). The plugin and mount layers read `node`, `runtime` and `plugins`. A capability is a declaration only: there is no "required capabilities" list, and a missing capability is handled by the layer that uses it (`SESS-25`). `crates/rutis-bridge/src/session/rpc.rs:1154-1178,1590-1611,2204-2214`; `crates/rutis-bridge/src/session/plugin/greet.rs:31-36`; `crates/rutis-bridge/src/session/plugin/mod.rs:352,368`; `bridge/sync-wait-cycle-refused` in `docs/guarantees.en.md`
 
 | Capability | Declared by | Meaning |
 | --- | --- | --- |
@@ -87,10 +88,21 @@ The rules are the contract. Error **text** is a contract only where this file qu
 | `runtime` | Node, Bun, Python, Go, Swift and Kotlin runtime processes | This end is a runtime process a host may mount or dial. `node/rutis-runtime/src/runner.mjs:39`; `bun/rutis-bun/src/main.ts:118`; `python/rutis/rutis/__main__.py:72`; `go/rutis/internal/runtime/serve.go:99`; `swift/rutis/Sources/Rutis/Remote/App.swift:356`; `kotlin/rutis/rutis/src/shared/kotlin/arcships/rutis/RutisApp.kt:122`; `crates/rutis-bridge/src/session/plugin/mod.rs:369` |
 | `plugins` | Rust; Node/Bun when hosting | This end takes plugin definition values. `crates/rutis-bridge/src/session/rpc.rs:918-922`; `bridge/plugin-values` in `docs/guarantees.en.md` |
 | `value-<tag>` | Every implementation, ten kinds | This end takes that kind of tagged value. `crates/rutis-bridge/src/session/rpc.rs:904-917` |
+| `chunked` | Rust (`rutis-bridge`), the Node runtime | This end reassembles `chunk` frames, so a frame over the limit may arrive in slices (§2.5, `SESS-85`). `Endpoint::rust` in `crates/rutis-bridge/src/session/rpc.rs`; `CAPABILITIES` in `node/rutis-runtime/src/session.mjs` |
 
 `SESS-16` **Superseded.** The capabilities `sync-wait`, `events-v2` and `objects`. Protocol-4 implementations have no such constants; object references cross to every protocol-4 implementation (§6.2). `sync-wait` and `events-v2` belong to the negotiations of 0.18 and earlier; `objects` is the 0.18 object capability ([object references](design-object-refs-2026-10-27.en.md) §3). Protocol-4 implementations no longer declare or check any of the three.
 
 `SESS-17` **Not guaranteed.** Unknown capability names are ignored without an error; a far end's declaration is not verified (one that declares but cannot do it fails only when actually called); no capability grants a permission.
+
+### 2.5 A frame across chunks
+
+`SESS-84` **Current.** A frame over the transport's per-message limit may be carried in a run of `chunk` frames. A `chunk` frame is not a `Frame` variant: the session's read layer takes it before `Frame` decoding. Its fields are `transfer: string` (`<sending endpoint>:<n>`, increasing from 1 within the session on the sending side, non-empty), `seq: u64` (from 0, one more for each slice), `last: bool`, and `data: string` (one slice of the frame's UTF-8 JSON bytes, base64, RFC 4648 §4, padded, canonical, no whitespace). The `data` of every slice, in order, is that message. `hello` is never chunked. A `chunk` with a field of the wrong type, an extra field, or a `seq` that does not start at 0 is a malformed frame (§8). `Chunk` in `crates/rutis-bridge/src/session/chunks.rs`; `#receiveChunk` in `node/rutis-runtime/src/session.mjs`
+
+`SESS-85` **Current.** The capability `chunked` declares that this end reassembles `chunk` frames. Only when both this side and the far end declared it does the sender cut an oversized frame into chunks; otherwise the over-limit error of §10 stands and nothing is written. In 0.23 it is declared by Rust (`rutis-bridge`) and the Node runtime; Bun, Python, Go, Swift and Kotlin do not declare it, so their sessions behave as before and never receive a `chunk` frame. The side that reads `chunk` requires the far end to have declared it: a `chunk` from a far end that did not is a transport error. `Endpoint::rust`, `send_limit` and `accept_chunk` in `crates/rutis-bridge/src/session/rpc.rs`; `CAPABILITIES` and `#chunking` in `node/rutis-runtime/src/session.mjs`
+
+`SESS-86` **Current.** The sender cuts when an encoded frame is over `Sender::max_message()` (Node: `maxMessage`, matching its channel) and both sides declared `chunked`: each slice is at most 8 MiB (8388608 bytes), shrunk to the transport's limit so one `chunk` frame fits one of its messages; a computed slice of 0 means no chunking. All `chunk` frames of one frame are consecutive in the outbound order, with no other frame between, and one transfer runs at a time. A frame over the session's `max_transfer` (256 MiB, 268435456 bytes, by default) is not sent; only that call fails as in `SESS-71`, with `limit` set to the configured value. `CHUNK_SIZE`, `slice_size` and `Chunk::frames` in `crates/rutis-bridge/src/session/chunks.rs`; `#transmit` in `node/rutis-runtime/src/session.mjs`
+
+`SESS-87` **Current.** The receiver buffers by `transfer`: `seq` must start at 0 and increase by one, and a second `transfer` while one is in progress (at most one unfinished transfer), more than the session's `max_transfer` accumulated, `data` that is not canonical base64, a `last` that is not a bool or a field of the wrong type all end the session with a transport error (a `chunk` belongs to no call, so there is no smaller scope); a `chunk` before the greeting is `request before protocol handshake`. The frame reaches the session only after `last`, the join and the parse all succeeded; a reassembled frame has exactly the rights of one that arrived whole (depth, unknown fields, call ids, references and cancellation unchanged), and may not itself be a `chunk` frame. When the session ends, an unfinished transfer goes with it: never dispatched, never answered. `Reassembly::accept` in `crates/rutis-bridge/src/session/chunks.rs`; the reader thread and `accept_chunk` in `crates/rutis-bridge/src/session/rpc.rs`; `#receiveChunk` in `node/rutis-runtime/src/session.mjs`
 
 ## 3. Frame order and processing
 
@@ -247,6 +259,7 @@ Receivers are not equally strict: Node, Bun, Go, Swift and Kotlin require `^[1-9
 | A `path` containing the frame's own `id` | `invalid invocation identity/path` | same |
 | A frame nested deeper than 208 JSON levels with no call to blame | `frame nested deeper than 208 levels: …` | `crates/rutis-bridge/src/session/rpc.rs:2514-2561,3126-3134` |
 | A message over the channel's limit in either direction | The transport closes the channel; the session ends with a transport error | `crates/rutis-bridge/src/pipe/lines.rs:141-168`; `crates/rutis-bridge/src/websocket/connection.rs:29,87-99` |
+| A `chunk` with a bad `seq`, `transfer`, `last` or `data`, from a far end that did not declare `chunked`, over 256 MiB reassembled, or a nested `chunk` | The session ends with a transport error | §2.5; `crates/rutis-bridge/src/session/chunks.rs`; `accept_chunk` in `crates/rutis-bridge/src/session/rpc.rs` |
 
 ### 8.2 Failing only the call involved
 
@@ -283,9 +296,9 @@ Implementation: `parse_frame` / `reject_unknown_fields` in `crates/rutis-bridge/
 
 ## 10. Message size, nesting depth and outbound backlog
 
-`SESS-70` **Current.** The message size limit is the transport's rule, not the frame's. Process pipes and WebSockets default to 16 MiB (16777216 bytes); a WebSocket's `Limits.max_message` is configurable. The memory channel has no limit. `crates/rutis-bridge/src/pipe/lines.rs:13-28`; `crates/rutis-bridge/src/websocket/config.rs:104-108,132-141`; `crates/rutis-bridge/src/channel/mod.rs:32-42`
+`SESS-70` **Current.** The message size limit is the transport's rule, not the frame's. Process pipes and WebSockets default to 16 MiB (16777216 bytes); a WebSocket's `Limits.max_message` is configurable. The memory channel has no limit. When both sides declared `chunked`, a frame over the limit is carried by the `chunk` frames of §2.5 and one frame may reach the session's `max_transfer` (256 MiB by default, `SESS-88`). `crates/rutis-bridge/src/pipe/lines.rs:13-28`; `crates/rutis-bridge/src/websocket/config.rs:104-108,132-141`; `crates/rutis-bridge/src/channel/mod.rs:32-42`
 
-`SESS-71` **Current.** At open the session records `Sender::max_message()` and compares every frame it is about to write against it. A frame over the limit is not written: the call fails with `bad-value`, `data` names the part (`part`, with `argument` for an argument) and the `limit`, and the text names the call, the argument or result, and the byte count; the session and other calls go on. `crates/rutis-bridge/src/session/rpc.rs:1940-1946,3063-3078`; `crates/rutis-bridge/src/session/rpc/crossing.rs:104-113,221-246`; tests `crates/rutis-bridge/src/session/rpc/tests.rs::a_message_over_the_limit_fails_only_its_call`, `::the_limit_and_the_call_are_named`; `bridge/bad-values` and `bridge/large-and-deep-values` in `docs/guarantees.en.md`
+`SESS-71` **Current.** At open the session records `Sender::max_message()` and compares every frame it is about to write against it. A frame over the limit is not written: the call fails with `bad-value`, `data` names the part (`part`, with `argument` for an argument) and the `limit`, and the text names the call, the argument or result, and the byte count; the session and other calls go on. When both sides declared `chunked`, the limit compared is the session's `max_transfer` (256 MiB by default), and only a frame over it fails (`SESS-88`). `send_limit` and `serialized` in `crates/rutis-bridge/src/session/rpc.rs`; `crates/rutis-bridge/src/session/rpc/crossing.rs:104-113,221-246`; tests `crates/rutis-bridge/src/session/rpc/tests.rs::a_message_over_the_limit_fails_only_its_call`, `::the_limit_and_the_call_are_named`; `bridge/bad-values` and `bridge/large-and-deep-values` in `docs/guarantees.en.md`
 
 `SESS-72` **Current.** When the transport refuses a message over its own limit, the channel ends, the session ends with a transport error, every in-flight call fails with that error, and the message is not executed. The process pipe refuses oversized messages on both sending and receiving and closes the channel; a WebSocket closes with code 1009. `crates/rutis-bridge/src/pipe/lines.rs:141-168`; `crates/rutis-bridge/src/websocket/connection.rs:29,87-99`; test `crates/rutis-bridge/tests/websocket.rs:662-690`
 
@@ -299,6 +312,8 @@ Implementation: `parse_frame` / `reject_unknown_fields` in `crates/rutis-bridge/
 
 `SESS-82` **Not guaranteed.** Values received nest within 64 levels. The limit constrains sending; a value received from a far end that does not keep to it may nest deeper than 64 levels (the frame limit of 208 levels still applies).
 
+`SESS-88` **Current.** One transfer reassembles to at most the session's `max_transfer`: 256 MiB by default, set per session with `SessionOptions::max_transfer` or for a deployment with `RUTIS_MAX_TRANSFER` (a host passes it to the runtime processes it starts); never unlimited, and never truncated silently. A sender over it fails only that call as in `SESS-71`, with `limit` set to the configured value; a receiver over it ends the session with a transport error naming that value. At most one transfer is unfinished at a time: a second `transfer` is a protocol error, the bound on concurrent unfinished transfers. **Not guaranteed:** that the two ends are configured with the same cap; the sender chunks up to its own, the receiver reassembles up to its own, and the side over its cap ends the session with a transport error. Chunking changes nothing else in `SESS-70`–`SESS-73`: the transport still refuses a single message over its own limit, so a `chunk` frame itself must fit; the memory channel has no transport limit and so is never chunked, but the session's own `max_transfer` still bounds the whole frame — no session is unlimited. One transfer counts as one message in the outbound backlog, its bytes as the original frame (`SESS-75` unchanged). **Not guaranteed:** between two ends that did not declare `chunked`, a value over the transport's limit still cannot cross (the behaviour of 0.22); reassembly needs the whole frame in the far end's memory, with a peak of about 1.4 times its size; a transfer whose `last` never comes produces no call. `MAX_TRANSFER` in `crates/rutis-bridge/src/session/chunks.rs`; `crates/rutis-bridge/tests/value_roundtrip.rs::node_carries_frames_over_the_message_limit_whole`; `bridge/large-and-deep-values` in `docs/guarantees.en.md`
+
 ## 11. Rule states
 
 The table is this file's rule list, for #634's trace table and #613's models. Every **Current** row has a code or test anchor; **Not guaranteed** rows are collected here so they cannot be misread as promises.
@@ -310,7 +325,7 @@ The table is this file's rule list, for #634's trace table and #613's models. Ev
 | `SESS-3` | Protocol 5, one constant in seven implementations, WebSocket subprotocol `rutis.5` | Current | `crates/rutis-bridge/src/session/mod.rs:9-15` and each implementation's constant |
 | `SESS-4` | Two endpoint ids; call ids carry this end's prefix | Current | `crates/rutis-bridge/src/channel/mod.rs:77-109`; `crates/rutis-bridge/src/session/rpc.rs:1493-1499` |
 | `SESS-5` | A reconnect is a new session; old state does not carry over | Current | `docs/formal-trace.en.md` §3.0; `crates/rutis-bridge/tests/session_plugin.rs:182-270` |
-| `SESS-6` | The ten frames and their fields | Current | `crates/rutis-bridge/src/session/protocol.rs:149-230` |
+| `SESS-6` | The ten `Frame` variants, plus the `chunk` frame read before decoding (§2.5) | Current | `crates/rutis-bridge/src/session/protocol.rs:149-230`; `crates/rutis-bridge/src/session/chunks.rs` |
 | `SESS-7` | `sync` and optional fields omitted when absent | Current | `crates/rutis-bridge/src/session/protocol.rs:157-221` |
 | `SESS-8` | `path` is the call chain; its entries are call ids | Current | `crates/rutis-bridge/src/session/rpc.rs:2739-2742` |
 | `SESS-9` | The `WireValue` tag set | Current | `crates/rutis-bridge/src/session/protocol.rs:26-85` |
@@ -319,7 +334,7 @@ The table is this file's rule list, for #634's trace table and #613's models. Ev
 | `SESS-12` | One format only: endpoint, protocol 5 | Current | `docs/migration-0.23.en.md` "Upgrading together"; `crates/rutis-bridge/src/session/rpc.rs:2456-2462` |
 | `SESS-13` | Two formats (compat 2, endpoint 3) | Superseded | `docs/migration-0.19.en.md` "Upgrading together" |
 | `SESS-14` | `sync` sent only to ends declaring `sync-wait` | Superseded | Protocol 4 has no such capability; `crates/rutis-bridge/src/session/protocol.rs:174-176` |
-| `SESS-15` | Capability declarations and what reads them | Current | `crates/rutis-bridge/src/session/rpc.rs:1154-1178,1590-1611`; `crates/rutis-bridge/src/session/plugin/greet.rs:31-36` |
+| `SESS-15` | Capability declarations and what reads them (including `chunked`) | Current | `crates/rutis-bridge/src/session/rpc.rs:1154-1178,1590-1611`; `crates/rutis-bridge/src/session/plugin/greet.rs:31-36` |
 | `SESS-16` | The `sync-wait`, `events-v2`, `objects` capabilities | Superseded | No such constants; §6.2 |
 | `SESS-17` | Unknown capability names ignored; declarations unverified; capabilities are not permissions | Not guaranteed | §2.4 |
 | `SESS-18` | Frames in arrival order, one at a time; calls may run concurrently | Current | `crates/rutis-bridge/src/session/rpc.rs:1557-1570,2792-2839`; `go/rutis/internal/peer/peer_test.go:55-58` |
@@ -374,8 +389,8 @@ The table is this file's rule list, for #634's trace table and #613's models. Ev
 | `SESS-67` | All seven runtimes implement the call-level refusal (`bad-frame`); `release`/`cancel` ignore extra fields | Current | `bridge/unknown-fields` in `docs/guarantees.en.md`; §9; §14 G1 |
 | `SESS-68` | Unknown fields end the session / six runtimes ignore them uniformly | Superseded | §9; §14 G1 |
 | `SESS-69` | Unknown fields as an extension mechanism | Not guaranteed | §9 |
-| `SESS-70` | 16 MiB default; the memory channel has no limit | Current | `crates/rutis-bridge/src/pipe/lines.rs:13-28`; `crates/rutis-bridge/src/websocket/config.rs:104-108,132-141` |
-| `SESS-71` | Checked before sending; over the limit fails only the call | Current | `crates/rutis-bridge/src/session/rpc.rs:1940-1946`; `crates/rutis-bridge/src/session/rpc/crossing.rs:221-246` |
+| `SESS-70` | 16 MiB default; the memory channel has no limit; the session's `max_transfer` (256 MiB by default) a frame when both declared `chunked` | Current | `crates/rutis-bridge/src/pipe/lines.rs:13-28`; `crates/rutis-bridge/src/websocket/config.rs:104-108,132-141` |
+| `SESS-71` | Checked before sending; over the limit fails only the call (`max_transfer` when `chunked`) | Current | `crates/rutis-bridge/src/session/rpc.rs`; `crates/rutis-bridge/src/session/rpc/crossing.rs:221-246` |
 | `SESS-72` | A transport over-limit ends the channel and session | Current | `crates/rutis-bridge/src/pipe/lines.rs:141-168`; `crates/rutis-bridge/src/websocket/connection.rs:29,87-99` |
 | `SESS-73` | Over the limit failing only this call | Not guaranteed | §10 |
 | `SESS-74` | 64 levels for a value, 208 for a frame | Current | `crates/rutis-bridge/src/session/rpc.rs:3119-3148`; `bridge/large-and-deep-values` |
@@ -384,10 +399,15 @@ The table is this file's rule list, for #634's trace table and #613's models. Ev
 | `SESS-77` | The same rule's error text word for word across implementations | Not guaranteed | §12; Node and Go read differently from Rust |
 | `SESS-78` | `hello.implementation` may be absent; receivers do not require it | Current | `crates/rutis-bridge/src/session/protocol.rs:157-167`; `crates/rutis-bridge/src/session/rpc.rs:2450-2489` |
 | `SESS-79` | Protocol 5 speaks only to protocol 5; 0.22 and earlier are refused | Current | `docs/migration-0.23.en.md` "Upgrading together"; `bridge/cross-version-meetings` |
-| `SESS-80` | A new capability needs no version bump; a new frame or a changed field meaning does | Current | `crates/rutis-bridge/src/session/protocol.rs:154-156,210-226`; §13; `SESS-66` |
+| `SESS-80` | A new capability needs no version bump; a new frame joins the current protocol version before its release, or bumps it | Current | `crates/rutis-bridge/src/session/protocol.rs:154-156,210-226`; §13; `SESS-66` |
 | `SESS-81` | Cross-version meetings beyond adjacent releases | Not guaranteed | `bridge/cross-version-meetings` promises adjacent releases only |
 | `SESS-82` | Values received nest within 64 levels | Not guaranteed | §10; `bridge/large-and-deep-values` |
 | `SESS-83` | `awaited` tells fired-and-forgotten from awaited; absent reads as awaited | Current | §5.3; `crates/rutis-bridge/src/session/protocol.rs`; `crates/rutis-bridge/src/session/rpc/waits.rs`; `bridge/sync-wait-cycle-refused` |
+| `SESS-84` | The `chunk` frame's fields and where it is read (before decoding, not a `Frame` variant) | Current | §2.5; `Chunk` in `crates/rutis-bridge/src/session/chunks.rs` |
+| `SESS-85` | The `chunked` capability; chunking only when both declared; Rust and Node declare it | Current | §2.5; `send_limit` in `crates/rutis-bridge/src/session/rpc.rs`; `#chunking` in `node/rutis-runtime/src/session.mjs` |
+| `SESS-86` | Sending: at most 8 MiB a slice that fits the transport; consecutive slices; over `max_transfer` fails only the call | Current | §2.5; `slice_size` in `crates/rutis-bridge/src/session/chunks.rs`; test `a_frame_over_the_limit_is_chunked_to_a_far_end_that_declared_it` |
+| `SESS-87` | Receiving: buffer by `transfer` and `seq`, at most one unfinished transfer, dispatch only after `last`; an unfinished transfer goes with the session; violations end it | Current | §2.5; `Reassembly` in `crates/rutis-bridge/src/session/chunks.rs`; `#receiveChunk` in `node/rutis-runtime/src/session.mjs` |
+| `SESS-88` | The configurable `max_transfer` cap (256 MiB by default); a transfer counts as one message in the backlog; ends without `chunked` behave as before | Current | §10; `crates/rutis-bridge/tests/value_roundtrip.rs::node_carries_frames_over_the_message_limit_whole` |
 
 ## 12. What developers see
 
@@ -403,12 +423,13 @@ The table is this file's rule list, for #634's trace table and #613's models. Ev
 | The far end is newer | `incompatible session: the far end speaks protocol 99, this side 5: upgrade this side (Rust crates rutis-host / rutis-bridge)` |
 | The far end did not greet within 10 seconds | `the far end did not greet in time` |
 | The host has no session id | `the host provides no id for its sessions` |
-| A value is over the message limit | `svc.take: argument 2 cannot be sent: the message would be over the limit of 16777216 bytes (16 MiB)`; code `bad-value`; `data` is `{"argument":2,"limit":16777216,"part":"argument"}` |
+| A value is over the message limit | When the far end did not declare `chunked` (Bun, Python, Go, Swift, Kotlin): `svc.take: argument 2 cannot be sent: the message would be over the limit of 16777216 bytes (16 MiB)`; code `bad-value`; `data` is `{"argument":2,"limit":16777216,"part":"argument"}`. When it declared `chunked` (the 0.23 Node runtime), the same value crosses, up to 256 MiB |
+| The value encodes to over the session's cap (256 MiB by default, a host may raise it) | `svc.take: argument 2 cannot be sent: the message would be 300000000 bytes, over the limit of 268435456 bytes (256 MiB)`; code `bad-value`; `data` is `{"argument":2,"limit":268435456,"part":"argument"}` |
 | The runtime owning an object exits | `a call on an object from py failed: runtime py exited`; code `peer-gone` |
 
 Every call-level failure ends at the call or the value. Handshake and transport failures are fixed by upgrading both ends together, checking the deployment's endpoint ids, removing the oversized value or raising the limit. **Do not branch on error text**: branch on `code`, or on the `Error::Handshake` / `Error::Transport` category (`SESS-77`).
 
-**Concepts to learn:** none added. Frames, call ids and grants/releases are vocabulary for runtime authors and contributors, not for the plugin API.
+**Concepts to learn:** none added. Frames, call ids and grants/releases are vocabulary for runtime authors and contributors, not for the plugin API. A parameter or result over 16 MiB needs no paging either: when the far end declared `chunked` (the 0.23 Node runtime) it crosses, up to 256 MiB.
 
 ### Host authors and deployers
 
@@ -419,9 +440,10 @@ Every call-level failure ends at the call or the value. Handshake and transport 
 - The session is refused at the handshake: the error is `incompatible session: …`, saying which end to upgrade; a dialer classifies it as `incompatible` and stops retrying until the configuration changes.
 - Identity mismatch: `endpoint mismatch: …`; a dialer classifies it as `auth-rejected` and retries slowly while reporting.
 - A retryable transport failure: `retryable`, reconnecting with backoff; the new connection is a new session.
+- The transport ends midway through a transfer: the session ends with a transport error, and the unfinished request is never dispatched or answered; in-flight calls fail with `peer-gone`. Between two ends that declared `chunked`, parameters and results over 16 MiB are usable directly and one call runs once; a far end without it behaves as in 0.22.
 - A protocol error: the session ends with a transport error, in-flight calls fail with `peer-gone`, and late frames of the old session never reach the replacement session.
 
-**Concepts to learn:** none added. Deployers need to know: endpoint ids are unique in a deployment, and every protocol-5 end must be upgraded together (§13).
+**Concepts to learn:** none added; to change the cap, one knob, `max_transfer` / `RUTIS_MAX_TRANSFER`. Deployers need to know: endpoint ids are unique in a deployment, and every protocol-5 end must be upgraded together (§13).
 
 ### Runtime authors and contributors
 
@@ -429,15 +451,15 @@ Every call-level failure ends at the call or the value. Handshake and transport 
 
 **When it fails:** each malformed case prints which message it was; the rule categories are in §8. Error text may differ from other implementations (`SESS-77`), but the session must still end with a transport error, or only the call involved must fail, with the scope of §8.
 
-**Concepts to learn:** frames, `op`, call ids, `path`, reference grants/releases, call-level failure, session-level failure, capability declarations. They are for implementation and verification only and do not enter the user API.
+**Concepts to learn:** frames, `op`, call ids, `path`, reference grants/releases, call-level failure, session-level failure, capability declarations, the `chunk` frame and the `chunked` capability. They are for implementation and verification only and do not enter the user API.
 
 ## 13. Compatibility and migration
 
 `SESS-79` **Current.** Protocol 5 speaks only to protocol 5. Hosts, runtimes, nodes and SDKs of 0.22 and earlier are refused at the handshake; migrating means upgrading every end to 0.23 or later. `docs/migration-0.23.en.md` "Upgrading together"; `bridge/cross-version-meetings` in `docs/guarantees.en.md`
 
-`SESS-80` **Current.** Adding a capability does not need a protocol version: a sender checks `value-<tag>` before sending a tagged value, and does not send it when the far end does not declare it. Because old implementations fail a call with an unknown field (`SESS-66`) and reject unknown `op`s, a new **frame** or a **change in an existing field's meaning** can only ship with a protocol version bump, updating this file, `Frame`/`WireValue`, the malformed matrix and the seven implementations together. A new capability needs no version bump and is used only as declared (§2.4); there is no required capability to negotiate (`SESS-25`).
+`SESS-80` **Current.** Adding a capability does not need a protocol version: a sender checks `value-<tag>` before sending a tagged value, and does not send it when the far end does not declare it. Because old implementations fail a call with an unknown field (`SESS-66`) and reject unknown `op`s, a new **frame** or a **change in an existing field's meaning** can only join the current protocol version before its release, or ship with a version bump, updating this file, `Frame`/`WireValue`, the malformed matrix and the implementations together. The `chunk` frame (`SESS-84`) and `awaited` (`SESS-83`) joined protocol 5 before its release, so neither bumps it; an implementation must send and read it before declaring `chunked`. A new capability needs no version bump and is used only as declared (§2.4); there is no required capability to negotiate (`SESS-25`).
 
-`SESS-81` **Not guaranteed.** Cross-version meetings beyond adjacent releases; mixing new and old implementations; a new field without a version. Protocol 5 gained `awaited` before release (`SESS-83`): a far end built from an earlier protocol-5 prerelease fails a call carrying the field per `SESS-66` and must be upgraded to the 0.23 build that has it. `bridge/cross-version-meetings` in `docs/guarantees.en.md` promises only two adjacent releases with no incompatible change between them.
+`SESS-81` **Not guaranteed.** Cross-version meetings beyond adjacent releases; mixing new and old implementations; a new field without a version. Protocol 5 gained `awaited` (`SESS-83`) and the `chunk` frame (`SESS-84`) before release: a far end built from an earlier protocol-5 prerelease fails a call carrying `awaited` per `SESS-66`; an earlier build does not declare `chunked`, so it is never chunked to and never receives a `chunk` frame it does not know. All ends must be upgraded to the 0.23 build that has them. `bridge/cross-version-meetings` in `docs/guarantees.en.md` promises only two adjacent releases with no incompatible change between them.
 
 ## 14. Specification gaps and decisions
 
@@ -452,7 +474,7 @@ Every call-level failure ends at the call or the value. Handshake and transport 
 
 - Decision (#635): move malformed rules that only code enforced into the shared `session::testing::malformed` matrix, so the seven implementations run the same cases.
 - Done: the matrix grew from 13 cases to 26, 13 single frames in `MALFORMED` and 13 multi-frame/ordered cases in `MALFORMED_SEQUENCES` (`SESS-83` added a single frame with a wrong `awaited` type, 27 now); the original list (a request before the handshake, a duplicate `hello`, `get` on an unknown reference, a released reference, a `release` count of 0 or above the grants, wrong field types in `cancel`/`ack`/`throw`, a `throw` for an unknown call, a `path` containing the frame's id, a call id that does not increase) is covered, with the call-id item covering a repeated id only, plus an invocation with no `id` (`SESS-21`, `SESS-22`, `SESS-33`, `SESS-47`, `SESS-48`; `SESS-64`). Implementation: `MALFORMED`, `MALFORMED_SEQUENCES` and `malformed` in `crates/rutis-bridge/src/session/testing.rs`; Swift's cases compile only on macOS and run in CI's `runtimes-swift` job.
-- Still outside the matrix: a method call or property read on a non-object reference; a call id that goes backwards, is not numeric, exceeds 2^53−1 or lacks the far end's prefix; `throw.error` missing `name`/`message`; a frame deeper than 208 levels; a message over the channel's limit. Code and other tests verify these (§8.1, §8.2).
+- Still outside the matrix: a method call or property read on a non-object reference; a call id that goes backwards, is not numeric, exceeds 2^53−1 or lacks the far end's prefix; `throw.error` missing `name`/`message`; a frame deeper than 208 levels; a message over the channel's limit; a `chunk`'s malformed order and its cap (only Rust and Node chunk, G8). Code and other tests verify these (§8.1, §8.2, §2.5).
 
 ### G3 The reply-after-cancel rule: decided (2026-11-16)
 
@@ -484,9 +506,18 @@ The same kind of error reads differently in Rust, Node and Go (`SESS-77`). This 
 - Boundary: `awaited: false` is a trusted declaration; the host does not verify it. A false one loses a real wait edge (`SESS-40`'s explicit non-guarantee). `awaited` is ignored when `sync: true`. A receiver forwarding the call keeps the original signal.
 - Verification: `an_asynchronous_forward_nobody_awaits_is_an_entry`, `an_awaited_forward_closes_the_cycle`, `a_forwarded_call_carries_the_callers_awaited_signal`, `a_call_says_when_its_result_is_not_waited_for` in `crates/rutis-bridge`; the shared malformed matrix of all seven implementations has the `awaited`-wrong-type frame; `specs/cross-runtime-sync`'s `async-forgotten-policy-b` (passes after the fix) and `async-policy-b` (counterexample 8 before it).
 
+### G8 A frame across chunks: settled (2026-11-19, #1361)
+
+- Decision: add the `chunk` frame and the `chunked` capability (`SESS-84`–`SESS-88`), implemented first in Rust (`rutis-bridge`) and the Node runtime; protocol 5 is unreleased, so no version bump. The reassembly cap is the session option `max_transfer` (256 MiB by default), which a host passes to runtime processes in `RUTIS_MAX_TRANSFER`; it is never unlimited. The design and the developer-visible output are in [parameters and results over one message's limit, carried across frames](design-chunked-frames-2026-11-19.en.md).
+- Reason: for a cross-language value over one message's limit, business code can only slice, page and retry. Chunking in the session layer leaves the business API, service signatures and public API unchanged, and one call runs once.
+- Not adopted: a protocol version bump (0.22 and 0.23 cannot run together anyway); raising only the transport's limit (it changes no other implementation's default); slices inside `args` (it would change `WireValue` and seven value codecs); concurrent transfers (both the receiver's ordering and the memory peak double); no reassembly cap (a far end that ignores the protocol makes this process allocate without bound).
+- The other five implementations (Bun, Python, Go, Swift, Kotlin) do not declare `chunked`, so they behave as in 0.22; they can declare it when they implement it, with no business API change.
+- Verification: `a_chunked_call_is_dispatched_once_after_its_last_chunk`, `an_incomplete_transfer_is_never_dispatched`, `a_chunk_out_of_order_ends_the_session`, `a_second_transfer_before_the_first_ends_ends_the_session`, `a_chunk_before_the_handshake_ends_the_session`, `a_chunk_from_a_far_end_without_the_capability_ends_the_session`, `a_chunk_with_invalid_base64_ends_the_session`, `a_frame_over_the_limit_is_chunked_to_a_far_end_that_declared_it` in `crates/rutis-bridge`; the real Rust↔Node test `crates/rutis-bridge/tests/value_roundtrip.rs::node_carries_frames_over_the_message_limit_whole`; Node's own `node/rutis-runtime/test/chunked.test.mjs`.
+
 ## Related files
 
 - [Session trace contract](formal-trace.en.md)
+- [Parameters and results over one message's limit, carried across frames](design-chunked-frames-2026-11-19.en.md)
 - [Migration to 0.19](migration-0.19.en.md)
 - [Migration to 0.23](migration-0.23.en.md)
 - [Protocol plugin design](design-protocol-plugins-2026-09-25.en.md) §6.1 (wire formats of tagged values)

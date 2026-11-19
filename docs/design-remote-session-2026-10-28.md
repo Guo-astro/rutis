@@ -361,7 +361,7 @@ export default definePlugin({
 
 - rutis.json：`runtimes.*`（本机运行时）；`rutis-host/dial`、`rutis-host/listen` 的行（远程运行时、设备、节点）；运行在对面的行写 `<连接行>:<插件>`。
 - Rust：`LocalId`（宿主放进根 ctx）、`Session::handshake(&ctx, channel)` 与 `ctx.plugin(greeted)`、`Session::new(channel)`、`SessionHandle::{id, run}`；`websocket::{dial, listen}`、`pipe::spawn`、`memory::pair`。
-- Rust 的会话上限（#1005，§三），默认不限：`ctx.plugin(Session::new(channel).options(SessionOptions { outbound_limit: Some(8 * 1024 * 1024) }))`；握手与挂载分两步时 `Session::handshake_with(&ctx, channel, options)`；rutis-host 的 Rust 嵌入用 `SpawnPlugin::session(options)`。rutis.json、其他语言的 `open(far)` 与 rutis-host 的 dial / listen 行都不设它：按 #694 规则 3，资源上限默认关。
+- Rust 的会话上限（#1005，§三），默认不限：`ctx.plugin(Session::new(channel).options(SessionOptions { outbound_limit: Some(8 * 1024 * 1024), ..Default::default() }))`；握手与挂载分两步时 `Session::handshake_with(&ctx, channel, options)`；rutis-host 的 Rust 嵌入用 `SpawnPlugin::session(options)`。rutis.json、其他语言的 `open(far)` 与 rutis-host 的 dial / listen 行都不设它：按 #694 规则 3，资源上限默认关。
 - 其他语言：服务 `sessions` 的 `open(far)`。
 
 **`run` 的输出**：前缀是连接行的 id，只用 connected / disconnected 两个词，原因写在括号里。

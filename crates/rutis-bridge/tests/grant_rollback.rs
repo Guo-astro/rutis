@@ -299,11 +299,13 @@ async fn a_value_without_its_capability_grants_nothing() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_message_over_the_channel_limit_grants_nothing() {
     const LIMIT: usize = 2048;
-    let link = Link::open(
-        Some(LIMIT),
-        Arc::new(Fixture::default()),
-        Endpoint::rust(id("far")),
-    );
+    // A far end that takes no chunks: the channel's per-message limit is what
+    // refuses the call, and the grants made while encoding go back (#1361
+    // lifts that limit only between two ends that declared `chunked`).
+    let mut far = Endpoint::rust(id("far"));
+    far.capabilities
+        .retain(|capability| capability != "chunked");
+    let link = Link::open(Some(LIMIT), Arc::new(Fixture::default()), far);
     link.near.ready().await.unwrap();
     tokio::task::spawn_blocking(move || {
         let (near_before, far_before) = link.tables();
