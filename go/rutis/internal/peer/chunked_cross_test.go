@@ -1,5 +1,6 @@
 //go:build unix
 
+// guarantee: bridge/large-and-deep-values
 // A real cross-language call for `chunked` (#1363): this Go session as the
 // host and the Node runtime's conformance fixture as the far end. A
 // parameter and a result over 16 MiB cross whole, and the method runs once.

@@ -1,3 +1,4 @@
+# guarantee: bridge/large-and-deep-values
 """A frame over the channel's message limit, carried by `chunk` frames and
 reassembled by the far end (#1363). A chunk is not a call: the method runs
 once, after the last chunk, and never for a transfer that does not finish."""
