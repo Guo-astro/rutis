@@ -116,7 +116,7 @@ class DeferredFrameTests(background.TestCase):
                 [frame for frame in self.channel.pending() if frame["op"] == "invoke"],
                 [{
                     "op": "invoke", "id": "py:1", "path": ["main:1"], "target": "host", "method": "timer",
-                    "args": {"type": "data", "value": []},
+                    "awaited": False, "args": {"type": "data", "value": []},
                 }],
             )
             peer.close()
