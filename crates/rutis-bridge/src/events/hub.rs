@@ -184,8 +184,8 @@ struct Emits {
     running: Option<(Emitted, Arc<Cancel>)>,
     /// The dispatches queued behind it, in arrival order, and the run.
     queue: VecDeque<(Emitted, EmitRun)>,
-    /// The rows whose entries are leaving the table: nothing queued starts
-    /// until none is (§7.1 step 1).
+    /// The rows whose disposers are running: nothing queued starts until
+    /// none is (§7.1 step 1).
     leaving: Arc<Leaving>,
 }
 
@@ -211,10 +211,12 @@ impl Emitted {
     }
 }
 
-/// The rows whose entries are leaving the table (§7.1 step 1). The kernel
-/// withdraws an entry on a task of its own, so starting a row's disposers in
-/// `row_ended` is not having the entries out: an `emit` that started
-/// meanwhile would still select them (§5.1).
+/// The rows whose disposers are running (§7.1 step 1). Since #1318 an
+/// entry leaves the table when its disposer is called, on the calling
+/// thread, so the table is already clean here; the session's emit queue
+/// still waits for the disposers to finish, so a row's end stays one step:
+/// what its cleanup stack hands over is delivered in its turn after it, and
+/// no other row's emit starts in the middle of it.
 #[derive(Default)]
 struct Leaving {
     /// How many rows are being withdrawn.
@@ -227,7 +229,7 @@ struct Leaving {
 enum Next {
     /// The queued emit whose turn came, now the running one.
     Run(EmitRun),
-    /// Rows' entries are leaving the table: wait for them, then look again
+    /// Rows' disposers are running: wait for them, then look again
     /// (§7.1 step 1).
     Leaving,
     /// Nothing waits: the session's emits are idle.
@@ -424,12 +426,14 @@ impl SessionEvents {
     /// (§7.1 step 5, #1327).
     pub(crate) fn row_ended(&self, key: &str) {
         self.rows.lock().unwrap().remove(key);
-        // The entries leave the table before the emits are let go: letting
-        // go is what starts the session's next emit, on its own task, and
-        // that emit's snapshot (§5.1) must not find a row that has ended.
-        // The kernel withdraws an entry on a task of its own, so the order
-        // alone is not enough: `withdraw_entries` holds the session's emits
-        // until they are out (EVP-7.1-1).
+        // The entries leave the table in `withdraw_entries` itself, on this
+        // thread, before this returns (#1318): the reply goes out after the
+        // table is clean, so a dispatch the runtime sends next cannot select
+        // them, whichever mode it uses. The session's emits are still let go
+        // only after that, because letting go is what starts the next emit
+        // on its own task, and its snapshot (§5.1) must not find a row that
+        // has ended. `withdraw_entries` also holds those emits until the
+        // row's disposers are through (EVP-7.1-1).
         self.withdraw_entries(key);
         #[cfg(test)]
         tests::between_the_steps();
@@ -483,12 +487,14 @@ impl SessionEvents {
         }
     }
 
-    /// Row `key`'s entries leave the table. The kernel takes each out when
-    /// its disposer finishes, on a task of the session's executor: being
-    /// started is not being gone, so the session's emits are held until they
-    /// are out (§7.1 step 1) — an emit that started meanwhile would still
-    /// select them (§5.1), while the row's own emits are already let go
-    /// (§5.5).
+    /// Row `key`'s entries leave the table now: each disposer withdraws its
+    /// entry on this thread (`Disposer::dispose`) before its cleanup starts
+    /// on the session's executor (#1318). The session's emits are held until
+    /// those cleanups finish (§7.1 step 1): the row's end stays one step, and
+    /// the emissions its stack hands over keep their turn behind it (§5.5,
+    /// #1327). An emit that started before the withdrawal may still select an
+    /// entry, and its call finishes as any call started before does (§5.1
+    /// step 3).
     fn withdraw_entries(&self, key: &str) {
         let gone: Vec<Registered> = {
             let mut entries = self.entries.lock().unwrap();
@@ -802,7 +808,7 @@ impl SessionEvents {
     ///
     /// A run that is let go (its row ended, or the session) or panics ends
     /// like one that finished: the next one starts. A queued emit waits for
-    /// the rows whose entries are leaving the table too (§7.1 step 1).
+    /// the rows whose disposers are running too (§7.1 step 1).
     fn run_emit(self: &Arc<Self>, row: Option<String>, mut run: EmitRun) -> bool {
         // The row's place is held while the emit takes its place in the
         // queue: the row unloading meanwhile (on another thread) is what
@@ -822,9 +828,9 @@ impl SessionEvents {
             return false;
         }
         if emits.leaving.count.load(Ordering::SeqCst) != 0 {
-            // A row's entries are leaving the table: this emit starts once
-            // they are out (§7.1 step 1), so the session's task holds the
-            // queue until then.
+            // A row's disposers are running: this emit starts once they are
+            // through (§7.1 step 1), so the session's task holds the queue
+            // until then.
             emits.busy = true;
             emits.queue.push_back((emitted, run));
             drop(emits);
@@ -845,7 +851,7 @@ impl SessionEvents {
             Poll::Ready(()) => match self.next_emit() {
                 Next::Idle => return true,
                 Next::Run(next) => Some(next),
-                // The queue is held for a row's entries leaving the table.
+                // The queue is held while a row's disposers run.
                 Next::Leaving => None,
             },
         };
@@ -873,7 +879,7 @@ impl SessionEvents {
         }
     }
 
-    /// Waits until no row's entries are leaving the table (§7.1 step 1).
+    /// Waits until no row's disposers are running (§7.1 step 1).
     async fn wait_through(&self) {
         loop {
             let through = self.emits.lock().unwrap().leaving.clone();
@@ -888,7 +894,7 @@ impl SessionEvents {
     }
 
     /// The emit running ended: the next queued one, now running; or, while
-    /// rows' entries are leaving the table, them (§7.1 step 1); or none (the
+    /// rows' disposers are running, them (§7.1 step 1); or none (the
     /// session's emits are idle).
     fn next_emit(&self) -> Next {
         let mut emits = self.emits.lock().unwrap();
@@ -1658,11 +1664,12 @@ mod tests {
     }
 
     /// guarantee: events/hub-lifecycle
-    /// #1133: the order alone is not enough. The kernel withdraws an entry
-    /// on a task of its own, so a row's entries are still selectable after
-    /// `row_ended` started their disposers; an emit of another row that
-    /// starts meanwhile would select them (§5.1), although the row has
-    /// ended. The session's emits wait for the withdrawal (§7.1 step 1).
+    /// #1133: a row's end holds the session's emit queue while the row's
+    /// disposers run (§7.1 step 1), so no other row's emit starts in the
+    /// middle of its cleanup stack. Since #1318 the entries themselves are
+    /// already out of the table when the disposers start (`Disposer::dispose`
+    /// withdraws them on the calling thread); this pins the wait that keeps
+    /// the end one step.
     #[test]
     fn an_emit_waits_for_the_entries_that_are_leaving_the_table() {
         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -1708,6 +1715,113 @@ mod tests {
         pump(&runtime);
         assert!(ran.load(Ordering::SeqCst), "the emit never started");
         assert!(emits_are_idle(&session), "the session's emits stayed busy");
+        drop((far, near));
+    }
+
+    /// guarantee: events/hub-lifecycle
+    /// #1318: a row's end takes its entries out of the kernel's table on
+    /// the calling thread, before `row_ended` returns. Every mode but `emit`
+    /// reads the table when its dispatch starts (§5.1) and does not wait for
+    /// the session's emit queue, so a dispatch the runtime sends after the
+    /// `rows.ended` answer must not be offered the ended row's entries —
+    /// not merely the next emit (#1133).
+    ///
+    /// Pinned without driving the session's runtime: the disposal task does
+    /// not run, so what each mode's filter is offered right after
+    /// `row_ended` is read, not raced for.
+    #[test]
+    fn a_rows_end_withdraws_its_entries_before_the_next_non_emit_dispatch() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("a current-thread runtime");
+        let _entered = runtime.enter();
+        let root = Ctx::root_with(runtime.handle().clone());
+        let (near, far) = crate::memory::pair();
+        let near = Connection::open(near, Arc::new(Quiet), rust()).unwrap();
+        let session =
+            SessionEvents::join(Some(&root), near.clone(), "rt".into(), Vec::new()).unwrap();
+        // Both rows listen to one name: a dispatch that is offered row `a`'s
+        // listener too is the row outliving its end.
+        for row in ["a", "b"] {
+            session.row_loading(row, Vec::new(), row.into());
+        }
+        for (id, row) in [("1", "a"), ("2", "b")] {
+            session
+                .on(Value::Data(json!({
+                    "id": id, "name": "t/x", "row": row, "plugin": "p", "kind": "any",
+                })))
+                .expect("the listener registers");
+        }
+        session.row_ended("a");
+        assert_eq!(
+            selectable(&root, "t/x"),
+            1,
+            "the ended row's listener stayed in the table"
+        );
+
+        let modes = ["serial", "parallel", "bail", "waterfall"];
+        for (mode, dispatch_mode) in
+            modes
+                .into_iter()
+                .zip([Mode::Serial, Mode::Parallel, Mode::Bail, Mode::Waterfall])
+        {
+            let offered: Arc<Mutex<Vec<Option<String>>>> = Arc::default();
+            let seen = offered.clone();
+            let mut dispatch = Dispatch::new("t/x", dispatch_mode, from_wire(Vec::new()));
+            dispatch.filter = Some(Box::new(move |candidates: Vec<Candidate>| {
+                *seen.lock().unwrap() = candidates
+                    .iter()
+                    .map(|candidate| candidate.info.row.clone())
+                    .collect();
+                FilterAnswer::Ready(Ok(vec![false; candidates.len()]))
+            }));
+            match dispatch_mode {
+                Mode::Bail => root
+                    .events()
+                    .dispatch_sync(&root, dispatch)
+                    .expect("the bail dispatch runs"),
+                _ => block_on(root.events().dispatch(&root, dispatch)).expect("the dispatch runs"),
+            };
+            assert_eq!(
+                *offered.lock().unwrap(),
+                vec![Some("b".to_owned())],
+                "the {mode} dispatch was offered the ended row's listener"
+            );
+        }
+        drop((far, near));
+    }
+
+    /// guarantee: events/hub-lifecycle
+    /// #1318: `events.off` takes the same path as a row's end: the entry is
+    /// out of the kernel's table when the answer is written, so a dispatch
+    /// after it selects nothing, whichever mode it uses (§4.4 item 4).
+    ///
+    /// Pinned without driving the runtime, as the row's end is above.
+    #[test]
+    fn an_off_withdraws_its_entry_before_the_next_dispatch() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("a current-thread runtime");
+        let _entered = runtime.enter();
+        let root = Ctx::root_with(runtime.handle().clone());
+        let (near, far) = crate::memory::pair();
+        let near = Connection::open(near, Arc::new(Quiet), rust()).unwrap();
+        let session =
+            SessionEvents::join(Some(&root), near.clone(), "rt".into(), Vec::new()).unwrap();
+        session.row_loading("a", Vec::new(), "a".into());
+        session
+            .on(Value::Data(json!({
+                "id": "1", "name": "t/x", "row": "a", "plugin": "p", "kind": "any",
+            })))
+            .expect("the listener registers");
+        session
+            .off(Value::Data(json!(["1"])))
+            .expect("the off runs");
+        assert_eq!(
+            selectable(&root, "t/x"),
+            0,
+            "the entry stayed in the table after events.off was answered"
+        );
         drop((far, near));
     }
 
