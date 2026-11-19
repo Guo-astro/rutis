@@ -241,7 +241,7 @@ Go 插件用模块 [`github.com/arcships/rutis/go/rutis`](go/rutis)：SDK，以�
   - 给宿主写插件：[TypeScript](docs/guide/typescript-plugin.md)、[Bun](docs/guide/bun-plugin.md)、[Python](docs/guide/python-plugin.md)、[Go](docs/guide/go-plugin.md)、[Rust](docs/guide/rust-plugin.md)、[Swift](docs/guide/swift-plugin.md)；
   - 用 rutis-host 组装插件：[rutis-host 与 rutis.json](docs/guide/rutis-host.md)；
   - 做一个开放插件的宿主：[在自己的 Rust 产品里](docs/guide/open-host.md)；
-  - 参考：[插件 API](docs/guide/plugin-api.md)、[在 Rust 应用里嵌入](docs/guide/rust-host.md)、[连接节点](docs/guide/nodes.md)、[Cordis](docs/guide/cordis.md)。
+  - 参考：[插件 API](docs/guide/plugin-api.md)、[在 Rust 应用里嵌入](docs/guide/rust-host.md)、[连接节点](docs/guide/nodes.md)、[Cordis](docs/guide/cordis.md)、[Cordis 兼容边界](docs/guide/cordis-boundaries.md)。
 - **[设计哲学](docs/design-philosophy.md)**：rutis 为什么存在，由此而来的形态、代价和原则。
 - **[应用设计指南](docs/development-guide.md)**：如何拆分插件、画依赖图、设计重载与多实例。
 - **[开发手册](docs/development-handbook.md)**：API 用法、资源清理、事件、排障与验证。

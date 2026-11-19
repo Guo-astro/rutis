@@ -241,7 +241,7 @@ All of these form a release train: released together at one version. Use the sam
   - write plugins for a host: [TypeScript](docs/guide/typescript-plugin.en.md), [Bun](docs/guide/bun-plugin.en.md), [Python](docs/guide/python-plugin.en.md), [Go](docs/guide/go-plugin.en.md), [Rust](docs/guide/rust-plugin.en.md), [Swift](docs/guide/swift-plugin.en.md);
   - assemble plugins with rutis-host: [rutis-host and rutis.json](docs/guide/rutis-host.en.md);
   - build a host open to plugins: [in your own Rust product](docs/guide/open-host.en.md);
-  - reference: [plugin API](docs/guide/plugin-api.en.md), [embedding in Rust](docs/guide/rust-host.en.md), [connecting nodes](docs/guide/nodes.en.md), [Cordis](docs/guide/cordis.en.md).
+  - reference: [plugin API](docs/guide/plugin-api.en.md), [embedding in Rust](docs/guide/rust-host.en.md), [connecting nodes](docs/guide/nodes.en.md), [Cordis](docs/guide/cordis.en.md), [Cordis compatibility boundaries](docs/guide/cordis-boundaries.en.md).
 - **[Design philosophy](docs/design-philosophy.en.md)**: why rutis exists, the shape that follows, its costs and principles.
 - **[Application design guide](docs/development-guide.en.md)**: splitting an app into plugins, drawing the dependency graph, designing reloads and multiple instances.
 - **[Development handbook](docs/development-handbook.en.md)**: API usage, resource cleanup, events, troubleshooting and verification.

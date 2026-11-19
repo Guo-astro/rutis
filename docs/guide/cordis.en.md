@@ -150,7 +150,7 @@ If unset, the build-time location is used, so development needs no extra configu
 
 ### 4. Cordis plugin boundaries
 
-Some behavior provided by the JavaScript call stack cannot be preserved across processes. The rules are in [Requirements §5](../requirements-protocol-plugins.en.md). Events are not among them: the five modes work across processes as in one (see [events](#events) above), and the only thing they cannot do, a synchronous `bail` waiting in a cycle or on a far end that went away, fails with an error. The main points are:
+Some behavior provided by the JavaScript call stack cannot be preserved across processes. The rules are in [Requirements §5](../requirements-protocol-plugins.en.md). All eight are gathered in [Cordis compatibility boundaries](cordis-boundaries.en.md): each says what it is now, what it is not, and what to do, with the guarantee numbers and tests. Events are not among them: the five modes work across processes as in one (see [events](#events) above), and the only thing they cannot do, a synchronous `bail` waiting in a cycle or on a far end that went away, fails with an error. The main points are:
 
 - After direct `ctx.set` replacement, rutis switches to the new object on the next call to that service.
 - A synchronous method cannot wait during execution for a result that requires the Node event loop; this returns `SyncWaitCycle`.
