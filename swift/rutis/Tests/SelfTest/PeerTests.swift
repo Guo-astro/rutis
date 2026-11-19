@@ -3,13 +3,15 @@ import Foundation
 
 /// A session in this process: `host` drives `runtime`, which serves
 /// `dispatch`.
-func pairOfPeers(_ dispatch: @escaping (String, String, [Value]) async throws -> Value) async throws -> (host: Peer, runtime: Peer) {
+func pairOfPeers(maxTransfer: Int? = nil, _ dispatch: @escaping (String, String, [Value]) async throws -> Value) async throws -> (host: Peer, runtime: Peer) {
     let (a, b) = try Channels.pair()
     var runtimeOptions = PeerOptions(endpoint: Endpoint(local: "swift", expected: "main"))
     runtimeOptions.dispatch = dispatch
+    runtimeOptions.maxTransfer = maxTransfer
     let runtime = try Peer(channel: a, options: runtimeOptions)
     var hostOptions = PeerOptions(endpoint: Endpoint(local: "main", expected: "swift"))
     hostOptions.host = true
+    hostOptions.maxTransfer = maxTransfer
     let host = try Peer(channel: b, options: hostOptions)
     try runtime.start()
     try host.start()
@@ -354,9 +356,11 @@ func stallingPair(_ dispatch: @escaping (String, String, [Value]) async throws -
     let channel = StallingChannel(b)
     var runtimeOptions = PeerOptions(endpoint: Endpoint(local: "swift", expected: "main"))
     runtimeOptions.dispatch = dispatch
+    runtimeOptions.maxTransfer = maxTransfer
     let runtime = try Peer(channel: a, options: runtimeOptions)
     var hostOptions = PeerOptions(endpoint: Endpoint(local: "main", expected: "swift"))
     hostOptions.host = true
+    hostOptions.maxTransfer = maxTransfer
     let host = try Peer(channel: channel, options: hostOptions)
     try runtime.start()
     try host.start()
