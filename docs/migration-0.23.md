@@ -98,3 +98,59 @@ node tools/check-guarantees.mjs
 ```
 
 Rust 回归：`an_asynchronous_forward_nobody_awaits_is_an_entry`（发完不管 → 入口）、`an_awaited_forward_closes_the_cycle`（之后 await → 拒绝真实的环）、`a_forwarded_call_carries_the_callers_awaited_signal`（转发沿用原信号）、`a_call_says_when_its_result_is_not_waited_for`（线上缺省与 `false`）。
+
+### 跨语言调用超过 16 MiB：`chunk` 帧与 `chunked` 能力（#1361）
+
+规格：[会话协议](protocol-session.md) §2.5、`SESS-84`–`SESS-88`、§10；设计：[跨帧传输超过单条消息上限的参数和返回值](design-chunked-frames-2026-11-19.md)。
+
+#### 改了什么
+
+会话协议 5 新增 `chunk` 帧和 `chunked` 能力：双方在问候里都声明 `chunked` 时，编码后超过通道单条消息上限（默认 16 MiB）的参数、返回值或错误由发送方切成至多 8 MiB 的片，接收方拼回整帧后才派发。一次调用仍然只执行一次；传输中途断开时未完成的帧不派发。单帧上限从 16 MiB 提高到会话的 `max_transfer`：默认 256 MiB，宿主可按内存预算用 `SessionOptions::max_transfer` 调整，或用 `RUTIS_MAX_TRANSFER` 一处设置并由宿主传给启动的运行时进程；没有无上限，也不静默截断。超过它仍然只让这次调用失败，`limit` 写配置值（默认 268435456）。
+
+0.23 里声明 `chunked` 的是 Rust 宿主（`rutis-bridge`）和 Node 运行时。Bun、Python、Go、Swift、Kotlin 不声明，行为与 0.22 相同：超过 16 MiB 的值仍然在发出前失败，`limit` 仍是 16777216。
+
+| 情形 | 0.22 | 0.23 |
+| --- | --- | --- |
+| Rust ↔ Node，17 MiB 参数 | `argument 1 cannot be sent: … over the limit of 16777216 bytes (16 MiB)` | 调用成功，对端拿到完整值 |
+| Rust ↔ Node，17 MiB 返回值 | 同样失败 | 调用成功，完整值返回 |
+| Rust ↔ Node，300 MiB 值 | 失败（16 MiB） | 失败（会话上限，默认 256 MiB），`limit` 为配置值 |
+| Rust ↔ Bun/Python/Go/Swift/Kotlin，17 MiB | 失败（16 MiB） | 不变 |
+| 传输在传输中途断开 | — | 会话以传输错误结束，未完成的调用不执行 |
+
+#### 要改什么
+
+- 宿主和所有端一起升级到 0.23（协议 5 原本就要求一起升级）。Rust 宿主与 Node 运行时自动获得分片；没有必填的新配置项。要调最大帧：宿主用 `SessionOptions::max_transfer`，部署用 `RUTIS_MAX_TRANSFER`（宿主会传给启动的运行时进程）；默认 256 MiB。
+- 其他运行时要支持超过 16 MiB 的值，必须实现 `chunk` 帧的收发并在问候里声明 `chunked`；在那之前不要声明，否则对端会按“已声明即实现”发来 `chunk` 帧。
+- 业务代码不用改：不要为了大值自己切片、分页或重试。值超过 256 MiB 时仍是显式的调用级错误。
+
+#### 影响谁
+
+- 插件作者：没有新概念。Rust 宿主与 Node 运行时之间，超过 16 MiB 的参数和返回值照常可用；到其他运行时仍是 16 MiB 上限。
+- 宿主作者与部署者：没有新的状态行或退出码；WebSocket 子协议仍是 `rutis.5`。同一部署所有端一起升级。最大帧默认 256 MiB，可按会话或部署调整（`SessionOptions::max_transfer` / `RUTIS_MAX_TRANSFER`），没有无上限。直接构造 `SessionOptions` 的宿主代码要补 `..Default::default()`（新增了 `max_transfer` 字段）。
+- 运行时作者与贡献者：实现 `chunk` 帧（`transfer`、`seq`、`last`、base64 `data`）、按 `transfer` 缓冲、至多一个未完成传输、只在 `last` 后派发、按配置的上限重组；实现了再声明 `chunked`。
+
+#### 开发者看到什么
+
+**成功：** Rust 宿主调用 Node 运行时，参数或返回值编码后 17 MiB，调用成功，对端拿到完整值；业务方写一次调用。没有新配置项、没有新输出行。
+
+**失败（Rust 侧，逐字）：**
+
+| 情形 | 输出 |
+| --- | --- |
+| 值超过会话上限（默认 256 MiB，宿主可调大） | `svc.take: argument 2 cannot be sent: the message would be 300000000 bytes, over the limit of 268435456 bytes (256 MiB)`；`data` 为 `{"argument":2,"limit":268435456,"part":"argument"}` |
+| 对端不声明 `chunked`（Bun、Python、Go、Swift、Kotlin），值超过 16 MiB | `svc.take: argument 2 cannot be sent: the message would be 17825803 bytes, over the limit of 16777216 bytes (16 MiB)`；`data` 为 `{"argument":2,"limit":16777216,"part":"argument"}` |
+| 传输在中途断开 | 会话以传输错误结束（管道是 `peer disconnected`），在途调用以 `peer-gone` 失败 |
+| 两端上限不一致，接收方更小 | 接收方以 `chunked transfer node:3: over the limit of <n> bytes` 结束会话 |
+
+**要学的新概念：** 运行时作者要知道 `chunk` 帧与 `chunked` 能力；插件作者不需要。
+
+#### 验证
+
+```sh
+cargo test -p rutis-bridge --all-features
+RUTIS_TEST_RUNTIMES=node cargo test -p rutis-bridge --all-features --test value_roundtrip
+cd node/rutis-runtime && npm test
+node tools/check-guarantees.mjs
+```
+
+Rust↔Node：`node_carries_frames_over_the_message_limit_whole`（17 MiB 参数与返回值完整往返；`tally` 证明每次调用只执行一次）。Rust 接收：`a_chunked_call_is_dispatched_once_after_its_last_chunk`、`an_incomplete_transfer_is_never_dispatched`、`a_chunk_out_of_order_ends_the_session`、`a_second_transfer_before_the_first_ends_ends_the_session`、`a_chunk_before_the_handshake_ends_the_session`、`a_chunk_from_a_far_end_without_the_capability_ends_the_session`、`a_chunk_with_invalid_base64_ends_the_session`、`a_frame_over_the_limit_is_chunked_to_a_far_end_that_declared_it`。Node：`node/rutis-runtime/test/chunked.test.mjs`。

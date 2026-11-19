@@ -774,6 +774,7 @@ async fn a_session_limit_the_host_turns_on_ends_a_peer_that_stopped_reading() {
     let (near, far, stalled) = stalled_pair();
     let at_a = a.plugin(Session::new(near).options(SessionOptions {
         outbound_limit: Some(LIMIT),
+        ..Default::default()
     }));
     let at_b = b.plugin(Session::new(far));
     a.listen::<Args>()

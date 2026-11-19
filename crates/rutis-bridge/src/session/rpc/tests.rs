@@ -1004,6 +1004,7 @@ async fn a_session_limit_the_host_turns_on_ends_a_far_end_that_never_reads() {
         rust(),
         SessionOptions {
             outbound_limit: Some(2 * size),
+            ..Default::default()
         },
     )
     .unwrap();
@@ -1076,6 +1077,7 @@ async fn a_limit_of_zero_still_takes_one_frame_at_a_time() {
         rust(),
         SessionOptions {
             outbound_limit: Some(0),
+            ..Default::default()
         },
     )
     .unwrap();
@@ -4123,6 +4125,393 @@ async fn a_message_over_the_limit_fails_only_its_call() {
         awaited.starts_with("svc.later: the result cannot be sent: the message would be "),
         "{awaited}"
     );
+    assert!(peer.close_reason().is_none());
+}
+
+// ── Frames over the message limit, carried in chunks (#1361) ──────────
+
+/// The deployment's environment sets the cap; [`SessionOptions::default`]
+/// alone stays at the 256 MiB default (#1361).
+#[test]
+fn the_environment_sets_the_default_cap() {
+    struct Restore(Option<std::ffi::OsString>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            match self.0.take() {
+                Some(value) => std::env::set_var(MAX_TRANSFER_ENV, value),
+                None => std::env::remove_var(MAX_TRANSFER_ENV),
+            }
+        }
+    }
+    let _restore = Restore(std::env::var_os(MAX_TRANSFER_ENV));
+    std::env::set_var(MAX_TRANSFER_ENV, "4096");
+    assert_eq!(SessionOptions::from_environment().max_transfer, 4096);
+    assert_eq!(
+        SessionOptions::default().max_transfer,
+        crate::session::DEFAULT_MAX_TRANSFER
+    );
+}
+
+/// A dispatch that records the arguments each call ran with.
+struct Recorded(Arc<Mutex<Vec<Value>>>);
+impl Dispatch for Recorded {
+    fn invoke(&self, _: &Connection, _: &str, _: &str, args: Value) -> Reply {
+        self.0.lock().unwrap().push(args.clone());
+        Ok(args)
+    }
+}
+
+fn recorded_pair() -> (Connection, Far, Arc<Mutex<Vec<Value>>>) {
+    recorded_pair_with(SessionOptions::default())
+}
+
+/// [`recorded_pair`], with the session's limits.
+fn recorded_pair_with(options: SessionOptions) -> (Connection, Far, Arc<Mutex<Vec<Value>>>) {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let (local, far) = far_pair();
+    (
+        Connection::open_with(local, Arc::new(Recorded(calls.clone())), rust(), options).unwrap(),
+        far,
+        calls,
+    )
+}
+
+/// A call of the `conformance` echo with `value` as its one argument.
+fn echo_frame(id: &str, value: Json) -> Frame {
+    Frame::Invoke {
+        id: id.into(),
+        path: Vec::new(),
+        target: "conformance".into(),
+        method: "echo".into(),
+        args: WireValue::Data(value),
+        sync: false,
+        awaited: true,
+    }
+}
+
+/// The chunks of `frame` as wire objects, split so each fits `limit`.
+fn chunks_of(frame: &Frame, limit: usize, transfer: &str) -> Vec<Json> {
+    let bytes = serde_json::to_vec(frame).unwrap();
+    crate::session::chunks::Chunk::frames(&bytes, limit, transfer)
+        .into_iter()
+        .map(|chunk| serde_json::to_value(chunk).unwrap())
+        .collect()
+}
+
+fn send_chunks(far: &mut Remote, chunks: &[Json]) {
+    for chunk in chunks {
+        far.send_json(chunk.clone());
+    }
+}
+
+/// A chunked call is reassembled before dispatch: the method runs once, with
+/// the whole value, after the last chunk (#1361).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_chunked_call_is_dispatched_once_after_its_last_chunk() {
+    let (peer, far, calls) = recorded_pair();
+    let value = json!({ "text": "x".repeat(4096) });
+    let script = tokio::task::spawn_blocking(move || {
+        let mut far = Remote::start_declaring(far, &["chunked"]);
+        let chunks = chunks_of(&echo_frame("node:1", value.clone()), 1024, "node:1");
+        assert!(chunks.len() > 1, "one frame, many chunks");
+        for chunk in &chunks {
+            assert!(
+                serde_json::to_vec(chunk).unwrap().len() <= 1024,
+                "a chunk frame over the channel's limit: {chunk}"
+            );
+        }
+        send_chunks(&mut far, &chunks);
+        match far.read() {
+            Frame::Return {
+                id,
+                value: WireValue::Data(back),
+            } => {
+                assert_eq!(id, "node:1");
+                assert_eq!(back, value, "the far-end reply carries the value");
+            }
+            _ => panic!("a return of node:1 expected"),
+        }
+        far
+    });
+    peer.ready().await.unwrap();
+    let _far = script.await.unwrap();
+    let calls = calls.lock().unwrap();
+    assert_eq!(calls.len(), 1, "the call ran once");
+    assert_eq!(
+        calls[0].clone().json().unwrap(),
+        json!({ "text": "x".repeat(4096) }),
+        "the call ran with the whole value"
+    );
+    assert!(peer.close_reason().is_none());
+}
+
+/// A transfer the session never finishes is never dispatched: the far end
+/// goes in the middle of it, and the method does not run (#1361).
+#[tokio::test(flavor = "multi_thread")]
+async fn an_incomplete_transfer_is_never_dispatched() {
+    let (peer, far, calls) = recorded_pair();
+    let script = tokio::task::spawn_blocking(move || {
+        let mut far = Remote::start_declaring(far, &["chunked"]);
+        let chunks = chunks_of(
+            &echo_frame("node:1", json!({ "text": "y".repeat(4096) })),
+            1024,
+            "node:1",
+        );
+        assert!(chunks.len() > 1);
+        send_chunks(&mut far, &chunks[..chunks.len() - 1]);
+        // The far end goes midway: the last chunk never comes.
+        far.writer._closer.close(crate::channel::Close::Done);
+    });
+    peer.ready().await.unwrap();
+    script.await.unwrap();
+    peer.closed().await;
+    assert!(
+        calls.lock().unwrap().is_empty(),
+        "a call was dispatched from an incomplete transfer"
+    );
+    let reason = peer.close_reason().expect("a session end").to_string();
+    assert_eq!(reason, "peer disconnected", "{reason}");
+}
+
+/// A chunk out of order is a protocol error: the session ends (#1361).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_chunk_out_of_order_ends_the_session() {
+    let (peer, far, _calls) = recorded_pair();
+    let script = tokio::task::spawn_blocking(move || {
+        let mut far = Remote::start_declaring(far, &["chunked"]);
+        let mut chunks = chunks_of(&echo_frame("node:1", json!("x")), 1024, "node:1");
+        chunks[0]["seq"] = json!(1);
+        send_chunks(&mut far, &chunks);
+        far
+    });
+    peer.ready().await.unwrap();
+    let _far = script.await.unwrap();
+    peer.closed().await;
+    let reason = peer.close_reason().expect("a session end").to_string();
+    assert!(
+        reason.contains("chunked transfer node:1: expected chunk 0, got 1"),
+        "{reason}"
+    );
+}
+
+/// Another transfer before this one ended is a protocol error: one transfer
+/// runs at a time (#1361).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_second_transfer_before_the_first_ends_ends_the_session() {
+    let (peer, far, _calls) = recorded_pair();
+    let script = tokio::task::spawn_blocking(move || {
+        let mut far = Remote::start_declaring(far, &["chunked"]);
+        let bytes = serde_json::to_vec(&echo_frame("node:1", json!("z".repeat(2048)))).unwrap();
+        let first = crate::session::chunks::Chunk::frames(&bytes, 1024, "node:1");
+        assert!(first.len() > 1);
+        far.send_json(serde_json::to_value(&first[0]).unwrap());
+        let second = chunks_of(&echo_frame("node:2", json!("y")), 1024, "node:2");
+        far.send_json(second[0].clone());
+        far
+    });
+    peer.ready().await.unwrap();
+    let _far = script.await.unwrap();
+    peer.closed().await;
+    let reason = peer.close_reason().expect("a session end").to_string();
+    assert!(
+        reason.contains("chunked transfer node:1: transfer node:2 started before it ended"),
+        "{reason}"
+    );
+}
+
+/// A chunk before the greeting ends the session like any other frame (#1361,
+/// SESS-21).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_chunk_before_the_handshake_ends_the_session() {
+    let (local, far) = far_pair();
+    let peer = Connection::open(local, Arc::new(NoExports), rust()).unwrap();
+    let script = tokio::task::spawn_blocking(move || {
+        let mut far = Remote {
+            reader: far.try_clone().unwrap(),
+            writer: far,
+        };
+        assert!(matches!(far.read(), Frame::Hello { .. }));
+        let chunk = crate::session::chunks::Chunk::new("node:1", 0, true, b"{}");
+        far.send_json(serde_json::to_value(chunk).unwrap());
+        far
+    });
+    let _far = script.await.unwrap();
+    peer.closed().await;
+    let reason = peer.close_reason().expect("a session end").to_string();
+    assert_eq!(reason, "request before protocol handshake", "{reason}");
+}
+
+/// A `chunk` from a far end that did not declare `chunked` is a protocol
+/// error: the declaration is what makes sending it legal (#1361).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_chunk_from_a_far_end_without_the_capability_ends_the_session() {
+    let (peer, far, _calls) = recorded_pair();
+    let script = tokio::task::spawn_blocking(move || {
+        let mut far = Remote::start_declaring(far, &[]);
+        let chunk = crate::session::chunks::Chunk::new("node:1", 0, true, b"{}");
+        far.send_json(serde_json::to_value(chunk).unwrap());
+        far
+    });
+    peer.ready().await.unwrap();
+    let _far = script.await.unwrap();
+    peer.closed().await;
+    let reason = peer.close_reason().expect("a session end").to_string();
+    assert_eq!(
+        reason, "chunk frame from a far end that did not declare chunked",
+        "{reason}"
+    );
+}
+
+/// The reassembly cap is the session's `max_transfer`, not a constant: over
+/// it, the session ends saying the configured number (#1361).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_transfer_over_the_configured_cap_ends_the_session() {
+    let (peer, far, calls) = recorded_pair_with(SessionOptions {
+        max_transfer: 1024,
+        ..Default::default()
+    });
+    let script = tokio::task::spawn_blocking(move || {
+        let mut far = Remote::start_declaring(far, &["chunked"]);
+        let bytes = serde_json::to_vec(&echo_frame("node:1", json!("x".repeat(2048)))).unwrap();
+        for chunk in crate::session::chunks::Chunk::frames(&bytes, 4096, "node:1") {
+            far.send_json(serde_json::to_value(chunk).unwrap());
+        }
+        far
+    });
+    peer.ready().await.unwrap();
+    let _far = script.await.unwrap();
+    peer.closed().await;
+    assert!(calls.lock().unwrap().is_empty());
+    let reason = peer.close_reason().expect("a session end").to_string();
+    assert_eq!(
+        reason, "chunked transfer node:1: over the limit of 1024 bytes",
+        "{reason}"
+    );
+}
+
+/// A frame over the session's `max_transfer` fails only its call, naming the
+/// configured cap (#1361).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_frame_over_the_configured_cap_fails_its_call() {
+    let (local, far) = limited_pair(4096);
+    let peer = Connection::open_with(
+        local,
+        Arc::new(EchoCall),
+        rust(),
+        SessionOptions {
+            max_transfer: 2048,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let script = tokio::task::spawn_blocking(move || Remote::start_declaring(far, &["chunked"]));
+    peer.ready().await.unwrap();
+    let near = peer.clone();
+    let value = "x".repeat(8192);
+    let error = tokio::task::spawn_blocking(move || {
+        near.invoke(
+            "conformance",
+            "echo",
+            Value::List(vec![Value::Data(json!(value))]),
+        )
+    })
+    .await
+    .unwrap()
+    .expect_err("a frame over the session's cap");
+    match error {
+        Error::Value { message, reason } => {
+            assert_eq!(reason, Some("limit"));
+            assert!(
+                message.starts_with("conformance.echo: argument 1 cannot be sent: ")
+                    && message.ends_with("over the limit of 2048 bytes"),
+                "{message}"
+            );
+        }
+        other => panic!("a value error expected, got {other:?}"),
+    }
+    let _far = script.await.unwrap();
+    assert!(peer.close_reason().is_none());
+}
+
+/// A chunk whose `data` is not canonical base64 is a protocol error (#1361).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_chunk_with_invalid_base64_ends_the_session() {
+    let (peer, far, _calls) = recorded_pair();
+    let script = tokio::task::spawn_blocking(move || {
+        let mut far = Remote::start_declaring(far, &["chunked"]);
+        let chunk = crate::session::chunks::Chunk::new("node:1", 0, true, b"{}");
+        let mut chunk = serde_json::to_value(chunk).unwrap();
+        chunk["data"] = json!("not base64!");
+        far.send_json(chunk);
+        far
+    });
+    peer.ready().await.unwrap();
+    let _far = script.await.unwrap();
+    peer.closed().await;
+    let reason = peer.close_reason().expect("a session end").to_string();
+    assert!(
+        reason
+            .starts_with("chunked transfer node:1: invalid bytes (11 characters): expected base64"),
+        "{reason}"
+    );
+}
+
+/// A frame over the channel's limit is cut into `chunk` frames that fit it,
+/// all of one transfer, and the far end gets the whole frame (#1361).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_frame_over_the_limit_is_chunked_to_a_far_end_that_declared_it() {
+    let (local, far) = limited_pair(4096);
+    let peer = Connection::open(local, Arc::new(EchoCall), rust()).unwrap();
+    let value = json!({ "text": "x".repeat(8192) });
+    let expected = value.clone();
+    let script = tokio::task::spawn_blocking(move || {
+        let mut far = Remote::start_declaring(far, &["chunked"]);
+        let mut chunks = Vec::new();
+        loop {
+            let frame = far.read_json();
+            assert_eq!(
+                frame["op"], "chunk",
+                "a message that is not a chunk: {frame}"
+            );
+            let size = serde_json::to_vec(&frame).unwrap().len();
+            assert!(
+                size <= 4096,
+                "a chunk frame of {size} bytes, over the limit"
+            );
+            let last = frame["last"].as_bool().unwrap();
+            chunks.push(frame);
+            if last {
+                break;
+            }
+        }
+        assert!(chunks.len() > 1, "one chunk for a frame over the limit");
+        let transfer = chunks[0]["transfer"].as_str().unwrap();
+        let mut bytes = Vec::new();
+        for (seq, chunk) in chunks.iter().enumerate() {
+            assert_eq!(chunk["transfer"].as_str(), Some(transfer));
+            assert_eq!(chunk["seq"].as_u64(), Some(seq as u64));
+            let part = base64_decode(chunk["data"].as_str().unwrap()).unwrap();
+            bytes.extend_from_slice(&part);
+        }
+        let call: Json = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(call["op"], "invoke");
+        assert_eq!(call["args"]["value"][0]["value"], expected);
+        far.send_json(json!({
+            "op": "return",
+            "id": call["id"],
+            "value": { "type": "data", "value": "ok" },
+        }));
+        far
+    });
+    peer.ready().await.unwrap();
+    let near = peer.clone();
+    let back = tokio::task::spawn_blocking(move || {
+        near.invoke("conformance", "echo", Value::List(vec![Value::Data(value)]))
+    })
+    .await
+    .unwrap();
+    assert_eq!(back.unwrap(), Value::Data(json!("ok")));
+    let _far = script.await.unwrap();
     assert!(peer.close_reason().is_none());
 }
 

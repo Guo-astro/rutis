@@ -1095,6 +1095,50 @@ fn over_the_limit(message: &str) -> bool {
 fn bad_values(far: &Connection, name: &str) {
     let call =
         |method: &str, args: Vec<Value>| far.invoke("conformance", method, Value::List(args));
+    if far.supports("chunked") {
+        // A frame over the channel's limit crosses in chunks (#1361): the
+        // value arrives whole, and the call after it goes on.
+        let big = "x".repeat(LIMIT);
+        let back = call("echo", vec![Value::Data(json!(big))])
+            .and_then(Value::json)
+            .unwrap();
+        assert_eq!(back, json!(big), "{name}: this side's value over the limit");
+        let size = LIMIT + 10;
+        let back = call("big", vec![Value::Data(json!(size))])
+            .and_then(Value::json)
+            .unwrap();
+        assert_eq!(
+            back.as_str().map(str::len),
+            Some(size),
+            "{name}: the far end's result over the limit"
+        );
+        let called = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let callback = {
+            let called = called.clone();
+            Value::callback(move |_| {
+                called.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(Value::Undefined)
+            })
+        };
+        let back = call("applyBig", vec![callback, Value::Data(json!(size))])
+            .and_then(Value::json)
+            .unwrap();
+        assert_eq!(
+            back,
+            Json::Null,
+            "{name}: the callback's result over the limit"
+        );
+        assert_eq!(
+            called.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "{name}: the callback ran once with the whole argument"
+        );
+        relayed_throw(far, name);
+        let back = call("echo", vec![Value::Data(json!("after"))]).and_then(Value::json);
+        assert_eq!(back.unwrap(), json!("after"), "{name}: a call after them");
+        assert!(far.close_reason().is_none(), "{name}: the session ended");
+        return;
+    }
     match call("echo", vec![Value::Data(json!("x".repeat(LIMIT)))]) {
         Err(Error::Value {
             message,
@@ -1131,6 +1175,48 @@ fn bad_values(far: &Connection, name: &str) {
     relayed_throw(far, name);
     let back = call("echo", vec![Value::Data(json!("after"))]).and_then(Value::json);
     assert_eq!(back.unwrap(), json!("after"), "{name}: a call after them");
+    assert!(far.close_reason().is_none(), "{name}: the session ended");
+}
+
+/// guarantee: bridge/large-and-deep-values. #1361.
+///
+/// A parameter and a result whose encoded frame is over the 16 MiB the pipe
+/// takes cross whole, and each call runs once with the whole value: the
+/// frames are carried in `chunk` frames, reassembled before dispatch.
+fn chunked_values(far: &Connection, name: &str) {
+    let call =
+        |method: &str, args: Vec<Value>| far.invoke("conformance", method, Value::List(args));
+    let big = "x".repeat(17 * 1024 * 1024);
+    let size = big.len();
+    let first = call("tally", vec![Value::Data(json!(big))])
+        .and_then(Value::json)
+        .unwrap();
+    assert_eq!(
+        first,
+        json!({ "calls": 1, "size": size }),
+        "{name}: the argument arrived whole, once"
+    );
+    let second = call("tally", vec![Value::Data(json!(big))])
+        .and_then(Value::json)
+        .unwrap();
+    assert_eq!(
+        second,
+        json!({ "calls": 2, "size": size }),
+        "{name}: the second call ran once, whole"
+    );
+    // A result over the limit comes back whole too.
+    let back = call("big", vec![Value::Data(json!(size))])
+        .and_then(Value::json)
+        .unwrap();
+    assert_eq!(
+        back.as_str().map(str::len),
+        Some(size),
+        "{name}: the result came back whole"
+    );
+    let after = call("echo", vec![Value::Data(json!("after"))])
+        .and_then(Value::json)
+        .unwrap();
+    assert_eq!(after, json!("after"), "{name}: a call after them");
     assert!(far.close_reason().is_none(), "{name}: the session ended");
 }
 
@@ -1518,6 +1604,22 @@ async fn node_bad_values() {
     }
     let (near, _child) = far_end(node(), "node").await;
     tokio::task::spawn_blocking(move || bad_values(&near, "node"))
+        .await
+        .unwrap();
+}
+
+/// guarantee: bridge/large-and-deep-values. #1361.
+#[tokio::test(flavor = "multi_thread")]
+async fn node_carries_frames_over_the_message_limit_whole() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
+    let (near, _child) = far_end(node(), "node").await;
+    assert!(
+        near.supports("chunked"),
+        "the Node runtime declares chunked"
+    );
+    tokio::task::spawn_blocking(move || chunked_values(&near, "node"))
         .await
         .unwrap();
 }

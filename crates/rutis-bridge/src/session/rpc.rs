@@ -24,6 +24,7 @@ use tokio::runtime::{Handle, RuntimeFlavor};
 use tokio::sync::{oneshot, watch, Notify};
 
 use crate::channel::PeerId;
+use crate::session::chunks::{self, Chunk};
 pub use crate::session::protocol::Implementation;
 use crate::session::protocol::{Frame, Kind, WireValue};
 use crate::session::values::{
@@ -1285,7 +1286,8 @@ pub struct Endpoint {
     pub expected: Option<PeerId>,
     pub implementation: Implementation,
     /// What this side supports: `reentrant-sync` (and, for a runtime with
-    /// one thread and one stack, `sync-stack`), `plugins`, and
+    /// one thread and one stack, `sync-stack`), `plugins`, `chunked` (frames
+    /// over the transport's limit split across `chunk` frames, #1361), and
     /// `value-<tag>` for each tagged value it takes. Capabilities grant no
     /// permission.
     pub capabilities: Vec<String>,
@@ -1302,7 +1304,7 @@ impl Endpoint {
                 name: "rutis-bridge".into(),
                 version: env!("CARGO_PKG_VERSION").into(),
             },
-            capabilities: ["reentrant-sync", PLUGINS_CAPABILITY]
+            capabilities: ["reentrant-sync", PLUGINS_CAPABILITY, chunks::CHUNKED]
                 .into_iter()
                 .chain(VALUE_CAPABILITIES)
                 .map(String::from)
@@ -1325,7 +1327,7 @@ impl Endpoint {
 /// holds neither the thread that made the frame nor the other sessions of
 /// the process. What it has not taken yet waits for it, in the session's
 /// queue, in this process's memory.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct SessionOptions {
     /// The most a far end may fall behind before its session ends: bytes of
     /// frames made for it, queued for the session's writer thread and not
@@ -1344,6 +1346,58 @@ pub struct SessionOptions {
     /// end does not read, is not counted. What is bounded is the queue
     /// behind that one.
     pub outbound_limit: Option<usize>,
+    /// The most one encoded frame may be on this session, in bytes (#1361).
+    /// It bounds what this side sends (a larger call fails with
+    /// `bad-value` and this number as its `limit`) and what one chunked
+    /// transfer may reassemble to here. Between two ends that declared
+    /// `chunked`, a frame over the channel's message limit is carried in
+    /// `chunk` frames up to this many bytes; below it, the channel's own
+    /// limit applies. The default is [`DEFAULT_MAX_TRANSFER`](crate::session::DEFAULT_MAX_TRANSFER) (256 MiB), or
+    /// `RUTIS_MAX_TRANSFER` when [`SessionOptions::from_environment`] reads
+    /// it; a host raises or lowers it per session, and a host that starts a
+    /// runtime process passes it on in that variable. Never unlimited: a
+    /// session with `0` refuses every non-empty frame.
+    pub max_transfer: usize,
+}
+
+impl Default for SessionOptions {
+    fn default() -> Self {
+        Self {
+            outbound_limit: None,
+            max_transfer: chunks::DEFAULT_MAX_TRANSFER,
+        }
+    }
+}
+
+/// The variable that sets [`SessionOptions::max_transfer`] for a host that
+/// reads its configuration from the environment; a host passes it on to the
+/// runtime processes it starts.
+pub const MAX_TRANSFER_ENV: &str = "RUTIS_MAX_TRANSFER";
+
+impl SessionOptions {
+    /// [`Default`] with `max_transfer` from [`MAX_TRANSFER_ENV`] when it is
+    /// set (#1361): one deployment-wide knob for the host and the runtimes it
+    /// starts. An invalid value ends the host's startup, naming the variable
+    /// and what it expected.
+    pub fn from_environment() -> Self {
+        let mut options = Self::default();
+        if let Some(value) = std::env::var_os(MAX_TRANSFER_ENV) {
+            let text = value.to_string_lossy();
+            match text.parse::<usize>() {
+                Ok(bytes) if bytes > 0 => options.max_transfer = bytes,
+                _ => panic!("{MAX_TRANSFER_ENV} {text:?}: expected a positive number of bytes"),
+            }
+        }
+        options
+    }
+
+    /// This session's largest frame, in bytes:
+    /// [`DEFAULT_MAX_TRANSFER`](crate::session::DEFAULT_MAX_TRANSFER) unless
+    /// set here or in [`MAX_TRANSFER_ENV`] (#1361).
+    pub fn max_transfer(mut self, bytes: usize) -> Self {
+        self.max_transfer = bytes;
+        self
+    }
 }
 
 /// What the far end said of itself in its handshake.
@@ -1436,6 +1490,13 @@ struct SessionState {
     outbound: Arc<Outbound>,
     /// The channel's message limit, if it has one (#675).
     max_message: Option<usize>,
+    /// The frame a chunked transfer is rebuilding, if one is in progress
+    /// (#1361). One at a time.
+    reassembly: SeamMutex<chunks::Reassembly>,
+    /// The most one frame may be on this session (#1361, `SessionOptions`).
+    max_transfer: usize,
+    /// This side's transfers: the id of each chunked frame (#1361).
+    transfers: AtomicU64,
     closer: Arc<dyn Closer>,
     calls: SeamMutex<Calls>,
     exports: SeamMutex<Exports>,
@@ -1529,24 +1590,47 @@ impl Outbound {
 
 #[derive(Default)]
 struct Queued {
-    frames: std::collections::VecDeque<Vec<u8>>,
+    frames: std::collections::VecDeque<Outgoing>,
     /// The bytes `frames` hold.
     bytes: usize,
     /// The session ended: the writer thread stops, and sending fails.
     closed: bool,
 }
 
+/// One message on its way to the far end: a frame's bytes, or a frame over
+/// the channel's limit that the writer cuts into `chunk` frames (#1361).
+/// The chunks of one transfer go out together, with no other frame between
+/// them: the writer finishes an entry before taking the next.
+enum Outgoing {
+    Frame(Vec<u8>),
+    Chunked {
+        bytes: Vec<u8>,
+        transfer: String,
+        /// The transport's message limit: each chunk frame fits it.
+        limit: usize,
+    },
+}
+
+impl Outgoing {
+    fn len(&self) -> usize {
+        match self {
+            Self::Frame(bytes) => bytes.len(),
+            Self::Chunked { bytes, .. } => bytes.len(),
+        }
+    }
+}
+
 impl Outbound {
-    /// Queue `bytes` to go, in order, under the lock that orders frames and
-    /// serializes encoding with the session's teardown. Over the limit a
+    /// Queue `outgoing` to go, in order, under the lock that orders frames
+    /// and serializes encoding with the session's teardown. Over the limit a
     /// host set, the session ends instead; one frame waits however large it
     /// is, and without a limit so does everything else.
-    fn push(&self, queued: &mut Queued, bytes: Vec<u8>) -> Result<(), Error> {
+    fn push(&self, queued: &mut Queued, outgoing: Outgoing) -> Result<(), Error> {
         if queued.closed {
             return Err(transport("the session ended"));
         }
         if let Some(limit) = self.limit {
-            if !queued.frames.is_empty() && queued.bytes + bytes.len() > limit {
+            if !queued.frames.is_empty() && queued.bytes + outgoing.len() > limit {
                 return Err(transport(format!(
                     "the far end is not reading: {} messages, {} bytes waited for it",
                     queued.frames.len(),
@@ -1554,8 +1638,8 @@ impl Outbound {
                 )));
             }
         }
-        queued.bytes += bytes.len();
-        queued.frames.push_back(bytes);
+        queued.bytes += outgoing.len();
+        queued.frames.push_back(outgoing);
         self.ready.notify_all();
         Ok(())
     }
@@ -1567,7 +1651,7 @@ impl Outbound {
 /// waited for.
 fn write_frames(outbound: Arc<Outbound>, mut sender: Box<dyn Sender>, channel: Weak<SessionState>) {
     loop {
-        let bytes = {
+        let outgoing = {
             let mut queued = outbound
                 .queued
                 .lock()
@@ -1576,9 +1660,9 @@ fn write_frames(outbound: Arc<Outbound>, mut sender: Box<dyn Sender>, channel: W
                 if queued.closed {
                     return;
                 }
-                if let Some(bytes) = queued.frames.pop_front() {
-                    queued.bytes -= bytes.len();
-                    break bytes;
+                if let Some(outgoing) = queued.frames.pop_front() {
+                    queued.bytes -= outgoing.len();
+                    break outgoing;
                 }
                 queued = outbound
                     .ready
@@ -1586,7 +1670,32 @@ fn write_frames(outbound: Arc<Outbound>, mut sender: Box<dyn Sender>, channel: W
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
             }
         };
-        if let Err(error) = sender.send(&bytes) {
+        // A failure closes the session, whatever the message.
+        let result = match outgoing {
+            Outgoing::Frame(bytes) => sender.send(&bytes),
+            Outgoing::Chunked {
+                bytes,
+                transfer,
+                limit,
+            } => {
+                let mut result = Ok(());
+                for chunk in Chunk::frames(&bytes, limit, &transfer) {
+                    match serde_json::to_vec(&chunk) {
+                        Ok(encoded) => result = sender.send(&encoded),
+                        Err(error) => {
+                            result = Err(ChannelError::Closed {
+                                reason: error.to_string(),
+                            });
+                        }
+                    }
+                    if result.is_err() {
+                        break;
+                    }
+                }
+                result
+            }
+        };
+        if let Err(error) = result {
             if let Some(channel) = channel.upgrade() {
                 Connection(channel).close(ended(error));
             }
@@ -1667,6 +1776,9 @@ impl Connection {
             }),
             outbound: Arc::new(Outbound::new(None)),
             max_message: None,
+            reassembly: SeamMutex::new(chunks::Reassembly::new(chunks::DEFAULT_MAX_TRANSFER)),
+            max_transfer: chunks::DEFAULT_MAX_TRANSFER,
+            transfers: AtomicU64::new(0),
             closer: Arc::new(NoCloser),
             calls: SeamMutex::new(Calls::default()),
             exports: SeamMutex::new(Exports::default()),
@@ -1732,6 +1844,9 @@ impl Connection {
             greeting: std::sync::OnceLock::new(),
             outbound: Arc::new(Outbound::new(options.outbound_limit)),
             max_message,
+            reassembly: SeamMutex::new(chunks::Reassembly::new(options.max_transfer)),
+            max_transfer: options.max_transfer,
+            transfers: AtomicU64::new(0),
             closer,
             calls: SeamMutex::new(Calls::default()),
             exports: SeamMutex::new(Exports::default()),
@@ -1781,7 +1896,7 @@ impl Connection {
             .stack_size(READER_STACK)
             .spawn(move || {
                 let result: Result<(), Error> = (|| loop {
-                    let message = match receiver.recv() {
+                    let mut message = match receiver.recv() {
                         Ok(Some(message)) => message,
                         Ok(None) => return Err(Error::Transport("peer disconnected".into())),
                         Err(error) => return Err(ended(error)),
@@ -1789,15 +1904,37 @@ impl Connection {
                     let Some(peer) = weak.upgrade().map(Self) else {
                         return Ok(());
                     };
-                    if deeper_than(&message, MAX_FRAME_DEPTH) {
-                        peer.too_deep(&message)?;
-                        continue;
+                    // A chunked frame is the frame its chunks join (#1361):
+                    // the bytes go on through the same depth check and
+                    // parsing as a message that arrived whole.
+                    let mut reassembled = false;
+                    loop {
+                        if deeper_than(&message, MAX_FRAME_DEPTH) {
+                            peer.too_deep(&message)?;
+                            break;
+                        }
+                        let value = parse_json(&message)?;
+                        let Some(chunk) = Chunk::of(&value)? else {
+                            let parsed = frame_from(&message, &value)?;
+                            if peer.reject_unknown_fields(&parsed.frame, &parsed.ignored)? {
+                                break;
+                            }
+                            peer.receive(parsed.frame)?;
+                            break;
+                        };
+                        // A chunk is a wrapper around one frame's bytes, not
+                        // a frame that may itself be chunked.
+                        if reassembled {
+                            return Err(transport("chunk frame inside a chunked transfer"));
+                        }
+                        match peer.accept_chunk(chunk)? {
+                            Some(complete) => {
+                                message = complete;
+                                reassembled = true;
+                            }
+                            None => break,
+                        }
                     }
-                    let parsed = parse_frame(&message)?;
-                    if peer.reject_unknown_fields(&parsed.frame, &parsed.ignored)? {
-                        continue;
-                    }
-                    peer.receive(parsed.frame)?;
                 })();
                 if let (Err(error), Some(peer)) = (result, weak.upgrade()) {
                     Self(peer).close(error);
@@ -2130,7 +2267,50 @@ impl Connection {
         if let Some(error) = &self.0.calls.lock().unwrap().closed {
             return Err(error.clone());
         }
-        self.0.outbound.push(queued, bytes)
+        let outgoing = self.outgoing(bytes);
+        self.0.outbound.push(queued, outgoing)
+    }
+    /// What to queue for `bytes`: the frame itself, or its chunks when it is
+    /// over the channel's limit and both ends declared `chunked` (#1361).
+    fn outgoing(&self, bytes: Vec<u8>) -> Outgoing {
+        let Some(limit) = self.0.max_message else {
+            return Outgoing::Frame(bytes);
+        };
+        if bytes.len() <= limit || !self.chunks() {
+            return Outgoing::Frame(bytes);
+        }
+        let n = self.0.transfers.fetch_add(1, Ordering::Relaxed) + 1;
+        Outgoing::Chunked {
+            bytes,
+            transfer: format!("{}{n}", self.0.local_prefix),
+            limit,
+        }
+    }
+    /// Whether this side and the far end declared `chunked`, and the
+    /// channel's limit leaves room for a chunk frame (#1361).
+    fn chunks(&self) -> bool {
+        self.supports(chunks::CHUNKED)
+            && self.declares(chunks::CHUNKED)
+            && self
+                .0
+                .max_message
+                .is_some_and(|limit| chunks::slice_size(limit) > 0)
+    }
+    /// The largest frame this side may send: the channel's limit, or the
+    /// reassembly cap when the far end takes chunks (#1361, SESS-88).
+    fn send_limit(&self) -> Option<usize> {
+        let cap = self.0.max_transfer;
+        match self.0.max_message {
+            // Chunks lift the channel's per-message limit; the session's own
+            // cap still bounds the whole frame (#1361).
+            Some(_) if self.chunks() => Some(cap),
+            // Without chunks the channel's limit binds, and so does the
+            // session's cap.
+            Some(limit) => Some(limit.min(cap)),
+            // A channel with no limit is still bounded by the session's cap:
+            // no session is unlimited.
+            None => Some(cap),
+        }
     }
     fn send(&self, call: Operation, mut waiting: Waiting) -> Result<String, Error> {
         let mut queued = self.0.outbound.queued.lock().unwrap();
@@ -2238,7 +2418,7 @@ impl Connection {
                 Vec::new(),
             ),
         };
-        let bytes = match self.serialized(&frame, self.0.max_message, &described) {
+        let bytes = match self.serialized(&frame, self.send_limit(), &described) {
             Ok(bytes) => bytes,
             Err(error) => {
                 self.ungrant(grants);
@@ -2970,6 +3150,22 @@ impl Connection {
             }
         }
     }
+    /// The far end's `chunk` (#1361): buffer it, and give back a frame's
+    /// bytes once its transfer is complete. A `chunk` before the greeting,
+    /// from a far end that did not declare `chunked`, out of its transfer's
+    /// order, or past the reassembly cap ends the session: a chunk belongs
+    /// to no call, so there is nothing smaller to fail.
+    fn accept_chunk(&self, chunk: Chunk) -> Result<Option<Vec<u8>>, Error> {
+        if !matches!(*self.0.ready.borrow(), Some(Ok(()))) {
+            return Err(transport("request before protocol handshake"));
+        }
+        if !self.supports(chunks::CHUNKED) {
+            return Err(transport(
+                "chunk frame from a far end that did not declare chunked",
+            ));
+        }
+        self.0.reassembly.lock().unwrap().accept(chunk)
+    }
     fn receive(&self, frame: Frame) -> Result<(), Error> {
         if let Some(error) = &self.0.calls.lock().unwrap().closed {
             return Err(error.clone());
@@ -3537,7 +3733,7 @@ impl Connection {
                 Some(call) => format!("{call}: {what} cannot be sent"),
                 None => format!("{what} cannot be sent"),
             };
-            let bytes = match self.serialized(&frame, self.0.max_message, &described) {
+            let bytes = match self.serialized(&frame, self.send_limit(), &described) {
                 Ok(bytes) => Ok(bytes),
                 Err(error) => {
                     self.ungrant(std::mem::take(&mut grants));
@@ -3736,16 +3932,29 @@ pub(crate) struct ParsedFrame {
 /// past serde_json's own limit of 128. The JSON is read once into a value so
 /// unknown fields can be found without denying the whole frame (#635); the
 /// frame is then decoded from that value.
+/// [`parse_json`] and [`frame_from`] together: a frame from its bytes.
+#[cfg(test)]
 pub(crate) fn parse_frame(text: &[u8]) -> Result<ParsedFrame, Error> {
+    let value = parse_json(text)?;
+    frame_from(text, &value)
+}
+
+/// The frame `text` holds as JSON, past serde_json's nesting limit of 128
+/// (the caller checked [`MAX_FRAME_DEPTH`] first). A reader that must look at
+/// the `op` before decoding the frame reads it once here (#1361).
+pub(crate) fn parse_json(text: &[u8]) -> Result<Json, Error> {
     use serde::Deserialize;
-    let value: Json = {
-        let mut deserializer = serde_json::Deserializer::from_slice(text);
-        deserializer.disable_recursion_limit();
-        let value = Json::deserialize(&mut deserializer).map_err(transport)?;
-        deserializer.end().map_err(transport)?;
-        value
-    };
-    let ignored = unknown_fields(&value);
+    let mut deserializer = serde_json::Deserializer::from_slice(text);
+    deserializer.disable_recursion_limit();
+    let value = Json::deserialize(&mut deserializer).map_err(transport)?;
+    deserializer.end().map_err(transport)?;
+    Ok(value)
+}
+
+/// The frame `text` holds, decoded from its parsed `value`.
+pub(crate) fn frame_from(text: &[u8], value: &Json) -> Result<ParsedFrame, Error> {
+    use serde::Deserialize;
+    let ignored = unknown_fields(value);
     let mut deserializer = serde_json::Deserializer::from_slice(text);
     deserializer.disable_recursion_limit();
     let frame = Frame::deserialize(&mut deserializer).map_err(transport)?;
