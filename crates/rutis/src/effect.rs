@@ -237,18 +237,39 @@ pub(crate) async fn run_cleanups(
 /// still runs it.
 pub struct Disposer {
     run: Option<Box<dyn FnOnce() -> BoxFuture<'static, Result<(), Arc<ErrorKind>>> + Send>>,
+    /// What the kernel promised to have happened once `dispose` is called,
+    /// on the calling thread and before the cleanup starts: an event entry
+    /// leaving the table (`EventBus::register`).
+    withdrawing: Option<Box<dyn FnOnce() + Send>>,
 }
 
 impl Disposer {
     pub(crate) fn new(
         run: Box<dyn FnOnce() -> BoxFuture<'static, Result<(), Arc<ErrorKind>>> + Send>,
     ) -> Self {
-        Self { run: Some(run) }
+        Self {
+            run: Some(run),
+            withdrawing: None,
+        }
+    }
+
+    /// A disposer that also does `withdrawing` when it is disposed: on the
+    /// calling thread, before the cleanup starts, so what it withdraws is
+    /// gone from the kernel's table by the time `dispose` returns.
+    pub(crate) fn withdrawing(mut self, withdrawing: impl FnOnce() + Send + 'static) -> Self {
+        self.withdrawing = Some(Box::new(withdrawing));
+        self
     }
 
     /// Runs the cleanup now and waits for it to finish. If it is already
-    /// running or done, waits for the same result.
+    /// running or done, waits for the same result. A withdrawal the kernel
+    /// attached to it (an event entry leaves the table) happens here, on the
+    /// calling thread, before the cleanup starts: no dispatch after this
+    /// call selects the entry, even while the cleanup runs.
     pub fn dispose(mut self) -> BoxFuture<'static, Result<(), Arc<ErrorKind>>> {
+        if let Some(withdrawing) = self.withdrawing.take() {
+            withdrawing();
+        }
         match self.run.take() {
             Some(run) => run(),
             None => Box::pin(async { Ok(()) }),

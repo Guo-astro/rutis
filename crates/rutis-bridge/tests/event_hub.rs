@@ -1079,14 +1079,19 @@ async fn a_session_ending_with_a_cleanup_still_queued_reports_it() {
 /// `rows.ended` takes its place in frame order with the session's
 /// `events.*` operations (events protocol §7.1): an `events.on` sent before
 /// it is applied first, and an `events.dispatch` sent after it no longer
-/// reaches the ended row.
+/// reaches the ended row, in every non-emit mode. The kernel-side
+/// withdrawal this rests on is pinned without a race by
+/// `events/hub.rs::tests::a_rows_end_withdraws_its_entries_before_the_next_non_emit_dispatch`;
+/// this walks the wire once per mode.
 #[tokio::test(flavor = "multi_thread")]
 async fn rows_ended_is_applied_in_frame_order_with_event_operations() {
     within("rows.ended order", async {
         let rig = rig().await;
         rig.load("other", &[]).await;
-        // Each round races once; one round alone may pass by luck.
-        for round in 0..40 {
+        for (round, mode) in ["serial", "parallel", "bail", "waterfall"]
+            .into_iter()
+            .enumerate()
+        {
             let row = format!("r{round}");
             let name = format!("t/ended{round}");
             rig.load(&row, &[]).await;
@@ -1103,7 +1108,7 @@ async fn rows_ended_is_applied_in_frame_order_with_event_operations() {
                     "events.on",
                     Value::List(vec![Value::Data(json!({
                         "id": row, "name": name, "row": row, "plugin": "fake",
-                        "kind": "async", "prepend": false, "global": false,
+                        "kind": "sync", "prepend": false, "global": false,
                     }))]),
                 )
                 .unwrap();
@@ -1114,7 +1119,7 @@ async fn rows_ended_is_applied_in_frame_order_with_event_operations() {
             let mut fields = BTreeMap::new();
             fields.insert("row".into(), Value::Data(json!("other")));
             fields.insert("name".into(), Value::Data(json!(name)));
-            fields.insert("mode".into(), Value::Data(json!("parallel")));
+            fields.insert("mode".into(), Value::Data(json!(mode)));
             fields.insert("args".into(), Value::List(vec![]));
             let dispatch = rig
                 .far
@@ -1139,7 +1144,7 @@ async fn rows_ended_is_applied_in_frame_order_with_event_operations() {
                 .collect();
             assert!(
                 !reached.contains(&json!(row)),
-                "round {round}: the dispatch reached the ended row"
+                "round {round}: the {mode} dispatch reached the ended row"
             );
         }
     })

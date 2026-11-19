@@ -327,50 +327,50 @@ impl EventBus {
         let owner_ctx = ctx.clone();
         let mut added: Option<u64> = None;
         let pending = &mut added;
-        let registered = ctx.register_internal_effect_named(label, move |fiber, generation, _| {
-            let mut state = bus.core.state.lock().unwrap();
-            let id = state.table.next_id();
-            let position = state.table.position(opts.prepend);
-            let entry = Arc::new(Entry {
-                id,
-                position,
-                name,
-                prefix,
-                once: opts.once,
-                prepend: opts.prepend,
-                info,
-                origin,
-                body,
-                ctx: owner_ctx,
-                owner: fiber.owner.clone(),
-                generation,
-                withdrawn: Default::default(),
-                claimed: Default::default(),
-                calls: AtomicU64::new(0),
-            });
-            state.table.insert(entry.clone());
-            *pending = bus.enqueue(&state, vec![TableChange::Added(entry.table_entry())]);
-            drop(state);
-            let bus = bus.clone();
-            Ok(Effect::Disposer(Box::new(move || {
-                entry.withdrawn.store(true, Ordering::SeqCst);
-                bus.change(|table| {
-                    let removed = table.remove(&entry);
-                    let changes = if removed {
-                        vec![TableChange::Removed(entry.table_entry())]
-                    } else {
-                        Vec::new()
-                    };
-                    ((), changes)
+        let mut placed: Option<Arc<Entry>> = None;
+        let entry_out = &mut placed;
+        let registered =
+            ctx.register_internal_effect_named(label, move |fiber, generation, _| {
+                let mut state = bus.core.state.lock().unwrap();
+                let id = state.table.next_id();
+                let position = state.table.position(opts.prepend);
+                let entry = Arc::new(Entry {
+                    id,
+                    position,
+                    name,
+                    prefix,
+                    once: opts.once,
+                    prepend: opts.prepend,
+                    info,
+                    origin,
+                    body,
+                    ctx: owner_ctx,
+                    owner: fiber.owner.clone(),
+                    generation,
+                    withdrawn: Default::default(),
+                    claimed: Default::default(),
+                    calls: AtomicU64::new(0),
                 });
-                Ok(())
-            })))
-        });
+                state.table.insert(entry.clone());
+                *pending = bus.enqueue(&state, vec![TableChange::Added(entry.table_entry())]);
+                drop(state);
+                let bus = bus.clone();
+                *entry_out = Some(entry.clone());
+                Ok(Effect::Disposer(Box::new(move || {
+                    withdraw(&bus, &entry);
+                    Ok(())
+                })))
+            })?;
         // The entry is in the table; its watchers hear it before `on` returns.
         if let Some(seq) = added {
             self.deliver(seq);
         }
-        registered
+        // A committed registration inserted its entry; its disposer takes it
+        // out on the disposing thread, before the cleanup it starts (#1318),
+        // so a dispatch after the disposal selects nothing of it.
+        let entry = placed.expect("a committed registration inserted its entry");
+        let bus = self.clone();
+        Ok(registered.withdrawing(move || withdraw(&bus, &entry)))
     }
 
     /// Register a remote entry: its calls go to `listener` (protocol spec
@@ -1111,6 +1111,24 @@ impl EventBus {
         drop(flight);
         out
     }
+}
+
+/// Take `entry` out of the table now, on the calling thread, and tell its
+/// watchers: what a disposer does before the cleanup it starts, so a
+/// dispatch after `dispose` returns selects nothing of it (#1318). The
+/// fiber's unload runs the same cleanup later; the second call finds the
+/// entry gone and changes nothing.
+fn withdraw(bus: &EventBus, entry: &Arc<Entry>) {
+    entry.withdrawn.store(true, Ordering::SeqCst);
+    bus.change(|table| {
+        let removed = table.remove(entry);
+        let changes = if removed {
+            vec![TableChange::Removed(entry.table_entry())]
+        } else {
+            Vec::new()
+        };
+        ((), changes)
+    });
 }
 
 fn notify(watchers: &[Watcher], changes: &[TableChange]) {
