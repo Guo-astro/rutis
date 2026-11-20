@@ -2,7 +2,7 @@
 
 [中文](quality-status.md) · [Quality standard](quality-standard.en.md)
 
-Status: kept up to date with the code. Last updated: 2026-11-20 (#1372: retired the 1,825-row static rule tracker `docs/formal-trace/`, `tools/formal-trace*.mjs`, and `model-pr.yml`; trimmed `docs/guarantees.en.md` to the 40 active core promises with a forward form check; wired the 6 `rutis-loader` and `rutis-host` shuttle models into `ci.yml` and `stress.yml` (all 65 across four crates); `specs/*/run.sh` skips the 95 `*-mut-*` mutation configs by default (224 → 129) and `nightly.yml` triggers `specs` only on `specs/**` changes; kept the 11 passing 0.23 Kani harnesses and 6 Kotlin Fray suites as on-demand toolboxes). Previous: 2026-11-18 (#1270 second half + #1099 protocol 5: 15 kernel/event rules decided one by one, model 28 and the two-consumer eviction test added, kernel models 27 → 28 and four crates 63 → 65 (bridge gained one in #1331); protocol 5's cancel acknowledgement and the migration guide landed). Earlier history is in `git log`.
+Status: kept up to date with the code. Last updated: 2026-11-20 (#1375: moved OS-independent jobs back to Linux, ran `rust` and `rust-runtimes` in parallel, added Gradle caches, and removed duplicate PR work; the first ordinary code PR after #1375, #1384, took 10.0 minutes from push to result, meeting the ≤ 10-minute target, §8.5). Previous: 2026-11-20 (#1372: retired the 1,825-row static rule tracker `docs/formal-trace/`, `tools/formal-trace*.mjs`, and `model-pr.yml`; trimmed `docs/guarantees.en.md` to the 40 active core promises with a forward form check; wired the 6 `rutis-loader` and `rutis-host` shuttle models into `ci.yml` and `stress.yml` (all 65 across four crates); `specs/*/run.sh` skips the 95 `*-mut-*` mutation configs by default (224 → 129) and `nightly.yml` triggers `specs` only on `specs/**` changes; kept the 11 passing 0.23 Kani harnesses and 6 Kotlin Fray suites as on-demand toolboxes). Earlier: 2026-11-18 (#1270 second half + #1099 protocol 5: 15 kernel/event rules decided one by one, model 28 and the two-consumer eviction test added, kernel models 27 → 28 and four crates 63 → 65 (bridge gained one in #1331); protocol 5's cancel acknowledgement and the migration guide landed). Earlier history is in `git log`.
 Companion to: [Quality standard](quality-standard.en.md). This document maps the standard, clause by clause, to the current implementation: which clauses are met, which partly, what is missing and how it will be added. The standard describes rules that stay the same; the file names, test names, issue numbers and versions here change with the implementation. Which tests verify each guarantee is in the [guarantee register](guarantees.en.md).
 
 ---
@@ -711,6 +711,7 @@ The problems then: no `concurrency`; no selection by change, so a docs-only PR r
 | Platform-specific tests on macOS and Windows: first `value_roundtrip` and `fault_links` added, then every test file by default, excluding only the platform-independent ones (`PURE_TESTS_*`) | Q10.2, Q7.8 | #313, #328 |
 | A `multiprocess` job in nightly `stress.yml`: the bridge's and loader's multi-process tests repeated over many rounds | Q7.3 | #245 |
 | Self-hosted runners: macOS jobs such as `dylib-macos` and `sdk-repro-macos`, and jobs that do not depend on the OS (`links`, `js-py`, `msrv`, `checks`, `release-dry-run`, `semver-rutis`, `changes`, `ci-ok`) run on self-hosted macOS by default (repository variables `MACOS_RUNNER` and `GATE_RUNNER` switch them back); the Linux jobs and `runtimes-windows` can be switched to self-hosted runners with `LINUX_RUNNER` and `WINDOWS_RUNNER` (GitHub's runners by default) | Q12.6.2 | #333, #348, #350 |
+| Lighter ordinary-PR critical path: OS-independent jobs moved back to Linux and no longer take macOS slots; `rust` and `rust-runtimes` run in parallel; Gradle caches added; PRs no longer rebuild the Kotlin fatJar or repeat the Node/Python unit tests `js-py` already ran; nightly and stress jobs tiered by frequency | Q12.2, Q12.6, Q12.7 | #1375 |
 
 `network-macos` runs on the self-hosted macOS machine too (repository variable `NETWORK_MACOS_RUNNER`; moved once #344 fixed #287, ci.md §10).
 
@@ -734,9 +735,26 @@ From `node tools/ci-stats.mjs 40 ci.yml --since 2026-10-11`. Jobs were being mov
 | Clause | Gap |
 | --- | --- |
 | Q12.4 | ~~On main, runs are grouped by ref, so not every merge gets its own complete result~~: the standard now has the nightly run check every commit since the last one (#369); met |
-| Q12.6 | The median for ordinary code PRs is 15.6 minutes (§8.3) against a 10-minute target; a week of data with the self-hosted runners settled is needed to judge |
+| Q12.6 | The old median for ordinary code PRs was 15.6 minutes (§8.3); the first ordinary code PR after #1375 measured 10.0 minutes (§8.5), meeting the target; there is one sample so far, keep tracking with `ci-stats` |
 | Q12.7 | In full runs the single-machine and two-machine reproducibility checks both run |
 | Q12.1 | The old record said nightly lacked TLC, but current CI runs the `specs` job on PRs that change `specs/**`; nightly runs it only when the corresponding paths changed (or a workflow/configuration path that triggers the full plan changed), while Monday's weekly run unconditionally runs all existing models. The full model matrix, trace validation and cross-language conformance still need one daily/release report. Weekly still lacks longer host soaks and benchmarks (the hour-long host soak S8 now runs nightly, #192). A real network (S5 with containers + netem) now runs nightly (report only, #341 → #433); the newest Cordis-plugin baseline also runs nightly (report only, #190 → #429); fuzzing and the existing models run in stress/nightly (#179 → #425) |
+
+### 8.5 Measurement (2026-11-20, the first ordinary code PR after #1375)
+
+#1384 is the first ordinary code PR after #1375 merged (it changes only `node/**`). Run `44772162074`: **10.0 minutes** from push to result (16:19:07 → 16:29:07), meeting the 10-minute target, with all 39 checks passing.
+
+| Job | Duration |
+| --- | ---: |
+| `rust` | 9.6 min |
+| `rust-runtimes` | 8.4 min |
+| `network-macos` | 5.9 min |
+| `runtimes-windows` | 5.6 min |
+| `e2e`, `js-py`, `lint` | 2.1–2.2 min |
+| the rest | < 1 min |
+
+- Compared with §8.3, an ordinary PR no longer waits 15–45 minutes behind OS-independent jobs holding macOS slots.
+- The critical path is now `rust`; #1373 will compress compilation and linking further by merging integration-test binaries.
+- There is one sample only: the target is reachable, and the median still needs to accumulate through `node tools/ci-stats.mjs`.
 
 ## 9. Plan
 
