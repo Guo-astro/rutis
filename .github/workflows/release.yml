@@ -498,9 +498,14 @@ jobs:
             done
             return 1
           }
+          # The asset list is read once, by name: the list endpoint ignores
+          # `?name=` and answers every asset, so a per-asset check that only
+          # asks whether the answer is non-empty skips every asset after the
+          # first one uploaded (0.23.0 shipped with one asset that way).
+          have=$(api_call "$api/releases/$id/assets?per_page=100" | jq -r '.[].name' 2>/dev/null || true)
           for file in dist/rutis-host-*; do
             name=$(basename "$file")
-            if [ -n "$(api_call "$api/releases/$id/assets?name=$name" | jq -r 'if type == "array" then (.[0].id // "") else (.id // "") end')" ]; then
+            if grep -qxF -- "$name" <<<"$have"; then
               echo "$name is uploaded already"
               continue
             fi
