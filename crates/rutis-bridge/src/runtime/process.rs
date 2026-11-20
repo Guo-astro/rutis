@@ -497,16 +497,32 @@ impl Imports {
         // withdrawn after its row was forgotten (`forget_exports`), which
         // must not leave an entry behind for every row unloaded (#191).
         let followed = self.events.is_some() || self.exported.lock().unwrap().contains_key(&id);
-        {
+        let (stale, unused) = {
             let mut slots = self.slots.lock().unwrap();
             if handle.is_none() && !followed && !slots.contains_key(&id) {
                 return;
             }
             let entry = slots.entry(id.clone()).or_insert((None, 0));
             if version <= entry.1 {
-                return;
+                (
+                    true,
+                    handle
+                        .as_ref()
+                        .filter(|handle| entry.0.as_ref() != Some(*handle))
+                        .cloned(),
+                )
+            } else {
+                *entry = (handle.clone(), version);
+                (false, None)
             }
-            *entry = (handle.clone(), version);
+        };
+        if stale {
+            if let Some(handle) = unused {
+                if let Some(process) = self.process.get().and_then(std::sync::Weak::upgrade) {
+                    process.release(&handle);
+                }
+            }
+            return;
         }
         if let Some(events) = &self.events {
             events.changed(&id, handle.clone(), version);
@@ -1701,6 +1717,17 @@ impl Process {
             .unwrap()
             .get(name)
             .and_then(|(handle, _)| handle.clone())
+    }
+
+    /// The handle and version of the object currently in an exported slot.
+    pub(crate) fn service_versioned(&self, name: &str) -> (Option<String>, u64) {
+        self.imports
+            .slots
+            .lock()
+            .unwrap()
+            .get(name)
+            .cloned()
+            .unwrap_or((None, 0))
     }
 
     /// Tell the Cordis side that no Rust proxy uses `handle` any longer.

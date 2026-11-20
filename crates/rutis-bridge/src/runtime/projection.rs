@@ -53,6 +53,8 @@ struct Refusals {
 struct Slot {
     /// Newest handle reported by the Cordis side.
     handle: Option<String>,
+    /// Version of `handle`: an older notification must not override a newer one.
+    version: u64,
     /// Handle the native binding currently holds.
     applied: Option<String>,
     /// Handle whose proxy is being published outside the lock.
@@ -287,6 +289,7 @@ impl Projection {
             name.to_owned(),
             Slot {
                 handle: None,
+                version: 0,
                 applied: None,
                 publishing: None,
                 withdrawing: false,
@@ -301,7 +304,11 @@ impl Projection {
         {
             let mut state = self.state.lock().unwrap();
             for (name, slot) in state.slots.iter_mut() {
-                slot.handle = process.service(name);
+                let (handle, version) = process.service_versioned(name);
+                if version > slot.version {
+                    slot.handle = handle;
+                    slot.version = version;
+                }
             }
             state.target = Some((ctx.clone(), process.clone()));
             state.runtime = Some(tokio::runtime::Handle::current());
@@ -332,6 +339,7 @@ impl Projection {
             }
             for slot in state.slots.values_mut() {
                 slot.handle = None;
+                slot.version = u64::MAX;
             }
         }
         if let Err(error) = self.publish() {
@@ -521,25 +529,46 @@ impl ServiceEvents for Projection {
         self.refuse(why);
     }
 
-    fn changed(&self, name: &str, handle: Option<String>, _version: u64) {
-        let skipped = {
+    fn changed(&self, name: &str, handle: Option<String>, version: u64) {
+        let (stale, skipped) = {
             let mut state = self.state.lock().unwrap();
             let process = state.target.as_ref().map(|(_, process)| process.clone());
             let Some(slot) = state.slots.get_mut(name) else {
                 return;
             };
-            let previous = std::mem::replace(&mut slot.handle, handle);
-            // A handle replaced before it got a native proxy is released here;
-            // applied or in-flight proxies release their handle when dropped.
-            previous
-                .filter(|previous| {
-                    slot.applied.as_ref() != Some(previous)
-                        && slot.publishing.as_ref() != Some(previous)
-                })
-                .zip(process)
+            // An older version never overrides a newer one. At the same
+            // version, a withdrawal (`None`, as `forget_exports` sends at the
+            // slot's last version) wins over a handle so a forgotten row's
+            // service is withdrawn and cannot be resurrected, while a later
+            // reload on the same projection still advances with a higher version.
+            if version < slot.version || (version == slot.version && handle.is_some()) {
+                let unused = handle
+                    .filter(|handle| {
+                        slot.handle.as_ref() != Some(handle)
+                            && slot.applied.as_ref() != Some(handle)
+                            && slot.publishing.as_ref() != Some(handle)
+                    })
+                    .zip(process);
+                (true, unused)
+            } else {
+                slot.version = version;
+                let previous = std::mem::replace(&mut slot.handle, handle);
+                // A handle replaced before it got a native proxy is released here;
+                // applied or in-flight proxies release their handle when dropped.
+                let unused = previous
+                    .filter(|previous| {
+                        slot.applied.as_ref() != Some(previous)
+                            && slot.publishing.as_ref() != Some(previous)
+                    })
+                    .zip(process);
+                (false, unused)
+            }
         };
         if let Some((handle, process)) = skipped {
             process.release(&handle);
+        }
+        if stale {
+            return;
         }
         if let Err(error) = self.publish() {
             eprintln!(
