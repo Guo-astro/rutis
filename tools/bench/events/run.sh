@@ -80,7 +80,7 @@ dsh() {
   test -d "$repo/node/baseline/node_modules" \
     || { echo "run: npm --prefix node/baseline ci" >&2; exit 1; }
   local binary
-  binary="$(cargo test -q -p rutis-bridge --test dsh_baseline --no-run --message-format=json \
+  binary="$(cargo test -q -p rutis-bridge --test lang dsh_baseline:: --no-run --message-format=json \
     --manifest-path "$repo/Cargo.toml" \
     | python3 -c 'import json,sys
 for line in sys.stdin:

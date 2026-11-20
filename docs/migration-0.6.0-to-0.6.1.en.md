@@ -98,7 +98,7 @@ loader.set_disabled("main", true).await?;
 
 The second argument to `reconcile` specifies the editable layer. `None` means read-only: the loader still loads plugins from all layers, but modifications such as `update` and `set_disabled` return `LoaderError::NoEditableLayer`.
 
-Changes are in memory by default (`LoaderOptions::default()` uses `NoPersist`). To retain them across restarts, implement `Persist`: after every change the loader passes it the editable layer to save. `Version` detects external file changes; on conflict, the loader replays the modification on top of the latest content. See rutis-dsh's `UserLayerStore` for a complete file implementation. This example is compiled and run by `crates/rutis-loader/tests/migration_example.rs`.
+Changes are in memory by default (`LoaderOptions::default()` uses `NoPersist`). To retain them across restarts, implement `Persist`: after every change the loader passes it the editable layer to save. `Version` detects external file changes; on conflict, the loader replays the modification on top of the latest content. See rutis-dsh's `UserLayerStore` for a complete file implementation. This example is compiled and run by `crates/rutis-loader/tests/rows/migration_example.rs`.
 
 The plugin itself need not change: `PluginFactory` constructs it as before. To expose a configuration schema to the loader, register a schema (`Builtins::register` generates one automatically for configurations implementing `JsonSchema`). A plugin may optionally support:
 

@@ -15,7 +15,7 @@
   - `bail`：同步的 `ctx.bail(...)`，同步监听器返回参数。
 
   插件只用公开的插件 API（`ctx.on`、`ctx.emit`、`ctx.serial`、`ctx.bail`），由 `rutis-host run` 按 `rutis.json` 跑起来，不碰 SDK 内部的分发代码，所以删本地分发后不用改就能再跑。
-- **dsh 基线**：`rutis-bridge` 的测试 `dsh_baseline`（`crates/rutis-bridge/tests/dsh_baseline.rs`）跑一遍的总时间：它先在原生 Cordis 里跑一遍 `node/baseline` 的场景，再把同样的已发布 Cordis 插件经 rutis 挂载、逐个调用并对比。连跑 5 次取中位数。同时单独记原生 Cordis 那一半（`node native.mjs`）作参照。
+- **dsh 基线**：`rutis-bridge` 的测试 `dsh_baseline`（`crates/rutis-bridge/tests/lang/dsh_baseline.rs`）跑一遍的总时间：它先在原生 Cordis 里跑一遍 `node/baseline` 的场景，再把同样的已发布 Cordis 插件经 rutis 挂载、逐个调用并对比。连跑 5 次取中位数。同时单独记原生 Cordis 那一半（`node native.mjs`）作参照。
 
 ## 怎么运行
 

@@ -62,7 +62,7 @@ plain，debug，N=400，每个实例，活跃分配：
 
 不覆盖：
 
-- **语言运行时进程**：本测试只有 Rust 行，不启动 Node、Python 等；运行时进程里的行、服务、代理、导出槽和对象句柄的残留由 `crates/rutis-loader/tests/instance_runtimes.rs`（D2/D3）和 S7（`tests/e2e/tests/install/embedding.rs`，PR 20 次、每晚 3000 次）覆盖；
+- **语言运行时进程**：本测试只有 Rust 行，不启动 Node、Python 等；运行时进程里的行、服务、代理、导出槽和对象句柄的残留由 `crates/rutis-loader/tests/runtimes/instance_runtimes.rs`（D2/D3）和 S7（`tests/e2e/tests/install/embedding.rs`，PR 20 次、每晚 3000 次）覆盖；
 - **非零服务绑定的实例内残留**：`plain`/`watch` 不 `provide` 服务，本测试只验证绑定的零增量；实例内同名服务隔离和关闭后的绑定清除由 `instance_services.rs`、`instance_runtimes.rs` 和 S7 覆盖；
 - **macOS / Windows 的 OS 线程数**：`Counts::threads` 在非 Linux 上为 0，不做断言；完整运行在这两个平台仍检查其余计数；
 - fd、堆的 RSS、分配器内部碎片：不在本测试范围。

@@ -1,0 +1,863 @@
+//! Objects with methods between Node, Bun and Python, through a real host
+//! (#687):
+//! the owner's row hands its object to the holder's row in the other
+//! runtime, which calls its methods (the owner's state changes), gets it in
+//! an array and as an event argument, passes it back (the owner gets the
+//! original) and on to a Rust host service (a third language). The object
+//! stays callable after the owner's row unloads; once the owner's runtime
+//! is gone, calls on it fail with `peer-gone`, saying where it came from.
+//! Run both ways between Node and Bun, Node and Python, Node and Go, and,
+//! with their features, Node and Swift (macOS), Node and Kotlin. A Go or
+//! Swift runtime starts on demand: once its owner's row unloads, it stops
+//! when idle, and calls on its objects say so.
+//!
+//! Node and Python are always there; the Bun, Go, Swift and Kotlin cases
+//! run when `RUTIS_TEST_RUNTIMES` lists their language (CI runs the Swift
+//! ones in the Swift job, the Kotlin ones in the Kotlin job), each case
+//! starting only the runtimes it uses.
+#![cfg(all(unix, feature = "runtimes"))]
+
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use crate::common::runtimes::{
+    greet_as_main, layer, repo, row_state, rows_stage, Probe, TestRuntime, COLD,
+};
+use rutis::host::CtxHost;
+use rutis::Ctx;
+use rutis_bridge::pipe::Processes;
+use rutis_bridge::runtime::RuntimeState;
+use rutis_bridge::session::{host_key, settle, HostDispatch, Reply, Value as RpcValue};
+use rutis_loader::report::EntryStatus;
+#[cfg(any(feature = "go", all(feature = "swift", target_os = "macos")))]
+use rutis_loader::runtime::binary::{BinaryLanguage, BinaryRuntimesHandle};
+#[cfg(feature = "go")]
+use rutis_loader::runtime::go::Go;
+#[cfg(all(feature = "swift", target_os = "macos"))]
+use rutis_loader::runtime::swift::Swift;
+use rutis_loader::runtime::SessionResolver;
+use rutis_loader::{Chain, Loader, LoaderOptions, LoaderPlugin, ServiceCatalog};
+use serde_json::{json, Value};
+
+/// The owner: makes a counter and drives the holder with it.
+const OWNER: &str = r#"
+import { definePlugin } from 'SDK'
+class Counter { n = 0; inc() { return ++this.n } value() { return this.n } }
+const made = new Counter()
+export default definePlugin({
+  inject: ['holder'],
+  provides: { owner: { run: 'async', announce: 'async', wrongs: 'async' } },
+  apply(ctx) {
+    const holder = ctx.use('holder')
+    ctx.provide('owner', {
+      async run() {
+        await holder.take(made)
+        await holder.inc(); await holder.inc()
+        const listed = await holder.listed([{ data: 1 }, made])
+        const home = (await holder.back()) === made
+        const viaRust = await holder.rust()
+        const missing = await holder.nope()
+        const plain = await holder.plain({ ping: () => 'pong' })
+        return `${made.n} ${listed} ${home} ${viaRust} ${plain} | ${missing}`
+      },
+      announce() { ctx.emit('counter', made); return 'sent' },
+      // What a Go holder's parameters that cannot take an object say.
+      async wrongs() {
+        const said = []
+        for (const method of ['wrong', 'text']) {
+          try { await holder[method](made); said.push('taken') } catch (e) { said.push(`${e.code}: ${e.message}`) }
+        }
+        return said.join(' | ')
+      },
+    })
+  },
+})
+"#;
+
+/// The holder: keeps the proxy it is given and calls it.
+const HOLDER: &str = r#"
+import { definePlugin } from 'SDK'
+let kept
+export default definePlugin({
+  inject: ['poker', 'probe'],
+  provides: { holder: { take: 'async', inc: 'async', listed: 'async', back: 'async', rust: 'async', nope: 'async', plain: 'async', after: 'async' } },
+  apply(ctx) {
+    const probe = ctx.use('probe'), poker = ctx.use('poker')
+    ctx.on('counter', async counter => { probe.record(`event: ${counter === kept} ${await counter.value()}`) })
+    ctx.provide('holder', {
+      take(counter) { kept = counter; return String(counter) },
+      inc() { return kept.inc() },
+      listed([data, counter]) { return `${JSON.stringify(data)} ${counter === kept}` },
+      back() { return kept },
+      rust() { return poker.poke(kept) },
+      async nope() { try { await kept.nope(); return 'answered' } catch (e) { return `${e.code}: ${e.message}` } },
+      plain(object) { return object.ping() },
+      async after() { try { return String(await kept.inc()) } catch (e) { return `${e.code}: ${e.message}` } },
+    })
+  },
+})
+"#;
+
+/// The owner in Python (a class instance with a method, where JavaScript
+/// passes a plain object with a function).
+const PY_OWNER: &str = r#"
+inject = ["holder"]
+
+
+class Counter:
+    def __init__(self):
+        self.n = 0
+
+    def inc(self):
+        self.n += 1
+        return self.n
+
+    def value(self):
+        return self.n
+
+
+class Pinger:
+    def ping(self):
+        return "pong"
+
+
+made = Counter()
+
+
+class Owner:
+    def __init__(self, ctx):
+        self.ctx = ctx
+
+    async def run(self):
+        holder = self.ctx.use("holder")
+        await holder.take(made)
+        await holder.inc()
+        await holder.inc()
+        listed = await holder.listed([{"data": 1}, made])
+        home = "true" if (await holder.back()) is made else "false"
+        via_rust = await holder.rust()
+        missing = await holder.nope()
+        plain = await holder.plain(Pinger())
+        return f"{made.n} {listed} {home} {via_rust} {plain} | {missing}"
+
+    def announce(self):
+        self.ctx.emit("counter", made)
+        return "sent"
+
+
+provides = {"owner": Owner}
+
+
+def apply(ctx, config):
+    ctx.provide("owner", Owner(ctx))
+"#;
+
+/// The holder in Python.
+const PY_HOLDER: &str = r#"
+import json
+
+inject = ["poker", "probe"]
+kept = None
+
+
+def said(error):
+    return f"{getattr(error, 'code', None)}: {getattr(error, 'message', error)}"
+
+
+class Holder:
+    def __init__(self, ctx):
+        self.ctx = ctx
+
+    def take(self, counter):
+        global kept
+        kept = counter
+        return repr(counter)
+
+    async def inc(self):
+        return await kept.inc()
+
+    def listed(self, items):
+        data, counter = items
+        return f"{json.dumps(data, separators=(',', ':'))} {'true' if counter is kept else 'false'}"
+
+    def back(self):
+        return kept
+
+    async def rust(self):
+        return await self.ctx.use("poker").poke(kept)
+
+    async def nope(self):
+        try:
+            await kept.nope()
+            return "answered"
+        except Exception as error:
+            return said(error)
+
+    async def plain(self, thing):
+        return await thing.ping()
+
+    async def after(self):
+        try:
+            return str(await kept.inc())
+        except Exception as error:
+            return said(error)
+
+
+provides = {"holder": Holder}
+
+
+def apply(ctx, config):
+    probe = ctx.use("probe")
+
+    async def heard(counter):
+        probe.record(f"event: {'true' if counter is kept else 'false'} {await counter.value()}")
+
+    ctx.on("counter", heard)
+    ctx.provide("holder", Holder(ctx))
+"#;
+
+/// The host service `poker`: calls `inc` on the object it is given, as a
+/// Rust host's code does (a third language).
+struct Poker;
+
+impl HostDispatch for Poker {
+    fn invoke(&self, method: &str, args: RpcValue) -> Reply {
+        assert_eq!(method, "poke");
+        let object = args.list()?.remove(0).reference()?;
+        Ok(RpcValue::future(async move {
+            object
+                .call_method_async("inc", RpcValue::List(vec![]))
+                .await
+        }))
+    }
+
+    fn methods(&self) -> Option<Value> {
+        Some(json!({ "poke": "async" }))
+    }
+}
+
+struct Fixture {
+    root: Ctx,
+    loader: Loader,
+    probe: Probe,
+    node: Processes,
+    bun: Option<Processes>,
+    py: Processes,
+    kt: Option<Processes>,
+    /// The compiled runtime of the case, to say how it ended when a call
+    /// fails (#1094).
+    #[cfg(feature = "go")]
+    go: Option<BinaryRuntimesHandle<Go>>,
+    #[cfg(all(feature = "swift", target_os = "macos"))]
+    swift: Option<BinaryRuntimesHandle<Swift>>,
+    dir: PathBuf,
+    _dir: tempfile::TempDir,
+}
+
+/// Node and Python, and the runtime `other` (`bun`, `go`, `swift` or
+/// `kt`) when there is one.
+async fn fixture(other: Option<&str>) -> Fixture {
+    fixture_with_idle(other, false).await
+}
+
+/// [`fixture`], saying whether the compiled runtime (`go`, `swift`) stops two
+/// seconds after its last row is gone.
+///
+/// Only when that runtime is the **owner** whose row the test removes on
+/// purpose: the idle stop is then the `peer-gone` the test expects. A
+/// runtime whose rows the test keeps using must not have a two-second idle —
+/// the sweep counts a runtime as used while an entry resolves to it, and a
+/// `reconcile` lasting longer than that (a loaded CI machine) stops it under
+/// the test's feet: the next call fails with `runtime swift-multilang exited
+/// during the call` (`objects_cross.rs:413`), which is not the case under
+/// test.
+async fn fixture_with_idle(other: Option<&str>, idle: bool) -> Fixture {
+    let dir = tempfile::tempdir().unwrap();
+    let sdk = repo()
+        .join("node/rutis/src/index.mjs")
+        .canonicalize()
+        .unwrap();
+    let sdk = url::Url::from_file_path(&sdk).unwrap().to_string();
+    std::fs::write(dir.path().join("package.json"), "{}").unwrap();
+    // Python's modules in a directory of their own, its project.
+    let py = dir.path().join("py");
+    std::fs::create_dir_all(&py).unwrap();
+    for (name, text) in [("owner", PY_OWNER), ("holder", PY_HOLDER)] {
+        std::fs::write(py.join(format!("{name}.py")), text).unwrap();
+    }
+    for (name, text) in [("owner", OWNER), ("holder", HOLDER)] {
+        for extension in ["mjs", "ts"] {
+            std::fs::write(
+                dir.path().join(format!("{name}.{extension}")),
+                text.replace("SDK", &sdk),
+            )
+            .unwrap();
+        }
+    }
+    let probe = Probe::default();
+    let root = Ctx::root().unwrap();
+    root.provide_at(host_key("probe"), Arc::new(probe.clone()))
+        .unwrap();
+    root.provide_at(host_key("poker"), Arc::new(Poker)).unwrap();
+    let mut catalog = ServiceCatalog::new();
+    for name in ["probe", "poker", "owner", "holder"] {
+        catalog.register_shared(name);
+    }
+    greet_as_main(&root);
+    // One resolver for every local runtime's rows: `<runtime>:<module>`,
+    // and npm names / paths on `node`.
+    let sessions = Arc::new(SessionResolver::npm(&catalog, "node"));
+    let node = TestRuntime::node(&repo().join("node/rutis-runtime/package.json"));
+    let python = TestRuntime::python(&py);
+    let (node_processes, py_processes) = (node.processes(), python.processes());
+    let chain = Chain::new();
+    // Bun, rows `bun:<module>`.
+    let bun_processes = (other == Some("bun")).then(|| {
+        let bun = TestRuntime::bun(dir.path());
+        let processes = bun.processes();
+        sessions.runtime(bun.handle());
+        root.plugin(bun);
+        processes
+    });
+    // Go: the multilang binary's plugins, rows `go:<plugin>`.
+    #[cfg(feature = "go")]
+    let go = (other == Some("go")).then(|| {
+        Arc::new(
+            rutis_loader::runtime::binary::BinaryResolver::<rutis_loader::runtime::go::Go>::new(
+                rutis_loader::runtime::binary::Binaries::new()
+                    .file(crate::common::runtimes::go_binary()),
+            )
+            .with_catalog(&catalog)
+            .reserve(["node", "py", "bun", "kt"]),
+        )
+    });
+    #[cfg(feature = "go")]
+    let chain = match &go {
+        Some(go) => chain.with_shared(go.clone()),
+        None => chain,
+    };
+    // Kotlin: the conformance jar's plugins, rows `kt:<plugin>`.
+    let kt_processes = (other == Some("kt")).then(|| {
+        let project = dir.path().join("kt");
+        std::fs::create_dir_all(&project).unwrap();
+        let kotlin = TestRuntime::new(
+            "kt",
+            crate::common::runtimes::kotlin_launcher(&project),
+            &project,
+        );
+        let processes = kotlin.processes();
+        sessions.runtime(kotlin.handle());
+        root.plugin(kotlin);
+        processes
+    });
+    // Swift: the multilang binary's plugins, rows `swift:<plugin>`, in the
+    // runtime `swift-multilang`.
+    #[cfg(all(feature = "swift", target_os = "macos"))]
+    let swift = (other == Some("swift")).then(|| {
+        Arc::new(
+        rutis_loader::runtime::binary::BinaryResolver::<rutis_loader::runtime::swift::Swift>::new(
+            rutis_loader::runtime::binary::Binaries::new().file(crate::common::runtimes::swift_binary(
+                "RutisMultilang",
+                "multilang",
+            )),
+        )
+        .with_catalog(&catalog)
+        .reserve(["node", "py", "bun", "kt"]),
+    )
+    });
+    sessions.runtime(python.handle());
+    sessions.runtime(node.handle());
+    root.plugin(python);
+    root.plugin(node);
+    #[cfg(all(feature = "swift", target_os = "macos"))]
+    let chain = match &swift {
+        Some(swift) => chain.with_shared(swift.clone()),
+        None => chain,
+    };
+    let chain = chain.with_shared(sessions.clone());
+    let plugin = LoaderPlugin::new(
+        chain,
+        LoaderOptions {
+            catalog,
+            ..LoaderOptions::default()
+        },
+    );
+    let loader = plugin.handle();
+    sessions.attach(&loader);
+    root.plugin(plugin).await.unwrap();
+    for runtime in ["py", "node"] {
+        rows_stage(&root, &sessions, runtime).await;
+    }
+    if let Some(other @ ("bun" | "kt")) = other {
+        rows_stage(&root, &sessions, other).await;
+    }
+    // The compiled runtimes of the case: their handles stay, so that a
+    // failed call can say how they ended (#1094). Their rows' stage is
+    // `rows_stage`'s; the runtime stops two seconds after its last row is
+    // gone when `idle`.
+    #[cfg(feature = "go")]
+    let mut go_runtimes = None;
+    #[cfg(feature = "go")]
+    if let Some(go) = go {
+        let runtimes = rutis_loader::runtime::binary::BinaryRuntimes::<Go>::new(
+            go,
+            dir.path(),
+            crate::common::runtimes::spawner(),
+        )
+        .idle(idle.then_some(std::time::Duration::from_secs(2)));
+        go_runtimes = Some(runtimes.handle());
+        root.plugin(runtimes).await.unwrap();
+    }
+    #[cfg(all(feature = "swift", target_os = "macos"))]
+    let mut swift_runtimes = None;
+    #[cfg(all(feature = "swift", target_os = "macos"))]
+    if let Some(swift) = swift {
+        let runtimes = rutis_loader::runtime::binary::BinaryRuntimes::<Swift>::new(
+            swift,
+            dir.path(),
+            crate::common::runtimes::spawner(),
+        )
+        .idle(idle.then_some(std::time::Duration::from_secs(2)));
+        swift_runtimes = Some(runtimes.handle());
+        root.plugin(runtimes).await.unwrap();
+    }
+    Fixture {
+        root,
+        loader,
+        probe,
+        node: node_processes,
+        bun: bun_processes,
+        py: py_processes,
+        kt: kt_processes,
+        #[cfg(feature = "go")]
+        go: go_runtimes,
+        #[cfg(all(feature = "swift", target_os = "macos"))]
+        swift: swift_runtimes,
+        dir: dir.path().to_owned(),
+        _dir: dir,
+    }
+}
+
+impl Fixture {
+    /// What the rows and the compiled runtimes were doing, for a failed call
+    /// to print (#1094). A runtime's line says which start it is (a number
+    /// that grows when it starts again, so a restart under the test shows)
+    /// and where it is: `Ready` (running), `Starting`, or `Down(why)` — it
+    /// ended by itself, and `why` says how. One the loader stopped has no
+    /// line at all ([`noted`]). A `Ready` one also says where its session
+    /// ended, when it did.
+    fn diagnostics(&self) -> String {
+        let mut lines = vec!["the rows:".to_owned()];
+        for entry in self.loader.entries() {
+            let state = match &entry.status {
+                EntryStatus::Disabled => "disabled".to_owned(),
+                EntryStatus::Inactive => "inactive".to_owned(),
+                EntryStatus::Stopped => "stopped".to_owned(),
+                EntryStatus::Unresolved(error) => format!("unresolved: {error}"),
+                EntryStatus::Running(_) => "running".to_owned(),
+                other => format!("{other:?}"),
+            };
+            let name = entry
+                .options
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or("?");
+            lines.push(format!("  {} {name}: {state}", entry.id));
+        }
+        let mut runtimes = Vec::new();
+        #[cfg(feature = "go")]
+        if let Some(go) = &self.go {
+            noted(&mut runtimes, go);
+        }
+        #[cfg(all(feature = "swift", target_os = "macos"))]
+        if let Some(swift) = &self.swift {
+            noted(&mut runtimes, swift);
+        }
+        if !runtimes.is_empty() {
+            lines.push("the runtimes:".to_owned());
+            lines.append(&mut runtimes);
+        }
+        lines.push(format!("the probe's lines: {:?}", self.probe.lines()));
+        lines.join("\n")
+    }
+}
+
+/// [`runtime_lines`], saying so when it lists nothing: a runtime the loader
+/// stopped has no slot any more (`BinaryRuntimes` takes it out before it
+/// stops one), which is itself the answer to who ended it.
+#[cfg(any(feature = "go", all(feature = "swift", target_os = "macos")))]
+fn noted<L: BinaryLanguage>(lines: &mut Vec<String>, handle: &BinaryRuntimesHandle<L>) {
+    if runtime_lines(lines, handle) == 0 {
+        lines.push(
+            "  (none: not started, or stopped — the loader takes the slot of one it stops out)"
+                .to_owned(),
+        );
+    }
+}
+
+/// One line per runtime `handle` knows: its name, which start it is, its
+/// state, and, for one still running, where its session ended and how its
+/// process went when they did. How many lines it wrote.
+#[cfg(any(feature = "go", all(feature = "swift", target_os = "macos")))]
+fn runtime_lines<L: BinaryLanguage>(
+    lines: &mut Vec<String>,
+    handle: &BinaryRuntimesHandle<L>,
+) -> usize {
+    let before = lines.len();
+    for (name, state, started) in handle.states_started() {
+        let mut said = format!("  {name}: start {started}, {state:?}");
+        if let RuntimeState::Ready(process) = &state {
+            if let Some(reason) = process.connection().close_reason() {
+                said.push_str(&format!(", its session ended: {reason}"));
+            }
+            if let Some(status) = process.exit_status() {
+                said.push_str(&format!(", its process: {status}"));
+            }
+        }
+        lines.push(said);
+    }
+    lines.len() - before
+}
+
+/// Call `service.method` from the host, as Rust code does: its result.
+/// The service is waited for: a row's service is there once the row runs,
+/// which may be just after `reconcile` returns. A call that fails prints
+/// what the rows and the runtimes were doing ([`Fixture::diagnostics`]):
+/// `runtime swift-multilang exited during the call` alone does not say
+/// whether this side stopped it or it went by itself (#1094).
+async fn call(fixture: &Fixture, service: &str, method: &str) -> Value {
+    let dispatch = COLD
+        .eventually(
+            || fixture.root.get_at::<dyn HostDispatch>(&host_key(service)),
+            &format!("the service {service}"),
+        )
+        .await;
+    let reply = dispatch.invoke(method, RpcValue::List(vec![])).unwrap();
+    let value = match settle(reply).await {
+        Ok(value) => value,
+        Err(error) => panic!(
+            "calling {service}.{method} failed: {error}\n{}",
+            fixture.diagnostics()
+        ),
+    };
+    rutis_bridge::session::decode_value(value).unwrap()
+}
+
+/// The rows: the owner in the runtime `owner`, the holder in `holder`
+/// (`node`, `bun`, `py`, `go`, `swift` or `kt`).
+fn rows(fixture: &Fixture, owner: &str, holder: &str, with_owner: bool) -> Vec<Value> {
+    let row = |runtime: &str, name: &str| match runtime {
+        "node" => fixture
+            .dir
+            .join(format!("{name}.mjs"))
+            .to_string_lossy()
+            .into_owned(),
+        "py" => format!("py:{name}"),
+        "go" => format!("go:go_{name}"),
+        "swift" => format!("swift:swift_{name}"),
+        "kt" => format!("kt:kt_{name}"),
+        _ => format!("bun:./{name}.ts"),
+    };
+    let mut rows = vec![json!({ "id": "holder", "name": row(holder, "holder") })];
+    if with_owner {
+        rows.push(json!({ "id": "owner", "name": row(owner, "owner") }));
+    }
+    rows
+}
+
+/// The language of the runtime `runtime` (`node`, `py`, `bun`, `go`,
+/// `swift` or `kt`), as `RUTIS_TEST_RUNTIMES` names it.
+fn language(runtime: &str) -> &str {
+    match runtime {
+        "py" => "python",
+        "kt" => "kotlin",
+        other => other,
+    }
+}
+
+/// Whether this run uses Node, Python and `other`'s language: the
+/// fixture's runtimes, and the one of the case.
+fn enabled(other: &str) -> bool {
+    rutis_test_support::runtimes::all_enabled(&["node", "python", language(other)])
+}
+
+/// The runtime of `owner` and `holder` that is neither Node nor Python.
+fn other<'a>(owner: &'a str, holder: &'a str) -> Option<&'a str> {
+    [owner, holder]
+        .into_iter()
+        .find(|runtime| !matches!(*runtime, "node" | "py"))
+}
+
+async fn objects_cross(owner: &str, holder: &str) {
+    let other = other(owner, holder);
+    if !enabled(other.unwrap_or("node")) {
+        return;
+    }
+    // The idle stop is the expectation only when the compiled runtime is the
+    // owner (its row goes on purpose); a holder's runtime must stay up.
+    let fixture = fixture_with_idle(other, matches!(owner, "go" | "swift")).await;
+    let report = fixture
+        .loader
+        .reconcile(layer(rows(&fixture, owner, holder, true)), None)
+        .await
+        .unwrap();
+    assert!(report.failures.is_empty(), "{report:?}");
+    // Both rows run before the owner is called.
+    COLD.eventually_with(
+        || {
+            ["owner", "holder"]
+                .iter()
+                .all(|id| row_state(&fixture.loader, id) == Some(rutis::host::FiberState::Active))
+                .then_some(())
+        },
+        "both rows running",
+        || {
+            format!(
+                "{:#?}",
+                fixture
+                    .loader
+                    .entries()
+                    .into_iter()
+                    .map(|entry| format!("{entry:?}"))
+                    .collect::<Vec<_>>()
+            )
+        },
+    )
+    .await;
+    // Two calls of the holder's, one of Rust's: 3; listed in an array, the
+    // same proxy; passed back, the original; a missing method is the
+    // owner's to answer; a plain object with a function goes by reference.
+    assert_eq!(
+        call(&fixture, "owner", "run").await,
+        json!(
+            "3 {\"data\":1} true true 3 pong | no-method: Counter has no method nope (methods: inc, value)"
+        )
+    );
+    // As an event argument: the same proxy.
+    call(&fixture, "owner", "announce").await;
+    fixture.probe.wait_for("event: true 3").await;
+    // The owner's row unloads: the object is still callable.
+    fixture
+        .loader
+        .reconcile(layer(rows(&fixture, owner, holder, false)), None)
+        .await
+        .unwrap();
+    assert_eq!(call(&fixture, "holder", "after").await, json!("4"));
+    // The owner's runtime is gone: peer-gone, saying where from.
+    // A Go or Swift runtime stops by itself, idle; another is killed.
+    let said = match owner {
+        "go" | "swift" => format!("peer-gone: a call on an object from {owner}-multilang failed: runtime {owner}-multilang stopped because it was idle"),
+        _ => {
+            match owner {
+                "node" => fixture.node.kill(),
+                "py" => fixture.py.kill(),
+                "kt" => fixture.kt.as_ref().unwrap().kill(),
+                "bun" => fixture.bun.as_ref().unwrap().kill(),
+                other => panic!("no runtime {other}"),
+            }
+            format!("peer-gone: a call on an object from {owner} failed: runtime {owner} exited")
+        }
+    };
+    let mut answer = Value::Null;
+    for _ in 0..200 {
+        answer = call(&fixture, "holder", "after").await;
+        if answer == json!(said) {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert_eq!(answer, json!(said), "{}", fixture.diagnostics());
+    fixture.root.shutdown().await.unwrap();
+}
+
+/// objects-case(node): send-call-state
+/// objects-case(node): same-proxy-home
+/// objects-case(node): third-language
+/// objects-case(node): return-array-event
+/// objects-case(node): outlives-its-row
+/// objects-case(node): owner-killed-peer-gone
+/// objects-case(rust): owner-killed-peer-gone
+/// guarantee: bridge/object-refs
+#[tokio::test(flavor = "multi_thread")]
+async fn a_node_object_crosses_to_bun() {
+    objects_cross("node", "bun").await;
+}
+
+/// objects-case(bun): send-call-state
+/// objects-case(bun): same-proxy-home
+/// objects-case(bun): third-language
+/// objects-case(bun): return-array-event
+/// objects-case(bun): outlives-its-row
+/// objects-case(bun): owner-killed-peer-gone
+/// guarantee: bridge/object-refs
+#[tokio::test(flavor = "multi_thread")]
+async fn a_bun_object_crosses_to_node() {
+    objects_cross("bun", "node").await;
+}
+
+/// objects-case(python): send-call-state
+/// objects-case(python): same-proxy-home
+/// objects-case(python): third-language
+/// objects-case(python): return-array-event
+/// objects-case(python): outlives-its-row
+/// objects-case(python): owner-killed-peer-gone
+/// guarantee: bridge/object-refs
+#[tokio::test(flavor = "multi_thread")]
+async fn a_python_object_crosses_to_node() {
+    objects_cross("py", "node").await;
+}
+
+/// objects-case(python): send-call-state
+/// objects-case(python): same-proxy-home
+/// objects-case(python): return-array-event
+/// guarantee: bridge/object-refs
+#[tokio::test(flavor = "multi_thread")]
+async fn a_node_object_crosses_to_python() {
+    objects_cross("node", "py").await;
+}
+
+/// objects-case(go): send-call-state
+/// objects-case(go): same-proxy-home
+/// objects-case(go): third-language
+/// objects-case(go): return-array-event
+/// objects-case(go): outlives-its-row
+/// objects-case(go): idle-stop-peer-gone
+/// objects-case(rust): idle-stop-peer-gone
+/// guarantee: bridge/object-refs
+#[cfg(feature = "go")]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_go_object_crosses_to_node() {
+    objects_cross("go", "node").await;
+}
+
+/// objects-case(go): send-call-state
+/// objects-case(go): same-proxy-home
+/// objects-case(go): third-language
+/// objects-case(go): return-array-event
+/// guarantee: bridge/object-refs
+#[cfg(feature = "go")]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_node_object_crosses_to_go() {
+    objects_cross("node", "go").await;
+}
+
+/// A Go parameter that cannot take an object fails the call with
+/// `bad-argument`, saying what it takes (#687 §八).
+/// objects-case(go): declared-type-refuses
+/// guarantee: bridge/object-refs
+#[cfg(feature = "go")]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_go_parameter_that_takes_no_object_says_so() {
+    if !enabled("go") {
+        return;
+    }
+    let fixture = fixture(Some("go")).await;
+    fixture
+        .loader
+        .reconcile(layer(rows(&fixture, "node", "go", true)), None)
+        .await
+        .unwrap();
+    assert_eq!(
+        call(&fixture, "owner", "wrongs").await,
+        json!(
+            "bad-argument: holder.wrong: argument 1: an object is received only as a struct of function fields or any | \
+             bad-argument: holder.text: argument 1: an object cannot be decoded as string"
+        )
+    );
+    fixture.root.shutdown().await.unwrap();
+}
+
+/// A Go runtime holding an object another runtime called crashes: calls on
+/// its objects fail with `peer-gone`, saying it exited.
+/// objects-case(go): owner-killed-peer-gone
+/// guarantee: bridge/object-refs
+#[cfg(feature = "go")]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_go_object_whose_runtime_exited_is_peer_gone() {
+    runtime_exited("go").await;
+}
+
+/// The owner's compiled runtime (`go` or `swift`) crashes after its object
+/// was called: calls on the object fail with `peer-gone`, saying it exited.
+#[cfg(any(feature = "go", all(feature = "swift", target_os = "macos")))]
+async fn runtime_exited(owner: &str) {
+    if !enabled(owner) {
+        return;
+    }
+    let fixture = fixture(Some(owner)).await;
+    fixture
+        .loader
+        .reconcile(layer(rows(&fixture, owner, "node", true)), None)
+        .await
+        .unwrap();
+    call(&fixture, "owner", "run").await;
+    assert_eq!(call(&fixture, "owner", "die").await, json!("dying"));
+    let said = format!(
+        "peer-gone: a call on an object from {owner}-multilang failed: runtime {owner}-multilang exited"
+    );
+    let mut answer = Value::Null;
+    for _ in 0..200 {
+        answer = call(&fixture, "holder", "after").await;
+        if answer == json!(said) {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert_eq!(answer, json!(said), "{}", fixture.diagnostics());
+    fixture.root.shutdown().await.unwrap();
+}
+
+/// objects-case(swift): send-call-state
+/// objects-case(swift): same-proxy-home
+/// objects-case(swift): third-language
+/// objects-case(swift): return-array-event
+/// objects-case(swift): outlives-its-row
+/// objects-case(swift): idle-stop-peer-gone
+/// guarantee: bridge/object-refs
+#[cfg(all(feature = "swift", target_os = "macos"))]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_swift_object_crosses_to_node() {
+    objects_cross("swift", "node").await;
+}
+
+/// objects-case(swift): send-call-state
+/// objects-case(swift): same-proxy-home
+/// objects-case(swift): third-language
+/// objects-case(swift): return-array-event
+/// guarantee: bridge/object-refs
+#[cfg(all(feature = "swift", target_os = "macos"))]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_node_object_crosses_to_swift() {
+    objects_cross("node", "swift").await;
+}
+
+/// A Swift runtime holding an object another runtime called crashes.
+/// objects-case(swift): owner-killed-peer-gone
+/// guarantee: bridge/object-refs
+#[cfg(all(feature = "swift", target_os = "macos"))]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_swift_object_whose_runtime_exited_is_peer_gone() {
+    runtime_exited("swift").await;
+}
+
+/// objects-case(kotlin): send-call-state
+/// objects-case(kotlin): same-proxy-home
+/// objects-case(kotlin): third-language
+/// objects-case(kotlin): return-array-event
+/// objects-case(kotlin): outlives-its-row
+/// objects-case(kotlin): owner-killed-peer-gone
+/// guarantee: bridge/object-refs
+#[tokio::test(flavor = "multi_thread")]
+async fn a_kotlin_object_crosses_to_node() {
+    objects_cross("kt", "node").await;
+}
+
+/// objects-case(kotlin): send-call-state
+/// objects-case(kotlin): same-proxy-home
+/// objects-case(kotlin): third-language
+/// objects-case(kotlin): return-array-event
+/// guarantee: bridge/object-refs
+#[tokio::test(flavor = "multi_thread")]
+async fn a_node_object_crosses_to_kotlin() {
+    objects_cross("node", "kt").await;
+}

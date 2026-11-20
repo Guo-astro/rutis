@@ -69,11 +69,11 @@ memory peer mac: closed: done
 
 ### 3.0 会话与 row 生命周期
 
-**成功 — 问候、挂载与 active row。** `Session::handshake` 返回 `Greeted` 会话但不登记插件；仅握手 fixture 验证在挂载 greeted 值之前不会挂载或共享任何内容（`crates/rutis-bridge/tests/session_plugin.rs:224-255`）。替换连接只有在旧会话卸载后才挂载（`crates/rutis-bridge/tests/session_plugin.rs:257-270`）；普通 reconnect pair 在本端达到 `FiberState::Active`（`crates/rutis-bridge/tests/session_plugin.rs:215-222`）。运行时 row 通过 `rows.schema`/`rows.load` 加载；在加载成功路径上，Node、Bun、Python 和 Go 都在报告 row 加载完成前等待服务公告和 listener registration（`node/rutis-runtime/src/runner.mjs:706-715`；`bun/rutis-bun/src/runner.ts:424-429`；`python/rutis/rutis/runner.py:676-689`；`go/rutis/internal/runtime/runtime.go:559-570`）。这是顺序事实，不是跨 runtime 统一的失败策略。
+**成功 — 问候、挂载与 active row。** `Session::handshake` 返回 `Greeted` 会话但不登记插件；仅握手 fixture 验证在挂载 greeted 值之前不会挂载或共享任何内容（`crates/rutis-bridge/tests/session/session_plugin.rs:224-255`）。替换连接只有在旧会话卸载后才挂载（`crates/rutis-bridge/tests/session/session_plugin.rs:257-270`）；普通 reconnect pair 在本端达到 `FiberState::Active`（`crates/rutis-bridge/tests/session/session_plugin.rs:215-222`）。运行时 row 通过 `rows.schema`/`rows.load` 加载；在加载成功路径上，Node、Bun、Python 和 Go 都在报告 row 加载完成前等待服务公告和 listener registration（`node/rutis-runtime/src/runner.mjs:706-715`；`bun/rutis-bun/src/runner.ts:424-429`；`python/rutis/rutis/runner.py:676-689`；`go/rutis/internal/runtime/runtime.go:559-570`）。这是顺序事实，不是跨 runtime 统一的失败策略。
 
-**失败 — 卸载与远端离开。** `rows.unload` 是幂等的；已加载 row 被 dispose，其服务被 withdraw（`crates/rutis-bridge/src/session/plugin/rows.rs:197-207`；`crates/rutis-bridge/src/runtime/process.rs:1352-1365`）。远端离开时，会话被 dispose，已在途调用失败，远端插件被移除，其服务不再存在（`crates/rutis-bridge/tests/session_plugin.rs:750-772`）。row 自行结束时仅在 session 未取消的情况下报告 `rows.ended`；失败时在每次 failed state 报告一次 `rows.failed`（`crates/rutis-bridge/src/session/plugin/rows.rs:137-171`）。
+**失败 — 卸载与远端离开。** `rows.unload` 是幂等的；已加载 row 被 dispose，其服务被 withdraw（`crates/rutis-bridge/src/session/plugin/rows.rs:197-207`；`crates/rutis-bridge/src/runtime/process.rs:1352-1365`）。远端离开时，会话被 dispose，已在途调用失败，远端插件被移除，其服务不再存在（`crates/rutis-bridge/tests/session/session_plugin.rs:750-772`）。row 自行结束时仅在 session 未取消的情况下报告 `rows.ended`；失败时在每次 failed state 报告一次 `rows.failed`（`crates/rutis-bridge/src/session/plugin/rows.rs:137-171`）。
 
-**边界 — reconnect 是新会话。** 旧会话及其 row 先 dispose，新 pair 才能变为 active；仅握手的会话不共享插件或服务，替换连接只有在旧会话卸载后才挂载（`crates/rutis-bridge/tests/session_plugin.rs:182-270`）。正常承载结果是传输线程的 `Ok(())`/`Ok(None)`，而本地会话状态另行是 `Disposed`；不得把这些观察合并为一个握手结果。
+**边界 — reconnect 是新会话。** 旧会话及其 row 先 dispose，新 pair 才能变为 active；仅握手的会话不共享插件或服务，替换连接只有在旧会话卸载后才挂载（`crates/rutis-bridge/tests/session/session_plugin.rs:182-270`）。正常承载结果是传输线程的 `Ok(())`/`Ok(None)`，而本地会话状态另行是 `Disposed`；不得把这些观察合并为一个握手结果。
 
 生命周期追踪状态：上述会话/row 顺序是当前实现证据，但不主张跨 runtime 统一的 row-failure 策略；行协议的现行规则（装载、更新、卸载、服务与租约、自行结束与失败）见[行协议规格](protocol-rows.md)。公告错误由各 SDK 以不同方式处理，见服务公告设计。对象引用不按能力协商：协议 5 没有 `objects` 能力（[会话协议规格](protocol-session.md) `SESS-16`、`SESS-53`），所有协议 5 实现都收对象引用（`SESS-52`）；#639 的“Rust 中继不查 `objects`”在协议 5 没有可触发的检查点，0.18 及更早的对端在握手时已被拒绝（`SESS-79`）。
 
@@ -96,7 +96,7 @@ memory peer mac: closed: done
 
 **成功 — 双方协议 5 问候。** 每一端发送带 `version`、端点、实现（如果有）和能力的 `hello`（`crates/rutis-bridge/src/session/protocol.rs:157-167`）。Go 原始 peer 发送 `{"op":"hello","version":5,"endpoint":"main"}` 并等待运行时的 hello（`go/rutis/internal/peer/objects_test.go:35-51`）。普通配对启动双方并等待两个 `Ready()` 结果（`go/rutis/internal/peer/peer_test.go:70-89`）。仅仅问候不会挂载插件：`Session::handshake` 返回 `Greeted` 值且不登记任何内容（`crates/rutis-bridge/src/session/plugin/mod.rs:102-114,178-180`）。
 
-**失败 — 版本不匹配。** 说协议 3 的远端会产生精确的本地会话失败 `the far end speaks protocol 3, this side 4: upgrade the far end`。fixture 会分别观察本端 hello，以及远端线程正常的承载结果 `Ok(())`；这里的 `Ok(())` 是传输线程的关闭结果，不是握手成功（`crates/rutis-bridge/tests/session_plugin.rs:101-126`）。握手 10 秒内未完成会失败并显示 `the far end did not greet in time`，通道结束（`crates/rutis-bridge/tests/session_plugin.rs:128-152`；超时在 `crates/rutis-bridge/src/session/plugin/mod.rs:46-47` 定义）。没有 `LocalId` 的宿主失败并显示 `the host provides no id for its sessions`，且不发送问候（`crates/rutis-bridge/tests/session_plugin.rs:154-167`）。
+**失败 — 版本不匹配。** 说协议 3 的远端会产生精确的本地会话失败 `the far end speaks protocol 3, this side 4: upgrade the far end`。fixture 会分别观察本端 hello，以及远端线程正常的承载结果 `Ok(())`；这里的 `Ok(())` 是传输线程的关闭结果，不是握手成功（`crates/rutis-bridge/tests/session/session_plugin.rs:101-126`）。握手 10 秒内未完成会失败并显示 `the far end did not greet in time`，通道结束（`crates/rutis-bridge/tests/session/session_plugin.rs:128-152`；超时在 `crates/rutis-bridge/src/session/plugin/mod.rs:46-47` 定义）。没有 `LocalId` 的宿主失败并显示 `the host provides no id for its sessions`，且不发送问候（`crates/rutis-bridge/tests/session/session_plugin.rs:154-167`）。
 
 **边界 — 能力只是声明。** `Greet` 在问候里声明 `node` 和配置的能力（`crates/rutis-bridge/src/session/plugin/greet.rs:31-36`），但不检查对端有没有声明本端需要的能力：没有实现提供“必需能力”列表的入口。Rust 曾有一个 `require` 字段，唯一的生产调用传空列表，已删除；Go 的 `peer.Options.Require` 在 `internal/peer` 里没有调用方；其余实现没有这项检查。对端缺少某个能力时，只有用到它的地方才失败；能力声明本身不授予权限（`crates/rutis-bridge/src/session/rpc.rs:1153-1158`），也不被验证。
 
@@ -218,7 +218,7 @@ memory peer mac: closed: done
 
 添加帧或字段的实现者必须同时更新 `Frame`/`WireValue`、本文、畸形输入矩阵和所有适用的一致性实现。未知字段按帧的作用范围失败（§3.7）；兼容性变更必须有意且有版本，不能静默接受。添加重连逻辑的实现者必须保持按类型分类、退避重置和替换顺序。
 
-当上面九类的每个用例在所有适用实现中都有追踪验证器或一致性测试、每个不支持的能力/平台都明确标注，并且有意变异都会失败时，#635 才算有证据地完成。当前锚点包括 Rust 生命周期/会话测试（`crates/rutis-bridge/tests/session_plugin.rs:169-270,750-772`）、Rust 会话测试（`crates/rutis-bridge/src/session/rpc/tests.rs:268-359`）、Rust 握手测试（`crates/rutis-bridge/tests/session_plugin.rs:101-167`）、Go 引用/取消/限制测试（`go/rutis/internal/peer/crossing_test.go:29-64`、`go/rutis/internal/peer/objects_test.go:66-147`）和重试测试（`go/rutis/internal/runtime/dial_test.go:25-101`）。
+当上面九类的每个用例在所有适用实现中都有追踪验证器或一致性测试、每个不支持的能力/平台都明确标注，并且有意变异都会失败时，#635 才算有证据地完成。当前锚点包括 Rust 生命周期/会话测试（`crates/rutis-bridge/tests/session/session_plugin.rs:169-270,750-772`）、Rust 会话测试（`crates/rutis-bridge/src/session/rpc/tests.rs:268-359`）、Rust 握手测试（`crates/rutis-bridge/tests/session/session_plugin.rs:101-167`）、Go 引用/取消/限制测试（`go/rutis/internal/peer/crossing_test.go:29-64`、`go/rutis/internal/peer/objects_test.go:66-147`）和重试测试（`go/rutis/internal/runtime/dial_test.go:25-101`）。
 
 ## 相关文件
 

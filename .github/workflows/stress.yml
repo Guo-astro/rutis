@@ -458,7 +458,7 @@ jobs:
         # bash -eo pipefail: a failing test fails the step through tee.
         shell: bash
         run: |
-          cargo test -p rutis-loader --release --test close_cpu -- --nocapture 2>&1 \
+          cargo test -p rutis-loader --release --test lang close_cpu:: -- --nocapture 2>&1 \
             | tee "$RUNNER_TEMP/close-cpu.txt"
       - name: Queued emits share their listeners
         shell: bash
@@ -495,7 +495,7 @@ jobs:
       # Self-hosted runners keep their target directory instead.
       - uses: Swatinem/rust-cache@v2
         if: runner.environment == 'github-hosted'
-      - run: cargo test -p rutis-bridge --features websocket --test websocket_soak --test local_soak --no-run
+      - run: cargo test -p rutis-bridge --features websocket --test events --no-run
       - name: Soak the network stack
         # bash -eo pipefail: a failing soak fails the step through tee.
         shell: bash
@@ -503,8 +503,8 @@ jobs:
           RUTIS_SOAK_SECS: ${{ inputs.soak_secs || '300' }}
         run: |
           case "$RUTIS_SOAK_SECS" in ""|*[!0-9]*) echo "::error::soak_secs must be a number"; exit 1;; esac
-          cargo test -q -p rutis-bridge --features websocket --test websocket_soak -- --ignored --nocapture 2>&1 | tee websocket.txt
-          cargo test -q -p rutis-bridge --test local_soak -- --ignored --nocapture 2>&1 | tee local.txt
+          cargo test -q -p rutis-bridge --features websocket --test events websocket_soak:: -- --ignored --nocapture 2>&1 | tee websocket.txt
+          cargo test -q -p rutis-bridge --test events local_soak:: -- --ignored --nocapture 2>&1 | tee local.txt
           grep -h '^soak:' websocket.txt local.txt >> "$GITHUB_STEP_SUMMARY"
       - name: self-hosted runner, end
         if: always() && runner.environment == 'self-hosted'
@@ -556,7 +556,7 @@ jobs:
           JOB_STATUS: ${{ job.status }}
         run: bash tools/ci-self-hosted.sh end
 
-  # S8 (#192, tests/e2e/tests/soak.rs): one rutis-host run for
+  # S8 (#192, tests/e2e/tests/soak/soak.rs): one rutis-host run for
   # `host_soak_secs` with random operations from a seed (configuration
   # edits and reloads, runtimes killed, the link to a node cut), its
   # resources sampled and their growth bounded; then a host for every way of

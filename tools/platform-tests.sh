@@ -6,8 +6,8 @@
 # so a renamed or removed test file cannot leave a stale name in a list.
 #
 # Usage: tools/platform-tests.sh <crate directory> [<test name>...]
-#   tools/platform-tests.sh crates/rutis-bridge memory_session multihop
-#   → --lib --test boundary_rules --test bun_channel ...
+#   tools/platform-tests.sh crates/rutis-bridge session
+#   → --lib --test lang --test native ...
 set -euo pipefail
 
 [ $# -ge 1 ] || { echo "usage: $0 <crate directory> [<test name>...]" >&2; exit 2; }

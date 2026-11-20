@@ -47,7 +47,7 @@
 - 需要同步短路：把监听器写成同步函数（不返回 Promise），并且链上别处也不能有异步监听器。
 - 从 Cordis 迁过来时，凡是 `ctx.bail` 的监听器可能为 `async`，改成 `serial`，或把监听器改成同步。
 
-依据：保证 `events/serial-bail`、`events/hub-bail`；`crates/rutis/tests/events/events.rs::bail_meets_an_async_listener`；`crates/rutis-bridge/tests/event_hub.rs::bail_is_synchronous_everywhere`；`node/rutis-runtime/test/cordis-events.test.mjs` 的 `the five Cordis methods dispatch through the host, each in its mode`（`root.bail('b')` 抛 `AsyncListener`）。
+依据：保证 `events/serial-bail`、`events/hub-bail`；`crates/rutis/tests/events/events.rs::bail_meets_an_async_listener`；`crates/rutis-bridge/tests/events/event_hub.rs::bail_is_synchronous_everywhere`；`node/rutis-runtime/test/cordis-events.test.mjs` 的 `the five Cordis methods dispatch through the host, each in its mode`（`root.bail('b')` 抛 `AsyncListener`）。
 
 ## 3. `intercept`：非空的按服务合并配置不支持
 
@@ -69,7 +69,7 @@
 - 只是裸声明：把 `{ "dep": {} }` 简写成 `["dep"]`，或保留 `{ "dep": true }`。
 - 先跑 `rutis-host check`，或看 `rutis-host status`，确认是哪一行、哪个服务。
 
-依据：`crates/rutis-loader/src/loader/desired.rs` 的 `parse_scope`（`null` / `true` / `{}` 被接受，其余返回 `Unsupported`）；测试 `crates/rutis-loader/tests/scope.rs::unknown_services_and_intercept_config_are_unresolved`；保证 `loader/isolate-and-inject`。
+依据：`crates/rutis-loader/src/loader/desired.rs` 的 `parse_scope`（`null` / `true` / `{}` 被接受，其余返回 `Unsupported`）；测试 `crates/rutis-loader/tests/rows/scope.rs::unknown_services_and_intercept_config_are_unresolved`；保证 `loader/isolate-and-inject`。
 
 ## 4. 直接 `ctx.set` 换值：不通知，下一次调用后刷新
 
@@ -90,7 +90,7 @@
 - 用了 `ctx.set`：把它放在一次方法调用里，调用返回后让使用方重新读服务（`ctx.get`、重新 `ctx.use`），不要复用换值前拿到的代理。
 - 不要在定时器、事件回调里用 `ctx.set` 静默换值，然后指望下一次调用立刻命中新对象。
 
-依据：保证 `boundary/5.1`；`crates/rutis-bridge/tests/service_projection.rs::projected_service_follows_replacement_and_withdrawal`、`crates/rutis-bridge/tests/projection_lifecycle.rs::a_throwing_method_still_refreshes_the_slot`；实现见 `node/rutis-runtime/src/runner.mjs` 的 `refresh` 与 `dispatchCall`。
+依据：保证 `boundary/5.1`；`crates/rutis-bridge/tests/session/service_projection.rs::projected_service_follows_replacement_and_withdrawal`、`crates/rutis-bridge/tests/session/projection_lifecycle.rs::a_throwing_method_still_refreshes_the_slot`；实现见 `node/rutis-runtime/src/runner.mjs` 的 `refresh` 与 `dispatchCall`。
 
 ## 5. 宿主提供的服务：代理，`instanceof` 不成立
 
@@ -112,7 +112,7 @@
 - 需要判断服务在不在：用 `ctx.get('log')` 或 `inject`（依赖门控），不要用 `instanceof` 或 `typeof` 猜。
 - 给插件写 `.d.ts` 时声明成 `interface`，不要声明成 `class` 再期待 `instanceof`。
 
-依据：保证 `boundary/5.7`；`crates/rutis-bridge/tests/boundary_rules.rs::a_host_service_is_a_proxy_not_an_instance_of_the_declared_class`（同一份插件在原生 Cordis 里 `instanceof` 为 `true`，经兼容层为 `false`，调用结果相同）；[需求 §5](../requirements-protocol-plugins.md) 规则 7。
+依据：保证 `boundary/5.7`；`crates/rutis-bridge/tests/session/boundary_rules.rs::a_host_service_is_a_proxy_not_an_instance_of_the_declared_class`（同一份插件在原生 Cordis 里 `instanceof` 为 `true`，经兼容层为 `false`，调用结果相同）；[需求 §5](../requirements-protocol-plugins.md) 规则 7。
 
 ## 6. 同步等待：`SyncWaitCycle`
 
@@ -134,7 +134,7 @@
 - 确实是环：把一侧改成异步，或让发出即不管的调用标 `awaited: false`（会话协议 SESS-83），不要在同步链上互相等。
 - 看到 `SyncWaitCycle`：看错误里的调用链；宿主返回的那条还会列出经过的行。
 
-依据：保证 `boundary/5.6`、`bridge/sync-wait-cycle-refused`；`crates/rutis-bridge/tests/rpc_callbacks.rs::node_sync_wait_pumps_callbacks_and_reports_its_executor_cycle`（夹具 `node/rutis-runtime/test/fixtures/rpc-client.mjs` 断言 `SyncWaitCycle`）、`::sync_wait_detects_an_async_callback_already_running_on_its_runtime`；`crates/rutis-loader/tests/sync_cycles.rs`；设计[多语言运行时](../design-multilang-runtimes-2026-10-03.md) §九、[函数引用](../design-function-refs-2026-11-03.md)。
+依据：保证 `boundary/5.6`、`bridge/sync-wait-cycle-refused`；`crates/rutis-bridge/tests/session/rpc_callbacks.rs::node_sync_wait_pumps_callbacks_and_reports_its_executor_cycle`（夹具 `node/rutis-runtime/test/fixtures/rpc-client.mjs` 断言 `SyncWaitCycle`）、`::sync_wait_detects_an_async_callback_already_running_on_its_runtime`；`crates/rutis-loader/tests/lang/sync_cycles.rs`；设计[多语言运行时](../design-multilang-runtimes-2026-10-03.md) §九、[函数引用](../design-function-refs-2026-11-03.md)。
 
 ## 7. 卸载顺序与运行时覆写
 
