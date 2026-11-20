@@ -183,27 +183,27 @@
       ],
       "ts": {
         "tests": [
-          ["tests/e2e/tests/dev_loop.rs", "the_node_plugin_development_loop"],
+          ["tests/e2e/tests/develop/dev_loop.rs", "the_node_plugin_development_loop"],
           ["crates/rutis-host/tests/check.rs", "check_fails_what_cannot_run"]
         ]
       },
       "bun": {
         "tests": [
-          ["tests/e2e/tests/dev_loop.rs", "the_bun_plugin_development_loop"],
+          ["tests/e2e/tests/develop/dev_loop.rs", "the_bun_plugin_development_loop"],
           ["bun/rutis-bun/test/plugin.test.ts", "a module that does not parse fails with its file and line"],
           ["bun/rutis-bun/test/plugin.test.ts", "an import error names the submodule that threw, and a gone entry is said so (#677)"]
         ]
       },
       "py": {
         "tests": [
-          ["tests/e2e/tests/dev_loop.rs", "the_python_plugin_development_loop"],
+          ["tests/e2e/tests/develop/dev_loop.rs", "the_python_plugin_development_loop"],
           ["python/rutis/tests/test_plain_texts.py", "test_a_syntax_error_says_its_file_and_line"],
           ["python/rutis/tests/test_plain_texts.py", "test_the_submodule_that_raised_is_named"]
         ]
       },
       "go": {
         "tests": [
-          ["tests/e2e/tests/dev_loop.rs", "the_go_plugin_development_loop"]
+          ["tests/e2e/tests/develop/dev_loop.rs", "the_go_plugin_development_loop"]
         ]
       },
       "rust": {
@@ -377,7 +377,7 @@
         "tests": [
           ["crates/rutis-loader/tests/fault_containment.rs", "python_a_runtime_that_exits_blames_no_other_row"],
           ["crates/rutis-host/tests/runtimes.rs", "a_killed_runtime_is_reported_with_how_it_ended"],
-          ["tests/e2e/tests/runtime_crash.rs", "a_killed_runtime_fails_its_calls_and_a_restart_recovers"],
+          ["tests/e2e/tests/crashes/runtime_crash.rs", "a_killed_runtime_fails_its_calls_and_a_restart_recovers"],
           ["crates/rutis-host/tests/unhandled.rs", "a_plugin_ending_its_process_is_named"]
         ]
       },

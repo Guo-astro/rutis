@@ -74,10 +74,10 @@
 
 ### 5. 语法 / 导入 / 编译错误
 
-- TypeScript（Node）：`tests/e2e/tests/dev_loop.rs` `the_node_plugin_development_loop`，`crates/rutis-host/tests/check.rs` `check_fails_what_cannot_run`
-- Bun：`tests/e2e/tests/dev_loop.rs` `the_bun_plugin_development_loop`，`bun/rutis-bun/test/plugin.test.ts` “a module that does not parse fails with its file and line”，`bun/rutis-bun/test/plugin.test.ts` “an import error names the submodule that threw, and a gone entry is said so (#677)”
-- Python：`tests/e2e/tests/dev_loop.rs` `the_python_plugin_development_loop`，`python/rutis/tests/test_plain_texts.py` `test_a_syntax_error_says_its_file_and_line`，`python/rutis/tests/test_plain_texts.py` `test_the_submodule_that_raised_is_named`
-- Go：`tests/e2e/tests/dev_loop.rs` `the_go_plugin_development_loop`
+- TypeScript（Node）：`tests/e2e/tests/develop/dev_loop.rs` `the_node_plugin_development_loop`，`crates/rutis-host/tests/check.rs` `check_fails_what_cannot_run`
+- Bun：`tests/e2e/tests/develop/dev_loop.rs` `the_bun_plugin_development_loop`，`bun/rutis-bun/test/plugin.test.ts` “a module that does not parse fails with its file and line”，`bun/rutis-bun/test/plugin.test.ts` “an import error names the submodule that threw, and a gone entry is said so (#677)”
+- Python：`tests/e2e/tests/develop/dev_loop.rs` `the_python_plugin_development_loop`，`python/rutis/tests/test_plain_texts.py` `test_a_syntax_error_says_its_file_and_line`，`python/rutis/tests/test_plain_texts.py` `test_the_submodule_that_raised_is_named`
+- Go：`tests/e2e/tests/develop/dev_loop.rs` `the_go_plugin_development_loop`
 - Rust（插件与嵌入）：`crates/rutis/tests/compile_errors.rs` `author_mistakes_are_reported_in_the_authors_terms`
 
 ### 6. 跨语言传对面接不住的值
@@ -116,7 +116,7 @@
 
 - TypeScript（Node）：`crates/rutis-loader/tests/fault_containment.rs` `node_a_runtime_that_exits_blames_no_other_row`，`crates/rutis-host/tests/unhandled.rs` `a_plugin_ending_its_process_is_named`
 - Bun：`crates/rutis-loader/tests/fault_containment.rs` `bun_a_runtime_that_exits_blames_no_other_row`，`crates/rutis-host/tests/unhandled.rs` `a_plugin_ending_its_process_is_named`
-- Python：`crates/rutis-loader/tests/fault_containment.rs` `python_a_runtime_that_exits_blames_no_other_row`，`crates/rutis-host/tests/runtimes.rs` `a_killed_runtime_is_reported_with_how_it_ended`，`tests/e2e/tests/runtime_crash.rs` `a_killed_runtime_fails_its_calls_and_a_restart_recovers`，`crates/rutis-host/tests/unhandled.rs` `a_plugin_ending_its_process_is_named`
+- Python：`crates/rutis-loader/tests/fault_containment.rs` `python_a_runtime_that_exits_blames_no_other_row`，`crates/rutis-host/tests/runtimes.rs` `a_killed_runtime_is_reported_with_how_it_ended`，`tests/e2e/tests/crashes/runtime_crash.rs` `a_killed_runtime_fails_its_calls_and_a_restart_recovers`，`crates/rutis-host/tests/unhandled.rs` `a_plugin_ending_its_process_is_named`
 - Go：`crates/rutis-loader/tests/go_rows.rs` `a_crash_stops_only_its_runtimes_rows_and_is_not_restarted`，`crates/rutis-host/tests/runtimes.rs` `a_go_runtime_restarted_on_failure_brings_its_rows_back`
 - Rust（插件与嵌入）：不适用
 

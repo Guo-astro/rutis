@@ -53,7 +53,7 @@ jobs:
         id: s5
         env:
           RUTIS_E2E_HOST: ${{ github.workspace }}/target/release/rutis-host
-        run: cargo test -p rutis-e2e --test netem -- --ignored --nocapture
+        run: cargo test -p rutis-e2e --test soak netem:: -- --ignored --nocapture
       - name: report
         if: always()
         env:

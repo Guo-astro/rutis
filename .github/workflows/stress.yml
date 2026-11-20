@@ -682,7 +682,7 @@ jobs:
         run: |
           case "$RUTIS_S8_SECS" in ""|*[!0-9]*) echo "::error::host_soak_secs must be a number"; exit 1;; esac
           status=0
-          cargo test -p rutis-e2e --test soak -- --ignored --nocapture 2>&1 | tee "$RUNNER_TEMP/soak-s8.txt" || status=$?
+          cargo test -p rutis-e2e --test soak soak:: -- --ignored --nocapture 2>&1 | tee "$RUNNER_TEMP/soak-s8.txt" || status=$?
           {
             echo "### S8 host soak, ${{ matrix.os }}"
             echo

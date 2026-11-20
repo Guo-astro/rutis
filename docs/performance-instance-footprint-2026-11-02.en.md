@@ -62,7 +62,7 @@ Covers:
 
 Does not cover:
 
-- **language runtime processes**: this test has Rust rows only and starts no Node, Python or other runtime. Rows, services, proxies, export slots and object handles inside runtime processes after closing are covered by `crates/rutis-loader/tests/instance_runtimes.rs` (D2/D3) and by S7 (`tests/e2e/tests/embedding.rs`; 20 cycles on pull requests, 3000 nightly);
+- **language runtime processes**: this test has Rust rows only and starts no Node, Python or other runtime. Rows, services, proxies, export slots and object handles inside runtime processes after closing are covered by `crates/rutis-loader/tests/instance_runtimes.rs` (D2/D3) and by S7 (`tests/e2e/tests/install/embedding.rs`; 20 cycles on pull requests, 3000 nightly);
 - **non-zero service bindings inside an instance**: `plain`/`watch` provide no service, so this test checks only that the binding count does not change; isolation between instances and removing an instance's bindings are covered by `instance_services.rs`, `instance_runtimes.rs` and S7;
 - **OS thread counts on macOS and Windows**: `Counts::threads` is 0 off Linux and is not asserted there; the full runs on those platforms still check the other counts;
 - fds, the heap's RSS, allocator fragmentation: outside this test.

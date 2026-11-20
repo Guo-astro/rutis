@@ -737,7 +737,7 @@ jobs:
         env:
           RUTIS_E2E_CACHE: ${{ runner.temp }}/rutis-e2e-previous
           RUTIS_E2E_ONLY_OLDER: ${{ inputs.release && '1' || '' }}
-        run: cargo test -p rutis-e2e --test cross_version -- --ignored
+        run: cargo test -p rutis-e2e --test install cross_version:: -- --ignored
       # A failed scenario keeps its directory, with every host's output and
       # the residue found in logs/.
       # The failed scenarios' directories, without what is not read for a
@@ -1362,7 +1362,7 @@ jobs:
           RUTIS_E2E_DIR: /tmp/rutis-e2e
         run: |
           cargo test -p rutis-host --test swift --test swift_app
-          cargo test -p rutis-e2e --test dev_loop the_swift_plugin_development_loop
+          cargo test -p rutis-e2e --test develop dev_loop::the_swift_plugin_development_loop
       # The events conformance with X a Swift plugin, in the placements a
       # pull request runs (written; full runs sample more). Its own settle
       # windows are lengthened as in `rust`: this runner is loaded too, and
@@ -1644,7 +1644,7 @@ jobs:
           if [ "$ALL" = true ]; then
             cargo test -p rutis-e2e
           else
-            cargo test -p rutis-e2e --test stray_runtime --test runtime_crash
+            cargo test -p rutis-e2e --test crashes
           fi
       # Who killed a process that ended with SIGKILL (#287): the kernel's
       # memory pressure kills and code signing rejections.
@@ -2197,7 +2197,7 @@ jobs:
           if [ "$ALL" = true ]; then
             cargo test -p rutis-e2e --no-fail-fast
           else
-            cargo test -p rutis-e2e --no-fail-fast --test stray_runtime --test runtime_crash
+            cargo test -p rutis-e2e --no-fail-fast --test crashes
           fi
       - name: keep workspace static builds available
         if: "!cancelled() && needs.changes.outputs.all == 'true'"

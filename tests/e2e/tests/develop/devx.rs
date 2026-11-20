@@ -47,7 +47,7 @@ fn artifacts() -> PathBuf {
 fn version() -> String {
     std::env::var("RUTIS_E2E_VERSION").unwrap_or_else(|_| {
         let manifest: Value =
-            serde_json::from_str(include_str!("../../../node/rutis-host/package.json")).unwrap();
+            serde_json::from_str(include_str!("../../../../node/rutis-host/package.json")).unwrap();
         manifest["version"].as_str().unwrap().to_owned()
     })
 }
