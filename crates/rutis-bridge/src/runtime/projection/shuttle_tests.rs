@@ -266,3 +266,77 @@ fn a_withdraw_waits_for_a_publisher_in_flight() {
         assert_eq!(releases(&released, "h1"), 1, "h1 was not released once");
     });
 }
+
+/// Out-of-order withdrawal and reprovision (two concurrent `service` RPCs
+/// racing between `Imports::update` and `Projection::changed`): the newer
+/// version wins, so an older withdrawal never leaves the slot empty.
+#[test]
+fn out_of_order_withdrawal_and_reprovision_keep_the_newer_service() {
+    explore(|| {
+        let (runtime, ctx, _process, projection, key, _gate, released) = setup();
+        let withdraw = {
+            let projection = projection.clone();
+            thread::spawn(move || projection.changed("svc", None, 2))
+        };
+        let provide = {
+            let projection = projection.clone();
+            thread::spawn(move || projection.changed("svc", Some("h2".to_owned()), 3))
+        };
+        withdraw.join().unwrap();
+        provide.join().unwrap();
+        // Drive any async withdrawal spawned on the tokio runtime until idle.
+        loop {
+            let settled = {
+                let state = projection.state.lock().unwrap();
+                !state.applying && state.slots.get("svc").is_none_or(|slot| !slot.withdrawing)
+            };
+            if settled {
+                break;
+            }
+            runtime.block_on(async {
+                for _ in 0..4 {
+                    tokio::task::yield_now().await;
+                }
+            });
+            thread::yield_now();
+        }
+        assert_eq!(
+            held(&ctx, &key),
+            Some("h2".to_owned()),
+            "an older withdrawal overrode a newer reprovision"
+        );
+        projection.close();
+        block_on(ctx.shutdown(), &runtime).expect("the context shuts down");
+        assert_eq!(releases(&released, "h0"), 1, "h0 was not released once");
+        assert_eq!(releases(&released, "h2"), 1, "h2 was not released once");
+    });
+}
+
+/// Out-of-order replacements (`v2` vs `v3`): the newer handle stays published
+/// and every handle is released exactly once.
+#[test]
+fn out_of_order_replacements_keep_the_newer_handle_and_release_each_once() {
+    explore(|| {
+        let (runtime, ctx, _process, projection, key, _gate, released) = setup();
+        let older = {
+            let projection = projection.clone();
+            thread::spawn(move || projection.changed("svc", Some("h2".to_owned()), 2))
+        };
+        let newer = {
+            let projection = projection.clone();
+            thread::spawn(move || projection.changed("svc", Some("h3".to_owned()), 3))
+        };
+        older.join().unwrap();
+        newer.join().unwrap();
+        assert_eq!(
+            held(&ctx, &key),
+            Some("h3".to_owned()),
+            "an older replacement overrode a newer one"
+        );
+        projection.close();
+        block_on(ctx.shutdown(), &runtime).expect("the context shuts down");
+        assert_eq!(releases(&released, "h0"), 1, "h0 was not released once");
+        assert_eq!(releases(&released, "h2"), 1, "h2 was not released once");
+        assert_eq!(releases(&released, "h3"), 1, "h3 was not released once");
+    });
+}
