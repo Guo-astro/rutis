@@ -1376,11 +1376,8 @@ impl Process {
     fn forget_exports(&self, key: &str) {
         let ids = self.imports.rows.lock().unwrap().remove(key);
         let ids = ids.into_iter().flat_map(|exports| exports.ids);
-        for (name, observer, _version) in self.imports.forget(ids) {
-            // Terminal withdrawal: must override the slot's last projected
-            // version and prevent an older in-flight update from resurrecting
-            // a forgotten row's service.
-            observer.changed(&name, None, u64::MAX);
+        for (name, observer, version) in self.imports.forget(ids) {
+            observer.changed(&name, None, version);
         }
     }
 

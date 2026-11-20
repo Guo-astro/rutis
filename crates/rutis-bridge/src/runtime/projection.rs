@@ -536,7 +536,12 @@ impl ServiceEvents for Projection {
             let Some(slot) = state.slots.get_mut(name) else {
                 return;
             };
-            if version <= slot.version {
+            // An older version never overrides a newer one. At the same
+            // version, a withdrawal (`None`, as `forget_exports` sends at the
+            // slot's last version) wins over a handle so a forgotten row's
+            // service is withdrawn and cannot be resurrected, while a later
+            // reload on the same projection still advances with a higher version.
+            if version < slot.version || (version == slot.version && handle.is_some()) {
                 let unused = handle
                     .filter(|handle| {
                         slot.handle.as_ref() != Some(handle)

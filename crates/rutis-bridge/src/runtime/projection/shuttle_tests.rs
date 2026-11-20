@@ -340,3 +340,54 @@ fn out_of_order_replacements_keep_the_newer_handle_and_release_each_once() {
         assert_eq!(releases(&released, "h3"), 1, "h3 was not released once");
     });
 }
+
+/// `forget_exports` withdraws at the slot's last version (`v2, None`) while
+/// `v2, Some(h2)` may still be racing it, and a reload on the same projection
+/// then publishes `v3, Some(h3)` cleanly.
+#[test]
+fn same_version_withdrawal_beats_handle_and_allows_reload() {
+    explore(|| {
+        let (runtime, ctx, _process, projection, key, _gate, released) = setup();
+        let provide = {
+            let projection = projection.clone();
+            thread::spawn(move || projection.changed("svc", Some("h2".to_owned()), 2))
+        };
+        let forget = {
+            let projection = projection.clone();
+            thread::spawn(move || projection.changed("svc", None, 2))
+        };
+        provide.join().unwrap();
+        forget.join().unwrap();
+        loop {
+            let settled = {
+                let state = projection.state.lock().unwrap();
+                !state.applying && state.slots.get("svc").is_none_or(|slot| !slot.withdrawing)
+            };
+            if settled {
+                break;
+            }
+            runtime.block_on(async {
+                for _ in 0..4 {
+                    tokio::task::yield_now().await;
+                }
+            });
+            thread::yield_now();
+        }
+        assert!(
+            held(&ctx, &key).is_none(),
+            "same-version withdrawal did not leave slot empty"
+        );
+        // Reloading the row on the same projection advances with a higher version.
+        projection.changed("svc", Some("h3".to_owned()), 3);
+        assert_eq!(
+            held(&ctx, &key),
+            Some("h3".to_owned()),
+            "reload on the same projection did not publish h3"
+        );
+        projection.close();
+        block_on(ctx.shutdown(), &runtime).expect("the context shuts down");
+        assert_eq!(releases(&released, "h0"), 1, "h0 was not released once");
+        assert_eq!(releases(&released, "h2"), 1, "h2 was not released once");
+        assert_eq!(releases(&released, "h3"), 1, "h3 was not released once");
+    });
+}
