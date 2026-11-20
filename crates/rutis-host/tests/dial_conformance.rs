@@ -27,6 +27,7 @@
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::Arc;
 
 use rutis_bridge::websocket::{self, Limits, ListenerConfig};
@@ -480,11 +481,33 @@ async fn an_invalid_id_is_refused_before_dialing(language: Language) {
     assert!(rutis.connected().is_empty());
 }
 
+/// A free loopback port outside the OS ephemeral range (`32768..` on Linux,
+/// `49152..` on macOS/Windows), so parallel tests binding `127.0.0.1:0` cannot
+/// claim it while a host is stopped during a backoff test.
+fn non_ephemeral_port() -> u16 {
+    const RANGE_START: u16 = 20_000;
+    const RANGE_LEN: u16 = 10_000;
+    static NEXT: AtomicU16 = AtomicU16::new(0);
+    let base = (std::process::id() % u32::from(RANGE_LEN)) as u16;
+    for _ in 0..RANGE_LEN {
+        let offset = NEXT.fetch_add(1, Ordering::Relaxed);
+        let port =
+            RANGE_START + ((u32::from(base) + u32::from(offset)) % u32::from(RANGE_LEN)) as u16;
+        if std::net::TcpListener::bind(("127.0.0.1", port)).is_ok() {
+            return port;
+        }
+    }
+    panic!(
+        "no free non-ephemeral loopback port in {RANGE_START}..{}",
+        RANGE_START + RANGE_LEN
+    );
+}
+
 /// The host going away: the dialer backs off (doubling, capped), and
 /// connects again once it is back, as a new session.
 async fn it_backs_off_and_reconnects_as_a_new_session(language: Language) {
-    let rutis = Rutis::start(0).await;
-    let port = rutis.port;
+    let port = non_ephemeral_port();
+    let rutis = Rutis::start(port).await;
     let mut pixel = Dialer::start(language, &rutis.address(), "pixel", TOKEN);
     pixel.expect("rutis: connected to ").await;
     rutis.until_connected(&["pixel"]).await;

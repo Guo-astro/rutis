@@ -275,11 +275,20 @@ struct PeerTests {
         }
         let returned = await queued.wait(seconds: 10)
         XCTAssertTrue(returned, "emitting waited for its write")
+        XCTAssertEqual(try invokedMethods(in: channel.written), [])
         XCTAssertEqual(seen.methods, [])
         channel.unhold()
         _ = await emitter.value
-        for _ in 0 ..< 500 where seen.methods.count < 3 { try await Task.sleep(nanoseconds: 10_000_000) }
-        XCTAssertEqual(seen.methods, ["one", "two", "three"])
+        for _ in 0 ..< 500 {
+            if seen.methods.count >= 3, try invokedMethods(in: channel.written).count >= 3 { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        // Wire order is the writer's guarantee; the receiving peer runs each
+        // invoke's dispatch in its own concurrent Task, so handler entry order
+        // depends on the Swift concurrency pool.
+        XCTAssertEqual(try invokedMethods(in: channel.written), ["one", "two", "three"])
+        XCTAssertEqual(seen.methods.count, 3)
+        XCTAssertEqual(Set(seen.methods), ["one", "two", "three"])
     }
 
     /// `close()` writes the frames it had taken before it returns: a process
@@ -295,7 +304,6 @@ struct PeerTests {
             runtime.close()
             channel.close()
         }
-        let before = channel.written.count
         // A far end that reads, but slowly: each write takes a while.
         channel.slow(100)
         let queued = Event()
@@ -306,10 +314,11 @@ struct PeerTests {
         let returned = await queued.wait(seconds: 10)
         XCTAssertTrue(returned, "emitting waited for its write")
         host.close()
-        XCTAssertEqual(channel.written.count - before, 3, "close returned with frames still queued")
+        XCTAssertEqual(try invokedMethods(in: channel.written), ["one", "two", "three"], "close returned with frames still queued")
         _ = await emitter.value
         for _ in 0 ..< 500 where seen.methods.count < 3 { try await Task.sleep(nanoseconds: 10_000_000) }
-        XCTAssertEqual(seen.methods, ["one", "two", "three"])
+        XCTAssertEqual(seen.methods.count, 3)
+        XCTAssertEqual(Set(seen.methods), ["one", "two", "three"])
     }
 
     /// A write that fails ends the session: its frame was taken already, and
@@ -365,6 +374,15 @@ func stallingPair(_ dispatch: @escaping (String, String, [Value]) async throws -
     await host.ready()
     await runtime.ready()
     return (host, runtime, channel)
+}
+
+/// The `"method"` fields of the `"invoke"` frames in `frames`, in wire order.
+private func invokedMethods(in frames: [String]) throws -> [String] {
+    try frames.compactMap { text in
+        let frame = try JSONReader.parse(text)
+        guard frame["op"]?.stringValue == "invoke" else { return nil }
+        return frame["method"]?.stringValue
+    }
 }
 
 /// The methods the runtime side was called with, in order.
