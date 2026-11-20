@@ -95,9 +95,10 @@ setInterval(() => {}, 1000)
 // A command that does not read SIGUSR1 ends on it: so does the launcher, as
 // a shell reports such an end, instead of opening Node's debugger and
 // staying.
-test('a rutis-host ended by SIGUSR1 ends the launcher', { skip: process.platform === 'win32' && 'Unix signals' }, async () => {
+test('a rutis-host ended by SIGUSR1 ends the launcher', { skip: process.platform === 'win32' && 'Unix signals', timeout: 10_000 }, async (t) => {
   const { constants } = await import('node:os')
-  const { host, seen, ended } = await launched('#!/bin/sh\necho ready\nexec sleep 1000\n')
+  const { host, seen, ended } = await launched('#!/bin/sh\necho ready\nexec sleep 15\n')
+  t.after(() => host.kill('SIGKILL'))
   host.kill('SIGUSR1')
   const [code, signal] = await ended
   assert.deepEqual([code, signal], [128 + constants.signals.SIGUSR1, null])
