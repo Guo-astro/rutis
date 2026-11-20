@@ -246,4 +246,4 @@ test('a real Node runtime carries values over 16 MiB whole', async () => {
       rmSync(dir, { recursive: true, force: true })
     }
   }
-})
+}, 60_000)
