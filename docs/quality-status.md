@@ -2,7 +2,7 @@
 
 [English](quality-status.en.md) · [质量规范](quality-standard.md)
 
-状态：随代码持续更新。最近更新：2026-11-20（#1372：退役 1,825 行静态规则追踪表 `docs/formal-trace/`、`tools/formal-trace*.mjs`、`model-pr.yml`；`docs/guarantees.md` 收缩为 40 条现行核心承诺并改为正向形式检查；补接 `rutis-loader` 与 `rutis-host` 的 6 个 shuttle 模型到 `ci.yml` 和 `stress.yml`（四 crate 共 65 个）；TLA+ `run.sh` 默认跳过 95 个 `*-mut-*` 变异配置（224 → 129）且 `nightly.yml` 仅在 `specs/**` 变动时触发；保留 0.23 已跑通的 11 个 Kani harness 与 6 个 Kotlin Fray 测试作为按需工具箱）。上一次：2026-11-18（#1270 第二半 + #1099 协议 5：15 条内核／事件规则逐条定手段，新增内核模型 28 与两消费者驱逐用例，内核模型 27 → 28、四个 crate 63 → 65（随后 #1331 加入 bridge 的一个）；协议 5 的取消确认清账与《迁移到 0.23》落地）。更早历史见 `git log`。
+状态：随代码持续更新。最近更新：2026-11-20（#1375：与操作系统无关的任务搬回 Linux、`rust` 与 `rust-runtimes` 并行、补齐 Gradle 缓存并去掉 PR 上的重复工作；#1375 后首个普通代码 PR #1384 从推送到出结果 10.0 分钟，达到 ≤ 10 分钟目标，§8.5）。上一次：2026-11-20（#1372：退役 1,825 行静态规则追踪表 `docs/formal-trace/`、`tools/formal-trace*.mjs`、`model-pr.yml`；`docs/guarantees.md` 收缩为 40 条现行核心承诺并改为正向形式检查；补接 `rutis-loader` 与 `rutis-host` 的 6 个 shuttle 模型到 `ci.yml` 和 `stress.yml`（四 crate 共 65 个）；TLA+ `run.sh` 默认跳过 95 个 `*-mut-*` 变异配置（224 → 129）且 `nightly.yml` 仅在 `specs/**` 变动时触发；保留 0.23 已跑通的 11 个 Kani harness 与 6 个 Kotlin Fray 测试作为按需工具箱）。更早：2026-11-18（#1270 第二半 + #1099 协议 5：15 条内核／事件规则逐条定手段，新增内核模型 28 与两消费者驱逐用例，内核模型 27 → 28、四个 crate 63 → 65（随后 #1331 加入 bridge 的一个）；协议 5 的取消确认清账与《迁移到 0.23》落地）。更早历史见 `git log`。
 对应：[质量规范](quality-standard.md)。本文把规范逐条对应到当前的实现：哪些条款已满足、哪些部分满足、缺什么、计划怎么补。规范描述长期不变的规则；本文中的文件名、测试名、issue 号、版本号都会随实现变化。每条保证由哪些测试验证，见[保证登记表](guarantees.md)。
 
 ---
@@ -711,6 +711,7 @@ TLC 找到过两处握手期间吊销身份仍建立会话，已修复（#432）
 | macOS、Windows 上跑和平台有关的测试：先加入 `value_roundtrip`、`fault_links`，再改为默认全部测试文件、只排除与平台无关的（`PURE_TESTS_*`） | Q10.2、Q7.8 | #313、#328 |
 | 每晚 `stress.yml` 增加 `multiprocess` 任务：bridge、loader 的多进程测试重复多轮 | Q7.3 | #245 |
 | 自托管 runner：`dylib-macos`、`sdk-repro-macos` 等 macOS 任务，以及与操作系统无关的任务（`links`、`js-py`、`msrv`、`checks`、`release-dry-run`、`semver-rutis`、`changes`、`ci-ok`）默认跑在自托管 macOS 上（仓库变量 `MACOS_RUNNER`、`GATE_RUNNER` 可切回）；Linux 任务、`runtimes-windows` 可由 `LINUX_RUNNER`、`WINDOWS_RUNNER` 切到自托管（默认仍是 GitHub 的 runner） | Q12.6.2 | #333、#348、#350 |
+| 普通 PR 关键路径减重：与操作系统无关的任务搬回 Linux，不再占 macOS 槽位；`rust` 与 `rust-runtimes` 并行；补齐 Gradle 缓存；PR 上不再重复打 Kotlin fatJar、不再跑 `js-py` 已覆盖的 Node/Python 单测；Nightly、Stress 按频率分层 | Q12.2、Q12.6、Q12.7 | #1375 |
 
 `network-macos` 也在自托管的 macOS 机器上跑（仓库变量 `NETWORK_MACOS_RUNNER`；#287 由 #344 修复后切过来，ci.md §10）。
 
@@ -734,9 +735,26 @@ TLC 找到过两处握手期间吊销身份仍建立会话，已修复（#432）
 | 条款 | 差距 |
 | --- | --- |
 | Q12.4 | ~~main 上按 ref 分组，不是每次合并都有自己的完整结果~~：规范改为由每晚的运行检查上一次以来的所有提交（#369），已满足 |
-| Q12.6 | 普通代码 PR 的中位时间 15.6 分钟（§8.3），目标 10 分钟；需要自托管 runner 稳定后的一周数据再判断 |
+| Q12.6 | 普通代码 PR 的旧中位时间是 15.6 分钟（§8.3）；#1375 之后首个普通代码 PR 实测 10.0 分钟（§8.5），达到目标；样本只有一次，继续用 `ci-stats` 跟踪 |
 | Q12.7 | 完整运行中单机与两机两种可复现检查并存 |
 | Q12.1 | 旧记录曾写“每晚缺 TLC”，但当前 CI 在修改 `specs/**` 的 PR 上运行 `specs`；nightly 仅在相应路径有变更时运行（或 workflow 配置等全量触发路径有变更），周一的 weekly run 才无条件运行全部现有模型。仍需把完整模型矩阵、trace validation 和跨语言一致性统一纳入每日/发布前报告。每周还缺更长时间的宿主浸泡与基准测试（一小时的宿主浸泡 S8 已进每晚，#192）。真实网络（S5 容器 + netem）已进每晚（只报告，#341 → #433），最新 Cordis 插件基线也已进每晚（只报告，#190 → #429）；模糊测试与既有模型已进 stress/nightly（#179 → #425） |
+
+### 8.5 测量（2026-11-20，#1375 之后的首个普通代码 PR）
+
+#1384 是 #1375 合并后第一个普通代码 PR（只改 `node/**`）。运行 `44772162074`：从推送到出结果 **10.0 分钟**（16:19:07 → 16:29:07），达到 10 分钟目标，39 个检查全部通过。
+
+| 任务 | 执行时间 |
+| --- | ---: |
+| `rust` | 9.6 min |
+| `rust-runtimes` | 8.4 min |
+| `network-macos` | 5.9 min |
+| `runtimes-windows` | 5.6 min |
+| `e2e`、`js-py`、`lint` | 2.1–2.2 min |
+| 其余任务 | < 1 min |
+
+- 与 §8.3 相比，普通 PR 不再因为 OS 无关任务占着 macOS 槽位而排队 15–45 分钟。
+- 关键路径现在由 `rust` 决定；下一步靠 #1373 合并集成测试二进制继续压缩编译链接时间。
+- 样本只有一次，结论是“目标可以达到”，中位数仍需用 `node tools/ci-stats.mjs` 累积。
 
 ## 9. 计划
 
