@@ -2,7 +2,7 @@
 
 [中文](migration-0.22.md)
 
-0.22 is not released yet; this guide is written alongside the behaviour changes, a section with each one, and finished before the release as [#694](https://github.com/arcships/rutis/issues/694) says. It covers what differs from 0.21, and nothing else; a form that goes is deleted rather than deprecated.
+0.22 was released on 2026-11-17; this guide was written alongside the behaviour changes, a section with each one, and finished before the release as [#694](https://github.com/arcships/rutis/issues/694) says. It covers what differs from 0.21, and nothing else; a form that goes is deleted rather than deprecated.
 
 0.22 **removes and renames no API a plugin sees**: the session protocol is still 4, `rutis.json`'s `format` is still 1, the plugin API is still 3, and the kernel's public API snapshot `crates/rutis/public-api.txt` is unchanged. The changes fall into two groups: code that relied on the old behaviour now meets a refusal or an empty result, and code that needs no change but no longer sees an old spurious failure or a silent ignore.
 

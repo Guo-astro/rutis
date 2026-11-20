@@ -2,7 +2,7 @@
 
 [中文](migration-0.21.md)
 
-0.21 is not released yet; this guide is written alongside the incompatible changes, a section with each one, and finished before the release as [#694](https://github.com/arcships/rutis/issues/694) says. It covers what differs from 0.20, and nothing else; a form that goes is deleted rather than deprecated.
+0.21 was released on 2026-11-05; this guide was written alongside the incompatible changes, a section with each one, and finished before the release as [#694](https://github.com/arcships/rutis/issues/694) says. It covers what differs from 0.20, and nothing else; a form that goes is deleted rather than deprecated.
 
 The incompatible changes, by kind, each with its section:
 

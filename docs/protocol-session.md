@@ -508,7 +508,7 @@
 
 ### G8 跨帧的整帧：已定（2026-11-19，#1361、#1363）
 
-- 决定：加 `chunk` 帧与 `chunked` 能力（`SESS-84`–`SESS-88`），先实现 Rust（`rutis-bridge`）与 Node 运行时（#1361），随后由 #1363 补齐 Bun、Python、Go、Swift 与 Kotlin；协议 5 未发布，不升版本。重组上限是会话选项 `max_transfer`（默认 256 MiB），宿主可经 `RUTIS_MAX_TRANSFER` 把它传给运行时进程；不做无上限。设计与开发者可见的输出见[跨帧传输超过单条消息上限的参数和返回值](design-chunked-frames-2026-11-19.md)。
+- 决定：加 `chunk` 帧与 `chunked` 能力（`SESS-84`–`SESS-88`），先实现 Rust（`rutis-bridge`）与 Node 运行时（#1361），随后由 #1363 补齐 Bun、Python、Go、Swift 与 Kotlin；协议 5 当时尚未发布，不升版本。重组上限是会话选项 `max_transfer`（默认 256 MiB），宿主可经 `RUTIS_MAX_TRANSFER` 把它传给运行时进程；不做无上限。设计与开发者可见的输出见[跨帧传输超过单条消息上限的参数和返回值](design-chunked-frames-2026-11-19.md)。
 - 原因：跨语言调用超过单条消息上限时，业务方只能自己切片、分页、重试；分片放在会话层，业务 API、服务签名和公开 API 都不变，同一次调用只执行一次。
 - 不采用：升协议版本（0.22 与 0.23 本就不能混跑）；只提高承载上限（改不了其他实现的默认值）；把分片放进 `args`（要改 `WireValue` 与七种实现的值编解码）；并发传输（接收端排序与内存峰值都翻倍）；无重组上限（不守协议的对端可以让本进程分配任意内存）。
 - 七种实现（Rust、Node、Bun、Python、Go、Swift、Kotlin）都声明 `chunked`；更早的构建不声明，与它们的会话行为与 0.22 相同。

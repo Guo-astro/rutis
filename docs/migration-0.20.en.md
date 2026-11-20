@@ -2,7 +2,7 @@
 
 [中文](migration-0.20.md)
 
-0.20 is not released yet; this guide is written together with the incompatible changes, one section per change, and completed before the release as [#694](https://github.com/arcships/rutis/issues/694) says. Only the changes since 0.19 are written here, and removed forms are removed outright, not deprecated.
+0.20 was released on 2026-11-02; this guide was written together with the incompatible changes, one section per change, and completed before the release as [#694](https://github.com/arcships/rutis/issues/694) says. Only the changes since 0.19 are written here, and removed forms are removed outright, not deprecated.
 
 The incompatible changes, by kind, each with the section saying how to change:
 
