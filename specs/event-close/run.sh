@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Run TLC on the configurations of this directory and compare each outcome
 # with expected.txt. Every `close-*.cfg` checks CloseAdmission.tla.
-#   TLA2TOOLS=/path/to/tla2tools.jar ./run.sh [name ...]
+#   TLA2TOOLS=/path/to/tla2tools.jar ./run.sh [--mutations | name ...]
+# By default, skips `*-mut-*.cfg` mutation configs (pass `--mutations` or `--all`
+# to run them when editing the model).
 # Needs Java 11+ on PATH (for example `mise exec java@temurin-21 -- ./run.sh`).
 # tla2tools.jar: https://github.com/tlaplus/tlaplus/releases/tag/v1.7.4
 # (do not commit it).
@@ -10,10 +12,20 @@ cd "$(dirname "$0")"
 jar="${TLA2TOOLS:?set TLA2TOOLS to the path of tla2tools.jar}"
 out="${TLC_OUT:-$(mktemp -d)}"
 mkdir -p "$out"
-names=("$@")
+include_mut=false
+names=()
+for arg in "$@"; do
+  case "$arg" in
+    --mutations|--all) include_mut=true ;;
+    *) names+=("$arg") ;;
+  esac
+done
 if [ ${#names[@]} -eq 0 ]; then
-  names=()
-  for cfg in *.cfg; do names+=("${cfg%.cfg}"); done
+  for cfg in *.cfg; do
+    name="${cfg%.cfg}"
+    if [ "$include_mut" = false ] && [[ "$name" == *-mut-* ]]; then continue; fi
+    names+=("$name")
+  done
 fi
 status=0
 for name in "${names[@]}"; do

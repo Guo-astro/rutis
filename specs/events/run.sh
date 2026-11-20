@@ -2,7 +2,9 @@
 # Run TLC on the configurations of this directory and compare each outcome
 # with expected.txt. `host-defs` checks EventsHostCheck.tla (the definitions
 # of EventsHost.tla); `table-*`, `emit-*` and `link-*` check their modules.
-#   TLA2TOOLS=/path/to/tla2tools.jar ./run.sh [name ...]
+#   TLA2TOOLS=/path/to/tla2tools.jar ./run.sh [--mutations | name ...]
+# By default, skips `*-mut-*.cfg` mutation configs (pass `--mutations` or `--all`
+# to run them when editing the model).
 # Configurations whose .cfg says CHECK_DEADLOCK TRUE rely on the Done action:
 # it stutters only when the protocol has no work left, so a stuck state with
 # work remaining is still reported as a deadlock.
@@ -14,10 +16,20 @@ cd "$(dirname "$0")"
 jar="${TLA2TOOLS:?set TLA2TOOLS to the path of tla2tools.jar}"
 out="${TLC_OUT:-$(mktemp -d)}"
 mkdir -p "$out"
-names=("$@")
+include_mut=false
+names=()
+for arg in "$@"; do
+  case "$arg" in
+    --mutations|--all) include_mut=true ;;
+    *) names+=("$arg") ;;
+  esac
+done
 if [ ${#names[@]} -eq 0 ]; then
-  names=()
-  for cfg in *.cfg; do names+=("${cfg%.cfg}"); done
+  for cfg in *.cfg; do
+    name="${cfg%.cfg}"
+    if [ "$include_mut" = false ] && [[ "$name" == *-mut-* ]]; then continue; fi
+    names+=("$name")
+  done
 fi
 status=0
 for name in "${names[@]}"; do

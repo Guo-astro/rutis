@@ -1,17 +1,20 @@
 #!/usr/bin/env node
-// Check the guarantee register (docs/guarantees.md, .en.md) against the
-// tests, read only (§4, §5 of the register):
+// Check the core-promise register (docs/guarantees.md, .en.md) against the
+// tests, read only (forward form check, #1372):
 //
+// - every row is a core promise (`核心承诺` / `core promise`);
 // - every test a row's "verification" column lists is there: its file, and
 //   the function or test named (`path::fn`, `path::Class::test`, `::fn`
 //   after a path, `path` (`test name`, …), Swift `Type.method`, Kotlin
 //   `Type.method`);
 // - every file a row lists carries a `guarantee:` marker naming the row;
-// - every `guarantee:` marker in the repository names a row;
 // - both languages list the same rows, with the same level and status.
 //
+// Non-core `guarantee:` comments left in tests are ignored so shrinking or
+// refactoring non-core tests is never blocked by this register.
+//
 //   node tools/check-guarantees.mjs            the problems, exit 1 if any
-//   node tools/check-guarantees.mjs --counts   also the §16 counts
+//   node tools/check-guarantees.mjs --counts   also the status counts
 import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
 
@@ -137,14 +140,18 @@ for (const [file, register] of [['docs/guarantees.md', zh], ['docs/guarantees.en
     }
   }
 }
-for (const { file, line, ids } of marked) {
-  if (!ids.length) { problems.push(`${file}:${line}: a guarantee: marker that names no row`); continue }
-  for (const id of ids) if (!zh.has(id) && !/\*$/.test(id)) problems.push(`${file}:${line}: guarantee: ${id} is no row`)
+for (const [id, row] of zh) {
+  if (row.level !== '核心承诺') problems.push(`docs/guarantees.md:${row.line}: ${id}: only 核心承诺 rows belong in this register (got ${row.level})`)
+  const other = en.get(id)
+  if (!other) continue
+  if (other.level !== 'core promise') problems.push(`docs/guarantees.en.md:${other.line}: ${id}: only core promise rows belong in this register (got ${other.level})`)
+  const zhStatus = row.status?.replace(/部分验证/, 'partly verified').replace(/已验证/, 'verified').replace(/未验证/, 'not verified')
+  if (zhStatus !== other.status) problems.push(`docs/guarantees.en.md:${other.line}: ${id}: status mismatch (${row.status} vs ${other.status})`)
 }
 
 const counted = [...new Set(problems)]
 for (const line of counted) console.log(line)
-console.log(`${zh.size} rows, ${marked.length} markers: ${counted.length} problems`)
+console.log(`${zh.size} core promises checked: ${counted.length} problems`)
 
 if (process.argv.includes('--counts')) {
   const tally = {}

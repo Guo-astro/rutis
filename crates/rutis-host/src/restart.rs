@@ -15,6 +15,7 @@ use tokio::sync::watch;
 use tokio::time::Instant;
 
 use crate::config::Restart;
+#[cfg(not(all(test, rutis_shuttle)))]
 use crate::errln;
 
 /// The wait before a restart ([`supervise`]): tokio's in a plain build, the
@@ -130,6 +131,8 @@ pub async fn supervise(
     restart: Restart,
     backoff: &mut Backoff,
 ) -> Supervised {
+    #[cfg(all(test, rutis_shuttle))]
+    let _ = name;
     let mut started = Instant::now();
     loop {
         let why = runtime.ended().await;
@@ -139,6 +142,7 @@ pub async fn supervise(
             Restart::OnFailure => {}
         }
         let Some(wait) = backoff.next(Instant::now(), started.elapsed()) else {
+            #[cfg(not(all(test, rutis_shuttle)))]
             errln!(
                 "runtime {name}: gave up after {LIMIT} restarts within {} minutes",
                 WINDOW.as_secs() / 60
@@ -149,6 +153,7 @@ pub async fn supervise(
         if !runtime.still_ended() {
             continue;
         }
+        #[cfg(not(all(test, rutis_shuttle)))]
         errln!("runtime {name}: restarting");
         started = Instant::now();
         if !runtime.start_again().await {

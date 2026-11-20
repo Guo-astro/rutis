@@ -726,16 +726,19 @@ jobs:
 
   # The shuttle models of the kernel (crates/rutis/src/fiber/shuttle_tests.rs:
   # TransitionTask wakeup, post_join against the driver's exit, concurrent
-  # dispose) and of the bridge (nine shuttle_tests.rs modules: subprocess
-  # exit state, session, event host, channels, ...), `shuttle_iterations`
-  # iterations of each scheduler per model. A failure prints the failing
-  # schedule and seed; the log is uploaded.
+  # dispose), the bridge (nine shuttle_tests.rs modules: subprocess exit state,
+  # session, event host, channels, ...), the loader (binary runtime supervision,
+  # #627) and the host (restart and reload supervision, #627),
+  # `shuttle_iterations` iterations of each scheduler per model. A failure
+  # prints the failing schedule and seed; the log is uploaded.
   #
-  # Sharded by a hash of the model's name, four shards per crate: a model
-  # is one thread's work, and at a million iterations the slowest take tens
-  # of minutes, so one job ran for hours and was cut at its 60-minute
-  # limit (2026-11-12 on; the models #622 added made it grow). Every model
-  # lands in exactly one shard; a new model needs no change here.
+  # Sharded by a hash of the model's name — four shards each for `rutis` and
+  # `rutis-bridge`, one shard each for `rutis-loader` (3 models) and
+  # `rutis-host` (3 models): a model is one thread's work, and at a million
+  # iterations the slowest take tens of minutes, so one job ran for hours and
+  # was cut at its 60-minute limit (2026-11-12 on; the models #622 added made
+  # it grow). Every model lands in exactly one shard; a new model needs no
+  # change here.
   #
   # The 150-minute limit is what the shards need: the first run with 90
   # (2026-11-18, run 44316343421) cut `rutis` shard 2/4 at 95 minutes while
@@ -743,7 +746,7 @@ jobs:
   # random seed walks, so a shard's time varies by more than the model count
   # suggests.
   shuttle:
-    name: shuttle (${{ matrix.crate }}, ${{ matrix.shard }}/4)
+    name: shuttle (${{ matrix.crate }}, ${{ matrix.shard }}/${{ matrix.shards }})
     runs-on: ${{ fromJSON(vars.LINUX_RUNNER || '"ubuntu-24.04"') }}
     timeout-minutes: 150
     strategy:
@@ -751,6 +754,14 @@ jobs:
       matrix:
         crate: [rutis, rutis-bridge]
         shard: [0, 1, 2, 3]
+        shards: [4]
+        include:
+          - crate: rutis-loader
+            shard: 0
+            shards: 1
+          - crate: rutis-host
+            shard: 0
+            shards: 1
     steps:
       - uses: actions/checkout@v4
       - name: self-hosted runner, start (tools/ci-self-hosted.sh)
@@ -770,11 +781,15 @@ jobs:
           RUTIS_SHUTTLE_ITERATIONS: ${{ inputs.shuttle_iterations || '1000000' }}
           CRATE: ${{ matrix.crate }}
           SHARD: ${{ matrix.shard }}
-          SHARDS: 4
+          SHARDS: ${{ matrix.shards }}
         run: |
           case "$RUTIS_SHUTTLE_ITERATIONS" in ""|*[!0-9]*) echo "::error::shuttle_iterations must be a number"; exit 1;; esac
           mkdir -p "$RUNNER_TEMP/shuttle"
-          features=; [ "$CRATE" = rutis-bridge ] && features="--features websocket"
+          features=
+          case "$CRATE" in
+            rutis-bridge) features="--features websocket" ;;
+            rutis-loader) features="--features go,swift" ;;
+          esac
           # shellcheck disable=SC2086 # the features split into flags
           cargo test -p "$CRATE" $features --lib --target-dir "${CARGO_TARGET_DIR:-target}/shuttle" \
             --no-run --message-format=json \
@@ -811,7 +826,11 @@ jobs:
           CRATE: ${{ matrix.crate }}
           SHARD: ${{ matrix.shard }}
         run: |
-          features=; [ "$CRATE" = rutis-bridge ] && features=" --features websocket"
+          features=
+          case "$CRATE" in
+            rutis-bridge) features=" --features websocket" ;;
+            rutis-loader) features=" --features go,swift" ;;
+          esac
           {
             echo "### shuttle models failed"
             echo

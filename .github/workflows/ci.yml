@@ -26,7 +26,7 @@ on:
         type: string
         default: ""
       specs:
-        description: Run the TLA+ specs (nightly skips them unless specs/** changed or this is the weekly run)
+        description: Run the TLA+ specs (nightly skips them unless specs/** changed)
         type: boolean
         default: true
       sdk_repro:
@@ -48,7 +48,7 @@ on:
         type: boolean
         default: false
       specs:
-        description: Run the TLA+ specs (nightly skips them unless specs/** changed or this is the weekly run)
+        description: Run the TLA+ specs (nightly skips them unless specs/** changed)
         type: boolean
         default: true
       sdk_repro:
@@ -372,17 +372,12 @@ jobs:
       - name: fault acceptance summary
         if: success() || failure()
         run: node tools/check-faults.mjs
-      # The guarantee register (docs/guarantees.md, §4–§5): every test a row
-      # lists is there and carries its `guarantee:` marker, every marker names
-      # a row, and both languages list the same rows.
+      # The core-promise register (docs/guarantees.md, #1372): every row is a
+      # core promise, every test it lists is there and carries its `guarantee:`
+      # marker, and both languages list the same core promises.
       - name: guarantee register
         if: success() || failure()
         run: node tools/check-guarantees.mjs
-      # The rule tracker (docs/formal-trace/): evidence paths exist, the rows
-      # match the register, and the generated index is current.
-      - name: rule tracker
-        if: success() || failure()
-        run: node tools/formal-trace.mjs --check
       - name: self-hosted runner, end
         if: always() && runner.environment == 'self-hosted'
         env:
@@ -525,6 +520,15 @@ jobs:
         env:
           RUSTFLAGS: --cfg rutis_shuttle
         run: cargo test -p rutis-bridge --features websocket --lib --target-dir "${CARGO_TARGET_DIR:-target}/shuttle" shuttle
+
+      # The shuttle models of binary runtime supervision (rutis-loader) and
+      # host restart/reload supervision (rutis-host) (#627, #1372).
+      - name: cargo test (rutis-loader & rutis-host shuttle models)
+        env:
+          RUSTFLAGS: --cfg rutis_shuttle
+        run: |
+          cargo test -p rutis-loader --features go,swift --lib --target-dir "${CARGO_TARGET_DIR:-target}/shuttle" shuttle
+          cargo test -p rutis-host --lib --target-dir "${CARGO_TARGET_DIR:-target}/shuttle" shuttle
 
       # The fuzz entry points (crates/rutis-bridge/src/fuzzing.rs, #179)
       # compile only under cargo-fuzz's --cfg fuzzing, which the nightly

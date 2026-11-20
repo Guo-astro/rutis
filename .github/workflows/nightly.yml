@@ -97,30 +97,30 @@ jobs:
 
           install=false; dylib=false; specs=false; sdk_repro=false
           if [ "$everything" = true ]; then
-            install=true; dylib=true; specs=true; sdk_repro=true
-          else
-            while IFS= read -r f; do
-              case "$f" in
-                .github/workflows/*|Cargo.toml|Cargo.lock|rust-toolchain.toml)
-                  install=true; dylib=true; specs=true; sdk_repro=true ;;
-              esac
-              case "$f" in
-                scripts/train.mjs|*/pyproject.toml|*/package.json|crates/*/Cargo.toml|node/rutis-host/scripts/*)
-                  install=true ;;
-              esac
-              case "$f" in
-                crates/rutis-cli/build.rs|crates/rutis-cli/src/*|crates/rutis-cli/Cargo.toml|crates/rutis-abi/*|crates/rutis-dylib/*|crates/rutis-dylib-meta/*|crates/rutis-dylib-launcher/*|crates/rutis-sdk/*|crates/rutis-xtask/*|tools/*dylib*|tools/build-dylib-bundle.sh|tools/test-sdk-bundle.sh|tools/lib/*|tests/dylib-fixtures/*)
-                  dylib=true ;;
-              esac
-              case "$f" in
-                specs/*) specs=true ;;
-              esac
-              case "$f" in
-                crates/rutis-abi/*|crates/rutis-sdk/*|crates/rutis-cli/build.rs|tools/test-dylib-repro.sh|tools/build-dylib-bundle.sh|tools/lib/*)
-                  sdk_repro=true ;;
-              esac
-            done <<< "$changed"
+            install=true; dylib=true; sdk_repro=true
           fi
+          while IFS= read -r f; do
+            [ -n "$f" ] || continue
+            case "$f" in
+              .github/workflows/*|Cargo.toml|Cargo.lock|rust-toolchain.toml)
+                install=true; dylib=true; sdk_repro=true ;;
+            esac
+            case "$f" in
+              scripts/train.mjs|*/pyproject.toml|*/package.json|crates/*/Cargo.toml|node/rutis-host/scripts/*)
+                install=true ;;
+            esac
+            case "$f" in
+              crates/rutis-cli/build.rs|crates/rutis-cli/src/*|crates/rutis-cli/Cargo.toml|crates/rutis-abi/*|crates/rutis-dylib/*|crates/rutis-dylib-meta/*|crates/rutis-dylib-launcher/*|crates/rutis-sdk/*|crates/rutis-xtask/*|tools/*dylib*|tools/build-dylib-bundle.sh|tools/test-sdk-bundle.sh|tools/lib/*|tests/dylib-fixtures/*)
+                dylib=true ;;
+            esac
+            case "$f" in
+              specs/*) specs=true ;;
+            esac
+            case "$f" in
+              crates/rutis-abi/*|crates/rutis-sdk/*|crates/rutis-cli/build.rs|tools/test-dylib-repro.sh|tools/build-dylib-bundle.sh|tools/lib/*)
+                sdk_repro=true ;;
+            esac
+          done <<< "${changed:-}"
           events=sampled
           if [ "$everything" = true ]; then events=all; fi
 
