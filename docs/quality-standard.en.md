@@ -57,11 +57,17 @@ rutis's behavior falls into four levels; the strength of verification depends on
 | No. | Level | Meaning | Verification required |
 | --- | --- | --- | --- |
 | **Q3.1** | Core guarantee | Users build their systems on it and cannot work around it when it fails. Includes: dependency gating (not started until ready, stopped when a dependency goes away, restarted when it returns); every cleanup runs exactly once; failures roll back and the old state keeps working; consumers depend on service names, not implementations; what cannot cross a boundary is reported explicitly, never silently degraded; on interruption calls fail explicitly, never report false success, never retry side effects automatically; nothing is left behind after an end | Risks always treated as the highest level (P0); verified on every supported platform and under fault injection; verified in at least two independent ways (§8.3) |
-| **Q3.2** | Contract behavior | Specific behavior written in design or user documentation: ordering, parameters, defaults, error categories, timeouts | Automated verification; registered in the guarantee register (§9.4) |
-| **Q3.3** | Implementation detail | Behavior written in no document | Not required to be verified; users must not rely on it; tests must not pin it (otherwise changing the implementation is misread as breakage) |
+| **Q3.2** | Contract behavior | Behavior explicitly declared as an external contract: public programming APIs, wire protocol specifications, configuration and CLI contracts, runnable guide examples | Automated verification (preferring public API snapshots, conformance suites and invariant checks) |
+| **Q3.3** | Implementation detail | Internal implementation not explicitly declared as a contract, and explanatory prose in dated design/review notes that freeze as historical records once merged | Not required to be verified; users must not rely on it; tests must not pin it (otherwise changing the implementation is misread as breakage) |
 | **Q3.4** | Explicitly not guaranteed | Behavior the documentation says is not provided (for example some orderings across a boundary, some detections) | Reason written down; if someone could mistake it for a guarantee, a verification pins that it is indeed not provided, so it does not silently become an implicit guarantee |
 
 **Q3.5** When a behavior is promoted from implementation detail to contract behavior or core guarantee, verification of the matching level is added at the same time. Demoting a behavior is an incompatible change (§9.3).
+
+**Q3.6 Documentation: shape-controlled, opt-in contracts.** Documentation provides user guidance and semantic constraints; automated checks verify documentation **form**, not a sentence-by-sentence ledger of prose:
+
+1. Living documents (public API snapshots, core protocol specs, the trimmed core-guarantee register, `docs/guide/`) are separated from historical documents (dated `docs/design-*.md`, `review-*.md`, `plan/*`), which freeze once merged and are not continuously re-audited;
+2. automated checks verify form only: relative links resolve, public API shapes match snapshots, guide code examples build and run, and the core-guarantee register keeps valid table structure and existing tests;
+3. **opt-in by default**: routine bug fixes, explanations and internal tweaks do not implicitly expand contract boundaries; withdrawn entries leave no tombstone rows (history lives in `git log` and release notes).
 
 ---
 
@@ -378,6 +384,13 @@ E.g.: packages on each channel, binaries, platform-specific packages.
 
 **Q7.8 Skips are explained.** When a combination (platform, implementation, version) does not run a verification, the reason is written down; silent skips are not allowed.
 
+**Q7.9 Four test-coverage guardrails.** Tests are ongoing maintenance debt; adding and refactoring tests follow four rules:
+
+1. **Single ownership**: pin each risk class once at its highest-ROI layer (kernel state machine in the kernel, cross-process commonalities in unified conformance suites, language specifics in each language package, real processes/signals/residue in black-box E2E), avoiding 4–5-layer duplication;
+2. **Additive scaling**: adding a language adds O(1) tests (plug into unified conformance + language-specific unit tests + minimal smoke), never N×N copy-paste or full permutations;
+3. **Invariants over enumeration**: prefer property tests and reference models over handwritten case enumeration;
+4. **Structural guardrails**: delete tests and models in the same PR when retiring a feature; never create a new top-level integration test binary per bug (place regressions inside the crate's established suite).
+
 ---
 
 ## 8. Independence and layers of verification
@@ -433,15 +446,15 @@ E.g.: packages on each channel, binaries, platform-specific packages.
 3. comes with migration notes whose code is verified;
 4. when different versions meet (for example a new host and an old runtime), they either work or refuse explicitly at connection time with a reason; the previous release meeting the current version is verified.
 
-### 9.4 Guarantee register
+### 9.4 Core guarantee register
 
-**Q9.4.1** All core guarantees and contract behavior are recorded in a guarantee register: number, source, content, level, status (verified / partly verified / not verified / explicitly not guaranteed), verifications.
+**Q9.4.1** Active core guarantees (P0 invariants) are recorded in a concise register: number, source, content, level, status (verified / partly verified / not verified), and verifications. No sentence-by-sentence static ledger of design prose is kept, and withdrawn entries leave no tombstone rows (Q3.6).
 
-**Q9.4.2** Verification code is marked with the numbers of the guarantees it verifies.
+**Q9.4.2** Verification code for core guarantees is marked with their numbers so forward checks confirm the tests still exist.
 
-**Q9.4.3** When a verification is removed or skipped, the status of its guarantee in the register is updated in the same change.
+**Q9.4.3** When a core guarantee's verification is removed or skipped, its status in the register is updated in the same change.
 
-**Q9.4.4** At every release, unverified core guarantees number zero; unverified contract behaviors are no more than at the previous release.
+**Q9.4.4** At every release, unverified core guarantees number zero.
 
 ---
 
@@ -509,16 +522,21 @@ E.g.: packages on each channel, binaries, platform-specific packages.
 
 Continuous integration is where quality control is carried out: it runs most of the verification this standard requires. It is also a system to be designed and measured: too slow, and developers bypass it or wait for a long time; too thin, and problems slip into the main line.
 
-**Q12.1** Verification runs at levels according to how soon a problem needs to be known:
+**Q12.1** Verification is split into **three tiers by purpose and activity** and runs according to how soon a problem needs to be known:
 
-| When | What runs |
-| --- | --- |
-| Before every merge | P0 verification affected by the change (Q12.3); static checks; the cheaper parts on each platform |
-| Daily (when the main line has new merges), and before release | All verification: all platforms, every cell of the support matrix; clean installation; versions meeting across releases; reproducible builds |
-| Daily | Longer P1 verification: long runs, fuzzing, large-scale model checking, real network conditions, new versions of external ecosystems |
-| Before release | §13 |
+| Tier & cadence | Role | What runs |
+| --- | --- | --- |
+| **1. Active guardrails: before every merge (PR ≤ 10 min)** | Guard core semantic invariants and main paths | P0 verification affected by the change (Q12.3); static checks; Linux core/runtime/E2E suites; OS-sensitive subsets only on macOS and Windows |
+| **1. Active guardrails: daily (when main has new merges)** | Catch missed path mappings and cross-PR regressions | Full cross-platform test suites (including the latest runtime matrix); controlled-scheduling models at nightly scale; short resource/CPU baselines and Linux host soak |
+| **2. Toolbox: design changes / weekly Monday / on-demand / release gate** | Design validation, deep probing, debugging, pre-release backstop | TLA+ (when `specs/**` changes); Kani / Miri / Kotlin Fray / container `netem` / real devices & simulators (on demand); fuzzing, 3-platform host soak, newest upstream ecosystem checks (weekly Monday); cross-version meetings, five-platform clean install and reproducible builds (release gate / §13) |
+| **3. Development scaffolding: local only** | Reproduce bugs and inspect details | Throwaway repro and inspection scripts — deleted once done; only minimal invariants graduate into Tier 1 |
 
-**Q12.2** Verification before merging is kept within a reasonable time; when it grows beyond that, the expensive parts that find little are moved to a later level, not deleted.
+**Q12.2 Four CI operational rules.** Pre-merge verification stays strictly within budget rather than growing unchecked:
+
+1. **Default downward**: new checks start in Tier 2 (on-demand / weekly / release gate) and graduate to nightly or PR only when late detection is demonstrably costly and frequent;
+2. **Hard PR budget (one in, one out)**: ordinary code pull requests target **≤ 10 minutes** from push to result; adding a check that exceeds budget must split work in parallel or demote lower-ROI checks to Tier 2;
+3. **Platform by difference**: OS-independent logic runs once on Linux; macOS and Windows pull requests run only OS-sensitive subsets;
+4. **Periodic ROI retirement**: checks with persistently zero catches and high cost, or higher false-alarm rates than detection value, are demoted or retired (Q11.3.1).
 
 **Q12.3 Selection by change.** Before merging, only the verification affected by the change runs; all verification runs **at least once a day** (when the main line has new merges) and **before every release**.
 
@@ -542,7 +560,7 @@ Continuous integration is where quality control is carried out: it runs most of 
 
 **Q12.9 Measure continuous integration itself.** Regularly record: time from push to result (including queueing), what makes up the critical path, the time of each job, the intermittent failure rate, main line failures and how many of them were not selected before merging. When over budget, adjust per Q12.2 and Q12.6.
 
-**Q12.10 CI configuration is code.** Changes to CI configuration are reviewed like code; a change to CI configuration runs all verification before merging.
+**Q12.10 CI configuration is code.** Changes to CI configuration are reviewed like code; a change to the main PR CI workflow (`ci.yml`) runs all verification before merging (changes to scheduled-only workflows need not force every PR release-gate job).
 
 ---
 

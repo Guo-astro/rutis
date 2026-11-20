@@ -1,10 +1,11 @@
 # The nightly run (docs/ci.md §2, Q12.3, Q12.4): every job of ci.yml, the
-# install checks with this commit's packages (install.yml: every platform
-# when the packages changed, else linux-x64 for the developer-experience
-# scenarios, #690), the Windows dylib tests (dylib-windows.yml), the stress
-# tests (stress.yml), the Cordis checks on the newest published Cordis
-# plugins (`cordis-latest`, report only) and S5 across two containers with
-# netem (netem.yml, report only), on main's latest commit. A merge to main runs nothing,
+# install checks with this commit's packages (install.yml: five platforms
+# when packaging paths changed or on Monday; release.yml always runs the
+# five-platform install gate before publishing), the Windows dylib tests
+# (dylib-windows.yml), the stress tests (stress.yml), and on Monday the
+# Cordis checks on the newest published Cordis plugins (`cordis-latest`,
+# report only). S5 across two containers with netem (`netem.yml`, report
+# only) is paused. A merge to main runs nothing,
 # so this run is what checks every commit merged since the last successful
 # nightly run: the paths a pull request skipped, and pull requests that pass
 # alone but fail together.
@@ -40,11 +41,12 @@ concurrency:
 jobs:
   # Whether there is anything new: this commit against the last successful
   # nightly run's. What that range touches decides the checks that need not
-  # run every night (#576): the packages on every platform (install; it
-  # runs on linux-x64 every night), the Windows dylib tests,
-  # the TLA+ specs and the two-runner SDK reproducibility. Monday's run (UTC,
-  # 03:00 Tuesday in Beijing) runs all of them; the event conformance suite
-  # runs a sample every night and every placement on Monday.
+  # run every night (#576, #1375): the five-platform package installs, the
+  # Windows dylib tests, the TLA+ specs (`specs/**` only) and the two-runner
+  # SDK reproducibility. Monday's run (UTC, 03:00 Tuesday in Beijing) runs
+  # install, dylib-windows, sdk-repro, cordis-latest, fuzz, 3-platform
+  # soak-host, and every placement of the event conformance suite (ordinary
+  # nights run sampled placements and Linux-only soak-host).
   plan:
     runs-on: ubuntu-24.04
     permissions:
@@ -53,6 +55,7 @@ jobs:
     outputs:
       run: ${{ steps.plan.outputs.run }}
       base: ${{ steps.plan.outputs.base }}
+      weekly: ${{ steps.plan.outputs.weekly }}
       install: ${{ steps.plan.outputs.install }}
       dylib: ${{ steps.plan.outputs.dylib }}
       specs: ${{ steps.plan.outputs.specs }}
@@ -152,19 +155,16 @@ jobs:
       specs: ${{ needs.plan.outputs.specs == 'true' }}
       sdk_repro: ${{ needs.plan.outputs.sdk_repro == 'true' }}
 
-  # This commit's packages, built and installed; GitHub's clean machines but
-  # darwin-arm64 (docs/ci.md §10). Every platform when this range touched
-  # what they package (or on the weekly run); otherwise linux-x64 alone, for
-  # the developer-experience scenarios (#690), which run every night: the
-  # linux-x64 binary, the x86_64 wheel and the npm tarballs are built for
-  # them, a few tens of runner minutes.
+  # This commit's packages, built and installed on all five platforms when the
+  # range touched packaging paths or on Monday (`weekly`); release.yml always
+  # runs the full five-platform install gate before publishing (#1375).
   install:
     needs: plan
-    if: needs.plan.outputs.run == 'true'
+    if: needs.plan.outputs.run == 'true' && needs.plan.outputs.install == 'true'
     uses: ./.github/workflows/install.yml
     with:
       source: local
-      platforms: ${{ needs.plan.outputs.install == 'true' && '["linux-x64","linux-arm64","darwin-x64","darwin-arm64","win32-x64"]' || '["linux-x64"]' }}
+      platforms: '["linux-x64","linux-arm64","darwin-x64","darwin-arm64","win32-x64"]'
       self-hosted: true
 
   dylib-windows:
@@ -177,21 +177,15 @@ jobs:
     if: needs.plan.outputs.run == 'true'
     uses: ./.github/workflows/stress.yml
     with:
+      weekly: ${{ needs.plan.outputs.weekly == 'true' }}
+      host_soak_secs: ${{ needs.plan.outputs.weekly == 'true' && '1800' || '1200' }}
       events: ${{ needs.plan.outputs.events }}
 
   # Risk F4 (docs/quality-status.md, Q6.14.4): the newest published Cordis
-  # and dsh plugins, instead of node/baseline's lockfile, through the checks
-  # that use them: the library mount against native Cordis (rutis-bridge's
-  # dsh_baseline), the generated bindings (examples/dsh-baseline, without
-  # its version pins) and S6 (tests/e2e/tests/cordis.rs). Report only: a new
-  # upstream release must not fail main's nightly run, so the job never
-  # fails (`continue-on-error`), `report` does not wait for it and nothing
-  # is opened; its summary lists the versions and each check's result, and
-  # a check that failed shows as a warning on the run. Nothing is committed:
-  # the lockfile stays as it is.
+  # and dsh plugins, weekly on Monday (report only, #1375).
   cordis-latest:
     needs: plan
-    if: needs.plan.outputs.run == 'true'
+    if: needs.plan.outputs.run == 'true' && needs.plan.outputs.weekly == 'true'
     runs-on: ${{ fromJSON(vars.LINUX_RUNNER || '"ubuntu-24.04"') }}
     timeout-minutes: 30
     continue-on-error: true

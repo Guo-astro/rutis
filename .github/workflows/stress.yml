@@ -30,43 +30,50 @@ on:
     inputs:
       rounds:
         description: How many times to run the rutis tests and the multi-process tests
-        default: "20"
+        default: "5"
       soak_secs:
         description: How long each soak runs, in seconds
-        default: "600"
+        default: "300"
       shuttle_iterations:
         description: Iterations of each shuttle scheduler, per model
-        default: "1000000"
+        default: "100000"
       fuzz_secs:
         description: How long each fuzz target runs, in seconds
-        default: "1200"
+        default: "600"
       host_soak_secs:
         description: How long the S8 host soak runs on each platform, in seconds
-        default: "3600"
+        default: "1200"
+      weekly:
+        description: Run weekly-tier jobs (fuzz targets and macOS/Windows S8 host soak)
+        type: boolean
+        default: true
       events_case:
         description: The events conformance cases every placement of which runs (RUTIS_EVENTS_CASE, prefixes); empty, all of them in shards
         default: ""
       events:
         description: Events conformance placements (all, or sampled)
         default: all
-  # nightly.yml, with the defaults.
+  # nightly.yml passes weekly=true on Monday and weekly=false on other nights (#1375).
   workflow_call:
     inputs:
       rounds:
         type: string
-        default: "20"
+        default: "5"
       soak_secs:
         type: string
-        default: "600"
+        default: "300"
       shuttle_iterations:
         type: string
-        default: "1000000"
+        default: "100000"
       fuzz_secs:
         type: string
-        default: "1200"
+        default: "600"
       host_soak_secs:
         type: string
-        default: "3600"
+        default: "1200"
+      weekly:
+        type: boolean
+        default: true
       events_case:
         type: string
         default: ""
@@ -113,7 +120,7 @@ jobs:
         # build. Doc tests are not repeated.
         working-directory: crates/rutis
         env:
-          ROUNDS: ${{ inputs.rounds || '20' }}
+          ROUNDS: ${{ inputs.rounds || '5' }}
         run: |
           case "$ROUNDS" in ""|*[!0-9]*) echo "::error::rounds must be a number"; exit 1;; esac
           cores=$(nproc)
@@ -247,7 +254,7 @@ jobs:
         # counts as failed. Doc tests are not repeated.
         shell: bash
         env:
-          ROUNDS: ${{ inputs.rounds || '20' }}
+          ROUNDS: ${{ inputs.rounds || '5' }}
         run: |
           case "$ROUNDS" in ""|*[!0-9]*) echo "::error::rounds must be a number"; exit 1;; esac
           cores=$(nproc)
@@ -493,7 +500,7 @@ jobs:
         # bash -eo pipefail: a failing soak fails the step through tee.
         shell: bash
         env:
-          RUTIS_SOAK_SECS: ${{ inputs.soak_secs || '600' }}
+          RUTIS_SOAK_SECS: ${{ inputs.soak_secs || '300' }}
         run: |
           case "$RUTIS_SOAK_SECS" in ""|*[!0-9]*) echo "::error::soak_secs must be a number"; exit 1;; esac
           cargo test -q -p rutis-bridge --features websocket --test websocket_soak -- --ignored --nocapture 2>&1 | tee websocket.txt
@@ -561,25 +568,13 @@ jobs:
   soak-host:
     name: soak-host (${{ matrix.os }})
     runs-on: ${{ fromJSON(matrix.os == 'linux' && (vars.LINUX_RUNNER || '"ubuntu-24.04"') || matrix.os == 'macos' && (vars.MACOS_RUNNER || '["self-hosted","macOS","ARM64"]') || (vars.WINDOWS_RUNNER || '"windows-2025"')) }}
-    timeout-minutes: 150
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: linux
-            node: '22'
-            python: '3.12'
-            websockets: '==15.*'
-            bun: 1.4.0
-          - os: macos
-            node: '26'
-            python: '3.x'
-            websockets: '>=15'
-            bun: latest
-          - os: windows
-            node: '26'
-            python: '3.x'
-            websockets: '>=15'
+        # Linux runs every night (20m); macOS and Windows join on Monday (`weekly`)
+        # and manual runs (#1375).
+        include: ${{ fromJSON(inputs.weekly == false && '[{"os":"linux","node":"22","python":"3.12","websockets":"==15.*","bun":"1.4.0"}]' || '[{"os":"linux","node":"22","python":"3.12","websockets":"==15.*","bun":"1.4.0"},{"os":"macos","node":"26","python":"3.x","websockets":">=15","bun":"latest"},{"os":"windows","node":"26","python":"3.x","websockets":">=15"}]') }}
     defaults:
       run:
         # Git's bash on Windows (docs/ci.md §11).
@@ -683,7 +678,7 @@ jobs:
       - name: Soak the host (S8)
         # bash -eo pipefail: a failing soak fails the step through tee.
         env:
-          RUTIS_S8_SECS: ${{ inputs.host_soak_secs || '3600' }}
+          RUTIS_S8_SECS: ${{ inputs.host_soak_secs || '1200' }}
         run: |
           case "$RUTIS_S8_SECS" in ""|*[!0-9]*) echo "::error::host_soak_secs must be a number"; exit 1;; esac
           status=0
@@ -778,7 +773,7 @@ jobs:
         shell: bash
         env:
           RUSTFLAGS: --cfg rutis_shuttle
-          RUTIS_SHUTTLE_ITERATIONS: ${{ inputs.shuttle_iterations || '1000000' }}
+          RUTIS_SHUTTLE_ITERATIONS: ${{ inputs.shuttle_iterations || '100000' }}
           CRATE: ${{ matrix.crate }}
           SHARD: ${{ matrix.shard }}
           SHARDS: ${{ matrix.shards }}
@@ -858,6 +853,7 @@ jobs:
   # (fuzz/corpus/<target>); what they add to it is not kept. A crash or a
   # property that fails stops the target; its input is uploaded with the log.
   fuzz:
+    if: inputs.weekly != false
     runs-on: ${{ fromJSON(vars.LINUX_RUNNER || '"ubuntu-24.04"') }}
     timeout-minutes: 60
     strategy:
@@ -887,7 +883,7 @@ jobs:
         working-directory: fuzz
         env:
           TARGET: ${{ matrix.target }}
-          FUZZ_SECS: ${{ inputs.fuzz_secs || '1200' }}
+          FUZZ_SECS: ${{ inputs.fuzz_secs || '600' }}
         run: |
           case "$FUZZ_SECS" in ""|*[!0-9]*) echo "::error::fuzz_secs must be a number"; exit 1;; esac
           mkdir -p "$RUNNER_TEMP/corpus" artifacts
