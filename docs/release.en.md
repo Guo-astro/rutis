@@ -90,7 +90,15 @@ The parts of the release gate a local machine can run were run (2026-11-19, Linu
 - `cargo test -p rutis-host --test persisted` and `cargo test -p rutis-dsh --test persisted` pass: the 0.23.0 samples are byte-identical to 0.22.0's (this release adds no field or form to `rutis.json` or the user layer).
 - `tools/check-guarantees.mjs` (219 rows, 1287 markers), `tools/formal-trace.mjs --check`, `tools/check-faults.mjs`, `tools/check-model-pr.mjs --self-test`, `tools/doc-examples.mjs --check` and `tools/check-md-links.mjs --base origin/main` all report 0 problems.
 
-Not run locally: the `cargo semver-checks` comparison with 0.22.0, the whole `release.yml` dry run, `tools/install/local-artifacts.sh` and the install scenarios, and the two-machine network smoke.
+Not run locally: the `cargo semver-checks` comparison with 0.22.0 and `tools/install/local-artifacts.sh` with the install scenarios (both ran in `release.yml` on the tag), and the two-machine network smoke.
+
+Release gate and publishing (2026-11-20, tag `v0.23.0` at `18a912a8`, run [44674248010](https://github.com/arcships/rutis/actions/runs/44674248010)):
+
+- All 58 gate jobs passed: every CI job (including the cross-version tests and the 14 faults' acceptance tests in each language), the five platforms' binaries and wheels, the four npm packages, the five platforms' install scenarios, and the Windows dylib tests.
+- `crates` (11, `rutis-abi` for the first time), `npm`, `pypi`, `pypi-host`, `go` (`go/rutis/v0.23.0`) and `github` all succeeded; `maven` skipped because the environment `maven` has none of its four secrets, which the summary names.
+- Post-release verification first failed in `installed / install (linux-x64…)` at "download the released binary": the `github` job had uploaded only `aarch64-apple-darwin`. It asked `assets?name=<name>`, an endpoint that ignores the parameter and answers every asset, so after the first upload the rest were skipped. The nine missing assets were uploaded from this run's `binary-*` artifacts (checksums verified) and the job was rerun; attempt 2 passed and the run is a success. The check now reads the asset list once and matches by name ([#1371](https://github.com/arcships/rutis/issues/1371)).
+
+Not run: the two-machine network smoke with its outage and recovery, and the pre-release agent trial ([#663](https://github.com/arcships/rutis/issues/663)).
 
 ## 0.22.0
 

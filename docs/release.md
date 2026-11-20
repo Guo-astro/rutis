@@ -90,7 +90,15 @@ cargo run -p rutis-bridge --features websocket --example smoke -- \
 - `cargo test -p rutis-host --test persisted` 与 `cargo test -p rutis-dsh --test persisted` 通过：0.23.0 的样本与 0.22.0 逐字节相同（这一版没有给 `rutis.json` 或用户层加字段、写法）。
 - `tools/check-guarantees.mjs`（219 行、1287 个标记）、`tools/formal-trace.mjs --check`、`tools/check-faults.mjs`、`tools/check-model-pr.mjs --self-test`、`tools/doc-examples.mjs --check`、`tools/check-md-links.mjs --base origin/main` 都是 0 problem。
 
-本机没跑：`cargo semver-checks` 与 0.22.0 的比较、整套 `release.yml` dry run、`tools/install/local-artifacts.sh` 与安装场景、两台机器的网络冒烟。
+本机没跑：`cargo semver-checks` 与 0.22.0 的比较、`tools/install/local-artifacts.sh` 与安装场景（这两项在 tag 上的 `release.yml` 里跑了）、两台机器的网络冒烟。
+
+发布门与发布（2026-11-20，tag `v0.23.0` 指向 `18a912a8`，运行 [44674248010](https://github.com/arcships/rutis/actions/runs/44674248010)）：
+
+- 发布门的 58 个任务全部通过：CI 的全部任务（含跨版本测试与 14 种故障的各种语言验收）、五平台的二进制与 wheel、四个 npm 包、五平台的安装场景、Windows 的 dylib 测试。
+- `crates`（11 个，`rutis-abi` 首次发布）、`npm`、`pypi`、`pypi-host`、`go`（`go/rutis/v0.23.0`）、`github` 都成功；`maven` 跳过：environment `maven` 的四个 secret 都没有，运行摘要里写明缺哪几个。
+- 发布后验证第一次失败在 `installed / install (linux-x64…)` 的「download the released binary」：`github` 任务只传上了 `aarch64-apple-darwin` 一个资产——它用 `assets?name=<name>` 判断已上传，而接口忽略参数、返回全部资产，第一个传上后其余全被跳过。从这次运行的 `binary-*` artifact 补传缺的 9 个资产（校验和核对过），重跑该任务 attempt 2 通过，运行整体 success；检查已改成读一次资产列表按名字过滤（[#1371](https://github.com/arcships/rutis/issues/1371)）。
+
+没跑：两台机器的网络冒烟与断网恢复、发布前的 agent 试用（[#663](https://github.com/arcships/rutis/issues/663)）。
 
 ## 0.22.0
 

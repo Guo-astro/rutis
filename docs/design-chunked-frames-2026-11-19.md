@@ -2,7 +2,7 @@
 
 [English](design-chunked-frames-2026-11-19.en.md)
 
-状态：已实现（0.23 未发布，并入会话协议 5）；Rust 与 Node 由 #1361 实现，#1363 让其余五种（Bun、Python、Go、Swift、Kotlin）也实现。日期：2026-11-19。
+状态：已实现（0.23 已发布，并入会话协议 5）；Rust 与 Node 由 #1361 实现，#1363 让其余五种（Bun、Python、Go、Swift、Kotlin）也实现。日期：2026-11-19。
 议题：[#1361](https://github.com/arcships/rutis/issues/1361)、[#1363](https://github.com/arcships/rutis/issues/1363)，属于 0.23 beta。
 
 ## 1. 现在是什么样

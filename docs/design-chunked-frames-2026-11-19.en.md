@@ -2,7 +2,7 @@
 
 [中文](design-chunked-frames-2026-11-19.md)
 
-Status: implemented (0.23 is unreleased; this joins session protocol 5); Rust and Node by #1361, the other five (Bun, Python, Go, Swift and Kotlin) by #1363. Date: 2026-11-19.
+Status: implemented (released in 0.23; this joins session protocol 5); Rust and Node by #1361, the other five (Bun, Python, Go, Swift and Kotlin) by #1363. Date: 2026-11-19.
 Issue: [#1361](https://github.com/arcships/rutis/issues/1361), [#1363](https://github.com/arcships/rutis/issues/1363), part of the 0.23 beta.
 
 ## 1. Where things stand

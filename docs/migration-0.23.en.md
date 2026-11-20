@@ -2,7 +2,7 @@
 
 [中文](migration-0.23.md)
 
-0.23 is not released yet; this guide is written alongside the behaviour changes, a section with each one, and finished before the release as [#694](https://github.com/arcships/rutis/issues/694) says. It covers what differs from 0.22, and nothing else; a form that goes is deleted rather than deprecated.
+0.23 was released on 2026-11-20; this guide was written alongside the behaviour changes, a section with each one, and finished before the release as [#694](https://github.com/arcships/rutis/issues/694) says. It covers what differs from 0.22, and nothing else; a form that goes is deleted rather than deprecated.
 
 0.23 **removes and renames no API a plugin sees**: the plugin API is still 3 and `rutis.json`'s `format` is still 1. The session protocol is **5**, and every end must be upgraded together: a protocol-4 host, runtime, node or SDK is refused at the handshake, and no mixed protocol-4/protocol-5 session exists.
 
