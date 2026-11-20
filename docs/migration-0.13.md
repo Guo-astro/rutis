@@ -63,7 +63,7 @@ ctx.events().on(
 )?;
 ```
 
-子级的监听器收到父级的事件，兄弟实例的监听器也收到。`rutis/tests/events.rs::events_reach_every_listener_on_the_bus` 从每一侧运行这个流程。监听器按登记顺序运行；`parallel` 返回 `CordisError::ListenersFailed`，其子错误按登记顺序；`emit` 在监听器运行处报告失败并立即返回。
+子级的监听器收到父级的事件，兄弟实例的监听器也收到。`rutis/tests/events/events.rs::events_reach_every_listener_on_the_bus` 从每一侧运行这个流程。监听器按登记顺序运行；`parallel` 返回 `CordisError::ListenersFailed`，其子错误按登记顺序；`emit` 在监听器运行处报告失败并立即返回。
 
 **诊断。** `EventSubscription` 删除 `key`（`TypeKey`）、`prefixes`、`selected`、`invoked`，改为 `name`（事件名，前缀条目为前缀）、`prefix`、`remote`（别处的监听器）、`global`、`calls`（已开始的调用数）；`owner` 改为 `Option<PluginId>`（登记它的 fiber 已不在时为 `None`）。`ListenerKind` 只有 `Sync`、`Async`、`Any`（`Any` 只来自别处的监听器）：`AsyncWaterfall`、`SyncWaterfall` 删除，按值匹配的代码要改。`EventBacklog` 与 `DispatchAttempt` 带事件的 `name`，不再带 `key`（`TypeKey`）；`DispatchMode` 改为 `rutis::Mode`；`CordisError::ReentrantEvent` 删除：同名的同步分发可以重入（与 Cordis 相同），只有真正的等待环以 `SyncWaitCycle` 失败。
 

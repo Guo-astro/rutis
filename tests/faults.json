@@ -59,7 +59,7 @@
         "tests": [
           ["crates/rutis-loader/tests/waits.rs", "a_misspelt_name_is_waited_for_with_the_name_it_meant"],
           ["crates/rutis-loader/tests/check.rs", "a_disabled_provider_is_named_and_a_misspelt_name_corrected"],
-          ["crates/rutis/tests/still_waiting.rs", "a_plugin_waiting_long_for_its_deps_is_reported_once"]
+          ["crates/rutis/tests/core/still_waiting.rs", "a_plugin_waiting_long_for_its_deps_is_reported_once"]
         ]
       }
     },
@@ -170,7 +170,7 @@
       },
       "rust": {
         "tests": [
-          ["crates/rutis/tests/embedding_output.rs", "a_failed_start_reaches_the_error_sink_by_the_plugins_name"],
+          ["crates/rutis/tests/instances/embedding_output.rs", "a_failed_start_reaches_the_error_sink_by_the_plugins_name"],
           ["crates/rutis-loader/tests/waits.rs", "a_row_that_cannot_start_reaches_the_error_sink_by_its_name"]
         ]
       }
@@ -319,8 +319,8 @@
       },
       "rust": {
         "tests": [
-          ["crates/rutis/tests/embedding_output.rs", "an_apply_that_does_not_return_is_named"],
-          ["crates/rutis/tests/embedding_output.rs", "a_shutdown_that_runs_out_of_time_names_the_stuck_cleanup"]
+          ["crates/rutis/tests/instances/embedding_output.rs", "an_apply_that_does_not_return_is_named"],
+          ["crates/rutis/tests/instances/embedding_output.rs", "a_shutdown_that_runs_out_of_time_names_the_stuck_cleanup"]
         ]
       }
     },
@@ -461,7 +461,7 @@
         "tests": [
           ["crates/rutis-loader/tests/config_rows.rs", "a_rust_row_is_filled_and_validated"],
           ["crates/rutis-loader/tests/config_rows.rs", "extra_keys_are_warned_about_once"],
-          ["crates/rutis/tests/config_cases.rs", "every_case_of_the_shared_list_passes"]
+          ["crates/rutis/tests/core/config_cases.rs", "every_case_of_the_shared_list_passes"]
         ]
       }
     },
@@ -524,7 +524,7 @@
       },
       "rust": {
         "tests": [
-          ["crates/rutis/tests/embedding_output.rs", "diagnostics_print_by_name_without_rutis_own_plugins"],
+          ["crates/rutis/tests/instances/embedding_output.rs", "diagnostics_print_by_name_without_rutis_own_plugins"],
           ["crates/rutis-loader/tests/status.rs", "the_status_names_rows_services_runtimes_and_calls"]
         ]
       }

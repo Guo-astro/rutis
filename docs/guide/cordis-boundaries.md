@@ -47,7 +47,7 @@
 - 需要同步短路：把监听器写成同步函数（不返回 Promise），并且链上别处也不能有异步监听器。
 - 从 Cordis 迁过来时，凡是 `ctx.bail` 的监听器可能为 `async`，改成 `serial`，或把监听器改成同步。
 
-依据：保证 `events/serial-bail`、`events/hub-bail`；`crates/rutis/tests/events.rs::bail_meets_an_async_listener`；`crates/rutis-bridge/tests/event_hub.rs::bail_is_synchronous_everywhere`；`node/rutis-runtime/test/cordis-events.test.mjs` 的 `the five Cordis methods dispatch through the host, each in its mode`（`root.bail('b')` 抛 `AsyncListener`）。
+依据：保证 `events/serial-bail`、`events/hub-bail`；`crates/rutis/tests/events/events.rs::bail_meets_an_async_listener`；`crates/rutis-bridge/tests/event_hub.rs::bail_is_synchronous_everywhere`；`node/rutis-runtime/test/cordis-events.test.mjs` 的 `the five Cordis methods dispatch through the host, each in its mode`（`root.bail('b')` 抛 `AsyncListener`）。
 
 ## 3. `intercept`：非空的按服务合并配置不支持
 

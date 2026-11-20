@@ -46,7 +46,7 @@
 - Bun：`bun/rutis-bun/test/runner.test.ts` “a plugin using a service it does not inject is told to declare it”
 - Python：`python/rutis/tests/test_undeclared_use.py` `test_a_service_not_in_inject_is_named_with_the_fix`
 - Go：`go/rutis/sdk_test.go` `TestAPluginMayUseOnlyWhatItInjects`，`go/rutis/internal/runtime/errors_text_internal_test.go` `TestUseSaysWhyAServiceIsNotThere`
-- Rust（插件与嵌入）：`crates/rutis-loader/tests/waits.rs` `a_misspelt_name_is_waited_for_with_the_name_it_meant`，`crates/rutis-loader/tests/check.rs` `a_disabled_provider_is_named_and_a_misspelt_name_corrected`，`crates/rutis/tests/still_waiting.rs` `a_plugin_waiting_long_for_its_deps_is_reported_once`
+- Rust（插件与嵌入）：`crates/rutis-loader/tests/waits.rs` `a_misspelt_name_is_waited_for_with_the_name_it_meant`，`crates/rutis-loader/tests/check.rs` `a_disabled_provider_is_named_and_a_misspelt_name_corrected`，`crates/rutis/tests/core/still_waiting.rs` `a_plugin_waiting_long_for_its_deps_is_reported_once`
 
 ### 2. 服务方法抛错，跨语言
 
@@ -70,7 +70,7 @@
 - Bun：`crates/rutis-host/tests/dev.rs` `dev_follows_a_bun_project`，`bun/rutis-bun/test/runner.test.ts` “an apply failure crosses with the plugin's frames only (#677)”
 - Python：`crates/rutis-host/tests/dev.rs` `dev_follows_a_python_project`
 - Go：`crates/rutis-host/tests/dev.rs` `dev_rebuilds_a_go_project_only_for_its_sources`
-- Rust（插件与嵌入）：`crates/rutis/tests/embedding_output.rs` `a_failed_start_reaches_the_error_sink_by_the_plugins_name`，`crates/rutis-loader/tests/waits.rs` `a_row_that_cannot_start_reaches_the_error_sink_by_its_name`
+- Rust（插件与嵌入）：`crates/rutis/tests/instances/embedding_output.rs` `a_failed_start_reaches_the_error_sink_by_the_plugins_name`，`crates/rutis-loader/tests/waits.rs` `a_row_that_cannot_start_reaches_the_error_sink_by_its_name`
 
 ### 5. 语法 / 导入 / 编译错误
 
@@ -102,7 +102,7 @@
 - Bun：`bun/rutis-bun/test/output.test.ts` “a method holding the runtime is said once; a short one is not”，`bun/rutis-bun/test/output.test.ts` “a method awaiting for long does not hold the runtime, and is not said”，`bun/rutis-bun/test/output.test.ts` “under a debugger nothing is said of a method holding the runtime”
 - Python：`crates/rutis-host/tests/status.rs` `status_says_what_a_running_host_does`，`crates/rutis-loader/tests/status.rs` `the_status_names_rows_services_runtimes_and_calls`，`python/rutis/tests/test_output.py` `test_a_method_holding_the_runtime_is_said_once`，`python/rutis/tests/test_output.py` `test_a_blocking_call_in_an_async_method_is_said`，`python/rutis/tests/test_output.py` `test_an_async_method_awaiting_long_is_not_said`，`python/rutis/tests/test_output.py` `test_under_a_debugger_nothing_is_said`
 - Go：无测试
-- Rust（插件与嵌入）：`crates/rutis/tests/embedding_output.rs` `an_apply_that_does_not_return_is_named`，`crates/rutis/tests/embedding_output.rs` `a_shutdown_that_runs_out_of_time_names_the_stuck_cleanup`
+- Rust（插件与嵌入）：`crates/rutis/tests/instances/embedding_output.rs` `an_apply_that_does_not_return_is_named`，`crates/rutis/tests/instances/embedding_output.rs` `a_shutdown_that_runs_out_of_time_names_the_stuck_cleanup`
 
 ### 9. 互相调用、互相依赖
 
@@ -134,7 +134,7 @@
 - Bun：`bun/rutis-bun/test/sdk.test.ts` “the host fills the config defaults and refuses a wrong config”
 - Python：`python/rutis/tests/test_testing.py` `test_the_hosts_loader_checks_the_config_and_fills_its_defaults`
 - Go：`go/rutis/internal/runtime/config_internal_test.go` `TestATypedConfigIsDecoded`，`go/rutis/internal/runtime/config_internal_test.go` `TestAConfigTheTypeDoesNotTakeIsSaidPlainly`，`go/rutis/rutistest/config_test.go` `TestATypedConfigInTheTestTool`
-- Rust（插件与嵌入）：`crates/rutis-loader/tests/config_rows.rs` `a_rust_row_is_filled_and_validated`，`crates/rutis-loader/tests/config_rows.rs` `extra_keys_are_warned_about_once`，`crates/rutis/tests/config_cases.rs` `every_case_of_the_shared_list_passes`
+- Rust（插件与嵌入）：`crates/rutis-loader/tests/config_rows.rs` `a_rust_row_is_filled_and_validated`，`crates/rutis-loader/tests/config_rows.rs` `extra_keys_are_warned_about_once`，`crates/rutis/tests/core/config_cases.rs` `every_case_of_the_shared_list_passes`
 
 ### 13. 两个插件提供同名服务
 
@@ -150,6 +150,6 @@
 - Bun：无测试
 - Python：`crates/rutis-loader/tests/status.rs` `the_status_names_rows_services_runtimes_and_calls`
 - Go：无测试
-- Rust（插件与嵌入）：`crates/rutis/tests/embedding_output.rs` `diagnostics_print_by_name_without_rutis_own_plugins`，`crates/rutis-loader/tests/status.rs` `the_status_names_rows_services_runtimes_and_calls`
+- Rust（插件与嵌入）：`crates/rutis/tests/instances/embedding_output.rs` `diagnostics_print_by_name_without_rutis_own_plugins`，`crates/rutis-loader/tests/status.rs` `the_status_names_rows_services_runtimes_and_calls`
 
 <!-- faults:end -->

@@ -583,7 +583,7 @@ CI：`ci.yml`（PR 按改动选择任务，每晚全部运行；Linux 全量与�
 
 | 区域 | 部件 | 手段 | 现状 |
 | --- | --- | --- | --- |
-| 内核 | 监听器表的登记、撤下、`prepend`、前缀、`once` 与四种分发 | PT | **有**：[`crates/rutis/tests/listener_table_model.rs`](../crates/rutis/tests/listener_table_model.rs) 用有序列表模型逐次对照（256 例，`PROPTEST_CASES`），失败打印种子与收缩后的操作序列 |
+| 内核 | 监听器表的登记、撤下、`prepend`、前缀、`once` 与四种分发 | PT | **有**：[`crates/rutis/tests/events/listener_table_model.rs`](../crates/rutis/tests/events/listener_table_model.rs) 用有序列表模型逐次对照（256 例，`PROPTEST_CASES`），失败打印种子与收缩后的操作序列 |
 | 会话 | 值往返（七种语言）、引用的授予与回滚、帧与值的编解码 | PT | **有**：`value_roundtrip.rs`、`grant_rollback.rs`、`session/protocol.rs`（后者也能在 Miri 下跑） |
 | 会话 | `cycle_among` 的环检测，与按 TLA 定义建全部边的朴素实现做差分 | PT | **有**（#613）：[`crates/rutis-bridge/src/session/rpc/waits.rs`](../crates/rutis-bridge/src/session/rpc/waits.rs) 的 `cycle_among_agrees_with_the_models_graph`（最多 20 跳的随机图、随机 profile 与入口，默认 256 例，`PROPTEST_CASES`）与 `the_model_check_agrees_on_the_small_graphs` |
 | 加载器、宿主、dsh | 编辑流水线、待保存队列与多写者 CAS、配置求值、profile 层合成 | PT | **无**（#631 并入的 #629） |
@@ -880,7 +880,7 @@ E2E 发现并修复：#225、#226（#261、#217）。Node 最低版本降到 22�
 | --- | --- | --- |
 | 覆盖率门槛 | 不采用 | 覆盖率只说明代码被执行过，不说明结果被检查；设门槛会诱导出只为提高数字的测试。§2.3 的覆盖率只作量级参考 |
 | 变异测试设门槛 | 不采用 | 运行耗时数小时；门槛需要有人持续处理存活的变异体。TLA 的"每个性质一个变异"是模型内部的做法，不是这条 |
-| 内核 proptest 状态机 | 采用 | 监听器表已有 model-based 属性测试（`crates/rutis/tests/listener_table_model.rs`）；fiber 生命周期的顺序操作批次在 `interleave.rs`（带种子），参考模型已在 #1190 合入。Bug A 用顺序操作批次就能触发，这一条不再以"与契约测试重叠"为由排除 |
+| 内核 proptest 状态机 | 采用 | 监听器表已有 model-based 属性测试（`crates/rutis/tests/events/listener_table_model.rs`）；fiber 生命周期的顺序操作批次在 `interleave.rs`（带种子），参考模型已在 #1190 合入。Bug A 用顺序操作批次就能触发，这一条不再以"与契约测试重叠"为由排除 |
 | 有界模型检查（Kani） | 部分采用 | 11 个 harness 在 `fuzz/kani/`，覆盖日期与时间的谓词和往返、boot blob 的 const ABI（#1271）；2026-11-18 全部 `VERIFICATION:- SUCCESSFUL`（`fuzz/KANI-MIRI.md`）。构造器本身连同错误消息、`parse_boot`、`boot_meta`/`is_sha256` 的 `&str` 包装仍无结论；`unsafe` 与 dylib 的其余部分仍在 #631 |
 | Miri | 部分采用 | 用在会话帧与值路径：`fuzz/miri/` 按固定输入跑 30 个（13 帧、1 个超深嵌套、9 个分帧种子、7 个错误图），无 UB；`session/protocol.rs` 的属性测试在小例数下也在 Miri 里跑（记录里的一次 122 s）。不覆盖 tokio、网络与文件，因此不用于 dylib |
 | ASan | 不采用 | `unsafe` 集中在 dylib 加载和进程启动（FFI 与系统调用），没有能跑 ASan 的 Rust 侧代码；dylib 的内存问题由 Miri 的范围与端到端覆盖 |

@@ -1,6 +1,7 @@
 //! The order of the unload steps (D7) and what dropping a `restart` /
 //! `update` future does to work already under way (#177).
 
+#[path = "../common/mod.rs"]
 mod common;
 
 use std::future::IntoFuture;
