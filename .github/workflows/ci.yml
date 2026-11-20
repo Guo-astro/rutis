@@ -85,19 +85,48 @@ env:
   # The two platforms differ: Windows keeps the runtime rows that start
   # through loopback, and skips the rows of runtimes it does not run.
   MACOS_SKIP_TESTS_BRIDGE: >-
-    dsh_baseline event_hub events_expected go_runtime kotlin_runtime
-    marked_services python_runtime runtime_conformance swift_runtime
-    value_roundtrip
+    boundary_rules call_service caller_rows cancellation
+    conformance_events_tracker conformance_session_tracker dsh_baseline
+    error_shape event_hub events_expected fault_links go_runtime
+    grant_rollback group_mount host_services kotlin_remote kotlin_runtime
+    live_objects local_soak marked_services mount_greeting
+    mount_host_service mount_scope objects_expected projection_lifecycle
+    python_runtime python_values row_services rpc_callbacks
+    runtime_conformance sdk_protocol service_projection
+    session_future_release session_plugin session_tags swift_remote
+    swift_runtime tagged_values trace_validation tracker_conformance
+    value_roundtrip websocket_soak
   MACOS_SKIP_TESTS_LOADER: >-
-    events_conformance go_rows go_stop instance_go
-    marked_services multilang_go runtime_rows sync_cycles
+    bad_values bun_multilang caller_rows close_cpu config_rows edit_pipeline
+    event_close_admission events_conformance fault_containment fault_texts
+    go_rows go_stop instance_go listener_scale loader_service marked_services
+    multilang_go multilang_kotlin multilang_swift objects_cross optional_deps
+    optional_deps_go patch_random_parity plugin_limits plugin_values
+    queued_emits_memory row_events row_inject_gate runtime_rows session_rows
+    sessions_open settled swift_rows sync_cycles undeclared
+    virtual_clock_contract waits
   WINDOWS_SKIP_TESTS_BRIDGE: >-
-    dsh_baseline event_hub events_expected go_runtime kotlin_runtime
-    marked_services python_runtime runtime_conformance swift_runtime
-    value_roundtrip
+    boundary_rules bun_channel bun_runtime call_service caller_rows
+    cancellation concurrent_launch conformance_events_tracker
+    conformance_session_tracker dsh_baseline error_shape event_hub
+    events_expected fault_links go_runtime grant_rollback group_mount
+    host_services kotlin_remote kotlin_runtime live_objects local_soak
+    local_spawn local_stdio marked_services mount_greeting
+    mount_host_service mount_scope objects_expected projection_lifecycle
+    python_runtime python_values row_services rpc_callbacks
+    runtime_conformance sdk_protocol service_projection
+    session_future_release session_plugin session_tags swift_remote
+    swift_runtime tagged_values trace_validation tracker_conformance
+    value_roundtrip websocket_soak
   WINDOWS_SKIP_TESTS_LOADER: >-
-    bun_instances bun_multilang bun_rows close_cpu close_memory
-    events_conformance multilang_swift swift_rows
+    bad_values bun_instances bun_multilang bun_rows caller_rows close_cpu
+    config_rows edit_pipeline event_close_admission events_conformance
+    fault_containment fault_texts instance_go listener_scale loader_service
+    marked_services multilang_go multilang_kotlin multilang_swift
+    objects_cross optional_deps optional_deps_go patch_random_parity
+    plugin_limits plugin_values queued_emits_memory row_events
+    row_inject_gate session_rows sessions_open settled swift_rows
+    sync_cycles undeclared virtual_clock_contract waits
   # The jobs only build to run the tests and checks, and none reads a
   # backtrace: leaving debug info out of the dev and test profiles keeps the
   # target directories (and Swatinem/rust-cache's archives) smaller and the
@@ -156,7 +185,7 @@ jobs:
               - Cargo.lock
               - Cargo.toml
               - rust-toolchain.toml
-              - .github/workflows/**
+              - .github/workflows/ci.yml
             # The dylib crates, their tools and fixtures, and the files of
             # rutis-cli that link the SDK and hold the dylib host tests. Its
             # documentation and license do not reach the SDK. Kernel changes
@@ -474,28 +503,9 @@ jobs:
             sleep 20
           done
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
-      # The Kotlin SDK's jvm target (JDK 17): the bridge's tests with
-      # Kotlin (RUTIS_TEST_RUNTIMES) start its conformance jar, built once here
-      # (RUTIS_KOTLIN_JAR); runtimes-kotlin has the rest.
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '17'
-      - name: the Kotlin conformance jar
-        id: kotlin
-        working-directory: kotlin/rutis
-        run: |
-          # Retried: a download that fails halfway (the runners' networks)
-          # should not fail the job.
-          for attempt in 1 2 3; do
-            ./gradlew --no-daemon --quiet :rutis-conformance:fatJar && break
-            [ "$attempt" = 3 ] && exit 1
-            sleep 20
-          done
-          echo "RUTIS_KOTLIN_JAR=$PWD/rutis-conformance/build/libs/rutis-conformance-all.jar" >> "$GITHUB_ENV"
 
-      # rutis-bridge and rutis-loader run once each, below, with all their
-      # features (Q12.7); the end-to-end scenarios run in `e2e`.
+      # rutis-bridge and rutis-loader run in parallel in `rust-runtimes`, with
+      # all their features (Q12.6.1, Q12.7); the end-to-end scenarios run in `e2e`.
       - name: cargo test (workspace but rutis-bridge, rutis-loader and rutis-e2e)
         env:
           # The Go debugging test fails instead of skipping without dlv.
@@ -505,7 +515,7 @@ jobs:
 
       # The shuttle models of the kernel (crates/rutis/src/fiber/shuttle_tests.rs,
       # #179), 1000 iterations of each scheduler (well under a second); the
-      # nightly stress.yml runs a million. Built with --cfg rutis_shuttle in
+      # nightly stress.yml runs at scale. Built with --cfg rutis_shuttle in
       # a target directory of its own, so the flag rebuilds nothing else.
       - name: cargo test (rutis shuttle models)
         env:
@@ -531,7 +541,7 @@ jobs:
           cargo test -p rutis-host --lib --target-dir "${CARGO_TARGET_DIR:-target}/shuttle" shuttle
 
       # The fuzz entry points (crates/rutis-bridge/src/fuzzing.rs, #179)
-      # compile only under cargo-fuzz's --cfg fuzzing, which the nightly
+      # compile only under cargo-fuzz's --cfg fuzzing, which the weekly
       # stress.yml uses: checked here (no run), in a target directory of
       # its own, so that a change breaking them fails the pull request.
       - name: cargo check (rutis-bridge fuzz entry points)
@@ -540,13 +550,78 @@ jobs:
         run: cargo check -p rutis-bridge --features testing,websocket --target-dir "${CARGO_TARGET_DIR:-target}/fuzzcheck"
 
       # The fuzz targets themselves (fuzz/, its own workspace): a change
-      # there used to break only the nightly stress.yml, which compiles them
+      # there used to break only stress.yml, which compiles them
       # with cargo-fuzz. Same flags and target directory as the entry points.
       - name: cargo check (fuzz targets)
         env:
           RUSTFLAGS: --cfg fuzzing
         run: cargo check --manifest-path fuzz/Cargo.toml --target-dir "${CARGO_TARGET_DIR:-target}/fuzzcheck"
+      - name: job time
+        if: always()
+        run: echo "rust job, $(( ($(date +%s) - RUTIS_JOB_STARTED) / 60 )) min" >> "$GITHUB_STEP_SUMMARY"
+      - name: self-hosted runner, end
+        if: always() && runner.environment == 'self-hosted'
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: bash tools/ci-self-hosted.sh end
 
+  # rutis-loader and rutis-bridge with all features and runtimes, split from
+  # `rust` so the two halves run in parallel on Linux (Q12.6.1, #1375).
+  rust-runtimes:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ${{ fromJSON(vars.LINUX_RUNNER || '"ubuntu-24.04"') }}
+    timeout-minutes: 45
+    steps:
+      - name: job time, start
+        run: echo "RUTIS_JOB_STARTED=$(date +%s)" >> "$GITHUB_ENV"
+      - uses: actions/checkout@v4
+      - name: self-hosted runner, start (tools/ci-self-hosted.sh)
+        if: runner.environment == 'self-hosted'
+        env:
+          RUTIS_CI_JOBS: ${{ runner.os == 'Linux' && vars.LINUX_CI_JOBS || vars.RUTIS_CI_JOBS }}
+          RUTIS_TEST_TIME_SCALE: ${{ runner.os == 'Linux' && (vars.LINUX_TEST_TIME_SCALE || '3') || runner.os == 'macOS' && (vars.MACOS_TEST_TIME_SCALE || '3') || '' }}
+        run: bash tools/ci-self-hosted.sh start
+      - name: install rust toolchain
+        uses: dtolnay/rust-toolchain@1.98.1
+      - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: ${{ runner.environment == 'github-hosted' && 'npm' || '' }}
+          cache-dependency-path: |
+            node/rutis-runtime/package-lock.json
+            node/baseline/package-lock.json
+      - run: npm --prefix node/rutis-runtime ci
+      - run: npm --prefix node/baseline ci
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python3 -m pip install "websockets==15.*"
+      - uses: actions/setup-go@v5
+        with:
+          go-version: oldstable
+          cache-dependency-path: go/rutis/go.mod
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: the Kotlin conformance jar
+        id: kotlin
+        working-directory: kotlin/rutis
+        run: |
+          for attempt in 1 2 3; do
+            ./gradlew --no-daemon --quiet :rutis-conformance:fatJar && break
+            [ "$attempt" = 3 ] && exit 1
+            sleep 20
+          done
+          echo "RUTIS_KOTLIN_JAR=$PWD/rutis-conformance/build/libs/rutis-conformance-all.jar" >> "$GITHUB_ENV"
       # Plugins of other languages and of other nodes as rutis-loader rows,
       # and the unified events conformance suite (events_conformance), which
       # runs one test at a time and must find every runtime language. Its
@@ -559,13 +634,11 @@ jobs:
           RUTIS_EVENTS_PLACEMENTS: ${{ needs.changes.outputs.all == 'true' && 'sampled' || 'written' }}
           RUTIS_EVENTS_SETTLE_SCALE: '2'
         run: cargo test -p rutis-loader --all-features
-
       # Both runtimes, every transport, and the conformance suites.
       - name: cargo test (rutis-bridge, all features)
         env:
           RUTIS_TEST_RUNTIMES: bun,go,kotlin,node,python
         run: cargo test -p rutis-bridge --all-features
-
       # The same rows with the runtimes started as on Windows: a loopback
       # channel and a one-time token instead of an inherited socket. Pull
       # requests run these tests in runtimes-windows, where loopback is how
@@ -580,7 +653,7 @@ jobs:
         run: cargo test -p rutis-loader --all-features --test runtime_rows --test python_rows --test multilang --test instance_runtimes --test go_rows --test go_stop --test multilang_go --test instance_go --test sync_cycles --test events_conformance
       - name: job time
         if: always()
-        run: echo "rust job, $(( ($(date +%s) - RUTIS_JOB_STARTED) / 60 )) min" >> "$GITHUB_STEP_SUMMARY"
+        run: echo "rust-runtimes job, $(( ($(date +%s) - RUTIS_JOB_STARTED) / 60 )) min" >> "$GITHUB_STEP_SUMMARY"
       - name: self-hosted runner, end
         if: always() && runner.environment == 'self-hosted'
         env:
@@ -653,13 +726,9 @@ jobs:
         run: cargo test -p rutis-e2e
       # The published releases meeting this code (#209). They come from
       # npm, PyPI and the Go proxy and change as releases are published,
-      # so only full runs (nightly, release gate) run them (docs/ci.md §2).
-      # Installed outside target/: not into the Rust cache. Which releases
-      # it met goes to the job summary (tests/e2e/src/previous.rs). In the
-      # release gate, only older releases: a release re-run after it failed
-      # halfway may find its own version published in part.
+      # so they run in the release gate and on manual dispatch (#1375).
       - name: cargo test (cross-version meetings)
-        if: needs.changes.outputs.all == 'true'
+        if: inputs.release == true || github.event_name == 'workflow_dispatch'
         env:
           RUTIS_E2E_CACHE: ${{ runner.temp }}/rutis-e2e-previous
           RUTIS_E2E_ONLY_OLDER: ${{ inputs.release && '1' || '' }}
@@ -1463,6 +1532,7 @@ jobs:
       # The SDK's test tool needs the runtime and a rutis-host (js-py).
       - run: npm --prefix node/rutis-runtime ci
       - run: npm --prefix node/rutis ci
+        if: needs.changes.outputs.all == 'true'
       # The SDK's own tests do not depend on the platform: full runs only.
       - run: |
           cargo build -p rutis-host
@@ -1512,15 +1582,20 @@ jobs:
           cache: ${{ runner.environment == 'github-hosted' }}
           cache-dependency-path: go/rutis/go.mod
       # The Go plugin scenario serves the SDK's goleak requirement from the
-      # module cache; network-macos runs it too (plugin_install).
+      # module cache; only full runs run plugin_install on macOS (#1375).
       - name: Go module cache for the SDK's test dependency
+        if: needs.changes.outputs.all == 'true'
         run: cd go/rutis && go mod download
-      # The Kotlin SDK's jvm target, for the bridge's tests with `kotlin`.
+      # The Kotlin SDK's jvm target on macOS: full runs only (#1375); pull
+      # requests that touch Kotlin run `runtimes-kotlin`.
       - uses: actions/setup-java@v4
+        if: needs.changes.outputs.all == 'true'
         with:
           distribution: temurin
           java-version: '17'
       - name: the Kotlin conformance jar
+        id: kotlin
+        if: needs.changes.outputs.all == 'true'
         working-directory: kotlin/rutis
         run: |
           # Retried: a download that fails halfway (the runners' networks)
@@ -1531,9 +1606,9 @@ jobs:
             sleep 20
           done
           echo "RUTIS_KOTLIN_JAR=$PWD/rutis-conformance/build/libs/rutis-conformance-all.jar" >> "$GITHUB_ENV"
-      # events_conformance: the written placements on pull requests, the
-      # sampled ones in full runs (as in `rust`), with its own settle
-      # windows lengthened too (#1003).
+      # On pull requests, run only macOS OS-sensitive tests (without triggering
+      # Swift or Kotlin builds that have dedicated jobs); full runs run the
+      # complete suites across all six runtimes (#1375).
       - name: cargo test (network stack, runtimes, host)
         env:
           RUTIS_TEST_RUNTIMES: bun,go,node,python
@@ -1541,24 +1616,34 @@ jobs:
           RUTIS_EVENTS_PLACEMENTS: ${{ needs.changes.outputs.all == 'true' && 'sampled' || 'written' }}
           RUTIS_EVENTS_SETTLE_SCALE: '2'
         run: |
-          BRIDGE_TESTS= LOADER_TESTS=
-          if [ "$ALL" != true ]; then
+          if [ "$ALL" = true ]; then
+            RUTIS_TEST_RUNTIMES=bun,go,kotlin,node,python,swift cargo test -p rutis-bridge --all-features
+            cargo test -p rutis-loader --all-features
+            cargo test -p rutis-host
+          else
             BRIDGE_TESTS=$(bash tools/platform-tests.sh crates/rutis-bridge $PURE_TESTS_BRIDGE $MACOS_SKIP_TESTS_BRIDGE)
             LOADER_TESTS=$(bash tools/platform-tests.sh crates/rutis-loader $PURE_TESTS_LOADER $MACOS_SKIP_TESTS_LOADER)
+            RUTIS_TEST_RUNTIMES=bun,go,node,python cargo test -p rutis-bridge --all-features $BRIDGE_TESTS
+            cargo test -p rutis-loader --all-features $LOADER_TESTS
+            cargo test -p rutis-host --lib --test signals --test busy_runtime --test launcher --test reload --test runtimes --test runtime_exit --test nodes
           fi
-          # The bridge's suites with every runtime this runner has.
-          RUTIS_TEST_RUNTIMES=bun,go,kotlin,node,python,swift cargo test -p rutis-bridge --all-features $BRIDGE_TESTS
-          cargo test -p rutis-loader --all-features $LOADER_TESTS
-          cargo test -p rutis-host
       # The published Cordis plugins S6 mounts (tests/e2e/tests/cordis.rs),
-      # at the lockfile's versions.
+      # full runs only (Linux `e2e` runs S6 on every pull request).
       - run: npm --prefix node/baseline ci
-        if: '!cancelled()'
-      # The end-to-end scenarios on the latest versions (the `e2e` job runs
-      # them on the oldest).
+        if: "!cancelled() && needs.changes.outputs.all == 'true'"
+      # On pull requests, run the two macOS OS-critical E2E scenarios
+      # (process-group orphan cleanup and cross-language SIGKILL recovery);
+      # full runs run the entire E2E suite on the latest runtimes (#1375).
       - name: cargo test (end-to-end scenarios)
         if: '!cancelled()'
-        run: cargo test -p rutis-e2e
+        env:
+          ALL: ${{ needs.changes.outputs.all }}
+        run: |
+          if [ "$ALL" = true ]; then
+            cargo test -p rutis-e2e
+          else
+            cargo test -p rutis-e2e --test stray_runtime --test runtime_crash
+          fi
       # Who killed a process that ended with SIGKILL (#287): the kernel's
       # memory pressure kills and code signing rejections.
       - name: kernel kills in the system log
@@ -1582,7 +1667,7 @@ jobs:
           path: ${{ env.RUTIS_E2E_DIR }}
           retention-days: 14
       - name: keep workspace static builds available
-        if: '!cancelled()'
+        if: "!cancelled() && needs.changes.outputs.all == 'true'"
         run: cargo check --workspace --all-targets
       - name: self-hosted runner, end
         if: always() && runner.environment == 'self-hosted'
@@ -1986,17 +2071,18 @@ jobs:
           go-version: stable
           cache: ${{ runner.environment == 'github-hosted' }}
           cache-dependency-path: go/rutis/go.mod
-      # rutistest runs plugins under `rutis-host test` (RUTIS_HOST).
+      # rutistest runs plugins under `rutis-host test` (RUTIS_HOST); on pull
+      # requests only when Go paths changed (Linux `runtimes-go` tests Go too).
       - name: go test (the Go SDK)
+        if: needs.changes.outputs.all == 'true' || needs.changes.outputs.go == 'true'
         shell: bash
         run: |
           cargo build -p rutis-host
           export RUTIS_HOST="${CARGO_TARGET_DIR:-$PWD/target}/debug/rutis-host"
           cd go/rutis && go test ./...
-      # The Kotlin SDK's jvm target, for the bridge's tests with `kotlin`
-      # (loopback channels only on Windows).
+      # The Kotlin SDK's jvm target on Windows: full runs only (#1375).
       - uses: actions/setup-java@v5
-        if: runner.environment == 'github-hosted'
+        if: needs.changes.outputs.all == 'true' && runner.environment == 'github-hosted'
         with:
           distribution: temurin
           java-version: '17'
@@ -2004,7 +2090,7 @@ jobs:
       # rejects (Invalid XML name, seen on windows-runner-2), so these take
       # the JDK already in the runner's tool cache instead.
       - name: Java from the runner's tool cache (self-hosted)
-        if: runner.environment == 'self-hosted'
+        if: needs.changes.outputs.all == 'true' && runner.environment == 'self-hosted'
         shell: powershell
         run: |
           $root = Join-Path $env:RUNNER_TOOL_CACHE 'Java_Temurin-Hotspot_jdk'
@@ -2044,6 +2130,8 @@ jobs:
           "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=$link" >> $env:GITHUB_ENV
           Write-Host "cargo linker: $link"
       - name: the Kotlin conformance jar
+        id: kotlin
+        if: needs.changes.outputs.all == 'true'
         working-directory: kotlin/rutis
         run: |
           # Retried: a download that fails halfway (the runners' networks)
@@ -2068,14 +2156,13 @@ jobs:
             LOADER_TESTS=$(bash tools/platform-tests.sh crates/rutis-loader $PURE_TESTS_LOADER $WINDOWS_SKIP_TESTS_LOADER)
           fi
           cargo test -p rutis-loader --all-features --no-fail-fast $LOADER_TESTS
-      # The Kotlin row needs the jar this job builds above: without it (an
-      # earlier step failed) every test that starts a runtime would panic with
-      # `RUTIS_TEST_RUNTIMES lists kotlin, but java does not run`, burying the
-      # first failure under a page of red that says nothing.
+      # On pull requests runs Windows OS-sensitive bridge suites (loopback,
+      # WebSocket, process exit) with go/node/python; full runs include kotlin
+      # once its jar above succeeded (#1375).
       - name: cargo test (rutis-bridge, all features)
-        if: "!cancelled() && steps.kotlin.outcome == 'success'"
+        if: "!cancelled() && (needs.changes.outputs.all != 'true' || steps.kotlin.outcome == 'success')"
         env:
-          RUTIS_TEST_RUNTIMES: go,kotlin,node,python
+          RUTIS_TEST_RUNTIMES: ${{ needs.changes.outputs.all == 'true' && 'go,kotlin,node,python' || 'go,node,python' }}
           ALL: ${{ needs.changes.outputs.all }}
         run: |
           BRIDGE_TESTS=
@@ -2085,18 +2172,31 @@ jobs:
           cargo test -p rutis-bridge --all-features --no-fail-fast $BRIDGE_TESTS
       - name: cargo test (rutis-host)
         if: '!cancelled()'
-        run: cargo test -p rutis-host --no-fail-fast
+        env:
+          ALL: ${{ needs.changes.outputs.all }}
+        run: |
+          if [ "$ALL" = true ]; then
+            cargo test -p rutis-host --no-fail-fast
+          else
+            cargo test -p rutis-host --no-fail-fast --lib --test signals --test busy_runtime --test reload --test runtimes --test runtime_exit --test nodes --test dial_conformance
+          fi
       # The E2E harness on Windows (#232): each host in a Job Object,
-      # Ctrl-Break, the residue checks; the scenarios not limited to Unix.
-      # The published Cordis plugins S6 mounts (tests/e2e/tests/cordis.rs),
-      # at the lockfile's versions.
+      # Ctrl-Break, the residue checks; full runs run every Windows scenario,
+      # pull requests run the two Windows OS-critical scenarios (#1375).
       - run: npm --prefix node/baseline ci
-        if: '!cancelled()'
+        if: "!cancelled() && needs.changes.outputs.all == 'true'"
       - name: cargo test (rutis-e2e)
         if: '!cancelled()'
-        run: cargo test -p rutis-e2e --no-fail-fast
+        env:
+          ALL: ${{ needs.changes.outputs.all }}
+        run: |
+          if [ "$ALL" = true ]; then
+            cargo test -p rutis-e2e --no-fail-fast
+          else
+            cargo test -p rutis-e2e --no-fail-fast --test stray_runtime --test runtime_crash
+          fi
       - name: keep workspace static builds available
-        if: '!cancelled()'
+        if: "!cancelled() && needs.changes.outputs.all == 'true'"
         run: cargo check --workspace --all-targets
       # After a failure, this instance's Go build cache goes (a job cut
       # short can leave it truncated, #374; tools/ci-self-hosted.sh does the
@@ -2310,6 +2410,7 @@ jobs:
       - changes
       - links
       - rust
+      - rust-runtimes
       - e2e
       - js-py
       - lint
