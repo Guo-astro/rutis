@@ -46,7 +46,13 @@ func TestNodeCarriesValuesOverTheMessageLimitWhole(t *testing.T) {
 	if _, err := os.Stat(modules); err != nil {
 		t.Skip("node/rutis-runtime/node_modules is not installed")
 	}
-	directory := t.TempDir()
+	// A short path: macOS's sockaddr_un allows 104 bytes, and t.TempDir()
+	// under the runner's long temporary directory is over it.
+	directory, err := os.MkdirTemp("/tmp", "rutis-chunk-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(directory) })
 	socket := filepath.Join(directory, "node.sock")
 	listener, err := net.Listen("unix", socket)
 	if err != nil {
