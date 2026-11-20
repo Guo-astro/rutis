@@ -31,7 +31,6 @@ if (args.includes('--channel') && handed) {
   while (stdio.length < fd) stdio.push('ignore')
   stdio[fd] = fd
 }
-const child = spawn(binary, args, { stdio, env })
 // A terminal sends Ctrl-C (SIGINT) and its hang-up (SIGHUP) to the whole
 // process group, and Windows sends its console events to every process on
 // the console: rutis-host gets them itself. Forwarded too, one Ctrl-C would
@@ -41,11 +40,15 @@ const child = spawn(binary, args, { stdio, env })
 // the main process alone, which is this launcher, is forwarded: SIGTERM,
 // and SIGUSR1, which makes rutis-host read its configuration again
 // (`ExecReload=/bin/kill -USR1 $MAINPID`) and, handled here, does not open
-// Node's debugger (#664).
+// Node's debugger (#664). Register the listeners before spawning so a fast
+// child cannot become ready and trigger SIGUSR1 before Node's built-in
+// SIGUSR1 debugger handler is replaced.
 const shared = process.platform === 'win32' ? ['SIGINT', 'SIGBREAK', 'SIGHUP'] : ['SIGINT', 'SIGHUP']
 const forwarded = process.platform === 'win32' ? [] : ['SIGTERM', 'SIGUSR1']
+let child
 for (const signal of shared) process.on(signal, () => {})
-for (const signal of forwarded) process.on(signal, () => child.kill(signal))
+for (const signal of forwarded) process.on(signal, () => child?.kill(signal))
+child = spawn(binary, args, { stdio, env })
 child.on('exit', (code, signal) => {
   if (signal === 'SIGUSR1') {
     // Ended by it (a command that does not read it): Node's own SIGUSR1
