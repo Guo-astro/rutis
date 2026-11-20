@@ -356,11 +356,9 @@ func stallingPair(_ dispatch: @escaping (String, String, [Value]) async throws -
     let channel = StallingChannel(b)
     var runtimeOptions = PeerOptions(endpoint: Endpoint(local: "swift", expected: "main"))
     runtimeOptions.dispatch = dispatch
-    runtimeOptions.maxTransfer = maxTransfer
     let runtime = try Peer(channel: a, options: runtimeOptions)
     var hostOptions = PeerOptions(endpoint: Endpoint(local: "main", expected: "swift"))
     hostOptions.host = true
-    hostOptions.maxTransfer = maxTransfer
     let host = try Peer(channel: channel, options: hostOptions)
     try runtime.start()
     try host.start()
