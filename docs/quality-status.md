@@ -136,7 +136,7 @@
 | 部分 | 测试 | 测试函数数 | 行覆盖率（2026-10-10） |
 | --- | --- | ---: | ---: |
 | 内核 `rutis` | 46 个文件：契约 `contract.rs`、Cordis 对拍 `parity.rs`、交错 `interleave.rs`、监听器表模型 `listener_table_model.rs` 等；8 个 doctest、4 个 `compile_fail` | 413 | 92.8% |
-| `rutis-bridge` | 83 个文件；channel / session / runtime / node 四套一致性套件；`fault` 装饰器；`trace_validation.rs`；两个浸泡测试 | 593 | 87.8% |
+| `rutis-bridge` | 80 个文件；channel / session / runtime / node 四套一致性套件；`fault` 装饰器；`trace_validation.rs`；两个浸泡测试 | 439 | 87.8% |
 | `rutis-loader` | 61 个文件；patch 合并以 cordis-plugin-include 为参照；各语言的行契约（`*_rows.rs`） | 335 | 89.8% |
 | `rutis-host` | 56 个文件，含 `tests/` 下的黑盒测试 | 291 | 69.8%（`main.rs` 0%） |
 | `tests/e2e` | 黑盒层，不依赖任何 rutis crate（Q7.6） | 91 | — |
@@ -599,7 +599,7 @@ CI：`ci.yml`（PR 按改动选择任务，每晚全部运行；Linux 全量与�
 | 接入点（已撤回） | 对象在 0.19 删除（#695）：`AccessEvent` 日志、接入点与身份层吊销钩子一起删除；`AccessPoint.tla` 改为按 `rutis-host/listen` 建的最小模型，本侧只看到准入的结局 | **不适用**（#624 的接入点 TV 已撤回）：`trace_validation.rs` §3.8 的用例检查这一侧看到的 4003 吊销与 403 凭据拒绝，没有接入点自身的动作日志可对照 |
 | 等待图 | 记录 `waits.rs` 的六个操作与每次判定，对照 `CrossRuntimeSync.tla` | **有**（#613）：`waits/trace.rs` 记录、`waits/trace/check.rs` 按 `RustSucc` 重放；`sync_cycles.rs` 与 `rpc_callbacks.rs` 的真实运行上逐事件检查，改坏同一份日志必须报出 |
 | 事件宿主 | 用 `events-all` 运行中宿主的动作日志对照宿主模型 | **无**（#624 并入的 #616） |
-| 各语言运行时 | 一致性套件：`runtime_conformance`、`events_conformance`、`tracker_conformance`、`sync_cycles`、`host_gone` | **部分**：`sync_cycles` 有 Node / Python / Go / Swift 列，没有 Kotlin；`host_gone` 有 Node / Python / Go / Bun，没有 Swift / Kotlin（#624 未做：Swift 插件只在 macOS 上构建，Kotlin 要 JDK 17 与 `:rutis-conformance:fatJar`）；租约套件 `crates/rutis-host/tests/lease_e2e.rs` 有 Python、Go、Bun 列，同样缺 Swift、Kotlin；引用计数 PT 现在七种语言都有（`value_roundtrip.rs` 的 `*_releases_balance` / `*_reference_counts`，Go、Bun、Kotlin 只查本侧，#624）；授予与回滚的 PT 在 `grant_rollback.rs`（Rust 侧） |
+| 各语言运行时 | 一致性套件：`runtime_conformance`、`events_conformance`、`sync_cycles`、`host_gone` | **部分**：`sync_cycles` 有 Node / Python / Go / Swift 列，没有 Kotlin；`host_gone` 有 Node / Python / Go / Bun，没有 Swift / Kotlin（#624 未做：Swift 插件只在 macOS 上构建，Kotlin 要 JDK 17 与 `:rutis-conformance:fatJar`）；租约套件 `crates/rutis-host/tests/lease_e2e.rs` 有 Python、Go、Bun 列，同样缺 Swift、Kotlin；引用计数 PT 现在七种语言都有（`value_roundtrip.rs` 的 `*_releases_balance` / `*_reference_counts`，Go、Bun、Kotlin 只查本侧，#624）；授予与回滚的 PT 在 `grant_rollback.rs`（Rust 侧） |
 | 测试工具与真实运行时 | `weather.expected.json`、`events.expected.json` 中不带 `tool: false` 的用例 | **部分**：Node、Python 测试工具与真实运行时对同一份期望文件；Go `rutistest` 已对照整份 weather；与运行时共用代码的工具（JS `events.mjs`、Python `Bus`、Go `internal/events`）可能与运行时同错 |
 | 模型对应表 | 每个模型 README 的"对应的设计和代码" | **有**：七个模型的 README 都用仓库全路径（原 `model-pr.yml` / `tools/check-model-pr.mjs` 已在 #1372 退役） |
 
