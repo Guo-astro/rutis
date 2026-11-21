@@ -131,15 +131,15 @@ Status: **met**, **partly**, **not met**, **n/a**. The gaps column refers to ris
 
 ### 2.3 Existing tests
 
-Counted on 2026-11-15 (baseline `origin/main` `1dd73888`). Method: Rust counts `#[test]` and `#[tokio::test]` attributes, Node / Bun count `test(` / `it(`, Python counts `def test_`, Go counts `func Test`, Kotlin counts `@Test`, Swift counts `func test`. The line coverage column is still the measurement of 2026-10-10 on two platforms (#183, including Node / Python child processes started by Rust tests); it has not been re-measured and is here for magnitude only.
+Counted on 2026-11-21 (baseline `f4d453cb`, after #1373; a number in parentheses is the same count at `399eef61`, before #1373). Method: Rust counts `#[test]` and `#[tokio::test]` attributes in `tests/` and `src/` (not the files built only with `--cfg rutis_shuttle`), Node / Bun count `test(` / `it(`, Python counts `def test_`, Go counts `func Test`, Kotlin counts `@Test`, Swift counts `func test`; integration-test binaries are the `test` targets of `cargo metadata`, and §8.6 measures their compilation, linking and `target` size before and after. The line coverage column is still the measurement of 2026-10-10 on two platforms (#183, including Node / Python child processes started by Rust tests); it has not been re-measured and is here for magnitude only.
 
 | Part | Tests | Test functions | Line coverage (2026-10-10) |
 | --- | --- | ---: | ---: |
-| Core `rutis` | 46 files: contract `contract.rs`, Cordis parity `parity.rs`, interleaving `interleave.rs`, the listener-table model `listener_table_model.rs` and others; 8 doctests, 4 `compile_fail` | 413 | 92.8% |
-| `rutis-bridge` | 80 files; four conformance suites (channel / session / runtime / node); `fault` decorator; `trace_validation.rs`; two soak tests | 439 | 87.8% |
-| `rutis-loader` | 61 files; patch merging against cordis-plugin-include; per-language row contracts (`*_rows.rs`) | 335 | 89.8% |
-| `rutis-host` | 56 files, including the black-box tests under `tests/` | 291 | 69.8% (`main.rs` 0%) |
-| `tests/e2e` | The black-box layer, depending on no rutis crate (Q7.6) | 91 | — |
+| Core `rutis` | 43 files, all modules of the one `tests/core` binary: contract `contract.rs`, Cordis parity `parity.rs`, interleaving `interleave.rs`, the listener-table model `listener_table_model.rs` and others; 8 doctests, 4 `compile_fail` | 426 | 92.8% |
+| `rutis-bridge` | 63 files; four conformance suites (channel / session / runtime / node); `fault` decorator; `trace_validation.rs`; two soak tests; 6 integration-test binaries | 595 (758 before #1373) | 87.8% |
+| `rutis-loader` | 64 files; patch merging against cordis-plugin-include; per-language row contracts (`*_rows.rs`); 11 integration-test binaries | 376 | 89.8% |
+| `rutis-host` | 41 files, including the black-box tests under `tests/`; 3 integration-test binaries | 321 | 69.8% (`main.rs` 0%) |
+| `tests/e2e` | The black-box layer, depending on no rutis crate (Q7.6); 4 integration-test binaries | 91 | — |
 | dylib toolchain | `tools/test-dylib*.sh`, `tools/test-sdk-bundle.sh`; SDK hashes compared across two runners | — | — |
 | Node packages | `node/*/test/`, 48 files | 268 | 86% |
 | Bun packages | `bun/rutis-bun/test/`, 23 files | 159 | — |
@@ -151,7 +151,7 @@ Counted on 2026-11-15 (baseline `origin/main` `1dd73888`). Method: Rust counts `
 | Controlled scheduling | 65 shuttle models across four crates (core 28, `rutis-bridge` 31, `rutis-host` 3, `rutis-loader` 3), compiled only with `--cfg rutis_shuttle` (§7.3) | 65 | — |
 | Fuzzing | `fuzz/fuzz_targets/`, 9 targets (§7.4); plus Go's native fuzzing | 9 | — |
 
-2026-11-21 (#1373): the Rust integration tests are grouped by domain into 4–8 `tests/<suite>/main.rs` suites per crate, and the independent Cargo integration-test binaries go from 205 to 25; the test functions and assertions stay the same, and `cargo test --no-run` links fewer binaries.
+2026-11-21 (#1373): the Rust integration tests are grouped by domain into 1–11 `tests/<suite>/main.rs` suites per crate, and the independent Cargo integration-test binaries go from 229 to 50 across the workspace (205 to 26 in `rutis`, `rutis-bridge`, `rutis-loader`, `rutis-host`, `tests/e2e` and `rutis-dylib` together); the test functions and assertions stay the same, and `cargo test --no-run` links fewer binaries and leaves a smaller `target` (§8.6 measures both).
 
 What 0.11 and later added and still holds (details in §4, §5 and §7):
 
@@ -755,8 +755,26 @@ From `node tools/ci-stats.mjs 40 ci.yml --since 2026-10-11`. Jobs were being mov
 | the rest | < 1 min |
 
 - Compared with §8.3, an ordinary PR no longer waits 15–45 minutes behind OS-independent jobs holding macOS slots.
-- The critical path is now `rust`; #1373 will compress compilation and linking further by merging integration-test binaries.
+- The critical path is now `rust`; the compilation, linking and `target` size after #1373 merged the integration-test binaries are in §8.6.
 - There is one sample only: the target is reachable, and the median still needs to accumulate through `node tools/ci-stats.mjs`.
+
+### 8.6 Measurement (2026-11-21, before and after #1373 merged the integration-test binaries)
+
+Method: one machine (32 cores, rustc 1.98.1), the local build cache off, each tree built into its own empty `CARGO_TARGET_DIR` with `cargo test --workspace --no-run --timings`. The time is wall clock from start to end; `target` size is `du -sb` after the build; unit time is the sum of the durations `--timings` records for each rustc unit (compile + link), which run in parallel, so the sum is not the wall clock. One sample each, same machine, same stretch of time.
+
+| Item | `399eef61` (before #1373) | `f4d453cb` (after #1373) | Change |
+| --- | ---: | ---: | ---: |
+| Integration-test binaries (whole workspace) | 229 | 50 | −78% |
+| Integration-test binaries (the six crates) | 205 | 26 | −87% |
+| `cargo test --workspace --no-run` | 99 s | 53 s | −46% |
+| `target` size | 45.3 GiB | 21.2 GiB | −53% |
+| rustc unit time: test targets | 1,755 s | 291 s | −83% |
+| rustc unit time: all units | 2,733 s | 938 s | −66% |
+
+- The six crates one by one: `rutis` 34 → 1, `rutis-bridge` 58 → 6, `rutis-loader` 56 → 11, `rutis-host` 36 → 3, `tests/e2e` 19 → 4, `rutis-dylib` 2 → 1; the other crates (`rutis-agent`, `rutis-dsh`, `examples`, `dsh-baseline`) are unchanged, 229 → 50 in total.
+- `--timings` does not split compiling from linking: 1,755 → 291 s is each test binary's compile plus link, and most of what went away is 179 fewer binaries to link and fewer like-named test crates to compile.
+- Half of the smaller `target` comes from the same place: every test binary links its own copy of `libstd`, `rutis` and the test framework together with their debug info.
+- The local gain appears in full only on a clean build; an incremental build does not rebuild units that did not change anyway. On CI, jobs with `Swatinem/rust-cache` hit by unit, so the units that no longer exist simply do not run.
 
 ## 9. Plan
 

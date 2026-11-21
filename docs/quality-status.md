@@ -131,15 +131,15 @@
 
 ### 2.3 现有测试
 
-计数方法：Rust 数 `#[test]` 与 `#[tokio::test]` 属性，Node / Bun 数 `test(` / `it(`，Python 数 `def test_`，Go 数 `func Test`，Kotlin 数 `@Test`，Swift 数 `func test`。**2026-11-15 重新统计**（基准 `origin/main` `1dd73888`）。行覆盖率一列仍是 2026-10-10 在两个平台上实测的值（#183，含 Rust 测试拉起的 Node / Python 子进程），之后没有重新测，只作量级参考。
+计数方法：Rust 数 `#[test]` 与 `#[tokio::test]` 属性（`tests/` 与 `src/` 都算，不含只由 `--cfg rutis_shuttle` 编译的文件），Node / Bun 数 `test(` / `it(`，Python 数 `def test_`，Go 数 `func Test`，Kotlin 数 `@Test`，Swift 数 `func test`；集成测试二进制数取 `cargo metadata` 的 `test` 目标，编译链接与 `target` 体积的前后测量见 §8.6。**2026-11-21 重新统计**（基准 `f4d453cb`，#1373 合并之后；括号里是 `399eef61` 同一口径的数，用来看 #1373 的增减）。行覆盖率一列仍是 2026-10-10 在两个平台上实测的值（#183，含 Rust 测试拉起的 Node / Python 子进程），之后没有重新测，只作量级参考。
 
 | 部分 | 测试 | 测试函数数 | 行覆盖率（2026-10-10） |
 | --- | --- | ---: | ---: |
-| 内核 `rutis` | 46 个文件：契约 `contract.rs`、Cordis 对拍 `parity.rs`、交错 `interleave.rs`、监听器表模型 `listener_table_model.rs` 等；8 个 doctest、4 个 `compile_fail` | 413 | 92.8% |
-| `rutis-bridge` | 80 个文件；channel / session / runtime / node 四套一致性套件；`fault` 装饰器；`trace_validation.rs`；两个浸泡测试 | 439 | 87.8% |
-| `rutis-loader` | 61 个文件；patch 合并以 cordis-plugin-include 为参照；各语言的行契约（`*_rows.rs`） | 335 | 89.8% |
-| `rutis-host` | 56 个文件，含 `tests/` 下的黑盒测试 | 291 | 69.8%（`main.rs` 0%） |
-| `tests/e2e` | 黑盒层，不依赖任何 rutis crate（Q7.6） | 91 | — |
+| 内核 `rutis` | 43 个文件，都是 `tests/core` 这一个二进制的模块：契约 `contract.rs`、Cordis 对拍 `parity.rs`、交错 `interleave.rs`、监听器表模型 `listener_table_model.rs` 等；8 个 doctest、4 个 `compile_fail` | 426 | 92.8% |
+| `rutis-bridge` | 63 个文件；channel / session / runtime / node 四套一致性套件；`fault` 装饰器；`trace_validation.rs`；两个浸泡测试；6 个集成测试二进制 | 595（#1373 前 758） | 87.8% |
+| `rutis-loader` | 64 个文件；patch 合并以 cordis-plugin-include 为参照；各语言的行契约（`*_rows.rs`）；11 个集成测试二进制 | 376 | 89.8% |
+| `rutis-host` | 41 个文件，含 `tests/` 下的黑盒测试；3 个集成测试二进制 | 321 | 69.8%（`main.rs` 0%） |
+| `tests/e2e` | 黑盒层，不依赖任何 rutis crate（Q7.6）；4 个集成测试二进制 | 91 | — |
 | dylib 工具链 | `tools/test-dylib*.sh`、`tools/test-sdk-bundle.sh`；两个 runner 比较 SDK 哈希 | — | — |
 | Node 包 | `node/*/test/`，48 个文件 | 268 | 86% |
 | Bun 包 | `bun/rutis-bun/test/`，23 个文件 | 159 | — |
@@ -151,7 +151,7 @@
 | 可控调度 | 四个 crate 共 65 个 shuttle 模型（内核 28、`rutis-bridge` 31、`rutis-host` 3、`rutis-loader` 3），`--cfg rutis_shuttle` 才编译（§7.3） | 65 | — |
 | 模糊测试 | `fuzz/fuzz_targets/`，9 个目标（§7.4）；另有 Go 原生 fuzz | 9 | — |
 
-2026-11-21（#1373）：Rust 集成测试按域合并为每 crate 4–8 个 `tests/<suite>/main.rs`，独立 Cargo 集成测试二进制 205 → 25；测试函数与断言不变，`cargo test --no-run` 的链接次数随之减少。
+2026-11-21（#1373）：Rust 集成测试按域合并为每 crate 1–11 个 `tests/<suite>/main.rs` 套件，独立 Cargo 集成测试二进制整个工作区 229 → 50（`rutis`、`rutis-bridge`、`rutis-loader`、`rutis-host`、`tests/e2e`、`rutis-dylib` 六个合计 205 → 26）；测试函数与断言不变，`cargo test --no-run` 的链接次数与 `target` 体积随之下降（§8.6 是前后测量）。
 
 0.11 以后新增、现在仍有效的几块（细节在 §4、§5、§7）：
 
@@ -755,8 +755,26 @@ TLC 找到过两处握手期间吊销身份仍建立会话，已修复（#432）
 | 其余任务 | < 1 min |
 
 - 与 §8.3 相比，普通 PR 不再因为 OS 无关任务占着 macOS 槽位而排队 15–45 分钟。
-- 关键路径现在由 `rust` 决定；下一步靠 #1373 合并集成测试二进制继续压缩编译链接时间。
+- 关键路径现在由 `rust` 决定；#1373 合并集成测试二进制后的编译链接与 `target` 体积见 §8.6。
 - 样本只有一次，结论是“目标可以达到”，中位数仍需用 `node tools/ci-stats.mjs` 累积。
+
+### 8.6 测量（2026-11-21，#1373 合并集成测试二进制的前后）
+
+方法：同一台机器（32 核，rustc 1.98.1），关掉本机构建缓存，两份代码各用一个空的 `CARGO_TARGET_DIR` 跑 `cargo test --workspace --no-run --timings`。时间是从开始到结束的实际耗时；`target` 体积是构建完后的 `du -sb`；单元时间取 `--timings` 里每个 rustc 单元（编译 + 链接）自己的时长之和，各单元并行，所以和不是墙钟。前后各一个样本，同一台机器、同一时段。
+
+| 项 | `399eef61`（#1373 之前） | `f4d453cb`（#1373 之后） | 变化 |
+| --- | ---: | ---: | ---: |
+| 集成测试二进制（整个工作区） | 229 | 50 | −78% |
+| 集成测试二进制（六个 crate） | 205 | 26 | −87% |
+| `cargo test --workspace --no-run` | 99 s | 53 s | −46% |
+| `target` 体积 | 45.3 GiB | 21.2 GiB | −53% |
+| rustc 单元时间之和：测试目标 | 1,755 s | 291 s | −83% |
+| rustc 单元时间之和：全部单元 | 2,733 s | 938 s | −66% |
+
+- 六个 crate 逐个：`rutis` 34 → 1、`rutis-bridge` 58 → 6、`rutis-loader` 56 → 11、`rutis-host` 36 → 3、`tests/e2e` 19 → 4、`rutis-dylib` 2 → 1；其余 crate（`rutis-agent`、`rutis-dsh`、`examples`、`dsh-baseline`）不变，合计 229 → 50。
+- `--timings` 不把编译和链接分开：测试目标那 1,755 → 291 s 是每个测试二进制编译加链接的合计，减少的部分主要是少链接 179 个二进制、少编译同名测试 crate。
+- `target` 体积少的一半来自同一处：每个测试二进制都单独链进一份 `libstd`、`rutis` 与测试框架的调试信息。
+- 本地收益只在干净构建时完整出现，增量构建本来就不重编没变的单元；CI 上带 `Swatinem/rust-cache` 的作业按单元命中，少的单元直接不跑。
 
 ## 9. 计划
 
