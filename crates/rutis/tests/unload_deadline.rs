@@ -7,7 +7,9 @@ use std::time::{Duration, Instant};
 
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind, ErrorSink};
 use rutis::{Ctx, Error, Event};
+use rutis_test_support::Environment;
 use serde::{Deserialize, Serialize};
+use tokio::sync::Notify;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Hang;
@@ -17,15 +19,21 @@ impl Event for Hang {
 }
 
 /// Registers a listener of `t/hang` that never ends, not even when its
-/// fiber is cancelled.
-struct Stuck;
+/// fiber is cancelled, and says when it was called.
+struct Stuck {
+    started: Arc<Notify>,
+}
 impl DynPlugin for Stuck {
     fn name(&self) -> &str {
         "stuck"
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         Box::pin(async move {
-            ctx.on::<Hang>(|_, _| std::future::pending())?;
+            let started = self.started.clone();
+            ctx.on::<Hang>(move |_, _| {
+                started.notify_one();
+                std::future::pending()
+            })?;
             Ok(Effect::Done)
         })
     }
@@ -34,19 +42,23 @@ impl DynPlugin for Stuck {
 /// guarantee: events/lifecycle
 #[tokio::test(flavor = "multi_thread")]
 async fn an_unload_gives_up_on_running_listeners_at_the_deadline() {
+    let _environment = Environment::new();
     std::env::set_var("RUTIS_SHUTDOWN_TIMEOUT", "0.3");
     let errors: Arc<Mutex<Vec<Arc<ErrorKind>>>> = Arc::default();
     let into = errors.clone();
     let sink: ErrorSink = Arc::new(move |error| into.lock().unwrap().push(error));
     let root = Ctx::root_with_sink(tokio::runtime::Handle::current(), sink);
-    let view = root.plugin(Stuck);
+    let called = Arc::new(Notify::new());
+    let view = root.plugin(Stuck {
+        started: called.clone(),
+    });
     (&view).await.unwrap();
     // A call of the listener, under way.
     let emitter = root.clone();
     let running = tokio::spawn(async move {
         let _ = emitter.parallel(Hang).await;
     });
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    called.notified().await;
     let started = Instant::now();
     tokio::time::timeout(Duration::from_secs(5), view.dispose())
         .await
