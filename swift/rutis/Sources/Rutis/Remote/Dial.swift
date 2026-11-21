@@ -128,19 +128,82 @@ final class DialedSocket: NSObject, Channel, URLSessionWebSocketDelegate, @unche
     /// not yet invalidated (each holds its socket as its delegate) and
     /// heartbeat timers running. A stopped app leaves none (#542).
     final class Live: Sendable {
+        private struct Waiter {
+            let id: UUID
+            let sessions: Int
+            let heartbeats: Int
+            let continuation: CheckedContinuation<Void, Error>
+        }
+
         private struct Counts {
             var sessions = 0
             var heartbeats = 0
+            var waiters: [Waiter] = []
         }
 
         private let counts = Locked(Counts())
 
         var sessions: Int { counts.read { $0.sessions } }
         var heartbeats: Int { counts.read { $0.heartbeats } }
+
+        /// Returns once the counters are exactly these values: the test's
+        /// event for "the stopped app left nothing behind" (#542). A real
+        /// leak never reaches them, so the caller still needs a deadline.
+        func waitUntilQuiet(sessions expectedSessions: Int, heartbeats expectedHeartbeats: Int) async throws {
+            let id = UUID()
+            try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                    let now: Bool = counts.withLock { counts in
+                        if counts.sessions == expectedSessions && counts.heartbeats == expectedHeartbeats {
+                            return true
+                        }
+                        counts.waiters.append(Waiter(id: id, sessions: expectedSessions,
+                                                     heartbeats: expectedHeartbeats, continuation: continuation))
+                        return false
+                    }
+                    if now { continuation.resume() }
+                }
+            } onCancel: {
+                let waiter: Waiter? = counts.withLock { counts in
+                    guard let index = counts.waiters.firstIndex(where: { $0.id == id }) else { return nil }
+                    return counts.waiters.remove(at: index)
+                }
+                waiter?.continuation.resume(throwing: CancellationError())
+            }
+        }
+
+        /// The waiters the current counts satisfy; resumed after the lock is
+        /// released.
+        private func quiet(_ counts: inout Counts) -> [CheckedContinuation<Void, Error>] {
+            var resumed: [CheckedContinuation<Void, Error>] = []
+            var waiting: [Waiter] = []
+            for waiter in counts.waiters {
+                if waiter.sessions == counts.sessions && waiter.heartbeats == counts.heartbeats {
+                    resumed.append(waiter.continuation)
+                } else {
+                    waiting.append(waiter)
+                }
+            }
+            counts.waiters = waiting
+            return resumed
+        }
+
         fileprivate func sessionCreated() { counts.withLock { $0.sessions += 1 } }
-        fileprivate func sessionInvalidated() { counts.withLock { $0.sessions -= 1 } }
+        fileprivate func sessionInvalidated() {
+            let resumed = counts.withLock { counts in
+                counts.sessions -= 1
+                return quiet(&counts)
+            }
+            for continuation in resumed { continuation.resume() }
+        }
         fileprivate func heartbeatStarted() { counts.withLock { $0.heartbeats += 1 } }
-        fileprivate func heartbeatStopped() { counts.withLock { $0.heartbeats -= 1 } }
+        fileprivate func heartbeatStopped() {
+            let resumed = counts.withLock { counts in
+                counts.heartbeats -= 1
+                return quiet(&counts)
+            }
+            for continuation in resumed { continuation.resume() }
+        }
     }
 
     static let live = Live()
