@@ -135,6 +135,12 @@ PR 上 macOS、Windows 跑两个 crate 的单元测试（`--lib`）和平台专�
 
 bridge、loader 和示例里要启动语言运行时的测试，按环境变量 `RUTIS_TEST_RUNTIMES`（逗号分隔，`node`、`python`、`bun`、`go`、`swift`、`kotlin`）决定跑不跑，由 `rutis-test-support` 的 `runtimes` 判断：列出的语言找不到工具链时测试失败，写明缺什么；没列出的语言的测试打印一行 `skipped: <语言> not in RUTIS_TEST_RUNTIMES` 后返回。CI 的每个步骤按它装了的运行时设置这个变量，cargo 用 `--all-features`，不再用语言 feature 挑测试。这是测试约定，不是产品开关。本地跑时也要设，例如 `RUTIS_TEST_RUNTIMES=node,python cargo test -p rutis-loader --all-features`。
 
+### 测试挂住时怎么办
+
+跑整套套件的 `cargo test` 步骤都经 `tools/test-watchdog.sh`：它把命令的输出照常打到任务的日志里，同时在 `RUTIS_TEST_STALL` 秒（默认 300）没有新输出时判定为挂住，先打印最后 40 行（libtest 为还在跑的测试打的那行 `test <名字> has been running for over 60 seconds` 就在里面），再结束整个进程组，以 124 退出。没有这道闸，一次挂住要等任务的 `timeout-minutes`（45 分钟），而且失败的原因不会打出来（#1402；#1386 的 `listener_scale` 就这样挂过一次）。
+
+按 `--test <套件> <名字过滤>` 过滤的单点步骤不包：它们跑多久由测试自己的 `within`/`Guard` 封顶，而 watchdog 分不清「一个测试慢慢跑」和「挂住」；安装类测试（跨版本相遇）更是几分钟不输出。新加跑整套的步骤时写 `bash tools/test-watchdog.sh cargo test ...`。进程级观测的测试（`go_stop`、`local_soak`、`websocket_soak`）单独跑，原因写在它们的文件头。
+
 ### 一致性矩阵
 
 bridge 的一致性套件在哪些实现、哪些通道、哪些平台上运行（风险 C10，#176）。手写维护：增删格子、改跳过原因时同步改这张表。“跳过”的格子在测试里用 `ignore = "原因"` 标注，`cargo test` 的输出里能看到；整平台不编译的，原因写在 `cfg` 旁的注释里。

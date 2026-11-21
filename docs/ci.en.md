@@ -135,6 +135,12 @@ On pull requests, macOS and Windows run both crates' unit tests (`--lib`) and th
 
 The tests of the bridge, the loader and the examples that start a language runtime run or not by the variable `RUTIS_TEST_RUNTIMES` (comma separated: `node`, `python`, `bun`, `go`, `swift`, `kotlin`), as `rutis-test-support`'s `runtimes` reads it: a test of a listed language whose toolchain is missing fails, saying what is missing; a test of a language not listed prints `skipped: <language> not in RUTIS_TEST_RUNTIMES` and returns. Each CI step sets it to the runtimes it installed, and cargo runs with `--all-features`: language features no longer pick the tests. It is a test convention, not a product setting. Set it when running locally too, for example `RUTIS_TEST_RUNTIMES=node,python cargo test -p rutis-loader --all-features`.
 
+### When a test hangs
+
+Every `cargo test` step that runs whole suites goes through `tools/test-watchdog.sh`: it prints the command's output to the job's log as it comes and, when nothing new has been printed for `RUTIS_TEST_STALL` seconds (300 by default), calls the run hung, prints the last 40 lines (libtest's `test <name> has been running for over 60 seconds` for the test still running among them) and ends the whole process group with 124. Without that gate a hang waits for the job's `timeout-minutes` (45 minutes) and the reason is never printed (#1402; #1386's `listener_scale` hung once like that).
+
+Steps filtered to a single test or suite by `--test <suite> <name filter>` are not wrapped: their length is capped by the test's own `within`/`Guard`, and the watchdog cannot tell a slow test from a hung one; installation tests (the cross-version meetings) print nothing for minutes. A new step that runs whole suites writes `bash tools/test-watchdog.sh cargo test ...`. Tests that observe the process itself (`go_stop`, `local_soak`, `websocket_soak`) run alone, with the reason in their file header.
+
 ### The conformance matrix
 
 Where bridge's conformance suites run: which implementations, which channels, which platforms (risk C10, #176). Kept by hand: a change to a cell or a skip reason changes this table too. A skipped cell is marked `ignore = "reason"` in its test, which `cargo test` prints; where a whole platform does not compile a test, the reason is a comment next to its `cfg`.

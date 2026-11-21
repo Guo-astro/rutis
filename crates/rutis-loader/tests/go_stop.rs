@@ -1,7 +1,8 @@
 //! A Go runtime that does not stop within the shutdown deadline is killed
 //! before another process starts under its name (#538). A test binary of
 //! its own: it sets `RUTIS_SHUTDOWN_TIMEOUT`, which everything in the
-//! process reads.
+//! process reads, and it counts the processes this process has started
+//! (`pipe::running_processes`), which a test beside it would add to.
 #![cfg(feature = "go")]
 
 mod common;
