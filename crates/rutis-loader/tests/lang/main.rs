@@ -4,7 +4,6 @@ mod common;
 
 mod bun_multilang;
 mod caller_rows;
-mod close_cpu;
 mod instance_go;
 mod multilang_go;
 mod multilang_kotlin;

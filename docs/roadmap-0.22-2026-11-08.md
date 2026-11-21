@@ -95,7 +95,7 @@ Gate：中英文审查确认决定、精确输出/error/code/data、按角色的
 
 ### Rust 宿主作者
 
-public Rust API、事件协议和 shutdown result 不变。关闭后的 registration/effect/provide 类操作仍返回 `ErrorKind::Closed`，文字为 `root has been shut down`，没有新增 `code` 或 `data`（`crates/rutis/tests/instances/instance_subtrees.rs:291-325`）。事件关闭设计提议 `emit()` 本身不会仅因子树关闭而失败，但该 delivery 结果不是 0.22 保证：现有 service-after-stop 测试将 delivery 明确留作未承诺（`crates/rutis/src/events/api.rs:453-480`；`crates/rutis/tests/instances/service_emits.rs:70-83`）。
+public Rust API、事件协议和 shutdown result 不变。关闭后的 registration/effect/provide 类操作仍返回 `ErrorKind::Closed`，文字为 `root has been shut down`，没有新增 `code` 或 `data`（`crates/rutis/tests/core/instance_subtrees.rs:291-325`）。事件关闭设计提议 `emit()` 本身不会仅因子树关闭而失败，但该 delivery 结果不是 0.22 保证：现有 service-after-stop 测试将 delivery 明确留作未承诺（`crates/rutis/src/events/api.rs:453-480`；`crates/rutis/tests/core/service_emits.rs:70-83`）。
 
 ### 运行时作者与贡献者
 

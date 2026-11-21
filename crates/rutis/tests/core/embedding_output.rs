@@ -178,7 +178,7 @@ async fn a_shutdown_that_runs_out_of_time_names_the_stuck_cleanup() {
         panic!("{error}");
     };
     let line = *registered_at.lock().unwrap();
-    let at = format!("tests/instances/embedding_output.rs:{line}:");
+    let at = format!("tests/core/embedding_output.rs:{line}:");
     assert_eq!(stuck.len(), 1, "{stuck:?}");
     assert_eq!(stuck[0].plugin, "slow");
     assert!(

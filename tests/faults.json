@@ -170,7 +170,7 @@
       },
       "rust": {
         "tests": [
-          ["crates/rutis/tests/instances/embedding_output.rs", "a_failed_start_reaches_the_error_sink_by_the_plugins_name"],
+          ["crates/rutis/tests/core/embedding_output.rs", "a_failed_start_reaches_the_error_sink_by_the_plugins_name"],
           ["crates/rutis-loader/tests/rows/waits.rs", "a_row_that_cannot_start_reaches_the_error_sink_by_its_name"]
         ]
       }
@@ -319,8 +319,8 @@
       },
       "rust": {
         "tests": [
-          ["crates/rutis/tests/instances/embedding_output.rs", "an_apply_that_does_not_return_is_named"],
-          ["crates/rutis/tests/instances/embedding_output.rs", "a_shutdown_that_runs_out_of_time_names_the_stuck_cleanup"]
+          ["crates/rutis/tests/core/embedding_output.rs", "an_apply_that_does_not_return_is_named"],
+          ["crates/rutis/tests/core/embedding_output.rs", "a_shutdown_that_runs_out_of_time_names_the_stuck_cleanup"]
         ]
       }
     },
@@ -524,7 +524,7 @@
       },
       "rust": {
         "tests": [
-          ["crates/rutis/tests/instances/embedding_output.rs", "diagnostics_print_by_name_without_rutis_own_plugins"],
+          ["crates/rutis/tests/core/embedding_output.rs", "diagnostics_print_by_name_without_rutis_own_plugins"],
           ["crates/rutis-loader/tests/runtimes/status.rs", "the_status_names_rows_services_runtimes_and_calls"]
         ]
       }

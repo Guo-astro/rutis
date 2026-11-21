@@ -1,6 +1,3 @@
-#[path = "../common/mod.rs"]
-mod common;
-
 use std::future::{ready, IntoFuture, Ready};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -16,7 +13,7 @@ use rutis::{Ctx, Error, Event, Plugin};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{oneshot, Semaphore};
 
-use common::still_pending;
+use crate::common::still_pending;
 
 struct Capture(Arc<Mutex<Option<Ctx>>>);
 

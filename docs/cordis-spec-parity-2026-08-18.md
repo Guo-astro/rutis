@@ -133,7 +133,7 @@
 
 **结论**:57 对拍 + 58 契约 + 13 agent + 1 doc = 129 测试,双线程/单线程模式、连续 10+ 轮均绿;clippy `-D warnings` 与 fmt 清零。判定表中"isolate 的 shared label 保留语义"条件点已按现有实现(Rust 版保留 label 共享)对拍通过。
 
-**增补(2026-08-19):emit 派发序对拍空白补齐**。cordis JS 的 emit 是同步内联调用,监听器按发射序执行——顺序免费,spec 因此从未显式断言它,Rust 版直译为逐事件 spawn 后该保证静默丢失(多线程背靠背 emit 实测约 30% 事件错位、位移最大 52;单线程与 ≥1ms 间隔零乱序,故原对拍全绿)。修复:emit 尾链(D31,同事件类型按发射序串行派发,remove/spawn/insert 单锁原子)。回归钉死:`rutis/tests/instances/dispatch_chain_probe.rs`(并发同类型 emit 链不分叉)、`rutis-agent/tests/order_probe.rs`(multi_thread 下单发射者发射序=到达序)。此为 Rust 侧空白补齐,非语义偏差;跨事件类型不保证顺序为已声明边界(见 D31)。
+**增补(2026-08-19):emit 派发序对拍空白补齐**。cordis JS 的 emit 是同步内联调用,监听器按发射序执行——顺序免费,spec 因此从未显式断言它,Rust 版直译为逐事件 spawn 后该保证静默丢失(多线程背靠背 emit 实测约 30% 事件错位、位移最大 52;单线程与 ≥1ms 间隔零乱序,故原对拍全绿)。修复:emit 尾链(D31,同事件类型按发射序串行派发,remove/spawn/insert 单锁原子)。回归钉死:`rutis/tests/core/dispatch_chain_probe.rs`(并发同类型 emit 链不分叉)、`rutis-agent/tests/order_probe.rs`(multi_thread 下单发射者发射序=到达序)。此为 Rust 侧空白补齐,非语义偏差;跨事件类型不保证顺序为已声明边界(见 D31)。
 
 ## 六、宣发口径(基于本清单)
 

@@ -1,9 +1,6 @@
 //! The order of the unload steps (D7) and what dropping a `restart` /
 //! `update` future does to work already under way (#177).
 
-#[path = "../common/mod.rs"]
-mod common;
-
 use std::future::IntoFuture;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -13,7 +10,7 @@ use rutis::{Ctx, Error, Plugin};
 use rutis_test_support::within;
 use tokio::sync::Notify;
 
-use common::still_pending;
+use crate::common::still_pending;
 
 type Log = Arc<Mutex<Vec<String>>>;
 

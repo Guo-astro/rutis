@@ -70,7 +70,7 @@
 - Bun：`crates/rutis-host/tests/config/dev.rs` `dev_follows_a_bun_project`，`bun/rutis-bun/test/runner.test.ts` “an apply failure crosses with the plugin's frames only (#677)”
 - Python：`crates/rutis-host/tests/config/dev.rs` `dev_follows_a_python_project`
 - Go：`crates/rutis-host/tests/config/dev.rs` `dev_rebuilds_a_go_project_only_for_its_sources`
-- Rust（插件与嵌入）：`crates/rutis/tests/instances/embedding_output.rs` `a_failed_start_reaches_the_error_sink_by_the_plugins_name`，`crates/rutis-loader/tests/rows/waits.rs` `a_row_that_cannot_start_reaches_the_error_sink_by_its_name`
+- Rust（插件与嵌入）：`crates/rutis/tests/core/embedding_output.rs` `a_failed_start_reaches_the_error_sink_by_the_plugins_name`，`crates/rutis-loader/tests/rows/waits.rs` `a_row_that_cannot_start_reaches_the_error_sink_by_its_name`
 
 ### 5. 语法 / 导入 / 编译错误
 
@@ -102,7 +102,7 @@
 - Bun：`bun/rutis-bun/test/output.test.ts` “a method holding the runtime is said once; a short one is not”，`bun/rutis-bun/test/output.test.ts` “a method awaiting for long does not hold the runtime, and is not said”，`bun/rutis-bun/test/output.test.ts` “under a debugger nothing is said of a method holding the runtime”
 - Python：`crates/rutis-host/tests/config/status.rs` `status_says_what_a_running_host_does`，`crates/rutis-loader/tests/runtimes/status.rs` `the_status_names_rows_services_runtimes_and_calls`，`python/rutis/tests/test_output.py` `test_a_method_holding_the_runtime_is_said_once`，`python/rutis/tests/test_output.py` `test_a_blocking_call_in_an_async_method_is_said`，`python/rutis/tests/test_output.py` `test_an_async_method_awaiting_long_is_not_said`，`python/rutis/tests/test_output.py` `test_under_a_debugger_nothing_is_said`
 - Go：无测试
-- Rust（插件与嵌入）：`crates/rutis/tests/instances/embedding_output.rs` `an_apply_that_does_not_return_is_named`，`crates/rutis/tests/instances/embedding_output.rs` `a_shutdown_that_runs_out_of_time_names_the_stuck_cleanup`
+- Rust（插件与嵌入）：`crates/rutis/tests/core/embedding_output.rs` `an_apply_that_does_not_return_is_named`，`crates/rutis/tests/core/embedding_output.rs` `a_shutdown_that_runs_out_of_time_names_the_stuck_cleanup`
 
 ### 9. 互相调用、互相依赖
 
@@ -150,6 +150,6 @@
 - Bun：无测试
 - Python：`crates/rutis-loader/tests/runtimes/status.rs` `the_status_names_rows_services_runtimes_and_calls`
 - Go：无测试
-- Rust（插件与嵌入）：`crates/rutis/tests/instances/embedding_output.rs` `diagnostics_print_by_name_without_rutis_own_plugins`，`crates/rutis-loader/tests/runtimes/status.rs` `the_status_names_rows_services_runtimes_and_calls`
+- Rust（插件与嵌入）：`crates/rutis/tests/core/embedding_output.rs` `diagnostics_print_by_name_without_rutis_own_plugins`，`crates/rutis-loader/tests/runtimes/status.rs` `the_status_names_rows_services_runtimes_and_calls`
 
 <!-- faults:end -->

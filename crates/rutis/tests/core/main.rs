@@ -1,19 +1,27 @@
 //! The `core` integration tests, one module per former test binary.
+#[path = "../common/mod.rs"]
+mod common;
 
 mod cleanup_errors;
 mod config_cases;
 mod config_update;
 mod contract;
 mod definitions;
+mod dispatch_chain_probe;
+mod embedding_output;
 mod evicted_apply;
 mod failed_retry;
 mod generation_registration;
 mod host_control;
+mod instance_subtrees;
 mod interleave;
 mod lifecycle_diagnostics;
 mod lifecycle_order;
 mod load_window;
+mod marked_generations;
 mod parity;
+mod service_emits;
+mod service_writer;
 mod still_waiting;
 mod strict_reads;
 mod terminal_cleanup;

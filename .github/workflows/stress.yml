@@ -458,7 +458,7 @@ jobs:
         # bash -eo pipefail: a failing test fails the step through tee.
         shell: bash
         run: |
-          cargo test -p rutis-loader --release --test lang close_cpu:: -- --nocapture 2>&1 \
+          cargo test -p rutis-loader --release --test close_cpu -- --nocapture 2>&1 \
             | tee "$RUNNER_TEMP/close-cpu.txt"
       - name: Queued emits share their listeners
         shell: bash
