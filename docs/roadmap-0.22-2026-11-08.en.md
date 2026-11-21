@@ -95,7 +95,7 @@ There is no new trust-boundary setting in 0.22. The event-close optimization has
 
 ### Rust host authors
 
-Public Rust APIs, the event protocol and shutdown results are unchanged. Closed registration/effect/provide-style operations still return `ErrorKind::Closed`, with the text `root has been shut down` and no new `code` or `data` (`crates/rutis/tests/instance_subtrees.rs:291-325`). The event-close design proposes that `emit()` itself not fail merely because a subtree is closed, but this delivery result is not a 0.22 guarantee: the existing service-after-stop test leaves delivery unspecified (`crates/rutis/src/events/api.rs:453-480`; `crates/rutis/tests/service_emits.rs:70-83`).
+Public Rust APIs, the event protocol and shutdown results are unchanged. Closed registration/effect/provide-style operations still return `ErrorKind::Closed`, with the text `root has been shut down` and no new `code` or `data` (`crates/rutis/tests/core/instance_subtrees.rs:291-325`). The event-close design proposes that `emit()` itself not fail merely because a subtree is closed, but this delivery result is not a 0.22 guarantee: the existing service-after-stop test leaves delivery unspecified (`crates/rutis/src/events/api.rs:453-480`; `crates/rutis/tests/core/service_emits.rs:70-83`).
 
 ### Runtime authors and contributors
 

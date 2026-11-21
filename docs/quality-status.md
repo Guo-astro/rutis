@@ -27,12 +27,12 @@
 | Q5.3.6 | 不安全代码集中、加载前校验 | 部分 | `unsafe` 集中在 dylib 加载与进程启动；dylib 校验由脚本验证，`design-dylib-sdk` §十三 5 项未勾选，需要对账 |
 | Q5.3.7 | 依赖漏洞与许可证检查 | 部分 | 每周 `deps.yml`：`cargo deny check advisories`、`npm audit`、`pip-audit`（#256），不阻止合并。许可证没有检查；新增依赖的理由没有固定的检查项 |
 | Q5.4.2 | 每个场景结束核对残余 | 部分 | E2E harness 每个场景结束时核对：宿主拉起的进程（Linux、macOS 按场景标记找，Windows 按 Job Object）、socket 文件、端口、临时目录、凭据（#221、#277）。测试进程的 fd、线程只在两个浸泡测试里查；tokio 任务数与 Linux 上的 OS 线程数在 `instance_subtrees.rs`、`instance_runtimes.rs`、`close_memory.rs` 查（#286、#191、#979）；运行时内部的注册由 Node、Python 运行时的测试控制方法 `inspect` 查询，只有 S7 用到（§5，#191） |
-| Q5.4.3 | 反复创建销毁后资源不增长 | 部分 | bridge 层两个浸泡（反复建链断链、起停进程，查测试进程的 fd、线程）；宿主进程级的 S8（`tests/e2e/tests/soak.rs`，#192）：一个 `rutis-host run` 每晚运行一小时，反复增删改行并重新加载、杀掉运行时由宿主重启、断开对端的 link，采样宿主、它的运行时和对端的进程数、fd（Windows 上是句柄）、线程、常驻内存，后 25% 时间的中位数与前段（跳过前 10% 预热）的中位数比较，不超过阈值（进程数最多多一个：Node 运行时的 TypeScript 加载器按需起 esbuild 进程；其余阈值及理由见 `soak.rs` 的 `Bounds`），Linux、macOS、Windows。缺：内核层 root 上反复创建销毁实例（K5，#191）；tokio 任务数只在 `instance_subtrees.rs`、`instance_runtimes.rs`、`close_memory.rs` 查 |
-| Q5.4.4 | 宿主被强制终止时不留孤儿进程 | 满足 | `cross_language.rs` 在三个平台上 `kill -9` 宿主，残余检查确认运行时退出（Unix 靠通道关闭，Windows 靠 rutis-host 的 Job Object）。Unix 上插件留着定时器、或清理一直不返回时，运行时也在截止时间内卸载各行后退出（#353，由 #354 修复；`stray_runtime.rs`、`rutis-bridge/tests/host_gone.rs`，Node、Python、Go、Bun）。S8 每晚在三个平台上轮换 Ctrl-C（Windows 上 Ctrl-Break）、SIGTERM、`kill -9` 结束宿主，`kill -9` 前在 Node、Python、Bun 运行时里各加一个清理永不返回的行，检查宿主的进程在限定时间内全部退出、运行时自己卸载各行并守住截止时间（#192）；它发现宿主被 `kill -9` 后 Python 运行时到截止时间写不出放弃清理那一行（stderr 管道的读端随宿主没了），一直不退出，已修复（`stray_runtime.rs` 的 Python 例） |
+| Q5.4.3 | 反复创建销毁后资源不增长 | 部分 | bridge 层两个浸泡（反复建链断链、起停进程，查测试进程的 fd、线程）；宿主进程级的 S8（`tests/e2e/tests/soak/soak.rs`，#192）：一个 `rutis-host run` 每晚运行一小时，反复增删改行并重新加载、杀掉运行时由宿主重启、断开对端的 link，采样宿主、它的运行时和对端的进程数、fd（Windows 上是句柄）、线程、常驻内存，后 25% 时间的中位数与前段（跳过前 10% 预热）的中位数比较，不超过阈值（进程数最多多一个：Node 运行时的 TypeScript 加载器按需起 esbuild 进程；其余阈值及理由见 `soak.rs` 的 `Bounds`），Linux、macOS、Windows。缺：内核层 root 上反复创建销毁实例（K5，#191）；tokio 任务数只在 `instance_subtrees.rs`、`instance_runtimes.rs`、`close_memory.rs` 查 |
+| Q5.4.4 | 宿主被强制终止时不留孤儿进程 | 满足 | `cross_language.rs` 在三个平台上 `kill -9` 宿主，残余检查确认运行时退出（Unix 靠通道关闭，Windows 靠 rutis-host 的 Job Object）。Unix 上插件留着定时器、或清理一直不返回时，运行时也在截止时间内卸载各行后退出（#353，由 #354 修复；`stray_runtime.rs`、`rutis-bridge/tests/platform/host_gone.rs`，Node、Python、Go、Bun）。S8 每晚在三个平台上轮换 Ctrl-C（Windows 上 Ctrl-Break）、SIGTERM、`kill -9` 结束宿主，`kill -9` 前在 Node、Python、Bun 运行时里各加一个清理永不返回的行，检查宿主的进程在限定时间内全部退出、运行时自己卸载各行并守住截止时间（#192）；它发现宿主被 `kill -9` 后 Python 运行时到截止时间写不出放弃清理那一行（stderr 管道的读端随宿主没了），一直不退出，已修复（`stray_runtime.rs` 的 Python 例） |
 | Q5.5.2 | 多写者冲突检测 | 部分 | loader 实现了 CAS 与重放；设计 §十七 列出的多写者测试需逐条核对 |
 | Q5.5.3 | 持久化格式向前兼容 | 部分 | `rutis.json` 有顶层 `format`（省略按 1 读，比当前新时拒绝并提示升级）；`tests/fixtures/persisted/` 存 0.8.0、0.9.0、0.9.1 的样本，`rejected/` 断言错误信息；`docs/release.md` 每次发布加样本（#207 → #284）。dsh 的 `cordis.patch.yml` 按决定不加版本字段（跟随 Cordis，方案 Q4），只靠样本测试，与本条"每种格式都有版本"不完全一致 |
 | Q5.5.4 | 跨语言值往返验证 | 满足 | 转换规则在 `guide/plugin-api.md`；`value_roundtrip.rs` 用 proptest 在 Rust 侧生成值，经 Node、Python、Go、Bun 往返比较，每个 256 例，失败打印种子，另有 release 计数不变式（#296）；发现的问题已修（#290 → #312、#302 → #311、#279 → #338）。表外的值（Date、Map、Set、二进制、大整数）显式拒绝，登记为明确不保证（方案 Q5；是否支持见 #308）。只在 Unix 上运行 |
-| Q5.6.1、Q5.6.3 | 错误信息内容与锁定 | 部分 | `rutis-host` 的常见错误逐字锁定（`rutis-host/tests/errors.rs`，#205 → #217）；协议版本不匹配时说明升级哪一端（#293 → #335）；link 被拒的类别出现在 `run` 的输出里（#321 → #336）。SDK 与 bridge 库级的错误没有锁定 |
+| Q5.6.1、Q5.6.3 | 错误信息内容与锁定 | 部分 | `rutis-host` 的常见错误逐字锁定（`rutis-host/tests/config/errors.rs`，#205 → #217）；协议版本不匹配时说明升级哪一端（#293 → #335）；link 被拒的类别出现在 `run` 的输出里（#321 → #336）。SDK 与 bridge 库级的错误没有锁定 |
 | Q5.6.2 | 不依据错误文字分支 | 满足 | 建立连接的错误按结构化类别分类，有跨实现测试 |
 | Q5.7.1 | 性能数字标明承诺或参考值 | 部分 | "同步调用约 30 µs"在设计哲学中未标明性质；基准测试无固定环境 |
 | Q5.7.2 | 声明规模范围 | 未满足 | 没有对外声明；本文 §2.2 的规模为待确认的假设。连续运行时间：S8 每晚验证一个宿主一小时内资源没有增长趋势（#192），更长时间没有验证 |
@@ -54,7 +54,7 @@
 | Q6.11 | Cordis 绑定生成 | 满足 | 生成器有单元测试，真实插件基线编译调用；外部新版本每晚用最新已发布的插件重新生成、编译、调用，只报告（F4，`nightly.yml` 的 `cordis-latest`，#190 → #429） |
 | Q6.12 | dylib 加载 | 满足 | Linux、macOS 在 PR 改 dylib 时和每晚运行；Windows（`dylib-windows.yml`）在每晚和发布门里运行（PR 上不跑，#569；ci.md §2）。加载前校验的对账见 Q5.3.6 |
 | Q6.13 | 节点互联、远程运行时、租约 | 部分 | 库级测试完整；两个独立宿主进程之间经 loopback 验证（S5，`nodes.rs`，#322、#336）：断网时进行中的调用失败一次、重连恢复、对端重启后拿到新租约、换 token 被拒、证书主机名不匹配与过期被拒；两个容器之间经真实网络（E12，#341 → #433，nightly 只报告）：非 loopback + TLS，200 ms 延迟 + 5% 丢包下调用成功、只执行一次、link 不断，断网时进行中的调用失败一次、心跳超时报告、退避上限内重连。缺：运行中吊销凭据（#273）；link 实际重试时序与稳定 60 s 后重置（E3）。租约、接管、重连与吊销有 TLA+ 模型（E4、E5，#210） |
-| Q6.14 | Cordis 挂载与 Cordis 节点 | 部分 | 以原生 Cordis 为参照的差分验证；边界规则 3、4、5、7 有跨进程测试（`boundary_rules.rs` 等，#283），测试发现的静默降级改为明确报错（#281、#282 → #337）。用 `rutis.json` 挂载已发布插件的黑盒场景 S6（`tests/e2e/tests/cordis.rs`，#190 → #429）：依赖 rutis 一侧服务的插件所做的调用与原生一致，服务撤回、恢复时按原生规则停止、重启，未捕获的异常明确报错；`rutis.json` 挂载的已发布插件之间按原生规则互用服务，提供的服务自动投到 rutis，probe 经这些服务的调用与原生一致（#428）；新发布的版本每晚跑一遍，只报告（F4）。缺：跨边界的 `serial` 在对侧也按 serial 执行，需要协议改动（#340）；`boundary/5.8` 部分验证 |
+| Q6.14 | Cordis 挂载与 Cordis 节点 | 部分 | 以原生 Cordis 为参照的差分验证；边界规则 3、4、5、7 有跨进程测试（`boundary_rules.rs` 等，#283），测试发现的静默降级改为明确报错（#281、#282 → #337）。用 `rutis.json` 挂载已发布插件的黑盒场景 S6（`tests/e2e/tests/install/cordis.rs`，#190 → #429）：依赖 rutis 一侧服务的插件所做的调用与原生一致，服务撤回、恢复时按原生规则停止、重启，未捕获的异常明确报错；`rutis.json` 挂载的已发布插件之间按原生规则互用服务，提供的服务自动投到 rutis，probe 经这些服务的调用与原生一致（#428）；新发布的版本每晚跑一遍，只报告（F4）。缺：跨边界的 `serial` 在对侧也按 serial 执行，需要协议改动（#340）；`boundary/5.8` 部分验证 |
 | Q6.15 | npm、PyPI、二进制、crates.io | 部分 | `install.yml`：npm、PyPI、release 二进制在干净目录安装运行，每晚五个平台，PR 上 linux-x64，发布前五个平台；发布后用注册表上的包跑文档示例（#193 → #254，#266 → #324）。缺：crates.io 与 Go 模块没有安装验证；Python 指南示例的标记（#266 (d)，等 #259） |
 | Q6.16 | `rutis-dev` dev 通道 | 不适用 | 0.19 删除 `rutis-dev`（#694） |
 
@@ -71,7 +71,7 @@
 | Q7.8 | 跳过必须说明 | 部分 | 只在部分平台运行的测试文件在 `cfg` 旁写原因，跳过的格子用 `ignore = "原因"`；一致性矩阵写在 ci.md §4（#176）；残余检查报告本平台未运行的项。`rutis-dev/tests/channel.rs` 的 `cfg(unix)` 没有写原因 |
 | Q8.1 | 三个层次 | 部分 | 规则层充分；组合层有黑盒 E2E 与故障注入（S2–S5、`fault_links.rs`）；环境层有支持矩阵与干净环境安装（S9）、真实网络（S5 容器 + netem，#433）；长时间运行（S8，#192） |
 | Q9.1.1 | 设计文档包含级别、风险、验收 | 部分 | 多数设计有验收节；PR 模板加了持久化格式与保证登记的检查项（#284、#276）；原 `model-pr.yml`（`tools/check-model-pr.mjs`）已在 #1372 退役。缺：设计文档没有标级别与风险 |
-| Q9.3.2 | 不兼容变化检测与跨版本相遇 | 部分 | `cargo semver-checks` 只提示；协议版本不匹配时说明升级哪一端（#335）；上一个发布版本（运行时、Go SDK、`rutis-host`、节点）与当前代码相遇，断言正常工作或在加载、连接时说明升级哪一端（`tests/e2e/tests/cross_version.rs`，完整运行，#209 → #426） |
+| Q9.3.2 | 不兼容变化检测与跨版本相遇 | 部分 | `cargo semver-checks` 只提示；协议版本不匹配时说明升级哪一端（#335）；上一个发布版本（运行时、Go SDK、`rutis-host`、节点）与当前代码相遇，断言正常工作或在加载、连接时说明升级哪一端（`tests/e2e/tests/install/cross_version.rs`，完整运行，#209 → #426） |
 | Q9.4 | 保证登记 | 部分 | [核心承诺登记表](guarantees.md)已收缩为 40 条现行核心承诺（P0，#1372），CI 的 `check-guarantees.mjs` 做正向形式核对；原 1,825 行静态规则追踪表（`docs/formal-trace/`）与 `tools/formal-trace*.mjs` 已在 #1372 退役 |
 | Q10.2 | 支持矩阵最低与最新版本 | 满足 | Linux 任务用最低版本（Node 22、Python 3.12、websockets 15、Bun 1.4.0、Go oldstable），macOS、Windows 用最新版本；MSRV 1.88 由 `msrv` 任务验证（#204 → #256；ci.md §9）。运行时 × 通道 × 平台矩阵写在 ci.md §4，不运行的格子写原因（#176） |
 | Q11.3.2 | 不以覆盖率为门槛 | 满足 | — |
@@ -136,7 +136,7 @@
 | 部分 | 测试 | 测试函数数 | 行覆盖率（2026-10-10） |
 | --- | --- | ---: | ---: |
 | 内核 `rutis` | 46 个文件：契约 `contract.rs`、Cordis 对拍 `parity.rs`、交错 `interleave.rs`、监听器表模型 `listener_table_model.rs` 等；8 个 doctest、4 个 `compile_fail` | 413 | 92.8% |
-| `rutis-bridge` | 83 个文件；channel / session / runtime / node 四套一致性套件；`fault` 装饰器；`trace_validation.rs`；两个浸泡测试 | 593 | 87.8% |
+| `rutis-bridge` | 80 个文件；channel / session / runtime / node 四套一致性套件；`fault` 装饰器；`trace_validation.rs`；两个浸泡测试 | 439 | 87.8% |
 | `rutis-loader` | 61 个文件；patch 合并以 cordis-plugin-include 为参照；各语言的行契约（`*_rows.rs`） | 335 | 89.8% |
 | `rutis-host` | 56 个文件，含 `tests/` 下的黑盒测试 | 291 | 69.8%（`main.rs` 0%） |
 | `tests/e2e` | 黑盒层，不依赖任何 rutis crate（Q7.6） | 91 | — |
@@ -150,6 +150,8 @@
 | 设计模型 | `specs/` 7 个目录、17 个 `.tla`、224 个配置（§7.2） | — | — |
 | 可控调度 | 四个 crate 共 65 个 shuttle 模型（内核 28、`rutis-bridge` 31、`rutis-host` 3、`rutis-loader` 3），`--cfg rutis_shuttle` 才编译（§7.3） | 65 | — |
 | 模糊测试 | `fuzz/fuzz_targets/`，9 个目标（§7.4）；另有 Go 原生 fuzz | 9 | — |
+
+2026-11-21（#1373）：Rust 集成测试按域合并为每 crate 4–8 个 `tests/<suite>/main.rs`，独立 Cargo 集成测试二进制 205 → 25；测试函数与断言不变，`cargo test --no-run` 的链接次数随之减少。
 
 0.11 以后新增、现在仍有效的几块（细节在 §4、§5、§7）：
 
@@ -264,13 +266,13 @@ CI：`ci.yml`（PR 按改动选择任务，每晚全部运行；Linux 全量与�
 | EV2 | `emit` 的顺序在路径切换、过滤器等待、不可重入运行时扣住调用时被打破（已发生：#513、#527、#557、#519、#554） | 语义 | 高 | 中 | P0 | TLA；K；nightly `events-all`；TV（#624） | PR、nightly | 部分：`EventsEmit.tla` 的两个顺序性质通过，卸载丢弃排队 emit 有配置；`emit-python-deferred` 通过（`Defer = "nextRound"` 只把开始推到下一轮，模型本来就允许任意晚）；`before-future-reply` 以变异 `emit-mut-future-reply` 建（宿主对还在排队、调用尚未开始的 emit 先回复），违反 `EmitOrder`；`events.expected.json` 与 nightly 的 `events-all` 有。缺：Node 按 key 扣住的配置；事件宿主的 trace validation 未做 |
 | EV3 | 卸载或断开之后，已撤下的条目仍开始调用，或进行中的调用失败零次、两次；已卸载的行扣住队列（已发生：#536（#564 修复）、#587） | 语义、残留 | 高 | 中 | P0 | TLA；K；TV（#624） | PR | 部分：`EventsTable.tla` 的"只接受这一行当前登记"与 `table-reload`/`table-end-session` 配置；实现侧 `event_hub.rs` 的 `rows.ended` 按帧序（#587）、卸载丢弃排队 emit（#536）。缺：trace validation |
 | EV4 | 节点连接的提供与宣告：旧提供的条目残留，先于提供到达的宣告被撤下（已发生：#593；#435 的根因在宿主内的登记，由 `peer.rs` 的 `a_family_is_announced_only_with_its_offer` 覆盖） | 语义 | 中 | 中 | P1 | TLA（`EventsLink.tla`）；K（`crates/rutis-bridge/src/peer.rs`、`events.expected.json` 的 `node/` 用例、`node/rutis-runtime/test/cordis-events.test.mjs`） | PR | 部分：`EventsLink.tla` 检查只保留最高版本、旧提供按 epoch 撤下、先到的宣告保留；`events.expected.json` 有 5 个 `node/` 用例。缺：多对端与多跳不在模型里 |
-| EV5 | 同步分发（`bail`、`waterfall-sync`）、宿主自己的同步调用、每个调用一个线程的运行时（Go、Swift、Kotlin）让等待环漏检或误报（已发生：#537） | 语义 | 高 | 中 | P0 | TLA（`specs/cross-runtime-sync/`）；K（`crates/rutis-loader/tests/sync_cycles.rs`）；TV（#624） | PR | 部分：`cross-runtime-sync` 44 个配置含 `Threaded`（每调用一线程）与宿主发起的 `host-call`，`sync_cycles.rs` 有 Node / Python / Go / Swift 列；`cycle_among` 的差分属性测试（`waits.rs` 的 `cycle_among_agrees_with_the_models_graph` 与 `the_model_check_agrees_on_the_small_graphs`）与等待图 trace validation（`waits/trace.rs` 记录、`waits/trace/check.rs` 按 `RustSucc` 重放，在 `sync_cycles.rs`、`rpc_callbacks.rs` 上跑）已做。缺：`sync_cycles` 没有 Kotlin 列（Kotlin 要 JDK 17 与 `:rutis-conformance:fatJar`，#624） |
+| EV5 | 同步分发（`bail`、`waterfall-sync`）、宿主自己的同步调用、每个调用一个线程的运行时（Go、Swift、Kotlin）让等待环漏检或误报（已发生：#537） | 语义 | 高 | 中 | P0 | TLA（`specs/cross-runtime-sync/`）；K（`crates/rutis-loader/tests/lang/sync_cycles.rs`）；TV（#624） | PR | 部分：`cross-runtime-sync` 44 个配置含 `Threaded`（每调用一线程）与宿主发起的 `host-call`，`sync_cycles.rs` 有 Node / Python / Go / Swift 列；`cycle_among` 的差分属性测试（`waits.rs` 的 `cycle_among_agrees_with_the_models_graph` 与 `the_model_check_agrees_on_the_small_graphs`）与等待图 trace validation（`waits/trace.rs` 记录、`waits/trace/check.rs` 按 `RustSucc` 重放，在 `sync_cycles.rs`、`rpc_callbacks.rs` 上跑）已做。缺：`sync_cycles` 没有 Kotlin 列（Kotlin 要 JDK 17 与 `:rutis-conformance:fatJar`，#624） |
 | RL1 | 宿主与运行时之间的行生命周期：迟到的 `rows.ended`、拒绝、服务公告作用到别的代次；租约比行活得长（已发生：a88fb65b、54a7e824、d94aae9a、#247、#314、#372、#584、#191） | 语义、残留 | 高 | 中 | P1 | TLA（`specs/row-lifecycle/`）；K（各语言的行契约，`crates/rutis-loader/tests/*_rows.rs`） | PR | 部分：`RowLifecycle.tla` 36 个配置检查"一行最多一个代次在运行、迟到结束只结束自己的代次、租约不长于行、服务在提供方卸载前撤下"；各语言行契约有 Node / Python / Bun / Go / Swift。缺：`rows.schema` / `mount`、调用链、各语言卸载栈差异、shutdown 截止不在模型里；#1100 已定案（键每次装载新取）、#1101（卸载先于装载）已修（#1185），两个 issue 都已关闭 |
 | CL1 | 调用生命周期：取消之后被调用方可能回也可能不回（已成文，`SESS-61`），调用方的取消表只增不减；读线程写回在两端背压时可能互相卡死 | 语义、残留 | 高 | 中 | P1 | TLA（`specs/call-lifecycle/`）；K（`rpc_callbacks.rs`、`multihop.rs`） | PR | 部分：`CallLifecycle.tla` / `CallRelay.tla` 35 个配置把两种取消答复实现都验证为"不重复结算、不漏引用"，并证明读线程写回不死锁的前提（读线程不直接写）、中继逐跳传取消。缺：调用方的取消表可能只增不减，清理与取消确认未定（#1099）；中继的关闭、关闭后对侧继续读帧不在模型里 |
 | AH1 | 应用托管：`RutisApp` 的开始、停止不按调用顺序生效，停止后端口没有释放，再开始时拿到上一轮的状态（已发生：#519、#521、#532、#554） | 语义、残留 | 高 | 中 | P1 | SH：Kotlin 用 Fray（#630）；Swift 没有可控调度，用严格并发检查加 TSan（#630）；连接层用 TLA（`remote-lease`）；模拟器与设备上的测试在本地运行（[CI](ci.md) §12） | PR、设计 | 部分：`remote-lease` 的 `lease-app-restart` / `access-app-restart` 配置按"停止后再开始"建，`RutisApp` 的线程交错已在 f57b4138 修复；Kotlin 的 Fray 用例（§7.3）没有覆盖 `RutisApp` 的起停；Swift 的 TSan 任务跑 AppTests（§7.3）；iOS / Android 的应用托管测试只在本地跑 |
 | AH2 | Swift / Kotlin 的接管顺序、再拨规则与其他语言不一致 | 语义 | 中 | 中 | P1 | TLA 的对应表核对；K（#624） | PR | 部分：`specs/remote-lease/README.md` 的对应表已补 Swift / Kotlin；Kotlin 心跳起算点已修（#1181），模型按正确规则建，修复前的实现留作反例 `lease-mut-heartbeat-from-accept`。`sync_cycles` 没有 Kotlin 列（#624） |
-| RS1 | 二进制运行时（Go、Swift）的监督与宿主的重载、本地运行时监督：监督开始前的结束无界地留着，重启时旧进程没结束就启动新的，缺失的二进制每轮都重试，`dev` 重建失败时丢掉旧的构建，被移除的运行时等错了进程（已发生：#524、#563、#565、#566、57f536a0） | 语义、残留 | 中 | 中 | P1 | SH（抽出 Launcher 接缝之后用 shuttle，#622）；U（测试时钟） | PR | 部分：`crates/rutis-loader/tests/virtual_clock_contract.rs` 与 [测试时钟设计](design-test-clocks-2026-10-11.md) 覆盖计时规则；二进制运行时的重启、停止与安装由 `rutis-loader/src/runtime/binary/shuttle_tests.rs` 的 3 个模型检查，宿主等运行时自己的进程由 `rutis-host/src/restart/shuttle_tests.rs` 与 `rutis-host/src/host_shuttle_tests.rs` 的 3 个模型检查（#627，§7.3），均已接入 `ci.yml` 与 `stress.yml`（#1372）。缺：`dev` 的重建、巡检与 dylib 仍只靠真实 Go / Swift 进程测 |
-| SV1 | 标记的服务：同一版本重建的 dylib 仍由旧构建提供，按名字调用时按错误的行选拦截器（已发生：#522、#531、#534） | 语义 | 中 | 低 | P1 | U；E | PR | 有：`crates/rutis-bridge/tests/marked_services.rs`、`crates/rutis-loader/tests/marked_services.rs` 覆盖标记服务的代次与拦截器选择；三个缺陷已修。缺：E2E 里没有专门的标记服务场景 |
+| RS1 | 二进制运行时（Go、Swift）的监督与宿主的重载、本地运行时监督：监督开始前的结束无界地留着，重启时旧进程没结束就启动新的，缺失的二进制每轮都重试，`dev` 重建失败时丢掉旧的构建，被移除的运行时等错了进程（已发生：#524、#563、#565、#566、57f536a0） | 语义、残留 | 中 | 中 | P1 | SH（抽出 Launcher 接缝之后用 shuttle，#622）；U（测试时钟） | PR | 部分：`crates/rutis-loader/tests/rows/virtual_clock_contract.rs` 与 [测试时钟设计](design-test-clocks-2026-10-11.md) 覆盖计时规则；二进制运行时的重启、停止与安装由 `rutis-loader/src/runtime/binary/shuttle_tests.rs` 的 3 个模型检查，宿主等运行时自己的进程由 `rutis-host/src/restart/shuttle_tests.rs` 与 `rutis-host/src/host_shuttle_tests.rs` 的 3 个模型检查（#627，§7.3），均已接入 `ci.yml` 与 `stress.yml`（#1372）。缺：`dev` 的重建、巡检与 dylib 仍只靠真实 Go / Swift 进程测 |
+| SV1 | 标记的服务：同一版本重建的 dylib 仍由旧构建提供，按名字调用时按错误的行选拦截器（已发生：#522、#531、#534） | 语义 | 中 | 低 | P1 | U；E | PR | 有：`crates/rutis-bridge/tests/session/marked_services.rs`、`crates/rutis-loader/tests/rows/marked_services.rs` 覆盖标记服务的代次与拦截器选择；三个缺陷已修。缺：E2E 里没有专门的标记服务场景 |
 
 ---
 
@@ -293,8 +295,8 @@ CI：`ci.yml`（PR 按改动选择任务，每晚全部运行；Linux 全量与�
 | A3 | 重新加载后旧代码仍在运行，或旧实例没有卸载 | 语义、残留 | 高 | 中 | P0 | E + R | PR | 有（S2，#253） |
 | A4 | 写入语法错误后 `dev` 崩溃，或旧版本停止服务 | 故障 | 中 | 高 | P1 | E（写坏文件，断言旧版本继续服务、输出 `cannot reload`） | PR | 有（S2，#253） |
 | A5 | 反复重新加载数百次后资源增长 | 残留 | 中 | 中 | P1 | E + R，循环 N 次 | nightly | 没有 |
-| A6 | `check` 误判：能运行的报错，或不能运行的通过 | 诊断 | 中 | 中 | P1 | G（一组正例和负例项目，对比输出和退出码） | PR | 有（`rutis-host/tests/check.rs`，#217；#258） |
-| A7 | 错误信息看不出是哪个文件、哪一行、哪个服务 | 诊断 | 中 | 高 | P1 | G（常见错误的输出快照）；DR | PR | 有（`rutis-host/tests/errors.rs`，#217） |
+| A6 | `check` 误判：能运行的报错，或不能运行的通过 | 诊断 | 中 | 中 | P1 | G（一组正例和负例项目，对比输出和退出码） | PR | 有（`rutis-host/tests/config/check.rs`，#217；#258） |
+| A7 | 错误信息看不出是哪个文件、哪一行、哪个服务 | 诊断 | 中 | 高 | P1 | G（常见错误的输出快照）；DR | PR | 有（`rutis-host/tests/config/errors.rs`，#217） |
 | A8 | Windows 上路径、venv（`Scripts\python.exe`）、换行解析错 | 兼容 | 中 | 中 | P1 | E 在 Windows 上运行 | PR | 有（S2 在 Windows，#323） |
 | A9 | 插件 API 版本不匹配时，错误信息不说明要升级什么 | 兼容、诊断 | 中 | 低 | P2 | U（两个 SDK） | PR | 有 |
 | A10 | 方法形状声明和实现不一致（声明 sync 却返回 Promise），测试工具没发现 | 语义 | 中 | 中 | P1 | U（测试工具严格模式） | PR | 有 |
@@ -315,7 +317,7 @@ CI：`ci.yml`（PR 按改动选择任务，每晚全部运行；Linux 全量与�
 | B2 | 收到 SIGINT / SIGTERM（Windows：Ctrl-C、Ctrl-Break、关闭控制台）时不执行清理；退出码不符合文档 | 残留 | 高 | 高（#174 已发生） | P0 | E + R（每种信号轮换） | PR | 部分：Unix 的 SIGINT、SIGTERM 有（#216）；Windows 的 Ctrl-Break 有（#277、#324）；Windows 的 Ctrl-C、关闭控制台没有 |
 | B3 | 宿主被 SIGKILL 后，运行时子进程成为孤儿 | 残留 | 高 | 中 | P0 | E + R（Unix 靠通道断开，Windows 靠 Job Object） | PR | 有：三个平台（`cross_language.rs`）；Unix 上事件循环不空、清理不返回的运行时也在截止时间内退出（#353、#354，`stray_runtime.rs`、`host_gone.rs`） |
 | B4 | 配置改坏后，旧的行被卸载、新的起不来 | 故障 | 高 | 中 | P0 | E（写入错误配置，断言旧版本继续服务）；loader 库级 K 已有 | PR | loader 有；`run` 运行中重新读配置（SIGUSR1、`--watch-config`，#274）全有或全无，E 见 `host/reload-config` |
-| B5 | `rutis.json` 解析问题：未知字段被静默忽略、相对路径基准错误、凭据环境变量优先级错误 | 语义、诊断 | 中 | 中 | P1 | U（每个字段）；FZ（配置文件，低优先级） | PR | 有（U，`rutis-host/tests/config.rs`，#217；#226）；FZ 没有 |
+| B5 | `rutis.json` 解析问题：未知字段被静默忽略、相对路径基准错误、凭据环境变量优先级错误 | 语义、诊断 | 中 | 中 | P1 | U（每个字段）；FZ（配置文件，低优先级） | PR | 有（U，`rutis-host/tests/config/config.rs`，#217；#226）；FZ 没有 |
 | B6 | 运行时包缺失、解释器找不到、端口被占、证书文件错误时，错误信息不足 | 诊断 | 中 | 高 | P1 | G（每种错误一个快照） | PR | 有（`errors.rs`，#217） |
 | B7 | 凭据出现在日志、错误信息、状态输出、trace 里 | 安全 | 高 | 低 | P1 | E 的公共断言：所有捕获输出中查不到 token 值 | PR | 有（E2E 残余检查，#221、#277；S5 #322） |
 | B8 | 无 TLS 的监听绑定到非回环地址 | 安全 | 高 | 低 | P1 | U | PR | 需核对 |
@@ -380,7 +382,7 @@ CI：`ci.yml`（PR 按改动选择任务，每晚全部运行；Linux 全量与�
 | E1 | 断网时进行中的调用报告成功，或被自动重试导致副作用执行两次 | 故障 | 高 | 中 | P0 | FI（`fault::drop_and_close` 在第 N 帧后断开，对端计数副作用） | PR | 有（`fault_links.rs` #285；S5 两个进程之间 #322） |
 | E2 | 半开连接没有在 30 s 内发现 | 故障 | 中 | 中 | P1 | FI（`half_open` + 暂停时钟） | PR | 有 |
 | E3 | 重连退避参数不符合文档（0.5 s 起、30 s 封顶、±20%、稳定 60 s 后重置；凭据被拒 30 s；不兼容停止） | 语义 | 中 | 中 | P1 | U（暂停时钟，精确断言每次间隔） | PR | 部分：`rutis-host/src/connect/dial.rs` 的测试覆盖退避序列（0.5 s 起、30 s 封顶、±20%、reset）、稳定 60 s 后重置、凭据被拒后 30 s（暂停时钟） |
-| E4 | 远程运行时接管时新旧租约同时存在；旧会话的迟到指令作用于新租约 | 语义 | 高 | 低 | P1 | TLA（设计）；K（`crates/rutis-host/tests/lease_e2e.rs`，Python、Go、Bun 三列） | 设计、PR | 有：TLA+（`specs/remote-lease/`，#210）检查接管时最多一个租约、接入点每个 id 最多一个实例、旧会话的指令不作用于新租约；K（`crates/rutis-host/tests/lease_e2e.rs`，Python、Go、Bun 三列） |
+| E4 | 远程运行时接管时新旧租约同时存在；旧会话的迟到指令作用于新租约 | 语义 | 高 | 低 | P1 | TLA（设计）；K（`crates/rutis-host/tests/dial/lease_e2e.rs`，Python、Go、Bun 三列） | 设计、PR | 有：TLA+（`specs/remote-lease/`，#210）检查接管时最多一个租约、接入点每个 id 最多一个实例、旧会话的指令不作用于新租约；K（`crates/rutis-host/tests/dial/lease_e2e.rs`，Python、Go、Bun 三列） |
 | E5 | 吊销凭据后仍能连接；握手进行中撤销注册，旧握手仍完成移交 | 安全 | 高 | 低 | P1 | K（`link.rs`）；TLA | PR | 部分：TLA+（#210）检查注册撤销后旧握手不移交；运行中吊销的身份层钩子（#273）在 0.19 删除（没有生产调用方），断开现有连接靠停掉那一行，换 token 要重启 rutis-host，S5 没有这一步 |
 | E6 | TLS 校验漏洞：证书过期、CA 不符、主机名不匹配时仍然连接 | 安全 | 高 | 中 | P0 | U（三种负向，Rust 和 Python 各自） | PR | 有（#297；S5 第 6 步 #322） |
 | E7 | WebSocket 升级请求畸形时监听方崩溃 | 安全、故障 | 高 | 中 | P0 | FZ | nightly | 有：FZ `websocket_upgrade`（tungstenite 握手与监听方对路径、bearer 令牌、子协议的读取），nightly 20 分钟（#179 → #425） |
@@ -410,7 +412,7 @@ CI：`ci.yml`（PR 按改动选择任务，每晚全部运行；Linux 全量与�
 | F5 | Node 进程因插件未捕获异常退出后，服务没有撤销，或依赖方没停下 | 故障 | 高 | 中 | P0 | K | PR | 有 |
 | F6 | 部署到别的目录后（`RUTIS_CORDIS_ROOT`）找不到运行时或插件 | 兼容 | 中 | 中 | P1 | E（构建后复制到另一目录运行） | 合并 | 没有 |
 | F7 | 无法绑定的成员没有在构建时报告 | 诊断 | 低 | 中 | P2 | G（构建警告快照） | PR | 需核对 |
-| F8 | 用 `rutis.json` 挂载（而不是库级）时行为不同 | 语义 | 中 | 中 | P1 | E（S6） | PR | 部分（S6，`tests/e2e/tests/cordis.rs`，#190 → #429）；发现的已发布插件之间不能按原生规则互用服务、服务到不了 rutis 已修复（#428） |
+| F8 | 用 `rutis.json` 挂载（而不是库级）时行为不同 | 语义 | 中 | 中 | P1 | E（S6） | PR | 部分（S6，`tests/e2e/tests/install/cordis.rs`，#190 → #429）；发现的已发布插件之间不能按原生规则互用服务、服务到不了 rutis 已修复（#428） |
 
 #### 场景 G：实现迁移（尝试 → 验证 → 固化）
 
@@ -583,7 +585,7 @@ CI：`ci.yml`（PR 按改动选择任务，每晚全部运行；Linux 全量与�
 
 | 区域 | 部件 | 手段 | 现状 |
 | --- | --- | --- | --- |
-| 内核 | 监听器表的登记、撤下、`prepend`、前缀、`once` 与四种分发 | PT | **有**：[`crates/rutis/tests/listener_table_model.rs`](../crates/rutis/tests/listener_table_model.rs) 用有序列表模型逐次对照（256 例，`PROPTEST_CASES`），失败打印种子与收缩后的操作序列 |
+| 内核 | 监听器表的登记、撤下、`prepend`、前缀、`once` 与四种分发 | PT | **有**：[`crates/rutis/tests/core/listener_table_model.rs`](../crates/rutis/tests/core/listener_table_model.rs) 用有序列表模型逐次对照（256 例，`PROPTEST_CASES`），失败打印种子与收缩后的操作序列 |
 | 会话 | 值往返（七种语言）、引用的授予与回滚、帧与值的编解码 | PT | **有**：`value_roundtrip.rs`、`grant_rollback.rs`、`session/protocol.rs`（后者也能在 Miri 下跑） |
 | 会话 | `cycle_among` 的环检测，与按 TLA 定义建全部边的朴素实现做差分 | PT | **有**（#613）：[`crates/rutis-bridge/src/session/rpc/waits.rs`](../crates/rutis-bridge/src/session/rpc/waits.rs) 的 `cycle_among_agrees_with_the_models_graph`（最多 20 跳的随机图、随机 profile 与入口，默认 256 例，`PROPTEST_CASES`）与 `the_model_check_agrees_on_the_small_graphs` |
 | 加载器、宿主、dsh | 编辑流水线、待保存队列与多写者 CAS、配置求值、profile 层合成 | PT | **无**（#631 并入的 #629） |
@@ -595,11 +597,11 @@ CI：`ci.yml`（PR 按改动选择任务，每晚全部运行；Linux 全量与�
 
 | 对象 | 做法 | 现状 |
 | --- | --- | --- |
-| 会话通道 | `crates/rutis-bridge/tests/trace_validation.rs`：通道、帧与租约的步骤写成 trace，逐事件检查它是否被前面的事件允许（[会话追踪契约](formal-trace.md) §2–§4） | **有**（#624 第一块）：通道方向与结束、hello 只一次且最先、调用号与 `path`、答复至多一次、允许的悬空取消、租约的接管步骤 |
+| 会话通道 | `crates/rutis-bridge/tests/lang/trace_validation.rs`：通道、帧与租约的步骤写成 trace，逐事件检查它是否被前面的事件允许（[会话追踪契约](formal-trace.md) §2–§4） | **有**（#624 第一块）：通道方向与结束、hello 只一次且最先、调用号与 `path`、答复至多一次、允许的悬空取消、租约的接管步骤 |
 | 接入点（已撤回） | 对象在 0.19 删除（#695）：`AccessEvent` 日志、接入点与身份层吊销钩子一起删除；`AccessPoint.tla` 改为按 `rutis-host/listen` 建的最小模型，本侧只看到准入的结局 | **不适用**（#624 的接入点 TV 已撤回）：`trace_validation.rs` §3.8 的用例检查这一侧看到的 4003 吊销与 403 凭据拒绝，没有接入点自身的动作日志可对照 |
 | 等待图 | 记录 `waits.rs` 的六个操作与每次判定，对照 `CrossRuntimeSync.tla` | **有**（#613）：`waits/trace.rs` 记录、`waits/trace/check.rs` 按 `RustSucc` 重放；`sync_cycles.rs` 与 `rpc_callbacks.rs` 的真实运行上逐事件检查，改坏同一份日志必须报出 |
 | 事件宿主 | 用 `events-all` 运行中宿主的动作日志对照宿主模型 | **无**（#624 并入的 #616） |
-| 各语言运行时 | 一致性套件：`runtime_conformance`、`events_conformance`、`tracker_conformance`、`sync_cycles`、`host_gone` | **部分**：`sync_cycles` 有 Node / Python / Go / Swift 列，没有 Kotlin；`host_gone` 有 Node / Python / Go / Bun，没有 Swift / Kotlin（#624 未做：Swift 插件只在 macOS 上构建，Kotlin 要 JDK 17 与 `:rutis-conformance:fatJar`）；租约套件 `crates/rutis-host/tests/lease_e2e.rs` 有 Python、Go、Bun 列，同样缺 Swift、Kotlin；引用计数 PT 现在七种语言都有（`value_roundtrip.rs` 的 `*_releases_balance` / `*_reference_counts`，Go、Bun、Kotlin 只查本侧，#624）；授予与回滚的 PT 在 `grant_rollback.rs`（Rust 侧） |
+| 各语言运行时 | 一致性套件：`runtime_conformance`、`events_conformance`、`sync_cycles`、`host_gone` | **部分**：`sync_cycles` 有 Node / Python / Go / Swift 列，没有 Kotlin；`host_gone` 有 Node / Python / Go / Bun，没有 Swift / Kotlin（#624 未做：Swift 插件只在 macOS 上构建，Kotlin 要 JDK 17 与 `:rutis-conformance:fatJar`）；租约套件 `crates/rutis-host/tests/dial/lease_e2e.rs` 有 Python、Go、Bun 列，同样缺 Swift、Kotlin；引用计数 PT 现在七种语言都有（`value_roundtrip.rs` 的 `*_releases_balance` / `*_reference_counts`，Go、Bun、Kotlin 只查本侧，#624）；授予与回滚的 PT 在 `grant_rollback.rs`（Rust 侧） |
 | 测试工具与真实运行时 | `weather.expected.json`、`events.expected.json` 中不带 `tool: false` 的用例 | **部分**：Node、Python 测试工具与真实运行时对同一份期望文件；Go `rutistest` 已对照整份 weather；与运行时共用代码的工具（JS `events.mjs`、Python `Bus`、Go `internal/events`）可能与运行时同错 |
 | 模型对应表 | 每个模型 README 的"对应的设计和代码" | **有**：七个模型的 README 都用仓库全路径（原 `model-pr.yml` / `tools/check-model-pr.mjs` 已在 #1372 退役） |
 
@@ -610,7 +612,7 @@ CI：`ci.yml`（PR 按改动选择任务，每晚全部运行；Linux 全量与�
 ### 7.7 形式化手段覆盖不到的
 
 - 操作系统与平台：macOS 的 fork / CLOEXEC、Windows 的 TLS 与路径、CPython 与 V8 的行为差异 → 支持矩阵、端到端。
-- 计时与截止时间：问候截止时间、退避的 30 / 60 秒、被拒后的等待 → 虚拟时钟测试（[测试时钟设计](design-test-clocks-2026-10-11.md)、`virtual_clock_contract.rs`；退避翻倍、被拒后 30 秒重试与 60 秒重置在 `crates/rutis-host/src/connect/dial.rs` 的 `start_paused` 用例里，问候的 10 秒截止在 `crates/rutis-bridge/tests/session_plugin.rs`；#633 并入 #639，随 #639 关闭）。
+- 计时与截止时间：问候截止时间、退避的 30 / 60 秒、被拒后的等待 → 虚拟时钟测试（[测试时钟设计](design-test-clocks-2026-10-11.md)、`virtual_clock_contract.rs`；退避翻倍、被拒后 30 秒重试与 60 秒重置在 `crates/rutis-host/src/connect/dial.rs` 的 `start_paused` 用例里，问候的 10 秒截止在 `crates/rutis-bridge/tests/session/session_plugin.rs`；#633 并入 #639，随 #639 关闭）。
 - 资源上限与缓慢增长 → 残余检查（§5）与浸泡（S8）。
 - 测试设计造成的偶发失败、打包与 CI、CLI 与代码生成的逻辑错误。
 - 读代码就能看到的 `unsafe` 问题：`crates/rutis-dylib/src/unix.rs:47` 的 `CStr::from_ptr(libc::dlerror())` 没有空指针检查（同文件的 `find_symbol` 检查了）。
@@ -630,7 +632,7 @@ CI：`ci.yml`（PR 按改动选择任务，每晚全部运行；Linux 全量与�
 
 #### Spec 1：跨运行时同步调用与死锁策略（对应 P10、C6）
 
-**结果**（#208 → #222，2026-10-11）：模型在 [`specs/cross-runtime-sync/`](../specs/cross-runtime-sync/README.md)。选定策略 B：宿主跟踪跨会话的等待关系，转发会让等待成环时不转发，直接返回 `SyncWaitCycle`。结论写回多语言设计 §九。实现是 #228 → #261：帧上的 `sync` 字段，`sync-wait`、`sync-stack` 能力；测试在 `rpc_callbacks.rs`、`rutis-loader/tests/sync_cycles.rs`。实现时定的两点：未声明可重入的运行时按不可重入处理；未声明 `sync-wait` 的运行时不在检测范围内（不误报）。
+**结果**（#208 → #222，2026-10-11）：模型在 [`specs/cross-runtime-sync/`](../specs/cross-runtime-sync/README.md)。选定策略 B：宿主跟踪跨会话的等待关系，转发会让等待成环时不转发，直接返回 `SyncWaitCycle`。结论写回多语言设计 §九。实现是 #228 → #261：帧上的 `sync` 字段，`sync-wait`、`sync-stack` 能力；测试在 `rpc_callbacks.rs`、`rutis-loader/tests/lang/sync_cycles.rs`。实现时定的两点：未声明可重入的运行时按不可重入处理；未声明 `sync-wait` 的运行时不在检测范围内（不误报）。
 
 **为什么先做**：多语言设计 §九 写明这个问题没有定论。Node 运行时不可重入，Python 可重入，两个 Node 运行时交叉同步调用会卡死。接入第三种语言（Swift、Go，或 Bun #194）前必须选定策略。卡死只在特定交错下出现，测试很难稳定碰到。
 
@@ -657,7 +659,7 @@ CI：`ci.yml`（PR 按改动选择任务，每晚全部运行；Linux 全量与�
 
 TLC 找到过两处握手期间吊销身份仍建立会话，已修复（#432）；身份吊销（#273）在 0.19 删除，对应的性质、配置与测试随之删除。§4.4 的接管顺序、注册代次复核、按连接读帧、停止时取消重试与模型一致。两个控制方配置同一个运行时（或两个拨出方同一个 id）时会互相顶掉，靠退避放慢（拨出稿 §六 已写明）；模型里活性成立是因为重连次数有限。CI：`specs` 任务（[CI](ci.md) §4）。
 
-**为什么做**：远程设计 §4.4 规定了接管顺序（鉴权 → 关闭旧会话 → 清理旧租约 → 回应新 hello）；网络栈设计规定了注册代次、握手期间撤销、迟到结果不得交付。现有的 `leases.rs`、`link.rs` 只覆盖构造得出来的时序（`leases.rs` 已在 #695 删除，由 #1113 的 `crates/rutis-host/tests/lease_e2e.rs` 接替）。
+**为什么做**：远程设计 §4.4 规定了接管顺序（鉴权 → 关闭旧会话 → 清理旧租约 → 回应新 hello）；网络栈设计规定了注册代次、握手期间撤销、迟到结果不得交付。现有的 `leases.rs`、`link.rs` 只覆盖构造得出来的时序（`leases.rs` 已在 #695 删除，由 #1113 的 `crates/rutis-host/tests/dial/lease_e2e.rs` 接替）。
 
 **模型**
 
@@ -819,10 +821,10 @@ E2E 发现并修复：#225、#226（#261、#217）。Node 最低版本降到 22�
 | 宿主级浸泡（S8） | L1、L3、L4 | #192 → #431。已完成（0.12）：每晚三个平台；发现并修复 Python 运行时在宿主被 `kill -9` 后不退出 |
 | S6 接入 Cordis 插件；最新 Cordis 插件 nightly 基线 | F8、F4 | #190 → #429。已完成（0.12）；发现的缺口 #428 已修复（0.12） |
 | S7 Rust 嵌入与多租户 | D2、D3、D5 | #191 → #430。已完成（0.12）：发现并修复语言行的投影任务与导出槽泄漏 |
-| 上一版运行时 vs 当前宿主 | J2、E13、P8 | #209 → #426。已完成（0.12）：`tests/e2e/tests/cross_version.rs`，上一个发布版本由 npm 上的版本推出，在 `ci.yml` 完整运行（每晚、发布门）的 `e2e` 任务里跑；没有发现加载后才出错或挂起的组合 |
+| 上一版运行时 vs 当前宿主 | J2、E13、P8 | #209 → #426。已完成（0.12）：`tests/e2e/tests/install/cross_version.rs`，上一个发布版本由 npm 上的版本推出，在 `ci.yml` 完整运行（每晚、发布门）的 `e2e` 任务里跑；没有发现加载后才出错或挂起的组合 |
 | TLA+ Spec 2 | E4、E5 | #210 → #432。已完成（0.12）：两个模型，CI `specs` 任务；找到并修复两处握手期间吊销仍建立会话 |
 | Bun 运行时按 Q6.8 准入（B2、B3） | C10 的 Bun 变体 | #194 → #200；远程监听与拨出 #402；#236 → #261。已完成 |
-| S5 nightly：两个容器、非 loopback + TLS、netem | E12 | #341 → #433。已完成（0.12）：`tests/e2e/tests/netem.rs`，`netem.yml`，每晚只报告；发现并修复 Python `listen:` 连着控制方时 Ctrl-C 不退出、SIGTERM 不清理；断网时 B 打印 websockets 的 traceback（#434） |
+| S5 nightly：两个容器、非 loopback + TLS、netem | E12 | #341 → #433。已完成（0.12）：`tests/e2e/tests/soak/netem.rs`，`netem.yml`，每晚只报告；发现并修复 Python `listen:` 连着控制方时 Ctrl-C 不退出、SIGTERM 不清理；断网时 B 打印 websockets 的 traceback（#434） |
 | 值的跨语言一致：Python `datetime` 按引用传、Go 结构体绕过检查、Python dict 删 undefined 键 | P7、A1 | #355 → #410、#412、#413。已完成（0.11） |
 | 跨语言传递日期时间、二进制、Map、Set、大整数、Decimal、UUID | P7、A1 | #308、#360 → 方案 #404、#414，实现 #406、#415、#410、#412、#413。已完成（0.11） |
 | 运行中吊销对端凭据，不重启进程；完成后 S5 加一步 | E5 | #273 → #424。已完成机制（0.12）：身份层的吊销钩子与库级测试；rutis-host 没有触发方式，S5（loopback 与容器版 #433）都没有这一步，留给管理服务 |
@@ -845,7 +847,7 @@ E2E 发现并修复：#225、#226（#261、#217）。Node 最低版本降到 22�
 | 非 Rust 运行时调度 | #630 | 已关闭（2026-11-16，COMPLETED），首块完成：Node 帧泵 4 个用例、Python 的 `SteppedLoop`；Bun 只有现状盘点；Kotlin 的 Fray 用例与 Swift 的 TSan 后来补上（§7.3）；Go 仍没有可控调度 |
 | trace 与一致性 | #624 | 已关闭（2026-11-16，COMPLETED），首块完成：Rust 通道/帧验证器 23 个用例（引用计数、错误图、调用范围、上限、替换/重连分类）；租约套件补了 Go、Bun 列（Python、Go、Bun 三列）；接入点 TV 随 0.19 删除（#695）撤回，不适用；事件宿主的动作日志、`sync_cycles` 的 Kotlin 列与 `host_gone` 的 Swift / Kotlin 列待补（理由见 §7.5）；等待图已做（#613，§7.5） |
 | 属性、模糊、Kani/Miri | #631 | 已关闭（2026-11-16，COMPLETED），首块完成：引用授予回滚 6 个用例、值/帧/坏帧属性 5 个（proptest + corpus 重放）、监听器表模型属性；cargo-fuzz 实际跑 4 个目标无 crash；Miri 跑了会话帧与值路径（无 UB）；Kani 6 个 harness 没有结论（0.68.0 不收敛），不写成通过（`fuzz/KANI-MIRI.md`）。服务槽与五种分发的参考模型已合入（#1200：`crates/rutis/src/registry/prop_tests.rs`、`crates/rutis/src/bus/prop_tests.rs`） |
-| 一致性与普通测试 | #639 | 已关闭（2026-11-15，COMPLETED）：按追踪表补的一致性用例分批合入，虚拟时钟计时用例在 `rutis-host/src/connect/dial.rs`、`rutis-bridge/tests/session_plugin.rs` 里（§7.7）；追踪表的状态仍按复核结论计（§7.6），`M1-13-3` 等行仍记未验证 |
+| 一致性与普通测试 | #639 | 已关闭（2026-11-15，COMPLETED）：按追踪表补的一致性用例分批合入，虚拟时钟计时用例在 `rutis-host/src/connect/dial.rs`、`rutis-bridge/tests/session/session_plugin.rs` 里（§7.7）；追踪表的状态仍按复核结论计（§7.6），`M1-13-3` 等行仍记未验证 |
 | 统一收口 | #634 | 已关闭（2026-11-16，COMPLETED）：原 1,825 行静态追踪表与 `tools/formal-trace*.mjs` 已在 #1372 退役，改为精简的 40 条核心承诺正向形式检查 |
 
 八个 issue（#613、#622、#624、#630、#631、#634、#635、#639）都已关闭；表中列出的缺口由 #776 与残余的 #1270–#1274 跟踪。
@@ -880,7 +882,7 @@ E2E 发现并修复：#225、#226（#261、#217）。Node 最低版本降到 22�
 | --- | --- | --- |
 | 覆盖率门槛 | 不采用 | 覆盖率只说明代码被执行过，不说明结果被检查；设门槛会诱导出只为提高数字的测试。§2.3 的覆盖率只作量级参考 |
 | 变异测试设门槛 | 不采用 | 运行耗时数小时；门槛需要有人持续处理存活的变异体。TLA 的"每个性质一个变异"是模型内部的做法，不是这条 |
-| 内核 proptest 状态机 | 采用 | 监听器表已有 model-based 属性测试（`crates/rutis/tests/listener_table_model.rs`）；fiber 生命周期的顺序操作批次在 `interleave.rs`（带种子），参考模型已在 #1190 合入。Bug A 用顺序操作批次就能触发，这一条不再以"与契约测试重叠"为由排除 |
+| 内核 proptest 状态机 | 采用 | 监听器表已有 model-based 属性测试（`crates/rutis/tests/core/listener_table_model.rs`）；fiber 生命周期的顺序操作批次在 `interleave.rs`（带种子），参考模型已在 #1190 合入。Bug A 用顺序操作批次就能触发，这一条不再以"与契约测试重叠"为由排除 |
 | 有界模型检查（Kani） | 部分采用 | 11 个 harness 在 `fuzz/kani/`，覆盖日期与时间的谓词和往返、boot blob 的 const ABI（#1271）；2026-11-18 全部 `VERIFICATION:- SUCCESSFUL`（`fuzz/KANI-MIRI.md`）。构造器本身连同错误消息、`parse_boot`、`boot_meta`/`is_sha256` 的 `&str` 包装仍无结论；`unsafe` 与 dylib 的其余部分仍在 #631 |
 | Miri | 部分采用 | 用在会话帧与值路径：`fuzz/miri/` 按固定输入跑 30 个（13 帧、1 个超深嵌套、9 个分帧种子、7 个错误图），无 UB；`session/protocol.rs` 的属性测试在小例数下也在 Miri 里跑（记录里的一次 122 s）。不覆盖 tokio、网络与文件，因此不用于 dylib |
 | ASan | 不采用 | `unsafe` 集中在 dylib 加载和进程启动（FFI 与系统调用），没有能跑 ASan 的 Rust 侧代码；dylib 的内存问题由 Miri 的范围与端到端覆盖 |
@@ -888,7 +890,7 @@ E2E 发现并修复：#225、#226（#261、#217）。Node 最低版本降到 22�
 | loom 穷举 | 不采用 | shuttle 已覆盖内核的 27 个模型，loom 需要更大的代码改造；shuttle 发现问题但无法稳定复现时再考虑 |
 | SDK 各自运行通道契约、跨语言帧标准样本 | 不采用 | 与 Rust 驱动的一致性套件重叠；非法帧的部分已并入 P3 与 `malformed` 矩阵 |
 | `cargo public-api` | 不采用 | 与 `cargo semver-checks` 重复 |
-| TLA+ trace validation | 采用 | 重新考虑的条件（spec 与实现多次不一致）已满足：会话通道的验证器已落地（`crates/rutis-bridge/tests/trace_validation.rs`，#624），等待图也已落地（#613）；接入点 TV 随 0.19 删除（#695）撤回（§7.5），事件宿主的动作日志按 §7.5 待补。规则来自[会话追踪契约](formal-trace.md) |
+| TLA+ trace validation | 采用 | 重新考虑的条件（spec 与实现多次不一致）已满足：会话通道的验证器已落地（`crates/rutis-bridge/tests/lang/trace_validation.rs`，#624），等待图也已落地（#613）；接入点 TV 随 0.19 删除（#695）撤回（§7.5），事件宿主的动作日志按 §7.5 待补。规则来自[会话追踪契约](formal-trace.md) |
 | TLA+ 用于内核状态机 | 不采用 | 单进程，历史问题都在实现层；进程内并发用 shuttle（§7.3） |
 | CI 上的性能回归阈值 | 不采用 | CI 机器噪声超过 15%，会反复误报；性能目前不是承诺。有固定基准机器时再考虑 |
 | 磁盘满、fd 上限、OOM 注入 | 不采用 | §4 中对应的风险都是低可能性；用户报告相关问题时再考虑 |

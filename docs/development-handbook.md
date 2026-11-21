@@ -443,7 +443,7 @@ cargo test -p rutis
 cargo run -p rutis --example development_workflow
 ```
 
-进一步的行为细节见 [生命周期契约测试](../crates/rutis/tests/contract.rs)、[配置更新测试](../crates/rutis/tests/config_update.rs)、[实例子树测试](../crates/rutis/tests/instance_subtrees.rs)和[关闭与等待时间说明](core-shutdown-and-disposal-deadline.md)。
+进一步的行为细节见 [生命周期契约测试](../crates/rutis/tests/core/contract.rs)、[配置更新测试](../crates/rutis/tests/core/config_update.rs)、[实例子树测试](../crates/rutis/tests/core/instance_subtrees.rs)和[关闭与等待时间说明](core-shutdown-and-disposal-deadline.md)。
 
 ---
 

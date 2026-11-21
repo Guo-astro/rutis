@@ -98,7 +98,7 @@ loader.set_disabled("main", true).await?;
 
 `reconcile` 的第二个参数指定哪一层可编辑。传 `None` 表示只读：loader 照常按各层装载插件，但 `update`、`set_disabled` 等修改会返回 `LoaderError::NoEditableLayer`。
 
-修改默认只在内存里（`LoaderOptions::default()` 的持久化是 `NoPersist`）。要在重启后保留，实现 `Persist`：loader 每次修改后把可编辑层交给它保存，`Version` 用于检测文件被别人改过（冲突时 loader 在最新内容上重放修改）。读写文件的完整实现可参考 rutis-dsh 的 `UserLayerStore`。这个示例由 `crates/rutis-loader/tests/migration_example.rs` 编译运行。
+修改默认只在内存里（`LoaderOptions::default()` 的持久化是 `NoPersist`）。要在重启后保留，实现 `Persist`：loader 每次修改后把可编辑层交给它保存，`Version` 用于检测文件被别人改过（冲突时 loader 在最新内容上重放修改）。读写文件的完整实现可参考 rutis-dsh 的 `UserLayerStore`。这个示例由 `crates/rutis-loader/tests/rows/migration_example.rs` 编译运行。
 
 插件本身不用改：工厂（`PluginFactory`）照常构造实例。要让 loader 拿到配置 schema，注册时给出 schema（`Builtins::register` 对实现了 `JsonSchema` 的配置自动生成）。插件可以选择支持：
 

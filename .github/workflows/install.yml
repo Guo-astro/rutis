@@ -1,9 +1,9 @@
 # Install smoke tests (S9, #193; quality standard Q6.15, Q12.1): rutis-host
 # installed as a user gets it, from npm, from PyPI and as the release
 # binary, in a new directory, running a minimal project
-# (tests/e2e/tests/install.rs). One job per platform runs the three
+# (tests/e2e/tests/install/install.rs). One job per platform runs the three
 # channels one after another. On linux-x64 the developer-experience
-# scenarios follow (#690, tests/e2e/tests/devx.rs).
+# scenarios follow (#690, tests/e2e/tests/develop/devx.rs).
 #
 #   nightly.yml   calls it every night main has new commits: builds that
 #                 commit's packages (package.yml) and installs them
@@ -255,8 +255,8 @@ jobs:
           RUTIS_E2E_DIR: ${{ env.RUTIS_E2E_DIR || format('{0}/e2e', runner.temp) }}
         run: |
           node --version; python3 --version 2>/dev/null || python --version; uv --version
-          cargo test --locked -p rutis-e2e --test install -- --ignored --test-threads=1
-      # The developer's view (#690, tests/e2e/tests/devx.rs): a plugin
+          cargo test --locked -p rutis-e2e --test install install:: -- --ignored --test-threads=1
+      # The developer's view (#690, tests/e2e/tests/develop/devx.rs): a plugin
       # written in each language from the template, tested, reloaded under
       # dev and packed; plugins of two languages assembled, run, changed and
       # stopped; a small Rust host's extension point taking a plugin from
@@ -270,7 +270,7 @@ jobs:
           RUTIS_E2E_ARTIFACTS: ${{ runner.temp }}/artifacts
           RUTIS_E2E_DIR: ${{ env.RUTIS_E2E_DIR || format('{0}/e2e', runner.temp) }}
         # Three at a time: two of them compile Rust (the plugin, the host).
-        run: cargo test --locked -p rutis-e2e --test devx -- --ignored --test-threads=3
+        run: 'cargo test --locked -p rutis-e2e --test develop devx:: -- --ignored --test-threads=3'
       # The guides' examples whose packages all come from npm and PyPI,
       # followed as written with the packages this gate built: a local npm
       # registry over the tarballs, the wheels for uv (the other examples
@@ -282,7 +282,7 @@ jobs:
         env:
           RUTIS_E2E_ARTIFACTS: ${{ runner.temp }}/artifacts
           RUTIS_E2E_DIR: ${{ env.RUTIS_E2E_DIR || format('{0}/e2e', runner.temp) }}
-        run: cargo test --locked -p rutis-e2e --test doc_examples -- --ignored
+        run: 'cargo test --locked -p rutis-e2e --test install doc_examples:: -- --ignored'
       # The guides install from the registries, so their examples run once
       # the version is published. darwin-arm64 runs only the Swift guides'
       # examples (Swift plugins build only on macOS), Linux the others.
@@ -290,7 +290,7 @@ jobs:
         if: env.RUTIS_E2E_SOURCE == 'registry' && (runner.os == 'Linux' || matrix.platform == 'darwin-arm64')
         env:
           RUTIS_E2E_DIR: ${{ env.RUTIS_E2E_DIR || format('{0}/e2e', runner.temp) }}
-        run: cargo test --locked -p rutis-e2e --test doc_examples -- --ignored
+        run: 'cargo test --locked -p rutis-e2e --test install doc_examples:: -- --ignored'
       - uses: actions/upload-artifact@v4
         if: failure()
         with:

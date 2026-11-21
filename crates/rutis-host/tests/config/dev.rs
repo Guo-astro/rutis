@@ -1,0 +1,901 @@
+//! guarantee: host/row-failure-output
+//! `rutis-host dev` following a project as it changes (#665): a changed file
+//! reloads only the rows whose file it is, the rows that use them restart
+//! by themselves and say why; `rutis.dev.json` is read again (also on
+//! SIGUSR1); an edit that does not import leaves the previous version
+//! running, also when a row it uses reloads; one whose `apply` fails fails
+//! the row; a runtime that ended starts again with the next change instead
+//! of rows said to reload while nothing runs. A Go project rebuilds only
+//! for its own sources.
+//!
+//! The project: its own plugin `weather` (injects `llm`, provides
+//! `weather`), a fake `llm` and a `caller` that injects `weather`, in Node,
+//! Bun and Python. Each plugin prints `plugin <row> <version> applied ...
+//! in <pid>` when it starts.
+//!
+//! Unix only, as the signal tests: the host is stopped with kill(2).
+#![cfg(unix)]
+
+use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime};
+
+use crate::common::process::{file_url, signal, unprefixed, Host};
+use crate::common::repo;
+use serde_json::json;
+
+/// A language's project: where its files are, and their sources.
+struct Lang {
+    /// The runtime's name in the lines (`node`, `bun`, `py`).
+    runtime: &'static str,
+    /// The project's own plugin, relative to the project.
+    own: &'static str,
+    /// The fake `llm`'s file and the caller's, relative to the project.
+    llm: &'static str,
+    caller: &'static str,
+    /// The row names of `llm` and `caller` in the dev file.
+    names: [&'static str; 2],
+    /// The source of `row` at `version`.
+    source: fn(row: &str, version: &str) -> String,
+    /// A source of the own plugin that does not import.
+    broken: fn() -> String,
+    /// A source of the own plugin whose `apply` throws `boom in apply`.
+    throws: fn() -> String,
+}
+
+const NODE: Lang = Lang {
+    runtime: "node",
+    own: "src/index.mjs",
+    llm: "dev/fake-llm.mjs",
+    caller: "dev/caller.mjs",
+    names: ["./dev/fake-llm.mjs", "./dev/caller.mjs"],
+    source: node_source,
+    broken: node_broken,
+    throws: node_throws,
+};
+
+const BUN: Lang = Lang {
+    runtime: "bun",
+    own: "src/index.ts",
+    llm: "dev/fake-llm.ts",
+    caller: "dev/caller.ts",
+    names: ["bun:./dev/fake-llm.ts", "bun:./dev/caller.ts"],
+    source: node_source,
+    broken: node_broken,
+    throws: node_throws,
+};
+
+const PYTHON: Lang = Lang {
+    runtime: "py",
+    own: "src/weather/__init__.py",
+    llm: "src/fake_llm.py",
+    caller: "src/caller.py",
+    names: ["py:fake_llm", "py:caller"],
+    source: python_source,
+    broken: python_broken,
+    throws: python_throws,
+};
+
+/// The SDK of this checkout, as a module a plugin imports.
+fn sdk() -> String {
+    file_url(
+        &repo()
+            .join("node/rutis/src/index.mjs")
+            .canonicalize()
+            .unwrap(),
+    )
+}
+
+fn node_source(row: &str, version: &str) -> String {
+    let (inject, provides) = match row {
+        "weather" => ("['llm']", "{ weather: { now: 'async' } }"),
+        "llm" => ("[]", "{ llm: { ask: 'async' } }"),
+        _ => ("['weather']", "{}"),
+    };
+    let service = match row {
+        "caller" => String::new(),
+        name => format!(
+            "ctx.provide('{name}', {{ {}: async () => 'ok' }})",
+            match name {
+                "weather" => "now",
+                _ => "ask",
+            }
+        ),
+    };
+    // Only weather is configured.
+    let city = match row {
+        "weather" => " city=${config.city}",
+        _ => "",
+    };
+    // With an `out` in its configuration, the row records each cleanup: the
+    // instance a reload replaces is cleaned up exactly once, and the count is
+    // what `the_dev_loop` checks (`host/dev-reload b`).
+    let cleanup = "if (config && config.out) ctx.effect(() => appendFileSync(`\
+         ${config.out}/dev-cleanup.log`, `cleanup ROW VERSION\\n`))\n\
+         "
+    .replace("ROW", row)
+    .replace("VERSION", version);
+    format!(
+        "import {{ appendFileSync }} from 'node:fs'\n\
+         import {{ definePlugin }} from '{}'\n\
+         export default definePlugin({{\n\
+           inject: {inject},\n\
+           provides: {provides},\n\
+           apply(ctx, config) {{\n\
+             console.log(`plugin {row} {version} applied{city} in ${{process.pid}}`)\n\
+             {service}\n\
+             {cleanup}   }},\n\
+         }})\n",
+        sdk()
+    )
+}
+
+fn node_broken() -> String {
+    "export default definePlugin({ const const = 1\n".into()
+}
+
+fn node_throws() -> String {
+    format!(
+        "import {{ definePlugin }} from '{}'\n\
+         export default definePlugin({{\n\
+           inject: ['llm'],\n\
+           provides: {{ weather: {{ now: 'async' }} }},\n\
+           apply() {{ throw new Error('boom in apply') }},\n\
+         }})\n",
+        sdk()
+    )
+}
+
+fn python_source(row: &str, version: &str) -> String {
+    let (inject, provides, service) = match row {
+        "weather" => (
+            "[\"llm\"]",
+            "{\"weather\": Service}",
+            "ctx.provide(\"weather\", Service())",
+        ),
+        "llm" => (
+            "[]",
+            "{\"llm\": Service}",
+            "ctx.provide(\"llm\", Service())",
+        ),
+        _ => ("[\"weather\"]", "{}", "pass"),
+    };
+    // Only weather is configured.
+    let city = match row {
+        "weather" => " city={config['city']}",
+        _ => "",
+    };
+    // With an `out` in its configuration, the row records each cleanup: the
+    // instance a reload replaces is cleaned up exactly once, and the count is
+    // what `the_dev_loop` checks (`host/dev-reload b`).
+    let cleanup = "\x20   if config and config.get(\"out\"):\n\
+         \x20       def cleanup():\n\
+         \x20           with open(os.path.join(config[\"out\"], \"dev-cleanup.log\"), \"a\") as f:\n\
+         \x20               f.write(\"cleanup ROW VERSION\\n\")\n\
+         \x20       ctx.effect(cleanup)\n"
+    .replace("ROW", row)
+    .replace("VERSION", version);
+    format!(
+        "import os, sys\n\
+         from rutis import define_plugin\n\
+         \n\
+         class Service:\n\
+         \x20   async def now(self):\n\
+         \x20       return \"ok\"\n\
+         \n\
+         def apply(ctx, config):\n\
+         \x20   sys.stdout.write(f\"plugin {row} {version} applied{city} in {{os.getpid()}}\\n\")\n\
+         \x20   sys.stdout.flush()\n\
+         \x20   {service}\n\
+         {cleanup}\
+         \n\
+         plugin = define_plugin(apply, inject={inject}, provides={provides})\n"
+    )
+}
+
+/// A module that fails while importing, once it redefined its plugin: put
+/// back as it was, not left half updated (Python reloads in place).
+fn python_broken() -> String {
+    python_source("weather", "v9") + "\nraise RuntimeError(\"half way\")\n"
+}
+
+fn python_throws() -> String {
+    "from rutis import define_plugin\n\
+     \n\
+     class Service:\n\
+     \x20   async def now(self):\n\
+     \x20       return \"ok\"\n\
+     \n\
+     def apply(ctx, config):\n\
+     \x20   raise RuntimeError(\"boom in apply\")\n\
+     \n\
+     plugin = define_plugin(apply, inject=[\"llm\"], provides={\"weather\": Service})\n"
+        .into()
+}
+
+/// Write `text` to `path`, its modification time later than any before:
+/// two edits within one tick of the clock are two changes.
+fn edit(path: &Path, text: &str) {
+    static LATER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, text).unwrap();
+    let ahead = LATER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    std::fs::File::options()
+        .write(true)
+        .open(path)
+        .unwrap()
+        .set_modified(SystemTime::now() + Duration::from_secs(ahead))
+        .unwrap();
+}
+
+/// The project of `lang` in `dir`, with its dev file: `weather` (the
+/// project's own row, configured with a city), `llm` and `caller`.
+fn project(dir: &Path, lang: &Lang) -> PathBuf {
+    // The runtime package of this checkout, where `dev` finds it.
+    let link = |package: &str, from: &str| {
+        let modules = dir.join("node_modules/@arcships");
+        std::fs::create_dir_all(&modules).unwrap();
+        std::os::unix::fs::symlink(
+            repo().join(from).canonicalize().unwrap(),
+            modules.join(package),
+        )
+        .unwrap();
+    };
+    let package = r#"{ "name": "weather", "type": "module" }"#;
+    match lang.runtime {
+        "node" => {
+            std::fs::write(dir.join("package.json"), package).unwrap();
+            link("rutis-runtime", "node/rutis-runtime");
+        }
+        "bun" => {
+            std::fs::write(dir.join("package.json"), package).unwrap();
+            // Bun manages it: the project runs in Bun.
+            std::fs::write(dir.join("bun.lock"), "").unwrap();
+            link("rutis-bun", "bun/rutis-bun");
+        }
+        _ => std::fs::write(
+            dir.join("pyproject.toml"),
+            "[project]\nname = \"weather\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap(),
+    }
+    edit(&dir.join(lang.own), &(lang.source)("weather", "v1"));
+    edit(&dir.join(lang.llm), &(lang.source)("llm", "v1"));
+    edit(&dir.join(lang.caller), &(lang.source)("caller", "v1"));
+    // Each row records its cleanups in `dir`: `the_dev_loop` counts the
+    // instance a reload replaced (`host/dev-reload b`).
+    let out = dir.display().to_string();
+    let dev = json!({
+        "rows": [
+            { "id": "weather", "config": { "city": "Oslo", "out": out.clone() } },
+            { "id": "llm", "name": lang.names[0], "config": { "out": out.clone() } },
+            { "id": "caller", "name": lang.names[1], "config": { "out": out } },
+        ]
+    });
+    let file = dir.join("rutis.dev.json");
+    std::fs::write(&file, serde_json::to_string_pretty(&dev).unwrap()).unwrap();
+    file
+}
+
+/// Read lines until each of `wants` was read, in any order (the state
+/// lines are printed every 200 ms, apart from the rest): a line equal to
+/// it, or starting with it when it ends in `*`, a plugin's line without
+/// the row's name `dev` starts it with. The lines read for them, in the
+/// order of `wants`. A wait that times out says the lines it had not read
+/// yet (#1044).
+fn expect(host: &mut Host, wants: &[&str]) -> Vec<String> {
+    let matches = |want: &str, line: &str| match want.strip_suffix('*') {
+        Some(prefix) => unprefixed(line).starts_with(prefix),
+        None => unprefixed(line) == want,
+    };
+    let mut found: Vec<Option<String>> = vec![None; wants.len()];
+    while found.contains(&None) {
+        let missing: Vec<&str> = wants
+            .iter()
+            .zip(&found)
+            .filter(|(_, found)| found.is_none())
+            .map(|(want, _)| *want)
+            .collect();
+        host.waiting(format!("{missing:?}"));
+        let (index, line) = host.wait_line(|line| {
+            let index = (0..wants.len())
+                .find(|index| found[*index].is_none() && matches(wants[*index], line))?;
+            Some((index, line.to_owned()))
+        });
+        found[index] = Some(line);
+    }
+    found.into_iter().flatten().collect()
+}
+
+/// The process in a plugin's line, `plugin <row> <version> applied ... in
+/// <pid>`.
+fn pid(line: &str) -> i32 {
+    line.rsplit_once(" in ").unwrap().1.trim().parse().unwrap()
+}
+
+fn the_dev_loop(lang: &Lang) {
+    let dir = tempfile::tempdir().unwrap();
+    let dev_file = project(dir.path(), lang);
+    let own = dir.path().join(lang.own);
+    let runtime = lang.runtime;
+    let mut host = Host::start(&["dev", "."], dir.path());
+    // Once running, the services and their rows (#670).
+    let services =
+        "rutis-host dev: services: llm (llm), rutis/loader (host), rutis/sessions (host), weather (weather)";
+    expect(
+        &mut host,
+        &[
+            "weather: running",
+            "llm: running",
+            "caller: running",
+            services,
+        ],
+    );
+
+    // The instance a reload replaces is cleaned up exactly once: what the
+    // old code registered on its own context is undone once, not skipped and
+    // not run twice (`host/dev-reload b`).
+    let cleanups = |line: &str| {
+        std::fs::read_to_string(dir.path().join("dev-cleanup.log"))
+            .map(|log| log.lines().filter(|read| *read == line).count())
+            .unwrap_or(0)
+    };
+
+    // 1. The own plugin's file: it reloads, its user restarts, llm (which
+    // it uses) does not; then the services again.
+    edit(&own, &(lang.source)("weather", "v2"));
+    let reloaded = format!("weather: reloaded ({} changed)", lang.own);
+    expect(
+        &mut host,
+        &[
+            "plugin weather v2 applied city=Oslo in *",
+            &reloaded,
+            "caller: restarted (weather reloaded)",
+            services,
+        ],
+    );
+    assert_eq!(
+        cleanups("cleanup weather v1"),
+        1,
+        "the instance the first reload replaced was not cleaned up exactly once"
+    );
+
+    // 2. The dev file: weather's config changes, and weather restarts with
+    // it. SIGUSR1 reads it again too (nothing changed then).
+    let text = std::fs::read_to_string(&dev_file).unwrap();
+    std::fs::write(&dev_file, text.replace("Oslo", "Tromso")).unwrap();
+    expect(
+        &mut host,
+        &[
+            "plugin weather v2 applied city=Tromso in *",
+            "rutis-host: reloaded rutis.dev.json (1 row changed)",
+            "weather: updated (its row in rutis.dev.json changed)",
+            "caller: restarted (weather updated)",
+            services,
+        ],
+    );
+    signal(&host, libc::SIGUSR1, false);
+    expect(
+        &mut host,
+        &["rutis-host: reloaded rutis.dev.json (0 rows changed)"],
+    );
+
+    // 3. An edit that does not import: the row that broke says so, and
+    // keeps running; a reload of the row it uses restarts it on the version
+    // it ran.
+    edit(&own, &(lang.broken)());
+    let failed = expect(&mut host, &["weather: cannot reload: *"]);
+    assert!(
+        failed[0].ends_with("; the previous version keeps running"),
+        "{failed:?}"
+    );
+    edit(&dir.path().join(lang.llm), &(lang.source)("llm", "v2"));
+    let llm = format!("llm: reloaded ({} changed)", lang.llm);
+    let lines = expect(
+        &mut host,
+        &[
+            "plugin llm v2 applied in *",
+            "plugin weather v2 applied city=Tromso in *",
+            &llm,
+            "weather: restarted (llm reloaded)",
+            // caller uses weather, not llm: weather is what it restarted
+            // with.
+            "caller: restarted (weather restarted)",
+        ],
+    );
+
+    // 4. An edit whose apply throws: it imports, so it is the code the row
+    // runs from now on, and the row fails with its error (not running).
+    edit(&own, &(lang.throws)());
+    let failed = expect(
+        &mut host,
+        &["weather: cannot reload: *", "weather: failed in apply: *"],
+    );
+    assert!(failed[0].contains("boom in apply"), "{failed:?}");
+    assert!(
+        !failed[0].ends_with("; the previous version keeps running"),
+        "{failed:?}"
+    );
+
+    // 5. The runtime ends (`restart` is `no`): the next change starts it
+    // again, with the code as it is now.
+    // SAFETY: plain kill(2) of the runtime process this host started.
+    unsafe { libc::kill(pid(&lines[1]), libc::SIGKILL) };
+    let down = format!("runtime {runtime}: down (exited with signal: 9 (SIGKILL))");
+    expect(&mut host, &[&down]);
+    edit(&own, &(lang.source)("weather", "v3"));
+    let again = format!("runtime {runtime}: starting again ({} changed)", lang.own);
+    let running = format!("runtime {runtime}: running");
+    expect(
+        &mut host,
+        &[
+            &again,
+            "plugin weather v3 applied city=Tromso in *",
+            &running,
+            "weather: running",
+        ],
+    );
+
+    // 6. A document, and a file no runtime loads: nothing reloads for them
+    // (#938). The reload counts below would see it.
+    std::fs::write(dir.path().join("README.md"), "notes\n").unwrap();
+    std::fs::write(dir.path().join("notes.txt"), "notes\n").unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(1200));
+    signal(&host, libc::SIGTERM, false);
+    let (status, stderr, output) = host.exit();
+    let context = format!("status {status:?}; output: {output:#?}; stderr: {stderr}");
+    assert_eq!(status.code(), Some(0), "{context}");
+    let count = |text: &str| {
+        output
+            .iter()
+            .filter(|line| unprefixed(line).starts_with(text))
+            .count()
+    };
+    // guarantee: host/output-prefix — `dev` starts each line a plugin
+    // writes with its row's name by default (#678).
+    assert!(
+        output
+            .iter()
+            .any(|line| line.starts_with("[weather] plugin weather v1 applied")),
+        "{context}"
+    );
+    // llm reloaded once, for its own file; weather's reloads did not.
+    assert_eq!(count("plugin llm v1 applied"), 1, "{context}");
+    assert_eq!(count("llm: reloaded"), 1, "{context}");
+    // Nothing said to reload while the runtime was down.
+    assert_eq!(count("weather: reloaded"), 1, "{context}");
+    // Never the half-imported version (Python).
+    assert_eq!(count("plugin weather v9"), 0, "{context}");
+    // The replaced instance was cleaned up once, and stayed at one: no
+    // cleanup ran again when nothing of that version was left.
+    assert_eq!(cleanups("cleanup weather v1"), 1, "{context}");
+    assert!(!stderr.contains("cannot resolve row"), "{context}");
+    // Never a cause the row does not use.
+    assert_eq!(count("caller: restarted (llm"), 0, "{context}");
+    // The project's runtime is dev's own: no word of an undeclared one.
+    assert!(
+        !stderr.contains("which runtimes does not declare"),
+        "{context}"
+    );
+}
+
+/// A Python row the dev file of a Node project adds without declaring
+/// `runtimes.py`: the Python runtime runs with its defaults, which is said
+/// once, not again each time `rutis.dev.json` is read again (#666).
+/// guarantee: host/dev-reload
+#[test]
+fn dev_warns_of_an_undeclared_runtime_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let dev_file = project(dir.path(), &NODE);
+    edit(&dir.path().join("probe.py"), &python_source("probe", "v1"));
+    let text = std::fs::read_to_string(&dev_file).unwrap();
+    let mut dev: serde_json::Value = serde_json::from_str(&text).unwrap();
+    dev["rows"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({ "id": "probe", "name": "py:probe" }));
+    std::fs::write(&dev_file, dev.to_string()).unwrap();
+    let mut host = Host::start(&["dev", "."], dir.path());
+    expect(&mut host, &["weather: running", "probe: running"]);
+    for city in ["Bergen", "Tromso"] {
+        dev["rows"][0]["config"]["city"] = json!(city);
+        std::fs::write(&dev_file, dev.to_string()).unwrap();
+        expect(
+            &mut host,
+            &["rutis-host: reloaded rutis.dev.json (1 row changed)"],
+        );
+    }
+
+    signal(&host, libc::SIGTERM, false);
+    let (status, stderr, output) = host.exit();
+    let context = format!("status {status:?}; output: {output:#?}; stderr: {stderr}");
+    assert_eq!(status.code(), Some(0), "{context}");
+    assert_eq!(
+        stderr.matches("rows use the py runtime (py:probe)").count(),
+        1,
+        "{context}"
+    );
+    assert!(!stderr.contains("rows use the node runtime"), "{context}");
+}
+
+/// A Go project with a Python row its dev file adds (`dev/probe.py`):
+/// a change to the probe reloads the probe and builds nothing; a change to
+/// the Go sources rebuilds and restarts the Go runtime. A plugin whose
+/// apply panicked, fixed and rebuilt, runs again without a word about
+/// resolving its row again (the rows the new runtime resolves again start
+/// on it).
+/// guarantee: host/dev-reload
+#[test]
+fn dev_rebuilds_a_go_project_only_for_its_sources() {
+    let dir = tempfile::tempdir().unwrap();
+    rutis_host::new::create(dir.path(), "net-probe", "go").unwrap();
+    let project = dir.path().join("net-probe");
+    // The SDK of this checkout, not a published one.
+    let sdk = repo().join("go/rutis").canonicalize().unwrap();
+    let module = std::fs::read_to_string(project.join("go.mod")).unwrap();
+    std::fs::write(
+        project.join("go.mod"),
+        format!(
+            "{module}\nreplace github.com/arcships/rutis/go/rutis => {}\n",
+            sdk.display()
+        ),
+    )
+    .unwrap();
+    let probe = |version: &str| {
+        format!(
+            "import os, sys\n\
+             from rutis import define_plugin\n\
+             \n\
+             def apply(ctx, config):\n\
+             \x20   sys.stdout.write(f\"plugin probe {version} applied in {{os.getpid()}}\\n\")\n\
+             \x20   sys.stdout.flush()\n\
+             \n\
+             plugin = define_plugin(apply, inject=[\"greeter\"])\n"
+        )
+    };
+    let probe_file = project.join("dev/probe.py");
+    edit(&probe_file, &probe("v1"));
+    let mut py = json!({ "project": "dev" });
+    if let Some(python) = std::env::var_os("RUTIS_PYTHON") {
+        py["python"] = json!(python.to_str().unwrap());
+    }
+    let dev = json!({
+        "runtimes": { "py": py },
+        "rows": [
+            { "id": "net-probe", "config": { "greeting": "Hello" } },
+            { "id": "probe", "name": "py:probe" },
+        ]
+    });
+    std::fs::write(project.join("rutis.dev.json"), dev.to_string()).unwrap();
+    // Builds use the module cache, never the network.
+    let env = [
+        ("GOPROXY", "off"),
+        ("GOTOOLCHAIN", "local"),
+        ("GOFLAGS", "-mod=mod"),
+    ];
+    let mut host = Host::start_in_env(&["dev", "."], &project, &env);
+    expect(
+        &mut host,
+        &[
+            "net-probe: built in *",
+            "net-probe: running",
+            "probe: running",
+        ],
+    );
+
+    // The probe's file: the probe reloads, nothing is built.
+    edit(&probe_file, &probe("v2"));
+    expect(
+        &mut host,
+        &[
+            "plugin probe v2 applied in *",
+            "probe: reloaded (dev/probe.py changed)",
+        ],
+    );
+
+    // A panic in apply, rebuilt: the row fails. Fixed and rebuilt: it runs.
+    let plugin = project.join("plugin.go");
+    let source = std::fs::read_to_string(&plugin).unwrap();
+    let panics = source.replace(
+        "greeting := config.Greeting",
+        "panic(\"boom\"); greeting := config.Greeting",
+    );
+    assert_ne!(panics, source, "the template's apply");
+    edit(&plugin, &panics);
+    expect(
+        &mut host,
+        &["go-net-probe: rebuilt and restarted", "net-probe: failed*"],
+    );
+    edit(&plugin, &source);
+    expect(
+        &mut host,
+        &["go-net-probe: rebuilt and restarted", "net-probe: running"],
+    );
+
+    signal(&host, libc::SIGTERM, false);
+    let (status, stderr, output) = host.exit();
+    let context = format!("status {status:?}; output: {output:#?}; stderr: {stderr}");
+    assert_eq!(status.code(), Some(0), "{context}");
+    let count = |text: &str| output.iter().filter(|line| line.starts_with(text)).count();
+    // The first build, the panic's and the fix's: not one for the probe.
+    assert_eq!(count("net-probe: building"), 3, "{context}");
+    assert!(!stderr.contains("cannot resolve row"), "{context}");
+}
+
+/// guarantee: host/dev-reload, host/dev-failed-reload-keeps-old
+#[test]
+fn dev_follows_a_node_project() {
+    the_dev_loop(&NODE);
+}
+
+/// guarantee: host/dev-reload, host/dev-failed-reload-keeps-old
+#[test]
+fn dev_follows_a_bun_project() {
+    the_dev_loop(&BUN);
+}
+
+/// guarantee: host/dev-reload, host/dev-failed-reload-keeps-old
+#[test]
+fn dev_follows_a_python_project() {
+    the_dev_loop(&PYTHON);
+}
+
+/// A Python plugin package's own module that it imports (`from .helpers
+/// import WORD`): editing it reloads the row on the new code, not on the
+/// module as first imported (#938); an edit of it that does not import
+/// leaves both as they were.
+/// guarantee: host/dev-reload, host/dev-failed-reload-keeps-old
+#[test]
+fn dev_reloads_a_python_plugins_own_modules() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("pyproject.toml"),
+        "[project]\nname = \"weather\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+    let helpers = dir.path().join("src/weather/helpers.py");
+    edit(
+        &dir.path().join("src/weather/__init__.py"),
+        "import os, sys\n\
+         from rutis import define_plugin\n\
+         from .helpers import WORD\n\
+         \n\
+         def apply(ctx, config):\n\
+         \x20   sys.stdout.write(f\"plugin weather {WORD} applied in {os.getpid()}\\n\")\n\
+         \x20   sys.stdout.flush()\n\
+         \n\
+         plugin = define_plugin(apply)\n",
+    );
+    edit(&helpers, "WORD = \"v1\"\n");
+    let runtime = tempfile::tempdir().unwrap();
+    let runtime = runtime.path().to_str().unwrap();
+    let status = || {
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_rutis-host"))
+            .arg("status")
+            .current_dir(dir.path())
+            .env("XDG_RUNTIME_DIR", runtime)
+            .output()
+            .unwrap();
+        let said = String::from_utf8_lossy(&output.stdout).into_owned();
+        said.lines()
+            .find(|line| line.starts_with("  weather: "))
+            .map(str::to_owned)
+            .unwrap_or(said)
+    };
+    let mut host = Host::start_in_env(&["dev", "."], dir.path(), &[("XDG_RUNTIME_DIR", runtime)]);
+    expect(
+        &mut host,
+        &["plugin weather v1 applied in *", "weather: running"],
+    );
+    edit(&helpers, "WORD = \"v2\"\n");
+    expect(
+        &mut host,
+        &[
+            "plugin weather v2 applied in *",
+            "weather: reloaded (src/weather/helpers.py changed)",
+        ],
+    );
+    // A helper that does not import: the version running stays, helper
+    // and all.
+    edit(&helpers, "WORD = \n");
+    let failed = expect(&mut host, &["weather: cannot reload: *"]);
+    assert!(
+        failed[0].ends_with("; the previous version keeps running"),
+        "{failed:?}"
+    );
+    // `status` says which version runs (#938), until a reload succeeds.
+    assert_eq!(
+        status(),
+        "  weather: running (the previous version: its last reload failed)"
+    );
+    edit(&helpers, "WORD = \"v3\"\n");
+    expect(
+        &mut host,
+        &[
+            "plugin weather v3 applied in *",
+            "weather: reloaded (src/weather/helpers.py changed)",
+        ],
+    );
+    assert_eq!(status(), "  weather: running");
+    signal(&host, libc::SIGTERM, false);
+    let (status, stderr, output) = host.exit();
+    assert_eq!(status.code(), Some(0), "{stderr}");
+    assert_eq!(
+        output
+            .iter()
+            .filter(|line| unprefixed(line).starts_with("plugin weather"))
+            .count(),
+        3,
+        "{output:#?}"
+    );
+}
+
+/// A Python project with a fake in TypeScript as the Python guide puts it
+/// (#938): the fake and its packages in `dev/`, `runtimes.node.project`
+/// `dev`; a package.json at the project's root, as `npm init` writes it,
+/// does not make it a Node project.
+/// guarantee: host/dev-reload
+#[test]
+fn a_python_project_runs_a_typescript_fake_from_dev() {
+    let dir = tempfile::tempdir().unwrap();
+    let modules = dir.path().join("dev/node_modules/@arcships");
+    std::fs::create_dir_all(&modules).unwrap();
+    for (package, from) in [
+        ("rutis", "node/rutis"),
+        ("rutis-runtime", "node/rutis-runtime"),
+    ] {
+        std::os::unix::fs::symlink(
+            repo().join(from).canonicalize().unwrap(),
+            modules.join(package),
+        )
+        .unwrap();
+    }
+    std::fs::write(
+        dir.path().join("dev/package.json"),
+        r#"{ "name": "dev", "type": "module" }"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("package.json"),
+        r#"{ "name": "weather", "version": "1.0.0", "main": "index.js" }"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("pyproject.toml"),
+        "[project]\nname = \"weather\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+    edit(
+        &dir.path().join("src/weather/__init__.py"),
+        &python_source("weather", "v1"),
+    );
+    edit(
+        &dir.path().join("dev/fake-llm.ts"),
+        "import { definePlugin } from '@arcships/rutis'\n\
+         export default definePlugin({\n\
+           provides: { llm: { ask: 'async' } },\n\
+           apply(ctx) { ctx.provide('llm', { ask: async () => 'ok' }) },\n\
+         })\n",
+    );
+    let dev = json!({
+        "runtimes": { "node": { "project": "dev" } },
+        "rows": [
+            { "id": "weather", "config": { "city": "Oslo" } },
+            { "id": "llm", "name": "./dev/fake-llm.ts" },
+        ]
+    });
+    std::fs::write(dir.path().join("rutis.dev.json"), dev.to_string()).unwrap();
+    let mut host = Host::start(&["dev", "."], dir.path());
+    expect(
+        &mut host,
+        &[
+            "rutis-host dev: running weather; changes reload it (Ctrl-C ends)",
+            "plugin weather v1 applied city=Oslo in *",
+            "weather: running",
+            "llm: running",
+            "rutis-host dev: services: llm (llm), rutis/loader (host), rutis/sessions (host), weather (weather)",
+        ],
+    );
+    signal(&host, libc::SIGTERM, false);
+    let (status, stderr, _) = host.exit();
+    assert_eq!(status.code(), Some(0), "{stderr}");
+}
+
+/// A project whose rows provide nothing says no services line (#1046: it
+/// used to say `none` at every start and every rebuild).
+#[test]
+fn dev_says_no_services_line_when_no_row_provides_one() {
+    let dir = tempfile::tempdir().unwrap();
+    crate::common::process::dev_project(dir.path());
+    let mut host = Host::start(&["dev", "."], dir.path());
+    host.wait_line(|line| line.ends_with(": running").then_some(()));
+    // A few polls: the line would be said once every row settled.
+    std::thread::sleep(std::time::Duration::from_millis(1200));
+    signal(&host, libc::SIGINT, true);
+    let (status, stderr, output) = host.exit();
+    assert_eq!(status.code(), Some(0), "{stderr}");
+    assert!(
+        !output
+            .iter()
+            .any(|line| line.starts_with("rutis-host dev: services:")),
+        "no row provides a service, so nothing is said: {output:#?}"
+    );
+}
+
+/// A reload takes the row's service away for a moment: the services line
+/// is not said in between, only before and after (#1046).
+#[test]
+fn dev_does_not_say_none_between_a_reload() {
+    let dir = tempfile::tempdir().unwrap();
+    project(dir.path(), &NODE);
+    let mut host = Host::start(&["dev", "."], dir.path());
+    fn services(line: &str) -> Option<&str> {
+        line.strip_prefix("rutis-host dev: services: ")
+    }
+    let first = host.wait_line(|line| services(line).map(str::to_owned));
+    assert!(first.contains("llm (llm)"), "{first}");
+    // `llm` reloads into a version that provides its service only after a
+    // while: for that while nothing provides one, long enough for a poll to
+    // see it, which is when the line used to say `none`.
+    edit(
+        &dir.path().join(NODE.llm),
+        &format!(
+            "import {{ definePlugin }} from '{}'\n\
+             export default definePlugin({{\n\
+               provides: {{ llm: {{ ask: 'async' }} }},\n\
+               apply(ctx) {{\n\
+                 setTimeout(() => ctx.provide('llm', {{ ask: async () => 'ok' }}), 900)\n\
+               }},\n\
+             }})\n",
+            sdk()
+        ),
+    );
+    host.wait_line(|line| line.starts_with("llm: reloaded").then_some(()));
+    // A few polls: a `none` line would come between the two.
+    std::thread::sleep(std::time::Duration::from_millis(1200));
+    signal(&host, libc::SIGINT, true);
+    let (status, stderr, output) = host.exit();
+    let context = format!("status {status:?}; output: {output:#?}; stderr: {stderr}");
+    assert_eq!(status.code(), Some(0), "{context}");
+    assert!(
+        !output
+            .iter()
+            .any(|line| line == "rutis-host dev: services: none"),
+        "{context}"
+    );
+}
+
+/// A service provided after its row settled, as one a runtime registers
+/// late: the services line is printed again once it is there (#771 X2).
+#[test]
+fn dev_says_the_services_again_when_they_change() {
+    let dir = tempfile::tempdir().unwrap();
+    project(dir.path(), &NODE);
+    // The project's own plugin: one service as it applies, another one a
+    // while after its apply returned.
+    edit(
+        &dir.path().join(NODE.own),
+        &format!(
+            "import {{ definePlugin }} from '{}'\n\
+             export default definePlugin({{\n\
+               apply(ctx) {{\n\
+                 ctx.provide('early', {{ now: async () => 'ok' }})\n\
+                 setTimeout(() => ctx.provide('late', {{ now: async () => 'ok' }}), 1500)\n\
+               }},\n\
+             }})\n",
+            sdk()
+        ),
+    );
+    let dev = json!({ "rows": [{ "id": "weather" }] });
+    std::fs::write(dir.path().join("rutis.dev.json"), dev.to_string()).unwrap();
+    let mut host = Host::start(&["dev", "."], dir.path());
+    fn services(line: &str) -> Option<&str> {
+        line.strip_prefix("rutis-host dev: services: ")
+    }
+    let first = host.wait_line(|line| services(line).map(str::to_owned));
+    assert!(first.contains("early (weather)"), "{first}");
+    assert!(!first.contains("late"), "{first}");
+    host.wait_line(|line| services(line)?.contains("late (weather)").then_some(()));
+    signal(&host, libc::SIGINT, true);
+    let (status, stderr, _) = host.exit();
+    assert_eq!(status.code(), Some(0), "{stderr}");
+}

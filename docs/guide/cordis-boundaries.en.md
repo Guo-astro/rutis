@@ -47,7 +47,7 @@ Evidence: guarantees `events/emit`, `events/parallel`, `events/serial-bail`. `no
 - Need to short-circuit synchronously: make the listeners synchronous functions (returning no Promise), and make sure no asynchronous listener is anywhere on the chain.
 - Coming from Cordis, wherever a `ctx.bail` listener may be `async`, change it to `serial`, or make the listener synchronous.
 
-Evidence: guarantees `events/serial-bail`, `events/hub-bail`; `crates/rutis/tests/events.rs::bail_meets_an_async_listener`; `crates/rutis-bridge/tests/event_hub.rs::bail_is_synchronous_everywhere`; `node/rutis-runtime/test/cordis-events.test.mjs` (`the five Cordis methods dispatch through the host, each in its mode`: `root.bail('b')` throws `AsyncListener`).
+Evidence: guarantees `events/serial-bail`, `events/hub-bail`; `crates/rutis/tests/core/events.rs::bail_meets_an_async_listener`; `crates/rutis-bridge/tests/lang/event_hub.rs::bail_is_synchronous_everywhere`; `node/rutis-runtime/test/cordis-events.test.mjs` (`the five Cordis methods dispatch through the host, each in its mode`: `root.bail('b')` throws `AsyncListener`).
 
 ## 3. `intercept`: a non-empty merged configuration is not supported
 
@@ -69,7 +69,7 @@ Evidence: guarantees `events/serial-bail`, `events/hub-bail`; `crates/rutis/test
 - It is only a bare declaration: write `["dep"]` instead of `{ "dep": {} }`, or keep `{ "dep": true }`.
 - Run `rutis-host check`, or look at `rutis-host status`, to see which row and which service.
 
-Evidence: `crates/rutis-loader/src/loader/desired.rs`, `parse_scope` (`null` / `true` / `{}` are accepted, anything else returns `Unsupported`); `crates/rutis-loader/tests/scope.rs::unknown_services_and_intercept_config_are_unresolved`; guarantee `loader/isolate-and-inject`.
+Evidence: `crates/rutis-loader/src/loader/desired.rs`, `parse_scope` (`null` / `true` / `{}` are accepted, anything else returns `Unsupported`); `crates/rutis-loader/tests/rows/scope.rs::unknown_services_and_intercept_config_are_unresolved`; guarantee `loader/isolate-and-inject`.
 
 ## 4. Direct `ctx.set`: no notification, refreshed after the next call
 
@@ -90,7 +90,7 @@ Evidence: `crates/rutis-loader/src/loader/desired.rs`, `parse_scope` (`null` / `
 - If you use `ctx.set`: do it inside a method call, and after the call returns have the user read the service again (`ctx.get`, `ctx.use`), rather than reusing a proxy obtained before the replacement.
 - Do not replace silently with `ctx.set` from a timer or an event listener and expect the next call to hit the new object.
 
-Evidence: guarantee `boundary/5.1`; `crates/rutis-bridge/tests/service_projection.rs::projected_service_follows_replacement_and_withdrawal`, `crates/rutis-bridge/tests/projection_lifecycle.rs::a_throwing_method_still_refreshes_the_slot`; implementation in `node/rutis-runtime/src/runner.mjs` (`refresh`, `dispatchCall`).
+Evidence: guarantee `boundary/5.1`; `crates/rutis-bridge/tests/session/service_projection.rs::projected_service_follows_replacement_and_withdrawal`, `crates/rutis-bridge/tests/session/projection_lifecycle.rs::a_throwing_method_still_refreshes_the_slot`; implementation in `node/rutis-runtime/src/runner.mjs` (`refresh`, `dispatchCall`).
 
 ## 5. Services the host provides: proxies, `instanceof` does not hold
 
@@ -112,7 +112,7 @@ Evidence: guarantee `boundary/5.1`; `crates/rutis-bridge/tests/service_projectio
 - Need to know whether the service is there: use `ctx.get('log')` or `inject` (dependency gating), not `instanceof` or `typeof`.
 - When writing a `.d.ts` for the plugin, declare an `interface`, not a `class` you then expect `instanceof` to match.
 
-Evidence: guarantee `boundary/5.7`; `crates/rutis-bridge/tests/boundary_rules.rs::a_host_service_is_a_proxy_not_an_instance_of_the_declared_class` (the same plugin gets `instanceof` `true` in native Cordis and `false` through the layer, with the same call results); [Requirements §5](../requirements-protocol-plugins.en.md) rule 7.
+Evidence: guarantee `boundary/5.7`; `crates/rutis-bridge/tests/session/boundary_rules.rs::a_host_service_is_a_proxy_not_an_instance_of_the_declared_class` (the same plugin gets `instanceof` `true` in native Cordis and `false` through the layer, with the same call results); [Requirements §5](../requirements-protocol-plugins.en.md) rule 7.
 
 ## 6. Synchronous waits: `SyncWaitCycle`
 
@@ -134,7 +134,7 @@ Evidence: guarantee `boundary/5.7`; `crates/rutis-bridge/tests/boundary_rules.rs
 - A real cycle: make one side asynchronous, or mark a fire-and-forget call `awaited: false` (session protocol SESS-83); do not wait on each other inside a synchronous chain.
 - On seeing `SyncWaitCycle`: read the call chain in the error; the host's line also names the rows the call went through.
 
-Evidence: guarantees `boundary/5.6`, `bridge/sync-wait-cycle-refused`; `crates/rutis-bridge/tests/rpc_callbacks.rs::node_sync_wait_pumps_callbacks_and_reports_its_executor_cycle` (the fixture `node/rutis-runtime/test/fixtures/rpc-client.mjs` asserts `SyncWaitCycle`), `::sync_wait_detects_an_async_callback_already_running_on_its_runtime`; `crates/rutis-loader/tests/sync_cycles.rs`; designs [multilanguage runtimes](../design-multilang-runtimes-2026-10-03.en.md) §9 and [function references](../design-function-refs-2026-11-03.en.md).
+Evidence: guarantees `boundary/5.6`, `bridge/sync-wait-cycle-refused`; `crates/rutis-bridge/tests/session/rpc_callbacks.rs::node_sync_wait_pumps_callbacks_and_reports_its_executor_cycle` (the fixture `node/rutis-runtime/test/fixtures/rpc-client.mjs` asserts `SyncWaitCycle`), `::sync_wait_detects_an_async_callback_already_running_on_its_runtime`; `crates/rutis-loader/tests/lang/sync_cycles.rs`; designs [multilanguage runtimes](../design-multilang-runtimes-2026-10-03.en.md) §9 and [function references](../design-function-refs-2026-11-03.en.md).
 
 ## 7. Unload order and what the runtime overrides
 

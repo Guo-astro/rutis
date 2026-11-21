@@ -15,7 +15,7 @@ Date: 2026-10-28. Code: main `212ac7ce` (after rutis 0.18, before 0.19); the lan
   - `bail`: the synchronous `ctx.bail(...)`, a synchronous listener returns its argument.
 
   The plugins use only the public plugin API (`ctx.on`, `ctx.emit`, `ctx.serial`, `ctx.bail`) and run under `rutis-host run` from a `rutis.json`; they do not touch the SDK's internal dispatch code, so they run unchanged after local dispatch is removed.
-- **dsh baseline**: the total time of one run of the `rutis-bridge` test `dsh_baseline` (`crates/rutis-bridge/tests/dsh_baseline.rs`): it runs the scenarios of `node/baseline` in native Cordis, then mounts the same published Cordis plugins through rutis, calls them one by one and compares. Five runs, median. The native Cordis half (`node native.mjs`) is recorded on its own for reference.
+- **dsh baseline**: the total time of one run of the `rutis-bridge` test `dsh_baseline` (`crates/rutis-bridge/tests/lang/dsh_baseline.rs`): it runs the scenarios of `node/baseline` in native Cordis, then mounts the same published Cordis plugins through rutis, calls them one by one and compares. Five runs, median. The native Cordis half (`node native.mjs`) is recorded on its own for reference.
 
 ## How to run
 

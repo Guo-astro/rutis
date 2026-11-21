@@ -3,7 +3,9 @@
 //! whether it is live, and the emit that follows dispatches to all of them
 //! (#980).
 //!
-//! Its own test binary: it reads a counter of this process's selections.
+//! Its own test binary: it reads a counter of this process's selections, and
+//! a test beside it in a suite moves that counter between the reads, failing
+//! the asserts below (#1373).
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier};

@@ -42,51 +42,51 @@ The table comes from `tests/faults.json`. When an acceptance test changes (renam
 
 ### 1. A dependency's service name misspelt
 
-- TypeScript (Node): `crates/rutis-host/tests/waiting.rs` `a_waiting_row_says_what_it_waits_for_and_why`; `crates/rutis-host/tests/check.rs` `check_fails_on_cycles_and_clashes_and_suggests_misspelt_names`; `node/rutis-runtime/test/leaf.test.mjs` “a leaf plugin using a service it does not inject is told to declare it”
+- TypeScript (Node): `crates/rutis-host/tests/config/waiting.rs` `a_waiting_row_says_what_it_waits_for_and_why`; `crates/rutis-host/tests/config/check.rs` `check_fails_on_cycles_and_clashes_and_suggests_misspelt_names`; `node/rutis-runtime/test/leaf.test.mjs` “a leaf plugin using a service it does not inject is told to declare it”
 - Bun: `bun/rutis-bun/test/runner.test.ts` “a plugin using a service it does not inject is told to declare it”
 - Python: `python/rutis/tests/test_undeclared_use.py` `test_a_service_not_in_inject_is_named_with_the_fix`
 - Go: `go/rutis/sdk_test.go` `TestAPluginMayUseOnlyWhatItInjects`; `go/rutis/internal/runtime/errors_text_internal_test.go` `TestUseSaysWhyAServiceIsNotThere`
-- Rust (plugin and embedding): `crates/rutis-loader/tests/waits.rs` `a_misspelt_name_is_waited_for_with_the_name_it_meant`; `crates/rutis-loader/tests/check.rs` `a_disabled_provider_is_named_and_a_misspelt_name_corrected`; `crates/rutis/tests/still_waiting.rs` `a_plugin_waiting_long_for_its_deps_is_reported_once`
+- Rust (plugin and embedding): `crates/rutis-loader/tests/rows/waits.rs` `a_misspelt_name_is_waited_for_with_the_name_it_meant`; `crates/rutis-loader/tests/rows/check.rs` `a_disabled_provider_is_named_and_a_misspelt_name_corrected`; `crates/rutis/tests/core/still_waiting.rs` `a_plugin_waiting_long_for_its_deps_is_reported_once`
 
 ### 2. A service method throws, across languages
 
-- TypeScript (Node): `crates/rutis-loader/tests/fault_texts.rs` `fault_messages_hold_none_of_the_platforms_words`; `crates/rutis-loader/tests/runtime_rows.rs` `an_error_from_a_service_method_says_where_it_came_from`; `node/rutis-runtime/test/errors.test.mjs` “an error from the other side thrown on adds where it was thrown on to its root (#677)”
+- TypeScript (Node): `crates/rutis-loader/tests/rows/fault_texts.rs` `fault_messages_hold_none_of_the_platforms_words`; `crates/rutis-loader/tests/go/runtime_rows.rs` `an_error_from_a_service_method_says_where_it_came_from`; `node/rutis-runtime/test/errors.test.mjs` “an error from the other side thrown on adds where it was thrown on to its root (#677)”
 - Bun: `bun/rutis-bun/test/errors.test.ts` “an error from the other side thrown on adds where it was thrown on to its root (#677)”; `bun/rutis-bun/test/bad-values.test.ts` “an error answering a call has the caller's stack, and a rethrow adds it (#677)”
-- Python: `crates/rutis-loader/tests/fault_texts.rs` `fault_messages_hold_none_of_the_platforms_words`; `python/rutis/tests/test_peer.py` `test_a_remote_error_thrown_on_crosses_with_its_whole_graph`; `python/rutis/tests/test_plain_texts.py` `test_a_traceback_through_a_host_service_names_the_service_and_method`
+- Python: `crates/rutis-loader/tests/rows/fault_texts.rs` `fault_messages_hold_none_of_the_platforms_words`; `python/rutis/tests/test_peer.py` `test_a_remote_error_thrown_on_crosses_with_its_whole_graph`; `python/rutis/tests/test_plain_texts.py` `test_a_traceback_through_a_host_service_names_the_service_and_method`
 - Go: `go/rutis/internal/runtime/errors_location_test.go` `TestAServiceErrorCrossesWithItsMethodsPosition`; `go/rutis/internal/runtime/errors_location_test.go` `TestAReceivedErrorThrownOnRecordsTheMethodInRethrown`
-- Rust (plugin and embedding): `crates/rutis-bridge/tests/marked_services.rs` `a_provided_marked_type_is_served_by_name`
+- Rust (plugin and embedding): `crates/rutis-bridge/tests/session/marked_services.rs` `a_provided_marked_type_is_served_by_name`
 
 ### 3. No such method, wrong number or type of arguments
 
-- TypeScript (Node): `crates/rutis-loader/tests/fault_texts.rs` `fault_messages_hold_none_of_the_platforms_words`; `node/rutis-runtime/test/texts.test.mjs` “a row that cannot load, or is refused a call, is told in the developer's words”
+- TypeScript (Node): `crates/rutis-loader/tests/rows/fault_texts.rs` `fault_messages_hold_none_of_the_platforms_words`; `node/rutis-runtime/test/texts.test.mjs` “a row that cannot load, or is refused a call, is told in the developer's words”
 - Bun: `bun/rutis-bun/test/errors.test.ts` “the errors this runtime makes have their code, data and text (#677)”; `bun/rutis-bun/test/bad-values.test.ts` “a method an object passed by reference lacks is no-method, saying what it has”
 - Python: `python/rutis/tests/test_plain_texts.py` `test_no_method`; `python/rutis/tests/test_plain_texts.py` `test_too_many_arguments`; `python/rutis/tests/test_plain_texts.py` `test_a_missing_argument`
-- Go: `crates/rutis-loader/tests/fault_texts.rs` `fault_messages_hold_none_of_the_platforms_words`; `go/rutis/internal/runtime/errors_text_internal_test.go` `TestARefusedCallNamesTheServiceMethodAndArgument`
-- Rust (plugin and embedding): `crates/rutis-loader/tests/fault_texts.rs` `fault_messages_hold_none_of_the_platforms_words`; `crates/rutis-bridge/src/marked.rs` `wrong_calls_name_the_service_method_and_argument`
+- Go: `crates/rutis-loader/tests/rows/fault_texts.rs` `fault_messages_hold_none_of_the_platforms_words`; `go/rutis/internal/runtime/errors_text_internal_test.go` `TestARefusedCallNamesTheServiceMethodAndArgument`
+- Rust (plugin and embedding): `crates/rutis-loader/tests/rows/fault_texts.rs` `fault_messages_hold_none_of_the_platforms_words`; `crates/rutis-bridge/src/marked.rs` `wrong_calls_name_the_service_method_and_argument`
 
 ### 4. An error in `apply`
 
-- TypeScript (Node): `crates/rutis-host/tests/dev.rs` `dev_follows_a_node_project`; `crates/rutis-loader/tests/runtime_rows.rs` `a_failed_row_keeps_the_plugins_error`; `node/rutis-runtime/test/errors.test.mjs` “an apply failure crosses with the plugin's frames only (#677)”
-- Bun: `crates/rutis-host/tests/dev.rs` `dev_follows_a_bun_project`; `bun/rutis-bun/test/runner.test.ts` “an apply failure crosses with the plugin's frames only (#677)”
-- Python: `crates/rutis-host/tests/dev.rs` `dev_follows_a_python_project`
-- Go: `crates/rutis-host/tests/dev.rs` `dev_rebuilds_a_go_project_only_for_its_sources`
-- Rust (plugin and embedding): `crates/rutis/tests/embedding_output.rs` `a_failed_start_reaches_the_error_sink_by_the_plugins_name`; `crates/rutis-loader/tests/waits.rs` `a_row_that_cannot_start_reaches_the_error_sink_by_its_name`
+- TypeScript (Node): `crates/rutis-host/tests/config/dev.rs` `dev_follows_a_node_project`; `crates/rutis-loader/tests/go/runtime_rows.rs` `a_failed_row_keeps_the_plugins_error`; `node/rutis-runtime/test/errors.test.mjs` “an apply failure crosses with the plugin's frames only (#677)”
+- Bun: `crates/rutis-host/tests/config/dev.rs` `dev_follows_a_bun_project`; `bun/rutis-bun/test/runner.test.ts` “an apply failure crosses with the plugin's frames only (#677)”
+- Python: `crates/rutis-host/tests/config/dev.rs` `dev_follows_a_python_project`
+- Go: `crates/rutis-host/tests/config/dev.rs` `dev_rebuilds_a_go_project_only_for_its_sources`
+- Rust (plugin and embedding): `crates/rutis/tests/core/embedding_output.rs` `a_failed_start_reaches_the_error_sink_by_the_plugins_name`; `crates/rutis-loader/tests/rows/waits.rs` `a_row_that_cannot_start_reaches_the_error_sink_by_its_name`
 
 ### 5. A syntax, import or compile error
 
-- TypeScript (Node): `tests/e2e/tests/dev_loop.rs` `the_node_plugin_development_loop`; `crates/rutis-host/tests/check.rs` `check_fails_what_cannot_run`
-- Bun: `tests/e2e/tests/dev_loop.rs` `the_bun_plugin_development_loop`; `bun/rutis-bun/test/plugin.test.ts` “a module that does not parse fails with its file and line”; `bun/rutis-bun/test/plugin.test.ts` “an import error names the submodule that threw, and a gone entry is said so (#677)”
-- Python: `tests/e2e/tests/dev_loop.rs` `the_python_plugin_development_loop`; `python/rutis/tests/test_plain_texts.py` `test_a_syntax_error_says_its_file_and_line`; `python/rutis/tests/test_plain_texts.py` `test_the_submodule_that_raised_is_named`
-- Go: `tests/e2e/tests/dev_loop.rs` `the_go_plugin_development_loop`
-- Rust (plugin and embedding): `crates/rutis/tests/compile_errors.rs` `author_mistakes_are_reported_in_the_authors_terms`
+- TypeScript (Node): `tests/e2e/tests/develop/dev_loop.rs` `the_node_plugin_development_loop`; `crates/rutis-host/tests/config/check.rs` `check_fails_what_cannot_run`
+- Bun: `tests/e2e/tests/develop/dev_loop.rs` `the_bun_plugin_development_loop`; `bun/rutis-bun/test/plugin.test.ts` “a module that does not parse fails with its file and line”; `bun/rutis-bun/test/plugin.test.ts` “an import error names the submodule that threw, and a gone entry is said so (#677)”
+- Python: `tests/e2e/tests/develop/dev_loop.rs` `the_python_plugin_development_loop`; `python/rutis/tests/test_plain_texts.py` `test_a_syntax_error_says_its_file_and_line`; `python/rutis/tests/test_plain_texts.py` `test_the_submodule_that_raised_is_named`
+- Go: `tests/e2e/tests/develop/dev_loop.rs` `the_go_plugin_development_loop`
+- Rust (plugin and embedding): `crates/rutis/tests/core/compile_errors.rs` `author_mistakes_are_reported_in_the_authors_terms`
 
 ### 6. A value passed across languages that the other side cannot take
 
-- TypeScript (Node): `crates/rutis-loader/tests/bad_values.rs` `a_bad_value_fails_only_its_call_between_node_python_and_go`; `crates/rutis-bridge/tests/value_roundtrip.rs` `node_bad_values`; `crates/rutis-loader/tests/objects_cross.rs` `a_node_object_crosses_to_python`
-- Bun: `crates/rutis-bridge/tests/value_roundtrip.rs` `bun_bad_values`; `crates/rutis-loader/tests/objects_cross.rs` `a_bun_object_crosses_to_node`; `bun/rutis-bun/test/bad-values.test.ts` “a value that cannot be sent carries code bad-value and its part (#677)”
-- Python: `crates/rutis-loader/tests/bad_values.rs` `a_bad_value_fails_only_its_call_between_node_python_and_go`; `crates/rutis-bridge/tests/value_roundtrip.rs` `python_bad_values`; `crates/rutis-loader/tests/objects_cross.rs` `a_python_object_crosses_to_node`
-- Go: `crates/rutis-loader/tests/bad_values.rs` `a_bad_value_fails_only_its_call_between_node_python_and_go`; `crates/rutis-loader/tests/objects_cross.rs` `a_go_parameter_that_takes_no_object_says_so`
-- Rust (plugin and embedding): `crates/rutis-bridge/src/session/rpc/tests/objects.rs` `a_rust_service_refuses_an_object_argument`; `crates/rutis-bridge/tests/value_roundtrip.rs` `rust_relays_a_thrown_value`
+- TypeScript (Node): `crates/rutis-loader/tests/rows/bad_values.rs` `a_bad_value_fails_only_its_call_between_node_python_and_go`; `crates/rutis-bridge/tests/lang/value_roundtrip.rs` `node_bad_values`; `crates/rutis-loader/tests/lang/objects_cross.rs` `a_node_object_crosses_to_python`
+- Bun: `crates/rutis-bridge/tests/lang/value_roundtrip.rs` `bun_bad_values`; `crates/rutis-loader/tests/lang/objects_cross.rs` `a_bun_object_crosses_to_node`; `bun/rutis-bun/test/bad-values.test.ts` “a value that cannot be sent carries code bad-value and its part (#677)”
+- Python: `crates/rutis-loader/tests/rows/bad_values.rs` `a_bad_value_fails_only_its_call_between_node_python_and_go`; `crates/rutis-bridge/tests/lang/value_roundtrip.rs` `python_bad_values`; `crates/rutis-loader/tests/lang/objects_cross.rs` `a_python_object_crosses_to_node`
+- Go: `crates/rutis-loader/tests/rows/bad_values.rs` `a_bad_value_fails_only_its_call_between_node_python_and_go`; `crates/rutis-loader/tests/lang/objects_cross.rs` `a_go_parameter_that_takes_no_object_says_so`
+- Rust (plugin and embedding): `crates/rutis-bridge/src/session/rpc/tests/objects.rs` `a_rust_service_refuses_an_object_argument`; `crates/rutis-bridge/tests/lang/value_roundtrip.rs` `rust_relays_a_thrown_value`
 
 ### 7. An event listener throws
 
@@ -98,58 +98,58 @@ The table comes from `tests/faults.json`. When an acceptance test changes (renam
 
 ### 8. A call that never returns
 
-- TypeScript (Node): `crates/rutis-host/tests/status.rs` `status_says_what_a_running_host_does`; `node/rutis-runtime/test/output.test.mjs` “a method holding the runtime is said once; a short one is not”; `node/rutis-runtime/test/output.test.mjs` “a method awaiting for long does not hold the runtime, and is not said”; `node/rutis-runtime/test/output.test.mjs` “under a debugger nothing is said of a method holding the runtime”
+- TypeScript (Node): `crates/rutis-host/tests/config/status.rs` `status_says_what_a_running_host_does`; `node/rutis-runtime/test/output.test.mjs` “a method holding the runtime is said once; a short one is not”; `node/rutis-runtime/test/output.test.mjs` “a method awaiting for long does not hold the runtime, and is not said”; `node/rutis-runtime/test/output.test.mjs` “under a debugger nothing is said of a method holding the runtime”
 - Bun: `bun/rutis-bun/test/output.test.ts` “a method holding the runtime is said once; a short one is not”; `bun/rutis-bun/test/output.test.ts` “a method awaiting for long does not hold the runtime, and is not said”; `bun/rutis-bun/test/output.test.ts` “under a debugger nothing is said of a method holding the runtime”
-- Python: `crates/rutis-host/tests/status.rs` `status_says_what_a_running_host_does`; `crates/rutis-loader/tests/status.rs` `the_status_names_rows_services_runtimes_and_calls`; `python/rutis/tests/test_output.py` `test_a_method_holding_the_runtime_is_said_once`; `python/rutis/tests/test_output.py` `test_a_blocking_call_in_an_async_method_is_said`; `python/rutis/tests/test_output.py` `test_an_async_method_awaiting_long_is_not_said`; `python/rutis/tests/test_output.py` `test_under_a_debugger_nothing_is_said`
+- Python: `crates/rutis-host/tests/config/status.rs` `status_says_what_a_running_host_does`; `crates/rutis-loader/tests/runtimes/status.rs` `the_status_names_rows_services_runtimes_and_calls`; `python/rutis/tests/test_output.py` `test_a_method_holding_the_runtime_is_said_once`; `python/rutis/tests/test_output.py` `test_a_blocking_call_in_an_async_method_is_said`; `python/rutis/tests/test_output.py` `test_an_async_method_awaiting_long_is_not_said`; `python/rutis/tests/test_output.py` `test_under_a_debugger_nothing_is_said`
 - Go: no test
-- Rust (plugin and embedding): `crates/rutis/tests/embedding_output.rs` `an_apply_that_does_not_return_is_named`; `crates/rutis/tests/embedding_output.rs` `a_shutdown_that_runs_out_of_time_names_the_stuck_cleanup`
+- Rust (plugin and embedding): `crates/rutis/tests/core/embedding_output.rs` `an_apply_that_does_not_return_is_named`; `crates/rutis/tests/core/embedding_output.rs` `a_shutdown_that_runs_out_of_time_names_the_stuck_cleanup`
 
 ### 9. Plugins calling or depending on each other
 
-- TypeScript (Node): `crates/rutis-host/tests/check.rs` `check_fails_on_cycles_and_clashes_and_suggests_misspelt_names`; `crates/rutis-loader/tests/sync_cycles.rs` `two_node_runtimes_calling_each_other`
-- Bun: `crates/rutis-loader/tests/sync_cycles.rs` `an_emit_listener_run_while_a_call_waits`
-- Python: `crates/rutis-loader/tests/sync_cycles.rs` `one_node_and_two_python_runtimes`; `python/rutis/tests/test_plain_texts.py` `test_a_sync_wait_cycle_prints_its_message_alone`
-- Go: `crates/rutis-loader/tests/sync_cycles.rs` `two_node_runtimes_waiting_on_each_other_through_go`
-- Rust (plugin and embedding): `crates/rutis-loader/tests/waits.rs` `rows_that_inject_each_other_say_so`; `crates/rutis-loader/tests/check.rs` `rows_that_inject_each_other_are_a_cycle`
+- TypeScript (Node): `crates/rutis-host/tests/config/check.rs` `check_fails_on_cycles_and_clashes_and_suggests_misspelt_names`; `crates/rutis-loader/tests/lang/sync_cycles.rs` `two_node_runtimes_calling_each_other`
+- Bun: `crates/rutis-loader/tests/lang/sync_cycles.rs` `an_emit_listener_run_while_a_call_waits`
+- Python: `crates/rutis-loader/tests/lang/sync_cycles.rs` `one_node_and_two_python_runtimes`; `python/rutis/tests/test_plain_texts.py` `test_a_sync_wait_cycle_prints_its_message_alone`
+- Go: `crates/rutis-loader/tests/lang/sync_cycles.rs` `two_node_runtimes_waiting_on_each_other_through_go`
+- Rust (plugin and embedding): `crates/rutis-loader/tests/rows/waits.rs` `rows_that_inject_each_other_say_so`; `crates/rutis-loader/tests/rows/check.rs` `rows_that_inject_each_other_are_a_cycle`
 
 ### 10. A runtime process exits midway
 
-- TypeScript (Node): `crates/rutis-loader/tests/fault_containment.rs` `node_a_runtime_that_exits_blames_no_other_row`; `crates/rutis-host/tests/unhandled.rs` `a_plugin_ending_its_process_is_named`
-- Bun: `crates/rutis-loader/tests/fault_containment.rs` `bun_a_runtime_that_exits_blames_no_other_row`; `crates/rutis-host/tests/unhandled.rs` `a_plugin_ending_its_process_is_named`
-- Python: `crates/rutis-loader/tests/fault_containment.rs` `python_a_runtime_that_exits_blames_no_other_row`; `crates/rutis-host/tests/runtimes.rs` `a_killed_runtime_is_reported_with_how_it_ended`; `tests/e2e/tests/runtime_crash.rs` `a_killed_runtime_fails_its_calls_and_a_restart_recovers`; `crates/rutis-host/tests/unhandled.rs` `a_plugin_ending_its_process_is_named`
-- Go: `crates/rutis-loader/tests/go_rows.rs` `a_crash_stops_only_its_runtimes_rows_and_is_not_restarted`; `crates/rutis-host/tests/runtimes.rs` `a_go_runtime_restarted_on_failure_brings_its_rows_back`
+- TypeScript (Node): `crates/rutis-loader/tests/rows/fault_containment.rs` `node_a_runtime_that_exits_blames_no_other_row`; `crates/rutis-host/tests/config/unhandled.rs` `a_plugin_ending_its_process_is_named`
+- Bun: `crates/rutis-loader/tests/rows/fault_containment.rs` `bun_a_runtime_that_exits_blames_no_other_row`; `crates/rutis-host/tests/config/unhandled.rs` `a_plugin_ending_its_process_is_named`
+- Python: `crates/rutis-loader/tests/rows/fault_containment.rs` `python_a_runtime_that_exits_blames_no_other_row`; `crates/rutis-host/tests/process/runtimes.rs` `a_killed_runtime_is_reported_with_how_it_ended`; `tests/e2e/tests/crashes/runtime_crash.rs` `a_killed_runtime_fails_its_calls_and_a_restart_recovers`; `crates/rutis-host/tests/config/unhandled.rs` `a_plugin_ending_its_process_is_named`
+- Go: `crates/rutis-loader/tests/go/go_rows.rs` `a_crash_stops_only_its_runtimes_rows_and_is_not_restarted`; `crates/rutis-host/tests/process/runtimes.rs` `a_go_runtime_restarted_on_failure_brings_its_rows_back`
 - Rust (plugin and embedding): n/a
 
 ### 11. Breakpoints and logs
 
-- TypeScript (Node): `crates/rutis-host/tests/debug.rs` `dev_debug_opens_the_node_inspector`; `crates/rutis-host/tests/output.rs` `plugin_lines_written_in_pieces_come_out_whole`; `node/rutis-runtime/test/output.test.mjs` “each line a row's code writes starts with the row's name”; `crates/rutis-host/tests/output.rs` `prefix_output_starts_each_plugin_line_with_its_row`
-- Bun: `crates/rutis-host/tests/debug.rs` `dev_debug_opens_the_bun_inspector`; `bun/rutis-bun/test/output.test.ts` “each line a row's code writes starts with the row's name”
-- Python: `crates/rutis-host/tests/debug.rs` `dev_debug_stops_python_at_breakpoint`; `python/rutis/tests/test_output.py` `test_each_line_a_row_writes_starts_with_its_name`; `crates/rutis-host/tests/output.rs` `prefix_output_starts_each_plugin_line_with_its_row`
-- Go: `crates/rutis-host/tests/debug.rs` `dev_debug_runs_the_binary_under_delve`
+- TypeScript (Node): `crates/rutis-host/tests/config/debug.rs` `dev_debug_opens_the_node_inspector`; `crates/rutis-host/tests/config/output.rs` `plugin_lines_written_in_pieces_come_out_whole`; `node/rutis-runtime/test/output.test.mjs` “each line a row's code writes starts with the row's name”; `crates/rutis-host/tests/config/output.rs` `prefix_output_starts_each_plugin_line_with_its_row`
+- Bun: `crates/rutis-host/tests/config/debug.rs` `dev_debug_opens_the_bun_inspector`; `bun/rutis-bun/test/output.test.ts` “each line a row's code writes starts with the row's name”
+- Python: `crates/rutis-host/tests/config/debug.rs` `dev_debug_stops_python_at_breakpoint`; `python/rutis/tests/test_output.py` `test_each_line_a_row_writes_starts_with_its_name`; `crates/rutis-host/tests/config/output.rs` `prefix_output_starts_each_plugin_line_with_its_row`
+- Go: `crates/rutis-host/tests/config/debug.rs` `dev_debug_runs_the_binary_under_delve`
 - Rust (plugin and embedding): `crates/rutis/src/error.rs` `default_sink_lines_start_with_the_name_they_are_about`
 
 ### 12. A wrong config
 
-- TypeScript (Node): `crates/rutis-host/tests/check.rs` `check_fails_a_config_that_does_not_match_the_schema`; `crates/rutis-host/tests/check.rs` `check_warns_of_extra_config_keys`; `node/rutis/test/plugin.test.mjs` “the host fills the config defaults and refuses a config the schema refuses”
+- TypeScript (Node): `crates/rutis-host/tests/config/check.rs` `check_fails_a_config_that_does_not_match_the_schema`; `crates/rutis-host/tests/config/check.rs` `check_warns_of_extra_config_keys`; `node/rutis/test/plugin.test.mjs` “the host fills the config defaults and refuses a config the schema refuses”
 - Bun: `bun/rutis-bun/test/sdk.test.ts` “the host fills the config defaults and refuses a wrong config”
 - Python: `python/rutis/tests/test_testing.py` `test_the_hosts_loader_checks_the_config_and_fills_its_defaults`
 - Go: `go/rutis/internal/runtime/config_internal_test.go` `TestATypedConfigIsDecoded`; `go/rutis/internal/runtime/config_internal_test.go` `TestAConfigTheTypeDoesNotTakeIsSaidPlainly`; `go/rutis/rutistest/config_test.go` `TestATypedConfigInTheTestTool`
-- Rust (plugin and embedding): `crates/rutis-loader/tests/config_rows.rs` `a_rust_row_is_filled_and_validated`; `crates/rutis-loader/tests/config_rows.rs` `extra_keys_are_warned_about_once`; `crates/rutis/tests/config_cases.rs` `every_case_of_the_shared_list_passes`
+- Rust (plugin and embedding): `crates/rutis-loader/tests/rows/config_rows.rs` `a_rust_row_is_filled_and_validated`; `crates/rutis-loader/tests/rows/config_rows.rs` `extra_keys_are_warned_about_once`; `crates/rutis/tests/core/config_cases.rs` `every_case_of_the_shared_list_passes`
 
 ### 13. Two plugins provide a service of the same name
 
-- TypeScript (Node): `crates/rutis-host/tests/clash.rs` `a_service_provided_after_loading_twice_fails_the_later_row`; `crates/rutis-loader/tests/fault_containment.rs` `node_a_clashing_provide_fails_only_its_row`; `crates/rutis-host/tests/check.rs` `check_fails_on_cycles_and_clashes_and_suggests_misspelt_names`
-- Bun: `crates/rutis-loader/tests/fault_containment.rs` `bun_a_clashing_provide_fails_only_its_row`; `bun/rutis-bun/test/runner.test.ts` “a row that cannot load or provides a taken service is told so plainly (#677)”
-- Python: `crates/rutis-loader/tests/fault_containment.rs` `python_a_clashing_provide_fails_only_its_row`; `python/rutis/tests/test_plain_texts.py` `test_a_service_provided_twice_names_the_row`
+- TypeScript (Node): `crates/rutis-host/tests/config/clash.rs` `a_service_provided_after_loading_twice_fails_the_later_row`; `crates/rutis-loader/tests/rows/fault_containment.rs` `node_a_clashing_provide_fails_only_its_row`; `crates/rutis-host/tests/config/check.rs` `check_fails_on_cycles_and_clashes_and_suggests_misspelt_names`
+- Bun: `crates/rutis-loader/tests/rows/fault_containment.rs` `bun_a_clashing_provide_fails_only_its_row`; `bun/rutis-bun/test/runner.test.ts` “a row that cannot load or provides a taken service is told so plainly (#677)”
+- Python: `crates/rutis-loader/tests/rows/fault_containment.rs` `python_a_clashing_provide_fails_only_its_row`; `python/rutis/tests/test_plain_texts.py` `test_a_service_provided_twice_names_the_row`
 - Go: `go/rutis/internal/runtime/errors_text_internal_test.go` `TestADuplicateProviderIsNamedByItsRow`
-- Rust (plugin and embedding): `crates/rutis-loader/tests/check.rs` `rows_declaring_one_service_in_one_scope_clash`; `crates/rutis-bridge/tests/marked_services.rs` `a_second_service_of_the_same_name_is_refused`
+- Rust (plugin and embedding): `crates/rutis-loader/tests/rows/check.rs` `rows_declaring_one_service_in_one_scope_clash`; `crates/rutis-bridge/tests/session/marked_services.rs` `a_second_service_of_the_same_name_is_refused`
 
 ### 14. Seeing what is running now
 
-- TypeScript (Node): `crates/rutis-host/tests/status.rs` `status_says_what_a_running_host_does`
+- TypeScript (Node): `crates/rutis-host/tests/config/status.rs` `status_says_what_a_running_host_does`
 - Bun: no test
-- Python: `crates/rutis-loader/tests/status.rs` `the_status_names_rows_services_runtimes_and_calls`
+- Python: `crates/rutis-loader/tests/runtimes/status.rs` `the_status_names_rows_services_runtimes_and_calls`
 - Go: no test
-- Rust (plugin and embedding): `crates/rutis/tests/embedding_output.rs` `diagnostics_print_by_name_without_rutis_own_plugins`; `crates/rutis-loader/tests/status.rs` `the_status_names_rows_services_runtimes_and_calls`
+- Rust (plugin and embedding): `crates/rutis/tests/core/embedding_output.rs` `diagnostics_print_by_name_without_rutis_own_plugins`; `crates/rutis-loader/tests/runtimes/status.rs` `the_status_names_rows_services_runtimes_and_calls`
 
 <!-- faults:end -->

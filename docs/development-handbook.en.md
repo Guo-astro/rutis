@@ -443,7 +443,7 @@ cargo test -p rutis
 cargo run -p rutis --example development_workflow
 ```
 
-For more details, see [lifecycle contract tests](../crates/rutis/tests/contract.rs), [config update tests](../crates/rutis/tests/config_update.rs), [instance subtree tests](../crates/rutis/tests/instance_subtrees.rs), and [shutdown and deadline notes](core-shutdown-and-disposal-deadline.md).
+For more details, see [lifecycle contract tests](../crates/rutis/tests/core/contract.rs), [config update tests](../crates/rutis/tests/core/config_update.rs), [instance subtree tests](../crates/rutis/tests/core/instance_subtrees.rs), and [shutdown and deadline notes](core-shutdown-and-disposal-deadline.md).
 
 ---
 

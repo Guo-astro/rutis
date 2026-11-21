@@ -1,7 +1,7 @@
 # S5 across two containers (#341, risk E12 of docs/quality-status.md):
 # node B in one Docker container listening on a non-loopback address with
 # TLS, host A in another dialing it, netem adding 200 ms delay and 5 % loss,
-# then a full outage and its recovery (tests/e2e/tests/netem.rs). Runs in
+# then a full outage and its recovery (tests/e2e/tests/soak/netem.rs). Runs in
 # the nightly runs (nightly.yml calls it, report only) and on demand; pull
 # requests do not run it (Q12.1, #569): about 3 minutes there, and a failure
 # did not stop a merge (ci-ok only sums up ci.yml's jobs).
@@ -49,11 +49,11 @@ jobs:
       # The containers run this release build (ubuntu:24.04, the runner's
       # glibc).
       - run: cargo build --release -p rutis-host
-      - name: S5 across two containers (tests/e2e/tests/netem.rs)
+      - name: S5 across two containers (tests/e2e/tests/soak/netem.rs)
         id: s5
         env:
           RUTIS_E2E_HOST: ${{ github.workspace }}/target/release/rutis-host
-        run: cargo test -p rutis-e2e --test netem -- --ignored --nocapture
+        run: 'cargo test -p rutis-e2e --test soak netem:: -- --ignored --nocapture'
       - name: report
         if: always()
         env:

@@ -63,7 +63,7 @@ ctx.events().on(
 )?;
 ```
 
-The child's listener receives the parent's event, and a listener in a sibling instance receives it too. `rutis/tests/events.rs::events_reach_every_listener_on_the_bus` runs this flow from each side. Listeners run in registration order; `parallel` returns a `CordisError::ListenersFailed` whose children are in registration order, and `emit` reports failures where they run and returns at once.
+The child's listener receives the parent's event, and a listener in a sibling instance receives it too. `rutis/tests/core/events.rs::events_reach_every_listener_on_the_bus` runs this flow from each side. Listeners run in registration order; `parallel` returns a `CordisError::ListenersFailed` whose children are in registration order, and `emit` reports failures where they run and returns at once.
 
 **Diagnostics.** `EventSubscription` drops `key` (`TypeKey`), `prefixes`, `selected` and `invoked`, and has `name` (the event name, or the prefix of a prefix entry), `prefix`, `remote` (a listener elsewhere), `global` and `calls` (calls started so far); `owner` is an `Option<PluginId>` (`None` once the fiber that registered it is gone). `ListenerKind` has only `Sync`, `Async` and `Any` (`Any` only for listeners elsewhere): `AsyncWaterfall` and `SyncWaterfall` are gone, so code matching on them changes. `EventBacklog` and `DispatchAttempt` carry the event `name` instead of `key` (a `TypeKey`); `DispatchMode` is `rutis::Mode`; `CordisError::ReentrantEvent` is removed: a synchronous dispatch of a name may re-enter it (as in Cordis), and only a real wait cycle fails, with `SyncWaitCycle`.
 

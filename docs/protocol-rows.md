@@ -24,7 +24,7 @@
 
 `ROWS-1` **当前。** 行协议是会话上的控制操作：`invoke` 帧的 `target` 为空，`method` 是被调用的控制操作，`args` 是参数列表。宿主发给运行时的有 `mount`、`rows.load`、`rows.update`、`rows.unload`、`rows.schema`、`hosts.provide`、`hosts.withdraw`、`plugins.read`（`plugin-values`）；运行时发给宿主的有 `rows.ended`、`rows.failed` 和 `service`（服务槽位变化）。`target` 非空的 `invoke` 是应用服务调用，与行协议无关。`crates/rutis-bridge/src/runtime/process.rs:480-608`；`node/rutis-runtime/src/runner.mjs:1008-1041`
 
-`ROWS-2` **当前。** 一个运行时的一条会话服务它的全部行，不为一行另开会话或通道；控制操作按会话的帧序处理，和前后的会话帧没有别的顺序。`rows.ended` 与同一会话的 `events.*` 按帧序处理（会话协议 `SESS-19`）。`crates/rutis-bridge/tests/conformance_session_tracker.rs::a_remote_runtime_runs_rows_with_the_same_control_operations`、`::the_management_frames_do_not_depend_on_the_carrier`；`crates/rutis-bridge/tests/conformance_events_tracker.rs::rows_ended_is_a_table_change_in_frame_order`
+`ROWS-2` **当前。** 一个运行时的一条会话服务它的全部行，不为一行另开会话或通道；控制操作按会话的帧序处理，和前后的会话帧没有别的顺序。`rows.ended` 与同一会话的 `events.*` 按帧序处理（会话协议 `SESS-19`）。`crates/rutis-bridge/src/runtime/process.rs:135,589`；`crates/rutis-bridge/src/session/rpc.rs:1433-1444`
 
 `ROWS-3` **当前。** 跑行的运行时必须声明能力 `rows.v2` 与 `hosts`。宿主在让运行时跑行之前检查，缺一项就拒绝，文字逐字为：
 
@@ -40,9 +40,9 @@ the <运行时名> runtime lacks <缺少的能力，用 and 连接>: a runtime s
 
 `ROWS-5` **当前。** 行在一条会话里由 `key` 标识，同一个 `key` 最多一行。重复装载同一个 `key` 让这次调用失败，文字为 `row <key> is already loaded`。`node/rutis-runtime/src/runner.mjs:647`；`bun/rutis-bun/src/runner.ts:358`；`python/rutis/rutis/runner.py:616`；`go/rutis/internal/runtime/runtime.go:520`；`swift/rutis/Sources/Rutis/API/Runtime.swift:792`；`kotlin/rutis/rutis/src/shared/kotlin/arcships/rutis/internal/Runtime.kt:615`
 
-`ROWS-6` **当前。** 每次装载取一个新 `key`，行的旧代与新代因此不会共用一个键：loader 的行用 `<实例>.<代次>`（`crates/rutis-loader/src/runtime.rs:719-727`），`run` API 的行用 `<插件>#<n>`（`crates/rutis-loader/src/run.rs:168`）。旧代的迟到 `rows.ended` / `rows.failed` 只作用于收到它的那个键，不结束、不重启新代。`crates/rutis-loader/tests/session_rows.rs::a_late_notice_of_an_old_key_reaches_no_row`、`crates/rutis-loader/tests/runtime_rows.rs::a_row_restarted_while_loading_is_unloaded_in_the_runtime`；模型 `OwnFramesOnly`
+`ROWS-6` **当前。** 每次装载取一个新 `key`，行的旧代与新代因此不会共用一个键：loader 的行用 `<实例>.<代次>`（`crates/rutis-loader/src/runtime.rs:719-727`），`run` API 的行用 `<插件>#<n>`（`crates/rutis-loader/src/run.rs:168`）。旧代的迟到 `rows.ended` / `rows.failed` 只作用于收到它的那个键，不结束、不重启新代。`crates/rutis-loader/tests/rows/session_rows.rs::a_late_notice_of_an_old_key_reaches_no_row`、`crates/rutis-loader/tests/go/runtime_rows.rs::a_row_restarted_while_loading_is_unloaded_in_the_runtime`；模型 `OwnFramesOnly`
 
-`ROWS-7` **当前。** `rows.load` 的第七个参数是 `{scope, id}`：`scope` 是行的作用域链（`[{id, group}]`，根为 `[]`），`id` 是配置给这一行的 id；不给 `id` 时用 `key`。`id` 不要求唯一（实例里同组的两行可以同名），`key` 必须唯一。`crates/rutis-bridge/src/runtime/process.rs:1094-1111`；`crates/rutis-bridge/tests/conformance_events_tracker.rs::rows_load_carries_seven_arguments_with_the_scope_and_the_id`
+`ROWS-7` **当前。** `rows.load` 的第七个参数是 `{scope, id}`：`scope` 是行的作用域链（`[{id, group}]`，根为 `[]`），`id` 是配置给这一行的 id；不给 `id` 时用 `key`。`id` 不要求唯一（实例里同组的两行可以同名），`key` 必须唯一。`crates/rutis-bridge/src/runtime/process.rs:1094-1111`
 
 ## 3. 装载
 
@@ -52,11 +52,11 @@ the <运行时名> runtime lacks <缺少的能力，用 and 连接>: a runtime s
 [key, entry, config, isolate, inject, exports, {scope, id}]
 ```
 
-`entry` 由运行时自己解释（模块名、bundle、二进制里的插件名，或插件定义引用）；`config` 是已补默认值、已校验的配置；`isolate` 是 `[服务名, 标签]` 对；`inject` 是这一行自己等的服务名；`exports` 是 `{服务名: {方法: "sync" | "async"}}`，不导出时为 `{}`。宿主总是发七个参数。`crates/rutis-bridge/src/runtime/process.rs:1068-1079,1284-1294`；`node/rutis-runtime/src/runner.mjs:647`；`python/rutis/rutis/runner.py:1277-1287`；测试 `crates/rutis-bridge/tests/conformance_events_tracker.rs::rows_load_carries_seven_arguments_with_the_scope_and_the_id`
+`entry` 由运行时自己解释（模块名、bundle、二进制里的插件名，或插件定义引用）；`config` 是已补默认值、已校验的配置；`isolate` 是 `[服务名, 标签]` 对；`inject` 是这一行自己等的服务名；`exports` 是 `{服务名: {方法: "sync" | "async"}}`，不导出时为 `{}`。宿主总是发七个参数。`crates/rutis-bridge/src/runtime/process.rs:1068-1079,1284-1294`；`node/rutis-runtime/src/runner.mjs:647`；`python/rutis/rutis/runner.py:1277-1287`。
 
 `ROWS-9` **当前。** `rows.load` 的回复在下面这些之后才发：插件的 `apply` 返回；它声明的服务已投到 rutis；没有声明就提供的服务已公告并被接受；它的监听器已在总线上登记。插件在装载期间抛出的错误（包括 `apply` 返回的拒绝）让这次装载失败，不产生“已装载再失败”。`node/rutis-runtime/src/runner.mjs:673-742`；`python/rutis/rutis/runner.py:671-700`；事件协议 §4.4 第 2 条；`crates/rutis-bridge/src/runtime/process.rs:531-541`
 
-`ROWS-10` **当前。** 装载失败只让这一次调用失败：运行时卸载已经建立的半行（清理、撤服务、撤监听器），宿主忘掉这一行并释放它已租用的宿主服务，这一行不留残余。失败是这次 `rows.load` 的 `throw`，不是单独的帧。`node/rutis-runtime/src/runner.mjs:745-756`；`crates/rutis-loader/src/runtime.rs:613-640`；`crates/rutis-bridge/src/runtime/process.rs:1068-1079,1305-1315`；测试 `crates/rutis-loader/tests/runtime_rows.rs::a_row_that_fails_to_load_releases_its_leases`
+`ROWS-10` **当前。** 装载失败只让这一次调用失败：运行时卸载已经建立的半行（清理、撤服务、撤监听器），宿主忘掉这一行并释放它已租用的宿主服务，这一行不留残余。失败是这次 `rows.load` 的 `throw`，不是单独的帧。`node/rutis-runtime/src/runner.mjs:745-756`；`crates/rutis-loader/src/runtime.rs:613-640`；`crates/rutis-bridge/src/runtime/process.rs:1068-1079,1305-1315`；测试 `crates/rutis-loader/tests/go/runtime_rows.rs::a_row_that_fails_to_load_releases_its_leases`
 
 `ROWS-11` **当前。** `rows.schema` 的参数是 `entry`，回复是这一行的描述：`config`（配置的 JSON Schema，没有时为 `null`）、`inject`、`optional`、`provides`（`{名字: {方法: "sync" | "async"}}`）、`announces`（运行时会公告没有声明的服务）、`version`（包或模块的版本，没有时为 `null`）；Node 另有 `cordis: true`。描述里缺的字段按空处理。`crates/rutis-bridge/src/runtime/process.rs:730-757,1417-1421`；`node/rutis-runtime/src/runner.mjs:785-817`；`python/rutis/rutis/runner.py:970-980`；`kotlin/rutis/rutis/src/shared/kotlin/arcships/rutis/internal/Runtime.kt:978-990`
 
@@ -64,11 +64,11 @@ the <运行时名> runtime lacks <缺少的能力，用 and 连接>: a runtime s
 
 ## 4. 更新
 
-`ROWS-13` **当前。** `rows.update` 的参数是 `[key, config]`，键与代次不变。只改了易变字段（schema 里标 `x-volatile` 的字段）时，Node 的 Cordis 行就地提交、不卸载也不换代；其余更新按“卸载旧行、用同一 `key` 再装载”完成。全部叶运行时（Python、Bun、Go、Swift、Kotlin）没有易变字段，每次更新都重启这一行。`crates/rutis-bridge/src/runtime/process.rs:1347-1349`；`node/rutis-runtime/src/runner.mjs:837-886`；`python/rutis/rutis/runner.py:863-875`；`bun/rutis-bun/src/runner.ts:504-511`；`go/rutis/internal/runtime/runtime.go:644-666`；`swift/rutis/Sources/Rutis/API/Runtime.swift:892-905`；`kotlin/rutis/rutis/src/shared/kotlin/arcships/rutis/internal/Runtime.kt:875-887`；测试 `crates/rutis-loader/tests/runtime_rows.rs::volatile_changes_reach_cordis_in_place`、`crates/rutis-bridge/tests/conformance_session_tracker.rs::a_config_change_is_one_update`
+`ROWS-13` **当前。** `rows.update` 的参数是 `[key, config]`，键与代次不变。只改了易变字段（schema 里标 `x-volatile` 的字段）时，Node 的 Cordis 行就地提交、不卸载也不换代；其余更新按“卸载旧行、用同一 `key` 再装载”完成。全部叶运行时（Python、Bun、Go、Swift、Kotlin）没有易变字段，每次更新都重启这一行。`crates/rutis-bridge/src/runtime/process.rs:1347-1349`；`node/rutis-runtime/src/runner.mjs:837-886`；`python/rutis/rutis/runner.py:863-875`；`bun/rutis-bun/src/runner.ts:504-511`；`go/rutis/internal/runtime/runtime.go:644-666`；`swift/rutis/Sources/Rutis/API/Runtime.swift:892-905`；`kotlin/rutis/rutis/src/shared/kotlin/arcships/rutis/internal/Runtime.kt:875-887`；测试 `crates/rutis-loader/tests/go/runtime_rows.rs::volatile_changes_reach_cordis_in_place`
 
 `ROWS-14` **当前。** 更新一个不在装载中的行（没装载过，或正在卸载）让这次调用失败，文字为 `row <key> is not loaded`。六种运行时用同一句。`node/rutis-runtime/src/runner.mjs:852`；`bun/rutis-bun/src/runner.ts:506`；`python/rutis/rutis/runner.py:870`；`go/rutis/internal/runtime/runtime.go:646-650`；`swift/rutis/Sources/Rutis/API/Runtime.swift:893-896`；`kotlin/rutis/rutis/src/shared/kotlin/arcships/rutis/internal/Runtime.kt:876-879`
 
-`ROWS-15` **当前。** 重启式的更新按卸载再装载的顺序进行：先撤下这一行的服务与监听器、取消并等正在运行的监听器结束，再运行新的 `apply`；回复在新的监听器登记之后发（`ROWS-9`）。`node/rutis-runtime/src/runner.mjs:860-884`；`bun/rutis-bun/src/runner.ts:504-511`；`python/rutis/rutis/runner.py:863-875`；`crates/rutis-loader/tests/runtime_rows.rs::volatile_changes_reach_cordis_in_place`（其余字段的更新走重启）
+`ROWS-15` **当前。** 重启式的更新按卸载再装载的顺序进行：先撤下这一行的服务与监听器、取消并等正在运行的监听器结束，再运行新的 `apply`；回复在新的监听器登记之后发（`ROWS-9`）。`node/rutis-runtime/src/runner.mjs:860-884`；`bun/rutis-bun/src/runner.ts:504-511`；`python/rutis/rutis/runner.py:863-875`；`crates/rutis-loader/tests/go/runtime_rows.rs::volatile_changes_reach_cordis_in_place`（其余字段的更新走重启）
 
 ## 5. 卸载
 
@@ -86,7 +86,7 @@ the <运行时名> runtime lacks <缺少的能力，用 and 连接>: a runtime s
 
 `ROWS-21` **当前。** 一行提供的服务按“名字 + `isolate` 标签”组成一个 id：没有标签时就是名字，有标签时是名字与标签（`name\0label`）。一条会话里同一个 id 最多一个提供者；冲突让后装载的那一行失败，文字形如 `service <id> is already exported by row <key>`（Go、Swift、Kotlin 是 `<名字> is already provided by <行>: rename one of them`）。`crates/rutis-bridge/src/runtime/process.rs:43-54`；`node/rutis-runtime/src/runner.mjs:650-657`；`go/rutis/internal/runtime/runtime.go:530-538`；`swift/rutis/Sources/Rutis/API/Runtime.swift:53-59`；`kotlin/rutis/rutis/src/shared/kotlin/arcships/rutis/Refusals.kt:81-87`
 
-`ROWS-22` **当前。** 运行时用 `service` 控制操作报告服务槽位的变化：参数是 `[id, handle, version]`；没有声明就提供的服务在第四位多一个 `{row, methods}`，`row` 是它的行键，`methods` 是 `{方法: "sync" | "async"}`。`handle` 为 `null` 是撤下。声明的服务在 `rows.load` 回复之前发出（`ROWS-9`），没有声明的也在回复之前公告并被接受。`crates/rutis-bridge/src/runtime/process.rs:570-608`；`node/rutis-runtime/src/runner.mjs:266-274,706-714`；`crates/rutis-bridge/tests/row_services.rs::services_a_row_does_not_declare_are_announced_with_their_methods`
+`ROWS-22` **当前。** 运行时用 `service` 控制操作报告服务槽位的变化：参数是 `[id, handle, version]`；没有声明就提供的服务在第四位多一个 `{row, methods}`，`row` 是它的行键，`methods` 是 `{方法: "sync" | "async"}`。`handle` 为 `null` 是撤下。声明的服务在 `rows.load` 回复之前发出（`ROWS-9`），没有声明的也在回复之前公告并被接受。`crates/rutis-bridge/src/runtime/process.rs:570-608`；`node/rutis-runtime/src/runner.mjs:266-274,706-714`；`crates/rutis-bridge/tests/session/row_services.rs::services_a_row_does_not_declare_are_announced_with_their_methods`
 
 `ROWS-23` **当前。** 服务槽位带版本，同一个 id 每次变化取一个递增的版本；宿主只应用比已知版本新的公告，迟到的旧公告被丢弃。`crates/rutis-bridge/src/runtime/process.rs:453-472`；`node/rutis-runtime/src/runner.mjs:266`；模型 `NewerWins`
 
@@ -96,7 +96,7 @@ the <运行时名> runtime lacks <缺少的能力，用 and 连接>: a runtime s
 
 ## 7. 行自行结束与失败
 
-`ROWS-26` **当前。** 插件自行结束（Cordis 插件 dispose 自己的 fiber）时，运行时把这一行剩下的部分卸掉，然后发 `rows.ended`（参数 `[key]`）；宿主结束这一行并卸掉它，不再装载。`rows.ended` 是会话帧序里的表变更，和 `events.*` 同序（`SESS-19`）。`crates/rutis-bridge/src/runtime/process.rs:531-541`；`node/rutis-runtime/src/runner.mjs:372-382`；`crates/rutis-bridge/tests/conformance_events_tracker.rs::rows_ended_is_a_table_change_in_frame_order`；`crates/rutis-loader/tests/runtime_rows.rs::a_plugin_that_disposes_itself_ends_its_row`
+`ROWS-26` **当前。** 插件自行结束（Cordis 插件 dispose 自己的 fiber）时，运行时把这一行剩下的部分卸掉，然后发 `rows.ended`（参数 `[key]`）；宿主结束这一行并卸掉它，不再装载。`rows.ended` 是会话帧序里的表变更，和 `events.*` 同序（`SESS-19`）。`crates/rutis-bridge/src/runtime/process.rs:531-541`；`node/rutis-runtime/src/runner.mjs:372-382`；`crates/rutis-loader/tests/go/runtime_rows.rs::a_plugin_that_disposes_itself_ends_its_row`
 
 `ROWS-27` **未确认。** 装载期间插件自行结束：按 Node 的规则，装载照样成功，`rows.ended` 在装载回复之后才发（否则装载失败只报装载的错误）。这是模型 `EndingAfterLoad` 建的规则，只有 Node 的实现和用例；其余运行时的同一时序未确认。`node/rutis-runtime/src/runner.mjs:737,372-377`；`specs/row-lifecycle/README.md` 的 `EndingAfterLoad`
 
@@ -112,7 +112,7 @@ the <运行时名> runtime lacks <缺少的能力，用 and 连接>: a runtime s
 
 `ROWS-32` **当前。** 宿主一行是一个 fiber，一行最多一个代次处于运行；迟到的 `rows.ended` / `rows.failed` 只结束自己的代次；服务在提供方卸载之前撤下；租约不长于行。`specs/row-lifecycle/README.md` 的 `OneRowPerName`、`OwnFramesOnly`、`WithdrawBeforeUnload`、`LeaseWithinRow`；36 个配置（`specs/row-lifecycle/expected.txt`）
 
-`ROWS-33` **当前。** 撞名拒绝记在引起它的那次装载（fiber 实例）上：只让紧接的那次 `apply` 失败；这次重启在等依赖、没有 `apply` 时拒绝被忘掉，不失败后面的代。`crates/rutis-loader/src/runtime.rs:371-405`；`crates/rutis-loader/tests/fault_containment.rs::node_a_clashing_provide_fails_only_its_row`；模型 `RefusalScope`
+`ROWS-33` **当前。** 撞名拒绝记在引起它的那次装载（fiber 实例）上：只让紧接的那次 `apply` 失败；这次重启在等依赖、没有 `apply` 时拒绝被忘掉，不失败后面的代。`crates/rutis-loader/src/runtime.rs:371-405`；`crates/rutis-loader/tests/rows/fault_containment.rs::node_a_clashing_provide_fails_only_its_row`；模型 `RefusalScope`
 
 `ROWS-34` **当前。** 运行时进程结束时 `Runtime` 与 `RuntimeRows` 都撤销，它的行停下等待，正在进行的装载也随之等待；不自动重启，是否重启由应用决定；其他运行时、不用它的服务的行照常运行。重启之后行重新解析、重新装载。`crates/rutis-loader/src/runtime.rs:1013-1035` 的 `wait_for_the_runtime`；`docs/guarantees.md` 的 `loader/runtime-down-stops-its-rows`、`loader/runtime-start-failure-isolated`
 

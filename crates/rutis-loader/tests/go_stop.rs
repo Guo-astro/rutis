@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use common::runtimes::{greet_as_main, layer, spawner, COLD};
+use crate::common::runtimes::{greet_as_main, layer, spawner, COLD};
 use rutis::host::{CtxHost, FiberState};
 use rutis::Ctx;
 use rutis_bridge::pipe::{kill_processes, running_processes};

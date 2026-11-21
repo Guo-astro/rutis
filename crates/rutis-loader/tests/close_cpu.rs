@@ -18,7 +18,7 @@ mod common;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use common::{patches, MemStore};
+use crate::common::{patches, MemStore};
 use rutis::host::CtxHost;
 use rutis::internal::CtxInternal;
 use rutis::Ctx;

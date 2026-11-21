@@ -3,7 +3,7 @@
 # install scenarios (tests/e2e/tests/install.rs) on a development machine:
 #
 #   tools/install/local-artifacts.sh <dir>
-#   RUTIS_E2E_ARTIFACTS=<dir> cargo test -p rutis-e2e --test install -- --ignored --test-threads=1
+#   RUTIS_E2E_ARTIFACTS=<dir> cargo test -p rutis-e2e --test install install:: -- --ignored --test-threads=1
 #
 # <dir>/npm     the npm tarballs: @arcships/rutis, -runtime, -bun, -host and
 #               this platform's @arcships/rutis-host-<os>-<cpu>

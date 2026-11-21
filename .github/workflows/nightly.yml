@@ -223,7 +223,7 @@ jobs:
       - name: library mount against native Cordis (dsh_baseline)
         id: baseline
         continue-on-error: true
-        run: cargo test -p rutis-bridge --test dsh_baseline
+        run: 'cargo test -p rutis-bridge --test lang dsh_baseline::'
       - name: generated bindings (examples/dsh-baseline)
         id: bindings
         continue-on-error: true
@@ -234,12 +234,12 @@ jobs:
             examples/dsh-baseline/Cargo.toml > "$RUNNER_TEMP/Cargo.toml"
           cp "$RUNNER_TEMP/Cargo.toml" examples/dsh-baseline/Cargo.toml
           cargo test -p dsh-baseline
-      - name: S6 (tests/e2e/tests/cordis.rs)
+      - name: S6 (tests/e2e/tests/install/cordis.rs)
         id: s6
         continue-on-error: true
         env:
           RUTIS_E2E_DIR: /tmp/rutis-e2e
-        run: cargo test -p rutis-e2e --test cordis
+        run: 'cargo test -p rutis-e2e --test install cordis::'
       - name: report
         if: always()
         env:
@@ -263,7 +263,7 @@ jobs:
             echo "| --- | --- |"
             echo "| library mount against native Cordis (dsh_baseline) | ${BASELINE:-skipped} |"
             echo "| generated bindings (examples/dsh-baseline) | ${BINDINGS:-skipped} |"
-            echo "| S6 (tests/e2e/tests/cordis.rs) | ${S6:-skipped} |"
+            echo "| S6 (tests/e2e/tests/install/cordis.rs) | ${S6:-skipped} |"
           } >> "$GITHUB_STEP_SUMMARY"
           [ "$INSTALL" = together ] || echo "::warning::the newest published Cordis plugins do not install together (F4)"
           for check in "dsh_baseline:$BASELINE" "examples/dsh-baseline:$BINDINGS" "S6:$S6"; do
