@@ -130,7 +130,6 @@ async fn a_short_wait_or_reports_off_say_nothing() {
     let greeting = ctx.provide(Greeting).unwrap();
     within("printer to start", async {
         while view.state().state != FiberState::Active {
-            // clock: weak-negative — reported once, not again while the plugin goes on waiting
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     })
