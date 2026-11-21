@@ -28,7 +28,6 @@
 // The environment is held until the listener this test starts ends.
 #![allow(clippy::await_holding_lock)]
 
-
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU16, Ordering};
