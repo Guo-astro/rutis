@@ -41,8 +41,6 @@ use serde_json::json;
 use tokio::io::AsyncBufReadExt;
 use tokio::sync::mpsc;
 
-mod common;
-
 fn repo() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
