@@ -103,6 +103,7 @@ struct PeerTests {
         XCTAssertTrue(began, "the call reached its handler")
         // Its Task is attached right after the call starts; a moment is enough
         // for the attach to be behind us.
+        // clock: widen — the attach has completed
         try await Task.sleep(nanoseconds: 50_000_000)
         runtime.close()
         let heard = await cancelled.wait(seconds: 5)
@@ -130,6 +131,7 @@ struct PeerTests {
             attaching.wait()
             return {
                 do {
+                    // clock: widen — the attach has completed
                     try await Task.sleep(nanoseconds: 200_000_000)
                 } catch {
                     cancelled.fire()

@@ -717,6 +717,7 @@ async fn an_isolated_second_provider_runs_beside_the_first() {
         }
     }
     // Another isolate does not see bergen's: its reader waits.
+    // clock: weak-negative — isolated: nothing of the other tenant's
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     for lang in ["py", "js"] {
         assert!(

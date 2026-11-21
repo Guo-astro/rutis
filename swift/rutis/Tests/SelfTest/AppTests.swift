@@ -315,6 +315,7 @@ struct AppTests {
         let raced = try await stop.race({ () -> String in
             stop.stop()
             // Returns after the stop, ignoring the cancellation.
+            // clock: widen — let the stop land in the middle of dialing
             await Task.detached { try? await Task.sleep(nanoseconds: 50_000_000) }.value
             return "socket"
         }, discard: { discarded.add($0) })
@@ -348,10 +349,12 @@ struct AppTests {
             case 1: // as the dial returns: stopped once upgraded
                 let delay = Double(round % 7) * 0.0003
                 accepted.then = { DispatchQueue.global().asyncAfter(deadline: .now() + delay) { Task { await app.stop() } } }
+                // clock: widen — let the stop land in the middle of dialing
                 for _ in 0..<500 where accepted.count == before { try await Task.sleep(nanoseconds: 1_000_000) }
                 accepted.then = nil
             default: // waiting for the greeting
                 for _ in 0..<500 where accepted.count == before { try await Task.sleep(nanoseconds: 1_000_000) }
+                // clock: widen — let the stop land in the middle of dialing
                 try await Task.sleep(nanoseconds: 50_000_000)
             }
             await app.stop()

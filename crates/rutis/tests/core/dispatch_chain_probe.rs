@@ -46,6 +46,7 @@ impl ChainProbe {
         self.max_in_flight.fetch_max(now, Ordering::SeqCst);
         self.started.lock().unwrap()[emitter].push(n);
         // 一点工作量,放大重叠窗口:若链分叉,并发派发在此明显重叠
+        // clock: widen — widen the overlap between the emitters
         std::thread::sleep(std::time::Duration::from_micros(50));
         self.in_flight.fetch_sub(1, Ordering::SeqCst);
         self.completed.fetch_add(1, Ordering::SeqCst);

@@ -290,6 +290,7 @@ async fn a_runtime_the_host_may_not_restart_stays_down() {
         .expect_err("the call cannot succeed");
 
     // Longer than the first wait of `on-failure` (1 s): no restart at all.
+    // clock: weak-negative — the runtime is not started again
     tokio::time::sleep(Duration::from_millis(1500)).await;
     assert!(matches!(handle(&host).state(), RuntimeState::Down(_)));
     assert_eq!(starts(dir.path()), 1, "{:?}", lines(dir.path()));
@@ -370,6 +371,7 @@ async fn a_runtime_removed_during_the_backoff_is_not_started_again() {
     assert!(host.runtimes.is_empty());
 
     // Past the wait the supervisor had before it: nothing started.
+    // clock: weak-negative — the runtime is not started again
     tokio::time::sleep(Duration::from_millis(1500)).await;
     assert!(host.runtimes.is_empty());
     assert_eq!(starts(dir.path()), 1, "{:?}", lines(dir.path()));

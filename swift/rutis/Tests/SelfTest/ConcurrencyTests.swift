@@ -18,6 +18,7 @@ struct ConcurrencyTests {
                     resumed.withLock { $0 += 1 }
                 }
             }
+            // clock: widen — let all 64 tasks reach the waiters
             try? await Task.sleep(nanoseconds: 20_000_000)
             XCTAssertTrue(waiters.finish())
             await group.waitForAll()

@@ -196,6 +196,7 @@ class ConnectionTest {
             }
         }.apply { isDaemon = true }.start()
         // A send taking longer than this is blocked.
+        // clock: weak-negative — not blocked, not closed
         Thread.sleep(500)
         assertTrue(!sending.isDone, "the sends did not block")
         return sending
@@ -231,6 +232,7 @@ class ConnectionTest {
         val clock = AtomicLong(Long.MAX_VALUE / 2)
         connection.now = { clock.get() }
         // Well past the timeout, and no hello yet: waiting is not silence.
+        // clock: weak-negative — not blocked, not closed
         Thread.sleep(300)
         connection.send("not yet".toByteArray())
         assertEquals("not yet", nextMessage(client::next).toString(Charsets.UTF_8))
@@ -242,6 +244,7 @@ class ConnectionTest {
         val (client, connection) = client(server)
         val clock = AtomicLong(Long.MAX_VALUE / 2)
         connection.now = { clock.get() }
+        // clock: weak-negative — not blocked, not closed
         Thread.sleep(200)
         connection.send("hello".toByteArray())
         assertEquals("hello", nextMessage(client::next).toString(Charsets.UTF_8))
@@ -396,6 +399,7 @@ class ConnectionTest {
         repeat(3) {
             val listening = Listening(server(), Endpoint("app", null, listOf("runtime")), emptyList())
             val ended = CompletableFuture.supplyAsync { listening.run() }
+            // clock: widen — the listening has started before it is stopped
             Thread.sleep(100)
             listening.stop()
             assertTrue(ended.get(5, TimeUnit.SECONDS) is Ended.Stopped)
@@ -479,6 +483,7 @@ class ConnectionTest {
         // The access point never answers this side's pings: only its own count.
         val connection = dialer(at, Heartbeat(100, 1000)).dial()
         val received = CompletableFuture.supplyAsync { runCatching { connection.recv() } }
+        // clock: weak-negative — not blocked, not closed
         Thread.sleep(1500)
         assertTrue(!received.isDone, "the connection ended while the access point pinged: ${received.getNow(null)}")
         at.pinging = false

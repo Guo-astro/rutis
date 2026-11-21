@@ -114,6 +114,7 @@ async fn run_mode(mode: &str) {
             // `backlogs` is crate-private; the hook has already selected the
             // listener, and `Entry::start` is the next step of the same task.
             // Give the dispatch a bounded window to reach it.
+            // clock: widen — a bounded window for the dispatch
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
         "serial" => {
@@ -192,6 +193,7 @@ async fn subtree_shutdown_skips_descendant_but_not_sibling() {
     let (shutdown, fired) = close_on_first_ping(&root, closed);
     root.emit(Ping(0)).unwrap();
     fired.notified().await;
+    // clock: weak-negative — after the close, listeners do not run
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
     assert_eq!(closed_calls.load(Ordering::SeqCst), 0, "closed child ran");
@@ -242,6 +244,7 @@ async fn root_shutdown_before_start_skips_root_and_child_listeners() {
 
     root.emit(Ping(0)).unwrap();
     fired.notified().await;
+    // clock: weak-negative — after the close, listeners do not run
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     assert_eq!(root_calls.load(Ordering::SeqCst), 0, "root listener ran");
     assert_eq!(child_calls.load(Ordering::SeqCst), 0, "child listener ran");
@@ -414,6 +417,7 @@ async fn a_generation_restart_keeps_the_marker_clear_until_shutdown() {
     .await;
     view.shutdown().await.unwrap();
     root.emit(Ping(1)).unwrap();
+    // clock: weak-negative — after the close, listeners do not run
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     assert_eq!(
         calls.load(Ordering::SeqCst),
@@ -443,6 +447,7 @@ async fn repeated_subtree_shutdown_is_idempotent() {
     first.await.unwrap();
     second.await.unwrap();
     root.emit(Ping(1)).unwrap();
+    // clock: weak-negative — after the close, listeners do not run
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     assert_eq!(
         calls.load(Ordering::SeqCst),

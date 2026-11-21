@@ -327,6 +327,7 @@ test('a failure of events.dispatch(\'emit\') nobody awaits is reported', async (
     const results = await Promise.allSettled(root.events.dispatch('emit', ['d']).map(async callback => callback()))
     assert.equal(results[0].status, 'rejected')
     assert.equal(results[0].reason.name, 'AggregateError')
+    // clock: weak-negative — reported once: an awaited caller has the failure itself
     await new Promise(resolve => setTimeout(resolve, 10))
     assert.deepEqual(reported, [], 'awaited: the caller has the failure')
     assert.deepEqual(unhandled, [])

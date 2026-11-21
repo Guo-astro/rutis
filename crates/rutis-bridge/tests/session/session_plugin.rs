@@ -246,6 +246,7 @@ async fn a_handshake_alone_registers_nothing() {
             .any(|plugin| plugin.name == "rutis-bridge/session"),
         "nothing is mounted at a"
     );
+    // clock: weak-negative — nothing is shared between the two
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert!(
         b.get_at(&host_key("clock")).is_none(),
@@ -421,6 +422,7 @@ async fn a_service_never_returns_through_its_session() {
         Some(FiberState::Active)
     );
     // Nothing of a's own came back to a.
+    // clock: weak-negative — nothing is sent twice
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert!(
         !a.diagnostics()
@@ -1019,6 +1021,7 @@ async fn the_far_end_leaving_unloads_its_plugins() {
         let a = a.clone();
         tokio::spawn(async move { call_service::<Json>(&a, "clock", "slow", ()).await })
     };
+    // clock: widen — the call is already in flight when the plugin is disposed
     tokio::time::sleep(Duration::from_millis(50)).await;
     within("b's session unloading", at_b.dispose())
         .await
@@ -1044,6 +1047,7 @@ async fn a_greeted_session_dropped_unmounted_closes_with_done() {
         .unwrap();
     // Time for anything a greeted session might send on its own: it sends
     // nothing until it is mounted.
+    // clock: weak-negative — nothing is sent twice
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     drop(greeted);
     let (frames, ended) = joined(far).await;

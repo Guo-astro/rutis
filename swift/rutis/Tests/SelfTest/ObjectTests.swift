@@ -215,6 +215,7 @@ struct ObjectTests {
         guard case let .remoteObject(object) = given else { return XCTFail("\(given)") }
         XCTAssertEqual(runtime.referenceTables.exports, 1)
         let call = Task { try await object.call("run", [], sync: false) }
+        // clock: widen — the object has started before it is cancelled
         try await Task.sleep(nanoseconds: 100_000_000)
         call.cancel()
         for _ in 0 ..< 100 where slow.cancelled.all.isEmpty {

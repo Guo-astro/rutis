@@ -136,6 +136,7 @@ async fn a_runtime_that_does_not_stop_in_time_is_killed_before_the_next_starts()
     // process's row or service later.
     let generation_now = generation(&loader).expect("the row runs again");
     assert!(generation_now > first_generation);
+    // clock: weak-negative — the runtime is not started again
     tokio::time::sleep(Duration::from_secs_f64(DEADLINE * 2.0)).await;
     assert_eq!(generation(&loader), Some(generation_now));
     assert_eq!(pid(&root), Some(second), "the new service stays");

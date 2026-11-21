@@ -266,6 +266,7 @@ async fn withdrawn_at_the_gate(
     .await
     .expect("service marked removed");
     // The consumer is held in validate: the withdrawal must wait for it.
+    // clock: weak-negative — the consumer is held in validate, so the withdrawal must wait
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert!(
         !returned.load(Ordering::SeqCst),
@@ -640,6 +641,7 @@ async fn refresh_queued_before_a_dispose() {
     .await
     .expect("service marked removed");
     // The withdrawal queues the consumer's refresh right after marking.
+    // clock: widen — let the withdrawal be queued into a refresh
     tokio::time::sleep(Duration::from_millis(50)).await;
     let dispose = view.dispose();
     go.notify_one();
@@ -750,6 +752,7 @@ async fn restart_behind_a_refresh_that_disposes() {
     .await
     .expect("service marked removed");
     // The withdrawal queues the consumer's refresh right after marking.
+    // clock: widen — let the withdrawal be queued into a refresh
     tokio::time::sleep(Duration::from_millis(50)).await;
     let restart = polled_once(view.restart()).await;
     let dispose = view.dispose();

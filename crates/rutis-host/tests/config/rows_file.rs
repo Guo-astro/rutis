@@ -104,6 +104,7 @@ fn rows_plugins_add_and_remove_are_written_into_rutis_json() {
     host.wait_lines(&["weather: running"]);
     assert_eq!(read(dir), file(&[maker, ("weather", "py:tiny")]));
     // What was written is no change: the first reload is the hand edit's.
+    // clock: weak-negative — the debounce window: no reload yet
     std::thread::sleep(std::time::Duration::from_millis(1500));
     std::fs::write(
         dir.join("rutis.json"),

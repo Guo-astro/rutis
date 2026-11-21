@@ -56,6 +56,7 @@ test('the returned function stops it, and so does unloading the row', async () =
   t.on('talker/asked', city => { asked.push(city) })
   await t.unload()
   h.emit('talker/asked', 'Bergen')
+  // clock: weak-negative — nothing is delivered after the unload
   await new Promise(resolve => setTimeout(resolve, 50))
   assert.deepEqual(asked, [])
   assert.throws(() => t.on('talker/asked', () => {}), /the plugin is unloaded/)

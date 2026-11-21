@@ -941,6 +941,7 @@ async fn a_failing_emit_filter_is_reported() {
     assert!(
         matches!(&*errors.lock().unwrap()[0], ErrorKind::FilterFailed { name, .. } if name == "t/ping")
     );
+    // clock: weak-negative — a filter that failed never puts its listener in the table
     tokio::time::sleep(Duration::from_millis(20)).await;
     assert!(entries(&order).is_empty());
 }
@@ -1713,6 +1714,7 @@ async fn table_changes_are_heard_in_the_order_they_were_made() {
     }
     assert_eq!(root.subscriptions().len(), 2);
     // Give a delivery out of order its chance.
+    // clock: widen — give a delivery out of order its chance
     tokio::time::sleep(Duration::from_millis(50)).await;
     *release.0.lock().unwrap() = true;
     release.1.notify_all();

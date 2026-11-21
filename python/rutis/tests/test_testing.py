@@ -384,6 +384,7 @@ class Testing(background.TestCase):
             async def scope():
                 async with load(define_plugin(apply)) as t:
                     t.emit("tick")
+                    # clock: weak-negative — the call was cancelled, not answered
                     await asyncio.sleep(0.05)
 
             await asyncio.wait_for(scope(), 5)
