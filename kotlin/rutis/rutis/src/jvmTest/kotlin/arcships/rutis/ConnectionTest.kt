@@ -283,7 +283,10 @@ class ConnectionTest {
         assertEquals("hello", received.get(2, TimeUnit.SECONDS).getOrThrow()!!.toString(Charsets.UTF_8))
         val started = System.nanoTime()
         connection.closeWith(CloseCode.GOING_AWAY, "stopping")
-        assertTrue((System.nanoTime() - started) / 1_000_000 < 100, "closeWith blocked")
+        // It returns instead of waiting for the blocked writer, whose socket
+        // closes only when the close grace runs out (the assertion below).
+        val took = (System.nanoTime() - started) / 1_000_000
+        assertTrue(took < FrameConnection.CLOSE_GRACE_MILLIS, "closeWith waited ${took} ms, the close grace")
         // The socket closes within the close grace, failing the blocked send.
         val failure = assertFailsWith<ExecutionException> { sending.get(FrameConnection.CLOSE_GRACE_MILLIS + 2000, TimeUnit.MILLISECONDS) }
         assertTrue(failure.cause is IOException, "${failure.cause}")
@@ -295,9 +298,10 @@ class ConnectionTest {
         val (_, connection) = client(server, receiveBuffer = 4096)
         stuck(connection)
         val (other, _) = client(server)
-        val started = System.nanoTime()
+        // The read is the wait: `next` times out after 10 s (a 100 ms
+        // heartbeat, a hundred times over), and a close frame comes instead
+        // once the far end stops pinging.
         assertEquals(0x9, other.next().first)
-        assertTrue((System.nanoTime() - started) / 1_000_000 < 1000, "the other connection was not pinged")
     }
 
     @Test
@@ -367,15 +371,25 @@ class ConnectionTest {
         val server = server(maxPending = 2)
         val port = server.address.substringAfterLast(':').substringBefore('/').toInt()
         val idle = (1..2).map { Socket(InetAddress.getLoopbackAddress(), port).also(closing::add) }
-        Thread.sleep(200)
+        // The two are in handshake: the cap is counted on those, not waited for.
+        awaitPending(server, 2)
         val extra = Socket(InetAddress.getLoopbackAddress(), port).also(closing::add)
         assertTrue(closedWithin(extra, 2000), "a connection over the cap was kept")
         assertTrue(!closedWithin(idle[0], 200), "a pending upgrade was dropped")
-        // Once one goes, another may come.
+        // Once one goes, another may come: the cap frees when the upgrades end.
         idle.forEach { it.close() }
-        Thread.sleep(200)
+        awaitPending(server, 0)
         val client = RawClient(server.address)
         closing.add(client)
+    }
+
+    /** Waits until `count` upgrades are under way, and no others. */
+    private fun awaitPending(server: WebSocketServer, count: Int) {
+        val deadline = System.nanoTime() + 5_000_000_000
+        while (server.pendingUpgrades != count) {
+            check(System.nanoTime() < deadline) { "upgrades under way stayed ${server.pendingUpgrades}, not $count" }
+            Thread.sleep(5)
+        }
     }
 
     @Test

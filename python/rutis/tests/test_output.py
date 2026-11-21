@@ -21,6 +21,7 @@ import unittest
 from unittest import mock
 
 import background
+import support
 
 from rutis._output import BlockingWatch, Prefixed, blocking_text, prefix_lines
 from rutis.runner import Runtime
@@ -124,7 +125,7 @@ class Prefixes(background.TestCase):
 
 
 class Blocking(background.TestCase):
-    def run_blocking(self, watch: BlockingWatch, seconds: list, method: str = "block") -> str:
+    def run_blocking(self, watch: BlockingWatch, seconds: list, method: str = "block", until: str | None = None) -> str:
         runtime = Runtime()
         runtime._control("mount", {"announce": True})
         runtime.blocking = watch
@@ -136,8 +137,12 @@ class Blocking(background.TestCase):
             with contextlib.redirect_stderr(written):
                 for wait in seconds:
                     await call(runtime, "talk-a", method, wait)
-                # The watch's line, written by its thread, is in.
-                await asyncio.sleep(0.05)
+                if until is None:
+                    # clock: weak-negative — nothing is said of a watch nothing
+                    # held; give its thread the moment a line would take.
+                    await asyncio.sleep(0.05)
+                else:
+                    await support.eventually(f"the watch's line ({until})", lambda: until in written.getvalue())
             await runtime.unload("a")
 
         asyncio.run(run())
@@ -145,14 +150,14 @@ class Blocking(background.TestCase):
 
     def test_a_method_holding_the_runtime_is_said_once(self):
         watch = BlockingWatch(lambda: "py", limit=0.2, quiet=False)
-        said = self.run_blocking(watch, [0.02, 0.6])
+        said = self.run_blocking(watch, [0.02, 0.6], until="held the runtime")
         hints = [line for line in said.splitlines() if "held the runtime" in line]
         self.assertEqual(hints, [blocking_text("py", "weather", "talk-a.block", 0.2)])
         self.assertIn("make it async def", hints[0])
 
     def test_a_blocking_call_in_an_async_method_is_said(self):
         watch = BlockingWatch(lambda: "py", limit=0.2, quiet=False)
-        said = self.run_blocking(watch, [0.6], "block_later")
+        said = self.run_blocking(watch, [0.6], "block_later", until="held the runtime")
         hints = [line for line in said.splitlines() if "held the runtime" in line]
         self.assertEqual(hints, [blocking_text("py", "weather", "talk-a.block_later", 0.2)])
 
