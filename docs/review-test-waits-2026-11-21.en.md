@@ -301,7 +301,7 @@ Product code (P, 13 sites) is not in this table, so each row sums to "raw sites 
 | `crates/rutis/tests/core/unload_deadline.rs:37` | `std::env::set_var("RUTIS_SHUTDOWN_TIMEOUT", "0.3")`, **never restored** | `shutdown_deadline()` (`crates/rutis/src/fiber.rs:1344`) reads the environment on every call, so the value leaks into the unload path of every concurrent and later test in the `core` binary | **high** | take a process-level env mutex (as `rutis-host/tests/common/mod.rs:33` `environment()` does), or pass the deadline into the object under test | S |
 | `crates/rutis-loader/tests/rows/virtual_clock_contract.rs:184-200` (one env write at 185/187/189/192/199 each) | five `set_var`/`remove_var` statements inside a `#[test]`; the comment says "the variable belongs to the process" | other tests in the `rows` suite that unload plugins concurrently read 0.25 s / 3 s / invalid values | **high** | same: add a mutex, or make `shutdown_deadline()` injectable | M |
 | `crates/rutis-host/tests/dial/dial_conformance.rs:245` | `std::env::set_var("RUTIS_TOKEN_PHONE", TOKEN)`, **without `environment()`** | the same suite's `lease_e2e.rs:433`, `swift_app.rs:206` and `kotlin.rs:91` run `environment()`, which removes every `RUTIS_TOKEN_*` (`common/mod.rs:39-41`). Interleaving leaves the `dial_conformance` host without its token | **high** | take `crate::common::environment()` before `listen()` and hold it until the test ends | S |
-| `crates/rutis-host/tests/config/android.rs:156` | the same unlocked `set_var` | `feature = "android"` only, run locally, not in CI; but it collides with guarded tests such as `remote_runtimes.rs` the moment they share a run | medium | same fix | S |
+| `crates/rutis-host/tests/config/android.rs:156` | the same unlocked `set_var` | **false positive**: all three call sites of `Rutis::start` / `Rutis::with` (lines 280, 344, 503) already hold `environment()` before calling; taking the lock again inside `with` would self-deadlock | — | do not change; if anything, state at the top of `with` that the caller must hold `environment()` | — |
 | `crates/rutis-loader/tests/go_stop.rs:96,133` | `assert_eq!(running_processes(), vec![pid])` | exact equality on the process-global registry. Safe today only because the file holds a single test and is its own binary | low (latent) | assert containment instead, or state in a comment that it must stay its own binary | S |
 | `crates/rutis-bridge/tests/lang/local_soak.rs:14-34`, `crates/rutis-bridge/tests/lang/websocket_soak.rs:15-20` | read `/proc/self/fd`, `/proc/self/task/*/children`, thread count | a process-global measurement placed in the `lang` suite. Safe today only because `stress.yml:506-507` filters by `local_soak::` / `websocket_soak::` and runs one test | medium (latent) | move back to its own binary, or state in the header that it must not run beside other modules | S |
 
@@ -438,7 +438,7 @@ No workflow uses a sleep as a stand-in for synchronization; every sleep is eithe
 | E-01 | `crates/rutis/tests/core/unload_deadline.rs:37` | process env leak |
 | E-02 | `crates/rutis-loader/tests/rows/virtual_clock_contract.rs:184-200` (one env write at 185/187/189/192/199 each) | concurrent process-env write |
 | E-03 | `crates/rutis-host/tests/dial/dial_conformance.rs:245` | unlocked env write colliding with a locked removal |
-| E-04 | `crates/rutis-host/tests/config/android.rs:156` | same (feature-gated, local) |
+| E-04 | `crates/rutis-host/tests/config/android.rs:156` | **false positive**: the callers (lines 280/344/503) already hold the lock |
 | E-05 | `crates/rutis-loader/tests/go_stop.rs:96,133` | exact equality on the global process table (latent) |
 | E-06 | `crates/rutis-bridge/tests/lang/local_soak.rs:14-34`, `websocket_soak.rs` | process-global fd/thread measurement inside a shared suite (latent) |
 
@@ -456,7 +456,7 @@ With the three sleep-related ones (`still_waiting.rs:124`, `unload_deadline.rs:4
 4. **The two race-decided sleeps**:
    - `still_waiting.rs:124`: raise `report_waiting_after` (say 10 s) so the test only checks that a short wait says nothing, or use a paused clock;
    - `unload_deadline.rs:49`: replace the 50 ms with a signal that the listener has entered.
-5. **E-04 `android.rs:156`**: the same fix (low priority, do it while you are there).
+5. **E-04 `android.rs:156`: do not change (false positive).** All three call sites of `Rutis::start` / `Rutis::with` (lines 280, 344, 503) already hold `common::environment()` before calling; taking the lock again inside `with` would deadlock. The report looked at the `set_var` alone and not at its callers.
 
 ### P1 — next batch; remove the medium-high risks
 

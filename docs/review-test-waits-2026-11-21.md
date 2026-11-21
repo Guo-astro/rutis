@@ -301,7 +301,7 @@ fixed ports (127.0.0.1:<port>, :<port>)   temp dirs (/tmp, temp_dir)
 | `crates/rutis/tests/core/unload_deadline.rs:37` | `std::env::set_var("RUTIS_SHUTDOWN_TIMEOUT", "0.3")`，**从不恢复** | `shutdown_deadline()`（`crates/rutis/src/fiber.rs:1344`）每次调用都读 env，因此该值会泄漏给 `core` 二进制里所有并发/后续测试的卸载路径 | **高** | 加进程级 env 互斥（照 `rutis-host/tests/common/mod.rs:33` 的 `environment()`），或改为把时限作为参数传入被测对象 | S |
 | `crates/rutis-loader/tests/rows/virtual_clock_contract.rs:184-200`（185/187/189/192/199 行各一次 env 写） | `#[test]` 内 5 条 `set_var`/`remove_var`，注释写"the variable belongs to the process" | 同一 `rows` 套件内其它测试同时卸载插件时，会读到 0.25 s / 3 s / 非法值 | **高** | 同上：加互斥；或把 `shutdown_deadline()` 改成可注入 | M |
 | `crates/rutis-host/tests/dial/dial_conformance.rs:245` | `std::env::set_var("RUTIS_TOKEN_PHONE", TOKEN)`，**未取 `environment()`** | 同套件的 `lease_e2e.rs:433`、`swift_app.rs:206`、`kotlin.rs:91` 会在 `environment()` 里删除所有 `RUTIS_TOKEN_*`（`common/mod.rs:39-41`）。交错即让 `dial_conformance` 的 host 找不到 token | **高** | 在 `listen()` 前取 `crate::common::environment()` 并持有到测试结束 | S |
-| `crates/rutis-host/tests/config/android.rs:156` | 同样的未加锁 `set_var` | 仅 `feature = "android"`，本地运行，不进 CI；但一旦与 `remote_runtimes.rs` 等加锁测试同跑即冲突 | 中 | 同上 | S |
+| `crates/rutis-host/tests/config/android.rs:156` | 同样的未加锁 `set_var` | **假阳性**：`Rutis::start` / `Rutis::with` 的三个调用点（280、344、503 行）都已在调用前持有 `environment()`；在 `with` 里再加锁会自锁 | — | 不改；如需更强约束，在 `with` 的文件头写清“调用方必须持有 environment()” | — |
 | `crates/rutis-loader/tests/go_stop.rs:96,133` | `assert_eq!(running_processes(), vec![pid])` | 进程级全局注册表全量相等；今天安全仅因为该文件只有 1 个测试、且是独立二进制 | 低（潜在） | 改成"只检查包含关系"，或在注释里写明"必须独立二进制" | S |
 | `crates/rutis-bridge/tests/lang/local_soak.rs:14-34`、`crates/rutis-bridge/tests/lang/websocket_soak.rs:15-20` | 读 `/proc/self/fd`、`/proc/self/task/*/children`、线程数 | 进程级量测，却被放进 `lang` 套件。今天安全仅因为 `stress.yml:506-507` 用 `local_soak::` / `websocket_soak::` 名字过滤，只跑一个测试 | 中（潜在） | 移回独立二进制，或在文件头写明"不得与其它模块同跑" | S |
 
@@ -438,7 +438,7 @@ Python 全局状态：`test_testing.py:510` 修改 `os.environ["RUTIS_HOST"]`/`P
 | E-01 | `crates/rutis/tests/core/unload_deadline.rs:37` | 进程 env 泄漏 |
 | E-02 | `crates/rutis-loader/tests/rows/virtual_clock_contract.rs:184-200`（185/187/189/192/199 行各一次 env 写） | 进程 env 并发写 |
 | E-03 | `crates/rutis-host/tests/dial/dial_conformance.rs:245` | 进程 env 无锁写，与有锁删除冲突 |
-| E-04 | `crates/rutis-host/tests/config/android.rs:156` | 同上（feature 门控，本地） |
+| E-04 | `crates/rutis-host/tests/config/android.rs:156` | **假阳性**：调用方（280/344/503 行）已持锁 |
 | E-05 | `crates/rutis-loader/tests/go_stop.rs:96,133` | 全局进程表全量相等（潜在） |
 | E-06 | `crates/rutis-bridge/tests/lang/local_soak.rs:14-34`、`websocket_soak.rs` | 进程级 fd/线程量测被放进共享套件（潜在） |
 
@@ -456,7 +456,7 @@ Python 全局状态：`test_testing.py:510` 修改 `os.environ["RUTIS_HOST"]`/`P
 4. **两个"抢时间窗"的 sleep**：
    - `still_waiting.rs:124`：把 `report_waiting_after` 调大（例如 10 s）只验证"短等待不上报"，或改用暂停时钟；
    - `unload_deadline.rs:49`：用 listener 已进入的信号替代 50 ms。
-5. **E-04 `android.rs:156`**：同一处修法（低优先，但顺手）。
+5. **E-04 `android.rs:156`：不改（假阳性）。** `Rutis::start` / `Rutis::with` 的三个调用点（280、344、503 行）都已在调用前持有 `common::environment()`；在 `with` 里再加一次锁会死锁。报告这里只看了 `set_var` 本身，没有看调用点的锁。
 
 ### P1（下一批；消除负载下的中高风险）
 
