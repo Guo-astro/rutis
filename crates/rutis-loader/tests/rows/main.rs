@@ -19,7 +19,6 @@ mod edit_pipeline;
 mod event_close_admission;
 mod fault_containment;
 mod fault_texts;
-mod listener_scale;
 mod loader_service;
 mod marked_services;
 mod optional_deps;
