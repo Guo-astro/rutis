@@ -78,7 +78,7 @@
 - Bun：`tests/e2e/tests/develop/dev_loop.rs` `the_bun_plugin_development_loop`，`bun/rutis-bun/test/plugin.test.ts` “a module that does not parse fails with its file and line”，`bun/rutis-bun/test/plugin.test.ts` “an import error names the submodule that threw, and a gone entry is said so (#677)”
 - Python：`tests/e2e/tests/develop/dev_loop.rs` `the_python_plugin_development_loop`，`python/rutis/tests/test_plain_texts.py` `test_a_syntax_error_says_its_file_and_line`，`python/rutis/tests/test_plain_texts.py` `test_the_submodule_that_raised_is_named`
 - Go：`tests/e2e/tests/develop/dev_loop.rs` `the_go_plugin_development_loop`
-- Rust（插件与嵌入）：`crates/rutis/tests/events/compile_errors.rs` `author_mistakes_are_reported_in_the_authors_terms`
+- Rust（插件与嵌入）：`crates/rutis/tests/core/compile_errors.rs` `author_mistakes_are_reported_in_the_authors_terms`
 
 ### 6. 跨语言传对面接不住的值
 

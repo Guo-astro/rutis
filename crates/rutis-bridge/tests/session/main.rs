@@ -7,7 +7,6 @@ mod call_service;
 mod caller_rows;
 mod cancellation;
 mod error_shape;
-mod grant_rollback;
 mod group_mount;
 mod host_services;
 mod live_objects;
