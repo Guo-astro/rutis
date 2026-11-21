@@ -82,11 +82,11 @@ env:
   # The two platforms differ: Windows keeps the runtime rows that start
   # through loopback, and skips the rows of runtimes it does not run.
   MACOS_SKIP_TESTS_BRIDGE: >-
-    session lang events
+    session lang mount_greeting
   MACOS_SKIP_TESTS_LOADER: >-
     rows lang events_conformance go go_stop close_memory queued_emits_memory
   WINDOWS_SKIP_TESTS_BRIDGE: >-
-    session lang events native
+    session lang native mount_greeting
   WINDOWS_SKIP_TESTS_LOADER: >-
     rows lang events_conformance bun close_memory queued_emits_memory
   # The jobs only build to run the tests and checks, and none reads a

@@ -13,7 +13,6 @@ mod host_services;
 mod live_objects;
 mod marked_services;
 mod memory_session;
-mod mount_greeting;
 mod mount_host_service;
 mod mount_scope;
 mod multihop;

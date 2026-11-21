@@ -47,7 +47,7 @@ Evidence: guarantees `events/emit`, `events/parallel`, `events/serial-bail`. `no
 - Need to short-circuit synchronously: make the listeners synchronous functions (returning no Promise), and make sure no asynchronous listener is anywhere on the chain.
 - Coming from Cordis, wherever a `ctx.bail` listener may be `async`, change it to `serial`, or make the listener synchronous.
 
-Evidence: guarantees `events/serial-bail`, `events/hub-bail`; `crates/rutis/tests/events/events.rs::bail_meets_an_async_listener`; `crates/rutis-bridge/tests/events/event_hub.rs::bail_is_synchronous_everywhere`; `node/rutis-runtime/test/cordis-events.test.mjs` (`the five Cordis methods dispatch through the host, each in its mode`: `root.bail('b')` throws `AsyncListener`).
+Evidence: guarantees `events/serial-bail`, `events/hub-bail`; `crates/rutis/tests/events/events.rs::bail_meets_an_async_listener`; `crates/rutis-bridge/tests/lang/event_hub.rs::bail_is_synchronous_everywhere`; `node/rutis-runtime/test/cordis-events.test.mjs` (`the five Cordis methods dispatch through the host, each in its mode`: `root.bail('b')` throws `AsyncListener`).
 
 ## 3. `intercept`: a non-empty merged configuration is not supported
 

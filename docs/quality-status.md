@@ -597,7 +597,7 @@ CI：`ci.yml`（PR 按改动选择任务，每晚全部运行；Linux 全量与�
 
 | 对象 | 做法 | 现状 |
 | --- | --- | --- |
-| 会话通道 | `crates/rutis-bridge/tests/events/trace_validation.rs`：通道、帧与租约的步骤写成 trace，逐事件检查它是否被前面的事件允许（[会话追踪契约](formal-trace.md) §2–§4） | **有**（#624 第一块）：通道方向与结束、hello 只一次且最先、调用号与 `path`、答复至多一次、允许的悬空取消、租约的接管步骤 |
+| 会话通道 | `crates/rutis-bridge/tests/lang/trace_validation.rs`：通道、帧与租约的步骤写成 trace，逐事件检查它是否被前面的事件允许（[会话追踪契约](formal-trace.md) §2–§4） | **有**（#624 第一块）：通道方向与结束、hello 只一次且最先、调用号与 `path`、答复至多一次、允许的悬空取消、租约的接管步骤 |
 | 接入点（已撤回） | 对象在 0.19 删除（#695）：`AccessEvent` 日志、接入点与身份层吊销钩子一起删除；`AccessPoint.tla` 改为按 `rutis-host/listen` 建的最小模型，本侧只看到准入的结局 | **不适用**（#624 的接入点 TV 已撤回）：`trace_validation.rs` §3.8 的用例检查这一侧看到的 4003 吊销与 403 凭据拒绝，没有接入点自身的动作日志可对照 |
 | 等待图 | 记录 `waits.rs` 的六个操作与每次判定，对照 `CrossRuntimeSync.tla` | **有**（#613）：`waits/trace.rs` 记录、`waits/trace/check.rs` 按 `RustSucc` 重放；`sync_cycles.rs` 与 `rpc_callbacks.rs` 的真实运行上逐事件检查，改坏同一份日志必须报出 |
 | 事件宿主 | 用 `events-all` 运行中宿主的动作日志对照宿主模型 | **无**（#624 并入的 #616） |
@@ -890,7 +890,7 @@ E2E 发现并修复：#225、#226（#261、#217）。Node 最低版本降到 22�
 | loom 穷举 | 不采用 | shuttle 已覆盖内核的 27 个模型，loom 需要更大的代码改造；shuttle 发现问题但无法稳定复现时再考虑 |
 | SDK 各自运行通道契约、跨语言帧标准样本 | 不采用 | 与 Rust 驱动的一致性套件重叠；非法帧的部分已并入 P3 与 `malformed` 矩阵 |
 | `cargo public-api` | 不采用 | 与 `cargo semver-checks` 重复 |
-| TLA+ trace validation | 采用 | 重新考虑的条件（spec 与实现多次不一致）已满足：会话通道的验证器已落地（`crates/rutis-bridge/tests/events/trace_validation.rs`，#624），等待图也已落地（#613）；接入点 TV 随 0.19 删除（#695）撤回（§7.5），事件宿主的动作日志按 §7.5 待补。规则来自[会话追踪契约](formal-trace.md) |
+| TLA+ trace validation | 采用 | 重新考虑的条件（spec 与实现多次不一致）已满足：会话通道的验证器已落地（`crates/rutis-bridge/tests/lang/trace_validation.rs`，#624），等待图也已落地（#613）；接入点 TV 随 0.19 删除（#695）撤回（§7.5），事件宿主的动作日志按 §7.5 待补。规则来自[会话追踪契约](formal-trace.md) |
 | TLA+ 用于内核状态机 | 不采用 | 单进程，历史问题都在实现层；进程内并发用 shuttle（§7.3） |
 | CI 上的性能回归阈值 | 不采用 | CI 机器噪声超过 15%，会反复误报；性能目前不是承诺。有固定基准机器时再考虑 |
 | 磁盘满、fd 上限、OOM 注入 | 不采用 | §4 中对应的风险都是低可能性；用户报告相关问题时再考虑 |
