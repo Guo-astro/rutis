@@ -142,13 +142,27 @@ async fn the_status_names_rows_services_runtimes_and_calls() {
     assert_eq!(loader.status().runtimes[0].state, RuntimeState::Running);
 
     kill(pid);
+    // The runtime ending and its rows settling come one after the other, and
+    // not in one order on every platform: wait for the status this test is
+    // about, not for the first half of it (#1080).
     let status = COLD
         .eventually(
             || {
                 let status = loader.status();
-                (status.runtimes[0].state == RuntimeState::Down).then_some(status)
+                let down = status.runtimes[0].state == RuntimeState::Down;
+                let waiting = status.rows.iter().any(|row| {
+                    row.id == "slow"
+                        && matches!(
+                            &row.state,
+                            EntryStatus::Running(snapshot) if snapshot.state == FiberState::Pending
+                        )
+                        && row.reason.as_deref().is_some_and(|reason| {
+                            reason.starts_with("waiting for runtime py (down: ")
+                        })
+                });
+                (down && waiting).then_some(status)
             },
-            "the runtime down",
+            "the runtime down and its row waiting for it",
         )
         .await;
     assert_eq!(status.runtimes[0].pid, None);

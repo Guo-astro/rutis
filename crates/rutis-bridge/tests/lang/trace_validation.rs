@@ -1903,6 +1903,18 @@ async fn a_real_session_run_is_an_allowed_trace() {
         "the caller's reader line",
     )
     .await;
+    // Each end's line for the close frame it sends comes from the sending
+    // thread, while the ending and its closed come from another: wait until
+    // both ends have told their whole story, not for the half that arrives
+    // first (#1080).
+    until(
+        || {
+            let checked = accepted(&log.lines());
+            checked.events("main").len() == 6 && checked.events("node").len() == 6
+        },
+        "both ends' events",
+    )
+    .await;
 
     let lines = log.lines();
     assert!(
