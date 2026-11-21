@@ -39,17 +39,11 @@ use rutis::host::{
     BoxFuture, CtxHost, DynPlugin, Effect, FiberState, FiberView, PluginFactory, TypeKey,
 };
 use rutis::{Ctx, Disposer, Error};
-use rutis_test_support::Guard;
+use rutis_test_support::{soon, Guard};
 
 const ROUNDS: u64 = 100;
 const TASKS: u64 = 6;
 const OPS_PER_TASK: usize = 8;
-
-async fn soon<F: std::future::IntoFuture>(f: F) -> F::Output {
-    tokio::time::timeout(Duration::from_secs(10), f)
-        .await
-        .expect("timed out")
-}
 
 /// The seed for this run: `RUTIS_SEED` if set, otherwise random. Printed,
 /// so the test output of a failing run carries it.

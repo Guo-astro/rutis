@@ -9,11 +9,11 @@
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier};
-use std::time::Duration;
 
 use rutis::host::CtxHost;
 use rutis::internal::CtxInternal;
 use rutis::{Ctx, Event};
+use rutis_test_support::until;
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct Tick;
@@ -24,17 +24,6 @@ impl Event for Tick {
 
 fn selection_checks(root: &Ctx) -> u64 {
     root.events().selection_checks_for_testing()
-}
-
-/// Waits until `done` holds; the timeout only guards against a hang.
-async fn until(done: impl Fn() -> bool, what: &str) {
-    tokio::time::timeout(Duration::from_secs(10), async {
-        while !done() {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .unwrap_or_else(|_| panic!("timed out waiting until {what}"));
 }
 
 /// The list an `emit` dispatches over lives as long as that emit: the first

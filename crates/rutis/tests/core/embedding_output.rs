@@ -121,6 +121,7 @@ async fn a_platform_plugin_waiting_long_is_not_reported() {
         }
     })
     .await;
+    // clock: weak-negative — the application is told once
     tokio::time::sleep(Duration::from_millis(200)).await;
     let said = texts(&sunk);
     assert_eq!(said.len(), 1, "{said:?}");

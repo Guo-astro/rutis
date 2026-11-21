@@ -165,6 +165,7 @@ test('a connection waiting for its hello is not silent; served, silence counts',
   // Waiting for its hello, it is not silent, even past ten timeouts.
   let closed = false
   server.closedWith.then(() => { closed = true }, () => {})
+  // clock: weak-negative — stays open within ten timeouts
   await new Promise(resolve => setTimeout(resolve, 500))
   assert.equal(closed, false, 'closed before its hello')
   // Served: the hello went out, and from here silence counts.

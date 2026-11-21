@@ -135,6 +135,17 @@ On pull requests, macOS and Windows run both crates' unit tests (`--lib`) and th
 
 The tests of the bridge, the loader and the examples that start a language runtime run or not by the variable `RUTIS_TEST_RUNTIMES` (comma separated: `node`, `python`, `bun`, `go`, `swift`, `kotlin`), as `rutis-test-support`'s `runtimes` reads it: a test of a listed language whose toolchain is missing fails, saying what is missing; a test of a language not listed prints `skipped: <language> not in RUTIS_TEST_RUNTIMES` and returns. Each CI step sets it to the runtimes it installed, and cargo runs with `--all-features`: language features no longer pick the tests. It is a test convention, not a product setting. Set it when running locally too, for example `RUTIS_TEST_RUNTIMES=node,python cargo test -p rutis-loader --all-features`.
 
+### Waits and `clock:` markers
+
+A test waits for a thing by waiting until it happens: `rutis_test_support`'s `within` / `until` / `eventually` / `Guard` (each SDK has its equivalent), whose limits only guard against a hang and scale with `RUTIS_TEST_TIME_SCALE`. The rules and the three legal shapes are in the [test clocks design](design-test-clocks-2026-10-11.en.md) §3.
+
+A fixed wait stays in two shapes only, and is marked where it stands (`// clock: …`, in every language):
+
+- `// clock: weak-negative — <reason>`: it confirms that something did **not** happen within the time. It can only miss (on a slow machine nothing was seen), never misreport, and the same behavior has a deterministic test elsewhere;
+- `// clock: widen — <reason>`: it widens a race window on purpose, and the assertions hold whether or not it is hit.
+
+`grep -rn "clock: " crates tests node python kotlin swift go` lists them all; an unmarked fixed wait is either a fixture simulating a slow operation or one that was missed (#1399).
+
 ### When a test hangs
 
 Every `cargo test` step that runs whole suites goes through `tools/test-watchdog.sh`: it prints the command's output to the job's log as it comes and, when nothing new has been printed for `RUTIS_TEST_STALL` seconds (300 by default), calls the run hung, prints the last 40 lines (libtest's `test <name> has been running for over 60 seconds` for the test still running among them) and ends the whole process group with 124. Without that gate a hang waits for the job's `timeout-minutes` (45 minutes) and the reason is never printed (#1402; #1386's `listener_scale` hung once like that).

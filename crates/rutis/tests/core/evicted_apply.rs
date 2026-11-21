@@ -478,6 +478,7 @@ async fn a_validate_error_after_eviction_returns_to_pending_and_reloads() {
     .await
     .expect("service marked removed");
     // The withdrawal has reached the consumer (it waits in `validate`).
+    // clock: weak-negative — the withdrawal is held in the consumer's validate
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert!(
         !returned.load(Ordering::SeqCst),
@@ -706,6 +707,7 @@ async fn a_genuine_apply_failure_stays_failed() {
     let disposer = provider.disposer.lock().unwrap().take().unwrap();
     disposer.dispose().await.unwrap();
     provide_again(&provider, &root);
+    // clock: weak-negative — a failed apply is not retried (a miss is what can go unseen)
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert_eq!(consumer.state().state, FiberState::Failed);
     assert_eq!(applies.load(Ordering::SeqCst), 1);
@@ -736,6 +738,7 @@ async fn a_plugin_that_cancels_its_own_token_stays_failed() {
     let disposer = provider.disposer.lock().unwrap().take().unwrap();
     disposer.dispose().await.unwrap();
     provide_again(&provider, &root);
+    // clock: weak-negative — a failed apply is not retried (a miss is what can go unseen)
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert_eq!(consumer.state().state, FiberState::Failed);
     assert_eq!(applies.load(Ordering::SeqCst), 1);

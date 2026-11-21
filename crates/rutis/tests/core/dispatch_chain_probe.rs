@@ -46,6 +46,7 @@ impl ChainProbe {
         self.max_in_flight.fetch_max(now, Ordering::SeqCst);
         self.started.lock().unwrap()[emitter].push(n);
         // 一点工作量,放大重叠窗口:若链分叉,并发派发在此明显重叠
+        // clock: widen — widen the overlap between the emitters
         std::thread::sleep(std::time::Duration::from_micros(50));
         self.in_flight.fetch_sub(1, Ordering::SeqCst);
         self.completed.fetch_add(1, Ordering::SeqCst);
@@ -89,13 +90,13 @@ async fn dispatch_chain_does_not_fork_under_concurrent_emit() {
 
     // 确定性排干:全部派发完成(completed == 总 emit 数)后读终值
     let total = EMITS_PER_EMITTER * 2;
-    tokio::time::timeout(std::time::Duration::from_secs(60), async {
-        while completed.load(Ordering::SeqCst) < total {
-            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-        }
-    })
-    .await
-    .expect("chain drains");
+    // 2000 emits twice over: a longer guard than the nominal one, scaled.
+    rutis_test_support::Guard(rutis_test_support::HANG_GUARD * 6)
+        .until(
+            || completed.load(Ordering::SeqCst) >= total,
+            "the chain to drain",
+        )
+        .await;
 
     assert_eq!(
         max_in_flight.load(Ordering::SeqCst),

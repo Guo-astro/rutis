@@ -164,6 +164,7 @@ class AppTest {
         assertEquals(listOf("services"), (told.of("link.offers")[0]["families"] as List<*>).map { (it as JsonPrimitive).content })
         // `services` alone: nothing installs before rutis offers `events`.
         host.offer(1, listOf("services"))
+        // clock: weak-negative — nothing is installed before events are provided
         Thread.sleep(100)
         assertEquals(emptyList(), lines.toList(), "nothing installed before rutis offers events")
         assertEquals(emptyList(), reported.toList())

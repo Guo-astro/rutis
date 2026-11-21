@@ -26,16 +26,8 @@ use rutis_agent::{
     AgentToolResult, LlmResponse, ScriptedLlm, ToolDef, ToolPostExecute, ToolPreExecute,
     ToolsPlugin,
 };
+use rutis_test_support::soon;
 use serde_json::{json, Value};
-
-async fn soon<F, T>(f: F) -> T
-where
-    F: std::future::Future<Output = T>,
-{
-    tokio::time::timeout(Duration::from_secs(5), f)
-        .await
-        .expect("timed out")
-}
 
 async fn wait_state(view: &FiberView, want: FiberState) {
     soon(async {
@@ -150,6 +142,7 @@ fn replay_recording(prompt_text: &str, reply: &str) -> Recording {
 async fn driver_is_gated_on_llm_and_tools() {
     let root = Ctx::root().unwrap();
     let driver_view = root.plugin(AgentDriverPlugin::new(16));
+    // clock: weak-negative — the driver stays Pending while a dependency is missing
     tokio::time::sleep(Duration::from_millis(30)).await;
     assert_eq!(driver_view.state().state, FiberState::Pending);
     assert!(root.get::<dyn Agent>().is_none());
@@ -161,6 +154,7 @@ async fn driver_is_gated_on_llm_and_tools() {
         vec![replay_recording("ping", "pong")],
     ));
     let llm_disposer = root.provide_as::<dyn LanguageModel>(llm).unwrap();
+    // clock: weak-negative — the plugin has not started
     tokio::time::sleep(Duration::from_millis(30)).await;
     assert_eq!(driver_view.state().state, FiberState::Pending);
 
@@ -420,6 +414,7 @@ async fn events_observed_and_listeners_unload_with_fiber() {
     let (_, done2) = soon(collect_turn(&root, &agent, "again")).await;
     assert_eq!(done2.unwrap(), "31");
 
+    // clock: weak-negative — nothing is left behind
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert_eq!(events.lock().unwrap().len(), count_after_run); // 无残留监听器
     tools_view.dispose().await.unwrap();

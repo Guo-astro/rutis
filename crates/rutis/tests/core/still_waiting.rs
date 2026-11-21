@@ -63,6 +63,7 @@ async fn a_plugin_waiting_long_for_its_deps_is_reported_once() {
     })
     .await;
     // Once: not again while it goes on waiting.
+    // clock: weak-negative — reported once, not again while the plugin goes on waiting
     tokio::time::sleep(Duration::from_millis(400)).await;
     let said = reported(&sunk);
     assert_eq!(
@@ -110,6 +111,7 @@ async fn waiting_again_is_reported_again() {
     greeting.dispose().await.unwrap();
     reports(2).await;
     assert_eq!(view.state().state, FiberState::Pending);
+    // clock: weak-negative — reported once, not again while the plugin goes on waiting
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert_eq!(reported(&sunk).len(), 2);
     ctx.shutdown().await.unwrap();
@@ -139,6 +141,7 @@ async fn a_short_wait_or_reports_off_say_nothing() {
 
     let (ctx, sunk) = root(None);
     ctx.plugin(Printer);
+    // clock: weak-negative — reported once, not again while the plugin goes on waiting
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert!(reported(&sunk).is_empty(), "{:?}", reported(&sunk));
     ctx.shutdown().await.unwrap();

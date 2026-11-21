@@ -662,6 +662,7 @@ fn a_previous_go_sdk_binary_is_refused_at_the_handshake() {
             "the row fails with the refusal: {row}"
         );
         // Not started again within a restart's first steps.
+        // clock: weak-negative — no second delivery
         std::thread::sleep(std::time::Duration::from_secs(3));
         assert_eq!(
             host.count(&format!("down ({}", older_runtime(release))),
@@ -721,6 +722,7 @@ fn a_previous_remote_runtime_is_refused_at_the_handshake() {
         });
         assert!(stopped.contains(older_listener()), "{stopped}");
         // Not dialed again: no second refusal within a backoff's first steps.
+        // clock: weak-negative — no second delivery
         std::thread::sleep(std::time::Duration::from_secs(3));
         assert_eq!(host.count("gpu: disconnected (incompatible: "), 1);
         assert_eq!(host.count("echo: running"), 0);
@@ -930,6 +932,7 @@ fn a_previous_node_is_refused_at_the_handshake() {
                     line.starts_with(said)
                 });
                 assert!(stopped.contains(refusal), "{stopped}");
+                // clock: weak-negative — no second delivery
                 std::thread::sleep(std::time::Duration::from_secs(3));
                 assert_eq!(dialer.count(said), 1, "not dialed again");
                 assert_eq!(current.count("old: connected"), 0);

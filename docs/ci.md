@@ -135,6 +135,17 @@ PR 上 macOS、Windows 跑两个 crate 的单元测试（`--lib`）和平台专�
 
 bridge、loader 和示例里要启动语言运行时的测试，按环境变量 `RUTIS_TEST_RUNTIMES`（逗号分隔，`node`、`python`、`bun`、`go`、`swift`、`kotlin`）决定跑不跑，由 `rutis-test-support` 的 `runtimes` 判断：列出的语言找不到工具链时测试失败，写明缺什么；没列出的语言的测试打印一行 `skipped: <语言> not in RUTIS_TEST_RUNTIMES` 后返回。CI 的每个步骤按它装了的运行时设置这个变量，cargo 用 `--all-features`，不再用语言 feature 挑测试。这是测试约定，不是产品开关。本地跑时也要设，例如 `RUTIS_TEST_RUNTIMES=node,python cargo test -p rutis-loader --all-features`。
 
+### 等待与 `clock:` 标记
+
+测试里等一件事，就等到它发生为止：`rutis_test_support` 的 `within` / `until` / `eventually` / `Guard`（各语言 SDK 有等价实现），上限只防挂死，并随 `RUTIS_TEST_TIME_SCALE` 缩放。规则与三种合法写法见[测试时钟设计](design-test-clocks-2026-10-11.md) §3。
+
+固定等待只在两种情况下留，并且就地标出来（`// clock: …`，任何语言都一样）：
+
+- `// clock: weak-negative — <原因>`：确认一件事在给定时间内**没有**发生。它只可能漏报（机器慢时什么都没测到），不可能误报，同一行为在别处有确定性测试；
+- `// clock: widen — <原因>`：人为撑开一个竞态窗口，断言无论命中与否都成立。
+
+`grep -rn "clock: " crates tests node python kotlin swift go` 能把它们全列出来；没标的固定等待要么是夹具自己在模拟慢操作，要么是漏标（#1399）。
+
 ### 测试挂住时怎么办
 
 跑整套套件的 `cargo test` 步骤都经 `tools/test-watchdog.sh`：它把命令的输出照常打到任务的日志里，同时在 `RUTIS_TEST_STALL` 秒（默认 300）没有新输出时判定为挂住，先打印最后 40 行（libtest 为还在跑的测试打的那行 `test <名字> has been running for over 60 seconds` 就在里面），再结束整个进程组，以 124 退出。没有这道闸，一次挂住要等任务的 `timeout-minutes`（45 分钟），而且失败的原因不会打出来（#1402；#1386 的 `listener_scale` 就这样挂过一次）。

@@ -392,6 +392,7 @@ async fn a_failed_start_keeps_the_old_runtime_and_stays_stopped() {
             .is_some_and(|why| why.contains("no such file")),
         "{stopped:?}"
     );
+    // clock: weak-negative — the runtime is not started again
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert_eq!(down(&fixture.runtimes, "go-netkit"), stopped);
     fixture.root.shutdown().await.unwrap();
@@ -514,6 +515,7 @@ async fn a_missing_binary_is_tried_again_only_when_its_file_changes() {
     assert!(why.contains("no Go runtime go-late"), "{why}");
     assert!(!binary.exists());
     // Sweeps (every 100 ms) leave it.
+    // clock: weak-negative — the runtime is not started again
     tokio::time::sleep(Duration::from_millis(500)).await;
     assert_eq!(down(&fixture.runtimes, "go-late").as_deref(), Some(&*why));
 
@@ -523,6 +525,7 @@ async fn a_missing_binary_is_tried_again_only_when_its_file_changes() {
         .await;
     // A binary in a directory whose manifest fails is not one of its
     // runtimes: the start fails as before.
+    // clock: weak-negative — the runtime is not started again
     tokio::time::sleep(Duration::from_millis(500)).await;
     assert_eq!(runs(&count), 1, "sweeps read the failing binary again");
     assert_eq!(down(&fixture.runtimes, "go-late").as_deref(), Some(&*why));
@@ -531,6 +534,7 @@ async fn a_missing_binary_is_tried_again_only_when_its_file_changes() {
     always_failing(&binary, &count, 2);
     COLD.until(|| runs(&count) == 2, "a start on the changed file")
         .await;
+    // clock: weak-negative — the runtime is not started again
     tokio::time::sleep(Duration::from_millis(500)).await;
     assert_eq!(runs(&count), 2, "sweeps read the failing binary again");
     assert_ne!(row_state(&fixture.loader, "late"), Some(FiberState::Active));
@@ -1250,6 +1254,7 @@ async fn a_binary_of_an_old_sdk_is_refused_and_its_rows_fail() {
         )
         .await
         .unwrap();
+    // clock: weak-negative — the runtime is not started again
     tokio::time::sleep(Duration::from_millis(500)).await;
     assert_eq!(runs(&count), 1, "started again");
     assert!(unresolved(&fixture.loader, "third").is_some_and(|why| why.contains(refusal)));

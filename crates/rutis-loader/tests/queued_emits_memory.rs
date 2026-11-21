@@ -9,11 +9,11 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier};
-use std::time::Duration;
 
 use rutis::host::CtxHost;
 use rutis::Ctx;
 use rutis::Event;
+use rutis_test_support::{Guard, HANG_GUARD};
 
 struct Counting;
 
@@ -64,17 +64,6 @@ const QUEUED: [usize; 2] = [512, 1024];
 /// chain is one entry or a thousand.
 const PER_EMIT: usize = 4096;
 
-/// Waits until `done` holds; the timeout only guards against a hang.
-async fn until(done: impl Fn() -> bool, what: &str) {
-    tokio::time::timeout(Duration::from_secs(120), async {
-        while !done() {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .unwrap_or_else(|_| panic!("timed out waiting until {what}"));
-}
-
 /// One round: the listeners held by the first emit, then `queued` more emits,
 /// each after one more registration. Returns the bytes held while they wait.
 ///
@@ -101,22 +90,25 @@ async fn round(queued: usize) -> usize {
         .unwrap();
     let base = LIVE.load(Ordering::Relaxed);
     root.emit(Tick).unwrap();
-    until(
-        || entered.load(Ordering::SeqCst),
-        "the emit is in its listener",
-    )
-    .await;
+    // A round here queues a thousand emits: twelve times the nominal guard.
+    Guard(HANG_GUARD * 12)
+        .until(
+            || entered.load(Ordering::SeqCst),
+            "the emit is in its listener",
+        )
+        .await;
     for _ in 0..queued {
         root.on_sync::<Tick>(|_, _| Ok(None)).unwrap();
         root.emit(Tick).unwrap();
     }
     let held_bytes = LIVE.load(Ordering::Relaxed).saturating_sub(base);
     gate.wait();
-    until(
-        || root.diagnostics().event_backlogs.is_empty(),
-        "every call started",
-    )
-    .await;
+    Guard(HANG_GUARD * 12)
+        .until(
+            || root.diagnostics().event_backlogs.is_empty(),
+            "every call started",
+        )
+        .await;
     root.shutdown().await.unwrap();
     held_bytes
 }

@@ -19,16 +19,8 @@ use rutis_agent::{
     AgentDriverPlugin, AgentStatus, AgentToolResult, LlmResponse, ScriptedLlm, ToolDef,
     ToolsPlugin,
 };
+use rutis_test_support::soon;
 use serde_json::{json, Value};
-
-async fn soon<F, T>(f: F) -> T
-where
-    F: std::future::Future<Output = T>,
-{
-    tokio::time::timeout(Duration::from_secs(10), f)
-        .await
-        .expect("timed out")
-}
 
 /// 依赖无关的临时目录 guard(避免为测试引 tempfile 依赖)。
 struct TempDir(PathBuf);

@@ -384,6 +384,7 @@ export function apply(ctx) {
     assert_eq!(call("later"), json!("scheduled"));
     assert_eq!(call("reject"), json!("rejected"));
     // Both errors have happened by then; the process runs on.
+    // clock: weak-negative — the process has not died
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert_eq!(call("alive"), json!("alive"));
     assert!(

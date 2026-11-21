@@ -82,6 +82,7 @@ class PeerTests(background.IsolatedAsyncioTestCase):
         # Admitted, not run: the loop has not reached it.
         self.peer._receive({"op": "cancel", "id": "main:1"})
         self.assertEqual(self.read(), {"op": "ack", "id": "main:1"})
+        # clock: weak-negative — a dropped call never runs
         await asyncio.sleep(0.01)
         self.assertEqual(ran, [], "the dropped call never ran")
         # The table holds no entry once the call is resolved (#1099).
@@ -94,6 +95,7 @@ class PeerTests(background.IsolatedAsyncioTestCase):
         self.peer._receive({"op": "cancel", "id": "main:1"})
         self.assertEqual(self.read(), {"op": "ack", "id": "main:1"})
         future.set_result(42)
+        # clock: weak-negative — a dropped call never runs
         await asyncio.sleep(0.01)
         self.assertNotIn("main:1", self.peer._admitted)
         self.theirs.settimeout(0.05)

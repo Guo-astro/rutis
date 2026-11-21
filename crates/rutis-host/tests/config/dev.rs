@@ -439,6 +439,7 @@ fn the_dev_loop(lang: &Lang) {
     // (#938). The reload counts below would see it.
     std::fs::write(dir.path().join("README.md"), "notes\n").unwrap();
     std::fs::write(dir.path().join("notes.txt"), "notes\n").unwrap();
+    // clock: weak-negative — no line beyond the ones expected
     std::thread::sleep(std::time::Duration::from_millis(1200));
     signal(&host, libc::SIGTERM, false);
     let (status, stderr, output) = host.exit();
@@ -809,6 +810,7 @@ fn dev_says_no_services_line_when_no_row_provides_one() {
     let mut host = Host::start(&["dev", "."], dir.path());
     host.wait_line(|line| line.ends_with(": running").then_some(()));
     // A few polls: the line would be said once every row settled.
+    // clock: weak-negative — no line beyond the ones expected
     std::thread::sleep(std::time::Duration::from_millis(1200));
     signal(&host, libc::SIGINT, true);
     let (status, stderr, output) = host.exit();
@@ -851,6 +853,7 @@ fn dev_does_not_say_none_between_a_reload() {
     );
     host.wait_line(|line| line.starts_with("llm: reloaded").then_some(()));
     // A few polls: a `none` line would come between the two.
+    // clock: weak-negative — no line beyond the ones expected
     std::thread::sleep(std::time::Duration::from_millis(1200));
     signal(&host, libc::SIGINT, true);
     let (status, stderr, output) = host.exit();

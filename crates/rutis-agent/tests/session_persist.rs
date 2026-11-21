@@ -10,7 +10,6 @@
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
 
 use aimux_core::message::{MessageContent, ModelMessage, Role};
 use rutis::host::*;
@@ -18,15 +17,7 @@ use rutis::Ctx;
 use rutis_agent::{
     Agent, AgentDriverPlugin, LlmResponse, ScriptedLlm, Session, SessionId, ToolsPlugin,
 };
-
-async fn soon<F, T>(f: F) -> T
-where
-    F: std::future::Future<Output = T>,
-{
-    tokio::time::timeout(Duration::from_secs(10), f)
-        .await
-        .expect("timed out")
-}
+use rutis_test_support::soon;
 
 /// 依赖无关的临时目录 guard(同 minimal_tools.rs,避免引 tempfile)。
 struct TempDir(PathBuf);

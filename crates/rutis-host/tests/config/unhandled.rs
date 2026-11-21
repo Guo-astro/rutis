@@ -217,6 +217,7 @@ fn where_rows_are_traced_an_unhandled_error_fails_its_row() {
         "{context}"
     );
     // A moment for anything else to happen.
+    // clock: weak-negative — no line beyond the ones expected
     std::thread::sleep(Duration::from_millis(600));
     signal(&host, libc::SIGTERM, false);
     let (status, stderr, output) = host.exit();
@@ -259,6 +260,7 @@ fn where_rows_are_not_traced_an_unhandled_error_is_reported() {
     let file = project(dir.path(), rows);
     let mut host = Host::start(&["run", file.to_str().unwrap()], dir.path());
     wait_for_files(&mut host, &[done("node-faulty"), done("bun-faulty")]);
+    // clock: weak-negative — no line beyond the ones expected
     std::thread::sleep(Duration::from_millis(600));
     signal(&host, libc::SIGTERM, false);
     let (status, stderr, output) = host.exit();

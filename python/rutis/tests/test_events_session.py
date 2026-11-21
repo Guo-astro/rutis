@@ -230,6 +230,7 @@ class Registration(Session):
         entry = module("events_session_waiting", lambda ctx, config: ctx.on("t/x", lambda: None))
         call = self.host.invoke("rows.load", data(["w", entry, {}, [], [], {}, {"scope": []}]))
         frame = await self.host.request("events.on")
+        # clock: weak-negative — the call stays pending
         await asyncio.sleep(0.05)
         self.assertIsNotNone(self.host.runtime.rows["w"].pending, "rows.load still waits for the host")
         self.host.answer(frame)
@@ -759,6 +760,7 @@ class Review(Session):
             frame = await self.host.request("events.on")
             self.host.fail(frame, {"name": "BindingError", "message": "row r is not loaded in this runtime"})
             outcome, error = await self.host.outcome(call)
+            # clock: weak-negative — the call stays pending
             await asyncio.sleep(0.05)
         self.assertEqual((outcome, error["name"], error["message"]), ("throw", "BindingError", "row r is not loaded in this runtime"))
         self.assertNotIn("r", self.host.runtime.rows)

@@ -312,6 +312,7 @@ async fn eager_runtimes_run_side_by_side_and_a_crash_stops_only_its_rows() {
         "its row stops",
     )
     .await;
+    // clock: weak-negative — the other row is unaffected
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert_eq!(
         row_state(&loader, "probe"),
