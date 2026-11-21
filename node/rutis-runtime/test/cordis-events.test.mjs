@@ -11,6 +11,7 @@ import { Bus } from '../src/events.mjs'
 import { install } from '../src/cordis-events.mjs'
 import { definePlugin } from '../../rutis/src/index.mjs'
 import { supported, toCordis } from '../src/leaf.mjs'
+import { eventually } from './support.mjs'
 import { fakePeer } from './fixtures/fake-peer.mjs'
 
 // A root Context on the runtime's bus; plugins are rows by name. Its host
@@ -319,9 +320,9 @@ test('a failure of events.dispatch(\'emit\') nobody awaits is reported', async (
   try {
     await load('a', ctx => { ctx.on('d', () => { throw new Error('a failed') }) })
     for (const callback of root.events.dispatch('emit', ['d'])) callback()
-    await new Promise(resolve => setTimeout(resolve, 10))
     // The parallel the host dispatched failed; this process reports it as
     // the emit's failure.
+    await eventually("the emit's failure to be reported", () => reported.length > 0)
     assert.deepEqual(reported, ['rutis: emit of d from the mount failed: AggregateError: 1 listeners of d failed'])
     reported.length = 0
     const results = await Promise.allSettled(root.events.dispatch('emit', ['d']).map(async callback => callback()))

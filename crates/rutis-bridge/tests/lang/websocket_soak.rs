@@ -3,8 +3,13 @@
 //! called through each session. What
 //! the process holds (file descriptors, threads) must not grow with the
 //! number of sessions. Ignored by default; run it with
-//! `RUTIS_SOAK_SECS=600 cargo test -p rutis-bridge --features websocket --test websocket_soak -- --ignored`
+//! `RUTIS_SOAK_SECS=600 cargo test -p rutis-bridge --features websocket --test lang websocket_soak:: -- --ignored`
 //! (60 s when unset). Linux only: it reads `/proc`.
+//!
+//! Alone in its process: what it samples is the test process's own file
+//! descriptors and threads, so another test running beside it would be
+//! counted. It is a module of the `lang` suite, so every run names it
+//! (`websocket_soak::`) and runs nothing else.
 #![cfg(all(target_os = "linux", feature = "websocket"))]
 
 use std::sync::atomic::{AtomicU64, Ordering};

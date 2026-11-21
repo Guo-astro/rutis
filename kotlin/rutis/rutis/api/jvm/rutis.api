@@ -924,6 +924,7 @@ public final class arcships/rutis/internal/remote/WebSocketServer {
 	public final fun close ()V
 	public final fun getAccepted ()Ljava/util/concurrent/LinkedBlockingQueue;
 	public final fun getAddress ()Ljava/lang/String;
+	public final fun getPendingUpgrades ()I
 }
 
 public final class arcships/rutis/internal/remote/WebSocketServer$Companion {

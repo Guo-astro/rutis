@@ -118,6 +118,9 @@ class WebSocketServer(
     /** Upgrades under way. */
     private val pending = AtomicInteger()
 
+    /** How many upgrades are under way now, at most `maxPending` (a test waits on it). */
+    val pendingUpgrades: Int get() = pending.get()
+
     init {
         Thread({
             while (true) {
