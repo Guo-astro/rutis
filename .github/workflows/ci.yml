@@ -471,7 +471,7 @@ jobs:
           # The Go debugging test fails instead of skipping without dlv.
           RUTIS_TEST_DELVE: required
           RUTIS_TEST_RUNTIMES: bun,go,node,python
-        run: cargo test --workspace --exclude rutis-bridge --exclude rutis-loader --exclude rutis-e2e
+        run: bash tools/test-watchdog.sh cargo test --workspace --exclude rutis-bridge --exclude rutis-loader --exclude rutis-e2e
 
       # The shuttle models of the kernel (crates/rutis/src/fiber/shuttle_tests.rs,
       # #179), 1000 iterations of each scheduler (well under a second); the
@@ -480,7 +480,7 @@ jobs:
       - name: cargo test (rutis shuttle models)
         env:
           RUSTFLAGS: --cfg rutis_shuttle
-        run: cargo test -p rutis --lib --target-dir "${CARGO_TARGET_DIR:-target}/shuttle" shuttle
+        run: bash tools/test-watchdog.sh cargo test -p rutis --lib --target-dir "${CARGO_TARGET_DIR:-target}/shuttle" shuttle
 
       # The shuttle models of the subprocess exit state (#623), the session
       # and event host (#628) and the channels (#628), same iterations and
@@ -489,7 +489,7 @@ jobs:
       - name: cargo test (rutis-bridge shuttle models)
         env:
           RUSTFLAGS: --cfg rutis_shuttle
-        run: cargo test -p rutis-bridge --features websocket --lib --target-dir "${CARGO_TARGET_DIR:-target}/shuttle" shuttle
+        run: bash tools/test-watchdog.sh cargo test -p rutis-bridge --features websocket --lib --target-dir "${CARGO_TARGET_DIR:-target}/shuttle" shuttle
 
       # The shuttle models of binary runtime supervision (rutis-loader) and
       # host restart/reload supervision (rutis-host) (#627, #1372).
@@ -497,8 +497,8 @@ jobs:
         env:
           RUSTFLAGS: --cfg rutis_shuttle
         run: |
-          cargo test -p rutis-loader --features go,swift --lib --target-dir "${CARGO_TARGET_DIR:-target}/shuttle" shuttle
-          cargo test -p rutis-host --lib --target-dir "${CARGO_TARGET_DIR:-target}/shuttle" shuttle
+          bash tools/test-watchdog.sh cargo test -p rutis-loader --features go,swift --lib --target-dir "${CARGO_TARGET_DIR:-target}/shuttle" shuttle
+          bash tools/test-watchdog.sh cargo test -p rutis-host --lib --target-dir "${CARGO_TARGET_DIR:-target}/shuttle" shuttle
 
       # The fuzz entry points (crates/rutis-bridge/src/fuzzing.rs, #179)
       # compile only under cargo-fuzz's --cfg fuzzing, which the weekly
@@ -600,12 +600,12 @@ jobs:
           RUTIS_TEST_RUNTIMES: bun,go,node,python
           RUTIS_EVENTS_PLACEMENTS: ${{ needs.changes.outputs.all == 'true' && 'sampled' || 'written' }}
           RUTIS_EVENTS_SETTLE_SCALE: '2'
-        run: cargo test -p rutis-loader --all-features
+        run: bash tools/test-watchdog.sh cargo test -p rutis-loader --all-features
       # Both runtimes, every transport, and the conformance suites.
       - name: cargo test (rutis-bridge, all features)
         env:
           RUTIS_TEST_RUNTIMES: ${{ needs.changes.outputs.all == 'true' && 'bun,go,kotlin,node,python' || 'bun,go,node,python' }}
-        run: cargo test -p rutis-bridge --all-features
+        run: bash tools/test-watchdog.sh cargo test -p rutis-bridge --all-features
       # The same rows with the runtimes started as on Windows: a loopback
       # channel and a one-time token instead of an inherited socket. Pull
       # requests run these tests in runtimes-windows, where loopback is how
@@ -618,13 +618,13 @@ jobs:
           RUTIS_EVENTS_PLACEMENTS: written
           RUTIS_EVENTS_SETTLE_SCALE: '2'
         run: |
-          cargo test -p rutis-loader --all-features --test go
-          cargo test -p rutis-loader --all-features --test go_stop
-          cargo test -p rutis-loader --all-features --test runtimes
-          cargo test -p rutis-loader --all-features --test lang multilang_go::
-          cargo test -p rutis-loader --all-features --test lang instance_go::
-          cargo test -p rutis-loader --all-features --test lang sync_cycles::
-          cargo test -p rutis-loader --all-features --test events_conformance
+          bash tools/test-watchdog.sh cargo test -p rutis-loader --all-features --test go
+          bash tools/test-watchdog.sh cargo test -p rutis-loader --all-features --test go_stop
+          bash tools/test-watchdog.sh cargo test -p rutis-loader --all-features --test runtimes
+          bash tools/test-watchdog.sh cargo test -p rutis-loader --all-features --test lang multilang_go::
+          bash tools/test-watchdog.sh cargo test -p rutis-loader --all-features --test lang instance_go::
+          bash tools/test-watchdog.sh cargo test -p rutis-loader --all-features --test lang sync_cycles::
+          bash tools/test-watchdog.sh cargo test -p rutis-loader --all-features --test events_conformance
       - name: job time
         if: always()
         run: echo "rust-runtimes job, $(( ($(date +%s) - RUTIS_JOB_STARTED) / 60 )) min" >> "$GITHUB_STEP_SUMMARY"
@@ -697,8 +697,7 @@ jobs:
           # 20 on pull requests, 3000 in full runs (nightly), about a
           # minute more.
           RUTIS_E2E_TENANT_CYCLES: ${{ github.event_name == 'pull_request' && '20' || '3000' }}
-        run: cargo test -p rutis-e2e
-      # The published releases meeting this code (#209). They come from
+        run: bash tools/test-watchdog.sh cargo test -p rutis-e2e
       # npm, PyPI and the Go proxy and change as releases are published,
       # so they run in the release gate and on manual dispatch (#1375).
       - name: cargo test (cross-version meetings)
@@ -1595,15 +1594,15 @@ jobs:
           RUTIS_EVENTS_SETTLE_SCALE: '2'
         run: |
           if [ "$ALL" = true ]; then
-            RUTIS_TEST_RUNTIMES=bun,go,kotlin,node,python,swift cargo test -p rutis-bridge --all-features
-            cargo test -p rutis-loader --all-features
-            cargo test -p rutis-host
+            RUTIS_TEST_RUNTIMES=bun,go,kotlin,node,python,swift bash tools/test-watchdog.sh cargo test -p rutis-bridge --all-features
+            bash tools/test-watchdog.sh cargo test -p rutis-loader --all-features
+            bash tools/test-watchdog.sh cargo test -p rutis-host
           else
             BRIDGE_TESTS=$(bash tools/platform-tests.sh crates/rutis-bridge $PURE_TESTS_BRIDGE $MACOS_SKIP_TESTS_BRIDGE)
             LOADER_TESTS=$(bash tools/platform-tests.sh crates/rutis-loader $PURE_TESTS_LOADER $MACOS_SKIP_TESTS_LOADER)
-            RUTIS_TEST_RUNTIMES=bun,go,node,python cargo test -p rutis-bridge --all-features $BRIDGE_TESTS
-            cargo test -p rutis-loader --all-features $LOADER_TESTS
-            cargo test -p rutis-host --lib --test process
+            RUTIS_TEST_RUNTIMES=bun,go,node,python bash tools/test-watchdog.sh cargo test -p rutis-bridge --all-features $BRIDGE_TESTS
+            bash tools/test-watchdog.sh cargo test -p rutis-loader --all-features $LOADER_TESTS
+            bash tools/test-watchdog.sh cargo test -p rutis-host --lib --test process
           fi
       # The published Cordis plugins S6 mounts (tests/e2e/tests/install/cordis.rs),
       # full runs only (Linux `e2e` runs S6 on every pull request).
@@ -1618,9 +1617,9 @@ jobs:
           ALL: ${{ needs.changes.outputs.all }}
         run: |
           if [ "$ALL" = true ]; then
-            cargo test -p rutis-e2e
+            bash tools/test-watchdog.sh cargo test -p rutis-e2e
           else
-            cargo test -p rutis-e2e --test crashes
+            bash tools/test-watchdog.sh cargo test -p rutis-e2e --test crashes
           fi
       # Who killed a process that ended with SIGKILL (#287): the kernel's
       # memory pressure kills and code signing rejections.
@@ -2135,7 +2134,7 @@ jobs:
           if [ "$ALL" != true ]; then
             LOADER_TESTS=$(bash tools/platform-tests.sh crates/rutis-loader $PURE_TESTS_LOADER $WINDOWS_SKIP_TESTS_LOADER)
           fi
-          cargo test -p rutis-loader --all-features --no-fail-fast $LOADER_TESTS
+          bash tools/test-watchdog.sh cargo test -p rutis-loader --all-features --no-fail-fast $LOADER_TESTS
       # On pull requests runs Windows OS-sensitive bridge suites (loopback,
       # WebSocket, process exit) with go/node/python; full runs include kotlin
       # once its jar above succeeded (#1375).
@@ -2149,16 +2148,16 @@ jobs:
           if [ "$ALL" != true ]; then
             BRIDGE_TESTS=$(bash tools/platform-tests.sh crates/rutis-bridge $PURE_TESTS_BRIDGE $WINDOWS_SKIP_TESTS_BRIDGE)
           fi
-          cargo test -p rutis-bridge --all-features --no-fail-fast $BRIDGE_TESTS
+          bash tools/test-watchdog.sh cargo test -p rutis-bridge --all-features --no-fail-fast $BRIDGE_TESTS
       - name: cargo test (rutis-host)
         if: '!cancelled()'
         env:
           ALL: ${{ needs.changes.outputs.all }}
         run: |
           if [ "$ALL" = true ]; then
-            cargo test -p rutis-host --no-fail-fast
+            bash tools/test-watchdog.sh cargo test -p rutis-host --no-fail-fast
           else
-            cargo test -p rutis-host --no-fail-fast --lib --test process --test dial dial_conformance::
+            bash tools/test-watchdog.sh cargo test -p rutis-host --no-fail-fast --lib --test process --test dial dial_conformance::
           fi
       # The E2E harness on Windows (#232): each host in a Job Object,
       # Ctrl-Break, the residue checks; full runs run every Windows scenario,
@@ -2171,9 +2170,9 @@ jobs:
           ALL: ${{ needs.changes.outputs.all }}
         run: |
           if [ "$ALL" = true ]; then
-            cargo test -p rutis-e2e --no-fail-fast
+            bash tools/test-watchdog.sh cargo test -p rutis-e2e --no-fail-fast
           else
-            cargo test -p rutis-e2e --no-fail-fast --test crashes
+            bash tools/test-watchdog.sh cargo test -p rutis-e2e --no-fail-fast --test crashes
           fi
       - name: keep workspace static builds available
         if: "!cancelled() && needs.changes.outputs.all == 'true'"

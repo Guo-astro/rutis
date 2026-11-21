@@ -2,8 +2,13 @@
 //! `pipe::spawn`. Every process must be reaped, and what this process holds (file
 //! descriptors, threads) must not grow with their number. Ignored by
 //! default; run it with
-//! `RUTIS_SOAK_SECS=600 cargo test -p rutis-bridge --test local_soak -- --ignored`
+//! `RUTIS_SOAK_SECS=600 cargo test -p rutis-bridge --test lang local_soak:: -- --ignored`
 //! (60 s when unset). Linux only: it reads `/proc`.
+//!
+//! Alone in its process: what it samples is the test process's own file
+//! descriptors and threads, so another test running beside it would be
+//! counted. It is a module of the `lang` suite, so every run names it
+//! (`local_soak::`) and runs nothing else.
 #![cfg(target_os = "linux")]
 
 use std::time::{Duration, Instant};
