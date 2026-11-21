@@ -3,5 +3,4 @@
 mod common;
 
 mod go_rows;
-mod go_stop;
 mod runtime_rows;

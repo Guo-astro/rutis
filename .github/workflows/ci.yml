@@ -84,7 +84,7 @@ env:
   MACOS_SKIP_TESTS_BRIDGE: >-
     session lang events
   MACOS_SKIP_TESTS_LOADER: >-
-    rows lang events_conformance go close_memory queued_emits_memory
+    rows lang events_conformance go go_stop close_memory queued_emits_memory
   WINDOWS_SKIP_TESTS_BRIDGE: >-
     session lang events native
   WINDOWS_SKIP_TESTS_LOADER: >-
@@ -619,6 +619,7 @@ jobs:
           RUTIS_EVENTS_SETTLE_SCALE: '2'
         run: |
           cargo test -p rutis-loader --all-features --test go
+          cargo test -p rutis-loader --all-features --test go_stop
           cargo test -p rutis-loader --all-features --test runtimes
           cargo test -p rutis-loader --all-features --test lang multilang_go::
           cargo test -p rutis-loader --all-features --test lang instance_go::
@@ -1056,7 +1057,9 @@ jobs:
         if: needs.changes.outputs.all == 'true'
         env:
           RUTIS_TEST_RUNTIMES: go,node,python
-        run: cargo test -p rutis-loader --all-features --test go go_
+        run: |
+          cargo test -p rutis-loader --all-features --test go go_
+          cargo test -p rutis-loader --all-features --test go_stop
       # Pull requests run these rows on Windows (runtimes-windows), where
       # loopback is how processes start; full runs also run them here.
       - name: cargo test (Go rows on loopback channels)
@@ -1064,7 +1067,9 @@ jobs:
         env:
           RUTIS_TEST_RUNTIMES: go,node,python
           RUTIS_LOCAL_HANDOVER: loopback
-        run: cargo test -p rutis-loader --all-features --test go go_
+        run: |
+          cargo test -p rutis-loader --all-features --test go go_
+          cargo test -p rutis-loader --all-features --test go_stop
       # Only rutis-host's Go tests: the other runtimes run in their own jobs.
       - name: cargo test (rutis-host, Go)
         run: cargo test -p rutis-host go

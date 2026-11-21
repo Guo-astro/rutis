@@ -377,7 +377,7 @@ fn reading_from_any_working_directory_gives_the_same_paths() {
         let out = dir.path().join(format!("paths-{index}.json"));
         let status = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
-                "reading_from_any_working_directory_gives_the_same_paths",
+                "config_props::reading_from_any_working_directory_gives_the_same_paths",
                 "--exact",
                 "--nocapture",
             ])

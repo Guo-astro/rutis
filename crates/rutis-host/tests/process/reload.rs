@@ -432,9 +432,6 @@ def apply(ctx, config):
     #[tokio::test(flavor = "multi_thread")]
     async fn a_removed_runtime_being_restarted_stops_with_its_new_process() {
         let _environment = environment();
-        // Processes earlier tests started are left listed, their tests'
-        // async runtimes gone: only those may be there at the end.
-        let earlier = rutis_bridge::pipe::running_processes();
         let dir = tempfile::tempdir().unwrap();
         let d = dir.path();
         std::fs::write(d.join("pid.py"), PID).unwrap();
@@ -455,6 +452,9 @@ def apply(ctx, config):
             matches!(state, RuntimeState::Starting | RuntimeState::Ready(_))
         })
         .await;
+        // The process of the restarted runtime: the reload must end it. Other
+        // tests of this suite may run their own runtimes beside this one.
+        let restarted = pid_of(d, "py-row").await as u32;
 
         let begun = std::time::Instant::now();
         let reloaded = host.reload(host_config(json!({}))).await.unwrap();
@@ -467,8 +467,8 @@ def apply(ctx, config):
         assert!(reloaded.warnings.is_empty(), "{:?}", reloaded.warnings);
         let running = rutis_bridge::pipe::running_processes();
         assert!(
-            running.iter().all(|pid| earlier.contains(pid)),
-            "a runtime process runs on: {running:?}"
+            !running.contains(&restarted),
+            "the restarted runtime process still runs: {restarted}"
         );
         host.shut_down(HANG_GUARD).await.ok();
     }

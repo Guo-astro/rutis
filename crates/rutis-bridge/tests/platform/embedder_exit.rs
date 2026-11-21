@@ -170,7 +170,7 @@ fn killed_embedder_leaves_no_runtime(language: Language, signal: i32) {
     let mut command = Command::new(std::env::current_exe().unwrap());
     command
         .args([
-            "embedder_role",
+            "embedder_exit::embedder_role",
             "--exact",
             "--nocapture",
             "--test-threads=1",

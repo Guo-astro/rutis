@@ -4,6 +4,8 @@
 //! process reads.
 #![cfg(feature = "go")]
 
+mod common;
+
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;

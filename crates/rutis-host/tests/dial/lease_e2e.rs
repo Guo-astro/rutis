@@ -19,7 +19,6 @@
 // variables they set are for the hosts they start.
 #![allow(clippy::await_holding_lock)]
 
-#[cfg(target_os = "macos")]
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;

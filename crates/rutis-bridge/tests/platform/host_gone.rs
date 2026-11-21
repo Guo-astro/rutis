@@ -18,7 +18,6 @@ use rutis_bridge::session::Error;
 use rutis_test_support::{eventually_with, scaled, HANG_GUARD};
 use serde_json::json;
 
-#[cfg(target_os = "macos")]
 use crate::common::runtime::launcher;
 use rutis_test_support::runtimes;
 

@@ -26,7 +26,7 @@ use rutis_bridge::session::{Connection, Dispatch, Endpoint, Error, Reply, Value}
 use rutis_test_support::{scaled, HANG_GUARD};
 use serde_json::json;
 
-const NAME: &str = "a_call_chain_crossing_processes_keeps_each_process_s_calls_apart";
+const NAME: &str = "session_tags::a_call_chain_crossing_processes_keeps_each_process_s_calls_apart";
 const ROLE: &str = "RUTIS_325_ROLE";
 const DIR: &str = "RUTIS_325_DIR";
 

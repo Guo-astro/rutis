@@ -208,7 +208,7 @@
       },
       "rust": {
         "tests": [
-          ["crates/rutis/tests/typed/compile_errors.rs", "author_mistakes_are_reported_in_the_authors_terms"]
+          ["crates/rutis/tests/events/compile_errors.rs", "author_mistakes_are_reported_in_the_authors_terms"]
         ]
       }
     },
