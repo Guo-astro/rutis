@@ -9,6 +9,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { host, load } from '../src/testing.mjs'
+import { eventually } from '../../rutis-runtime/test/support.mjs'
 import handover from './fixtures/handover.mjs'
 import part from './fixtures/part.mjs'
 import gatekeeper from './fixtures/gatekeeper.mjs'
@@ -22,9 +23,6 @@ const parts = () => {
 }
 
 // What the host delivers arrives a little later (../testing-on.test.mjs).
-async function until(check) {
-  for (let i = 0; i < 200 && !check(); i++) await new Promise(resolve => setTimeout(resolve, 5))
-}
 
 test('a definition a double received is mounted by load, and the plugin gets it back', async () => {
   const { handed, service } = parts()
@@ -89,14 +87,14 @@ test('its listeners go with the row: gone after unloading, one when loaded again
   const owner = await load(handover, { services: { parts: service } })
   const t = await load(handed.get('watched'))
   t.emit('watched/ping')
-  await until(() => t.service('watched').hits() === 1)
+  await eventually('the first hit', () => t.service('watched').hits() === 1)
   assert.equal(t.service('watched').hits(), 1)
   await t.unload()
   // Nothing of the unloaded row hears it any more, and nothing of it is
   // left beside the next one.
   const t2 = await load(handed.get('watched'))
   t2.emit('watched/ping')
-  await until(() => t2.service('watched').hits() === 1)
+  await eventually("the second plugin's first hit", () => t2.service('watched').hits() === 1)
   assert.equal(t2.service('watched').hits(), 1)
   await t2.unload()
   await owner.unload()
@@ -110,7 +108,7 @@ test('the test hears what the row emits, as it hears a row of load', async () =>
   owner.on('watched/ping', () => { heard.push('ping') })
   const t = await h.load(handed.get('watched'))
   t.emit('watched/ping')
-  await until(() => heard.length)
+  await eventually('the emission to be heard', () => heard.length)
   assert.deepEqual(heard, ['ping'])
   await t.unload()
   await owner.unload()
@@ -144,7 +142,7 @@ test('a definition whose injected service is not there waits, and starts when it
   assert.throws(() => t.service('gated'), { name: 'PluginTestError', message: away, code: 'not-running' })
   // The service arrives, as a row of its own: the waiting row starts.
   const provider = await h.load(gatekeeper)
-  await until(() => t.provided().includes('gated'))
+  await eventually('the gated service to be provided', () => t.provided().includes('gated'))
   assert.deepEqual(t.provided(), ['gated'])
   assert.equal(await t.waiting(), null)
   assert.equal(t.service('gated').ping(), 7)

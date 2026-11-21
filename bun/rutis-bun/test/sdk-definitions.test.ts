@@ -4,6 +4,7 @@
 // docs/design-test-tool-definition-load-2026-11-01.md §4). Every case loads
 // the handle a double received, never a module the test process imported.
 import { expect, test } from 'bun:test'
+import { eventually } from './support'
 import { host, load } from '../../../node/rutis/src/testing.mjs'
 import handover from '../../../node/rutis/test/fixtures/handover.mjs'
 import part from '../../../node/rutis/test/fixtures/part.mjs'
@@ -17,10 +18,6 @@ const parts = () => {
 
 const message = async (promise: Promise<unknown>) => promise.then(() => 'loaded', (error: Error) => error.message)
 
-// What the host delivers arrives a little later (sdk.test.ts).
-async function until(check: () => boolean) {
-  for (let i = 0; i < 200 && !check(); i++) await new Promise(resolve => setTimeout(resolve, 5))
-}
 
 test('a definition a double received is mounted by load, and the plugin gets it back', async () => {
   const { handed, service } = parts()
@@ -82,12 +79,12 @@ test('its listeners go with the row: gone after unloading, one when loaded again
   const owner = await load(handover, { services: { parts: service } })
   const t = await load(handed.get('watched'))
   t.emit('watched/ping')
-  await until(() => t.service('watched').hits() === 1)
+  await eventually('the first hit', () => t.service('watched').hits() === 1)
   expect(t.service('watched').hits()).toBe(1)
   await t.unload()
   const t2 = await load(handed.get('watched'))
   t2.emit('watched/ping')
-  await until(() => t2.service('watched').hits() === 1)
+  await eventually("the second plugin's first hit", () => t2.service('watched').hits() === 1)
   expect(t2.service('watched').hits()).toBe(1)
   await t2.unload()
   await owner.unload()
@@ -101,7 +98,7 @@ test('the test hears what the row emits, as it hears a row of load', async () =>
   owner.on('watched/ping', () => { heard.push('ping') })
   const t = await h.load(handed.get('watched'))
   t.emit('watched/ping')
-  await until(() => heard.length > 0)
+  await eventually('the emission to be heard', () => heard.length > 0)
   expect(heard).toEqual(['ping'])
   await t.unload()
   await owner.unload()
@@ -130,7 +127,7 @@ test('a definition whose injected service is not there waits, and starts when it
   expect(await t.waiting()).toBe('gated: waiting for later (nothing provides it yet)')
   expect(() => t.service('gated')).toThrow('gated: waiting for later (nothing provides it yet)')
   const provider = await h.load(gatekeeper)
-  await until(() => t.provided().includes('gated'))
+  await eventually('the gated service to be provided', () => t.provided().includes('gated'))
   expect(t.provided()).toEqual(['gated'])
   expect(await t.waiting()).toBeNull()
   expect(t.service('gated').ping()).toBe(7)
