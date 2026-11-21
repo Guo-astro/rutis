@@ -12,6 +12,7 @@ use rutis::host::{
 };
 use rutis::internal::CtxInternal;
 use rutis::{Ctx, Error, Event};
+use rutis_test_support::{soon, until};
 
 // ── 测试助手 ─────────────────────────────────────────────────────
 
@@ -153,28 +154,13 @@ async fn marker_cleanup(name: &'static str, order: Order) -> rutis::Result {
     Ok(())
 }
 
-async fn soon<F, T>(f: F) -> T
-where
-    F: std::future::Future<Output = T>,
-{
-    tokio::time::timeout(Duration::from_secs(10), f)
-        .await
-        .expect("timed out")
-}
-
-/// Polls `done` until it holds; the timeout only guards against a hang.
-async fn eventually(mut done: impl FnMut() -> bool) {
-    soon(async {
-        while !done() {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-}
-
 /// Waits until every accepted `emit` has finished dispatching.
 async fn drained(ctx: &Ctx) {
-    eventually(|| ctx.diagnostics().event_backlogs.is_empty()).await
+    until(
+        || ctx.diagnostics().event_backlogs.is_empty(),
+        "the event backlogs to drain",
+    )
+    .await
 }
 
 /// Waits until `view` reaches `state`.
@@ -2337,7 +2323,11 @@ async fn restart_cleanup_errors_to_sink() {
     view.restart()
         .await
         .expect("restart Ok, cleanup error to sink");
-    eventually(|| !sink_errors.lock().unwrap().is_empty()).await;
+    until(
+        || !sink_errors.lock().unwrap().is_empty(),
+        "the error sink to be told",
+    )
+    .await;
     assert!(matches!(
         &*sink_errors.lock().unwrap()[0],
         ErrorKind::InactiveEffect

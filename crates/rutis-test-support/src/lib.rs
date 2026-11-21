@@ -74,6 +74,14 @@ pub async fn until(check: impl FnMut() -> bool, what: &str) {
     Guard(HANG_GUARD).until(check, what).await
 }
 
+/// `f`, its result, unless it takes longer than [`HANG_GUARD`]: then the
+/// test fails. A step a test cannot name better than its own line: where it
+/// can, say what it waits for ([`within`]). It is the tests' own `soon`,
+/// shared so that its guard is [`scaled`] like every other.
+pub async fn soon<F: std::future::IntoFuture>(f: F) -> F::Output {
+    within("a step of this test", f.into_future()).await
+}
+
 /// [`eventually`], with `describe()` (the state at the time) in the failure.
 pub async fn eventually_with<T>(
     check: impl FnMut() -> Option<T>,

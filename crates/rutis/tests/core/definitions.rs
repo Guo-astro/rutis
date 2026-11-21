@@ -4,21 +4,15 @@
 //! mount only where the origin's instance allows.
 
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, FiberState, FiberView, Key};
 use rutis::{Ctx, Definition, Error, Plugin};
+use rutis_test_support::soon;
 
 type Log = Arc<Mutex<Vec<String>>>;
 
 fn entries(log: &Log) -> Vec<String> {
     log.lock().unwrap().clone()
-}
-
-async fn soon<F: std::future::IntoFuture>(f: F) -> F::Output {
-    tokio::time::timeout(Duration::from_secs(10), f)
-        .await
-        .expect("timed out")
 }
 
 async fn reach(view: &FiberView, state: FiberState) {

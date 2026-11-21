@@ -11,7 +11,7 @@ use rutis::host::{
     FiberView, Key, TypeKey,
 };
 use rutis::{Ctx, Deps, Error, Plugin};
-use rutis_test_support::within;
+use rutis_test_support::{soon, within};
 use tokio::sync::Notify;
 
 #[derive(Debug)]
@@ -20,12 +20,6 @@ struct Llm(u32);
 struct Logger;
 #[derive(Debug)]
 struct Ready;
-
-async fn soon<F: std::future::IntoFuture>(f: F) -> F::Output {
-    tokio::time::timeout(Duration::from_secs(10), f)
-        .await
-        .expect("timed out")
-}
 
 async fn reach(view: &FiberView, state: FiberState) {
     let mut rx = view.watch();

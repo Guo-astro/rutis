@@ -16,6 +16,7 @@ use rutis_agent::{
     tool_call, Agent, AgentDriverPlugin, AgentError, AgentStatus, AgentTextDelta, AgentToolCall,
     AgentToolResult, AgentTurnEnd, LlmResponse, ScriptedLlm, ToolDef, ToolsPlugin,
 };
+use rutis_test_support::soon;
 use serde_json::{json, Value};
 
 fn weather_tool() -> ToolDef {
@@ -133,15 +134,6 @@ async fn run_turn(
     let result = agent.followup(input).await;
     let collected = text.lock().unwrap().clone();
     (collected, result)
-}
-
-async fn soon<F, T>(f: F) -> T
-where
-    F: std::future::Future<Output = T>,
-{
-    tokio::time::timeout(Duration::from_secs(5), f)
-        .await
-        .expect("timed out")
 }
 
 // 1. 无工具:TextDelta 流式 + 终答

@@ -4,7 +4,6 @@
 //! refused (what docs/guide/rust-plugin.md says).
 
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use rutis::host::CtxHost;
 use rutis::{Ctx, Event, Plugin, Result};
@@ -61,10 +60,11 @@ async fn a_service_emits_with_the_ctx_it_kept() {
     sessions.create_and_wait("a").await.unwrap();
     // `emit` returns at once; its listeners run after.
     sessions.create("b").unwrap();
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-    while heard.lock().unwrap().len() < 2 && tokio::time::Instant::now() < deadline {
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+    rutis_test_support::until(
+        || heard.lock().unwrap().len() >= 2,
+        "both sessions to be heard",
+    )
+    .await;
     assert_eq!(*heard.lock().unwrap(), ["a", "b"]);
 
     // Stopped: the service is withdrawn, and registering on the ctx the

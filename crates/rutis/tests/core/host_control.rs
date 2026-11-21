@@ -6,6 +6,7 @@ use std::time::Duration;
 use rutis::host::diagnostics::{ServiceChange, ServiceChanged};
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind, PluginId, TypeKey};
 use rutis::{Ctx, Error};
+use rutis_test_support::until;
 
 struct Named(&'static str);
 
@@ -100,16 +101,6 @@ impl Changes {
     }
 }
 
-async fn wait_for(changes: &Changes, len: usize) {
-    tokio::time::timeout(Duration::from_secs(10), async {
-        while changes.0.lock().unwrap().len() < len {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("ServiceChanged not emitted");
-}
-
 #[tokio::test]
 async fn service_changes_are_announced() {
     let root = Ctx::root().unwrap();
@@ -123,9 +114,13 @@ async fn service_changes_are_announced() {
 
     let provider = root.plugin(Provides(1));
     (&provider).await.unwrap();
-    wait_for(&changes, 1).await;
+    until(|| changes.0.lock().unwrap().len() >= 1, "a service change").await;
     provider.dispose().await.unwrap();
-    wait_for(&changes, 2).await;
+    until(
+        || changes.0.lock().unwrap().len() >= 2,
+        "a second service change",
+    )
+    .await;
 
     let seen = changes.0.lock().unwrap().clone();
     assert_eq!(

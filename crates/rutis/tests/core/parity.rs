@@ -14,7 +14,6 @@
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use rutis::events::{Call, Listener};
 use rutis::host::{
@@ -23,6 +22,7 @@ use rutis::host::{
 };
 use rutis::internal::CtxInternal;
 use rutis::{Ctx, Error, Event};
+use rutis_test_support::{soon, until};
 use tokio::runtime::Handle;
 use tokio::sync::Notify;
 
@@ -177,28 +177,13 @@ fn sink_ctx() -> (Ctx, Arc<Mutex<Vec<Arc<ErrorKind>>>>) {
     (ctx, collected)
 }
 
-async fn soon<F, T>(f: F) -> T
-where
-    F: std::future::Future<Output = T>,
-{
-    tokio::time::timeout(Duration::from_secs(10), f)
-        .await
-        .expect("timed out")
-}
-
-/// Polls `done` until it holds; the timeout only guards against a hang.
-async fn eventually(mut done: impl FnMut() -> bool) {
-    soon(async {
-        while !done() {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-}
-
 /// Waits until every accepted `emit` has finished dispatching.
 async fn drained(ctx: &Ctx) {
-    eventually(|| ctx.diagnostics().event_backlogs.is_empty()).await
+    until(
+        || ctx.diagnostics().event_backlogs.is_empty(),
+        "the event backlogs to drain",
+    )
+    .await
 }
 
 /// 等待 fiber 进入目标状态(watch last-value)。
@@ -253,7 +238,11 @@ fn transitions_of(log: &TransitionLog, id: PluginId) -> Vec<(FiberState, FiberSt
 }
 
 async fn wait_transitions(log: &TransitionLog, id: PluginId, at_least: usize) {
-    eventually(|| transitions_of(log, id).len() >= at_least).await;
+    until(
+        || transitions_of(log, id).len() >= at_least,
+        "the fiber to change state enough",
+    )
+    .await;
 }
 
 /// 分段装配(dispose.spec async yield 系列的 Rust 载体):每段先等放行门,
@@ -458,7 +447,11 @@ async fn logs_disposal_observer_failures_without_rejecting_disposal() {
         .await
         .expect("observer failure must not reject disposal");
     assert_eq!(*seen.lock().unwrap(), vec!["disposed"]);
-    eventually(|| !sink.lock().unwrap().is_empty()).await;
+    until(
+        || !sink.lock().unwrap().is_empty(),
+        "the error sink to be told",
+    )
+    .await;
     assert_eq!(sink.lock().unwrap().len(), 1);
     // An emit listener's failure reaches the sink as `ListenerFailed`.
     assert!(matches!(
@@ -541,7 +534,11 @@ async fn does_not_await_async_disposal_observers_but_still_observes_rejections()
     assert!(sink.lock().unwrap().is_empty()); // 观察者还挂着,尚未报错
 
     observer_gate.notify_one();
-    eventually(|| !sink.lock().unwrap().is_empty()).await;
+    until(
+        || !sink.lock().unwrap().is_empty(),
+        "the error sink to be told",
+    )
+    .await;
     // An emit listener's failure reaches the sink as `ListenerFailed`.
     assert!(matches!(
         &*sink.lock().unwrap()[0],
@@ -663,7 +660,11 @@ async fn makes_a_loading_parent_join_child_cleanup_already_in_progress() {
         })
     }));
     // owner 的 apply 已创建 child 并填槽(publication 进行中)
-    eventually(|| child_slot.lock().unwrap().is_some()).await;
+    until(
+        || child_slot.lock().unwrap().is_some(),
+        "the child to be handed out",
+    )
+    .await;
     *owner_slot.lock().unwrap() = Some(owner.clone());
     go.notify_one();
     soon(cleanup_started.notified()).await;
@@ -1060,7 +1061,11 @@ async fn logs_auto_rollback_cleanup_failure_once_when_a_structural_owner_joins()
     *slot.lock().unwrap() = Some(view.clone());
     soon(registered.notified()).await;
     hold.notify_one();
-    eventually(|| restart_done.load(Ordering::SeqCst)).await;
+    until(
+        || restart_done.load(Ordering::SeqCst),
+        "the restart to finish",
+    )
+    .await;
     // 回滚 + 重启 join 同一回滚:错误只记录一次
     assert_eq!(sink.lock().unwrap().len(), 1);
     assert!(
@@ -2418,7 +2423,7 @@ async fn events_ctx_on() {
     soon(done.notified()).await;
     assert_eq!(hits.load(Ordering::SeqCst), 1);
     ctx.emit(Ping { value: 1 }).expect("default event dispatch");
-    eventually(|| hits.load(Ordering::SeqCst) >= 2).await;
+    until(|| hits.load(Ordering::SeqCst) >= 2, "both hits").await;
     assert_eq!(hits.load(Ordering::SeqCst), 2);
     d.dispose().await.unwrap();
     ctx.emit(Ping { value: 1 }).expect("default event dispatch");

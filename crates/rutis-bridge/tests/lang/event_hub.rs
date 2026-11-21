@@ -16,7 +16,7 @@ use rutis_bridge::channel::PeerId;
 use rutis_bridge::events::{ArgValue, Args};
 use rutis_bridge::runtime::Process;
 use rutis_bridge::session::{settle, Connection, Dispatch, Endpoint, Error, Reply, Value};
-use rutis_test_support::within;
+use rutis_test_support::{until, within};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as Json};
 
@@ -215,16 +215,6 @@ fn scope(chain: &[(&str, &str)]) -> Vec<Scope> {
         .collect()
 }
 
-async fn eventually(mut check: impl FnMut() -> bool, what: &str) {
-    for _ in 0..500 {
-        if check() {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    panic!("timed out waiting for {what}");
-}
-
 /// Answers a fixed value; counts its calls.
 fn answer(value: Option<&'static str>, heard: Arc<Mutex<Vec<Vec<Value>>>>) -> impl Listener<Args> {
     move |event: Arc<Args>, _: Call<Args>| {
@@ -303,7 +293,7 @@ async fn dropping_a_dispatch_cancels_the_remote_listener_it_started() {
             );
         }
         drop(pending);
-        eventually(
+        until(
             || ended.load(Ordering::SeqCst),
             "the dropped dispatch to cancel the call it started",
         )
@@ -534,7 +524,7 @@ async fn a_failing_filter_of_an_emit_is_reported_from_its_row() {
         rig.dispatch(Some("chat"), "t/fe", "emit", vec![], Some(throws))
             .await
             .unwrap();
-        eventually(|| !lines.lock().unwrap().is_empty(), "the report").await;
+        until(|| !lines.lock().unwrap().is_empty(), "the report").await;
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert_eq!(
             *lines.lock().unwrap(),
@@ -596,7 +586,7 @@ async fn an_unloaded_row_lets_go_of_its_emit_whose_filter_never_answers() {
             })
         };
         let hung = emit("chat", "hung", Some(never));
-        eventually(
+        until(
             || asked.load(std::sync::atomic::Ordering::SeqCst) == 1,
             "the filter's call",
         )
@@ -619,7 +609,7 @@ async fn an_unloaded_row_lets_go_of_its_emit_whose_filter_never_answers() {
                 .unwrap()
                 .unwrap();
         }
-        eventually(|| !heard.lock().unwrap().is_empty(), "the kept emit").await;
+        until(|| !heard.lock().unwrap().is_empty(), "the kept emit").await;
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert_eq!(
             *heard.lock().unwrap(),
@@ -660,7 +650,7 @@ async fn entries_leave_with_their_row_and_their_session() {
         rig.process.unload_row("chat").await.unwrap();
         assert_eq!(serial().await.unwrap(), Some(Value::Data(json!("other"))));
         rig.far.close(Error::Transport("gone".into()));
-        eventually(
+        until(
             || rig.process.connection().close_reason().is_some(),
             "the session's end",
         )
@@ -715,7 +705,7 @@ async fn a_row_emits_from_its_unload_stack() {
             let process = rig.process.clone();
             async move { process.unload_row("chat").await }
         });
-        eventually(
+        until(
             || rig.fake.held.lock().unwrap().is_empty(),
             "rows.unload to reach the runtime",
         )
@@ -780,7 +770,7 @@ async fn an_answer_does_not_overtake_the_dispatch_before_it() {
                 let row = row.clone();
                 async move { process.unload_row(&row).await }
             });
-            eventually(
+            until(
                 || rig.fake.held.lock().unwrap().is_empty(),
                 "rows.unload to reach the runtime",
             )
@@ -807,7 +797,7 @@ async fn an_answer_does_not_overtake_the_dispatch_before_it() {
                 "round {round}: the stack's emission was refused: {result:?}"
             );
         }
-        eventually(
+        until(
             || heard.lock().unwrap().len() == 100,
             "every emission of the unload stacks",
         )
@@ -921,7 +911,7 @@ async fn a_cleanup_emission_outlives_its_row_and_the_queue_before_it() {
                     .await
             }
         });
-        eventually(|| asked.load(Ordering::SeqCst), "the held emit's filter").await;
+        until(|| asked.load(Ordering::SeqCst), "the held emit's filter").await;
 
         // Row `b` unloads: the runtime keeps `rows.unload` unanswered while
         // its stack runs, and the stack emits (§7.1 step 5).
@@ -931,7 +921,7 @@ async fn a_cleanup_emission_outlives_its_row_and_the_queue_before_it() {
             let process = rig.process.clone();
             async move { process.unload_row("b").await }
         });
-        eventually(
+        until(
             || rig.fake.held.lock().unwrap().is_empty(),
             "rows.unload to reach the runtime",
         )
@@ -962,7 +952,7 @@ async fn a_cleanup_emission_outlives_its_row_and_the_queue_before_it() {
         release_filter.send(Ok(Value::Data(json!([true])))).unwrap();
         holding.await.unwrap().unwrap();
         assert_eq!(finish(cleanup).await.unwrap(), Value::Undefined);
-        eventually(|| heard(&rig, "other-hears"), "the cleanup's emission").await;
+        until(|| heard(&rig, "other-hears"), "the cleanup's emission").await;
         let call = rig
             .fake
             .calls
@@ -1021,7 +1011,7 @@ async fn a_session_ending_with_a_cleanup_still_queued_reports_it() {
                     .await
             }
         });
-        eventually(|| asked.load(Ordering::SeqCst), "the held emit's filter").await;
+        until(|| asked.load(Ordering::SeqCst), "the held emit's filter").await;
 
         let (release_unload, held) = tokio::sync::oneshot::channel::<()>();
         rig.fake.held.lock().unwrap().insert("b".into(), held);
@@ -1029,7 +1019,7 @@ async fn a_session_ending_with_a_cleanup_still_queued_reports_it() {
             let process = rig.process.clone();
             async move { process.unload_row("b").await }
         });
-        eventually(
+        until(
             || rig.fake.held.lock().unwrap().is_empty(),
             "rows.unload to reach the runtime",
         )
@@ -1350,7 +1340,7 @@ async fn an_unload_does_not_wait_for_a_call_the_runtime_never_answers() {
     .await;
     let emitter = root.clone();
     let parallel = tokio::spawn(async move { emitter.named("t/hang").parallel(args(&[])).await });
-    eventually(
+    until(
         || !rig.fake.calls.lock().unwrap().is_empty(),
         "the call reached the runtime",
     )
@@ -1397,7 +1387,7 @@ async fn plugin_code_seeing_a_runtime_s_emit_can_call_that_runtime() {
     )
     .await
     .unwrap();
-    eventually(
+    until(
         || !answers.lock().unwrap().is_empty(),
         "the listener's call",
     )

@@ -26,16 +26,8 @@ use rutis_agent::{
     AgentToolResult, LlmResponse, ScriptedLlm, ToolDef, ToolPostExecute, ToolPreExecute,
     ToolsPlugin,
 };
+use rutis_test_support::soon;
 use serde_json::{json, Value};
-
-async fn soon<F, T>(f: F) -> T
-where
-    F: std::future::Future<Output = T>,
-{
-    tokio::time::timeout(Duration::from_secs(5), f)
-        .await
-        .expect("timed out")
-}
 
 async fn wait_state(view: &FiberView, want: FiberState) {
     soon(async {
