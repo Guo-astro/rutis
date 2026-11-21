@@ -176,7 +176,7 @@ async fn each_plugin_runs_in_its_own_process() {
 /// §五 5: a runtime stopped at its first line for a debugger, with no
 /// greeting limit, is starting, and its row waits for it.
 // guarantee: host/plugin-limits (greeting(Duration::MAX) in the status)
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn a_runtime_waiting_for_a_debugger_stays_starting() {
     if !rutis_test_support::runtimes::enabled("node") {
         return;
@@ -187,10 +187,6 @@ async fn a_runtime_waiting_for_a_debugger_stays_starting() {
     let host = host(vec![runtime], false).await;
     let ping = host.plugin("ping.mjs", &PING.replace("NAME", "ping"));
     host.rows(&[("wordcount", "wordcount", &ping)]).await;
-    // Past the time Node takes to greet when nothing stops it, and past a
-    // session's own 10 s handshake.
-    tokio::time::sleep(Duration::from_secs(12)).await;
-    let status = host.loader.status().to_string();
     // With its process id, to attach the debugger to. On Windows a local
     // runtime's process is known only once it connected back (loopback
     // handover), so a process that has not greeted shows none.
@@ -201,11 +197,23 @@ async fn a_runtime_waiting_for_a_debugger_stays_starting() {
         }
         true => "  wordcount: starting".to_string(),
     };
-    assert_eq!(line(&status, "  wordcount: starting"), expected);
-    assert_eq!(
-        line(&status, "  wordcount: waiting"),
-        "  wordcount: waiting for runtime wordcount (starting)"
-    );
+    let starting_and_waiting = || {
+        let status = host.loader.status().to_string();
+        assert_eq!(line(&status, "  wordcount: starting"), expected);
+        assert_eq!(
+            line(&status, "  wordcount: waiting"),
+            "  wordcount: waiting for runtime wordcount (starting)"
+        );
+    };
+    starting_and_waiting();
+    // Past the time Node takes to greet when nothing stops it, and past a
+    // session's own 10 s handshake, without 12 s of real time (#1400): the
+    // clock is paused, so the loader's timers are the ones that run. What
+    // this does not cover is a watchdog on real time outside tokio; there
+    // is none over a runtime's start.
+    tokio::time::advance(Duration::from_secs(12)).await;
+    tokio::task::yield_now().await;
+    starting_and_waiting();
     host.root.shutdown().await.unwrap();
 }
 
