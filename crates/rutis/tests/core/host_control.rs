@@ -114,7 +114,7 @@ async fn service_changes_are_announced() {
 
     let provider = root.plugin(Provides(1));
     (&provider).await.unwrap();
-    until(|| changes.0.lock().unwrap().len() >= 1, "a service change").await;
+    until(|| !changes.0.lock().unwrap().is_empty(), "a service change").await;
     provider.dispose().await.unwrap();
     until(
         || changes.0.lock().unwrap().len() >= 2,
