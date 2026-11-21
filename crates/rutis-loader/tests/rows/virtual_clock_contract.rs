@@ -19,6 +19,7 @@ use rutis::host::{shutdown_deadline, CtxHost, DisposeWaitError, DynPlugin, Effec
 use rutis::{Ctx, Error as RutisError};
 use rutis_bridge::channel::PeerId;
 use rutis_bridge::session::{Connection, Dispatch, Endpoint, Reply, Value, ENDPOINT_PROTOCOL};
+use rutis_test_support::Environment;
 use serde_json::{json, Value as Json};
 
 /// An hour: long enough that a timeout of any length the compatibility
@@ -182,6 +183,7 @@ async fn an_in_flight_call_is_given_no_timeout() {
 /// guarantee: host/stop-deadline
 #[test]
 fn the_cleanup_deadline_is_ten_seconds_unless_set() {
+    let _environment = Environment::new();
     std::env::remove_var("RUTIS_SHUTDOWN_TIMEOUT");
     assert_eq!(shutdown_deadline(), Duration::from_secs(10));
     std::env::set_var("RUTIS_SHUTDOWN_TIMEOUT", "0.25");

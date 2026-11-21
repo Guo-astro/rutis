@@ -119,7 +119,10 @@ async fn waiting_again_is_reported_again() {
 /// guarantee: core/features.still-waiting
 #[tokio::test(flavor = "multi_thread")]
 async fn a_short_wait_or_reports_off_say_nothing() {
-    let (ctx, sunk) = root(Some(Duration::from_millis(300)));
+    // Long enough that the short wait below cannot reach it on a loaded
+    // runner: this test is about "a wait under the threshold says nothing",
+    // not about where the boundary is.
+    let (ctx, sunk) = root(Some(Duration::from_secs(10)));
     let view = ctx.plugin(Printer);
     tokio::time::sleep(Duration::from_millis(50)).await;
     let greeting = ctx.provide(Greeting).unwrap();
