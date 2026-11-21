@@ -358,9 +358,10 @@ struct AppTests {
         }
         XCTAssertTrue(accepted.count > 0, "the app dialed")
         accepted.closeAll()
-        for _ in 0..<300 where DialedSocket.live.sessions != sessions || DialedSocket.live.heartbeats != heartbeats {
-            try await Task.sleep(nanoseconds: 10_000_000)
+        let quiet = await completed(within: 60) {
+            try? await DialedSocket.live.waitUntilQuiet(sessions: sessions, heartbeats: heartbeats)
         }
+        XCTAssertTrue(quiet, "the stopped app left \(DialedSocket.live.sessions - sessions) URLSessions and \(DialedSocket.live.heartbeats - heartbeats) heartbeats")
         XCTAssertEqual(DialedSocket.live.sessions, sessions, "URLSessions left")
         XCTAssertEqual(DialedSocket.live.heartbeats, heartbeats, "heartbeats left")
     }
@@ -505,6 +506,24 @@ struct AppTests {
     private func port(of address: String) -> UInt16? {
         guard let url = URLComponents(string: address), let port = url.port else { return nil }
         return UInt16(port)
+    }
+}
+
+/// Whether `body` finished within `seconds`; the deadline only catches a
+/// waiter a real leak would never resume.
+private func completed(within seconds: Double, _ body: @escaping @Sendable () async -> Void) async -> Bool {
+    await withTaskGroup(of: Bool.self) { group in
+        group.addTask {
+            await body()
+            return true
+        }
+        group.addTask {
+            try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+            return false
+        }
+        let result = await group.next() ?? false
+        group.cancelAll()
+        return result
     }
 }
 
