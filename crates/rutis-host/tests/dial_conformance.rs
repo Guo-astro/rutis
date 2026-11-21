@@ -25,6 +25,9 @@
 //!
 //! Risk C10: the matrix is in docs/ci.md. guarantee: bridge/dial-out-rules
 
+// The environment is held until the listener this test starts ends.
+#![allow(clippy::await_holding_lock)]
+
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU16, Ordering};
@@ -37,6 +40,8 @@ use rutis_test_support::{within, HANG_GUARD};
 use serde_json::json;
 use tokio::io::AsyncBufReadExt;
 use tokio::sync::mpsc;
+
+mod common;
 
 fn repo() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -225,6 +230,8 @@ impl Language {
 struct Rutis {
     host: Host,
     port: u16,
+    /// The environment this listener's token lives in, until it stops.
+    _environment: std::sync::MutexGuard<'static, ()>,
 }
 
 impl Rutis {
@@ -247,6 +254,8 @@ impl Rutis {
 
     async fn listen(port: u16, tls: Option<(PathBuf, PathBuf)>) -> Self {
         // Every host here has this token: set by any test, it is the same.
+        // The guard serializes it with the other tests that rewrite tokens.
+        let environment = crate::common::environment();
         std::env::set_var("RUTIS_TOKEN_PHONE", TOKEN);
         let listener = match tls {
             Some((cert, key)) => json!({
@@ -266,7 +275,11 @@ impl Rutis {
         let host = Host::start(&config).await.unwrap();
         host.load(config.rows()).await.unwrap();
         let port = host.listening[0].1.port();
-        Self { host, port }
+        Self {
+            host,
+            port,
+            _environment: environment,
+        }
     }
 
     fn address(&self) -> String {

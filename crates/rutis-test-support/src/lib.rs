@@ -12,8 +12,9 @@
 //! loaded machine (CI runners sharing a host) waits longer, and a real hang
 //! still fails, only later (docs/ci.md §11).
 
+use std::ffi::OsString;
 use std::future::Future;
-use std::sync::OnceLock;
+use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 
 use tokio::sync::oneshot;
@@ -193,4 +194,60 @@ pub fn on_thread<T: Send + 'static>(
         let _ = tx.send(f());
     });
     rx
+}
+
+static ENVIRONMENT: Mutex<()> = Mutex::new(());
+
+/// The process's `RUTIS_*` variables, to this test alone, put back as they
+/// were when dropped. Product code reads some of them on every call
+/// (`RUTIS_SHUTDOWN_TIMEOUT`, `RUTIS_TEST_TIME_SCALE`), so a test in a suite
+/// that sets one must hold this across every test that could read it; the
+/// suite's other tests use it too, or the change leaks into them.
+///
+/// The lock, not just the save and restore: two tests that set different
+/// variables would otherwise interleave. A value a test set is removed on
+/// drop, and a value it removed comes back.
+#[derive(Debug)]
+pub struct Environment {
+    _guard: MutexGuard<'static, ()>,
+    saved: Vec<(OsString, OsString)>,
+}
+
+impl Environment {
+    /// Takes the process environment lock and records every `RUTIS_*`
+    /// variable.
+    pub fn new() -> Self {
+        let guard = ENVIRONMENT
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let saved = std::env::vars_os()
+            .filter(|(name, _)| name.to_string_lossy().starts_with("RUTIS_"))
+            .collect();
+        Self {
+            _guard: guard,
+            saved,
+        }
+    }
+}
+
+impl Default for Environment {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Drop for Environment {
+    fn drop(&mut self) {
+        let added: Vec<OsString> = std::env::vars_os()
+            .map(|(name, _)| name)
+            .filter(|name| name.to_string_lossy().starts_with("RUTIS_"))
+            .filter(|name| !self.saved.iter().any(|(saved, _)| saved == name))
+            .collect();
+        for name in added {
+            std::env::remove_var(name);
+        }
+        for (name, value) in &self.saved {
+            std::env::set_var(name, value);
+        }
+    }
 }
