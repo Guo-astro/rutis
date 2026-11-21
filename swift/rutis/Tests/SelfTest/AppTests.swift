@@ -212,10 +212,6 @@ struct AppTests {
                            settings: Events.Settings(log: { lines.add($0) }, shutdownTimeout: 1),
                            heartbeat: (ping: 0.02, timeout: 0.2))
         try await app.start()
-        func waitFor(_ what: String, _ condition: () -> Bool) async throws {
-            for _ in 0..<500 where !condition() { try await Task.sleep(nanoseconds: 10_000_000) }
-            XCTAssertTrue(condition(), what)
-        }
         try await waitFor("the listening address") { !lines.all.isEmpty }
         let address = try XCTUnwrap(lines.all.compactMap { $0.components(separatedBy: "listening on ").dropFirst().first }.last)
         let protocolName = "rutis.\(endpointProtocol)"
@@ -417,10 +413,6 @@ struct AppTests {
         let app = RutisApp(plugins: plugins, configs: ["strict": Words(word: "x"), "second": Words(word: "hello")],
                            connect: address, id: "pad", token: "secret", peer: "test", log: { lines.add($0) })
         try await app.start()
-        func waitFor(_ what: String, _ condition: () -> Bool) async throws {
-            for _ in 0..<500 where !condition() { try await Task.sleep(nanoseconds: 10_000_000) }
-            XCTAssertTrue(condition(), what)
-        }
         func told(_ method: String) -> [Value] { host.frames.filter { $0.method == method }.map(\.frame) }
         func ran(_ prefix: String) -> [String] { lines.all.filter { $0.hasPrefix(prefix) } }
         try await waitFor("the app's offer") { !told("link.offers").isEmpty }

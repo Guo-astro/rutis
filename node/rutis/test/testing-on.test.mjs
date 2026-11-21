@@ -3,19 +3,17 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { host, load } from '../src/testing.mjs'
+import { eventually } from '../../rutis-runtime/test/support.mjs'
 import talker from './fixtures/talker.mjs'
 
 // Wait until `check()` holds: what the host delivers arrives a little later.
-async function until(check) {
-  for (let i = 0; i < 200 && !check(); i++) await new Promise(resolve => setTimeout(resolve, 5))
-}
 
 test('t.on hears the plugin\'s emissions of the name', async () => {
   const t = await load(talker, { config: { city: 'Oslo' } })
   const asked = []
   const off = t.on('talker/asked', city => { asked.push(city) })
   await t.service('talker').today()
-  await until(() => asked.length)
+  await eventually("the plugin's emission to be heard", () => asked.length)
   assert.deepEqual(asked, ['Oslo'])
   off()
   await t.unload()
@@ -27,7 +25,7 @@ test('t.on hears the test\'s own emissions', async () => {
   t.on('talker/asked', (city, n) => { heard.push([city, n]) })
   t.emit('talker/asked', 'Bergen', 2)
   assert.equal(await t.parallel('talker/asked', 'Tromsø', 3), undefined)
-  await until(() => heard.length === 2)
+  await eventually('both emissions to be heard', () => heard.length === 2)
   assert.deepEqual(heard, [['Bergen', 2], ['Tromsø', 3]])
   await t.unload()
 })
@@ -38,7 +36,7 @@ test('the listener gets the arguments as from another process', async () => {
   let got
   t.on('talker/told', received => { got = received })
   await t.service('talker').tell(entry)
-  await until(() => got)
+  await eventually("the test's own emission to arrive", () => got)
   // A copy, with undefined inside a value as null, as the runtimes send it.
   assert.notEqual(got, entry)
   assert.deepEqual(got, { city: 'Oslo', at: null })

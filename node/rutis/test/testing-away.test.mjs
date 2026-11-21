@@ -5,6 +5,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { host, load } from '../src/testing.mjs'
+import { eventually } from '../../rutis-runtime/test/support.mjs'
 import gated from './fixtures/gated.mjs'
 import gatekeeper from './fixtures/gatekeeper.mjs'
 import echo from './fixtures/echo.mjs'
@@ -12,9 +13,6 @@ import anonymous from './fixtures/anonymous.mjs'
 import stuck from './fixtures/stuck.mjs'
 import cycler from './fixtures/cycler.mjs'
 
-async function until(check) {
-  for (let i = 0; i < 200 && !check(); i++) await new Promise(resolve => setTimeout(resolve, 5))
-}
 
 test('a row that waits says what `dev` says, with the code `not-running`', async () => {
   const h = host()
@@ -25,7 +23,7 @@ test('a row that waits says what `dev` says, with the code `not-running`', async
   assert.throws(() => t.service('gated'), { name: 'PluginTestError', message: away, code: 'not-running' })
   // The provider arrives: the row starts, and neither says otherwise.
   const provider = await h.load(gatekeeper)
-  await until(() => t.provided().includes('gated'))
+  await eventually('the gated service to be provided', () => t.provided().includes('gated'))
   assert.equal(await t.waiting(), null)
   assert.equal(t.service('gated').ping(), 7)
   await provider.unload()

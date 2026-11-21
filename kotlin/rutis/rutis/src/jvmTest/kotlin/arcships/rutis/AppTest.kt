@@ -64,14 +64,6 @@ class AppTest {
         closing.forEach { runCatching { it.close() } }
     }
 
-    private fun until(what: String, condition: () -> Boolean) {
-        val deadline = System.nanoTime() + 10_000_000_000
-        while (!condition()) {
-            assertTrue(System.nanoTime() < deadline, what)
-            Thread.sleep(10)
-        }
-    }
-
     /** A field of a frame as text (data arrives as JSON). */
     private fun Map<*, *>.text(key: String): String? = (this[key] as? JsonPrimitive)?.content
 
